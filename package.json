@@ -1,0 +1,17 @@
+{
+  "name": "roleflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "简历驱动的本地岗位筛选与投递工作流。",
+  "type": "commonjs",
+  "scripts": {
+    "cli": "node src/cli.js",
+    "check": "node tests/self_check.js"
+  },
+  "dependencies": {
+    "pdf-parse": "2.4.5"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

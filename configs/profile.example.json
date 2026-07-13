@@ -1,0 +1,17 @@
+{
+  "candidate": {
+    "name": "示例候选人",
+    "city": "广州",
+    "target_roles": ["AI应用开发", "Python后端", "RAG", "Agent"],
+    "strengths": ["Python", "FastAPI", "RAG", "Agent", "知识库", "智能问答"]
+  },
+  "location": {
+    "target_cities": ["广州"],
+    "default_city": "广州",
+    "boss_city_code": "101280100"
+  },
+  "safety": {
+    "read_only": true,
+    "manual_confirmation_required": true
+  }
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "source": "boss",
+    "sourceId": "sample-rag-001",
+    "keyword": "RAG工程师",
+    "title": "AI应用开发工程师（RAG/Agent）",
+    "company": "广州某智能科技有限公司",
+    "location": "广州·天河区",
+    "salary": "12-18K",
+    "experience": "3-5年",
+    "education": "本科",
+    "bossActiveText": "今日活跃",
+    "url": "https://www.zhipin.com/job_detail/sample-rag-001.html",
+    "tags": ["Python", "FastAPI", "RAG", "知识库"],
+    "description": "负责企业知识库、智能问答、RAG检索增强和Agent工具调用落地。熟悉Python、FastAPI、向量数据库优先。"
+  },
+  {
+    "source": "boss",
+    "sourceId": "sample-algo-002",
+    "keyword": "大模型应用开发",
+    "title": "大模型算法工程师",
+    "company": "深圳某AI实验室",
+    "location": "深圳",
+    "salary": "30-50K",
+    "experience": "5-10年",
+    "education": "硕士",
+    "bossActiveText": "本月活跃",
+    "url": "https://www.zhipin.com/job_detail/sample-algo-002.html",
+    "tags": ["PyTorch", "模型训练", "多模态"],
+    "description": "负责大模型训练、微调、多模态算法优化，需要深度学习论文经验。"
+  }
+]

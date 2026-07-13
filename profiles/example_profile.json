@@ -1,0 +1,31 @@
+{
+  "candidate": {
+    "name": "示例候选人",
+    "city": "广州",
+    "targetTitle": "AI应用开发工程师",
+    "expectedSalary": "9-14K",
+    "adjustableSalary": ["8-12K", "9-13K"],
+    "directions": ["AI应用开发", "Python后端", "RAG", "Agent"]
+  },
+  "skills": ["Python", "FastAPI", "RAG", "LangGraph", "LangChain", "Agent", "Milvus", "Redis", "MySQL", "Docker", "pytest"],
+  "projects": [
+    {
+      "name": "企业知识库问答项目",
+      "tags": ["RAG", "知识库", "Agent", "FastAPI"],
+      "pitch": "参与检索增强问答链路优化，具备知识库问答与工程协作经验。"
+    },
+    {
+      "name": "多 Agent 内容生成项目",
+      "tags": ["LangGraph", "Agent", "工具调用"],
+      "pitch": "使用结构化工作流实现内容生成与质量审查。"
+    }
+  ],
+  "constraints": {
+    "preferredCities": ["广州"],
+    "levels": ["初级", "中级", "0-3年", "1-3年", "经验不限"],
+    "avoidRoles": ["销售", "培训", "讲师", "纯算法", "纯前端", "纯Java"]
+  },
+  "riskMessaging": {
+    "gap": "如被问到职业空档，基于本人实际经历说明方向探索、持续学习与项目实践。"
+  }
+}

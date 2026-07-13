@@ -1,0 +1,61 @@
+{
+  "boss_activity": {
+    "max_active_days": 3,
+    "unknown_penalty": 3,
+    "inactive_penalty": 10
+  },
+  "work_schedule": {
+    "preference": "prefer_double_weekend",
+    "double_weekend_bonus": 4,
+    "alternating_weekend_penalty": 3,
+    "single_weekend_penalty": 6
+  },
+  "salary": {
+    "preferred_max_k": 24,
+    "hard_max_k": 35,
+    "experience_flex_max_k": 18
+  },
+  "positive_keywords": [
+    {"word": "RAG", "weight": 4, "label": "RAG"},
+    {"word": "检索增强", "weight": 4, "label": "RAG"},
+    {"word": "知识库", "weight": 3, "label": "知识库"},
+    {"word": "Agent", "weight": 4, "label": "Agent"},
+    {"word": "智能体", "weight": 4, "label": "Agent"},
+    {"word": "LangGraph", "weight": 4, "label": "LangGraph"},
+    {"word": "LangChain", "weight": 3, "label": "LangChain"},
+    {"word": "MCP", "weight": 3, "label": "MCP"},
+    {"word": "Function Calling", "weight": 3, "label": "Function Calling"},
+    {"word": "Prompt", "weight": 2, "label": "Prompt"},
+    {"word": "Python", "weight": 3, "label": "Python"},
+    {"word": "FastAPI", "weight": 3, "label": "FastAPI"},
+    {"word": "Dify", "weight": 2, "label": "Dify"},
+    {"word": "Coze", "weight": 1, "label": "Coze"},
+    {"word": "FastGPT", "weight": 2, "label": "FastGPT"},
+    {"word": "智能问答", "weight": 2, "label": "智能问答"}
+  ],
+  "risk_rules": [
+    {"word": "产品经理", "penalty": 10, "risk": "产品方向"},
+    {"word": "测试工程师", "penalty": 10, "risk": "测试方向"},
+    {"word": "顾问", "penalty": 8, "risk": "顾问/售前方向"},
+    {"word": "实施", "penalty": 8, "risk": "实施方向"},
+    {"word": "讲师", "penalty": 12, "risk": "讲师/培训方向"},
+    {"word": "培训", "penalty": 12, "risk": "讲师/培训方向"},
+    {"word": "课程", "penalty": 10, "risk": "课程方向"},
+    {"word": "算法工程师", "penalty": 8, "risk": "偏算法"},
+    {"word": "模型训练", "penalty": 8, "risk": "偏训练"},
+    {"word": "微调", "penalty": 5, "risk": "可能偏训练"},
+    {"word": "多模态", "penalty": 5, "risk": "可能偏多模态"},
+    {"word": "PyTorch", "penalty": 5, "risk": "算法框架占比需确认"},
+    {"word": "TensorFlow", "penalty": 5, "risk": "算法框架占比需确认"},
+    {"word": "Java", "penalty": 4, "risk": "Java占比需确认"},
+    {"word": "Spring", "penalty": 4, "risk": "Spring占比需确认"},
+    {"word": "全栈", "penalty": 3, "risk": "全栈职责较重"},
+    {"word": "单双休", "penalty": 2, "risk": "单双休"},
+    {"word": "大小周", "penalty": 3, "risk": "大小周"},
+    {"word": "加班", "penalty": 1, "risk": "加班风险"},
+    {"word": "应届", "penalty": 4, "risk": "可能只招应届"},
+    {"word": "985", "penalty": 8, "risk": "学历门槛风险"},
+    {"word": "硕士", "penalty": 5, "risk": "学历可能偏高"}
+  ],
+  "exclude_words": ["电话销售", "课程顾问", "招生", "主播", "纯销售"]
+}

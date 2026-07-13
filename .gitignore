@@ -1,0 +1,14 @@
+.runtime/
+node_modules/
+data/*.sqlite
+data/*.sqlite-*
+reports/*.html
+reports/*.md
+profiles/guo_mingfu.json
+profiles/resume_versions.json
+configs/profile.yaml
+configs/browser.json
+dist/
+vendor/edge-control-bridge/
+vendor/edge-control-bridge/scripts/node_modules/
+vendor/edge-control-bridge/extension/config.local.js

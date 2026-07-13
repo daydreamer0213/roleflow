@@ -1,0 +1,13 @@
+姓名：测试候选人
+所在地：广州
+求职意向：AI应用开发工程师 / Python 后端 / RAG 工程师
+期望薪资：9-14K
+
+技能：Python、FastAPI、RAG、LangGraph、LangChain、Agent、Milvus、Redis、MySQL、Docker、pytest。
+
+项目经历
+KnowledgeFlow 多 Agent 知识内容生成系统
+使用 LangGraph、条件路由和并行 fan-out 构建知识内容生成与审查流程，覆盖 Python、RAG 与 Agent 工具调用场景。
+
+企业知识库问答项目
+参与检索增强问答链路优化，了解向量检索、关键词检索与重排序的工程配合方式。
