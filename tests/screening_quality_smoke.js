@@ -4,15 +4,24 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const {
   normalizeBossUrl,
+  normalizeBossNavigationUrl,
+  normalizeBossJob,
   cleanDetailText,
   parseBossActivityText,
   BossSiteAdapter,
+  buildBossSearchUrl,
+  parseBossFilterCatalog,
   weightedCardLimit,
   detailQuotas,
   mergeScanCandidate,
-  selectDetailCandidates
+  selectDetailCandidates,
+  isStretchDetailCandidate,
+  normalizePageBudget,
+  randomBetween
 } = require("../src/adapters/sites/boss");
+const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
+const { extractJobMetadata } = require("../src/core/job_metadata");
 const { normalizeSearchPlan } = require("../src/core/profile_schema");
 const {
   openDb,
@@ -23,7 +32,10 @@ const {
   rescorePlanObservations,
   listReportJobs,
   listDecisionQueue,
-  decisionBucket
+  decisionBucket,
+  applyJobQualityGovernance,
+  getPlatformFilterCatalog,
+  savePlatformFilterCatalog
 } = require("../src/core/storage");
 
 const root = path.resolve(__dirname, "..");
@@ -31,17 +43,112 @@ const tmpDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(tmpDir, `screening-quality-${Date.now()}.sqlite`);
 fs.mkdirSync(tmpDir, { recursive: true });
 
+const freshActivity = applyJobQualityGovernance([{
+  id: 1,
+  bossActiveDays: 0,
+  bossActiveText: "今日活跃",
+  lastSeenAt: "2026-07-13T00:00:00.000Z",
+  qualityTags: []
+}], { now: "2026-07-15T00:00:00.000Z", maxActiveDays: 3 })[0];
+assert.strictEqual(freshActivity.effectiveBossActiveDays, 2);
+assert.strictEqual(freshActivity.decisionBucket, "backup");
+assert(freshActivity.qualityTags.includes("activity_snapshot_aged"));
+assert(!freshActivity.qualityTags.includes("stale_or_unknown_active"));
+
+const expiredActivity = applyJobQualityGovernance([{
+  id: 2,
+  bossActiveDays: 0,
+  bossActiveText: "今日活跃",
+  lastSeenAt: "2026-07-10T00:00:00.000Z",
+  qualityTags: []
+}], { now: "2026-07-15T00:00:00.000Z", maxActiveDays: 3 })[0];
+assert.strictEqual(expiredActivity.effectiveBossActiveDays, 5);
+assert(expiredActivity.qualityTags.includes("stale_or_unknown_active"));
+assert.strictEqual(expiredActivity.decisionBucket, "refresh");
+
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/job_detail/abc123.html?ka=search"), "https://www.zhipin.com/job_detail/abc123.html");
+assert.strictEqual(normalizeBossNavigationUrl("https://www.zhipin.com/job_detail/abc123.html?securityId=token"), "https://www.zhipin.com/job_detail/abc123.html?securityId=token");
 assert.strictEqual(normalizeBossUrl("javascript:;"), "");
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/web/geek/jobs"), "");
+assert.deepStrictEqual(extractJobMetadata("广州 · 12-18K·13薪 · 1-3年 · 本科"), { salary: "12-18K·13薪", experience: "1-3年", education: "本科" });
+assert.deepStrictEqual(normalizeBossJob({
+  source: "boss", title: "Python Engineer", company: "Quality Corp", location: "广州", url: "https://www.zhipin.com/job_detail/metadata.html",
+  cardText: "广州 10-15K 2-3年 本科 Python FastAPI"
+}), {
+  source: "boss", sourceId: "boss:metadata", keyword: "", title: "Python Engineer", company: "Quality Corp", location: "广州",
+  salary: "10-15K", experience: "2-3年", education: "本科", bossActiveText: "", url: "https://www.zhipin.com/job_detail/metadata.html",
+  tags: [], description: "广州 10-15K 2-3年 本科 Python FastAPI", detailRead: false
+});
 assert.strictEqual(parseBossActivityText("负责在线客服系统集成"), "");
 assert.strictEqual(parseBossActivityText("梁子其 近半年活跃"), "近半年活跃");
 assert.strictEqual(activeDays("近半年活跃"), 180);
-assert.strictEqual(parseBossActivityText("许女士 在线 网思科技"), "在线");
+assert.strictEqual(parseBossActivityText("在线"), "今日活跃");
+assert.strictEqual(parseBossActivityText("许女士 在线 网思科技"), "今日活跃");
+assert.strictEqual(parseBossActivityText("刚刚活跃"), "今日活跃");
+assert.strictEqual(parseBossActivityText("符先生 2周内活跃"), "2周内活跃");
+assert.strictEqual(activeDays("2周内活跃"), 14);
+assert.strictEqual(parseBossActivityText("张先生 2月内活跃"), "2月内活跃");
+assert.strictEqual(activeDays("2月内活跃"), 60);
+assert.strictEqual(normalizeBossJob({ title: "AI应用", bossActiveText: "在线" }).bossActiveText, "今日活跃");
 assert.strictEqual(weightedCardLimit("A", 100), 100);
 assert.strictEqual(weightedCardLimit("B", 100), 65);
 assert.strictEqual(weightedCardLimit("C", 100), 40);
 assert.deepStrictEqual(detailQuotas([{ priority: "A" }, { priority: "B" }, { priority: "C" }], 20), { A: 20, B: 11, C: 5 });
+assert.strictEqual(normalizePageBudget(10), 20);
+assert.strictEqual(normalizePageBudget(500), 300);
+assert.strictEqual(randomBetween(100, 200, () => 0), 100);
+assert.strictEqual(randomBetween(100, 200, () => 1), 200);
+assert.strictEqual(isStretchDetailCandidate({ experience: "3-5\u5e74", salary: "10-16K" }, 18), true);
+assert.strictEqual(isStretchDetailCandidate({ experience: "3-5\u5e74", salary: "20-30K" }, 18), false);
+const bossCatalog = parseBossFilterCatalog([
+  { options: [
+    { ka: "sel-job-rec-salary-404", label: "5-10K" },
+    { ka: "sel-job-rec-salary-405", label: "10-20K" }
+  ] },
+  { options: [
+    { ka: "sel-job-rec-exp-101", label: "\u7ecf\u9a8c\u4e0d\u9650" },
+    { ka: "sel-job-rec-exp-104", label: "1-3\u5e74" },
+    { ka: "sel-job-rec-exp-105", label: "3-5\u5e74" }
+  ] }
+]);
+const nativeFilters = resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan: {
+  salary: { minK: 8, maxK: 12 },
+  experience: ["\u7ecf\u9a8c\u4e0d\u9650", "0-3\u5e74", "1-3\u5e74", "3-5\u5e74\uff08\u53ef\u51b2\uff09"]
+} });
+assert.deepStrictEqual(nativeFilters.params, { salary: ["404"], experience: ["101", "104", "105"] });
+assert.deepStrictEqual(nativeFilters.labels, { salary: ["5-10K"], experience: ["经验不限", "1-3年", "3-5年"] });
+const tenToTwenty = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog: bossCatalog,
+  plan: { salary: { minK: 10, maxK: 20 }, experience: ["1-3\u5e74"] }
+});
+assert.deepStrictEqual(tenToTwenty.params, { salary: ["405"], experience: ["104"] });
+const splitSalaryLanes = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog: bossCatalog,
+  plan: {
+    salary: { minK: 10, maxK: 20 },
+    experience: ["1-3\u5e74", "3-5\u5e74\uff08\u53ef\u51b2\uff09"],
+    platform: { salaryLanes: ["5-10K", "10-20K"] }
+  }
+});
+assert.strictEqual(splitSalaryLanes.lanes.length, 2);
+assert.deepStrictEqual(splitSalaryLanes.lanes.map((lane) => lane.params), [
+  { experience: ["104", "105"], salary: ["405"] },
+  { experience: ["104", "105"], salary: ["404"] }
+]);
+const filteredSearchUrl = new URL(buildBossSearchUrl({ keyword: "RAG", cityCode: "101280100", nativeFilters }));
+assert.strictEqual(filteredSearchUrl.searchParams.get("query"), "RAG");
+assert.strictEqual(filteredSearchUrl.searchParams.get("city"), "101280100");
+assert.strictEqual(filteredSearchUrl.searchParams.get("salary"), "404");
+assert.strictEqual(filteredSearchUrl.searchParams.get("experience"), "101,104,105");
+const extendedSearchUrl = new URL(buildBossSearchUrl({
+  keyword: "Python",
+  cityCode: "101280100",
+  nativeFilters: { params: { degree: ["203"], jobType: ["1901"] } }
+}));
+assert.strictEqual(extendedSearchUrl.searchParams.get("degree"), "203");
+assert.strictEqual(extendedSearchUrl.searchParams.get("jobType"), "1901");
 
 const scanCandidates = new Map();
 const scanJob = (id) => ({ source: "boss", url: `https://www.zhipin.com/job_detail/${id}.html`, title: id, company: "Quality Corp" });
@@ -56,10 +163,16 @@ const detailSelection = selectDetailCandidates([...scanCandidates.values()], [{ 
 assert.strictEqual(detailSelection.filter((item) => item.priority === "A").length, 1);
 assert.strictEqual(detailSelection.filter((item) => item.priority === "B").length, 3);
 assert.strictEqual(detailSelection.filter((item) => item.priority === "C").length, 1);
+const stretchDetailSelection = selectDetailCandidates([
+  { job: scanJob("normal-a"), keyword: "RAG", priority: "A", laneRank: 0, stretchCandidate: false, quickScore: 99, cityOrder: 0, keywordOrder: 0, index: 0 },
+  { job: scanJob("stretch-a"), keyword: "RAG", priority: "A", laneRank: 1, stretchCandidate: true, quickScore: 1, cityOrder: 0, keywordOrder: 0, index: 1 }
+], [{ word: "RAG", priority: "A" }], { detailLimit: 1, maxDetailTotal: 1 });
+assert.strictEqual(stretchDetailSelection[0].job.title, "stretch-a");
 assert(!cleanDetailText("职位描述 负责 Python 开发 BOSS安全提示 求职安全提醒").includes("BOSS安全提示"));
 
 const configs = {
   profile: { location: { target_cities: ["广州"] } },
+  candidateProfile: { skills: ["Python", "FastAPI", "RAG", "Agent"] },
   scoring: {
     boss_activity: { max_active_days: 3, unknown_penalty: 3, inactive_penalty: 10 },
     salary: { preferred_max_k: 24, hard_max_k: 35, experience_flex_max_k: 18, expected_min_k: 9 },
@@ -76,10 +189,15 @@ const ready = scoreJob(job({ bossActiveText: "今日活跃", experience: "3-5年
 assert.strictEqual(decisionState(ready), "ready");
 assert(ready.qualityTags.includes("experience_stretch"));
 assert.strictEqual(decisionBucket({ ...ready, risks: ["Java占比需确认"], analysis: {} }), "talk");
-assert.strictEqual(decisionBucket({ ...ready, level: "可投", qualityTags: ["work_schedule_unknown"], risks: [], analysis: {} }), "primary");
+assert.strictEqual(decisionBucket({ ...ready, level: "可投", qualityTags: ["work_schedule_unknown"], risks: [], analysis: {} }), "talk");
 
 const unknown = scoreJob(job({ bossActiveText: "" }), configs);
 assert.strictEqual(decisionState(unknown), "refresh");
+const metadataUnknown = scoreJob(job({ salary: "", experience: "", bossActiveText: "今日活跃" }), configs);
+assert(metadataUnknown.qualityTags.includes("salary_unverified"));
+assert(metadataUnknown.qualityTags.includes("experience_unverified"));
+assert.strictEqual(decisionState(metadataUnknown), "ready");
+assert.strictEqual(decisionBucket({ ...metadataUnknown, analysis: {} }), "talk");
 const listOnly = scoreJob(job({ detailRequired: true, detailRead: false }), configs);
 assert.strictEqual(decisionState(listOnly), "refresh");
 const scopedConfigs = {
@@ -92,6 +210,20 @@ const scopedConfigs = {
 };
 const stretch = scoreJob(job({ experience: "3-5年", salary: "10-12K" }), scopedConfigs);
 assert(stretch.qualityTags.includes("experience_stretch"));
+assert(stretch.qualityTags.includes("experience_stretch_low_salary"));
+assert.strictEqual(stretch.level, "可冲");
+const stretchAtMarket = scoreJob(job({ experience: "3-5年", salary: "20-30K" }), scopedConfigs);
+assert(stretchAtMarket.qualityTags.includes("experience_overrange"));
+assert(!stretchAtMarket.qualityTags.includes("experience_stretch_low_salary"));
+const stretchWithoutTechnicalEvidence = scoreJob(job({
+  title: "AI应用开发工程师",
+  description: "负责 AI 工具销售和客户拓展。",
+  tags: [],
+  experience: "3-5年",
+  salary: "10-12K"
+}), scopedConfigs);
+assert.strictEqual(stretchWithoutTechnicalEvidence.canStretch, false);
+assert.notStrictEqual(stretchWithoutTechnicalEvidence.level, "可冲");
 const overRange = scoreJob(job({ experience: "5-10年", salary: "10-12K" }), scopedConfigs);
 assert(overRange.qualityTags.includes("experience_overrange"));
 assert.strictEqual(decisionBucket({ ...overRange, analysis: {} }), "backup");
@@ -125,11 +257,30 @@ assert.strictEqual(decisionState(algorithmRole), "blocked");
 const hybridRole = scoreJob(job({ title: "AI Agent 开发工程师", bossActiveText: "今日活跃", description: "负责 Agent 应用开发和 RAG，参与模型训练、算法研究。" }), configs);
 assert(hybridRole.qualityTags.includes("algorithm_hybrid"));
 assert.strictEqual(decisionState(hybridRole), "ready");
+const cppGoCore = scoreJob(job({
+  title: "RAG 平台工程师", bossActiveText: "今日活跃",
+  description: "负责 RAG 服务开发。任职要求：熟练掌握 C++ 或 Golang，具备服务端开发经验；了解 RAG 者优先。"
+}), configs);
+assert(cppGoCore.qualityTags.includes("core_stack_mismatch"));
+assert.strictEqual(decisionBucket({ ...cppGoCore, analysis: {} }), "backup");
+const javaCore = scoreJob(job({
+  title: "AI 后端工程师", bossActiveText: "今日活跃",
+  description: "岗位职责：负责 AI 平台。任职要求：熟练掌握 Java 和 Spring Boot，具备微服务开发经验。"
+}), configs);
+assert(javaCore.qualityTags.includes("java_backend_heavy"));
+assert.strictEqual(decisionBucket({ ...javaCore, analysis: {} }), "backup");
+const pythonCore = scoreJob(job({
+  title: "AI 应用开发工程师", bossActiveText: "今日活跃",
+  description: "岗位职责：负责 RAG 知识库。任职要求：熟练掌握 Python 和 FastAPI，具备 RAG 项目经验。"
+}), configs);
+assert.strictEqual(pythonCore.technicalFit.kind, "aligned");
 assert(!cleanDetailText("职位描述 负责 Python 开发。公司介绍 这部分不是 JD").includes("公司介绍"));
 assert.strictEqual(normalizeSearchPlan({}, { candidate: { city: "广州" } }).workSchedulePreference, "prefer_double_weekend");
 
 const db = openDb(dbPath);
 try {
+  savePlatformFilterCatalog(db, { site: "boss", catalog: bossCatalog, discoveredAt: bossCatalog.discoveredAt });
+  assert.strictEqual(getPlatformFilterCatalog(db, "boss").catalog.version, bossCatalog.version);
   const now = new Date().toISOString();
   const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run("Quality Candidate", JSON.stringify({ candidate: { city: "广州" } }), "quality", now, now).lastInsertRowid);
@@ -211,35 +362,50 @@ async function browserAllocationSmoke() {
   };
   const browser = {
     keyword: "",
+    nativeFilterVisits: [],
     async activeTabId() { return "fake-tab"; },
-    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+    async navigate(_tabId, url) {
+      const parsed = new URL(url);
+      this.keyword = parsed.searchParams.get("query");
+      this.nativeFilterVisits.push({ salary: parsed.searchParams.get("salary"), experience: parsed.searchParams.get("experience") });
+    }
   };
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.cardLimits = [];
   adapter.detailUrls = [];
   adapter.collectCards = async (_tabId, limit) => {
     adapter.cardLimits.push(limit);
     return fixtures[browser.keyword].slice(0, limit);
   };
-  adapter.readDetail = async (_tabId, url) => {
+  adapter.readCardDetail = async (_tabId, job) => {
+    const url = job.url;
     adapter.detailUrls.push(url);
     return { description: `职位描述 Python RAG ${url}`, bossActiveText: "今日活跃" };
   };
+  adapter.readDetail = async (_tabId, url) => ({ description: `职位描述 Python RAG ${url}`, bossActiveText: "今日活跃" });
   const jobs = await adapter.scanBrowser({
     keywords: ["RAG", "LangChain", "Docker"],
     keywordPlan: [{ word: "RAG", priority: "A" }, { word: "LangChain", priority: "B" }, { word: "Docker", priority: "C" }],
     maxCards: 100,
     detailLimit: 4,
     maxDetailTotal: 20,
+    nativeFilters: splitSalaryLanes,
     scoreQuick: () => 0
   });
-  assert.deepStrictEqual(adapter.cardLimits, [100, 65, 40]);
+  assert.deepStrictEqual(adapter.cardLimits, [100, 100, 65, 65, 40, 40]);
   assert.strictEqual(jobs.length, 12);
   assert.strictEqual(adapter.detailUrls.length, 8);
   assert.strictEqual(new Set(adapter.detailUrls).size, 8);
   assert.strictEqual(adapter.detailUrls.filter((url) => url.includes("same.html")).length, 1);
-  assert(jobs.every((job) => job.detailRequired));
+  assert.deepStrictEqual(browser.nativeFilterVisits.map((item) => item.salary), ["405", "404", "405", "404", "405", "404"]);
+  assert(browser.nativeFilterVisits.every((item) => item.experience === "104,105"));
+  assert.strictEqual(jobs.filter((job) => job.detailRequired).length, 8);
   assert.strictEqual(jobs.filter((job) => job.detailRead).length, 8);
+  const refreshedJobs = await adapter.refreshDetails([{ ...jobs[0], bossActiveText: "", detailRead: false }], { limit: 1 });
+  assert.strictEqual(refreshedJobs.length, 1);
+  assert.strictEqual(refreshedJobs[0].bossActiveText, "今日活跃");
+  assert(refreshedJobs[0].detailRead);
 
   const visitedCities = [];
   const cityBrowser = {
@@ -251,6 +417,7 @@ async function browserAllocationSmoke() {
     }
   };
   const cityAdapter = new BossSiteAdapter({ browser: cityBrowser, sleepFn: async () => {} });
+  cityAdapter.assertSearchPage = async () => ({ isSearchPage: true });
   cityAdapter.collectCards = async () => [{
     title: `AI应用开发-${cityBrowser.cityCode}`,
     company: "City Quality Corp",
@@ -259,7 +426,7 @@ async function browserAllocationSmoke() {
     url: `https://www.zhipin.com/job_detail/city-${cityBrowser.cityCode}.html`,
     cardText: "Python RAG"
   }];
-  cityAdapter.readDetail = async (_tabId, url) => ({ description: `职位描述 Python RAG ${url}`, bossActiveText: "今日活跃" });
+  cityAdapter.readCardDetail = async (_tabId, job) => ({ description: `职位描述 Python RAG ${job.url}`, bossActiveText: "今日活跃" });
   const cityJobs = await cityAdapter.scanBrowser({
     keywords: ["RAG"],
     keywordPlan: [{ word: "RAG", priority: "A" }],
@@ -272,6 +439,52 @@ async function browserAllocationSmoke() {
   assert.deepStrictEqual(visitedCities, ["101280100", "101280600"]);
   assert.strictEqual(cityJobs.length, 2);
   assert(cityJobs.every((job) => job.detailRead));
+
+  let blockedNavigationCount = 0;
+  const pacingAdapter = new BossSiteAdapter({
+    browser: { async navigate() { blockedNavigationCount += 1; } },
+    sleepFn: async () => {},
+    randomFn: () => 0
+  });
+  pacingAdapter.pageBudget = 20;
+  pacingAdapter.listNavigations = 20;
+  pacingAdapter.pageNavigations = 20;
+  await assert.rejects(
+    () => pacingAdapter.navigateWithPacing("pacing-tab", "https://www.zhipin.com/web/geek/jobs", "list"),
+    (error) => error.code === "BOSS_PAGE_BUDGET_REACHED"
+  );
+  assert.strictEqual(blockedNavigationCount, 0);
+  await pacingAdapter.navigateWithPacing("pacing-tab", "https://www.zhipin.com/job_detail/quality.html", "detail");
+  assert.strictEqual(blockedNavigationCount, 1);
+
+  const syntaxBrowser = {
+    async navigate() {},
+    async evalValue(_tabId, expression) {
+      new Function(expression);
+      if (expression.includes("const currentJobId")) {
+        return { currentJobId: "syntax", description: "Python RAG ".repeat(20), bossActiveText: "今日活跃" };
+      }
+      return true;
+    }
+  };
+  const syntaxAdapter = new BossSiteAdapter({ browser: syntaxBrowser, sleepFn: async () => {} });
+  syntaxAdapter.assertDetailPage = async () => ({ jobId: "syntax" });
+  const syntaxDetail = await syntaxAdapter.readDetail("syntax-tab", "https://www.zhipin.com/job_detail/syntax.html");
+  assert.strictEqual(syntaxDetail.bossActiveText, "今日活跃");
+
+  const pacingSleeps = [];
+  const pacingAdapterMin = new BossSiteAdapter({ browser: {}, sleepFn: async (delay) => pacingSleeps.push(delay), randomFn: () => 0 });
+  const pacingAdapterMax = new BossSiteAdapter({ browser: {}, sleepFn: async (delay) => pacingSleeps.push(delay), randomFn: () => 1 });
+  await pacingAdapterMin.waitWithPacing("scroll");
+  await pacingAdapterMin.waitWithPacing("target");
+  await pacingAdapterMax.waitWithPacing("refresh");
+  assert.deepStrictEqual(pacingSleeps, [900, 2500, 2200]);
+  const cooldownSleeps = [];
+  const periodic = new BossSiteAdapter({ browser: {}, sleepFn: async (delay) => cooldownSleeps.push(delay), randomFn: () => 0 });
+  periodic.nextPacingCooldownAt = 1;
+  await periodic.waitWithPacing("card");
+  assert.deepStrictEqual(cooldownSleeps, [1000, 4000]);
+  assert.strictEqual(periodic.nextPacingCooldownAt, 19);
 }
 
 function job(overrides = {}) {

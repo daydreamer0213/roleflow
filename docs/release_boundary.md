@@ -1,16 +1,39 @@
 # 交付与隐私边界
 
-`BuildRelease.bat` 会生成 `dist\RoleFlow-portable.zip`。它包含项目代码、Node 依赖、匿名示例画像和可选的便携 Node；解压后可在另一台 Windows 电脑上运行，不依赖 Codex 或 Edge Control 插件。
+## 绿色包
 
-默认不打包：
+`BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。默认包含代码、依赖、匿名样例和便携 Node.js；另一台 Windows 电脑解压后可运行，不依赖 Codex 或 Edge Control 插件。
 
-- `data\jobs.sqlite` 与 WAL 文件：投递状态、跟进记录和模型缓存。
-- `.runtime\edge-profile`：BOSS 登录态、cookies 与浏览器个人数据。
-- `reports\`：历史岗位报告。
-- `vendor\edge-control-bridge`：上游许可未明确的本地 vendor 副本。
+运行条件：
 
-`BuildRelease.bat` 使用 `-IncludePortableNode`，因此打包前需要先运行一次 `scripts\install.ps1 -InstallPortableNode`。未包含便携 Node 的包仍可使用本机 Node.js 22+；没有 Node 时，`Install.bat` 会下载到项目自己的 `.runtime\node`。
+- Windows 10/11。
+- Microsoft Edge。
+- 能访问用户选择的模型服务和 BOSS。
 
-首次在新机器使用：双击 `Install.bat`，在弹出的项目专用 Edge 中重新登录 BOSS，再在工作台上传或更新简历。不要复制旧电脑的 `.runtime\edge-profile`。
+项目专用 Edge 通过本机 CDP 控制，不安装浏览器扩展。兼容的 Edge Control bridge 保留在源码项目中，但不是绿色包正常运行的依赖。
 
-这个项目只读取岗位信息并在本地保存人工决策；不会自动点击“立即沟通”、投递或发送消息。模型 Key 只从环境变量读取，不写入发布包配置文件。
+## 不进入发布包
+
+- `data\jobs.sqlite`、WAL/SHM 和备份：含简历、岗位、投递状态和模型缓存。
+- `.runtime\secrets`：当前 Windows 用户 DPAPI 加密的 API Key。
+- `.runtime\edge-profile`：BOSS Cookie、登录态和浏览器数据。
+- `.runtime\logs`：本机诊断日志。
+- `reports\`：历史报告。
+- 真实候选人画像和真实简历文件。
+- `vendor\edge-control-bridge`：便携 CDP 模式不需要它，且不扩大绿色包体积。
+
+## 新电脑首次运行
+
+1. 解压到用户可写目录。
+2. 双击 `Install.bat` 做环境与完整离线回归检查。
+3. 双击 `Start.bat`。
+4. 重新填写模型 Key；DPAPI 密文不能跨 Windows 用户或电脑复用。
+5. 在项目专用 Edge 中重新登录 BOSS，不复制旧电脑的浏览器 profile。
+6. 上传简历、确认画像和 Search Plan 后再扫描。
+
+## 安全边界
+
+- 绿色包不会包含 API Key、简历、岗位数据库或 BOSS 登录态。
+- 模型 Key 不写入源码、普通配置、SQLite 或日志。
+- 项目只读取岗位信息；不会自动点击“立即沟通”、投递或发送消息。
+- 云模型会收到用户主动提交的简历文本和待分析岗位内容；UI 必须在上传前明确提示。

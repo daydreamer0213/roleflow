@@ -2,6 +2,7 @@
 node_modules/
 data/*.sqlite
 data/*.sqlite-*
+data/backups/
 reports/*.html
 reports/*.md
 profiles/guo_mingfu.json

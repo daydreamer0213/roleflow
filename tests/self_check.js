@@ -5,7 +5,7 @@ const { spawnSync } = require("child_process");
 const { loadConfigs } = require("../src/config");
 const { scoreJob } = require("../src/core/scoring");
 const { createGreeting } = require("../src/core/llm");
-const { buildKeywordPlan, resolvePlannedKeywords, adjustKeywordPlanWithFeedback } = require("../src/core/keyword_planner");
+const { buildKeywordPlan, resolvePlannedKeywords } = require("../src/core/keyword_planner");
 const { explainJobMatch } = require("../src/core/match_explainer");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 const { ModelContractError } = require("../src/core/model_contract");
@@ -17,14 +17,27 @@ const { openDb, createBatch, upsertJob, listReportJobs, markApplication, markCan
 const { handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs } = require("../src/dashboard/server");
 const { parseBossActivityText, normalizeBossUrl, bossSourceId } = require("../src/adapters/sites/boss");
 const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
+const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
+const { mapWithConcurrency } = require("../src/core/async_pool");
 
 const root = path.resolve(__dirname, "..");
 const selfCheckDir = path.join(root, ".runtime", "self-check");
 fs.mkdirSync(selfCheckDir, { recursive: true });
+const help = spawnSync(process.execPath, [path.join(root, "src", "cli.js"), "--help"], { encoding: "utf8" });
+assert.strictEqual(help.status, 0);
+for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
+  const source = fs.readFileSync(path.join(root, script), "utf8");
+  assert(source.includes('"--plan"'));
+  assert(!source.includes('"--keywords"'));
+}
 const configs = loadConfigs(root, { profile: "profiles/example_profile.json", resumeVersions: "profiles/example_resume_versions.json" });
 assert.strictEqual(configs.candidateProfile.candidate.name, "示例候选人");
 const sample = JSON.parse(fs.readFileSync(path.join(root, "data", "sample_jobs.json"), "utf8"));
 assert.strictEqual(typeof new CdpBrowserAdapter({ port: 9222 }).listTabs, "function");
+assert.strictEqual(chooseAutomationTab([
+  { id: 1, url: "https://example.com", active: true },
+  { id: 2, url: "https://www.zhipin.com/web/geek/jobs?query=RAG", active: false }
+]).id, 2);
 assert.strictEqual(configs.candidateProfile.candidate.name, "示例候选人");
 assert((configs.resumeVersions.versions || []).some((version) => version.id === "ai_rag_agent"));
 
@@ -75,6 +88,18 @@ checkMockAnalyzer()
   });
 
 async function checkMockAnalyzer() {
+  let inFlight = 0;
+  let peakConcurrency = 0;
+  const pooled = await mapWithConcurrency([1, 2, 3, 4, 5], 3, async (value) => {
+    inFlight += 1;
+    peakConcurrency = Math.max(peakConcurrency, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+    return value * 2;
+  });
+  assert.deepStrictEqual(pooled, [2, 4, 6, 8, 10]);
+  assert.strictEqual(peakConcurrency, 3);
+
   assert.strictEqual(configs.model.provider, "mock");
   const analyzer = createLlmAnalyzer({ modelConfig: configs.model });
   const candidateProfile = await analyzer.analyzeResume({
@@ -102,12 +127,16 @@ async function checkMockAnalyzer() {
   assert(Array.isArray(matchDecision.primaryProjects));
 
   const communication = await analyzer.draftCommunication({
+    mode: "greeting",
     candidateProfile: configs.candidateProfile,
     jobUnderstanding,
     matchDecision
   });
-  assert(communication.greeting);
-  assert(communication.hrReplies.gap);
+  assert.strictEqual(communication.kind, "greeting");
+  assert.strictEqual(communication.messages.length, 1);
+  assert.strictEqual(communication.missingFact, null);
+  assert(communication.evidence.jd.length);
+  assert(communication.evidence.resume.length);
 
   const resume = await parseResumeUpload({
     fileName: "sample_resume.txt",
@@ -249,12 +278,8 @@ async function checkMockAnalyzer() {
   const newLowBatchId = createBatch(db, "boss", "feedback-new");
   upsertJob(db, { ...sample[0], sourceId: "feedback-new", company: "低效公司", keyword: "低效关键词", greeting }, newLowBatchId);
   const feedbackJob = listReportJobs(db, { batchId: newLowBatchId, feedbackSummary })[0];
-  assert(feedbackJob.feedback.penalty > 0);
-  assert(feedbackJob.feedback.notes.some((note) => note.includes("低效关键词")));
-
-  const adjustedPlan = adjustKeywordPlanWithFeedback([{ word: "低效关键词", priority: "A" }], feedbackSummary);
-  assert.strictEqual(adjustedPlan[0].priority, "B");
-  assert(adjustedPlan[0].feedbackNote);
+  assert.strictEqual(feedbackJob.feedback.penalty, 0);
+  assert.strictEqual(feedbackJob.feedbackRank, 0);
 
   const scopedJob = { ...sample[0], ...good, sourceId: "candidate-state-isolation", title: "Snapshot A", greeting };
   const scopedBatchA = createBatch(db, "boss", "candidate-state-a", "", { profileId: savedProfile.profileId, searchPlanId: savedProfile.planId });
@@ -283,6 +308,19 @@ async function checkMockAnalyzer() {
   const firstCandidateJob = listReportJobs(db, { batchId: scopedBatchB })[0];
   assert.strictEqual(firstCandidateJob.applicationStatus, "skipped");
   assert.strictEqual(firstCandidateJob.applicationReasonCode, "direction_mismatch");
+  const diagnosticFeedback = buildFeedbackSummary(db, { profileId: savedProfile.profileId });
+  assert.strictEqual(diagnosticFeedback.reasonCounts.direction_mismatch, 1);
+  assert.strictEqual(diagnosticFeedback.companyReasons[firstCandidateJob.company].direction_mismatch, 1);
+  assert.strictEqual(diagnosticFeedback.keywordReasons[firstCandidateJob.keyword].direction_mismatch, 1);
+
+  const reasonBatch = createBatch(db, "boss", "candidate-reason-normalization", "", { profileId: savedProfile.profileId, searchPlanId: savedProfile.planId });
+  const reasonJobId = upsertJob(db, { ...sample[0], ...good, sourceId: "candidate-reason-normalization", company: "Reason Corp", keyword: "Reason keyword", greeting }, reasonBatch);
+  markCandidateJob(db, { profileId: savedProfile.profileId, planId: savedProfile.planId, jobId: reasonJobId, status: "skipped", reasonCode: "salary" });
+  const normalizedReasonJob = listReportJobs(db, { batchId: reasonBatch })[0];
+  assert.strictEqual(normalizedReasonJob.applicationReasonCode, "salary_mismatch");
+  const normalizedFeedback = buildFeedbackSummary(db, { profileId: savedProfile.profileId });
+  assert.strictEqual(normalizedFeedback.reasonCounts.salary_mismatch, 1);
+  assert.strictEqual(handleMarkApi(db, JSON.stringify({ jobId: reasonJobId, profileId: savedProfile.profileId, planId: savedProfile.planId, status: "skipped", reasonCode: "not-a-reason" })).statusCode, 400);
 
   const secondProfile = JSON.parse(JSON.stringify(onboarding.profile));
   secondProfile.candidate.name = "Second Candidate";
@@ -316,14 +354,29 @@ async function checkMockAnalyzer() {
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
     understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: [job.title] }; },
-    matchJob: async () => { calls.matchJob += 1; return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], evidence: { jd: ["Python"], resume: ["Python"] } }; },
-    draftCommunication: async () => { calls.draftCommunication += 1; return { greeting: "Hello", hrReplies: {} }; }
+    matchJob: async ({ jobEvidence }) => { calls.matchJob += 1; assert.strictEqual(jobEvidence.title, "Cache test"); return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], evidence: { jd: ["Python"], resume: ["Python"] } }; },
+    draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
   const cachedRunner = createJobAnalysisRunner(configs, keywordPlan, { db, analyzer: fakeAnalyzer });
   const cacheJob = { ...sample[0], ...good, sourceId: "model-cache-regression", title: "Cache test", greeting };
   await cachedRunner(cacheJob);
   await cachedRunner(cacheJob);
-  assert.deepStrictEqual(calls, { analyzeResume: 1, understandJob: 1, matchJob: 1, draftCommunication: 1 });
+  assert.deepStrictEqual(calls, { analyzeResume: 0, understandJob: 1, matchJob: 1, draftCommunication: 0 });
+
+  const communicationFailureRunner = createJobAnalysisRunner(configs, keywordPlan, {
+    db,
+    analyzer: {
+      analyzeResume: async () => ({ candidate: { name: "Fallback Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }),
+      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: ["Python"] }),
+      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], evidence: { jd: ["Python"], resume: ["Python"] } }),
+      draftCommunication: async () => { throw new Error("communication contract failed"); }
+    }
+  });
+  const communicationFallback = await communicationFailureRunner({ ...cacheJob, sourceId: "communication-fallback", description: `${cacheJob.description} `.repeat(4), greeting: "保留的招呼语" });
+  assert.strictEqual(communicationFallback.realRoleType, "ai_application");
+  assert.strictEqual(communicationFallback.recommendation, "caution");
+  assert.strictEqual(communicationFallback.decisionSource, "experience_stretch_guard");
+  assert.strictEqual(communicationFallback.greeting, "保留的招呼语");
 }
 
 function closeSelfCheckDb() {

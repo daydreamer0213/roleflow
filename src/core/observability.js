@@ -5,7 +5,8 @@ const path = require("node:path");
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_LOG_DAYS = 21;
 const MAX_VALUE_LENGTH = 1600;
-const SECRET_KEY = /(?:api[_-]?key|authorization|cookie|token|password|secret|resume(?:text)?|description|content|body|buffer)/i;
+const SECRET_KEY = /(?:api[_-]?key|authorization|cookie|token|password|secret|resume(?:text)?|description|content|body|buffer|(?:original)?file(?:name|path))/i;
+const SAFE_METRIC_KEY = /^(?:prompt|completion|total)_tokens$/i;
 
 function createLogger({ root, component = "app" } = {}) {
   const logDir = path.join(root || process.cwd(), ".runtime", "logs");
@@ -114,7 +115,7 @@ function pruneLogs(logDir) {
 }
 
 function sanitize(value, key = "", depth = 0) {
-  if (SECRET_KEY.test(key)) return "[REDACTED]";
+  if (SECRET_KEY.test(key) && !SAFE_METRIC_KEY.test(key)) return "[REDACTED]";
   if (value instanceof Error) return errorMeta(value);
   if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "string") return redactText(value).slice(0, MAX_VALUE_LENGTH);

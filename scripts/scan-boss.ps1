@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-  [string]$Keywords = "AI",
+  [Parameter(Mandatory = $true)]
+  [ValidateRange(1, 2147483647)]
+  [int]$PlanId,
   [int]$MaxCards = 60,
   [int]$DetailLimit = 5,
   [int]$MaxDetailTotal = 150,
@@ -29,7 +31,7 @@ $ScanArgs = @(
   "scan",
   "--site", "boss",
   "--browser", "edge",
-  "--keywords", $Keywords,
+  "--plan", [string]$PlanId,
   "--max-cards", [string]$MaxCards,
   "--detail-limit", [string]$DetailLimit,
   "--max-detail-total", [string]$MaxDetailTotal

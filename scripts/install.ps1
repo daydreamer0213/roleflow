@@ -211,19 +211,7 @@ if (-not $EdgePath) {
 Write-Host "Edge: $EdgePath"
 
 $env:ZHIPPING_NODE = $Node.Path
-& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\self_check.js")
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\observability_smoke.js")
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\model_adapter_smoke.js")
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\onboarding_smoke.js")
+& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\run_all.js")
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
@@ -236,5 +224,5 @@ if ($StartBrowser) {
 }
 
 Write-Host "Install check passed."
-Write-Host "Next: scripts\scan-portable.ps1 -Keywords ""AI application"""
+Write-Host "Next: run Start.bat, then create or confirm a Search Plan in the dashboard."
 exit 0

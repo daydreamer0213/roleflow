@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "cli": "node src/cli.js",
-    "check": "node tests/self_check.js"
+    "check": "node tests/run_all.js",
+    "test": "node tests/run_all.js",
+    "test:live-model": "node tests/job_match_benchmark.js --live"
   },
   "dependencies": {
     "pdf-parse": "2.4.5"

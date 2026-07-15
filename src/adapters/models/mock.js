@@ -16,6 +16,8 @@ class MockModelAdapter {
         expectedSalary: candidate.expectedSalary || "",
         adjustableSalary: candidate.adjustableSalary || []
       },
+      education: profileHints.education || [],
+      experiences: profileHints.experiences || [],
       skills: toSkillEvidence(profileHints.skills || [], projects),
       projects: projects.map((project) => ({
         name: project.name,
@@ -23,6 +25,8 @@ class MockModelAdapter {
         canSay: project.tags || [],
         avoidSaying: ["全权负责", "主导完整架构"]
       })),
+      credentials: profileHints.credentials || [],
+      strengths: profileHints.strengths || [],
       resumeVersions: [],
       riskMessaging: profileHints.riskMessaging || {},
       source: {
@@ -89,6 +93,7 @@ class MockModelAdapter {
         `核心要求：${(jobUnderstanding.coreRequirements || []).join("、") || "待确认"}`
       ],
       missingPoints: ["mock 仅做结构稳定，真实语义缺口等待模型 adapter 判断"],
+      blockingGaps: [],
       riskQuestions: (jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence),
       recommendedResumeVersion: version?.id || "",
       primaryProjects: version?.primaryProjects || pickProjectNames(candidateProfile.projects || []),
@@ -96,27 +101,42 @@ class MockModelAdapter {
       evidence: {
         jd: (jobUnderstanding.evidenceSnippets || []).slice(0, 3),
         resume: (candidateProfile.skills || []).slice(0, 4).map((skill) => typeof skill === "string" ? skill : skill.name).filter(Boolean)
-      },
-      hrPrep: {
-        gap: candidateProfile.riskMessaging?.gap || "按稳健 GAP 口径回答",
-        salary: `期望 ${candidateProfile.candidate?.expectedSalary || "面议"}，可结合岗位调整`
       }
     };
   }
 
-  async draftCommunication({ candidateProfile = {}, jobUnderstanding = {}, matchDecision = {} } = {}) {
-    const name = candidateProfile.candidate?.name || "候选人";
-    return {
-      jobId: jobUnderstanding.jobId || "",
-      greeting: `您好，我是${name}。看到岗位方向与${matchDecision.greetingAngle || "我的项目经验"}相关，想进一步了解岗位职责和团队情况。`,
-      hrReplies: {
-        gap: candidateProfile.riskMessaging?.gap || "这段时间主要在收敛职业方向，并持续做 AI 应用项目实践。",
-        salary: `目前期望 ${candidateProfile.candidate?.expectedSalary || "面议"}，也会结合岗位职责沟通。`,
-        arrival: "可以按公司流程配合到岗时间。"
-      },
-      tone: "自然、稳健、不夸大"
-    };
+  async draftCommunication({ mode = "greeting", candidateProfile = {}, jobUnderstanding = {}, matchDecision = {}, hrMessage = "", userProvidedFacts = [] } = {}) {
+    const kind = ["greeting", "hr_reply", "follow_up"].includes(mode) ? mode : "greeting";
+    const jobEvidence = (matchDecision.evidence?.jd || jobUnderstanding.evidenceSnippets || []).slice(0, 2);
+    const resumeEvidence = (matchDecision.evidence?.resume || (candidateProfile.skills || []).map((skill) => skill.name || skill)).slice(0, 2);
+    const facts = Object.fromEntries((userProvidedFacts || []).map((item) => [item.factKey, item.factValue]));
+    if (kind === "hr_reply") {
+      const required = requiredCommunicationFact(hrMessage);
+      if (required && !facts[required.key]) {
+        return { kind, jobId: jobUnderstanding.jobId || "", messages: [], missingFact: required, evidence: { jd: [], resume: [] }, tone: "自然、稳健、不夸大" };
+      }
+      const salary = candidateProfile.candidate?.expectedSalary;
+      const answer = required ? facts[required.key]
+        : /薪资|期望/.test(hrMessage) && salary ? `目前期望薪资是 ${salary}，也可以结合岗位职责和整体待遇进一步沟通。`
+          : "您好，已收到您的问题。我会按简历中的实际经历如实说明，也愿意进一步沟通岗位细节。";
+      return { kind, jobId: jobUnderstanding.jobId || "", messages: [answer], missingFact: null, evidence: { jd: [], resume: required ? [answer] : resumeEvidence }, tone: "自然、稳健、不夸大" };
+    }
+    const role = jobUnderstanding.businessScenario || jobUnderstanding.realRoleType || "岗位核心工作";
+    const project = matchDecision.primaryProjects?.[0] || "相关项目";
+    const message = kind === "follow_up"
+      ? `您好，补充一下：我在${project}中有与${role}相关的实践，和岗位职责比较贴近。如岗位仍在推进，希望能进一步沟通。`
+      : `您好，我在${project}中做过与${role}相关的工作，和这个岗位的核心职责比较贴近，希望进一步沟通。`;
+    return { kind, jobId: jobUnderstanding.jobId || "", messages: [message], missingFact: null, evidence: { jd: jobEvidence, resume: resumeEvidence }, tone: "自然、稳健、不夸大" };
   }
+}
+
+function requiredCommunicationFact(message) {
+  const text = String(message || "");
+  if (/gap|空窗|为什么.*(?:没工作|没上班|中断)/i.test(text)) return { key: "gap", question: "这段 GAP 期间你实际在做什么？请用一两句话填写可对外说明的事实。" };
+  if (/离职|为什么.*离开|不继续做/.test(text)) return { key: "leaving_reason", question: "请填写你希望对 HR 说明的真实离开原因。" };
+  if (/到岗|什么时候.*(?:上班|入职)|入职时间/.test(text)) return { key: "arrival", question: "你目前最早可以什么时候到岗？" };
+  if (/短期项目|为什么.*短|项目.*(?:结束|离开)/.test(text)) return { key: "short_project", question: "请填写这个短期项目的真实性质和结束原因。" };
+  return null;
 }
 
 function profileFromResumeText(resumeText) {
@@ -133,16 +153,13 @@ function profileFromResumeText(resumeText) {
   const titles = targetTitles.length ? targetTitles : skills.some((skill) => skill.name === "Python") ? ["Python开发工程师"] : [];
   return {
     candidate: { name, city, targetTitles: titles, expectedSalary, adjustableSalary: [] },
+    education: [],
+    experiences: [],
     skills,
     projects: projectNames.map((name) => ({ name, roleBoundary: "仅按简历已有事实表达，不夸大职责边界。", canSay: [], avoidSaying: ["全权负责", "独立搭建完整系统"] })),
-    resumeVersions: [{
-      id: "main_resume",
-      name: "主简历版本",
-      summary: "根据上传简历生成；可在后续编辑为不同岗位方向的版本。",
-      primaryProjects: projectNames.slice(0, 2),
-      scenarios: titles,
-      keywords: skills.map((skill) => skill.name)
-    }],
+    resumeVersions: [],
+    credentials: [],
+    strengths: [],
     riskMessaging: {},
     source: { provider: "mock", model: "offline-structured-mock", resumeTextLength: text.length }
   };

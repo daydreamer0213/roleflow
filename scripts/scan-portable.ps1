@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
-  [string]$Keywords = "AI",
-  [int]$PlanId = 0,
+  [Parameter(Mandatory = $true)]
+  [ValidateRange(1, 2147483647)]
+  [int]$PlanId,
   [int]$MaxCards = 60,
   [int]$DetailLimit = 5,
   [int]$MaxDetailTotal = 150,
@@ -37,11 +38,7 @@ $ScanArgs = @(
   "--max-detail-total", [string]$MaxDetailTotal
 )
 
-if ($PlanId -gt 0) {
-  $ScanArgs += @("--plan", [string]$PlanId)
-} else {
-  $ScanArgs += @("--keywords", $Keywords)
-}
+$ScanArgs += @("--plan", [string]$PlanId)
 
 & $RunScript @ScanArgs
 exit $LASTEXITCODE

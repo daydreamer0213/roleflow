@@ -19,7 +19,11 @@ class CdpBrowserAdapter {
 
   async activeTabId() {
     const tabs = await this.listTabs();
-    const tab = tabs.find((item) => /zhipin\.com/.test(item.url)) || tabs[0];
+    const tab = tabs.find((item) => item.active && /zhipin\.com\/web\/geek\/jobs/i.test(item.url))
+      || tabs.find((item) => /zhipin\.com\/web\/geek\/jobs/i.test(item.url))
+      || tabs.find((item) => item.active && /zhipin\.com/i.test(item.url))
+      || tabs.find((item) => /zhipin\.com/i.test(item.url))
+      || tabs[0];
     if (!tab) throw new Error("CDP browser has no controllable page. Start portable Edge first.");
     return tab.id;
   }

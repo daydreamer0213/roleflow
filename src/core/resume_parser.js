@@ -42,7 +42,7 @@ async function parseResumeUpload({ fileName, buffer, root }) {
     try {
       text = await extractPdfText(buffer);
     } catch (error) {
-      throw appError("RESUME_PDF_PARSE_FAILED", "PDF 无法读取。该文件可能是扫描件，请使用 OCR 后重试，或直接粘贴简历文本。", {
+      throw appError("RESUME_PDF_PARSE_FAILED", "PDF 无法读取或可能是扫描件，请直接粘贴简历文本继续。", {
         cause: error,
         details: { diagnostics: parseDiagnostics({ buffer, extractionMethod, text: "", ocr: { ...ocr, status: "suggested" } }) }
       });
@@ -78,10 +78,13 @@ function createResumeDocument({ name, format, text, content, extractionMethod = 
     throw appError(
       "RESUME_TEXT_TOO_SHORT",
       isPdf
-        ? "PDF 只提取到很少文字，疑似扫描件。可选择本地 OCR，或直接粘贴简历文本继续使用。"
+        ? "PDF 只提取到很少文字，可能是扫描件。请直接粘贴简历文本继续。"
         : "未能读到足够的简历文字，请检查文件内容或直接粘贴简历文本。",
       { details: { charCount: normalized.text.length, diagnostics: { ...diagnostics, ocr: isPdf ? { ...ocr, status: "suggested" } : ocr } } }
     );
+  }
+  if (diagnostics.quality?.status === "poor") {
+    throw appError("RESUME_CONTENT_UNUSABLE", "提取结果疑似乱码、重复字符或非简历正文，请换一个文件，或直接粘贴简历文本。", { details: { charCount: normalized.text.length, diagnostics } });
   }
   return {
     originalFileName: name,
@@ -102,27 +105,45 @@ function parseDiagnostics({ buffer, extractionMethod, text, ocr = { status: "not
     charCount: normalized.length,
     preview: normalized.slice(0, 360),
     textTruncated: Boolean(textTruncated),
+    quality: assessResumeText(normalized),
     ocr
   };
 }
 
 function localOcrStatus() {
-  const available = commandAvailable("tesseract") && commandAvailable("pdftoppm");
   return {
-    status: available ? "available" : "not_installed",
-    available,
-    engine: available ? "tesseract+poppler" : "",
-    message: available ? "本机可调用本地 OCR。" : "未检测到本地 OCR 运行环境，仍可直接粘贴简历文本。"
+    status: "paste_fallback",
+    available: false,
+    engine: "",
+    message: "项目不自动执行 OCR；扫描件请直接粘贴简历文本。"
   };
 }
 
-function commandAvailable(command) {
-  try {
-    const result = spawnSync("where.exe", [command], { encoding: "utf8", windowsHide: true });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
+function assessResumeText(value) {
+  const text = String(value || "");
+  const compact = text.replace(/\s/g, "");
+  const signals = [];
+  const sections = [
+    ["education", /教育|学校|大学|学院|学历|本科|硕士|博士|education/i],
+    ["experience", /工作经历|实习经历|任职|公司|岗位|experience|employment/i],
+    ["project", /项目经历|项目名称|项目背景|项目职责|project/i],
+    ["skills", /专业技能|技能|技术栈|skill/i],
+    ["strengths", /个人优势|自我评价|求职意向|objective|summary/i]
+  ].filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const replacementRatio = (text.match(/�/g) || []).length / Math.max(1, text.length);
+  const controlRatio = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length / Math.max(1, text.length);
+  const uniqueRatio = new Set(compact).size / Math.max(1, compact.length);
+  if (replacementRatio > 0.005) signals.push("replacement_characters");
+  if (controlRatio > 0.005) signals.push("control_characters");
+  if (/(.)\1{19,}/s.test(compact)) signals.push("repeated_characters");
+  if (compact.length > 200 && uniqueRatio < 0.04) signals.push("low_character_variety");
+  const missingSections = ["education", "experience", "project", "skills"].filter((name) => !sections.includes(name));
+  return {
+    status: signals.length ? "poor" : sections.length >= 3 ? "good" : "warning",
+    signals,
+    detectedSections: sections,
+    missingSections
+  };
 }
 
 function extractDocxText(buffer, fileName, root) {
@@ -177,4 +198,4 @@ function safeFileName(value) {
   return name.replace(/[^\w.\-\u4e00-\u9fff()（） ]/g, "_") || "resume";
 }
 
-module.exports = { parseResumeUpload, parseResumeText, normalizeText, localOcrStatus, MAX_UPLOAD_BYTES, MAX_RESUME_CHARS };
+module.exports = { parseResumeUpload, parseResumeText, normalizeText, assessResumeText, localOcrStatus, MAX_UPLOAD_BYTES, MAX_RESUME_CHARS };

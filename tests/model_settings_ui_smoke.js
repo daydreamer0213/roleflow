@@ -5,7 +5,7 @@ const path = require("node:path");
 const { openDb } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { secretPath } = require("../src/core/secret_store");
-const { resolveRuntimeModelConfig } = require("../src/core/model_settings");
+const { resolveRuntimeModelConfig, secretIdForSettings } = require("../src/core/model_settings");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-ui-"));
 const dbPath = path.join(root, "data", "jobs.sqlite");
@@ -27,19 +27,27 @@ main().catch((error) => {
 
 async function main() {
   db = openDb(dbPath);
-  server = createDashboardServer({ db, root, dbPath, modelConfig: fallback });
+  server = createDashboardServer({
+    db,
+    root,
+    dbPath,
+    modelConfig: fallback,
+    connectionTester: async () => ({ status: "verified", checkedAt: new Date().toISOString(), latencyMs: 7, httpStatus: 200 })
+  });
   await listen(server);
   const baseUrl = "http://127.0.0.1:" + server.address().port;
 
   const beforeSetup = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.strictEqual(beforeSetup.status, 303);
-  assert.strictEqual(beforeSetup.headers.get("location"), "/settings?required=1&next=%2Fonboarding");
+  assert.strictEqual(beforeSetup.headers.get("location"), "/onboarding");
+  const onboarding = await fetch(baseUrl + "/onboarding");
+  assert((await onboarding.text()).includes("模型尚未通过连接测试"));
 
   const settings = await fetch(baseUrl + "/settings");
   const settingsHtml = await settings.text();
   assert.strictEqual(settings.status, 200);
   assert(settingsHtml.includes("DeepSeek"));
-  assert(settingsHtml.includes('value="https://api.deepseek.com"'));
+  assert(settingsHtml.includes("https://api.deepseek.com"));
   assert(settingsHtml.includes("通义千问"));
   assert(settingsHtml.includes("模型名称"));
 
@@ -61,15 +69,16 @@ async function main() {
   const afterSave = await fetch(baseUrl + "/settings");
   const afterHtml = await afterSave.text();
   assert.strictEqual(afterSave.status, 200);
-  assert(afterHtml.includes("已加密保存"));
+  assert(afterHtml.includes("当前厂商密钥已加密保存"));
   assert(!afterHtml.includes(apiKey));
-  assert(!fs.readFileSync(secretPath(root, "model-api-key"), "utf8").includes(apiKey));
+  const runtime = resolveRuntimeModelConfig({ root, fallbackModelConfig: fallback });
+  const secretId = secretIdForSettings(runtime.settings);
+  assert(!fs.readFileSync(secretPath(root, secretId), "utf8").includes(apiKey));
   assert(!fs.readFileSync(path.join(root, ".runtime", "settings", "model.json"), "utf8").includes(apiKey));
   const logDir = path.join(root, ".runtime", "logs");
   const logs = fs.readdirSync(logDir).map((name) => fs.readFileSync(path.join(logDir, name), "utf8")).join("\\n");
   assert(!logs.includes(apiKey));
 
-  const runtime = resolveRuntimeModelConfig({ root, fallbackModelConfig: fallback });
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.baseUrl, "https://api.deepseek.com");
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.apiKey, apiKey);
   const afterSetup = await fetch(baseUrl + "/", { redirect: "manual" });

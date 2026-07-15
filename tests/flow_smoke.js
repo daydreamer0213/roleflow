@@ -54,7 +54,7 @@ const dbHandles = [];
   assert.strictEqual(page.status, 200);
   assert(html.includes("投递操作台"));
   assert(html.includes(firstJob.title));
-  assert(html.includes(`最新批次 #${latestBatchId}`));
+  assert(html.includes(`#${latestBatchId}`), "dashboard did not identify the active batch");
 
   const note = `flow-smoke-${Date.now()}`;
   const post = await fetch(`${baseUrl}/api/mark?status=pending&batch=latest`, {
@@ -91,13 +91,25 @@ const dbHandles = [];
   console.error(error.stack || error.message);
   process.exitCode = 1;
 }).finally(async () => {
-  if (dashboard) {
-    dashboard.kill();
-    await new Promise((resolve) => dashboard.once("close", resolve));
-  }
+  if (dashboard) await stopChild(dashboard);
   for (const db of dbHandles) db.close();
-  if (success) cleanup();
+  cleanup();
 });
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode) return;
+  await new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
+    child.once("close", finish);
+    child.kill();
+    timer = setTimeout(() => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      setTimeout(finish, 500);
+    }, 2000);
+  });
+}
 
 function collectGeneratedReports(stdout) {
   for (const line of String(stdout || "").split(/\r?\n/)) {

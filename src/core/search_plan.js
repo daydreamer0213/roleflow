@@ -4,6 +4,7 @@ const CITY_CODES = {
   "苏州": "101190400", "长沙": "101250100", "佛山": "101280800", "东莞": "101281600",
   "珠海": "101281800", "天津": "101030100", "西安": "101110100", "重庆": "101040100"
 };
+const { runtimeAnalysisContext } = require("./analysis_revision");
 
 function cityToBossCode(city) {
   return CITY_CODES[String(city || "").trim()] || "";
@@ -20,7 +21,15 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
       summary: item.summary || "",
       primaryProjects: item.primaryProjects || [],
       scenarios: item.targetRoles || [],
-      keywords: item.keywords || []
+      keywords: item.keywords || [],
+      resumeFacts: item.analysis || {},
+      sourceDocument: item.resumeDocumentId ? {
+        id: item.resumeDocumentId,
+        fileName: item.fileName || "",
+        format: item.format || "",
+        contentHash: item.contentHash || "",
+        textExcerpt: item.resumeTextExcerpt || ""
+      } : null
     })) : [];
   const resumeVersions = persistedVersions.length ? { versions: persistedVersions }
     : candidateProfile?.resumeVersions?.length ? { versions: candidateProfile.resumeVersions } : configs.resumeVersions;
@@ -31,6 +40,13 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
   return {
     ...configs,
     candidateProfile,
+    searchPlan: plan,
+    analysisContext: runtimeAnalysisContext(candidateProfile, plan),
+    targetPolicy: {
+      jobTypes: plan.jobTypes || ["全职"],
+      directions: plan.directions || candidate.targetTitles || [],
+      skills: (candidateProfile?.skills || []).map((item) => typeof item === "string" ? item : item.name).filter(Boolean)
+    },
     resumeVersions,
     profile: {
       ...configs.profile,
@@ -44,14 +60,14 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
         ...configs.profile?.location,
         target_cities: plan.cities || [candidate.city].filter(Boolean),
         default_city: plan.cities?.[0] || candidate.city || configs.profile?.location?.default_city || "",
-        boss_city_code: plan.bossCityCode || configs.profile?.location?.boss_city_code || "101280100"
+        boss_city_code: plan.bossCityCode || cityToBossCode(plan.cities?.[0]) || ""
       }
     },
     scoring: {
       ...configs.scoring,
       positive_keywords: positiveKeywords,
-      // 保留全局岗位风险规则；用户方案里的排除词只是额外规则，不能把基础质量治理覆盖掉。
-      risk_rules: [...(configs.scoring?.risk_rules || []), ...softExclusions],
+      // 语义方向由画像和模型判断；这里仅保留用户当前方案明确设置的软排除词。
+      risk_rules: softExclusions,
       boss_activity: { ...configs.scoring?.boss_activity, max_active_days: safeActiveDays(plan.bossActiveDays) },
       work_schedule: {
         ...configs.scoring?.work_schedule,

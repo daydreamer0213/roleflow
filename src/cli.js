@@ -5,14 +5,19 @@ const { EdgeControlAdapter } = require("./adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
 const { BossSiteAdapter, cleanDetailText } = require("./adapters/sites/boss");
 const { scoreJob, decisionState } = require("./core/scoring");
-const { createGreeting } = require("./core/llm");
-const { resolvePlannedKeywords, adjustKeywordPlanWithFeedback } = require("./core/keyword_planner");
+const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner } = require("./core/job_analysis");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
 const { cityToBossCode, profileToRuntimeConfigs, planKeywords } = require("./core/search_plan");
+const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("./core/platform_filters");
 const {
   openDb,
   createBatch,
+  recordScanTargetResult,
+  recordJobRefreshAttempt,
+  getLatestJobRefreshAttempt,
+  getPlatformFilterCatalog,
+  savePlatformFilterCatalog,
   buildFeedbackSummary,
   buildBatchSummary,
   upsertKeywordSource,
@@ -23,8 +28,12 @@ const {
   getSearchPlan,
   getLatestBatchId,
   listCandidateResumeVersions,
+  listDecisionPool,
+  isActivityProbeDue,
   saveProfileAnalysis,
+  attachResumeDocumentFile,
   bindBatchToPlan,
+  rescorePlanObservations,
   reassessBatchObservations
 } = require("./core/storage");
 const { parseResumeUpload } = require("./core/resume_parser");
@@ -32,6 +41,8 @@ const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
 const { createLogger, errorMeta } = require("./core/observability");
 const { resolveRuntimeModelConfig } = require("./core/model_settings");
+const { mapWithConcurrency } = require("./core/async_pool");
+const { storeResumeSourceFile } = require("./core/resume_files");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -46,7 +57,7 @@ main().catch((err) => {
 async function main() {
   const [command = "help", ...argv] = process.argv.slice(2);
   const args = parseArgs(argv);
-  if (command === "help" || args.help) return printHelp();
+  if (["help", "--help", "-h"].includes(command) || args.help) return printHelp();
   logger.info("cli_command_started", { command, argKeys: Object.keys(args).sort() });
 
   const db = openDb(path.resolve(args.db || DEFAULT_DB));
@@ -56,10 +67,13 @@ async function main() {
   }
 
   if (command === "scan") return scan(db, args);
+  if (command === "refresh-details") return refreshDetails(db, args);
+  if (command === "refresh-activity") return refreshDetails(db, { ...args, "activity-only": true });
   if (command === "profile-create") return createProfile(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
-  if (command === "rebuild-report") return rebuildReport(db);
+  if (command === "rescore-plan") return rescorePlan(db, args);
+  if (command === "rebuild-report") return rebuildReport(db, args);
   if (command === "dashboard") return startDashboard(db, args);
   if (command === "feedback-summary") return printFeedbackSummary(db);
   if (command === "batch-summary") return printBatchSummary(db, args);
@@ -91,22 +105,28 @@ async function scan(db, args) {
     if (!profileRecord) throw new Error(`Search Plan #${args.plan} 对应的候选人画像不存在。`);
     configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
   }
-  const feedbackSummary = buildFeedbackSummary(db, { profileId: planRecord?.profileId });
   const planned = planRecord && !args.keywords && !args.keyword
     ? (() => {
-      const keywordPlan = adjustKeywordPlanWithFeedback(planRecord.plan.keywords || [], feedbackSummary);
-      return { keywords: keywordPlan.map((item) => item.word), keywordPlan, source: `search-plan:${planRecord.id}:feedback-aware` };
+      const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
+      return { keywords: keywordPlan.map((item) => item.word), keywordPlan, source: `search-plan:${planRecord.id}` };
     })()
-    : resolvePlannedKeywords(args, configs, feedbackSummary);
+    : resolvePlannedKeywords(args, configs);
   if (!planned.keywords.length) throw new Error("Search Plan 没有可用关键词，请先在页面补充后再扫描。");
   const { keywords, keywordPlan, source } = planned;
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
+  const analysisConcurrency = resolveAnalysisConcurrency(args);
+  const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const browser = createBrowser(args);
-  const adapter = new BossSiteAdapter({ browser, logger });
-  if (!args.input) await browser.activeTabId();
-  const batchId = createBatch(db, args.site || "boss", keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
+  const adapter = createSiteAdapter(site, { browser, logger });
+  const cityScopes = resolveCityScopes(args, planRecord, configs);
+  const browserState = args.input ? null : await adapter.preflight();
+  const nativeFilterSnapshot = args.input
+    ? { site, params: {}, labels: {} }
+    : await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId });
+  const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
     profileId: planRecord?.profileId,
-    searchPlanId: planRecord?.id
+    searchPlanId: planRecord?.id,
+    filterSnapshot: nativeFilterSnapshot
   });
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
   logger.info("scan_started", {
@@ -116,38 +136,64 @@ async function scan(db, args) {
     source,
     browser: args.browser || "input",
     hasInput: Boolean(args.input),
+    analysisConcurrency,
+    nativeFilters: args.input ? null : nativeFilterSnapshot,
     modelProvider: configs.model?.provider || "mock",
     model: configs.model?.providers?.[configs.model?.provider || "mock"]?.model || ""
   });
 
+  let checkpointed = 0;
+  const onTargetComplete = args.input ? null : async (result) => {
+    recordScanTargetResult(db, {
+      batchId,
+      targetKey: result.targetKey,
+      city: result.city,
+      keyword: result.keyword,
+      laneId: result.laneId,
+      status: result.status,
+      jobCount: result.jobCount,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt
+    });
+    for (const raw of result.jobs || []) {
+      upsertJob(db, checkpointScannedJob(raw, configs), batchId);
+      checkpointed += 1;
+    }
+    logger.info("scan_target_checkpointed", {
+      batchId,
+      targetKey: result.targetKey,
+      status: result.status,
+      jobCount: result.jobCount,
+      checkpointed
+    });
+  };
+
   const rawJobs = await adapter.scan({
     input: args.input,
+    tabId: browserState?.tabId,
     keywords,
     keywordPlan,
-    cityScopes: resolveCityScopes(args, planRecord, configs),
+    cityScopes,
+    nativeFilters: nativeFilterSnapshot,
+    stretchSalaryMax: configs.scoring?.salary?.experience_flex_max_k,
+    browserPageBudget: resolveScanLimit(args, "browser-page-budget", planRecord?.plan?.scan?.browserPageBudget, 90),
     maxCards: resolveScanLimit(args, "max-cards", planRecord?.plan?.scan?.maxCards, 60),
     detailLimit: resolveScanLimit(args, "detail-limit", planRecord?.plan?.scan?.detailLimit, 5, { allowZero: true }),
-    maxDetailTotal: resolveScanLimit(args, "max-detail-total", planRecord?.plan?.scan?.maxDetailTotal, 150),
-    scoreQuick: (job) => scoreJob(job, configs).score
+    maxDetailTotal: Math.min(24, resolveScanLimit(args, "max-detail-total", planRecord?.plan?.scan?.maxDetailTotal, 24)),
+    scoreQuick: (job) => scoreJob(job, configs).score,
+    onTargetComplete
   });
 
+  logger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
+  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => analyzeScannedJob(raw, { configs, analyzeJob }));
   let saved = 0;
-  for (const raw of rawJobs) {
-    const scored = scoreJob(raw, configs);
-    const baseGreeting = createGreeting(raw, configs.profile);
-    const gate = decisionState(scored);
-    const baseAnalysis = gate === "ready"
-      ? await analyzeJob({ ...raw, ...scored, greeting: baseGreeting })
-      : ruleGateAnalysis({ ...raw, ...scored, greeting: baseGreeting }, gate);
-    const analysis = {
-      ...baseAnalysis,
-      workSchedule: scored.workSchedule,
-      workScheduleEvidence: scored.workScheduleEvidence
-    };
-    const job = { ...raw, ...scored, analysis, greeting: analysis.greeting || baseGreeting };
+  for (const job of analyzedJobs) {
     upsertJob(db, job, batchId);
     saved += 1;
   }
+  logger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
   const report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
   logger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
   console.log(`导入 ${saved} 个岗位`);
@@ -155,11 +201,199 @@ async function scan(db, args) {
   console.log(`HTML: ${report.htmlPath}`);
 }
 
+async function analyzeScannedJob(raw, { configs, analyzeJob }) {
+  const scored = scoreJob(raw, configs);
+  const gate = decisionState(scored);
+  const baseAnalysis = gate === "ready"
+    ? await analyzeJob({ ...raw, ...scored, greeting: raw.greeting || "" })
+    : ruleGateAnalysis({ ...raw, ...scored, greeting: raw.greeting || "" }, gate);
+  const analysis = {
+    ...baseAnalysis,
+    workSchedule: scored.workSchedule,
+    workScheduleEvidence: scored.workScheduleEvidence
+  };
+  return { ...raw, ...scored, analysis, greeting: raw.greeting || "" };
+}
+
+function checkpointScannedJob(raw, configs) {
+  const scored = scoreJob(raw, configs);
+  const gate = decisionState(scored);
+  const analysis = gate === "ready"
+    ? {
+      provider: "scan-checkpoint",
+      model: "",
+      semanticStatus: "pending",
+      decisionSource: "analysis_pending",
+      recommendation: "review",
+      fitLevel: "C",
+      confidence: null,
+      fitReasons: ["岗位来源事实已保存，等待本批语义分析完成。"],
+      missingPoints: [],
+      riskQuestions: scored.risks || [],
+      evidence: { jd: [], resume: [] },
+      greeting: "",
+      workSchedule: scored.workSchedule,
+      workScheduleEvidence: scored.workScheduleEvidence
+    }
+    : {
+      ...ruleGateAnalysis({ ...raw, ...scored }, gate),
+      workSchedule: scored.workSchedule,
+      workScheduleEvidence: scored.workScheduleEvidence
+    };
+  return { ...raw, ...scored, analysis, greeting: "" };
+}
+
+async function refreshDetails(db, args) {
+  const activityOnly = args["activity-only"] === true;
+  const planId = Number(args.plan);
+  if (!Number.isInteger(planId) || planId <= 0) throw new Error("需要 --plan <Search Plan ID>");
+  const planRecord = getSearchPlan(db, planId);
+  if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
+  const profileRecord = getCandidateProfile(db, planRecord.profileId);
+  if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
+  const browser = createBrowser(args);
+  if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
+  const adapter = createSiteAdapter("boss", { browser, logger });
+  const browserState = await adapter.preflight();
+
+  let configs = loadConfigs(ROOT);
+  configs.model = resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
+  configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+  const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
+  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
+  const analysisConcurrency = resolveAnalysisConcurrency(args);
+  const limit = Math.max(1, Math.min(8, Number(args.limit) || 8));
+  const pending = listDecisionPool(db, { planId })
+    .filter((job) => {
+      const tags = new Set(job.qualityTags || []);
+      const status = job.applicationStatus || "pending";
+      const lastAttempt = getLatestJobRefreshAttempt(db, job.id);
+      const coolingDown = lastAttempt?.nextRetryAt && Date.parse(lastAttempt.nextRetryAt) > Date.now();
+      const common = job.source === "boss"
+        && job.url
+        && !coolingDown
+        && job.decisionBucket === "refresh"
+        && ["pending", "review", "later"].includes(status);
+      if (!common) return false;
+      if (activityOnly) return isActivityProbeDue(job);
+      return tags.has("detail_unverified") || tags.has("activity_unverified");
+    })
+    .sort((a, b) => Number((a.qualityTags || []).includes("detail_unverified")) - Number((b.qualityTags || []).includes("detail_unverified")))
+    .slice(0, limit);
+  if (!pending.length) {
+    console.log(activityOnly ? "当前没有超过 3 天有效期、需要更新活跃状态的历史岗位。" : "当前没有需要补读的岗位详情。");
+    return;
+  }
+
+  const refreshKind = activityOnly ? "activity-probe" : "detail-refresh";
+  const batchId = createBatch(db, "boss", refreshKind, `browser:${args.browser || "none"}:${refreshKind}:plan:${planId}`, {
+    profileId: planRecord.profileId,
+    searchPlanId: planId,
+    filterSnapshot: { mode: refreshKind, requested: pending.length }
+  });
+  logger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
+  const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
+  const rawJobs = await refreshMethod(pending, {
+    limit,
+    tabId: browserState.tabId,
+    onAttempt: async (attempt) => {
+      const nextRetryAt = attempt.result === "failed"
+        ? refreshRetryAt(attempt.errorCode)
+        : activityOnly ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString() : "";
+      recordJobRefreshAttempt(db, {
+        jobId: attempt.job.id,
+        result: attempt.result,
+        errorCode: attempt.errorCode,
+        errorMessage: attempt.errorMessage,
+        nextRetryAt
+      });
+    }
+  });
+  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => activityOnly
+    ? analyzeActivityProbe(raw, { configs, analyzeJob })
+    : analyzeScannedJob(raw, { configs, analyzeJob }));
+  for (const job of analyzedJobs) upsertJob(db, job, batchId);
+  const report = renderReports(listReportJobs(db, { batchId, limit: 500 }), path.join(ROOT, "reports"));
+  logger.info(activityOnly ? "activity_probe_completed" : "detail_refresh_completed", { batchId, planId, requested: pending.length, refreshed: analyzedJobs.length });
+  console.log(`${activityOnly ? "活跃状态更新" : "补读"}完成：请求 ${pending.length} 条，成功 ${analyzedJobs.length} 条`);
+  console.log(`Markdown: ${report.mdPath}`);
+  console.log(`HTML: ${report.htmlPath}`);
+}
+
+async function analyzeActivityProbe(raw, { configs, analyzeJob }) {
+  const scored = scoreJob(raw, configs);
+  const existing = raw.analysis || {};
+  if (decisionState(scored) === "ready" && ["complete", "partial"].includes(existing.semanticStatus)) {
+    return {
+      ...raw,
+      ...scored,
+      analysis: { ...existing, workSchedule: scored.workSchedule, workScheduleEvidence: scored.workScheduleEvidence }
+    };
+  }
+  return analyzeScannedJob(raw, { configs, analyzeJob });
+}
+
+function resolveAnalysisConcurrency(args) {
+  const parsed = Number(args["analysis-concurrency"] ?? 4);
+  if (!Number.isInteger(parsed)) return 4;
+  return Math.max(1, Math.min(8, parsed));
+}
+
+function refreshRetryAt(errorCode) {
+  const code = String(errorCode || "");
+  const delayMs = /RISK|CONTROL/.test(code)
+    ? 12 * 60 * 60 * 1000
+    : /LOGIN|AUTH/.test(code)
+      ? 30 * 60 * 1000
+    : /NOT_FOUND|INVALID_LINK/.test(code)
+      ? 7 * 24 * 60 * 60 * 1000
+      : 6 * 60 * 60 * 1000;
+  return new Date(Date.now() + delayMs).toISOString();
+}
+
 function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false } = {}) {
   const raw = args[key] ?? plannedValue;
   const value = Number(raw);
   if (Number.isFinite(value) && (allowZero ? value >= 0 : value > 0)) return value;
   return fallback;
+}
+
+async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes, keyword, tabId }) {
+  const stored = getPlatformFilterCatalog(db, "boss");
+  let catalog = stored?.catalog;
+  const shouldRefresh = args["refresh-platform-filters"] === true || !isCatalogFresh(catalog);
+  if (shouldRefresh) {
+    catalog = await adapter.discoverFilterCatalog({
+      cityCode: cityScopes[0]?.cityCode,
+      keyword: keyword || "Python",
+      tabId
+    });
+    savePlatformFilterCatalog(db, {
+      site: "boss",
+      catalog,
+      source: catalog.source || "live_dom",
+      discoveredAt: catalog.discoveredAt
+    });
+  }
+  const snapshot = resolveNativeFilterSnapshot({
+    site: "boss",
+    catalog,
+    plan,
+    overrides: {
+      salary: args["boss-salary"],
+      experience: args["boss-experience"]
+    }
+  });
+  logger.info("platform_filters_resolved", {
+    site: "boss",
+    refreshed: shouldRefresh,
+    catalogVersion: snapshot.catalogVersion,
+    params: snapshot.params,
+    labels: snapshot.labels
+  });
+  for (const warning of snapshot.warnings || []) logger.warn("platform_filter_remapped", { site: "boss", ...warning });
+  console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(snapshot) || "未命中可用原生条件"}`);
+  return snapshot;
 }
 
 function resolveCityScopes(args, planRecord, configs) {
@@ -185,6 +419,8 @@ function ruleGateAnalysis(job, gate) {
   return {
     provider: "rule-gate",
     model: "",
+    semanticStatus: blocked ? "blocked" : "refresh",
+    decisionSource: blocked ? "hard_boundary" : "source_refresh",
     error: "",
     realRoleType: "",
     businessScenario: "",
@@ -215,6 +451,12 @@ async function createProfile(db, args) {
     : resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
   const { profile, plan } = await analyzeResumeToPlan({ modelConfig: configs.model, resume });
   const saved = saveProfileAnalysis(db, { profile, document: resume, searchPlan: plan });
+  try {
+    const storedFilePath = storeResumeSourceFile({ root: ROOT, documentId: saved.resumeDocumentId, fileName, buffer });
+    attachResumeDocumentFile(db, saved.resumeDocumentId, storedFilePath);
+  } catch (error) {
+    logger.warn("resume_source_file_save_failed", { documentId: saved.resumeDocumentId, error: errorMeta(error) });
+  }
   logger.info("cli_profile_created", { profileId: saved.profileId, planId: saved.planId, fileName: resume.originalFileName, format: resume.format, charCount: resume.charCount });
   console.log(`Profile: ${saved.profileId}`);
   console.log(`Search plan: ${saved.planId}`);
@@ -246,8 +488,7 @@ async function reassessBatch(db, args) {
     ? resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig
     : offlineMockModelConfig();
   configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
-  const feedbackSummary = buildFeedbackSummary(db, { profileId: planRecord.profileId });
-  const keywordPlan = adjustKeywordPlanWithFeedback(planRecord.plan.keywords || [], feedbackSummary);
+  const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
   const result = await reassessBatchObservations(db, {
     batchId,
@@ -269,6 +510,11 @@ function createBrowser(args) {
   return null;
 }
 
+function createSiteAdapter(site, context) {
+  if (site === "boss") return new BossSiteAdapter(context);
+  throw new Error(`当前版本尚未接入 ${site}。请先选择 BOSS 直聘。`);
+}
+
 function offlineMockModelConfig() {
   return {
     provider: "mock",
@@ -276,8 +522,23 @@ function offlineMockModelConfig() {
   };
 }
 
-function rebuildReport(db) {
-  const report = renderReports(listReportJobs(db), path.join(ROOT, "reports"));
+function rescorePlan(db, args) {
+  const planId = Number(args.plan);
+  if (!Number.isInteger(planId) || planId <= 0) throw new Error("需要 --plan <Search Plan ID>");
+  const planRecord = getSearchPlan(db, planId);
+  if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
+  const profileRecord = getCandidateProfile(db, planRecord.profileId);
+  if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在`);
+  const configs = profileToRuntimeConfigs(loadConfigs(ROOT), profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+  const result = rescorePlanObservations(db, { planId, configs });
+  logger.info("plan_rescored", result);
+  console.log(`Search Plan #${planId} 已按最新规则重算 ${result.rescored} 条岗位。`);
+}
+
+function rebuildReport(db, args = {}) {
+  const batchId = Number(args.batch || 0);
+  const jobs = batchId ? listReportJobs(db, { batchId, limit: 500 }) : listReportJobs(db, { limit: 500 });
+  const report = renderReports(jobs, path.join(ROOT, "reports"));
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
 }
@@ -381,11 +642,16 @@ function printHelp() {
   run.ps1 scan --plan <Search Plan ID> --browser portable --cdp-port 9222
   run.ps1 bind-batch --batch <Batch ID> --plan <Search Plan ID>
   run.ps1 reassess-batch --batch <Batch ID> --plan <Search Plan ID>
+  run.ps1 rescore-plan --plan <Search Plan ID>
   run.ps1 scan --site boss --input data\\sample_jobs.json
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID>
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 4
+  run.ps1 refresh-details --browser edge --plan <Search Plan ID> --limit 8
+  run.ps1 refresh-activity --browser edge --plan <Search Plan ID> --limit 8
   run.ps1 scan --input data\\sample_jobs.json --profile profiles\\guo_mingfu.json --resume-versions profiles\\resume_versions.json
   run.ps1 dashboard --port 8787
-  run.ps1 rebuild-report
+  run.ps1 rebuild-report --batch <Batch ID>
   run.ps1 feedback-summary
   run.ps1 batch-summary --batch latest
   run.ps1 mark-applied --job-id <id> --note "人工确认已沟通"

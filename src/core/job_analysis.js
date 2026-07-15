@@ -1,90 +1,138 @@
+const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const crypto = require("crypto");
-const { getModelCache, saveModelCache } = require("./storage");
+const { validateModelResult } = require("./model_contract");
+const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
+const { decisionState } = require("./scoring");
+const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
 
 function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyzer: injectedAnalyzer = null, logger = null } = {}) {
-  const analyzer = injectedAnalyzer || createLlmAnalyzer({ modelConfig: configs.model });
-  const ruleOnly = !injectedAnalyzer && (configs.model?.provider || "mock") === "mock";
-  let candidateProfilePromise = null;
-
-  async function getCandidateProfile() {
-    if (!candidateProfilePromise) {
-      candidateProfilePromise = analyzer.analyzeResume({
-        resumeText: "",
-        profileHints: configs.candidateProfile || {}
-      });
-    }
-    return candidateProfilePromise;
-  }
+  const analyzer = injectedAnalyzer || createLlmAnalyzer({ modelConfig: configs.model, logger });
+  const provider = configs.model?.provider || "mock";
+  const ruleOnly = !injectedAnalyzer && provider === "mock";
+  const candidateProfile = configs.candidateProfile;
 
   return async function analyzeJob(job) {
     const ruleMatch = explainJobMatch(job, configs, keywordPlan);
-    if (ruleOnly) {
-      return createRuleOnlyAnalysis(configs, job, ruleMatch);
+    const facts = jobFacts(job);
+    const contentHash = sourceContentHash(facts);
+    const revision = buildAnalysisRevision(configs, contentHash);
+    if (ruleOnly) return createRuleOnlyAnalysis(configs, job, ruleMatch, revision);
+    if (!candidateProfile || typeof candidateProfile !== "object") {
+      return failedAnalysis(configs, job, revision, Object.assign(new Error("候选人画像不存在，无法执行语义匹配。"), { code: "CANDIDATE_PROFILE_REQUIRED" }));
     }
+
     try {
-      const candidateProfile = await getCandidateProfile();
-      const jobUnderstanding = await cachedModelCall({ db, configs, logger, kind: "understandJob", input: { job, candidateProfile }, run: analyzer.understandJob });
-      const matchDecision = await cachedModelCall({ db, configs, logger, kind: "matchJob", input: {
-        candidateProfile,
-        resumeVersions: configs.resumeVersions,
-        jobUnderstanding,
-        ruleMatch
-      }, run: analyzer.matchJob });
-      const communication = await cachedModelCall({ db, configs, logger, kind: "draftCommunication", input: {
-        candidateProfile,
-        jobUnderstanding,
-        matchDecision
-      }, run: analyzer.draftCommunication });
-      return applyRuleGuard(compactAnalysis(configs, {
-        job,
-        jobUnderstanding,
-        matchDecision,
-        communication,
-        ruleMatch
-      }), job);
+      const jobUnderstanding = await cachedModelCall({
+        db,
+        configs,
+        logger,
+        kind: "understandJob",
+        pipelineVersion: PIPELINE_VERSIONS.understandJob,
+        input: { job: { ...facts, sourceContentHash: contentHash } },
+        run: analyzer.understandJob
+      });
+      const matchDecision = await cachedModelCall({
+        db,
+        configs,
+        logger,
+        kind: "matchJob",
+        pipelineVersion: PIPELINE_VERSIONS.matchJob,
+        input: {
+          candidateProfile,
+          resumeVersions: configs.resumeVersions,
+          jobUnderstanding,
+          jobEvidence: {
+            sourceId: facts.sourceId,
+            title: facts.title,
+            salary: facts.salary,
+            experience: facts.experience,
+            education: facts.education,
+            description: facts.description
+          },
+          searchPreferences: searchPreferences(configs)
+        },
+        run: analyzer.matchJob
+      });
+      const analysis = compactAnalysis(configs, { job, jobUnderstanding, matchDecision, revision });
+      return applyRuleGuard(applyRoleIntentGuard(analysis, configs), job);
     } catch (error) {
-      logger?.warn("job_analysis_fallback", { jobId: job.sourceId || job.url || "", errorCode: error?.code || "MODEL_ANALYSIS_FAILED", errorMessage: error?.message || String(error) });
-      return applyRuleGuard(compactAnalysis(configs, {
-        job,
-        ruleMatch,
-        communication: { greeting: job.greeting || "" },
-        error: error.message || String(error)
-      }), job);
+      logger?.warn("job_analysis_failed", {
+        jobId: job.sourceId || job.url || "",
+        errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
+        errorMessage: error?.message || String(error)
+      });
+      return applyRuleGuard(failedAnalysis(configs, job, revision, error), job);
     }
   };
 }
 
-function createRuleOnlyAnalysis(configs, job, ruleMatch) {
-  const compact = compactAnalysis(configs, {
-    job,
-    ruleMatch,
-    communication: { greeting: job.greeting || "" }
-  });
+function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysisRevision(configs, sourceContentHash(jobFacts(job)))) {
+  const versionId = ruleMatch.recommendedResumeVersion || "";
   return applyRuleGuard({
-    ...compact,
     provider: "rule-only",
     model: "",
+    semanticStatus: "rule_only",
+    decisionSource: "local_rules",
+    error: "",
+    errorCode: "",
+    realRoleType: "",
+    businessScenario: "",
+    coreRequirements: [],
+    hiddenRisks: [],
+    recommendation: "review",
+    fitLevel: "C",
     confidence: null,
-    fitReasons: compact.fitReasons?.length ? compact.fitReasons : ["未配置大模型，当前仅按岗位类型、城市、薪资和技能规则排序。"]
+    recommendedResumeVersion: versionId,
+    recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
+    primaryProjects: ruleMatch.primaryProjects || [],
+    fitReasons: ["当前未启用语义模型，岗位只完成了基础边界检查。"],
+    missingPoints: ruleMatch.missingPoints || [],
+    riskQuestions: ruleMatch.riskQuestions || [],
+    evidence: { jd: [], resume: [] },
+    greetingAngle: "",
+    greeting: job.greeting || "",
+    hrReplies: {},
+    revision
   }, job);
 }
 
-async function cachedModelCall({ db, configs, logger = null, kind, input, run }) {
-  if (!db) return run(input);
+async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersion, input, run }) {
   const provider = configs.model?.provider || "mock";
   const model = configs.model?.providers?.[provider]?.model || "";
   const inputHash = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
-  const cacheKey = crypto.createHash("sha256").update(`${provider}|${model}|${kind}|${inputHash}`).digest("hex");
-  const cached = getModelCache(db, cacheKey);
-  if (cached) {
-    logger?.info("model_cache_hit", { kind, provider, model });
-    return cached.result;
+  const cacheKey = crypto.createHash("sha256").update(`${provider}|${model}|${kind}|${pipelineVersion}|${inputHash}`).digest("hex");
+  if (db) {
+    const cached = getModelCache(db, cacheKey);
+    if (cached) {
+      try {
+        const result = validateModelResult(kind, cached.result);
+        logger?.info("model_cache_hit", { kind, provider, model, pipelineVersion });
+        logger?.info("model_call_completed", { kind, provider, model, cacheHit: true, latencyMs: 0, attempts: 0, httpStatus: null, usage: null, jsonModeFallback: false });
+        return result;
+      } catch (error) {
+        if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
+        logger?.warn("model_cache_contract_invalid", { kind, provider, model, pipelineVersion, errorMessage: error.message });
+      }
+    }
   }
-  const result = await run(input);
-  saveModelCache(db, { cacheKey, kind, provider, model, inputHash, result });
-  logger?.info("model_cache_saved", { kind, provider, model });
+
+  let result;
+  try {
+    result = validateModelResult(kind, await run(input));
+  } catch (error) {
+    if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
+    logger?.warn("model_contract_repair_requested", { kind, provider, model, pipelineVersion, errorMessage: error.message });
+    result = validateModelResult(kind, await run({
+      ...input,
+      contractRepair: {
+        reason: error.message,
+        instruction: "补齐缺失的具体理由和可核对证据；不要改变已有事实，也不要输出通用占位语。"
+      }
+    }));
+  }
+  if (db) saveModelCache(db, { cacheKey, kind, provider, model, inputHash, result });
+  logger?.info("model_cache_saved", { kind, provider, model, pipelineVersion });
   return result;
 }
 
@@ -93,83 +141,156 @@ function compactAnalysis(configs, parts) {
   const model = configs.model?.providers?.[provider]?.model || "";
   const decision = parts.matchDecision || {};
   const understanding = parts.jobUnderstanding || {};
-  const communication = parts.communication || {};
-  const rule = parts.ruleMatch || {};
   const job = parts.job || {};
-  const versionId = decision.recommendedResumeVersion || rule.recommendedResumeVersion || "";
-  const versionName = resumeVersionName(configs.resumeVersions, versionId);
-  const primaryProjects = decision.primaryProjects || rule.primaryProjects || [];
-
+  const versionId = decision.recommendedResumeVersion || "";
+  const fullJd = job.detailRead === true || String(job.description || "").trim().length >= 120;
   return {
-    provider: parts.error ? "rule-fallback" : provider,
+    provider,
     model,
-    error: parts.error || "",
-    realRoleType: understanding.realRoleType || "",
+    semanticStatus: fullJd ? "complete" : "partial",
+    decisionSource: "model",
+    error: "",
+    errorCode: "",
+    realRoleType: understanding.realRoleType || "unknown",
     businessScenario: understanding.businessScenario || "",
-    recommendation: decision.recommendation || recommendationFromScore(job.score),
-    fitLevel: decision.fitLevel || fitLevelFromScore(job.score),
-    confidence: decision.confidence ?? null,
+    coreRequirements: understanding.coreRequirements || [],
+    coreStack: understanding.coreStack || [],
+    eligibilityConstraints: understanding.eligibilityConstraints || [],
+    hiddenRisks: understanding.hiddenRisks || [],
+    senioritySignal: understanding.senioritySignal || "unknown",
+    recommendation: decision.recommendation,
+    fitLevel: decision.fitLevel,
+    confidence: decision.confidence,
     recommendedResumeVersion: versionId,
-    recommendedResumeVersionName: versionName,
-    primaryProjects,
-    fitReasons: decision.fitReasons || rule.fitReasons || [],
-    missingPoints: decision.missingPoints || rule.missingPoints || [],
-    riskQuestions: decision.riskQuestions || rule.riskQuestions || [],
-    evidence: decision.evidence || { jd: understanding.evidenceSnippets || [], resume: [] },
-    greetingAngle: decision.greetingAngle || rule.greetingAngle || "",
-    greeting: chooseGreeting(configs, job, versionName, primaryProjects, communication.greeting),
-    hrReplies: communication.hrReplies || {}
+    recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
+    primaryProjects: decision.primaryProjects || [],
+    fitReasons: decision.fitReasons || [],
+    missingPoints: decision.missingPoints || [],
+    blockingGaps: decision.blockingGaps || [],
+    riskQuestions: decision.riskQuestions || [],
+    evidence: decision.evidence || { jd: [], resume: [] },
+    greetingAngle: decision.greetingAngle || "",
+    greeting: job.greeting || "",
+    hrReplies: {},
+    revision: parts.revision || buildAnalysisRevision(configs, sourceContentHash(jobFacts(job)))
+  };
+}
+
+function failedAnalysis(configs, job, revision, error) {
+  const provider = configs.model?.provider || "mock";
+  return {
+    provider,
+    model: configs.model?.providers?.[provider]?.model || "",
+    semanticStatus: "failed",
+    decisionSource: "analysis_pending",
+    error: error?.message || String(error || "模型分析失败"),
+    errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
+    realRoleType: "",
+    businessScenario: "",
+    coreRequirements: [],
+    hiddenRisks: [],
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: null,
+    recommendedResumeVersion: "",
+    recommendedResumeVersionName: "",
+    primaryProjects: [],
+    fitReasons: ["语义分析未完成，等待模型恢复后重试。"],
+    missingPoints: [],
+    riskQuestions: [],
+    evidence: { jd: [], resume: [] },
+    greetingAngle: "",
+    greeting: job.greeting || "",
+    hrReplies: {},
+    revision
   };
 }
 
 function applyRuleGuard(analysis, job) {
-  const score = Number(job.score ?? 0);
-  const risks = job.risks || [];
-  if (score <= -20) {
-    return addGuard(analysis, "skip", "D", "规则护栏：岗位分数过低，建议跳过。");
+  const gate = decisionState(job);
+  const qualityTags = new Set(job.qualityTags || []);
+  if (gate === "blocked") return addGuard(analysis, "skip", "D", "已确认的基础条件不满足。", "blocked", "hard_boundary");
+  if (gate === "refresh") return addGuard(analysis, "review", analysis.fitLevel || "C", "岗位来源信息需要刷新后再判断。", "refresh", "source_refresh");
+  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) return { ...analysis, recommendation: "review", decisionSource: "analysis_pending" };
+  if (analysis.semanticStatus === "partial") {
+    return addGuard(analysis, "review", analysis.fitLevel || "C", "当前只有卡片级信息，完整 JD 补齐前不进入主投。", "partial", "model_partial");
   }
-  if (score < 6 || risks.length >= 3) {
-    return addGuard(analysis, analysis.recommendation === "skip" ? "skip" : "caution", analysis.fitLevel || "C", "规则护栏：存在明显风险，投递前需要人工确认。");
+  const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
+  if (analysis.recommendation === "apply" && materialRisk) {
+    const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
+    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
   }
-  const usesLiveModel = !["mock", "rule-only", "rule-gate", "rule-fallback"].includes(analysis.provider);
-  if (usesLiveModel && Number(analysis.confidence ?? 0) < 0.62) {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，先人工复核 JD 与简历证据。");
+  if (analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange"))) {
+    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
+  }
+  if ((analysis.blockingGaps || []).length) return analysis;
+  if (Number(analysis.confidence ?? 0) < 0.62) {
+    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
   }
   return analysis;
 }
 
-function addGuard(analysis, recommendation, fitLevel, reason) {
+function applyRoleIntentGuard(analysis, configs) {
+  if (analysis.recommendation !== "apply" || analysis.realRoleType !== "implementation_presales") return analysis;
+  const candidate = configs.candidateProfile?.candidate || {};
+  const targets = [
+    candidate.targetTitle,
+    ...(candidate.targetTitles || []),
+    ...(candidate.directions || []),
+    ...(configs.searchPlan?.directions || [])
+  ].filter(Boolean).join(" ");
+  if (/解决方案|实施|售前/.test(targets)) return analysis;
+  return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位以实施、方案或客户交付为主，与当前纯开发目标存在职责偏移。", analysis.semanticStatus, "candidate_direction_guard");
+}
+
+function addGuard(analysis, recommendation, fitLevel, reason, semanticStatus = analysis.semanticStatus, decisionSource = analysis.decisionSource) {
   return {
     ...analysis,
+    semanticStatus,
+    decisionSource,
     recommendation,
     fitLevel,
-    fitReasons: [reason, ...(analysis.fitReasons || []).filter((item) => !/unknown|可做初步匹配/.test(String(item)))],
+    fitReasons: [reason, ...(analysis.fitReasons || []).filter((item) => item && item !== reason)],
     ruleAdjusted: true
   };
 }
 
-function chooseGreeting(configs, job, versionName, primaryProjects, modelGreeting) {
-  if ((configs.model?.provider || "mock") !== "mock" && modelGreeting) return modelGreeting;
-  const name = configs.candidateProfile?.candidate?.name || configs.profile?.candidate?.name || "候选人";
-  const title = job.title || "AI 相关";
-  const projects = (primaryProjects || []).slice(0, 2).join("、") || versionName || "AI 应用项目";
-  return `您好，我是${name}。看到这个${title}岗位和我做过的${projects}经验比较匹配，想进一步了解岗位职责和团队情况，方便的话可以沟通一下。`;
+function jobFacts(job = {}) {
+  return {
+    source: job.source || "",
+    sourceId: job.sourceId || "",
+    title: job.title || "",
+    company: job.company || "",
+    location: job.location || "",
+    salary: job.salary || "",
+    experience: job.experience || "",
+    education: job.education || "",
+    bossActiveText: job.bossActiveText || "",
+    url: job.url || "",
+    tags: Array.isArray(job.tags) ? job.tags : [],
+    description: job.description || ""
+  };
 }
 
-function recommendationFromScore(score) {
-  return Number(score ?? 0) >= 6 ? "apply" : "caution";
-}
-
-function fitLevelFromScore(score) {
-  const value = Number(score ?? 0);
-  if (value >= 12) return "A";
-  if (value >= 6) return "B";
-  if (value >= 0) return "C";
-  return "D";
+function searchPreferences(configs) {
+  const plan = configs.searchPlan || {};
+  return {
+    cities: plan.cities || [],
+    salary: plan.salary || {},
+    experience: plan.experience || [],
+    jobTypes: plan.jobTypes || [],
+    directions: plan.directions || []
+  };
 }
 
 function resumeVersionName(resumeVersions, id) {
   return (resumeVersions?.versions || []).find((version) => version.id === id)?.name || id || "";
 }
 
-module.exports = { createJobAnalysisRunner, compactAnalysis, createRuleOnlyAnalysis };
+module.exports = {
+  createJobAnalysisRunner,
+  compactAnalysis,
+  createRuleOnlyAnalysis,
+  cachedModelCall,
+  jobFacts
+};

@@ -1,0 +1,281 @@
+[
+  {
+    "id": "ai-rag-junior",
+    "category": "AI应用",
+    "title": "RAG应用开发工程师",
+    "description": "负责企业知识库问答的检索链路开发，使用 Python、FastAPI、向量数据库、BM25 和 Rerank 优化召回质量；参与 Agent 工具调用、接口联调、日志排查和效果评估。要求 1-3 年开发经验，有 RAG 或智能问答项目经验，能够阅读业务需求并完成应用层交付。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "核心职责与 Python、RAG、Agent 项目直接对应。"
+  },
+  {
+    "id": "ai-agent-workflow",
+    "category": "AI应用",
+    "title": "大模型智能体开发工程师",
+    "description": "基于 LangGraph 或 LangChain 开发多 Agent 工作流，负责状态管理、条件路由、工具调用、质量审查和失败降级；使用 Python 与 FastAPI 提供服务接口。要求理解 Function Calling、Prompt Engineering 和 RAG，有可运行的智能体项目，经验 1-3 年或优秀项目经验可放宽。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "KnowledgeFlow 能提供 LangGraph、多 Agent 和质量闭环证据。"
+  },
+  {
+    "id": "ai-knowledge-base",
+    "category": "AI应用",
+    "title": "企业知识库开发工程师",
+    "description": "建设企业文档知识问答应用，负责 Query Rewrite、向量检索、关键词检索、融合排序、重排序和上下文压缩；配合完成权限、审计、缓存与降级策略。技术栈为 Python、Milvus、Redis 和大模型 API，要求本科及以上，具备相关项目经验，工作年限不限至 3 年。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "DocMind 参与边界可稳健支持该岗位。"
+  },
+  {
+    "id": "ai-fastapi-rag",
+    "category": "AI应用",
+    "title": "Python AI后端工程师",
+    "description": "负责大模型应用后端接口、异步任务、知识库检索与工具调用服务，使用 Python、FastAPI、Pydantic、Redis 和 MySQL；需要编写测试、排查日志并与前端联调。要求熟悉 RAG 或 Agent 至少一种实现方式，接受 1-3 年经验及项目能力突出的候选人。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "Python 后端与 AI 应用工程能力均匹配。"
+  },
+  {
+    "id": "ai-customer-service",
+    "category": "AI应用",
+    "title": "智能客服应用开发工程师",
+    "description": "开发面向企业客服场景的知识问答、意图识别、工具调用和人工兜底流程，负责 RAG 检索质量、对话记忆、Prompt 注入防护、审计日志及 API 接入。要求 Python 基础扎实，有知识库或智能问答项目经验，能够完成测试和业务联调，工作经验 1-3 年。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "RAG、长期记忆、降级与安全治理均有证据。"
+  },
+  {
+    "id": "ai-llm-application",
+    "category": "AI应用",
+    "title": "LLM应用开发工程师",
+    "description": "面向内部业务开发大模型助手，工作包括提示词设计、Function Calling、知识库检索、模型输出校验、幻觉抑制和成本控制；使用 Python 构建服务并通过 Docker 部署。要求有完整个人或企业项目，能够说明评估方法和异常降级，经验要求 0-3 年。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "候选人的项目和技能覆盖主要职责。"
+  },
+  {
+    "id": "python-backend-ai-plus",
+    "category": "Python后端",
+    "title": "Python后端开发工程师",
+    "description": "负责业务接口、异步任务、MySQL 与 Redis 数据访问、日志监控和 Docker 部署，同时参与公司知识库问答功能接入。要求 Python 和 FastAPI 熟练，有后端接口开发经验；RAG、LangChain 或向量数据库经验为加分项而非硬要求，工作经验 1-3 年。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "Python 后端是候选人的明确次目标，核心技能和经验范围均匹配。"
+  },
+  {
+    "id": "public-info-automation",
+    "category": "自动化分析",
+    "title": "Python信息采集与自动化分析工程师",
+    "description": "负责公开网页信息采集、内容清洗、结构化入库、规则初筛、质量标记和日报生成，要求处理去重、失败重试、来源健康和本地数据导出。使用 Python、SQLite 和基础 Web 接口，可接入大模型做摘要但不是核心，要求 1-3 年或有完整自动化项目。",
+    "expectedRecommendation": "apply",
+    "expectedBucket": "primary",
+    "rationale": "公开信息采集工具与岗位链路直接对应，且属于 Python 自动化方向。"
+  },
+  {
+    "id": "ai-implementation",
+    "category": "实施交付",
+    "title": "AI实施工程师",
+    "description": "负责客户侧知识库配置、大模型接口联调、问题定位、部署文档和上线支持，需要理解 RAG、Prompt、API 与基础 Python；部分时间参与现场需求沟通，不承担销售指标。要求能够读日志和完成简单脚本开发，有 AI 应用项目经验优先，经验 1-3 年。",
+    "expectedRecommendation": "caution",
+    "expectedBucket": "talk",
+    "rationale": "技术匹配但实施和客户沟通占比需确认。"
+  },
+  {
+    "id": "ai-solution-assistant",
+    "category": "解决方案",
+    "title": "AI解决方案工程师",
+    "description": "协助梳理企业知识库和智能助手需求，完成技术方案、原型验证、接口演示与交付支持；需要熟悉 RAG、Agent、Python 和常见大模型平台，能够与研发及客户沟通。岗位无销售业绩要求，但方案文档和演示占比较高，接受 1-3 年经验。",
+    "expectedRecommendation": "caution",
+    "expectedBucket": "talk",
+    "rationale": "技术基础可用，但职责并非纯开发。"
+  },
+  {
+    "id": "java-spring-core",
+    "category": "Java主栈",
+    "title": "Java后端工程师（AI平台）",
+    "description": "负责 AI 平台账户、任务调度和服务治理，核心开发语言为 Java，要求精通 Spring Boot、Spring Cloud、MyBatis、消息队列和微服务治理；Python 仅用于调用模型脚本，RAG 经验为加分项。要求 3 年以上 Java 服务端经验并有高并发系统实践。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "核心硬要求是候选人不具备的 Java/Spring 企业后端经验。"
+  },
+  {
+    "id": "java-microservice-ai-optional",
+    "category": "Java主栈",
+    "title": "高级Java开发工程师",
+    "description": "负责分布式微服务、注册中心、链路追踪、消息中间件和数据库性能优化，必须熟练 Java、Spring Cloud、Kubernetes 并具备 3-5 年高并发经验。团队后续会接入大模型能力，了解 LangChain 或 RAG 优先，但 AI 不是当前岗位主要职责。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "AI 只是优先项，Java 微服务才是硬主线。"
+  },
+  {
+    "id": "go-rag-platform",
+    "category": "Go主栈",
+    "title": "Go平台开发工程师",
+    "description": "负责高并发检索平台和网关服务，必须熟练 Golang、gRPC、Kubernetes、分布式缓存和性能调优，要求 3 年以上 Go 服务端经验。平台会承载向量检索和 RAG 服务，Python 与大模型调用经验仅为加分项，不承担 AI 应用业务逻辑。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "Go 和云原生是核心硬要求。"
+  },
+  {
+    "id": "go-agent-infra",
+    "category": "Go主栈",
+    "title": "Agent基础设施后端工程师",
+    "description": "建设智能体运行时、任务队列和服务网格，核心语言为 Go，要求熟悉并发模型、gRPC、容器编排和可观测性，至少 3 年 Golang 经验；需要理解 Agent 概念以便提供基础设施接口，但不负责 Prompt、RAG 或业务应用开发。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "标题含 Agent，但实际是 Go 基础设施岗位。"
+  },
+  {
+    "id": "cpp-inference",
+    "category": "C++主栈",
+    "title": "大模型推理工程师",
+    "description": "负责大模型推理引擎性能优化、算子开发、显存管理和 CUDA 加速，必须精通 C++、CUDA、TensorRT 与 Linux 性能分析，要求 3 年以上底层开发经验。Python 只用于测试脚本，了解 RAG 或 Agent 不构成核心职责。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "底层 C++/CUDA 能力与候选人应用开发经历不匹配。"
+  },
+  {
+    "id": "cpp-vector-engine",
+    "category": "C++主栈",
+    "title": "向量数据库内核工程师",
+    "description": "研发向量索引、存储引擎和查询优化模块，要求精通 C++、数据结构、并发编程和 Linux 系统开发，具备 HNSW 或 ANN 内核实践；Python SDK 和 RAG 应用属于上层使用场景，不是岗位交付内容，工作经验要求 3-5 年。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "向量数据库关键词不能掩盖 C++ 内核主线。"
+  },
+  {
+    "id": "nlp-training",
+    "category": "算法训练",
+    "title": "NLP算法工程师",
+    "description": "负责预训练语言模型、指令微调、数据构造、损失函数优化和离线评测，需要熟练 PyTorch、Transformer 训练和分布式训练框架，要求硕士优先并有算法论文或竞赛经历。RAG 仅作为下游评测场景，不负责企业应用接口和知识库工程。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "岗位核心是模型训练和算法研究。"
+  },
+  {
+    "id": "cv-algorithm",
+    "category": "算法训练",
+    "title": "计算机视觉算法工程师",
+    "description": "负责目标检测、图像分割、多模态训练与模型部署，要求掌握 PyTorch、OpenCV、CUDA 和常用视觉网络，具有真实训练数据处理与指标优化经验；Python 是算法语言而非应用后端，岗位不涉及 RAG、知识库或 Agent 业务开发。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "候选人没有 CV 算法训练背景。"
+  },
+  {
+    "id": "llm-finetune",
+    "category": "算法训练",
+    "title": "大模型微调算法工程师",
+    "description": "负责 SFT、DPO、RLHF 数据与训练流程，优化大模型评测指标并完成多机多卡训练；要求熟悉 PyTorch、DeepSpeed、分布式训练和模型对齐算法，具备 2 年以上微调经验。了解 RAG 应用可加分，但主要产出是模型权重和训练方案。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "微调和训练是硬主线，不是 AI 应用开发。"
+  },
+  {
+    "id": "recommendation-algorithm",
+    "category": "算法训练",
+    "title": "推荐算法工程师",
+    "description": "负责召回、排序、用户画像和推荐模型训练，要求熟悉机器学习、深度学习、特征工程、A/B 实验和大规模数据处理，具有推荐系统指标优化经验。岗位偶尔使用大模型生成内容，但不涉及企业 RAG、Agent 或 Python Web 服务交付。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "推荐算法与现有项目证据不匹配。"
+  },
+  {
+    "id": "ai-internship",
+    "category": "实习",
+    "title": "大模型应用开发实习生",
+    "description": "协助开发 RAG 知识库、Prompt 模板和 Python 接口，要求每周到岗 5 天并连续实习 6 个月，仅面向在校生，可提供实习证明。技术内容与候选人项目接近，但岗位性质明确为实习，不是当前全职求职目标。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "明确在校实习与当前全职计划冲突。"
+  },
+  {
+    "id": "campus-2027-only",
+    "category": "实习校招",
+    "title": "2027届AI开发工程师",
+    "description": "参与大模型应用和智能问答系统研发，使用 Python、RAG 和 Agent 技术；岗位仅接受 2027 届统招应届毕业生，需要提供学籍和毕业时间证明，通过校招流程入职。技术方向匹配，但候选人已经毕业，不符合明确的届别资格。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "明确届别是不可放宽的资格条件。"
+  },
+  {
+    "id": "ai-product-manager",
+    "category": "非技术岗位",
+    "title": "AI产品经理",
+    "description": "负责大模型产品规划、需求文档、竞品分析、项目排期和运营数据复盘，推动研发和设计团队交付；要求产品经理经验、用户研究和商业化能力，了解 RAG、Agent 与 Prompt 为加分项，但不承担 Python 编码或后端开发职责。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "明确是产品岗位而非开发岗位。"
+  },
+  {
+    "id": "ai-sales",
+    "category": "非技术岗位",
+    "title": "AI解决方案销售经理",
+    "description": "负责企业客户拓展、销售线索跟进、合同谈判和年度业绩目标，向客户介绍大模型、知识库与智能客服方案；要求销售经验和客户资源，技术团队负责方案开发，岗位本人不承担 Python、RAG 或 Agent 工程实现。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "AI 名称不能掩盖纯销售职责。"
+  },
+  {
+    "id": "ai-course-instructor",
+    "category": "非技术岗位",
+    "title": "大模型课程讲师",
+    "description": "负责设计 AI 课程、直播授课、学员答疑、课程转化和培训交付，内容覆盖 Prompt、RAG、Agent 和 Python 入门；要求授课表达与课程运营经验，开发示例仅用于教学，不承担生产系统研发，也有招生转化考核。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "讲师与培训转化职责属于硬排除。"
+  },
+  {
+    "id": "ai-operations",
+    "category": "非技术岗位",
+    "title": "AI内容运营专员",
+    "description": "负责使用大模型生成公众号和短视频内容，制定选题、排期、投放和增长计划，监控阅读与转化数据；要求内容运营和平台账号经验，会使用 ChatGPT 等工具即可，不要求 Python 开发、接口集成、RAG 或 Agent 工程能力。",
+    "expectedRecommendation": "skip",
+    "expectedBucket": "not_recommended",
+    "rationale": "属于使用 AI 工具的内容运营岗位。"
+  },
+  {
+    "id": "insufficient-ai-title",
+    "category": "信息不足",
+    "title": "AI工程师",
+    "description": "负责公司 AI 相关工作，参与新技术研究和业务支持，完成领导安排的其他任务。职位描述未说明主要编程语言、具体交付物、经验要求、团队方向或是否承担模型训练，也没有给出 RAG、Agent、后端接口等可核对职责。",
+    "expectedRecommendation": "review",
+    "expectedBucket": "talk",
+    "rationale": "标题宽泛且 JD 证据不足，应先确认。"
+  },
+  {
+    "id": "insufficient-fullstack-ai",
+    "category": "信息不足",
+    "title": "AI全栈开发",
+    "description": "负责 AI 产品全栈研发和快速交付，需要根据项目安排完成前后端工作。JD 未列出前端框架、后端语言、数据库、模型接入方式、团队分工和上线要求，也没有说明 RAG 或 Agent 是否为核心，只写了有大模型经验优先。",
+    "expectedRecommendation": "review",
+    "expectedBucket": "talk",
+    "rationale": "职责范围和核心技术栈都不清楚。"
+  },
+  {
+    "id": "insufficient-consultant",
+    "category": "信息不足",
+    "title": "大模型技术顾问",
+    "description": "参与客户大模型项目，支持需求沟通、方案设计和项目交付。JD 没有说明顾问、售前、实施或编码各自占比，也未列出技术栈、经验要求、驻场频率和考核方式；仅要求了解主流大模型产品，无法判断是否存在持续开发工作。",
+    "expectedRecommendation": "review",
+    "expectedBucket": "talk",
+    "rationale": "顾问岗位的技术开发占比不足以判断。"
+  },
+  {
+    "id": "senior-low-salary-stretch",
+    "category": "经验可冲",
+    "title": "Python RAG开发工程师",
+    "description": "负责 Python、FastAPI、RAG 检索和知识库接口开发，工作内容与 AI 应用项目一致；JD 写 3-5 年经验，但薪资为 10-16K，也接受项目能力突出者并注明年限可适当放宽。需要完成接口联调、测试、日志排查和基础 Docker 部署。",
+    "expectedRecommendation": "caution",
+    "expectedBucket": "talk",
+    "rationale": "方向匹配且年限疑似门槛，可作为可冲岗位。"
+  },
+  {
+    "id": "outsourced-python-ai",
+    "category": "外包",
+    "title": "Python AI应用开发工程师",
+    "description": "由技术服务公司招聘并派驻客户项目，负责 Python、FastAPI、RAG 知识库和 Agent 工具调用开发，经验要求 1-3 年，薪资 10-18K；需要配合客户现场联调和项目交付，岗位技术职责明确，但派驻地点、项目周期和转组机制需面试确认。",
+    "expectedRecommendation": "caution",
+    "expectedBucket": "talk",
+    "rationale": "外包不是硬排除，技术匹配但需确认派驻条件。"
+  }
+]

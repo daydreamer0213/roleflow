@@ -23,10 +23,8 @@ $Node = Join-Path $ProjectRoot ".runtime\node\node.exe"
 if (-not (Test-Path -LiteralPath $Node)) {
   $Node = (Get-Command node -ErrorAction Stop).Source
 }
-foreach ($test in @("tests\self_check.js", "tests\observability_smoke.js", "tests\model_adapter_smoke.js", "tests\model_settings_smoke.js", "tests\model_settings_ui_smoke.js", "tests\profile_quality_smoke.js", "tests\onboarding_smoke.js")) {
-  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot $test)
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
+& $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\run_all.js")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Remove-ProjectPath -Path $StageDir
 New-Item -ItemType Directory -Force -Path $StageDir, $DistDir | Out-Null

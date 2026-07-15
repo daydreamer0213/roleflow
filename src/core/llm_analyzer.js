@@ -8,8 +8,8 @@ const DEFAULT_MODEL_CONFIG = {
   }
 };
 
-function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null } = {}) {
-  const modelAdapter = adapter || createModelAdapter(modelConfig);
+function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null, logger = null } = {}) {
+  const modelAdapter = adapter || createModelAdapter(modelConfig, { logger });
   return {
     analyzeResume: async (input) => validateModelResult("analyzeResume", await modelAdapter.analyzeResume(input)),
     recommendSearchPlan: async (input) => validateModelResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),

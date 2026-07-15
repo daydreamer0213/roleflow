@@ -47,7 +47,7 @@ class EdgeControlAdapter {
 
   async activeTabId() {
     const tabs = await this.listTabs();
-    const tab = tabs.find((item) => item.active) || tabs[0];
+    const tab = chooseAutomationTab(tabs);
     if (!tab) throw new Error("Edge Control 未发现可用标签页。");
     return tab.id;
   }
@@ -74,4 +74,14 @@ class EdgeControlAdapter {
   }
 }
 
-module.exports = { EdgeControlAdapter };
+function chooseAutomationTab(tabs = []) {
+  return tabs.find((item) => item.active && /zhipin\.com\/web\/geek\/jobs/i.test(String(item.url || "")))
+    || tabs.find((item) => /zhipin\.com\/web\/geek\/jobs/i.test(String(item.url || "")))
+    || tabs.find((item) => item.active && /zhipin\.com\//i.test(String(item.url || "")))
+    || tabs.find((item) => /zhipin\.com\//i.test(String(item.url || "")))
+    || tabs.find((item) => item.active)
+    || tabs[0]
+    || null;
+}
+
+module.exports = { EdgeControlAdapter, chooseAutomationTab };

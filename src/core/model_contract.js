@@ -53,8 +53,10 @@ function validateJobUnderstanding(value) {
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
     coreRequirements: strings(value.coreRequirements, 16),
+    coreStack: strings(value.coreStack, 10),
     niceToHave: strings(value.niceToHave, 16),
     senioritySignal: text(value.senioritySignal || "unknown"),
+    eligibilityConstraints: strings(value.eligibilityConstraints, 8),
     hiddenRisks: list(value.hiddenRisks).map((risk) => ({ type: text(risk?.type), severity: ["low", "medium", "high"].includes(risk?.severity) ? risk.severity : "medium", evidence: text(risk?.evidence) })).filter((risk) => risk.type || risk.evidence),
     isFakeAI: Boolean(value.isFakeAI),
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
@@ -63,14 +65,18 @@ function validateJobUnderstanding(value) {
 }
 
 function validateMatchDecision(value) {
-  const recommendation = ["apply", "caution", "skip", "review"].includes(value.recommendation) ? value.recommendation : "review";
+  if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
+  if (list(value.blockingGaps).some((item) => typeof item !== "string")) throw new ModelContractError("matchJob", "blockingGaps 必须是字符串数组");
+  const recommendation = value.recommendation;
   const confidence = Number(value.confidence);
-  return {
+  if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
+  const result = {
     recommendation,
     fitLevel: ["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C",
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     fitReasons: strings(value.fitReasons, 8),
     missingPoints: strings(value.missingPoints, 8),
+    blockingGaps: strings(value.blockingGaps, 8),
     riskQuestions: strings(value.riskQuestions, 8),
     recommendedResumeVersion: text(value.recommendedResumeVersion),
     primaryProjects: strings(value.primaryProjects, 4),
@@ -78,12 +84,41 @@ function validateMatchDecision(value) {
     evidence: normalizeEvidence(value.evidence),
     hrPrep: object(value.hrPrep)
   };
+  const inferredBlocking = result.missingPoints.filter((item) => /完全缺失|完全不匹配|不满足.{0,12}(?:核心|硬性)|不符合.{0,12}(?:核心|硬性|资格|届别)|核心.{0,16}(?:缺失|不匹配)|(?:无|缺少).{0,20}(?:C\+\+|Golang|Go语言|Java|Spring|CUDA|硬性资格|届别资格)/i.test(item));
+  if (!result.blockingGaps.length && inferredBlocking.length) result.blockingGaps = inferredBlocking;
+  if (result.blockingGaps.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性缺口时 recommendation 必须为 skip");
+  if (recommendation === "apply" && !["A", "B"].includes(result.fitLevel)) throw new ModelContractError("matchJob", "apply 的 fitLevel 必须为 A 或 B");
+  if (["apply", "caution"].includes(recommendation)) {
+    if (!result.fitReasons.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条具体匹配理由");
+    if (!result.evidence.jd.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条 JD 证据");
+    if (!result.evidence.resume.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条候选人证据");
+  } else {
+    const hasReason = result.fitReasons.length || result.missingPoints.length || result.riskQuestions.length;
+    const statesInsufficientInfo = result.missingPoints.some((item) => /信息|未提供|缺少|无法确认|待确认/.test(item));
+    if (!hasReason) throw new ModelContractError("matchJob", "skip/review 必须说明岗位风险或信息不足");
+    if (!result.evidence.jd.length && !statesInsufficientInfo) throw new ModelContractError("matchJob", "skip/review 至少需要 JD 风险证据或明确的信息不足说明");
+  }
+  return result;
 }
 
 function validateCommunication(value) {
-  const greeting = text(value.greeting);
-  if (!greeting) throw new ModelContractError("draftCommunication", "缺少招呼语");
-  return { jobId: text(value.jobId), greeting, hrReplies: object(value.hrReplies), tone: text(value.tone) };
+  const kind = ["greeting", "hr_reply", "follow_up"].includes(value.kind) ? value.kind : "greeting";
+  const messages = strings(value.messages || value.replies || value.greeting, 2);
+  const rawMissingFact = object(value.missingFact);
+  const missingFact = rawMissingFact.key || rawMissingFact.question
+    ? { key: text(rawMissingFact.key).slice(0, 80), question: text(rawMissingFact.question) }
+    : null;
+  const evidence = normalizeEvidence(value.evidence);
+  if (missingFact) {
+    if (!missingFact.key || !missingFact.question) throw new ModelContractError("draftCommunication", "missingFact 必须同时包含 key 和 question");
+    if (messages.length) throw new ModelContractError("draftCommunication", "缺少关键事实时不能同时生成可发送回复");
+  } else if (!messages.length) {
+    throw new ModelContractError("draftCommunication", "缺少可发送文案或待补事实问题");
+  }
+  if (!missingFact && ["greeting", "follow_up"].includes(kind) && (!evidence.jd.length || !evidence.resume.length)) {
+    throw new ModelContractError("draftCommunication", "定制沟通必须同时包含 JD 与候选人证据");
+  }
+  return { kind, jobId: text(value.jobId), messages, missingFact, evidence, tone: text(value.tone) };
 }
 
 function normalizeEvidence(value) {

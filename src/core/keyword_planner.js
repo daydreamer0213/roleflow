@@ -41,7 +41,7 @@ function buildKeywordPlan(profile, resumeVersions, keywordConfig) {
   return plan.sort(comparePlanItems);
 }
 
-function resolvePlannedKeywords(args, configs, feedbackSummary = null) {
+function resolvePlannedKeywords(args, configs) {
   const raw = args.keywords || args.keyword;
   if (raw) {
     const keywords = splitList(raw);
@@ -59,10 +59,7 @@ function resolvePlannedKeywords(args, configs, feedbackSummary = null) {
     };
   }
 
-  const keywordPlan = adjustKeywordPlanWithFeedback(
-    buildKeywordPlan(configs.candidateProfile, configs.resumeVersions, configs.keywords),
-    feedbackSummary
-  );
+  const keywordPlan = buildKeywordPlan(configs.candidateProfile, configs.resumeVersions, configs.keywords);
   const keywords = keywordPlan.map((item) => item.word);
   if (keywords.length) return { keywords, keywordPlan, source: "profile-planner" };
 
@@ -118,7 +115,6 @@ function guessResumeVersion(word, versions) {
 
 function comparePlanItems(a, b) {
   return rank(a.priority) - rank(b.priority)
-    || (a.feedbackPenalty || 0) - (b.feedbackPenalty || 0)
     || String(a.word).localeCompare(String(b.word), "zh-CN");
 }
 
@@ -126,49 +122,4 @@ function rank(priority) {
   return { A: 0, B: 1, C: 2 }[priority] ?? 9;
 }
 
-function adjustKeywordPlanWithFeedback(plan, feedbackSummary) {
-  if (!feedbackSummary) return plan;
-  return plan.map((item) => {
-    const stats = feedbackSummary.keywords?.[item.word];
-    if (!stats) return item;
-    if ((stats.invalid || 0) + (stats.salary_mismatch || 0) >= 2 && (stats.interview || 0) === 0) {
-      return {
-        ...item,
-        priority: demotePriority(item.priority),
-        feedbackPenalty: 10,
-        feedbackNote: `历史无效或薪资不匹配 ${(stats.invalid || 0) + (stats.salary_mismatch || 0)} 次，暂时降权`
-      };
-    }
-    if (stats.skipped >= 3 && stats.applied === 0) {
-      return {
-        ...item,
-        priority: demotePriority(item.priority),
-        feedbackPenalty: 8,
-        feedbackNote: `历史跳过 ${stats.skipped} 次，暂时降权`
-      };
-    }
-    if ((stats.interview || 0) >= 1) {
-      return {
-        ...item,
-        feedbackPenalty: -6,
-        feedbackNote: `历史获得约面 ${stats.interview} 次，优先保留`
-      };
-    }
-    if (stats.applied >= 2 && stats.skipped === 0) {
-      return {
-        ...item,
-        feedbackPenalty: -3,
-        feedbackNote: `历史投递 ${stats.applied} 次，优先保留`
-      };
-    }
-    return item;
-  }).sort(comparePlanItems);
-}
-
-function demotePriority(priority) {
-  if (priority === "A") return "B";
-  if (priority === "B") return "C";
-  return priority || "C";
-}
-
-module.exports = { buildKeywordPlan, resolvePlannedKeywords, summarizeResumeVersions, splitList, adjustKeywordPlanWithFeedback };
+module.exports = { buildKeywordPlan, resolvePlannedKeywords, summarizeResumeVersions, splitList };

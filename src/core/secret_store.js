@@ -36,6 +36,16 @@ function loadSecret(root, id) {
   return runDpapi(UNPROTECT_SCRIPT, encrypted).trim();
 }
 
+function inspectSecret(root, id) {
+  if (!hasSecret(root, id)) return { stored: false, readable: false, configured: false, errorCode: "" };
+  try {
+    const value = loadSecret(root, id);
+    return { stored: true, readable: Boolean(value), configured: Boolean(value), errorCode: value ? "" : "SECRET_EMPTY" };
+  } catch {
+    return { stored: true, readable: false, configured: false, errorCode: "SECRET_UNREADABLE" };
+  }
+}
+
 function clearSecret(root, id) {
   fs.rmSync(secretPath(root, id), { force: true });
 }
@@ -88,4 +98,4 @@ const UNPROTECT_SCRIPT = [
   "[Console]::Out.Write([Text.Encoding]::UTF8.GetString($bytes))"
 ].join("; ");
 
-module.exports = { secretPath, hasSecret, saveSecret, loadSecret, clearSecret };
+module.exports = { secretPath, hasSecret, saveSecret, loadSecret, inspectSecret, clearSecret };

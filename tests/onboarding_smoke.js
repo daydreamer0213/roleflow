@@ -3,7 +3,7 @@ const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
-const { openDb, getSearchPlan, listCandidateResumeVersions, listResumeParseAttempts, listReportJobs } = require("../src/core/storage");
+const { openDb, getSearchPlan, getCandidateProfile, getSearchPlanDependency, listCandidateResumeVersions, listResumeParseAttempts, listReportJobs } = require("../src/core/storage");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -30,6 +30,18 @@ const generatedReports = [];
   assert.strictEqual(onboardingPage.status, 200);
   assert(onboardingHtml.includes('id="resume-text"'));
   assert(onboardingHtml.includes("使用模板"));
+  assert(onboardingHtml.includes("预览发送内容"));
+  assert(onboardingHtml.includes("自动遮蔽手机号"));
+
+  const previewForm = new FormData();
+  previewForm.set("resumeText", `${fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8")}\n手机：13800138000\n邮箱：candidate@example.com\n现住址：广州市天河区测试路 18 号`);
+  const previewResponse = await fetch(`${baseUrl}/api/resume/preview`, { method: "POST", body: previewForm });
+  const preview = await previewResponse.json();
+  assert.strictEqual(previewResponse.status, 200);
+  assert(!preview.text.includes("13800138000"));
+  assert(!preview.text.includes("candidate@example.com"));
+  assert(!preview.text.includes("测试路 18 号"));
+  assert(preview.text.includes("KnowledgeFlow"));
   const settingsPage = await fetch(`${baseUrl}/settings`);
   const settingsHtml = await settingsPage.text();
   assert.strictEqual(settingsPage.status, 200);
@@ -72,6 +84,11 @@ const generatedReports = [];
   assert(planHtml.includes("可直接开始扫描"));
   assert(planHtml.includes("筛选方案"));
   assert(planHtml.includes("搜索关键词"));
+  assert(planHtml.includes("单轮右栏读取上限"));
+  assert(planHtml.includes("列表页面上限"));
+  assert(planHtml.includes("补读缺失详情"));
+  assert(planHtml.includes("更新过期活跃状态"));
+  assert(planHtml.includes("按动作类型随机等待"));
 
   const query = new URL(`${baseUrl}${planLocation}`).searchParams;
   const planId = Number(query.get("planId"));
@@ -79,6 +96,7 @@ const generatedReports = [];
   const db = openDb(dbPath);
   const plan = getSearchPlan(db, planId);
   assert(plan?.plan?.keywords?.length, "generated search plan had no keywords");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false);
   assert(listResumeParseAttempts(db, profileId).some((attempt) => attempt.status === "succeeded"), "successful parse attempt was not recorded");
 
   const profilePage = await fetch(`${baseUrl}/profile?profileId=${profileId}`);
@@ -95,12 +113,18 @@ const generatedReports = [];
       targetTitles: "AI Application Engineer,Python Backend",
       expectedSalary: "9-14K",
       adjustableSalary: "8-12K,9-13K",
+      education: "Smoke University | 本科 | 电子信息 | 2020 | 2024 | 已毕业 |",
+      experiences: "Smoke Company | AI Intern | 实习 | 2025.01 | 2025.04 | 参与 RAG 接口 | 接口联调 | Python,RAG",
       skills: "Python | API\nRAG | retrieval",
-      projects: "KnowledgeFlow | independent project | LangGraph,tests | do not overclaim"
+      projects: "KnowledgeFlow | 2025 | knowledge workflow | independent project | LangGraph,tests | Python,RAG | 336 tests | do not overclaim",
+      credentials: "英语四级 | 已通过",
+      strengths: "独立完成 Agent 项目"
     }),
     redirect: "manual"
   });
   assert.strictEqual(profileSaved.status, 303);
+  assert.strictEqual(getCandidateProfile(db, profileId).profile.education[0].degree, "本科");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, true, "画像更新后旧方案必须标记为待确认");
 
   const versionForm = new FormData();
   versionForm.set("profileId", String(profileId));
@@ -117,7 +141,14 @@ const generatedReports = [];
   const versionsHtml = await versionsPage.text();
   assert.strictEqual(versionsPage.status, 200);
   assert(versionsHtml.includes("AI Resume Variant"));
-  assert(listCandidateResumeVersions(db, profileId).some((version) => version.name === "AI Resume Variant"));
+  assert(versionsHtml.includes("打开原文件"));
+  const savedVersion = listCandidateResumeVersions(db, profileId).find((version) => version.name === "AI Resume Variant");
+  assert(savedVersion?.resumeTextExcerpt.includes("测试候选人"));
+  assert(savedVersion?.storedFilePath.includes(path.join(".runtime", "resumes")));
+  const sourceFile = await fetch(`${baseUrl}/resume-file?id=${savedVersion.resumeDocumentId}`);
+  assert.strictEqual(sourceFile.status, 200);
+  assert(Buffer.from(await sourceFile.arrayBuffer()).toString("utf8").includes("测试候选人"));
+  assert(savedVersion?.analysis?.candidate, "新增简历版本必须独立分析并保存结构化事实");
 
   const saved = await fetch(`${baseUrl}/api/plan`, {
     method: "POST",
@@ -145,6 +176,7 @@ const generatedReports = [];
   });
   assert.strictEqual(saved.status, 303);
   assert.strictEqual(getSearchPlan(db, planId).plan.source, "user-confirmed");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应绑定当前画像版本");
   assert.strictEqual(getSearchPlan(db, planId).plan.allowExperienceStretch, true);
   db.close();
 
