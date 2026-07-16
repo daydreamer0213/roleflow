@@ -7,6 +7,8 @@ const { appError } = require("./observability");
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_RESUME_CHARS = 60000;
+const DOCX_PARSE_TIMEOUT_MS = 30000;
+const PDF_PARSE_TIMEOUT_MS = 30000;
 const TEXT_EXTENSIONS = new Set([".txt", ".md"]);
 const SUPPORTED_EXTENSIONS = new Set([...TEXT_EXTENSIONS, ".docx", ".pdf"]);
 
@@ -30,8 +32,12 @@ async function parseResumeUpload({ fileName, buffer, root }) {
     try {
       text = extractDocxText(buffer, name, root);
     } catch (error) {
-      throw appError("RESUME_DOCX_PARSE_FAILED", "DOCX 无法读取，请重新导出为 DOCX、PDF，或直接粘贴简历文本。", {
+      const timedOut = error?.code === "RESUME_DOCX_TIMEOUT" || error?.code === "ETIMEDOUT";
+      throw appError(timedOut ? "RESUME_DOCX_TIMEOUT" : "RESUME_DOCX_PARSE_FAILED", timedOut
+        ? "DOCX 解析超时，请重新导出文件，或直接粘贴简历文本继续。"
+        : "DOCX 无法读取，请重新导出为 DOCX、PDF，或直接粘贴简历文本。", {
         cause: error,
+        statusCode: timedOut ? 408 : 400,
         details: { diagnostics: parseDiagnostics({ buffer, extractionMethod, text: "" }) }
       });
     }
@@ -42,8 +48,12 @@ async function parseResumeUpload({ fileName, buffer, root }) {
     try {
       text = await extractPdfText(buffer);
     } catch (error) {
-      throw appError("RESUME_PDF_PARSE_FAILED", "PDF 无法读取或可能是扫描件，请直接粘贴简历文本继续。", {
+      const timedOut = error?.code === "RESUME_PDF_TIMEOUT";
+      throw appError(timedOut ? "RESUME_PDF_TIMEOUT" : "RESUME_PDF_PARSE_FAILED", timedOut
+        ? "PDF 解析超时，请重新导出文件，或直接粘贴简历文本继续。"
+        : "PDF 无法读取或可能是扫描件，请直接粘贴简历文本继续。", {
         cause: error,
+        statusCode: timedOut ? 408 : 400,
         details: { diagnostics: parseDiagnostics({ buffer, extractionMethod, text: "", ocr: { ...ocr, status: "suggested" } }) }
       });
     }
@@ -156,8 +166,11 @@ function extractDocxText(buffer, fileName, root) {
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Path", tempPath], {
       encoding: "utf8",
       maxBuffer: 2 * 1024 * 1024,
+      timeout: DOCX_PARSE_TIMEOUT_MS,
       windowsHide: true
     });
+    if (result.error?.code === "ETIMEDOUT") throw parseTimeoutError("RESUME_DOCX_TIMEOUT", DOCX_PARSE_TIMEOUT_MS);
+    if (result.error) throw result.error;
     if (result.status !== 0) throw new Error((result.stderr || result.stdout || "DOCX parse failed").trim());
     return result.stdout || "";
   } finally {
@@ -168,11 +181,31 @@ function extractDocxText(buffer, fileName, root) {
 async function extractPdfText(buffer) {
   const parser = new PDFParse({ data: buffer });
   try {
-    const result = await parser.getText();
+    const result = await withTimeout(parser.getText(), PDF_PARSE_TIMEOUT_MS, "RESUME_PDF_TIMEOUT");
     return result.text || "";
   } finally {
     await parser.destroy();
   }
+}
+
+async function withTimeout(promise, timeoutMs, code) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(parseTimeoutError(code, timeoutMs)), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseTimeoutError(code, timeoutMs) {
+  const error = new Error(`${code} after ${timeoutMs}ms`);
+  error.code = code;
+  return error;
 }
 
 function decodeText(buffer) {

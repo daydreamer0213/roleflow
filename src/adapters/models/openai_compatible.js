@@ -111,7 +111,7 @@ class OpenAICompatibleAdapter {
               break;
             }
             if (attempt < this.maxRetries && (error.retryable || error.code === "model_invalid_json")) {
-              await delay(250 * (attempt + 1));
+              await delay(retryDelayMs(error, attempt));
               continue;
             }
             throw error;
@@ -159,6 +159,10 @@ class OpenAICompatibleAdapter {
         error.status = res.status;
         error.providerRequestId = providerRequestId;
         error.retryable = res.status === 408 || res.status === 429 || res.status >= 500;
+        if (res.status === 408 || res.status === 504) error.code = "MODEL_TIMEOUT";
+        if (res.status === 429 || res.status >= 500) {
+          error.retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+        }
         if (jsonMode && res.status === 400 && /response_format|json[_ -]?object|json mode|json schema/i.test(detail)) error.code = "json_mode_unsupported";
         throw error;
       }
@@ -172,14 +176,7 @@ class OpenAICompatibleAdapter {
         throw error;
       }
     } catch (error) {
-      if (error.name === "AbortError") {
-        const timeoutError = new Error(`模型请求超时（${this.timeoutMs}ms）。`);
-        timeoutError.retryable = true;
-        throw timeoutError;
-      }
-      if (error.code === "model_invalid_json" || error.retryable !== undefined || error.status) throw error;
-      error.retryable = true;
-      throw error;
+      throw normalizeTransportError(error, this.timeoutMs);
     } finally {
       clearTimeout(timer);
     }
@@ -221,6 +218,52 @@ function normalizeUsage(value = {}) {
   }
   return Object.keys(result).length ? result : null;
 }
+
+function parseRetryAfterMs(value, now = Date.now()) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function retryDelayMs(error, attempt) {
+  if (Number.isFinite(error?.retryAfterMs)) return error.retryAfterMs;
+  const base = 250 * (2 ** attempt);
+  return base + Math.floor(Math.random() * base);
+}
+
+function normalizeTransportError(error, timeoutMs) {
+  const code = error?.code || error?.cause?.code || "";
+  const name = error?.name || error?.cause?.name || "";
+  if (name === "AbortError" || name === "TimeoutError" || TIMEOUT_ERROR_CODES.has(code)) {
+    const timeoutError = new Error(`模型请求超时（${timeoutMs}ms）。`, { cause: error });
+    timeoutError.code = "MODEL_TIMEOUT";
+    timeoutError.retryable = true;
+    return timeoutError;
+  }
+  if (RETRYABLE_TRANSPORT_CODES.has(code)) error.retryable = true;
+  return error;
+}
+
+const TIMEOUT_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT"
+]);
+
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "EPIPE",
+  "UND_ERR_SOCKET"
+]);
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
