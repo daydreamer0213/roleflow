@@ -26,6 +26,14 @@ function validateSearchPlan(plan = {}, candidateProfile = {}) {
   return { valid: errors.length === 0, errors, warnings };
 }
 
+function assertSearchPlanReady(planRecord, candidateProfile = {}, dependency = {}) {
+  if (!planRecord?.plan) throw new Error("Search Plan 不存在，请重新确认筛选条件。");
+  const validation = validateSearchPlan(planRecord.plan, candidateProfile);
+  if (!validation.valid) throw new Error(validation.errors.join("；"));
+  if (dependency.stale) throw new Error("候选人画像已更新，当前筛选方案仍基于旧画像。请先检查并保存方案，再开始扫描。");
+  return validation;
+}
+
 function normalize(value) { return String(value || "").trim().toLowerCase(); }
 
-module.exports = { validateSearchPlan };
+module.exports = { validateSearchPlan, assertSearchPlanReady };

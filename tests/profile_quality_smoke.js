@@ -1,7 +1,7 @@
 const assert = require("node:assert");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../src/core/profile_schema");
 const { profileToRuntimeConfigs, resolveScanPolicy, applyScanPolicyToFilters } = require("../src/core/search_plan");
-const { validateSearchPlan } = require("../src/core/plan_validation");
+const { validateSearchPlan, assertSearchPlanReady } = require("../src/core/plan_validation");
 const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
 const { prepareResumeTextForModel } = require("../src/core/profile_onboarding");
 
@@ -87,6 +87,9 @@ assert.strictEqual(applyScanPolicyToFilters({ lanes: filteredLanes.lanes.concat(
 const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile);
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));
+assert.throws(() => assertSearchPlanReady({ plan: { ...plan, cities: ["惠州"] } }, profile), /惠州/);
+assert.throws(() => assertSearchPlanReady({ plan }, profile, { stale: true }), /旧画像/);
+assert.strictEqual(assertSearchPlanReady({ plan }, profile).valid, true);
 assert.deepStrictEqual(normalizeSearchPlan({ experience: ["2-3?", "3-5?"] }, profile).experience, ["2-3年", "3-5年（可冲）"]);
 const locationlessProfile = normalizeCandidateProfile({ candidate: { name: "无地点候选人", targetTitles: ["Python后端"] } });
 assert.deepStrictEqual(normalizeSearchPlan({ keywords: ["Python后端"] }, locationlessProfile).cities, []);

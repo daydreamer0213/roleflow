@@ -271,6 +271,15 @@ CREATE TABLE IF NOT EXISTS site_runtime_states (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS site_scan_leases (
+  site TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  command TEXT NOT NULL,
+  plan_id INTEGER,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS job_refresh_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER NOT NULL,
@@ -508,6 +517,74 @@ function setSiteRuntimeState(db, site, input = {}) {
 
 function clearSiteRuntimeState(db, site) {
   db.prepare("DELETE FROM site_runtime_states WHERE site = ?").run(String(site || "").trim().toLowerCase());
+}
+
+function acquireSiteScanLease(db, { site = "boss", owner = crypto.randomUUID(), command = "scan", planId = null, ttlMs = 10 * 60 * 1000 } = {}) {
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  const normalizedOwner = String(owner || "").trim();
+  if (!normalizedSite || !normalizedOwner) throw new Error("scan lease site and owner are required");
+  const now = new Date();
+  const acquiredAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + Math.max(60_000, Number(ttlMs) || 0)).toISOString();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM site_scan_leases WHERE expires_at <= ?").run(acquiredAt);
+    const active = db.prepare("SELECT * FROM site_scan_leases WHERE site = ?").get(normalizedSite);
+    if (active) {
+      const error = new Error(`${normalizedSite} 已有扫描任务运行中（${active.command}，开始于 ${active.acquired_at}）。`);
+      error.code = "SCAN_ALREADY_RUNNING";
+      error.lease = mapSiteScanLease(active);
+      throw error;
+    }
+    db.prepare(`INSERT INTO site_scan_leases(site, owner, command, plan_id, acquired_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(normalizedSite, normalizedOwner, String(command || "scan"), Number(planId || 0) || null, acquiredAt, expiresAt);
+    db.exec("COMMIT");
+    return getSiteScanLease(db, normalizedSite);
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch { /* no-op */ }
+    throw error;
+  }
+}
+
+function renewSiteScanLease(db, { site = "boss", owner, ttlMs = 10 * 60 * 1000 } = {}) {
+  const expiresAt = new Date(Date.now() + Math.max(60_000, Number(ttlMs) || 0)).toISOString();
+  const result = db.prepare("UPDATE site_scan_leases SET expires_at = ? WHERE site = ? AND owner = ?")
+    .run(expiresAt, String(site || "").trim().toLowerCase(), String(owner || ""));
+  if (!Number(result.changes || 0)) {
+    const error = new Error("扫描互斥租约已丢失，不能继续保证单实例运行。");
+    error.code = "SCAN_LEASE_LOST";
+    throw error;
+  }
+  return expiresAt;
+}
+
+function releaseSiteScanLease(db, { site = "boss", owner } = {}) {
+  const result = db.prepare("DELETE FROM site_scan_leases WHERE site = ? AND owner = ?")
+    .run(String(site || "").trim().toLowerCase(), String(owner || ""));
+  return Number(result.changes || 0) > 0;
+}
+
+function getSiteScanLease(db, site = "boss") {
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  const row = db.prepare("SELECT * FROM site_scan_leases WHERE site = ?").get(normalizedSite);
+  if (!row) return null;
+  if (Date.parse(row.expires_at) <= Date.now()) {
+    db.prepare("DELETE FROM site_scan_leases WHERE site = ? AND owner = ?").run(normalizedSite, row.owner);
+    return null;
+  }
+  return mapSiteScanLease(row);
+}
+
+function mapSiteScanLease(row) {
+  return {
+    site: row.site,
+    owner: row.owner,
+    command: row.command,
+    planId: Number(row.plan_id || 0) || null,
+    acquiredAt: row.acquired_at,
+    expiresAt: row.expires_at
+  };
 }
 
 function listReusableJobDetails(db, { site = "boss", profileId = 0, maxAgeDays = 7 } = {}) {
@@ -1967,6 +2044,10 @@ module.exports = {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
+  acquireSiteScanLease,
+  renewSiteScanLease,
+  releaseSiteScanLease,
+  getSiteScanLease,
   listReusableJobDetails,
   recordJobRefreshAttempt,
   listJobRefreshAttempts,

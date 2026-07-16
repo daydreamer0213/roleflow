@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const path = require("path");
+const crypto = require("crypto");
 const { loadConfigs } = require("./config");
 const { EdgeControlAdapter } = require("./adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
@@ -23,6 +24,9 @@ const {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
+  acquireSiteScanLease,
+  renewSiteScanLease,
+  releaseSiteScanLease,
   listReusableJobDetails,
   recordJobRefreshAttempt,
   getLatestJobRefreshAttempt,
@@ -36,6 +40,7 @@ const {
   markApplication,
   getCandidateProfile,
   getSearchPlan,
+  getSearchPlanDependency,
   getLatestBatchId,
   listCandidateResumeVersions,
   listDecisionPool,
@@ -53,6 +58,7 @@ const { createLogger, errorMeta } = require("./core/observability");
 const { resolveRuntimeModelConfig } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
+const { assertSearchPlanReady } = require("./core/plan_validation");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -76,9 +82,9 @@ async function main() {
     return;
   }
 
-  if (command === "scan") return scan(db, args);
-  if (command === "refresh-details") return refreshDetails(db, args);
-  if (command === "refresh-activity") return refreshDetails(db, { ...args, "activity-only": true });
+  if (command === "scan") return withSiteScanLease(db, args, command, () => scan(db, args));
+  if (command === "refresh-details") return withSiteScanLease(db, args, command, () => refreshDetails(db, args));
+  if (command === "refresh-activity") return withSiteScanLease(db, args, command, () => refreshDetails(db, { ...args, "activity-only": true }));
   if (command === "profile-create") return createProfile(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
@@ -91,6 +97,31 @@ async function main() {
   if (command === "mark-skipped") return mark(db, args, "skipped");
   if (command === "mark-no-reply") return mark(db, args, "no_reply");
   throw new Error(`未知命令：${command}`);
+}
+
+async function withSiteScanLease(db, args, command, run) {
+  if (command === "scan" && args.input) return run();
+  const planRecord = args.plan ? getSearchPlan(db, args.plan) : null;
+  const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
+  const owner = `${process.pid}:${crypto.randomUUID()}`;
+  const lease = acquireSiteScanLease(db, { site, owner, command, planId: Number(args.plan || 0) || null });
+  logger.info("site_scan_lease_acquired", { site, command, planId: lease.planId, owner, expiresAt: lease.expiresAt });
+  const heartbeat = setInterval(() => {
+    try {
+      const expiresAt = renewSiteScanLease(db, { site, owner });
+      logger.info("site_scan_lease_renewed", { site, command, owner, expiresAt });
+    } catch (error) {
+      logger.error("site_scan_lease_renew_failed", { site, command, owner, error: errorMeta(error) });
+    }
+  }, 60_000);
+  heartbeat.unref?.();
+  try {
+    return await run();
+  } finally {
+    clearInterval(heartbeat);
+    const released = releaseSiteScanLease(db, { site, owner });
+    logger.info("site_scan_lease_released", { site, command, owner, released });
+  }
 }
 
 async function scan(db, args) {
@@ -113,6 +144,7 @@ async function scan(db, args) {
     if (!planRecord) throw new Error(`未找到 Search Plan #${args.plan}`);
     const profileRecord = getCandidateProfile(db, planRecord.profileId);
     if (!profileRecord) throw new Error(`Search Plan #${args.plan} 对应的候选人画像不存在。`);
+    assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
     configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
   }
   const planned = planRecord && !args.keywords && !args.keyword
@@ -339,6 +371,7 @@ async function refreshDetails(db, args) {
   if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
+  assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
   const adapter = createSiteAdapter("boss", { browser, logger });

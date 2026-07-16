@@ -12,6 +12,10 @@ const {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
+  acquireSiteScanLease,
+  renewSiteScanLease,
+  releaseSiteScanLease,
+  getSiteScanLease,
   listReusableJobDetails,
   recordJobRefreshAttempt,
   listJobRefreshAttempts,
@@ -783,6 +787,28 @@ function storageSmoke() {
     assert.strictEqual(getSiteRuntimeState(db, "boss").status, "blocked");
     clearSiteRuntimeState(db, "boss");
     assert.strictEqual(getSiteRuntimeState(db, "boss"), null);
+
+    const lease = acquireSiteScanLease(db, { site: "boss", owner: "smoke-1", command: "scan", planId: 1 });
+    assert.strictEqual(lease.owner, "smoke-1");
+    assert.strictEqual(lease.planId, 1);
+    const secondDb = openDb(dbPath);
+    try {
+      assert.throws(
+        () => acquireSiteScanLease(secondDb, { site: "boss", owner: "smoke-2", command: "refresh-details", planId: 2 }),
+        (error) => error.code === "SCAN_ALREADY_RUNNING"
+      );
+    } finally {
+      secondDb.close();
+    }
+    assert(Date.parse(renewSiteScanLease(db, { site: "boss", owner: "smoke-1" })) > Date.now());
+    assert.strictEqual(releaseSiteScanLease(db, { site: "boss", owner: "wrong-owner" }), false);
+    assert.strictEqual(releaseSiteScanLease(db, { site: "boss", owner: "smoke-1" }), true);
+    assert.strictEqual(getSiteScanLease(db, "boss"), null);
+    acquireSiteScanLease(db, { site: "boss", owner: "expired", command: "scan" });
+    db.prepare("UPDATE site_scan_leases SET expires_at = ? WHERE site = 'boss'").run("2000-01-01T00:00:00.000Z");
+    assert.strictEqual(getSiteScanLease(db, "boss"), null);
+    assert.strictEqual(acquireSiteScanLease(db, { site: "boss", owner: "reclaimed", command: "scan" }).owner, "reclaimed");
+    releaseSiteScanLease(db, { site: "boss", owner: "reclaimed" });
 
     upsertJob(db, {
       source: "boss",

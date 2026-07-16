@@ -19,6 +19,7 @@ const {
   getActiveSearchPlan,
   getPlatformFilterCatalog,
   getSiteRuntimeState,
+  getSiteScanLease,
   saveProfileAnalysis,
   attachResumeDocumentFile,
   getResumeDocument,
@@ -47,7 +48,7 @@ const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/prof
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { loadConfigs } = require("../config");
-const { validateSearchPlan } = require("../core/plan_validation");
+const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, errorMeta, publicError } = require("../core/observability");
 const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
@@ -86,7 +87,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
-      if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId")));
+      if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
@@ -491,11 +492,12 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
-    if (!plan) throw new Error("Search Plan 不存在，请重新确认筛选条件。");
-    const profile = getCandidateProfile(db, plan.profileId);
-    const validation = validateSearchPlan(plan.plan, profile?.profile || {});
-    if (!validation.valid) throw new Error(validation.errors.join("；"));
-    if (getSearchPlanDependency(db, plan.id).stale) throw new Error("候选人画像已更新，当前筛选方案仍基于旧画像。请先检查并保存方案，再开始扫描。");
+    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
+    if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
+    assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    if ([...scanRuns.values()].some((run) => run.state === "running")) throw new Error("BOSS 已有扫描任务正在启动或运行，请等待当前任务结束。");
+    const activeLease = getSiteScanLease(db, "boss");
+    if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
     const cdpPort = Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)));
     const browserMode = params.browserMode === "edge" ? "edge" : "portable";
     const scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
@@ -546,8 +548,11 @@ function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = 
   });
 }
 
-function scanStatus(scanRuns, planId) {
+function scanStatus(scanRuns, planId, db = null) {
   const run = scanRuns.get(Number(planId));
+  if (run?.state === "running") return run;
+  const lease = db ? getSiteScanLease(db, "boss") : null;
+  if (lease) return { state: "running", kind: lease.command, startedAt: lease.acquiredAt, recovered: true, planId: lease.planId };
   return run || { state: "idle" };
 }
 
@@ -1178,7 +1183,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const broadScan = resolveScanPolicy(plan, "broad");
   const selectedExperience = plan.experience;
   const candidate = profile.profile.candidate || {};
-  const run = scanStatus(scanRuns, planRecord.id);
+  const run = scanStatus(scanRuns, planRecord.id, db);
   const validation = validateSearchPlan(plan, profile.profile);
   const planDependency = getSearchPlanDependency(db, planRecord.id);
   const versionDiff = compareProfileVersions(db, profile.id);
