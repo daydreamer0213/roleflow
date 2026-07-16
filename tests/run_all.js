@@ -5,6 +5,7 @@ const tests = [
   "self_check.js",
   "browser_transport_smoke.js",
   "scan_execution_smoke.js",
+  "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",
   "scan_cli_lifecycle_smoke.js",
   "dashboard_scan_lifecycle_smoke.js",
