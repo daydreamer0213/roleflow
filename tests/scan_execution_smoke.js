@@ -18,6 +18,7 @@ async function main() {
   await normalReleaseSmoke();
   await leaseLossSmoke(() => { throw new Error("renew failed"); });
   await leaseLossSmoke(() => ({ owner: "another-owner" }));
+  await leaseLossWaitsForCleanupSmoke();
 }
 
 function scanKindSmoke() {
@@ -158,4 +159,43 @@ async function leaseLossSmoke(renew) {
   assert.strictEqual(signal.aborted, true);
   assert.strictEqual(signal.reason.code, "SCAN_LEASE_LOST");
   assert.deepStrictEqual(released, { site: "boss", owner: "owner-a" });
+}
+
+async function leaseLossWaitsForCleanupSmoke() {
+  let heartbeat;
+  let cleanupFinished = false;
+  let finishCleanup;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const cleanup = new Promise((resolve) => { finishCleanup = resolve; });
+  const execution = withSiteScanLease({
+    acquire: () => ({ site: "boss", owner: "owner-a" }),
+    renew: () => { throw new Error("renew failed"); },
+    release: () => true,
+    setInterval(callback) {
+      heartbeat = callback;
+      return 1;
+    },
+    clearInterval() {}
+  }, {
+    site: "boss",
+    owner: "owner-a",
+    command: "scan",
+    planId: 42
+  }, async (signal) => {
+    markStarted();
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    await cleanup;
+    cleanupFinished = true;
+  });
+
+  await started;
+  await heartbeat();
+  let settled = false;
+  execution.finally(() => { settled = true; }).catch(() => {});
+  await Promise.resolve();
+  assert.strictEqual(settled, false);
+  finishCleanup();
+  await assert.rejects(execution, (error) => error.code === "SCAN_LEASE_LOST");
+  assert.strictEqual(cleanupFinished, true);
 }

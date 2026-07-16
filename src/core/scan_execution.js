@@ -94,15 +94,10 @@ async function withSiteScanLease(deps, input, run) {
   let closed = false;
   let renewing = false;
   let lostError = null;
-  let rejectLeaseLost;
-  const leaseLost = new Promise((resolve, reject) => {
-    rejectLeaseLost = reject;
-  });
   const markLeaseLost = (cause) => {
     if (closed || lostError) return;
     lostError = leaseLostError(cause);
     controller.abort(lostError);
-    rejectLeaseLost(lostError);
   };
   const renewLease = async () => {
     if (closed || renewing || lostError) return;
@@ -129,10 +124,7 @@ async function withSiteScanLease(deps, input, run) {
   heartbeat?.unref?.();
   let executionError = null;
   try {
-    const result = await Promise.race([
-      Promise.resolve().then(() => run(controller.signal)),
-      leaseLost
-    ]);
+    const result = await Promise.resolve().then(() => run(controller.signal));
     if (lostError) throw lostError;
     return result;
   } catch (error) {
