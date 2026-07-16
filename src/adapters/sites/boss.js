@@ -396,7 +396,9 @@ class BossSiteAdapter {
 
   async scanBrowser(options) {
     if (!this.browser) throw new Error("真实扫描需要 --browser edge。");
+    throwIfAborted(options.signal);
     const tabId = options.tabId || await this.browser.activeTabId();
+    throwIfAborted(options.signal);
     const maxCards = Number(options.maxCards || 60);
     const maxDetailTotal = Math.min(1000, Math.max(0, Number(options.maxDetailTotal ?? 300)));
     const allTargets = buildBossScanTargets({ ...options, maxCards });
@@ -437,6 +439,7 @@ class BossSiteAdapter {
     }
 
     scanTargetLoop: for (const target of scanTargets) {
+          throwIfAborted(options.signal);
           const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey } = target;
           targetPosition += 1;
           const startedAt = new Date().toISOString();
@@ -456,8 +459,10 @@ class BossSiteAdapter {
               nativeFilters: normalizeNativeFilters(lane)
             });
             await this.navigateWithPacing(tabId, url, "list");
+            throwIfAborted(options.signal);
             await this.assertSearchPage(tabId);
-            const collected = await this.collectCards(tabId, cardLimit);
+            const collected = await this.collectCards(tabId, cardLimit, options.signal);
+            throwIfAborted(options.signal);
             const collection = Array.isArray(collected)
               ? { cards: collected, status: "completed", stopReason: "external_collection", scrollRounds: 0, growthRounds: 0, quietWindows: 0 }
               : collected;
@@ -548,9 +553,11 @@ class BossSiteAdapter {
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
             for (const entry of detailEntries) {
+              throwIfAborted(options.signal);
               console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
               try {
-                const detail = await this.readCardDetail(tabId, entry.job, entry.index);
+                const detail = await this.readCardDetail(tabId, entry.job, entry.index, options.signal);
+                throwIfAborted(options.signal);
                 const detailedJob = normalizeBossJob({
                   ...entry.job,
                   description: detail.description,
@@ -583,6 +590,7 @@ class BossSiteAdapter {
 
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
             if (typeof options.onTargetComplete === "function") {
+              throwIfAborted(options.signal);
               await options.onTargetComplete({
                 targetKey,
                 city: city.city || "",
@@ -684,8 +692,9 @@ class BossSiteAdapter {
     return resultJobs;
   }
 
-  async refreshDetails(jobs, { limit = 8, tabId = null, onAttempt = null } = {}) {
+  async refreshDetails(jobs, { limit = 8, tabId = null, onAttempt = null, signal = null } = {}) {
     if (!this.browser) throw new Error("补读岗位详情需要浏览器连接。");
+    throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
     const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(8, Math.max(1, Number(limit) || 8)));
     this.pageNavigations = 0;
@@ -693,9 +702,11 @@ class BossSiteAdapter {
     this.resetPacing();
     const refreshed = [];
     for (const job of selected) {
+      throwIfAborted(signal);
       console.error(`[boss] 补读详情：${job.title}`);
       try {
         const detail = await this.readDetail(selectedTabId, job.url);
+        throwIfAborted(signal);
         if (!detail.description) throw new Error("岗位详情未加载完成");
         const normalized = normalizeBossJob({
           ...job,
@@ -728,8 +739,9 @@ class BossSiteAdapter {
     return refreshed.map((job) => ({ ...job, detailRequired: true, detailRead: true }));
   }
 
-  async probeActivities(jobs, { limit = 8, tabId = null, onAttempt = null } = {}) {
+  async probeActivities(jobs, { limit = 8, tabId = null, onAttempt = null, signal = null } = {}) {
     if (!this.browser) throw new Error("更新招聘方活跃状态需要浏览器连接。");
+    throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
     const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(8, Math.max(1, Number(limit) || 8)));
     this.pageNavigations = 0;
@@ -737,9 +749,11 @@ class BossSiteAdapter {
     this.resetPacing();
     const refreshed = [];
     for (const job of selected) {
+      throwIfAborted(signal);
       console.error(`[boss] 更新活跃状态：${job.title}`);
       try {
         const bossActiveText = await this.readActivity(selectedTabId, job.url);
+        throwIfAborted(signal);
         if (!bossActiveText) throw bossError("BOSS_ACTIVITY_UNAVAILABLE", "页面没有返回可识别的招聘方活跃状态");
         refreshed.push(normalizeBossJob({ ...job, bossActiveText }));
         if (typeof onAttempt === "function") await onAttempt({ job, result: "success" });
@@ -763,10 +777,11 @@ class BossSiteAdapter {
     return refreshed;
   }
 
-  async collectCards(tabId, maxCards) {
+  async collectCards(tabId, maxCards, signal = null) {
     const found = new Map();
     let readinessAttempts = 0;
     while (!found.size && readinessAttempts < 10) {
+      throwIfAborted(signal);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
@@ -784,6 +799,7 @@ class BossSiteAdapter {
     let confirmedEnd = false;
     const maxRounds = Math.max(20, Math.min(80, Math.ceil(Number(maxCards || 60) / 2) + 10));
     for (let round = 0; round < maxRounds && found.size < maxCards; round += 1) {
+      throwIfAborted(signal);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
@@ -792,7 +808,7 @@ class BossSiteAdapter {
       const scroll = await this.scrollList(tabId);
       scrollRounds += 1;
       if (scroll?.atBottom) {
-        const growth = await this.waitForCardGrowth(tabId, maxCards, found);
+        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal);
         if (growth.grew) {
           growthRounds += 1;
           quietWindows = 0;
@@ -819,12 +835,14 @@ class BossSiteAdapter {
     };
   }
 
-  async waitForCardGrowth(tabId, maxCards, found) {
+  async waitForCardGrowth(tabId, maxCards, found, signal = null) {
     const timeoutMs = randomBetween(2400, 3400, this.random);
     const pollMs = randomBetween(350, 650, this.random);
     const maxPolls = Math.max(4, Math.ceil(timeoutMs / pollMs));
     for (let poll = 0; poll < maxPolls; poll += 1) {
+      throwIfAborted(signal);
       await this.sleep(pollMs);
+      throwIfAborted(signal);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
@@ -842,7 +860,8 @@ class BossSiteAdapter {
     return result || { moved: false, atBottom: false };
   }
 
-  async readCardDetail(tabId, job, fallbackIndex = 0) {
+  async readCardDetail(tabId, job, fallbackIndex = 0, signal = null) {
+    throwIfAborted(signal);
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
     const expectedJobId = (normalizeBossUrl(job?.url || "").match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
@@ -851,6 +870,7 @@ class BossSiteAdapter {
     await this.waitWithPacing("card");
     let scrolled = false;
     for (let attempt = 0; attempt < 8; attempt += 1) {
+      throwIfAborted(signal);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
@@ -1330,6 +1350,14 @@ function isFatalBrowserError(error) {
     "SCAN_CHECKPOINT_FAILED",
     "SCAN_LEASE_LOST"
   ]).has(String(error?.code || ""));
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("扫描已中止。");
+  error.code = "SCAN_ABORTED";
+  throw error;
 }
 
 function normalizedComparableText(value) {

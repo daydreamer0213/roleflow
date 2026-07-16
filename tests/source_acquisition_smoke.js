@@ -86,6 +86,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await scanTargetPlanSmoke();
   await scanTargetResumeFilterSmoke();
   await fatalBrowserStopsRemainingTargetsSmoke();
+  await abortedScanStopsBeforeBrowserUseSmoke();
   await partialTargetCheckpointSmoke();
   await pageBudgetSmoke();
   await riskControlSmoke();
@@ -493,6 +494,26 @@ async function fatalBrowserStopsRemainingTargetsSmoke() {
   assert.strictEqual(jobs.length, 1);
   assert.strictEqual(summaries[0].status, "partial");
   assert.strictEqual(summaries[0].fatalErrorCode, "BROWSER_DISCONNECTED");
+}
+
+async function abortedScanStopsBeforeBrowserUseSmoke() {
+  let browserCalls = 0;
+  const browser = {
+    async activeTabId() {
+      browserCalls += 1;
+      return activeBoss.id;
+    }
+  };
+  const controller = new AbortController();
+  const reason = Object.assign(new Error("lease lost"), { code: "SCAN_LEASE_LOST" });
+  controller.abort(reason);
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  await assert.rejects(() => adapter.scanBrowser({
+    keywords: ["first"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    signal: controller.signal
+  }), (error) => error === reason);
+  assert.strictEqual(browserCalls, 0);
 }
 
 async function partialTargetCheckpointSmoke() {

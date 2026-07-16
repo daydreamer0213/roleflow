@@ -60,6 +60,7 @@ const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
+const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -83,9 +84,9 @@ async function main() {
     return;
   }
 
-  if (command === "scan") return withSiteScanLease(db, args, command, () => scan(db, args));
-  if (command === "refresh-details") return withSiteScanLease(db, args, command, () => refreshDetails(db, args));
-  if (command === "refresh-activity") return withSiteScanLease(db, args, command, () => refreshDetails(db, { ...args, "activity-only": true }));
+  if (command === "scan") return executeWithSiteScanLease(db, args, command, (signal) => scan(db, args, { signal }));
+  if (command === "refresh-details") return executeWithSiteScanLease(db, args, command, (signal) => refreshDetails(db, args, { signal }));
+  if (command === "refresh-activity") return executeWithSiteScanLease(db, args, command, (signal) => refreshDetails(db, { ...args, "activity-only": true }, { signal }));
   if (command === "profile-create") return createProfile(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
@@ -100,32 +101,39 @@ async function main() {
   throw new Error(`未知命令：${command}`);
 }
 
-async function withSiteScanLease(db, args, command, run) {
-  if (command === "scan" && args.input) return run();
+async function executeWithSiteScanLease(db, args, command, run) {
+  if (command === "scan" && args.input) return run(null);
   const planRecord = args.plan ? getSearchPlan(db, args.plan) : null;
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
-  const owner = `${process.pid}:${crypto.randomUUID()}`;
-  const lease = acquireSiteScanLease(db, { site, owner, command, planId: Number(args.plan || 0) || null });
-  logger.info("site_scan_lease_acquired", { site, command, planId: lease.planId, owner, expiresAt: lease.expiresAt });
-  const heartbeat = setInterval(() => {
-    try {
+  const scanKind = resolveScanKind(command, args);
+  const runId = String(args["run-id"] || "").trim();
+  const owner = `${runId || crypto.randomUUID()}:${process.pid}`;
+  return runWithSiteScanLease({
+    acquire(input) {
+      const lease = acquireSiteScanLease(db, input);
+      logger.info("site_scan_lease_acquired", { site, scanKind, planId: lease.planId, owner, expiresAt: lease.expiresAt, runId: runId || null });
+      return lease;
+    },
+    renew(input) {
       const expiresAt = renewSiteScanLease(db, { site, owner });
-      logger.info("site_scan_lease_renewed", { site, command, owner, expiresAt });
-    } catch (error) {
-      logger.error("site_scan_lease_renew_failed", { site, command, owner, error: errorMeta(error) });
+      logger.info("site_scan_lease_renewed", { site, scanKind, owner, expiresAt, runId: runId || null });
+      return { site, owner, expiresAt };
+    },
+    release(input) {
+      const released = releaseSiteScanLease(db, input);
+      logger.info("site_scan_lease_released", { site, scanKind, owner, released, runId: runId || null });
+      return released;
     }
-  }, 60_000);
-  heartbeat.unref?.();
-  try {
-    return await run();
-  } finally {
-    clearInterval(heartbeat);
-    const released = releaseSiteScanLease(db, { site, owner });
-    logger.info("site_scan_lease_released", { site, command, owner, released });
-  }
+  }, {
+    site,
+    owner,
+    command: scanKind,
+    planId: Number(args.plan || 0) || null
+  }, run);
 }
 
-async function scan(db, args) {
+async function scan(db, args, { signal = null } = {}) {
+  assertScanActive(signal);
   if (!args.plan && !args.input) {
     throw new Error("真实浏览器扫描必须传入 --plan <Search Plan ID>，避免岗位和投递状态脱离候选人画像。");
   }
@@ -179,6 +187,7 @@ async function scan(db, args) {
   if (!args.input) {
     try {
       browserState = await adapter.preflight();
+      assertScanActive(signal);
       const priorRuntimeState = getSiteRuntimeState(db, site);
       if (priorRuntimeState?.status === "blocked") {
         clearSiteRuntimeState(db, site);
@@ -238,6 +247,7 @@ async function scan(db, args) {
 
   let checkpointed = 0;
   const onTargetComplete = args.input ? null : async (result) => {
+    assertScanActive(signal);
     recordScanTargetResult(db, {
       batchId,
       targetKey: result.targetKey,
@@ -287,8 +297,10 @@ async function scan(db, args) {
         details: { batchId, detailsRead: risk.detailsRead, candidates: risk.candidates }
       });
     },
-    onTargetComplete
+    onTargetComplete,
+    signal
   });
+  assertScanActive(signal);
 
   const detailCoverage = args.input ? null : {
     collected: rawJobs.length,
@@ -303,7 +315,11 @@ async function scan(db, args) {
   };
   if (detailCoverage) logger.info("boss_detail_coverage", { batchId, ...detailCoverage });
   logger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
-  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => analyzeScannedJob(raw, { configs, analyzeJob }));
+  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
+    assertScanActive(signal);
+    return analyzeScannedJob(raw, { configs, analyzeJob });
+  });
+  assertScanActive(signal);
   let saved = 0;
   for (const job of analyzedJobs) {
     upsertJob(db, job, batchId);
@@ -366,7 +382,8 @@ function checkpointScannedJob(raw, configs) {
   return { ...raw, ...scored, analysis, greeting: "" };
 }
 
-async function refreshDetails(db, args) {
+async function refreshDetails(db, args, { signal = null } = {}) {
+  assertScanActive(signal);
   const activityOnly = args["activity-only"] === true;
   const planId = Number(args.plan);
   if (!Number.isInteger(planId) || planId <= 0) throw new Error("需要 --plan <Search Plan ID>");
@@ -379,6 +396,7 @@ async function refreshDetails(db, args) {
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
   const adapter = createSiteAdapter("boss", { browser, logger });
   const browserState = await adapter.preflight();
+  assertScanActive(signal);
 
   let configs = loadConfigs(ROOT);
   configs.model = resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
@@ -420,7 +438,9 @@ async function refreshDetails(db, args) {
   const rawJobs = await refreshMethod(pending, {
     limit,
     tabId: browserState.tabId,
+    signal,
     onAttempt: async (attempt) => {
+      assertScanActive(signal);
       const nextRetryAt = attempt.result === "failed"
         ? refreshRetryAt(attempt.errorCode)
         : activityOnly ? new Date(Date.now() + PRODUCT_POLICY.operations.activityRefreshDays * 24 * 60 * 60 * 1000).toISOString() : "";
@@ -433,9 +453,14 @@ async function refreshDetails(db, args) {
       });
     }
   });
-  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => activityOnly
-    ? analyzeActivityProbe(raw, { configs, analyzeJob })
-    : analyzeScannedJob(raw, { configs, analyzeJob }));
+  assertScanActive(signal);
+  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
+    assertScanActive(signal);
+    return activityOnly
+      ? analyzeActivityProbe(raw, { configs, analyzeJob })
+      : analyzeScannedJob(raw, { configs, analyzeJob });
+  });
+  assertScanActive(signal);
   for (const job of analyzedJobs) upsertJob(db, job, batchId);
   const report = renderReports(listReportJobs(db, { batchId, limit: 500 }), path.join(ROOT, "reports"));
   logger.info(activityOnly ? "activity_probe_completed" : "detail_refresh_completed", { batchId, planId, requested: pending.length, refreshed: analyzedJobs.length });
@@ -473,6 +498,14 @@ function refreshRetryAt(errorCode) {
       ? 7 * 24 * 60 * 60 * 1000
       : 6 * 60 * 60 * 1000;
   return new Date(Date.now() + delayMs).toISOString();
+}
+
+function assertScanActive(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("扫描已中止。");
+  error.code = "SCAN_ABORTED";
+  throw error;
 }
 
 function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false } = {}) {
