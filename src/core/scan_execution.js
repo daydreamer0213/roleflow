@@ -17,7 +17,7 @@ function resolveScanKind(command, args = {}) {
   throw unknownScanKind(kind);
 }
 
-function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId } = {}) {
+function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId, resumeBatchId = null } = {}) {
   const normalizedKind = normalizeScanKind(kind);
   const normalizedDbPath = requiredText(dbPath, "dbPath");
   const normalizedRunId = requiredText(runId, "runId");
@@ -39,6 +39,15 @@ function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId } 
   ];
   if (normalizedKind === "daily" || normalizedKind === "broad") {
     cliArgs.push("--site", "boss", "--scan-mode", normalizedKind);
+    if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
+      const normalizedResumeBatchId = Number(resumeBatchId);
+      if (!Number.isInteger(normalizedResumeBatchId) || normalizedResumeBatchId <= 0) {
+        throw scanExecutionError("INVALID_SCAN_INPUT", "resumeBatchId must be a positive integer");
+      }
+      cliArgs.push("--resume-batch", String(normalizedResumeBatchId));
+    }
+  } else if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
+    throw scanExecutionError("INVALID_SCAN_INPUT", "resumeBatchId is only valid for daily or broad scans");
   }
   cliArgs.push("--browser", normalizedBrowser);
   if (normalizedBrowser === "portable") {

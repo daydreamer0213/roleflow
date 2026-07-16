@@ -67,6 +67,14 @@ function cliArgsMatrixSmoke() {
     () => buildScanCliArgs({ ...common, kind: "unknown", browserMode: "edge" }),
     (error) => error.code === "UNKNOWN_SCAN_KIND"
   );
+  assert.deepStrictEqual(
+    buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", resumeBatchId: 73 }),
+    [...expectedByKind.daily, "--resume-batch", "73", "--browser", "edge"]
+  );
+  assert.throws(
+    () => buildScanCliArgs({ ...common, kind: "refresh", browserMode: "edge", resumeBatchId: 73 }),
+    (error) => error.code === "INVALID_SCAN_INPUT"
+  );
 }
 
 async function normalReleaseSmoke() {
