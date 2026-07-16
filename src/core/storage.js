@@ -15,6 +15,13 @@ const SCAN_RUN_STATUSES = ["running", "completed", "partial", "failed", "interru
 const TERMINAL_SCAN_RUN_STATUSES = new Set(SCAN_RUN_STATUSES.slice(1));
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  backup_path TEXT
+);
+
 CREATE TABLE IF NOT EXISTS batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   site TEXT NOT NULL,
@@ -331,17 +338,97 @@ CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs(status, heartbeat_a
 CREATE INDEX IF NOT EXISTS idx_job_refresh_attempts_job ON job_refresh_attempts(job_id, created_at);
 `;
 
+const MIGRATIONS = [
+  {
+    version: 1,
+    name: "stable_scan_runtime",
+    apply(db) {
+      db.exec(SCHEMA);
+      migrateLegacySchema(db);
+    }
+  }
+];
+const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
+
 function openDb(dbPath) {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const memoryDb = dbPath === ":memory:";
+  const existed = memoryDb ? false : fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0;
+  if (!memoryDb) fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA busy_timeout = 5000");
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec(SCHEMA);
-  migrate(db);
-  return db;
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const fromVersion = Number(db.prepare("PRAGMA user_version").get().user_version || 0);
+    if (fromVersion > SCHEMA_VERSION) {
+      throw databaseMigrationError(
+        "DB_SCHEMA_NEWER_THAN_APP",
+        `数据库版本 ${fromVersion} 高于当前程序支持的 ${SCHEMA_VERSION}，请升级 RoleFlow。`
+      );
+    }
+    if (fromVersion < SCHEMA_VERSION) {
+      assertDatabaseHealthy(db, "迁移前");
+      const backupPath = existed && !memoryDb
+        ? createMigrationBackup(db, dbPath, fromVersion, SCHEMA_VERSION)
+        : "";
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        for (const migration of MIGRATIONS.filter((item) => item.version > fromVersion)) {
+          migration.apply(db);
+          db.prepare(`INSERT OR REPLACE INTO schema_migrations(version, name, applied_at, backup_path)
+            VALUES (?, ?, ?, ?)`).run(migration.version, migration.name, nowIso(), backupPath || null);
+          db.exec(`PRAGMA user_version = ${migration.version}`);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch {}
+        const wrapped = databaseMigrationError(
+          "DB_MIGRATION_FAILED",
+          `数据库从 v${fromVersion} 升级到 v${SCHEMA_VERSION} 失败：${error.message}`,
+          error
+        );
+        wrapped.backupPath = backupPath || null;
+        throw wrapped;
+      }
+      assertDatabaseHealthy(db, "迁移后");
+    }
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA foreign_keys = ON");
+    return db;
+  } catch (error) {
+    try { db.close(); } catch {}
+    throw error;
+  }
 }
 
-function migrate(db) {
+function createMigrationBackup(db, dbPath, fromVersion, toVersion) {
+  const backupDir = path.join(path.dirname(dbPath), "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const extension = path.extname(dbPath) || ".sqlite";
+  const baseName = path.basename(dbPath, path.extname(dbPath));
+  const backupPath = path.join(
+    backupDir,
+    `${baseName}-before-v${fromVersion}-to-v${toVersion}-${stamp}-${process.pid}${extension}`
+  );
+  db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+  return backupPath;
+}
+
+function assertDatabaseHealthy(db, phase) {
+  const row = db.prepare("PRAGMA quick_check").get();
+  const result = row?.quick_check || Object.values(row || {})[0];
+  if (result !== "ok") {
+    throw databaseMigrationError("DB_INTEGRITY_CHECK_FAILED", `${phase}数据库完整性检查失败：${result || "unknown"}`);
+  }
+}
+
+function databaseMigrationError(code, message, cause) {
+  const error = new Error(message);
+  error.code = code;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function migrateLegacySchema(db) {
   const columns = new Set(db.prepare("PRAGMA table_info(jobs)").all().map((column) => column.name));
   if (!columns.has("analysis_json")) {
     db.exec("ALTER TABLE jobs ADD COLUMN analysis_json TEXT NOT NULL DEFAULT '{}'");
@@ -358,7 +445,6 @@ function migrate(db) {
   if (!batchColumns.has("finished_at")) db.exec("ALTER TABLE batches ADD COLUMN finished_at TEXT");
   if (!batchColumns.has("stop_code")) db.exec("ALTER TABLE batches ADD COLUMN stop_code TEXT");
   if (!batchColumns.has("stop_message")) db.exec("ALTER TABLE batches ADD COLUMN stop_message TEXT");
-  if (migratedLegacyBatchStatus) db.exec("UPDATE batches SET status = 'completed', finished_at = started_at");
   const resumeColumns = new Set(db.prepare("PRAGMA table_info(resume_documents)").all().map((column) => column.name));
   if (!resumeColumns.has("diagnostics_json")) db.exec("ALTER TABLE resume_documents ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'");
   if (!resumeColumns.has("stored_file_path")) db.exec("ALTER TABLE resume_documents ADD COLUMN stored_file_path TEXT");
@@ -417,6 +503,28 @@ function migrate(db) {
   `);
   backfillObservationContentHashes(db);
   backfillWorkSchedules(db);
+  if (migratedLegacyBatchStatus) backfillLegacyBatchStatuses(db);
+}
+
+function backfillLegacyBatchStatuses(db) {
+  const batches = db.prepare("SELECT id, started_at FROM batches ORDER BY id").all();
+  const targetFinished = db.prepare("SELECT MAX(finished_at) AS value FROM scan_target_results WHERE batch_id = ?");
+  const observationFinished = db.prepare("SELECT MAX(seen_at) AS value FROM job_observations WHERE batch_id = ?");
+  const update = db.prepare(`UPDATE batches
+    SET status = ?, finished_at = ?, stop_code = ?, stop_message = ?
+    WHERE id = ?`);
+  for (const batch of batches) {
+    const summary = summarizeScanTargets(db, batch.id);
+    const status = summary.total ? summary.status : "completed";
+    const finishedAt = targetFinished.get(batch.id)?.value
+      || observationFinished.get(batch.id)?.value
+      || batch.started_at;
+    const stopCode = status === "completed" ? "LEGACY_STATUS_INFERRED" : "LEGACY_TARGET_STATUS_INFERRED";
+    const stopMessage = summary.total
+      ? `Migrated from ${summary.total} legacy target checkpoint(s).`
+      : "Migrated without legacy target checkpoints; completion was inferred from saved observations.";
+    update.run(status, finishedAt, stopCode, stopMessage, batch.id);
+  }
 }
 
 function backfillObservationContentHashes(db) {
@@ -2565,6 +2673,7 @@ function planRow(row) {
 
 module.exports = {
   SCHEMA,
+  SCHEMA_VERSION,
   OUTCOME_STATUSES,
   SCAN_RUN_STATUSES,
   openDb,
