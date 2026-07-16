@@ -2,6 +2,10 @@ const fs = require("fs");
 const { parseBossActivityText } = require("../../core/activity_status");
 const { mergeJobMetadata } = require("../../core/job_metadata");
 const { normalizePlatformFilterCatalog } = require("../../core/platform_filters");
+const { PRODUCT_POLICY } = require("../../core/product_policy");
+
+const SEARCH_PLAN_POLICY = PRODUCT_POLICY.searchPlan;
+const REFRESH_LIMIT = PRODUCT_POLICY.operations.refreshLimit;
 
 const DEFAULT_CITY_CODE = "101280100";
 const DETAIL_PACING = Object.freeze({
@@ -74,7 +78,7 @@ const PAGE_HELPERS = String.raw`
     const salaryLineRe = /^(?:\d+\s*[-~—]\s*\d+\s*K(?:·\d+薪)?|\d+\s*K(?:·\d+薪)?|面议)$/;
     const expRe = /经验不限|在校|应届|无经验|\d+年|本科|大专|硕士|博士|学历不限/;
     const cityRe = /^(广州|深圳|佛山|东莞|珠海|北京|上海|杭州|成都|武汉|南京|苏州|远程)($|·)/;
-    return window.__bossCards().slice(0, maxCards || 60).map((card, index) => {
+    return window.__bossCards().slice(0, Number(maxCards) || 0).map((card, index) => {
       const q = (selector) => card.querySelector(selector);
       const lines = window.__bossLines(card);
       const flat = window.__bossDecode(card.innerText).replace(/\s+/g, " ");
@@ -223,7 +227,7 @@ class BossSiteAdapter {
     this.random = randomFn;
     this.pageNavigations = 0;
     this.listNavigations = 0;
-    this.pageBudget = 90;
+    this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.resetPacing();
   }
 
@@ -400,8 +404,11 @@ class BossSiteAdapter {
     throwIfAborted(options.signal);
     const tabId = options.tabId || await this.browser.activeTabId();
     throwIfAborted(options.signal);
-    const maxCards = Number(options.maxCards || 60);
-    const maxDetailTotal = Math.min(1000, Math.max(0, Number(options.maxDetailTotal ?? 300)));
+    const maxCards = normalizeCardLimit(options.maxCards);
+    const maxDetailTotal = Math.min(
+      SEARCH_PLAN_POLICY.scanBounds.maxDetailTotal[1],
+      Math.max(0, Number(options.maxDetailTotal ?? SEARCH_PLAN_POLICY.broadScanDefaults.maxDetailTotal))
+    );
     const allTargets = buildBossScanTargets({ ...options, maxCards });
     const hasTargetFilter = Array.isArray(options.targetKeys);
     const requestedTargetKeys = new Set(options.targetKeys || []);
@@ -693,11 +700,11 @@ class BossSiteAdapter {
     return resultJobs;
   }
 
-  async refreshDetails(jobs, { limit = 8, tabId = null, onAttempt = null, signal = null } = {}) {
+  async refreshDetails(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null } = {}) {
     if (!this.browser) throw new Error("补读岗位详情需要浏览器连接。");
     throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
-    const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(8, Math.max(1, Number(limit) || 8)));
+    const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(REFRESH_LIMIT, Math.max(1, Number(limit) || REFRESH_LIMIT)));
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.resetPacing();
@@ -705,11 +712,12 @@ class BossSiteAdapter {
     for (const job of selected) {
       throwIfAborted(signal);
       console.error(`[boss] 补读详情：${job.title}`);
+      let normalized;
       try {
         const detail = await this.readDetail(selectedTabId, job.url);
         throwIfAborted(signal);
         if (!detail.description) throw new Error("岗位详情未加载完成");
-        const normalized = normalizeBossJob({
+        normalized = normalizeBossJob({
           ...job,
           description: detail.description,
           salary: detail.salary || job.salary || "",
@@ -718,9 +726,6 @@ class BossSiteAdapter {
           bossActiveText: detail.bossActiveText || job.bossActiveText || "",
           detailRead: true
         });
-        refreshed.push(normalized);
-        if (typeof onAttempt === "function") await onAttempt({ job, result: "success" });
-        await this.waitWithPacing("refresh");
       } catch (error) {
         this.logger?.warn("boss_detail_refresh_failed", {
           jobId: job.sourceId || job.url || "",
@@ -735,16 +740,20 @@ class BossSiteAdapter {
         });
         if (isFatalBrowserError(error)) throw error;
         await this.waitWithPacing("refresh");
+        continue;
       }
+      refreshed.push(normalized);
+      if (typeof onAttempt === "function") await onAttempt({ job, refreshedJob: normalized, result: "success" });
+      await this.waitWithPacing("refresh");
     }
     return refreshed.map((job) => ({ ...job, detailRequired: true, detailRead: true }));
   }
 
-  async probeActivities(jobs, { limit = 8, tabId = null, onAttempt = null, signal = null } = {}) {
+  async probeActivities(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null } = {}) {
     if (!this.browser) throw new Error("更新招聘方活跃状态需要浏览器连接。");
     throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
-    const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(8, Math.max(1, Number(limit) || 8)));
+    const selected = (jobs || []).filter((job) => job?.url).slice(0, Math.min(REFRESH_LIMIT, Math.max(1, Number(limit) || REFRESH_LIMIT)));
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.resetPacing();
@@ -752,13 +761,12 @@ class BossSiteAdapter {
     for (const job of selected) {
       throwIfAborted(signal);
       console.error(`[boss] 更新活跃状态：${job.title}`);
+      let normalized;
       try {
         const bossActiveText = await this.readActivity(selectedTabId, job.url);
         throwIfAborted(signal);
         if (!bossActiveText) throw bossError("BOSS_ACTIVITY_UNAVAILABLE", "页面没有返回可识别的招聘方活跃状态");
-        refreshed.push(normalizeBossJob({ ...job, bossActiveText }));
-        if (typeof onAttempt === "function") await onAttempt({ job, result: "success" });
-        await this.waitWithPacing("refresh");
+        normalized = normalizeBossJob({ ...job, bossActiveText });
       } catch (error) {
         this.logger?.warn("boss_activity_probe_failed", {
           jobId: job.sourceId || job.url || "",
@@ -773,7 +781,11 @@ class BossSiteAdapter {
         });
         if (isFatalBrowserError(error)) throw error;
         await this.waitWithPacing("refresh");
+        continue;
       }
+      refreshed.push(normalized);
+      if (typeof onAttempt === "function") await onAttempt({ job, refreshedJob: normalized, result: "success" });
+      await this.waitWithPacing("refresh");
     }
     return refreshed;
   }
@@ -798,7 +810,7 @@ class BossSiteAdapter {
     let growthRounds = 0;
     let scrollRounds = 0;
     let confirmedEnd = false;
-    const maxRounds = Math.max(20, Math.min(80, Math.ceil(Number(maxCards || 60) / 2) + 10));
+    const maxRounds = Math.max(20, normalizeCardLimit(maxCards));
     for (let round = 0; round < maxRounds && found.size < maxCards; round += 1) {
       throwIfAborted(signal);
       await this.assertSearchPage(tabId);
@@ -1136,7 +1148,7 @@ function buildBossScanTargets(options = {}) {
     .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority) || left.order - right.order);
   const cityScopes = normalizeCityScopes(options);
   const nativeFilterLanes = normalizeNativeFilterLanes(options.nativeFilters);
-  const maxCards = Number(options.maxCards || 60);
+  const maxCards = normalizeCardLimit(options.maxCards);
   const targets = [];
   for (const [cityOrder, city] of cityScopes.entries()) {
     for (const item of keywordPlan) {
@@ -1185,14 +1197,22 @@ function priorityRank(priority) {
 }
 
 function weightedCardLimit(priority, baseLimit) {
-  const base = Math.max(10, Number(baseLimit) || 60);
-  const ratio = { A: 1, B: 0.65, C: 0.4 }[normalizePriority(priority)];
-  return Math.max(10, Math.ceil(base * ratio));
+  const ratio = SEARCH_PLAN_POLICY.priorityCardRatios[normalizePriority(priority)];
+  return Math.max(SEARCH_PLAN_POLICY.minCardsPerTarget, Math.ceil(normalizeCardLimit(baseLimit) * ratio));
+}
+
+function normalizeCardLimit(value) {
+  const [min, max] = SEARCH_PLAN_POLICY.scanBounds.maxCards;
+  const limit = Number(value);
+  return Math.max(min, Math.min(max, Number.isFinite(limit) ? limit : SEARCH_PLAN_POLICY.broadScanDefaults.maxCards));
 }
 
 function normalizePageBudget(value) {
+  const [min, max] = SEARCH_PLAN_POLICY.scanBounds.browserPageBudget;
   const budget = Number(value);
-  return Number.isFinite(budget) ? Math.max(20, Math.min(300, Math.floor(budget))) : 90;
+  return Number.isFinite(budget)
+    ? Math.max(min, Math.min(max, Math.floor(budget)))
+    : SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
 }
 
 function randomBetween(min, max, randomFn = Math.random) {

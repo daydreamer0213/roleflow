@@ -57,7 +57,7 @@ async function main() {
 
     const changedSnapshot = runScan(dbPath, planId, "scan-e2e-changed-snapshot", "complete", {
       resumeBatchId: batchId,
-      maxCards: 3
+      maxCards: 11
     });
     assertExit(changedSnapshot, 1, "changed-snapshot resume rejection");
 
@@ -97,7 +97,7 @@ async function main() {
   }
 }
 
-function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards = 2 } = {}) {
+function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards = 10 } = {}) {
   const args = [
     "--require", __filename,
     path.join(root, "src", "cli.js"),
@@ -109,7 +109,7 @@ function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards =
     "--browser", "edge",
     "--max-cards", String(maxCards),
     "--max-detail-total", "4",
-    "--browser-page-budget", "2",
+    "--browser-page-budget", "20",
     "--refresh-platform-filters"
   ];
   if (resumeBatchId) args.push("--resume-batch", String(resumeBatchId));

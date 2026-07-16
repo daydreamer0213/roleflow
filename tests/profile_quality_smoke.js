@@ -74,11 +74,23 @@ assert.strictEqual(dailyPolicy.browserPageBudget, 40);
 assert.strictEqual(dailyPolicy.policyVersion, PRODUCT_POLICY_VERSION);
 assert.match(dailyPolicy.policyHash, /^[a-f0-9]{64}$/);
 assert.strictEqual(resolveScanPolicy(modePlan, "daily").policyHash, dailyPolicy.policyHash);
+const lowBudgetPlan = {
+  ...modePlan,
+  scan: { maxCards: 10, maxDetailTotal: 1, browserPageBudget: 20 }
+};
+const dailyWithLowBroadBudget = resolveScanPolicy(lowBudgetPlan, "daily");
+assert.strictEqual(dailyWithLowBroadBudget.maxCards, 50);
+assert.strictEqual(dailyWithLowBroadBudget.maxDetailTotal, 220);
+assert.strictEqual(dailyWithLowBroadBudget.browserPageBudget, 40);
 const broadPolicy = resolveScanPolicy(modePlan, "broad");
 assert.strictEqual(broadPolicy.keywordPlan.length, 4);
 assert.strictEqual(broadPolicy.maxCards, 90);
 assert.strictEqual(broadPolicy.maxDetailTotal, 300);
 assert.notStrictEqual(broadPolicy.policyHash, dailyPolicy.policyHash);
+const lowBroadPolicy = resolveScanPolicy(lowBudgetPlan, "broad");
+assert.strictEqual(lowBroadPolicy.maxCards, 10);
+assert.strictEqual(lowBroadPolicy.maxDetailTotal, 1);
+assert.strictEqual(lowBroadPolicy.browserPageBudget, 20);
 const filteredLanes = applyScanPolicyToFilters({
   params: { salary: ["405"] },
   labels: { salary: ["10-20K"] },

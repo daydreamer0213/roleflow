@@ -64,12 +64,13 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
+const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
 function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
   const scanRuns = new Map();
-  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: 120_000 });
+  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
   if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const offlineMockState = {
     source: "runtime",
@@ -506,6 +507,8 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
     if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
+    if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
     const latestRun = getLatestScanRun(db, { planId: plan.id, site: "boss" });
     if (latestRun?.status === "running" || [...scanRuns.values()].some((run) => !run.exited)) {
       throw new Error("BOSS 已有扫描任务正在启动或运行，请等待当前任务结束。");
@@ -537,6 +540,8 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
 
 function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", resumeBatchId = null, logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
+  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
+  if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const runId = randomUUID();
   const commandArgs = buildScanCliArgs({ kind: scanKind, dbPath, planId, browserMode, cdpPort, runId, resumeBatchId });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
@@ -603,6 +608,7 @@ function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMod
 
 function scanStatus(scanRuns, planId, db = null) {
   const normalizedPlanId = Number(planId || 0);
+  if (db) interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
   const local = scanRuns.get(normalizedPlanId);
   const persisted = db && normalizedPlanId ? getLatestScanRun(db, { planId: normalizedPlanId, site: "boss" }) : null;
   if (persisted) {
@@ -644,13 +650,21 @@ async function handlePost(req, res, handler, { logger, requestId, action }) {
 
 function getDashboardData(db, searchParams = new URLSearchParams()) {
   const filters = parseFilters(searchParams);
-  const jobs = filterJobs(listReportJobs(db, batchOptions(filters)), filters);
+  const options = dashboardBatchOptions(db, filters);
+  const jobs = filterJobs(listReportJobs(db, options), filters);
   return {
     filters,
     jobs,
-    latestBatchId: getLatestBatchId(db, batchOptions(filters)),
-    summary: summarizeJobs(jobs, buildBatchSummary(db, batchOptions(filters)))
+    latestBatchId: options.batchId || getLatestBatchId(db, options),
+    summary: summarizeJobs(jobs, buildBatchSummary(db, options))
   };
+}
+
+function dashboardBatchOptions(db, filters) {
+  const options = batchOptions(filters);
+  if (filters.batch !== "latest" || filters.batchId) return options;
+  const latestMainBatchId = getLatestMainScanBatchId(db, options);
+  return latestMainBatchId ? { ...options, batch: undefined, batchId: latestMainBatchId } : options;
 }
 
 function batchOptions(filters) {
@@ -1253,6 +1267,9 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const plan = normalizeSearchPlan(planRecord.plan || {}, profile.profile);
   const dailyScan = resolveScanPolicy(plan, "daily");
   const broadScan = resolveScanPolicy(plan, "broad");
+  const scanDefaults = PRODUCT_POLICY.searchPlan.broadScanDefaults;
+  const scanBounds = PRODUCT_POLICY.searchPlan.scanBounds;
+  const dailyBCardLimit = boss.weightedCardLimit("B", dailyScan.maxCards);
   const selectedExperience = plan.experience;
   const candidate = profile.profile.candidate || {};
   const run = scanStatus(scanRuns, planRecord.id, db);
@@ -1306,14 +1323,14 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label>薪资策略<select name="salaryMode"><option value="wide"${plan.salaryMode !== "strict" ? " selected" : ""}>宽松排序，范围外保留</option><option value="strict"${plan.salaryMode === "strict" ? " selected" : ""}>严格范围，范围外不推荐</option></select></label>
     <label>工作节奏<select name="workSchedulePreference"><option value="prefer_double_weekend"${plan.workSchedulePreference !== "no_preference" ? " selected" : ""}>优先双休，其他仍保留</option><option value="no_preference"${plan.workSchedulePreference === "no_preference" ? " selected" : ""}>不作为排序依据</option></select></label>
     <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
-    <p class="plan-note">岗位质量会自动优先保留招聘方近 3 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
+    <p class="plan-note">岗位质量会自动优先保留招聘方近 ${escapeHtml(plan.bossActiveDays)} 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
     <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
-    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="10" max="200" name="maxCards" value="${escapeAttr(plan.scan.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="1" max="1000" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="20" max="300" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
+    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="${scanBounds.maxCards[0]}" max="${scanBounds.maxCards[1]}" name="maxCards" value="${escapeAttr(plan.scan.maxCards ?? scanDefaults.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="${scanBounds.maxDetailTotal[0]}" max="${scanBounds.maxDetailTotal[1]}" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal ?? scanDefaults.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="${scanBounds.browserPageBudget[0]}" max="${scanBounds.browserPageBudget[1]}" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget ?? scanDefaults.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
     <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
   </form>
   <section class="panel scan-panel">
-    <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run))}</div>
-    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${Math.max(10, Math.ceil(dailyScan.maxCards * 0.65))} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
+    <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
+    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
     <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section>
@@ -1419,14 +1436,14 @@ function keywordLines(keywords = []) {
   return keywords.map((item) => `${item.word || item} | ${item.priority || "B"} | ${item.reason || "用户确认的搜索关键词"}`).join("\n");
 }
 
-function scanLabel(run) {
+function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossActiveDays) {
   if (run.state === "running" && run.kind === "daily") return "正在执行日常扫描";
   if (run.state === "completed" && run.kind === "daily") return "日常扫描已完成";
   if (run.state === "running" && run.kind === "broad") return "正在执行广泛扫描";
   if (run.state === "completed" && run.kind === "broad") return "广泛扫描已完成";
   if (run.state === "running" && run.kind === "refresh") return "正在补读待刷新岗位";
   if (run.state === "completed" && run.kind === "refresh") return "待刷新岗位补读完成";
-  if (run.state === "running" && run.kind === "activity") return "正在更新超过 3 天有效期的招聘方活跃状态";
+  if (run.state === "running" && run.kind === "activity") return `正在更新超过 ${bossActiveDays} 天有效期的招聘方活跃状态`;
   if (run.state === "completed" && run.kind === "activity") return "招聘方活跃状态更新完成";
   return {
     idle: "尚未运行",
@@ -1731,4 +1748,4 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-module.exports = { createDashboardServer, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage };
+module.exports = { createDashboardServer, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };

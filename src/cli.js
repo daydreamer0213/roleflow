@@ -20,10 +20,12 @@ const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary }
 const {
   openDb,
   createBatch,
+  createAndBindScanBatch,
   getBatch,
   beginScanRun,
   heartbeatScanRun,
   finishScanRun,
+  interruptOrphanedScanRuns,
   checkpointScanTarget,
   listLatestScanTargetResults,
   getSiteRuntimeState,
@@ -115,14 +117,27 @@ async function main() {
 }
 
 async function executeWithSiteScanLease(db, args, command, run) {
-  if (command === "scan" && args.input) return run(null, null);
   const planRecord = args.plan ? getSearchPlan(db, args.plan) : null;
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const scanKind = resolveScanKind(command, args);
   const runId = String(args["run-id"] || crypto.randomUUID()).trim();
-  const owner = `${runId}:${process.pid}`;
   const planId = Number(args.plan || 0) || null;
   const runLogger = logger.child({ runId, planId, scanKind, site });
+  interruptOrphanedScanRuns(db, { site });
+  if (command === "scan" && args.input) {
+    const scanRun = beginScanRun(db, {
+      runId,
+      site,
+      command: scanKind,
+      planId,
+      processId: process.pid
+    });
+    const execution = { runId, leaseOwner: "", site, scanKind, planId, logger: runLogger };
+    runLogger.info("scan_run_started", { status: scanRun.status, localInput: true });
+    return executeTrackedScanRun(db, { runId, leaseOwner: "", runLogger, run, signal: null, execution });
+  }
+
+  const owner = `${runId}:${process.pid}`;
   let runClaimed = false;
   return runWithSiteScanLease({
     acquire(input) {
@@ -158,35 +173,53 @@ async function executeWithSiteScanLease(db, args, command, run) {
     runClaimed = true;
     const execution = { runId, leaseOwner: owner, site, scanKind, planId, logger: runLogger };
     runLogger.info("scan_run_started", { status: scanRun.status });
+    return executeTrackedScanRun(db, { runId, leaseOwner: owner, runLogger, run, signal, execution });
+  });
+}
+
+async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, signal, execution }) {
+  const localHeartbeat = leaseOwner ? null : setInterval(() => {
     try {
-      const result = await run(signal, execution);
-      const status = normalizeScanTerminalStatus(result?.status || "completed");
+      heartbeatScanRun(db, {
+        runId,
+        processId: process.pid,
+        allowUnleased: true
+      });
+    } catch (error) {
+      runLogger.warn("scan_run_heartbeat_failed", { error: errorMeta(error) });
+    }
+  }, PRODUCT_POLICY.operations.scanHeartbeatMs);
+  localHeartbeat?.unref?.();
+  try {
+    const result = await run(signal, execution);
+    const status = normalizeScanTerminalStatus(result?.status || "completed");
+    const finished = finishScanRun(db, {
+      runId,
+      leaseOwner: leaseOwner || undefined,
+      status,
+      stopCode: result?.stopCode,
+      stopMessage: result?.stopMessage
+    });
+    runLogger.info("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+    return result;
+  } catch (error) {
+    const status = scanFailureStatus(error);
+    try {
       const finished = finishScanRun(db, {
         runId,
-        leaseOwner: owner,
+        leaseOwner: leaseOwner || undefined,
         status,
-        stopCode: result?.stopCode,
-        stopMessage: result?.stopMessage
+        stopCode: error?.code || "SCAN_FAILED",
+        stopMessage: error?.message || String(error)
       });
-      runLogger.info("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
-      return result;
-    } catch (error) {
-      const status = scanFailureStatus(error);
-      try {
-        const finished = finishScanRun(db, {
-          runId,
-          leaseOwner: owner,
-          status,
-          stopCode: error?.code || "SCAN_FAILED",
-          stopMessage: error?.message || String(error)
-        });
-        runLogger.warn("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
-      } catch (finishError) {
-        runLogger.error("scan_run_finish_failed", { status, error: errorMeta(finishError) });
-      }
-      throw error;
+      runLogger.warn("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+    } catch (finishError) {
+      runLogger.error("scan_run_finish_failed", { status, error: errorMeta(finishError) });
     }
-  });
+    throw error;
+  } finally {
+    if (localHeartbeat) clearInterval(localHeartbeat);
+  }
 }
 
 async function scan(db, args, { signal = null, execution = null } = {}) {
@@ -270,10 +303,11 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       scanPolicy
     );
   if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
+  assertScanLimitOverridesAllowed(args, scanMode);
   const scanLimits = {
-    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
-    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
-    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget),
+    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards, "maxCards"),
+    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal, "maxDetailTotal"),
+    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget, "browserPageBudget"),
     detailLimits: scanPolicy.detailLimits
   };
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
@@ -310,7 +344,9 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       ...resume.progress
     });
   } else {
-    batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
+    const note = args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`;
+    const context = {
+      status: "running",
       profileId: planRecord?.profileId,
       searchPlanId: planRecord?.id,
       filterSnapshot: {
@@ -319,7 +355,18 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
         runtimePolicyHash: scanPolicy.policyHash,
         ...(executionSnapshot ? { execution: executionSnapshot } : {})
       }
-    });
+    };
+    batchId = execution
+      ? createAndBindScanBatch(db, {
+        runId: execution.runId,
+        leaseOwner: execution.leaseOwner,
+        processId: process.pid,
+        site,
+        keyword: keywords.join(", "),
+        note,
+        ...context
+      })
+      : createBatch(db, site, keywords.join(", "), note, context);
   }
   if (execution) {
     beginScanRun(db, {
@@ -364,6 +411,9 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       });
       checkpointed += jobs.length;
     } catch (error) {
+      if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
+        throw error;
+      }
       const checkpointError = new Error(`扫描目标 ${result.targetKey} 保存失败：${error.message}`);
       checkpointError.code = "SCAN_CHECKPOINT_FAILED";
       checkpointError.cause = error;
@@ -452,13 +502,14 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const targetSummary = executionSnapshot
     ? summarizeResumePlan(executionSnapshot, listLatestScanTargetResults(db, batchId))
     : null;
-  const finalStatus = targetSummary
-    ? (targetSummary.pending === 0 ? "completed" : "partial")
-    : scanSummary?.status || "completed";
+  const finalStatus = resolveScanTerminalStatus({ targetSummary, scanSummary });
+  const defaultStopCode = finalStatus === "partial"
+    ? "SCAN_TARGETS_PARTIAL"
+    : finalStatus === "failed" ? "SCAN_TARGETS_FAILED" : "";
   return {
     status: finalStatus,
     batchId,
-    stopCode: scanSummary?.fatalErrorCode || (finalStatus === "partial" ? "SCAN_TARGETS_PARTIAL" : ""),
+    stopCode: scanSummary?.fatalErrorCode || defaultStopCode,
     stopMessage: scanSummary?.fatalErrorMessage || ""
   };
 }
@@ -545,7 +596,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
         && job.decisionBucket === "refresh"
         && ["pending", "review", "later"].includes(status);
       if (!common) return false;
-      if (activityOnly) return isActivityProbeDue(job);
+      if (activityOnly) return isActivityProbeDue(job, { maxActiveDays: planRecord.plan.bossActiveDays });
       return tags.has("detail_unverified") || tags.has("activity_unverified");
     })
     .sort((a, b) => Number((a.qualityTags || []).includes("detail_unverified")) - Number((b.qualityTags || []).includes("detail_unverified")))
@@ -556,11 +607,24 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   }
 
   const refreshKind = activityOnly ? "activity-probe" : "detail-refresh";
-  const batchId = createBatch(db, "boss", refreshKind, `browser:${args.browser || "none"}:${refreshKind}:plan:${planId}`, {
+  const note = `browser:${args.browser || "none"}:${refreshKind}:plan:${planId}`;
+  const batchContext = {
+    status: "running",
     profileId: planRecord.profileId,
     searchPlanId: planId,
     filterSnapshot: { mode: refreshKind, requested: pending.length }
-  });
+  };
+  const batchId = execution
+    ? createAndBindScanBatch(db, {
+      runId: execution.runId,
+      leaseOwner: execution.leaseOwner,
+      processId: process.pid,
+      site: "boss",
+      keyword: refreshKind,
+      note,
+      ...batchContext
+    })
+    : createBatch(db, "boss", refreshKind, note, batchContext);
   if (execution) {
     beginScanRun(db, {
       runId: execution.runId,
@@ -571,22 +635,15 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   }
   scanLogger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
   const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
+  const attemptCounts = { success: 0, failed: 0 };
   const rawJobs = await refreshMethod(pending, {
     limit,
     tabId: browserState.tabId,
     signal,
     onAttempt: async (attempt) => {
       assertScanActive(signal);
-      const nextRetryAt = attempt.result === "failed"
-        ? refreshRetryAt(attempt.errorCode)
-        : activityOnly ? new Date(Date.now() + PRODUCT_POLICY.operations.activityRefreshDays * 24 * 60 * 60 * 1000).toISOString() : "";
-      recordJobRefreshAttempt(db, {
-        jobId: attempt.job.id,
-        result: attempt.result,
-        errorCode: attempt.errorCode,
-        errorMessage: attempt.errorMessage,
-        nextRetryAt
-      });
+      persistRefreshAttempt(db, attempt, { batchId, activityOnly });
+      if (Object.hasOwn(attemptCounts, attempt.result)) attemptCounts[attempt.result] += 1;
     }
   });
   assertScanActive(signal);
@@ -603,7 +660,38 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   console.log(`${activityOnly ? "活跃状态更新" : "补读"}完成：请求 ${pending.length} 条，成功 ${analyzedJobs.length} 条`);
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
-  return { status: "completed", batchId };
+  const status = analyzedJobs.length === pending.length
+    ? "completed"
+    : analyzedJobs.length > 0 ? "partial" : "failed";
+  return {
+    status,
+    batchId,
+    stopCode: status === "completed" ? "" : status === "partial" ? "REFRESH_PARTIAL" : "REFRESH_FAILED",
+    stopMessage: status === "completed" ? "" : `${attemptCounts.failed} of ${pending.length} refresh attempt(s) failed.`
+  };
+}
+
+function persistRefreshAttempt(db, attempt, { batchId, activityOnly = false } = {}) {
+  const result = String(attempt?.result || "");
+  if (result === "success") {
+    if (!attempt.refreshedJob) {
+      throw codedError("REFRESH_RESULT_MISSING", "成功的补读结果缺少岗位数据，未记录成功状态。");
+    }
+    upsertJob(db, attempt.refreshedJob, batchId);
+  }
+  const nextRetryAt = result === "failed"
+    ? refreshRetryAt(attempt.errorCode)
+    : activityOnly
+      ? new Date(Date.now() + PRODUCT_POLICY.operations.activityRefreshDays * 24 * 60 * 60 * 1000).toISOString()
+      : "";
+  recordJobRefreshAttempt(db, {
+    jobId: attempt.job.id,
+    result,
+    errorCode: attempt.errorCode,
+    errorMessage: attempt.errorMessage,
+    nextRetryAt
+  });
+  return nextRetryAt;
 }
 
 async function analyzeActivityProbe(raw, { configs, analyzeJob }) {
@@ -650,6 +738,17 @@ function normalizeScanTerminalStatus(status) {
   return ["completed", "partial", "failed", "interrupted"].includes(normalized) ? normalized : "completed";
 }
 
+function resolveScanTerminalStatus({ targetSummary = null, scanSummary = null } = {}) {
+  const fatalErrorCode = String(scanSummary?.fatalErrorCode || "");
+  if (fatalErrorCode) return scanFailureStatus({ code: fatalErrorCode });
+  if (!targetSummary) return normalizeScanTerminalStatus(scanSummary?.status || "completed");
+  if (targetSummary.pending === 0) return "completed";
+  if (targetSummary.completed > 0 || targetSummary.partial > 0) return "partial";
+  if (targetSummary.failed > 0) return "failed";
+  const adapterStatus = normalizeScanTerminalStatus(scanSummary?.status || "partial");
+  return adapterStatus === "completed" ? "partial" : adapterStatus;
+}
+
 function scanFailureStatus(error) {
   const code = String(error?.code || "");
   return new Set([
@@ -665,11 +764,29 @@ function scanFailureStatus(error) {
   ]).has(code) ? "interrupted" : "failed";
 }
 
-function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false } = {}) {
+function assertScanLimitOverridesAllowed(args, scanMode) {
+  const keys = ["max-cards", "max-detail-total", "browser-page-budget"]
+    .filter((key) => Object.hasOwn(args, key));
+  if (scanMode === "daily" && keys.length) {
+    throw codedError(
+      "DAILY_SCAN_LIMIT_OVERRIDE",
+      `日常扫描预算由产品策略固定；${keys.map((key) => `--${key}`).join("、")} 仅可用于 broad 模式。`
+    );
+  }
+}
+
+function resolveScanLimit(args, key, plannedValue, fallback, boundKey) {
   const raw = args[key] ?? plannedValue;
   const value = Number(raw);
-  if (Number.isFinite(value) && (allowZero ? value >= 0 : value > 0)) return value;
-  return fallback;
+  const bounds = PRODUCT_POLICY.searchPlan.scanBounds[boundKey];
+  if (!Number.isInteger(value)) {
+    throw codedError("INVALID_SCAN_LIMIT", `--${key} 必须是整数。`);
+  }
+  if (bounds && (value < bounds[0] || value > bounds[1])) {
+    throw codedError("INVALID_SCAN_LIMIT", `--${key} 必须在 ${bounds[0]}-${bounds[1]} 之间。`);
+  }
+  if (value <= 0) throw codedError("INVALID_SCAN_LIMIT", `--${key} 必须是正整数。`);
+  return Number.isInteger(value) ? value : fallback;
 }
 
 function parseOptionalPositiveIntegerArg(args, key) {
@@ -1019,5 +1136,9 @@ module.exports = {
   executeWithSiteScanLease,
   resolveResumeBatch,
   normalizeScanTerminalStatus,
-  scanFailureStatus
+  resolveScanTerminalStatus,
+  scanFailureStatus,
+  resolveScanLimit,
+  persistRefreshAttempt,
+  assertScanLimitOverridesAllowed
 };

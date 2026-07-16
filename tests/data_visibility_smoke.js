@@ -12,7 +12,9 @@ const {
   isActivityProbeDue
 } = require("../src/core/storage");
 const { classifyExperienceFit } = require("../src/core/scoring");
-const { handleMarkApi, renderQueuePage } = require("../src/dashboard/server");
+const boss = require("../src/adapters/sites/boss");
+const { PRODUCT_POLICY } = require("../src/core/product_policy");
+const { handleMarkApi, getDashboardData, renderPlanPage, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
 const dbPath = path.join(root, ".runtime", "smoke", `data-visibility-${Date.now()}.sqlite`);
@@ -29,7 +31,7 @@ try {
       text: "visibility test",
       diagnostics: {}
     },
-    searchPlan: { name: "Visibility Plan", cities: ["广州"], keywords: [{ word: "RAG", priority: "A" }] }
+    searchPlan: { name: "Visibility Plan", cities: ["广州"], keywords: [{ word: "RAG", priority: "A" }], bossActiveDays: 3 }
   });
 
   uniqueJobsBeforeLimitSmoke({ profileId, planId });
@@ -37,6 +39,8 @@ try {
   activitySnapshotSmoke({ profileId, planId });
   experiencePrioritySmoke();
   queueUiSmoke({ profileId, planId });
+  dashboardLatestBatchSmoke({ profileId, planId });
+  planPolicyUiSmoke({ profileId, planId });
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   console.log("data_visibility_smoke ok");
 } finally {
@@ -125,7 +129,7 @@ function experiencePrioritySmoke() {
 }
 
 function queueUiSmoke({ profileId, planId }) {
-  const latestBatchId = createBatch(db, "boss", "latest-main", "queue-scope", { profileId, searchPlanId: planId });
+  const latestBatchId = createBatch(db, "boss", "latest-main", "queue-scope", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
   const newJobId = upsertJob(db, job("latest-new", { title: "本轮新增岗位" }), latestBatchId);
   upsertJob(db, job("old-0", { title: "本轮再次出现岗位" }), latestBatchId);
   const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "talk", scope: "all", page: "5" }) });
@@ -150,6 +154,48 @@ function queueUiSmoke({ profileId, planId }) {
   assert(/^\d{4}-\d{2}-\d{2}$/.test(mark.body.reviewAt));
   const stored = listReportJobs(db, { planId, limit: 1000 }).find((item) => item.id === newJobId);
   assert.strictEqual(isJobAwaitingAction(stored), false, "7 天后再看必须立即移出当前待处理队列");
+}
+
+function dashboardLatestBatchSmoke({ profileId, planId }) {
+  const latestMainBatchId = createBatch(db, "boss", "latest-visible-main", "dashboard-main", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
+  upsertJob(db, job("dashboard-main-visible", { title: "最新主扫描岗位" }), latestMainBatchId);
+  const maintenanceBatchId = createBatch(db, "boss", "activity-probe", "dashboard-maintenance", { profileId, searchPlanId: planId });
+  upsertJob(db, job("dashboard-maintenance-only", { title: "维护批次岗位" }), maintenanceBatchId);
+  createBatch(db, "boss", "empty-main", "dashboard-empty", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
+
+  const data = getDashboardData(db, new URLSearchParams({ planId: String(planId), batch: "latest", status: "all" }));
+  assert.strictEqual(data.latestBatchId, latestMainBatchId, "latest 必须指向最近非空主扫描批次");
+  assert.strictEqual(data.summary.batchId, latestMainBatchId, "摘要与岗位列表必须使用同一主扫描批次");
+  assert(data.jobs.some((item) => item.sourceId === "dashboard-main-visible"), "主扫描历史不得被维护或空批次遮蔽");
+  assert(!data.jobs.some((item) => item.sourceId === "dashboard-maintenance-only"), "latest 不得展示维护批次");
+}
+
+function planPolicyUiSmoke({ planId }) {
+  const originalWeightedCardLimit = boss.weightedCardLimit;
+  const calls = [];
+  let html;
+  boss.weightedCardLimit = (priority, limit) => {
+    calls.push([priority, limit]);
+    return 17;
+  };
+  try {
+    html = renderPlanPage({ db, searchParams: new URLSearchParams({ planId: String(planId) }), scanRuns: new Map() });
+  } finally {
+    boss.weightedCardLimit = originalWeightedCardLimit;
+  }
+
+  assert.deepStrictEqual(calls, [["B", PRODUCT_POLICY.dailyScan.maxCards]], "B 类预览必须调用 BOSS 加权卡片上限");
+  assert(html.includes("A/B 每词最多 " + PRODUCT_POLICY.dailyScan.maxCards + "/17 张卡片"));
+  assert(html.includes("招聘方近 3 天活跃"), "活跃有效期必须显示当前计划值");
+  const policy = PRODUCT_POLICY.searchPlan;
+  for (const [name, bounds, fallback] of [
+    ["maxCards", policy.scanBounds.maxCards, policy.broadScanDefaults.maxCards],
+    ["maxDetailTotal", policy.scanBounds.maxDetailTotal, policy.broadScanDefaults.maxDetailTotal],
+    ["browserPageBudget", policy.scanBounds.browserPageBudget, policy.broadScanDefaults.browserPageBudget]
+  ]) {
+    const attributes = "min=\"" + bounds[0] + "\" max=\"" + bounds[1] + "\" name=\"" + name + "\" value=\"" + fallback + "\"";
+    assert(html.includes(attributes), name + " 必须使用 PRODUCT_POLICY 边界和默认值");
+  }
 }
 
 function job(sourceId, overrides = {}) {

@@ -5,14 +5,20 @@ param(
   [int]$PlanId,
   [ValidateSet("daily", "broad")]
   [string]$ScanMode = "daily",
-  [int]$MaxCards = 0,
-  [int]$MaxDetailTotal = 0,
+  [ValidateRange(10, 200)]
+  [int]$MaxCards,
+  [ValidateRange(1, 1000)]
+  [int]$MaxDetailTotal,
   [ValidateSet("auto", "plugin", "bundled")]
   [string]$BridgeSource = "auto",
   [string]$EdgeControlRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ($ScanMode -eq "daily" -and ($PSBoundParameters.ContainsKey("MaxCards") -or $PSBoundParameters.ContainsKey("MaxDetailTotal"))) {
+  throw "Scan budget overrides are only supported in broad mode."
+}
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
 $StartArgs = @{
@@ -35,8 +41,8 @@ $ScanArgs = @(
   "--plan", [string]$PlanId,
   "--scan-mode", $ScanMode
 )
-if ($MaxCards -gt 0) { $ScanArgs += @("--max-cards", [string]$MaxCards) }
-if ($MaxDetailTotal -gt 0) { $ScanArgs += @("--max-detail-total", [string]$MaxDetailTotal) }
+if ($PSBoundParameters.ContainsKey("MaxCards")) { $ScanArgs += @("--max-cards", [string]$MaxCards) }
+if ($PSBoundParameters.ContainsKey("MaxDetailTotal")) { $ScanArgs += @("--max-detail-total", [string]$MaxDetailTotal) }
 
 & $RunScript @ScanArgs
 exit $LASTEXITCODE

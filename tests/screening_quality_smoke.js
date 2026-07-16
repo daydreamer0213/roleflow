@@ -16,10 +16,11 @@ const {
   normalizePageBudget,
   randomBetween
 } = require("../src/adapters/sites/boss");
+const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
 const { extractJobMetadata } = require("../src/core/job_metadata");
-const { normalizeSearchPlan } = require("../src/core/profile_schema");
+const { normalizeSearchPlan, normalizeBossActiveDays } = require("../src/core/profile_schema");
 const {
   openDb,
   createBatch,
@@ -87,11 +88,23 @@ assert.strictEqual(activeDays("2周内活跃"), 14);
 assert.strictEqual(parseBossActivityText("张先生 2月内活跃"), "2月内活跃");
 assert.strictEqual(activeDays("2月内活跃"), 60);
 assert.strictEqual(normalizeBossJob({ title: "AI应用", bossActiveText: "在线" }).bossActiveText, "今日活跃");
+assert.deepStrictEqual([...PRODUCT_POLICY.searchPlan.allowedBossActiveDays], [3]);
+assert.strictEqual(normalizeBossActiveDays(1), 3);
+assert.strictEqual(normalizeBossActiveDays(7), 3);
+assert.strictEqual(activeDays("\u0037\u65e5\u5185\u6d3b\u8dc3"), 7);
+assert.strictEqual(activeDays("\u8fd1\u534a\u5e74\u6d3b\u8dc3"), 180);
+assert.deepStrictEqual(PRODUCT_POLICY.searchPlan.priorityCardRatios, { A: 1, B: 0.65, C: 0.4 });
+assert.strictEqual(PRODUCT_POLICY.searchPlan.minCardsPerTarget, 10);
 assert.strictEqual(weightedCardLimit("A", 100), 100);
 assert.strictEqual(weightedCardLimit("B", 100), 65);
 assert.strictEqual(weightedCardLimit("C", 100), 40);
+assert.strictEqual(weightedCardLimit("A"), PRODUCT_POLICY.searchPlan.broadScanDefaults.maxCards);
+assert.strictEqual(weightedCardLimit("A", 500), PRODUCT_POLICY.searchPlan.scanBounds.maxCards[1]);
+assert.strictEqual(weightedCardLimit("C", 0), PRODUCT_POLICY.searchPlan.minCardsPerTarget);
 assert.strictEqual(normalizePageBudget(10), 20);
 assert.strictEqual(normalizePageBudget(500), 300);
+assert.strictEqual(normalizePageBudget(), PRODUCT_POLICY.searchPlan.broadScanDefaults.browserPageBudget);
+assert.strictEqual(new BossSiteAdapter().pageBudget, PRODUCT_POLICY.searchPlan.broadScanDefaults.browserPageBudget);
 assert.strictEqual(randomBetween(100, 200, () => 0), 100);
 assert.strictEqual(randomBetween(100, 200, () => 1), 200);
 const bossCatalog = parseBossFilterCatalog([
@@ -449,17 +462,24 @@ async function browserAllocationSmoke() {
     cardText: "Python RAG"
   }];
   cityAdapter.readCardDetail = async (_tabId, job) => ({ description: `职位描述 Python RAG ${job.url}`, bossActiveText: "今日活跃" });
+  let cityDetailPlan;
+  cityAdapter.logger = {
+    info(event, fields) { if (event === "boss_detail_plan") cityDetailPlan = fields; }
+  };
   const cityJobs = await cityAdapter.scanBrowser({
     keywords: ["RAG"],
     keywordPlan: [{ word: "RAG", priority: "A" }],
     cityScopes: [{ city: "广州", cityCode: "101280100" }, { city: "深圳", cityCode: "101280600" }],
     maxCards: 20,
-    maxDetailTotal: 10,
+    maxDetailTotal: 5000,
+    browserPageBudget: 5000,
     scoreQuick: () => 0
   });
   assert.deepStrictEqual(visitedCities, ["101280100", "101280600"]);
   assert.strictEqual(cityJobs.length, 2);
   assert(cityJobs.every((job) => job.detailRead));
+  assert.strictEqual(cityDetailPlan.maxDetailTotal, PRODUCT_POLICY.searchPlan.scanBounds.maxDetailTotal[1]);
+  assert.strictEqual(cityDetailPlan.listPageBudget, PRODUCT_POLICY.searchPlan.scanBounds.browserPageBudget[1]);
 
   let blockedNavigationCount = 0;
   const pacingAdapter = new BossSiteAdapter({

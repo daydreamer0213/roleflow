@@ -8,6 +8,7 @@ const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
 const { effectiveHardBlockers } = require("./model_contract");
+const { PRODUCT_POLICY } = require("./product_policy");
 
 const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
@@ -571,10 +572,89 @@ function nowIso() {
 }
 
 function createBatch(db, site, keyword, note = "", context = {}) {
-  const started = nowIso();
-  const stmt = db.prepare("INSERT INTO batches(site, keyword, started_at, note, profile_id, search_plan_id, filter_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  const result = stmt.run(site, keyword || null, started, note, context.profileId || null, context.searchPlanId || null, JSON.stringify(context.filterSnapshot || {}));
+  return insertBatch(db, site, keyword, note, context);
+}
+
+function createAndBindScanBatch(db, input = {}) {
+  const runId = requiredRunId(input);
+  const owner = normalizedLeaseOwner(input);
+  const site = String(input.site || "").trim().toLowerCase();
+  const planId = optionalPositiveInteger(input.searchPlanId, "searchPlanId");
+  const processId = optionalPositiveInteger(input.processId ?? input.pid, "processId");
+  if (!site) throw scanRunError("SCAN_RUN_SITE_REQUIRED", "scan run site is required");
+  const startedAt = nowIso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const run = requireRunningScanRun(db, runId);
+    if (run.site !== site) throw scanRunError("SCAN_RUN_BATCH_MISMATCH", "scan run belongs to another site");
+    if (run.batch_id) throw scanRunError("SCAN_RUN_BATCH_MISMATCH", "scan run is already bound to a batch");
+    if (Number(run.plan_id || 0) !== Number(planId || 0)) {
+      throw scanRunError("SCAN_RUN_PLAN_MISMATCH", "scan batch belongs to another search plan");
+    }
+    if (owner) {
+      if (run.lease_owner && run.lease_owner !== owner) {
+        throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "scan run lease owner does not match");
+      }
+      const lease = db.prepare("SELECT owner, plan_id, expires_at FROM site_scan_leases WHERE site = ?").get(site);
+      const expiresAt = Date.parse(lease?.expires_at || "");
+      if (!lease || lease.owner !== owner || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(startedAt)) {
+        throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "active site lease does not belong to the scan run owner");
+      }
+      if (Number(lease.plan_id || 0) !== Number(planId || 0)) {
+        throw scanRunError("SCAN_RUN_PLAN_MISMATCH", "site lease belongs to another search plan");
+      }
+    } else if (run.lease_owner) {
+      throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "scan run is already claimed by a lease owner");
+    }
+    const batchId = insertBatch(db, site, input.keyword, input.note || "", {
+      status: input.status || "running",
+      profileId: input.profileId,
+      searchPlanId: planId,
+      filterSnapshot: input.filterSnapshot,
+      startedAt
+    });
+    db.prepare(`UPDATE scan_runs
+      SET batch_id = ?, lease_owner = COALESCE(?, lease_owner), process_id = COALESCE(?, process_id),
+        started_at = COALESCE(started_at, ?), heartbeat_at = ?
+      WHERE id = ?`)
+      .run(batchId, owner || null, processId, startedAt, startedAt, runId);
+    db.exec("COMMIT");
+    return batchId;
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+}
+
+function insertBatch(db, site, keyword, note, context = {}) {
+  const startedAt = String(context.startedAt || nowIso());
+  const status = normalizeBatchStatus(context.status);
+  const finishedAt = status === "running" ? null : String(context.finishedAt || startedAt);
+  const result = db.prepare(`INSERT INTO batches(
+    site, keyword, started_at, note, profile_id, search_plan_id, filter_snapshot_json,
+    status, finished_at, stop_code, stop_message
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    site,
+    keyword || null,
+    startedAt,
+    note,
+    context.profileId || null,
+    context.searchPlanId || null,
+    JSON.stringify(context.filterSnapshot || {}),
+    status,
+    finishedAt,
+    nullableText(context.stopCode),
+    nullableText(context.stopMessage, 1000)
+  );
   return Number(result.lastInsertRowid);
+}
+
+function normalizeBatchStatus(status) {
+  const normalized = String(status || "completed").trim().toLowerCase();
+  if (!SCAN_RUN_STATUSES.includes(normalized)) {
+    throw scanRunError("SCAN_BATCH_STATUS_INVALID", "scan batch status is invalid");
+  }
+  return normalized;
 }
 
 function getBatch(db, batchId) {
@@ -743,12 +823,17 @@ function claimScanRun(db, input = {}) {
 function heartbeatScanRun(db, input = {}) {
   const runId = requiredRunId(input);
   const owner = normalizedLeaseOwner(input);
-  if (!owner) throw scanRunError("SCAN_RUN_LEASE_OWNER_REQUIRED", "scan run lease owner is required");
+  const allowUnleased = input.allowUnleased === true;
+  if (!owner && !allowUnleased) throw scanRunError("SCAN_RUN_LEASE_OWNER_REQUIRED", "scan run lease owner is required");
   const heartbeatAt = String(input.heartbeatAt || nowIso());
-  const result = db.prepare(`UPDATE scan_runs
-    SET heartbeat_at = ?, process_id = COALESCE(?, process_id)
-    WHERE id = ? AND status = 'running' AND lease_owner = ?`)
-    .run(heartbeatAt, optionalPositiveInteger(input.processId ?? input.pid, "processId"), runId, owner);
+  const processId = optionalPositiveInteger(input.processId ?? input.pid, "processId");
+  const result = owner
+    ? db.prepare(`UPDATE scan_runs
+        SET heartbeat_at = ?, process_id = COALESCE(?, process_id)
+        WHERE id = ? AND status = 'running' AND lease_owner = ?`).run(heartbeatAt, processId, runId, owner)
+    : db.prepare(`UPDATE scan_runs
+        SET heartbeat_at = ?, process_id = COALESCE(?, process_id)
+        WHERE id = ? AND status = 'running' AND COALESCE(lease_owner, '') = ''`).run(heartbeatAt, processId, runId);
   if (!Number(result.changes || 0)) {
     const run = getScanRun(db, runId);
     if (!run) throw scanRunError("SCAN_RUN_NOT_FOUND", "scan run not found");
@@ -772,8 +857,12 @@ function finishScanRun(db, input = {}) {
     if (owner && run.lease_owner && run.lease_owner !== owner) {
       throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "scan run lease owner does not match");
     }
-    if (run.status !== "running" && run.status !== status) {
-      throw scanRunError("SCAN_RUN_ALREADY_FINISHED", `scan run already finished as ${run.status}`);
+    if (run.status !== "running") {
+      if (run.status !== status) {
+        throw scanRunError("SCAN_RUN_ALREADY_FINISHED", `scan run already finished as ${run.status}`);
+      }
+      db.exec("COMMIT");
+      return getScanRun(db, runId);
     }
     db.prepare(`UPDATE scan_runs
       SET status = ?, heartbeat_at = ?, finished_at = ?, stop_code = ?, stop_message = ?
@@ -797,23 +886,33 @@ function recordScanRunProcessExit(db, input = {}) {
   try {
     const run = db.prepare("SELECT * FROM scan_runs WHERE id = ?").get(runId);
     if (!run) throw scanRunError("SCAN_RUN_NOT_FOUND", "scan run not found");
-    let status = run.status;
+    if (run.status !== "running") {
+      db.prepare("UPDATE scan_runs SET process_exit_code = ?, process_signal = ? WHERE id = ?")
+        .run(exitCode, signal, runId);
+      db.exec("COMMIT");
+      return getScanRun(db, runId);
+    }
+    const status = input.status ? requireTerminalScanStatus(input.status) : processExitStatus(db, run, exitCode, signal);
     let stopCode = nullableText(input.stopCode) || run.stop_code || null;
     let stopMessage = nullableText(input.stopMessage, 1000) || run.stop_message || null;
-    if (run.status === "running") {
-      status = input.status ? requireTerminalScanStatus(input.status) : processExitStatus(db, run, exitCode, signal);
-      if (!stopCode && status !== "completed") stopCode = signal ? "SCAN_PROCESS_SIGNAL" : "SCAN_PROCESS_EXIT";
-      if (!stopMessage && status !== "completed") {
-        stopMessage = signal ? `scan process exited with signal ${signal}` : `scan process exited with code ${exitCode ?? "unknown"}`;
-      }
+    if (!stopCode && status !== "completed") stopCode = signal ? "SCAN_PROCESS_SIGNAL" : "SCAN_PROCESS_EXIT";
+    if (!stopMessage && status !== "completed") {
+      stopMessage = signal
+        ? `scan process exited with signal ${signal}`
+        : `scan process exited with code ${exitCode ?? "unknown"}`;
     }
     db.prepare(`UPDATE scan_runs
       SET status = ?, heartbeat_at = ?, finished_at = COALESCE(finished_at, ?),
         stop_code = ?, stop_message = ?, process_exit_code = ?, process_signal = ?
       WHERE id = ?`)
       .run(status, exitedAt, exitedAt, stopCode, stopMessage, exitCode, signal, runId);
-    if (run.batch_id && TERMINAL_SCAN_RUN_STATUSES.has(status)) {
-      syncBatchTerminalState(db, Number(run.batch_id), status, run.finished_at || exitedAt, stopCode, stopMessage);
+    if (run.batch_id) {
+      const batch = db.prepare("SELECT status FROM batches WHERE id = ?").get(run.batch_id);
+      const rebound = db.prepare("SELECT 1 FROM scan_runs WHERE batch_id = ? AND id <> ? AND status = 'running' LIMIT 1")
+        .get(run.batch_id, runId);
+      if (batch?.status === "running" && !rebound) {
+        syncBatchTerminalState(db, Number(run.batch_id), status, exitedAt, stopCode, stopMessage);
+      }
     }
     db.exec("COMMIT");
     return getScanRun(db, runId);
@@ -827,28 +926,44 @@ function interruptOrphanedScanRuns(db, input = {}) {
   const now = validDate(input.now || Date.now(), "now");
   const staleBefore = input.staleBefore
     ? validDate(input.staleBefore, "staleBefore")
-    : new Date(now.getTime() - Math.max(0, Number(input.heartbeatTimeoutMs ?? 120_000)));
+    : new Date(now.getTime() - Math.max(0, Number(input.heartbeatTimeoutMs ?? PRODUCT_POLICY.operations.scanOrphanTimeoutMs)));
   const site = String(input.site || "").trim().toLowerCase();
   db.exec("BEGIN IMMEDIATE");
   try {
-    const rows = db.prepare(`SELECT * FROM scan_runs
+    const staleRuns = db.prepare(`SELECT * FROM scan_runs
       WHERE status = 'running'
         AND COALESCE(heartbeat_at, started_at, created_at) <= ?
         AND (? = '' OR site = ?)
       ORDER BY created_at, id`)
       .all(staleBefore.toISOString(), site, site);
-    for (const run of rows) {
-      db.prepare(`UPDATE scan_runs
+    const interruptedRuns = [];
+    for (const run of staleRuns) {
+      if (run.lease_owner) {
+        const lease = db.prepare("SELECT owner, expires_at FROM site_scan_leases WHERE site = ?").get(run.site);
+        if (lease?.owner === run.lease_owner) {
+          const expiresAt = Date.parse(lease.expires_at);
+          if (Number.isFinite(expiresAt) && expiresAt > now.getTime()) continue;
+          db.prepare("DELETE FROM site_scan_leases WHERE site = ? AND owner = ?").run(run.site, run.lease_owner);
+        }
+      }
+      const result = db.prepare(`UPDATE scan_runs
         SET status = 'interrupted', heartbeat_at = ?, finished_at = ?,
           stop_code = 'SCAN_RUN_ORPHANED', stop_message = 'scan run heartbeat expired'
         WHERE id = ? AND status = 'running'`)
         .run(now.toISOString(), now.toISOString(), run.id);
+      if (!Number(result.changes || 0)) continue;
+      interruptedRuns.push(run);
       if (run.batch_id) {
-        syncBatchTerminalState(db, Number(run.batch_id), "interrupted", now.toISOString(), "SCAN_RUN_ORPHANED", "scan run heartbeat expired");
+        const batch = db.prepare("SELECT status FROM batches WHERE id = ?").get(run.batch_id);
+        const rebound = db.prepare("SELECT 1 FROM scan_runs WHERE batch_id = ? AND id <> ? AND status = 'running' LIMIT 1")
+          .get(run.batch_id, run.id);
+        if (batch?.status === "running" && !rebound) {
+          syncBatchTerminalState(db, Number(run.batch_id), "interrupted", now.toISOString(), "SCAN_RUN_ORPHANED", "scan run heartbeat expired");
+        }
       }
     }
     db.exec("COMMIT");
-    return { interrupted: rows.length, runIds: rows.map((row) => row.id) };
+    return { interrupted: interruptedRuns.length, runIds: interruptedRuns.map((run) => run.id) };
   } catch (error) {
     rollback(db);
     throw error;
@@ -877,8 +992,9 @@ function checkpointScanTarget(db, input = {}) {
       throw scanRunError("SCAN_BATCH_NOT_RUNNING", "scan batch is not running");
     }
     const lease = db.prepare("SELECT owner, expires_at FROM site_scan_leases WHERE site = ?").get(run.site);
-    if (!lease || lease.owner !== owner || Date.parse(lease.expires_at) <= Date.parse(checkpointedAt)) {
-      throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "active site lease does not belong to the scan run owner");
+    const leaseExpiresAt = Date.parse(lease?.expires_at || "");
+    if (!lease || lease.owner !== owner || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.parse(checkpointedAt)) {
+      throw scanRunError("SCAN_LEASE_LOST", "scan lease was lost before the checkpoint could be saved");
     }
     const jobIds = input.jobs.map((job) => upsertJob(db, job, batchId));
     const target = input.target && typeof input.target === "object" ? { ...input.target, ...input } : input;
@@ -1149,13 +1265,13 @@ function clearSiteRuntimeState(db, site) {
   db.prepare("DELETE FROM site_runtime_states WHERE site = ?").run(String(site || "").trim().toLowerCase());
 }
 
-function acquireSiteScanLease(db, { site = "boss", owner = crypto.randomUUID(), command = "scan", planId = null, ttlMs = 10 * 60 * 1000 } = {}) {
+function acquireSiteScanLease(db, { site = "boss", owner = crypto.randomUUID(), command = "scan", planId = null, ttlMs = PRODUCT_POLICY.operations.scanLeaseTtlMs } = {}) {
   const normalizedSite = String(site || "").trim().toLowerCase();
   const normalizedOwner = String(owner || "").trim();
   if (!normalizedSite || !normalizedOwner) throw new Error("scan lease site and owner are required");
   const now = new Date();
   const acquiredAt = now.toISOString();
-  const expiresAt = new Date(now.getTime() + Math.max(60_000, Number(ttlMs) || 0)).toISOString();
+  const expiresAt = new Date(now.getTime() + Math.max(PRODUCT_POLICY.operations.scanLeaseMinTtlMs, Number(ttlMs) || 0)).toISOString();
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM site_scan_leases WHERE expires_at <= ?").run(acquiredAt);
@@ -1177,8 +1293,8 @@ function acquireSiteScanLease(db, { site = "boss", owner = crypto.randomUUID(), 
   }
 }
 
-function renewSiteScanLease(db, { site = "boss", owner, ttlMs = 10 * 60 * 1000 } = {}) {
-  const expiresAt = new Date(Date.now() + Math.max(60_000, Number(ttlMs) || 0)).toISOString();
+function renewSiteScanLease(db, { site = "boss", owner, ttlMs = PRODUCT_POLICY.operations.scanLeaseTtlMs } = {}) {
+  const expiresAt = new Date(Date.now() + Math.max(PRODUCT_POLICY.operations.scanLeaseMinTtlMs, Number(ttlMs) || 0)).toISOString();
   const result = db.prepare("UPDATE site_scan_leases SET expires_at = ? WHERE site = ? AND owner = ?")
     .run(expiresAt, String(site || "").trim().toLowerCase(), String(owner || ""));
   if (!Number(result.changes || 0)) {
@@ -1857,15 +1973,13 @@ function getLatestBatchId(db, options = {}) {
 
 function getLatestMainScanBatchId(db, options = {}) {
   const planId = Number(options.planId || options.searchPlanId || 0);
-  const row = planId
-    ? db.prepare(`SELECT b.id FROM batches b
-        WHERE b.search_plan_id = ? AND COALESCE(b.keyword, '') NOT IN ('detail-refresh', 'activity-probe', 'analysis-retry')
-          AND EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id)
-        ORDER BY b.started_at DESC, b.id DESC LIMIT 1`).get(planId)
-    : db.prepare(`SELECT b.id FROM batches b
-        WHERE COALESCE(b.keyword, '') NOT IN ('detail-refresh', 'activity-probe', 'analysis-retry')
-          AND EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id)
-        ORDER BY b.started_at DESC, b.id DESC LIMIT 1`).get();
+  const rows = planId
+    ? db.prepare("SELECT b.id, b.filter_snapshot_json FROM batches b WHERE b.search_plan_id = ? AND EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id) ORDER BY b.started_at DESC, b.id DESC").all(planId)
+    : db.prepare("SELECT b.id, b.filter_snapshot_json FROM batches b WHERE EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id) ORDER BY b.started_at DESC, b.id DESC").all();
+  const row = rows.find((candidate) => {
+    const execution = parseJson(candidate.filter_snapshot_json, {}).execution;
+    return execution && typeof execution === "object" && !Array.isArray(execution);
+  });
   return row ? Number(row.id) : null;
 }
 
@@ -2678,6 +2792,7 @@ module.exports = {
   SCAN_RUN_STATUSES,
   openDb,
   createBatch,
+  createAndBindScanBatch,
   getBatch,
   getLatestResumableBatch,
   createScanRun,

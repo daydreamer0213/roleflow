@@ -214,6 +214,8 @@ function processExitAndOrphanRecovery(database, context) {
 
   const orphan = startRun(database, { ...context, label: "orphan" });
   database.prepare("UPDATE scan_runs SET heartbeat_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(orphan.runId);
+  database.prepare("UPDATE site_scan_leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE site = ? AND owner = ?")
+    .run("boss", context.owner);
   const interrupted = interruptOrphanedScanRuns(database, { heartbeatTimeoutMs: 60_000 });
   assert.deepStrictEqual(interrupted, { interrupted: 1, runIds: [orphan.runId] });
   assert.strictEqual(getScanRun(database, orphan.runId).status, "interrupted");

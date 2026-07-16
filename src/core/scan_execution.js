@@ -1,3 +1,5 @@
+const { PRODUCT_POLICY } = require("./product_policy");
+
 const SCAN_COMMANDS = Object.freeze({
   daily: "scan",
   broad: "scan",
@@ -76,7 +78,7 @@ async function withSiteScanLease(deps, input, run) {
     command = "scan",
     planId = null,
     ttlMs,
-    renewIntervalMs = 60_000
+    renewIntervalMs = PRODUCT_POLICY.operations.scanHeartbeatMs
   } = input || {};
   const requestedOwner = String(requestedOwnerValue || "").trim();
   const leaseInput = { site, owner: requestedOwnerValue, command, planId };
@@ -119,7 +121,7 @@ async function withSiteScanLease(deps, input, run) {
     }
   };
 
-  const intervalMs = Math.max(1, Number(renewIntervalMs) || 60_000);
+  const intervalMs = Math.max(1, Number(renewIntervalMs) || PRODUCT_POLICY.operations.scanHeartbeatMs);
   const heartbeat = schedule(renewLease, intervalMs);
   heartbeat?.unref?.();
   let executionError = null;

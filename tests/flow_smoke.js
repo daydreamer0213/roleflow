@@ -4,6 +4,7 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { openDb, listReportJobs, getLatestBatchId } = require("../src/core/storage");
+const { PRODUCT_POLICY_VERSION } = require("../src/core/product_policy");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -37,7 +38,7 @@ const dbHandles = [];
   assert(latestBatchId, "scan did not create a batch");
   const batchSnapshot = JSON.parse(db.prepare("SELECT filter_snapshot_json FROM batches WHERE id = ?").get(latestBatchId).filter_snapshot_json);
   assert.match(batchSnapshot.runtimePolicyHash, /^[a-f0-9]{64}$/);
-  assert.strictEqual(batchSnapshot.runtimePolicy.version, "2026-07-16.1");
+  assert.strictEqual(batchSnapshot.runtimePolicy.version, PRODUCT_POLICY_VERSION);
   const jobs = listReportJobs(db, { batch: "latest" });
   assert(jobs.length > 0, "scan did not import jobs");
   const firstJob = jobs[0];

@@ -39,7 +39,11 @@ let server;
       document: { originalFileName: "resume.txt", format: "text", contentHash: "communication-resume", text: "教育经历 测试大学 本科。项目经历 KnowledgeFlow，使用 Python、RAG 和 LangGraph 完成多 Agent 工作流。专业技能 Python RAG。".repeat(3), diagnostics: {} },
       searchPlan: plan
     });
-    const batchId = createBatch(db, "boss", "AI应用开发", "communication", { profileId: saved.profileId, searchPlanId: saved.planId });
+    const batchId = createBatch(db, "boss", "AI应用开发", "communication", {
+      profileId: saved.profileId,
+      searchPlanId: saved.planId,
+      filterSnapshot: { execution: { scanKind: "daily" } }
+    });
     const analysis = {
       provider: "mock", model: "offline-structured-mock", semanticStatus: "complete", decisionSource: "model",
       recommendation: "apply", fitLevel: "A", confidence: 0.9, realRoleType: "ai_application", businessScenario: "企业知识库 RAG",
@@ -95,7 +99,11 @@ let server;
     assert.strictEqual(followUp.status, 200, followUpHtml);
     assert(followUpHtml.includes("KnowledgeFlow"));
 
-    const failedBatchId = createBatch(db, "boss", "analysis-source", "analysis-source", { profileId: saved.profileId, searchPlanId: saved.planId });
+    const failedBatchId = createBatch(db, "boss", "analysis-source", "analysis-source", {
+      profileId: saved.profileId,
+      searchPlanId: saved.planId,
+      filterSnapshot: { execution: { scanKind: "daily" } }
+    });
     const failedJobId = upsertJob(db, {
       source: "boss", sourceId: "analysis-retry-job", keyword: "AI application", title: "AI Application Engineer",
       company: "Retry Test", location: plan.cities[0], salary: "10-18K", experience: plan.experience[0], education: "本科",

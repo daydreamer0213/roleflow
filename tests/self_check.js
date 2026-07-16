@@ -29,10 +29,29 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
   const source = fs.readFileSync(path.join(root, script), "utf8");
   assert(source.includes('"--plan"'));
   assert(!source.includes('"--keywords"'));
+  assert(!/\[int\]\$MaxCards\s*=/.test(source));
+  assert(!/\[int\]\$MaxDetailTotal\s*=/.test(source));
 }
 const portableLauncher = fs.readFileSync(path.join(root, "ScanPortable.bat"), "utf8");
 assert(!portableLauncher.includes("DetailLimit"));
 assert(!portableLauncher.includes("MaxCards"));
+const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
+  for (const [parameter, value] of [["MaxCards", "9"], ["MaxDetailTotal", "0"]]) {
+    const invalid = spawnSync(powershell, [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, script),
+      "-PlanId", "1", `-${parameter}`, value
+    ], { encoding: "utf8" });
+    assert.notStrictEqual(invalid.status, 0, `${script} must reject invalid ${parameter}`);
+    assert((invalid.stdout + invalid.stderr).includes(parameter), `${script} must identify invalid ${parameter}`);
+  }
+  const dailyOverride = spawnSync(powershell, [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, script),
+    "-PlanId", "1", "-ScanMode", "daily", "-MaxCards", "50"
+  ], { encoding: "utf8" });
+  assert.notStrictEqual(dailyOverride.status, 0, `${script} must reject daily budget overrides`);
+  assert((dailyOverride.stdout + dailyOverride.stderr).includes("only supported in broad mode"));
+}
 const defaultConfigs = loadConfigs(root);
 assert.strictEqual(defaultConfigs.candidateProfile, null);
 assert.deepStrictEqual(defaultConfigs.resumeVersions, { versions: [] });

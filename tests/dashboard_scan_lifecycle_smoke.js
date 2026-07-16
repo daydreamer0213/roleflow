@@ -32,6 +32,7 @@ try {
   db = openDb(dbPath);
   commandAndSuccessfulExitSmoke(db);
   failedAndInterruptedExitSmoke(db);
+  orphanRecheckSmoke(db);
   restartRecoveryAndOrphanCleanupSmoke(db);
   console.log("dashboard_scan_lifecycle_smoke ok");
 } finally {
@@ -136,6 +137,33 @@ function failedAndInterruptedExitSmoke(database) {
   const partialPersisted = getLatestScanRun(database, { planId: 204, site: "boss" });
   assert.strictEqual(partialPersisted.status, "partial");
   assert.strictEqual(partialPersisted.stopCode, "SCAN_TARGETS_PARTIAL");
+}
+
+function orphanRecheckSmoke(database) {
+  const staleAt = "2000-01-01T00:00:00.000Z";
+  createScanRun(database, {
+    runId: "dashboard-status-stale-run",
+    site: "boss",
+    command: "daily",
+    planId: 310,
+    createdAt: staleAt,
+    heartbeatAt: staleAt
+  });
+  const status = scanStatus(new Map(), 310, database);
+  assert.strictEqual(status.state, "interrupted");
+  assert.strictEqual(database.prepare("SELECT status FROM scan_runs WHERE id = ?").get("dashboard-status-stale-run").status, "interrupted");
+
+  createScanRun(database, {
+    runId: "dashboard-start-stale-run",
+    site: "boss",
+    command: "daily",
+    planId: 311,
+    createdAt: staleAt,
+    heartbeatAt: staleAt
+  });
+  const started = launch(database, 311);
+  assert.strictEqual(database.prepare("SELECT status FROM scan_runs WHERE id = ?").get("dashboard-start-stale-run").status, "interrupted");
+  started.child.emit("close", 0, null);
 }
 
 function restartRecoveryAndOrphanCleanupSmoke(database) {

@@ -4,6 +4,7 @@ const path = require("path");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { BossSiteAdapter, buildBossScanTargets, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   openDb,
   createBatch,
@@ -72,6 +73,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await delayedAppendAtBottomSmoke();
   await confirmedListEndSmoke();
   await scrollSafetyLimitSmoke();
+  await maxCardScrollBudgetSmoke();
   await delayedListSmoke();
   await paneSwitchSmoke();
   await leftCardMetadataAvoidsPaneScrollSmoke();
@@ -91,6 +93,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await pageBudgetSmoke();
   await riskControlSmoke();
   await refreshSafetySmoke();
+  await refreshCheckpointBeforeFatalSmoke();
   storageSmoke();
   console.log("source_acquisition_smoke ok");
 })().catch((error) => {
@@ -239,6 +242,27 @@ async function scrollSafetyLimitSmoke() {
   assert.strictEqual(result.cards.length, 15);
   assert.strictEqual(result.status, "partial");
   assert.strictEqual(result.stopReason, "scroll_safety_limit");
+}
+
+async function maxCardScrollBudgetSmoke() {
+  const maxCards = PRODUCT_POLICY.searchPlan.scanBounds.maxCards[1];
+  let visibleCards = 1;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (!expression.includes("__bossExtractCards")) return true;
+      return Array.from({ length: visibleCards }, (_, index) => card(`max-${index}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => {
+    visibleCards = Math.min(maxCards, visibleCards + 1);
+    return { moved: true, atBottom: false, scrollTop: visibleCards * 600 };
+  };
+  const result = await adapter.collectCards("tab", maxCards);
+  assert.strictEqual(result.cards.length, maxCards);
+  assert.strictEqual(result.stopReason, "card_limit_reached");
+  assert.strictEqual(result.scrollRounds, maxCards - 1);
 }
 
 async function delayedListSmoke() {
@@ -867,8 +891,8 @@ async function refreshSafetySmoke() {
     return { description: "完整职位描述 Python RAG ".repeat(12), bossActiveText: "今日活跃" };
   };
   const refreshed = await capped.refreshDetails(Array.from({ length: 12 }, (_, index) => card(`cap-${index}`)), { limit: 12, tabId: "tab" });
-  assert.strictEqual(reads, 8);
-  assert.strictEqual(refreshed.length, 8);
+  assert.strictEqual(reads, PRODUCT_POLICY.operations.refreshLimit);
+  assert.strictEqual(refreshed.length, PRODUCT_POLICY.operations.refreshLimit);
 
   const probeAttempts = [];
   const blockedProbe = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
@@ -888,9 +912,39 @@ async function refreshSafetySmoke() {
     return "今日活跃";
   };
   const probed = await cappedProbe.probeActivities(Array.from({ length: 12 }, (_, index) => card(`probe-cap-${index}`)), { limit: 12, tabId: "tab" });
-  assert.strictEqual(probes, 8);
-  assert.strictEqual(probed.length, 8);
+  assert.strictEqual(probes, PRODUCT_POLICY.operations.refreshLimit);
+  assert.strictEqual(probed.length, PRODUCT_POLICY.operations.refreshLimit);
   assert(probed.every((job) => job.bossActiveText === "今日活跃"));
+}
+
+async function refreshCheckpointBeforeFatalSmoke() {
+  let reads = 0;
+  const attempts = [];
+  const adapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  adapter.readDetail = async (_tabId, url) => {
+    reads += 1;
+    if (reads === 2) {
+      const error = new Error("edge disconnected after one success");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    }
+    return {
+      description: `persisted detail for ${url}`,
+      bossActiveText: "今日活跃"
+    };
+  };
+  await assert.rejects(() => adapter.refreshDetails([
+    card("refresh-before-fatal-1"),
+    card("refresh-before-fatal-2")
+  ], {
+    limit: 2,
+    tabId: "tab",
+    onAttempt: async (attempt) => attempts.push(attempt)
+  }), (error) => error.code === "BROWSER_DISCONNECTED");
+  assert.strictEqual(attempts.length, 2);
+  assert.strictEqual(attempts[0].result, "success");
+  assert(attempts[0].refreshedJob.description.includes("persisted detail"));
+  assert.strictEqual(attempts[1].result, "failed");
 }
 
 function storageSmoke() {

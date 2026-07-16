@@ -135,9 +135,9 @@ function resolveScanPolicy(plan = {}, requestedMode = "daily") {
   const resolved = {
     mode,
     keywordPlan: mode === "daily" ? (dailyKeywords.length ? dailyKeywords : allKeywords.slice(0, 4)) : allKeywords,
-    maxCards: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxCards, broad.maxCards) : broad.maxCards,
-    maxDetailTotal: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxDetailTotal, broad.maxDetailTotal) : broad.maxDetailTotal,
-    browserPageBudget: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.browserPageBudget, broad.browserPageBudget) : broad.browserPageBudget,
+    maxCards: mode === "daily" ? DAILY_SCAN_LIMITS.maxCards : broad.maxCards,
+    maxDetailTotal: mode === "daily" ? DAILY_SCAN_LIMITS.maxDetailTotal : broad.maxDetailTotal,
+    browserPageBudget: mode === "daily" ? DAILY_SCAN_LIMITS.browserPageBudget : broad.browserPageBudget,
     detailLimits: mode === "daily" ? DAILY_SCAN_LIMITS.detailLimits : null,
     salaryLaneLimit: mode === "daily" ? DAILY_SCAN_LIMITS.salaryLaneLimit : null
   };
