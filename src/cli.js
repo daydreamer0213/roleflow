@@ -115,22 +115,23 @@ async function executeWithSiteScanLease(db, args, command, run) {
   const runId = String(args["run-id"] || crypto.randomUUID()).trim();
   const owner = `${runId}:${process.pid}`;
   const planId = Number(args.plan || 0) || null;
+  const runLogger = logger.child({ runId, planId, scanKind, site });
   let runClaimed = false;
   return runWithSiteScanLease({
     acquire(input) {
       const lease = acquireSiteScanLease(db, input);
-      logger.info("site_scan_lease_acquired", { site, scanKind, planId: lease.planId, owner, expiresAt: lease.expiresAt, runId: runId || null });
+      runLogger.info("site_scan_lease_acquired", { planId: lease.planId, owner, expiresAt: lease.expiresAt });
       return lease;
     },
     renew(input) {
       const expiresAt = renewSiteScanLease(db, { site, owner });
       if (runClaimed) heartbeatScanRun(db, { runId, leaseOwner: owner, processId: process.pid });
-      logger.info("site_scan_lease_renewed", { site, scanKind, owner, expiresAt, runId: runId || null });
+      runLogger.info("site_scan_lease_renewed", { owner, expiresAt });
       return { site, owner, expiresAt };
     },
     release(input) {
       const released = releaseSiteScanLease(db, input);
-      logger.info("site_scan_lease_released", { site, scanKind, owner, released, runId: runId || null });
+      runLogger.info("site_scan_lease_released", { owner, released });
       return released;
     }
   }, {
@@ -148,8 +149,8 @@ async function executeWithSiteScanLease(db, args, command, run) {
       processId: process.pid
     });
     runClaimed = true;
-    const execution = { runId, leaseOwner: owner, site, scanKind, planId };
-    logger.info("scan_run_started", { ...execution, status: scanRun.status });
+    const execution = { runId, leaseOwner: owner, site, scanKind, planId, logger: runLogger };
+    runLogger.info("scan_run_started", { status: scanRun.status });
     try {
       const result = await run(signal, execution);
       const status = normalizeScanTerminalStatus(result?.status || "completed");
@@ -160,7 +161,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
         stopCode: result?.stopCode,
         stopMessage: result?.stopMessage
       });
-      logger.info("scan_run_finished", { ...execution, batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+      runLogger.info("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
       return result;
     } catch (error) {
       const status = scanFailureStatus(error);
@@ -172,9 +173,9 @@ async function executeWithSiteScanLease(db, args, command, run) {
           stopCode: error?.code || "SCAN_FAILED",
           stopMessage: error?.message || String(error)
         });
-        logger.warn("scan_run_finished", { ...execution, batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+        runLogger.warn("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
       } catch (finishError) {
-        logger.error("scan_run_finish_failed", { ...execution, status, error: errorMeta(finishError) });
+        runLogger.error("scan_run_finish_failed", { status, error: errorMeta(finishError) });
       }
       throw error;
     }
@@ -183,6 +184,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
 
 async function scan(db, args, { signal = null, execution = null } = {}) {
   assertScanActive(signal);
+  const scanLogger = execution?.logger || logger;
   if (!args.plan && !args.input) {
     throw new Error("真实浏览器扫描必须传入 --plan <Search Plan ID>，避免岗位和投递状态脱离候选人画像。");
   }
@@ -226,11 +228,11 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const keywords = keywordPlan.map((item) => item.word);
   const source = `${planned.source}:${scanMode}`;
   if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
-  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
+  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const browser = createBrowser(args);
-  const adapter = createSiteAdapter(site, { browser, logger });
+  const adapter = createSiteAdapter(site, { browser, logger: scanLogger });
   const cityScopes = resolveCityScopes(args, planRecord, configs);
   let browserState = null;
   if (!args.input) {
@@ -240,7 +242,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       const priorRuntimeState = getSiteRuntimeState(db, site);
       if (priorRuntimeState?.status === "blocked") {
         clearSiteRuntimeState(db, site);
-        logger.info("site_runtime_block_cleared", { site, priorReasonCode: priorRuntimeState.reasonCode });
+        scanLogger.info("site_runtime_block_cleared", { site, priorReasonCode: priorRuntimeState.reasonCode });
       }
     } catch (error) {
       if (error?.code === "BOSS_RISK_CONTROL") {
@@ -257,7 +259,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const nativeFilterSnapshot = args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
     : applyScanPolicyToFilters(
-      await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId }),
+      await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId, logger: scanLogger }),
       scanPolicy
     );
   if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
@@ -266,7 +268,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     profileId: planRecord?.profileId,
     maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays
   })).map((item) => [item.sourceId, item]));
-  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays });
+  if (reusableDetails.size) scanLogger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays });
   const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
     profileId: planRecord?.profileId,
     searchPlanId: planRecord?.id,
@@ -281,7 +283,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     });
   }
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
-  logger.info("scan_started", {
+  scanLogger.info("scan_started", {
     batchId,
     planId: planRecord?.id || null,
     keywordCount: keywords.length,
@@ -322,7 +324,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       checkpointError.cause = error;
       throw checkpointError;
     }
-    logger.info("scan_target_checkpointed", {
+    scanLogger.info("scan_target_checkpointed", {
       batchId,
       targetKey: result.targetKey,
       status: result.status,
@@ -370,8 +372,8 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       && job.detailErrorCode
       && !["BOSS_DETAIL_SAFETY_LIMIT", "BOSS_DETAIL_FAIR_SHARE_PENDING"].includes(job.detailErrorCode)).length
   };
-  if (detailCoverage) logger.info("boss_detail_coverage", { batchId, ...detailCoverage });
-  logger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
+  if (detailCoverage) scanLogger.info("boss_detail_coverage", { batchId, ...detailCoverage });
+  scanLogger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
   const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
     assertScanActive(signal);
     return analyzeScannedJob(raw, { configs, analyzeJob });
@@ -382,9 +384,9 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     upsertJob(db, job, batchId);
     saved += 1;
   }
-  logger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
+  scanLogger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
   const report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
-  logger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
+  scanLogger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
   console.log(`导入 ${saved} 个岗位`);
   if (detailCoverage) {
     console.log(`详情覆盖：应读 ${detailCoverage.detailRequired}，成功 ${detailCoverage.detailRead}，待补 ${detailCoverage.detailPending}；左栏明确排除 ${detailCoverage.hardFiltered}`);
@@ -448,6 +450,7 @@ function checkpointScannedJob(raw, configs) {
 
 async function refreshDetails(db, args, { signal = null, execution = null } = {}) {
   assertScanActive(signal);
+  const scanLogger = execution?.logger || logger;
   const activityOnly = args["activity-only"] === true;
   const planId = Number(args.plan);
   if (!Number.isInteger(planId) || planId <= 0) throw new Error("需要 --plan <Search Plan ID>");
@@ -458,7 +461,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
-  const adapter = createSiteAdapter("boss", { browser, logger });
+  const adapter = createSiteAdapter("boss", { browser, logger: scanLogger });
   const browserState = await adapter.preflight();
   assertScanActive(signal);
 
@@ -466,7 +469,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   configs.model = resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
   configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
-  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
+  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);
   const limit = Math.max(1, Math.min(PRODUCT_POLICY.operations.refreshLimit, Number(args.limit) || PRODUCT_POLICY.operations.refreshLimit));
   const pending = listDecisionPool(db, { planId })
@@ -505,7 +508,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
       processId: process.pid
     });
   }
-  logger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
+  scanLogger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
   const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
   const rawJobs = await refreshMethod(pending, {
     limit,
@@ -535,7 +538,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   assertScanActive(signal);
   for (const job of analyzedJobs) upsertJob(db, job, batchId);
   const report = renderReports(listReportJobs(db, { batchId, limit: 500 }), path.join(ROOT, "reports"));
-  logger.info(activityOnly ? "activity_probe_completed" : "detail_refresh_completed", { batchId, planId, requested: pending.length, refreshed: analyzedJobs.length });
+  scanLogger.info(activityOnly ? "activity_probe_completed" : "detail_refresh_completed", { batchId, planId, requested: pending.length, refreshed: analyzedJobs.length });
   console.log(`${activityOnly ? "活跃状态更新" : "补读"}完成：请求 ${pending.length} 条，成功 ${analyzedJobs.length} 条`);
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
@@ -608,7 +611,7 @@ function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false
   return fallback;
 }
 
-async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes, keyword, tabId }) {
+async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes, keyword, tabId, logger: scopedLogger = logger }) {
   const stored = getPlatformFilterCatalog(db, "boss");
   let catalog = stored?.catalog;
   const shouldRefresh = args["refresh-platform-filters"] === true || !isCatalogFresh(catalog);
@@ -634,14 +637,14 @@ async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes,
       experience: args["boss-experience"]
     }
   });
-  logger.info("platform_filters_resolved", {
+  scopedLogger.info("platform_filters_resolved", {
     site: "boss",
     refreshed: shouldRefresh,
     catalogVersion: snapshot.catalogVersion,
     params: snapshot.params,
     labels: snapshot.labels
   });
-  for (const warning of snapshot.warnings || []) logger.warn("platform_filter_remapped", { site: "boss", ...warning });
+  for (const warning of snapshot.warnings || []) scopedLogger.warn("platform_filter_remapped", { site: "boss", ...warning });
   return snapshot;
 }
 
