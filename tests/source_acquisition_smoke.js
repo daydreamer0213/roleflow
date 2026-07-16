@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
-const { BossSiteAdapter, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
+const { BossSiteAdapter, buildBossScanTargets, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const {
   openDb,
@@ -83,6 +83,9 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await detailSafetyLimitSmoke();
   await detailFailureDedupeSmoke();
   await targetIsolationSmoke();
+  await scanTargetPlanSmoke();
+  await scanTargetResumeFilterSmoke();
+  await fatalBrowserStopsRemainingTargetsSmoke();
   await partialTargetCheckpointSmoke();
   await pageBudgetSmoke();
   await riskControlSmoke();
@@ -380,6 +383,116 @@ async function targetIsolationSmoke() {
   assert.deepStrictEqual(checkpoints.map((item) => item.status), ["completed", "failed", "completed"]);
   assert(jobs.every((job) => job.detailRead));
   assert(jobs.every((job) => job.detailRequired));
+}
+
+async function scanTargetPlanSmoke() {
+  const targets = buildBossScanTargets({
+    keywords: ["secondary", "primary"],
+    keywordPlan: [
+      { word: "secondary", priority: "B", order: 0 },
+      { word: "primary", priority: "A", order: 1 }
+    ],
+    cityScopes: [
+      { city: "广州", cityCode: "101280100" },
+      { city: "深圳", cityCode: "101280600" }
+    ],
+    nativeFilters: {
+      lanes: [
+        { id: "main", params: { experience: ["101", "104"] } },
+        { id: "stretch", params: { experience: ["105"] } }
+      ]
+    },
+    maxCards: 50
+  });
+  assert.deepStrictEqual(targets.map((target) => target.targetKey), [
+    "101280100|primary|main",
+    "101280100|primary|stretch",
+    "101280100|secondary|main",
+    "101280100|secondary|stretch",
+    "101280600|primary|main",
+    "101280600|primary|stretch",
+    "101280600|secondary|main",
+    "101280600|secondary|stretch"
+  ]);
+  assert.deepStrictEqual(targets.map((target) => target.cardLimit), [50, 50, 33, 33, 50, 50, 33, 33]);
+}
+
+async function scanTargetResumeFilterSmoke() {
+  const navigated = [];
+  const browser = {
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { navigated.push(new URL(url).searchParams.get("query")); }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("resumed")];
+  const summaries = [];
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["first", "second"],
+    keywordPlan: [{ word: "first", priority: "A" }, { word: "second", priority: "A" }],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    targetKeys: ["101280100|second|lane-1"],
+    maxCards: 20,
+    maxDetailTotal: 0,
+    shouldReadDetail: () => false,
+    onScanComplete: async (summary) => summaries.push(summary)
+  });
+  assert.deepStrictEqual(navigated, ["second"]);
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(summaries[0].status, "completed");
+
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["first"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    targetKeys: ["101280100|missing|lane-1"]
+  }), (error) => error.code === "BOSS_SCAN_TARGETS_NOT_FOUND");
+}
+
+async function fatalBrowserStopsRemainingTargetsSmoke() {
+  const visited = [];
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) {
+      this.keyword = new URL(url).searchParams.get("query");
+      visited.push(this.keyword);
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => {
+    if (browser.keyword === "second") {
+      throw Object.assign(new Error("edge disconnected"), { code: "BROWSER_DISCONNECTED" });
+    }
+    return [card(browser.keyword)];
+  };
+  adapter.readCardDetail = async (_tabId, job) => ({
+    description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
+    bossActiveText: "今日活跃"
+  });
+  const checkpoints = [];
+  const summaries = [];
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["first", "second", "third"],
+    keywordPlan: [
+      { word: "first", priority: "A" },
+      { word: "second", priority: "A" },
+      { word: "third", priority: "A" }
+    ],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 3,
+    onTargetComplete: async (result) => checkpoints.push(result),
+    onScanComplete: async (summary) => summaries.push(summary)
+  });
+  assert.deepStrictEqual(visited, ["first", "second"]);
+  assert.deepStrictEqual(checkpoints.map((item) => item.status), ["completed", "failed"]);
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(summaries[0].status, "partial");
+  assert.strictEqual(summaries[0].fatalErrorCode, "BROWSER_DISCONNECTED");
 }
 
 async function partialTargetCheckpointSmoke() {

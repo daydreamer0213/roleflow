@@ -396,14 +396,25 @@ class BossSiteAdapter {
 
   async scanBrowser(options) {
     if (!this.browser) throw new Error("真实扫描需要 --browser edge。");
-    const keywords = options.keywords?.length ? options.keywords : ["AI应用开发"];
-    const keywordPlan = normalizeKeywordPlan(keywords, options.keywordPlan)
-      .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority) || left.order - right.order);
-    const cityScopes = normalizeCityScopes(options);
     const tabId = options.tabId || await this.browser.activeTabId();
     const maxCards = Number(options.maxCards || 60);
     const maxDetailTotal = Math.min(1000, Math.max(0, Number(options.maxDetailTotal ?? 300)));
-    const nativeFilterLanes = normalizeNativeFilterLanes(options.nativeFilters);
+    const allTargets = buildBossScanTargets({ ...options, maxCards });
+    const hasTargetFilter = Array.isArray(options.targetKeys);
+    const requestedTargetKeys = new Set(options.targetKeys || []);
+    if (!allTargets.length) {
+      throw bossError("BOSS_SCAN_NO_TARGETS", "本轮没有可执行的 BOSS 搜索目标，请检查关键词、城市和平台筛选配置。");
+    }
+    if (hasTargetFilter) {
+      const availableTargetKeys = new Set(allTargets.map((target) => target.targetKey));
+      const unknownTargetKeys = [...requestedTargetKeys].filter((targetKey) => !availableTargetKeys.has(targetKey));
+      if (unknownTargetKeys.length) {
+        throw bossError("BOSS_SCAN_TARGETS_NOT_FOUND", `恢复扫描的目标与当前执行快照不一致：${unknownTargetKeys.join(", ")}`);
+      }
+    }
+    const scanTargets = hasTargetFilter
+      ? allTargets.filter((target) => requestedTargetKeys.has(target.targetKey))
+      : allTargets;
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.pageBudget = normalizePageBudget(options.browserPageBudget);
@@ -414,18 +425,20 @@ class BossSiteAdapter {
     let detailsReused = 0;
     let detailsFailed = 0;
     let successfulTargets = 0;
+    let partialTargets = 0;
     let fatalError = null;
-    const targetCount = cityScopes.length * keywordPlan.length * nativeFilterLanes.length;
+    const targetCount = scanTargets.length;
     let targetPosition = 0;
 
-    scanTargets: for (const [cityOrder, city] of cityScopes.entries()) {
-      for (const item of keywordPlan) {
-        const keyword = item.word;
-        const cardLimit = weightedCardLimit(item.priority, maxCards);
-        for (const lane of nativeFilterLanes) {
+    if (!targetCount) {
+      const emptySummary = { status: "completed", targetCount: 0, attemptedTargets: 0, successfulTargets: 0, partialTargets: 0, fatalErrorCode: "", fatalErrorMessage: "" };
+      if (typeof options.onScanComplete === "function") await options.onScanComplete(emptySummary);
+      return [];
+    }
+
+    scanTargetLoop: for (const target of scanTargets) {
+          const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey } = target;
           targetPosition += 1;
-          const laneId = lane.id || "default";
-          const targetKey = [city.cityCode, keyword, laneId].join("|");
           const startedAt = new Date().toISOString();
           let targetJobs = [];
           let targetEntries = [];
@@ -569,7 +582,6 @@ class BossSiteAdapter {
             }
 
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
-            successfulTargets += 1;
             if (typeof options.onTargetComplete === "function") {
               await options.onTargetComplete({
                 targetKey,
@@ -591,8 +603,11 @@ class BossSiteAdapter {
                 finishedAt: new Date().toISOString()
               });
             }
+            successfulTargets += 1;
+            if (collection.status === "partial") partialTargets += 1;
             await this.waitWithPacing("target");
           } catch (error) {
+            if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST"].includes(error?.code)) throw error;
             this.logger?.warn("boss_scan_target_failed", {
               targetKey,
               keyword,
@@ -621,12 +636,10 @@ class BossSiteAdapter {
             }
             if (isFatalBrowserError(error)) {
               fatalError = error;
-              break scanTargets;
+              break scanTargetLoop;
             }
             await this.waitWithPacing("target");
           }
-        }
-      }
     }
     const resultJobs = [...candidates.values()].map((item) => item.job);
     const detailRequired = resultJobs.filter((job) => job.detailRequired).length;
@@ -654,6 +667,18 @@ class BossSiteAdapter {
         candidates: resultJobs.length
       });
     }
+    const scanSummary = {
+      status: fatalError
+        ? (successfulTargets ? "partial" : "failed")
+        : successfulTargets === targetCount && partialTargets === 0 ? "completed" : "partial",
+      targetCount,
+      attemptedTargets: targetPosition,
+      successfulTargets,
+      partialTargets,
+      fatalErrorCode: fatalError?.code || "",
+      fatalErrorMessage: fatalError?.message || ""
+    };
+    if (typeof options.onScanComplete === "function") await options.onScanComplete(scanSummary);
     if (!successfulTargets && fatalError) throw fatalError;
     if (!successfulTargets) throw bossError("BOSS_SCAN_NO_TARGET_SUCCEEDED", "本轮所有 BOSS 搜索目标均失败，已保留逐目标错误记录。");
     return resultJobs;
@@ -1091,6 +1116,36 @@ function normalizeNativeFilterLanes(value = {}) {
   }));
 }
 
+function buildBossScanTargets(options = {}) {
+  const keywords = options.keywords?.length ? options.keywords : [];
+  const keywordPlan = normalizeKeywordPlan(keywords, options.keywordPlan)
+    .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority) || left.order - right.order);
+  const cityScopes = normalizeCityScopes(options);
+  const nativeFilterLanes = normalizeNativeFilterLanes(options.nativeFilters);
+  const maxCards = Number(options.maxCards || 60);
+  const targets = [];
+  for (const [cityOrder, city] of cityScopes.entries()) {
+    for (const item of keywordPlan) {
+      const keyword = item.word;
+      const cardLimit = weightedCardLimit(item.priority, maxCards);
+      for (const lane of nativeFilterLanes) {
+        const laneId = lane.id || "default";
+        targets.push({
+          cityOrder,
+          city,
+          item,
+          keyword,
+          cardLimit,
+          lane,
+          laneId,
+          targetKey: [city.cityCode, keyword, laneId].join("|")
+        });
+      }
+    }
+  }
+  return targets;
+}
+
 function normalizeNativeFilters(value = {}) {
   const codes = (items) => [...new Set((Array.isArray(items) ? items : [])
     .map((item) => String(item || "").trim())
@@ -1268,7 +1323,12 @@ function isFatalBrowserError(error) {
     "BOSS_LOGIN_REQUIRED",
     "BOSS_TAB_REQUIRED",
     "BOSS_SEARCH_PAGE_LOST",
-    "BOSS_DETAIL_PAGE_LOST"
+    "BOSS_DETAIL_PAGE_LOST",
+    "BROWSER_TIMEOUT",
+    "BROWSER_DISCONNECTED",
+    "BROWSER_COMMAND_FAILED",
+    "SCAN_CHECKPOINT_FAILED",
+    "SCAN_LEASE_LOST"
   ]).has(String(error?.code || ""));
 }
 
@@ -1286,6 +1346,7 @@ module.exports = {
   cleanDetailText,
   weightedCardLimit,
   mergeScanCandidate,
+  buildBossScanTargets,
   buildBossSearchUrl,
   normalizeNativeFilters,
   normalizeNativeFilterLanes,
