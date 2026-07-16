@@ -8,24 +8,32 @@ const MAX_VALUE_LENGTH = 1600;
 const SECRET_KEY = /(?:api[_-]?key|authorization|cookie|token|password|secret|resume(?:text)?|description|content|body|buffer|(?:original)?file(?:name|path))/i;
 const SAFE_METRIC_KEY = /^(?:prompt|completion|total)_tokens$/i;
 
-function createLogger({ root, component = "app" } = {}) {
-  const logDir = path.join(root || process.cwd(), ".runtime", "logs");
-  const sessionId = crypto.randomUUID().slice(0, 8);
-  let sequence = 0;
-  ensureLogDir(logDir);
-  pruneLogs(logDir);
+function createLogger({ root, component = "app", context = {} } = {}) {
+  const state = {
+    logDir: path.join(root || process.cwd(), ".runtime", "logs"),
+    component,
+    sessionId: crypto.randomUUID().slice(0, 8),
+    sequence: 0
+  };
+  ensureLogDir(state.logDir);
+  pruneLogs(state.logDir);
+  return createScopedLogger(state, context);
+}
 
-  function write(level, event, context = {}) {
+function createScopedLogger(state, context = {}) {
+  const loggerContext = mergeDefined({}, context);
+
+  function write(level, event, eventContext = {}) {
     const entry = {
       time: new Date().toISOString(),
       level,
       event,
-      component,
-      sessionId,
-      ...sanitize(context)
+      component: state.component,
+      sessionId: state.sessionId,
+      ...sanitize(mergeDefined(loggerContext, eventContext))
     };
     try {
-      fs.appendFileSync(resolveLogFile(logDir), `${JSON.stringify(entry)}\n`, "utf8");
+      fs.appendFileSync(resolveLogFile(state.logDir), `${JSON.stringify(entry)}\n`, "utf8");
     } catch {
       // ponytail: logging must never make the user-facing workflow fail.
     }
@@ -36,9 +44,17 @@ function createLogger({ root, component = "app" } = {}) {
     info: (event, context) => write("info", event, context),
     warn: (event, context) => write("warn", event, context),
     error: (event, context) => write("error", event, context),
-    requestId: () => `${sessionId}-${++sequence}`,
-    listRecent: (limit = 120) => listRecentLogs(logDir, limit),
-    logDir
+    child: (context) => createScopedLogger(state, mergeDefined(loggerContext, context)),
+    requestId: () => `${state.sessionId}-${++state.sequence}`,
+    listRecent: (limit = 120) => listRecentLogs(state.logDir, limit),
+    logDir: state.logDir
+  };
+}
+
+function mergeDefined(base, override) {
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(override || {}).filter(([, value]) => value !== undefined))
   };
 }
 

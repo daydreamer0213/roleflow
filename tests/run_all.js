@@ -12,6 +12,7 @@ const tests = [
   "model_settings_smoke.js",
   "model_settings_ui_smoke.js",
   "observability_smoke.js",
+  "observability_context_smoke.js",
   "profile_quality_smoke.js",
   "semantic_pipeline_smoke.js",
   "source_acquisition_smoke.js",
