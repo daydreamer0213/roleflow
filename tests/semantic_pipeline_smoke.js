@@ -47,6 +47,7 @@ const db = openDb(dbPath);
 
 async function stableUnderstandingAndCandidateMatchSmoke() {
   const calls = { understandJob: 0, matchJob: 0, analyzeResume: 0, draftCommunication: 0 };
+  let sanitizedSourceSeen = false;
   const analyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; throw new Error("must not run"); },
     draftCommunication: async () => { calls.draftCommunication += 1; throw new Error("must not run"); },
@@ -64,6 +65,12 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
       assert(input.candidateProfile);
       assert.strictEqual(input.candidateProfile.candidate.expectedSalary, undefined);
       assert.strictEqual(input.candidateProfile.candidate.adjustableSalary, undefined);
+      assert.strictEqual(input.candidateProfile.resumeVersions, undefined);
+      if (input.resumeVersions.versions[0].sourceDocument) {
+        assert(input.resumeVersions.versions[0].sourceDocument.textExcerpt.includes("广州大学"));
+        sanitizedSourceSeen = true;
+      }
+      assert(!JSON.stringify({ candidateProfile: input.candidateProfile, resumeVersions: input.resumeVersions }).includes("8-12K"));
       assert.deepStrictEqual(input.searchPreferences.salary, { minK: 10, maxK: 20 });
       assert(input.jobUnderstanding);
       assert(input.jobEvidence);
@@ -74,7 +81,16 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
     }
   };
   const job = completeJob("shared-understanding");
-  const pythonRunner = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], { db, analyzer });
+  const pythonConfigs = configFor(["Python", "RAG"]);
+  pythonConfigs.candidateProfile.candidate.expectedSalary = "8-12K";
+  pythonConfigs.candidateProfile.resumeVersions = [{ summary: "期望薪资 8-12K" }];
+  pythonConfigs.resumeVersions.versions[0].resumeFacts = {
+    candidate: { expectedSalary: "8-12K" },
+    resumeVersions: [{ summary: "薪资 8-12K" }],
+    skills: [{ name: "Python" }]
+  };
+  pythonConfigs.resumeVersions.versions[0].sourceDocument = { textExcerpt: "广州大学本科，德勤 AI 实习。期望薪资：8-12K" };
+  const pythonRunner = createJobAnalysisRunner(pythonConfigs, [], { db, analyzer });
   const javaRunner = createJobAnalysisRunner(configFor(["Java", "Spring Boot"]), [], { db, analyzer });
   const pythonResult = await pythonRunner(job);
   const javaResult = await javaRunner(job);
@@ -82,6 +98,7 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(calls.matchJob, 2, "不同候选人的匹配结论必须分别计算");
   assert.strictEqual(calls.analyzeResume, 0, "岗位扫描不得重新解析空简历");
   assert.strictEqual(calls.draftCommunication, 0, "批量扫描不得生成招呼语");
+  assert.strictEqual(sanitizedSourceSeen, true);
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   assert.strictEqual(decisionBucket({ ...job, analysis: pythonResult, qualityTags: [], risks: [] }), "primary");
   assert.strictEqual(decisionBucket({ ...job, analysis: javaResult, qualityTags: [], risks: [] }), "talk");

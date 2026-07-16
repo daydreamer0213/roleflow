@@ -2,7 +2,7 @@ const crypto = require("crypto");
 
 const PIPELINE_VERSIONS = Object.freeze({
   understandJob: "job-understanding-v3",
-  matchJob: "match-decision-v8",
+  matchJob: "match-decision-v10",
   communication: "communication-v2"
 });
 
