@@ -469,6 +469,29 @@ function createBatch(db, site, keyword, note = "", context = {}) {
   return Number(result.lastInsertRowid);
 }
 
+function getBatch(db, batchId) {
+  const id = optionalPositiveInteger(batchId, "batchId");
+  if (!id) return null;
+  const row = db.prepare(`SELECT id, site, keyword, started_at, note, profile_id, search_plan_id,
+    filter_snapshot_json, status, finished_at, stop_code, stop_message
+    FROM batches WHERE id = ?`).get(id);
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    site: row.site,
+    keyword: row.keyword || "",
+    startedAt: row.started_at,
+    note: row.note || "",
+    profileId: Number(row.profile_id || 0) || null,
+    searchPlanId: Number(row.search_plan_id || 0) || null,
+    filterSnapshot: parseJson(row.filter_snapshot_json, {}),
+    status: row.status,
+    finishedAt: row.finished_at || null,
+    stopCode: row.stop_code || "",
+    stopMessage: row.stop_message || ""
+  };
+}
+
 function createScanRun(db, input = {}) {
   const runId = String(input.runId || input.id || crypto.randomUUID()).trim();
   const site = String(input.site || "boss").trim().toLowerCase();
@@ -2532,6 +2555,7 @@ module.exports = {
   SCAN_RUN_STATUSES,
   openDb,
   createBatch,
+  getBatch,
   createScanRun,
   getScanRun,
   getLatestScanRun,

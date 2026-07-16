@@ -5,6 +5,7 @@ const {
   SCAN_RUN_STATUSES,
   openDb,
   createBatch,
+  getBatch,
   createScanRun,
   getScanRun,
   beginScanRun,
@@ -84,6 +85,9 @@ function startRun(database, { label, profileId, planId, owner }) {
     filterSnapshot: { label }
   });
   const created = createScanRun(database, { runId: `run-${label}`, site: "boss", command: "scan", planId });
+  const batch = getBatch(database, batchId);
+  assert.strictEqual(batch.searchPlanId, planId);
+  assert.deepStrictEqual(batch.filterSnapshot, { label });
   assert.strictEqual(getScanRun(database, created.id).status, "running");
   const run = beginScanRun(database, { runId: created.id, batchId, leaseOwner: owner, processId: process.pid });
   assert.strictEqual(run.batchId, batchId);
