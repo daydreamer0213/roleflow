@@ -8,12 +8,22 @@ const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner } = require("./core/job_analysis");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
-const { cityToBossCode, profileToRuntimeConfigs, planKeywords } = require("./core/search_plan");
+const {
+  cityToBossCode,
+  profileToRuntimeConfigs,
+  planKeywords,
+  resolveScanPolicy,
+  applyScanPolicyToFilters
+} = require("./core/search_plan");
 const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("./core/platform_filters");
 const {
   openDb,
   createBatch,
   recordScanTargetResult,
+  getSiteRuntimeState,
+  setSiteRuntimeState,
+  clearSiteRuntimeState,
+  listReusableJobDetails,
   recordJobRefreshAttempt,
   getLatestJobRefreshAttempt,
   getPlatformFilterCatalog,
@@ -112,17 +122,60 @@ async function scan(db, args) {
     })()
     : resolvePlannedKeywords(args, configs);
   if (!planned.keywords.length) throw new Error("Search Plan 没有可用关键词，请先在页面补充后再扫描。");
-  const { keywords, keywordPlan, source } = planned;
+  const requestedScanMode = String(args["scan-mode"] || "");
+  const scanMode = requestedScanMode === "broad"
+    ? "broad"
+    : requestedScanMode === "daily"
+      ? "daily"
+      : (planRecord && !args.input ? "daily" : "broad");
+  const scanPolicy = resolveScanPolicy({
+    ...(planRecord?.plan || {}),
+    keywords: planned.keywordPlan
+  }, scanMode);
+  const keywordPlan = scanPolicy.keywordPlan;
+  const keywords = keywordPlan.map((item) => item.word);
+  const source = `${planned.source}:${scanMode}`;
+  if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const browser = createBrowser(args);
   const adapter = createSiteAdapter(site, { browser, logger });
   const cityScopes = resolveCityScopes(args, planRecord, configs);
-  const browserState = args.input ? null : await adapter.preflight();
+  let browserState = null;
+  if (!args.input) {
+    try {
+      browserState = await adapter.preflight();
+      const priorRuntimeState = getSiteRuntimeState(db, site);
+      if (priorRuntimeState?.status === "blocked") {
+        clearSiteRuntimeState(db, site);
+        logger.info("site_runtime_block_cleared", { site, priorReasonCode: priorRuntimeState.reasonCode });
+      }
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, site, {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
+  }
   const nativeFilterSnapshot = args.input
-    ? { site, params: {}, labels: {} }
-    : await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId });
+    ? { site, scanMode, params: {}, labels: {}, lanes: [] }
+    : applyScanPolicyToFilters(
+      await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId }),
+      scanPolicy
+    );
+  if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
+  const reusableDetails = new Map((args.input ? [] : listReusableJobDetails(db, {
+    site,
+    profileId: planRecord?.profileId,
+    maxAgeDays: 7
+  })).map((item) => [item.sourceId, item]));
+  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: 7 });
   const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
     profileId: planRecord?.profileId,
     searchPlanId: planRecord?.id,
@@ -134,10 +187,16 @@ async function scan(db, args) {
     planId: planRecord?.id || null,
     keywordCount: keywords.length,
     source,
+    scanMode,
     browser: args.browser || "input",
     hasInput: Boolean(args.input),
     analysisConcurrency,
     nativeFilters: args.input ? null : nativeFilterSnapshot,
+    scanLimits: {
+      maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
+      maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
+      browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget)
+    },
     modelProvider: configs.model?.provider || "mock",
     model: configs.model?.providers?.[configs.model?.provider || "mock"]?.model || ""
   });
@@ -177,15 +236,36 @@ async function scan(db, args) {
     keywordPlan,
     cityScopes,
     nativeFilters: nativeFilterSnapshot,
-    stretchSalaryMax: configs.scoring?.salary?.experience_flex_max_k,
-    browserPageBudget: resolveScanLimit(args, "browser-page-budget", planRecord?.plan?.scan?.browserPageBudget, 90),
-    maxCards: resolveScanLimit(args, "max-cards", planRecord?.plan?.scan?.maxCards, 60),
-    detailLimit: resolveScanLimit(args, "detail-limit", planRecord?.plan?.scan?.detailLimit, 5, { allowZero: true }),
-    maxDetailTotal: Math.min(24, resolveScanLimit(args, "max-detail-total", planRecord?.plan?.scan?.maxDetailTotal, 24)),
+    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget),
+    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
+    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
+    detailLimits: scanPolicy.detailLimits,
     scoreQuick: (job) => scoreJob(job, configs).score,
+    shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
+    getReusableDetail: (job) => reusableDetails.get(job.sourceId),
+    onRiskControl: async (risk) => {
+      setSiteRuntimeState(db, site, {
+        status: "blocked",
+        reasonCode: risk.errorCode || "BOSS_RISK_CONTROL",
+        message: risk.errorMessage || "BOSS 要求安全验证，扫描已暂停。",
+        details: { batchId, detailsRead: risk.detailsRead, candidates: risk.candidates }
+      });
+    },
     onTargetComplete
   });
 
+  const detailCoverage = args.input ? null : {
+    collected: rawJobs.length,
+    hardFiltered: rawJobs.filter((job) => !job.detailRequired).length,
+    detailRequired: rawJobs.filter((job) => job.detailRequired).length,
+    detailRead: rawJobs.filter((job) => job.detailRequired && job.detailRead).length,
+    detailPending: rawJobs.filter((job) => job.detailRequired && !job.detailRead).length,
+    detailFailed: rawJobs.filter((job) => job.detailRequired
+      && !job.detailRead
+      && job.detailErrorCode
+      && !["BOSS_DETAIL_SAFETY_LIMIT", "BOSS_DETAIL_FAIR_SHARE_PENDING"].includes(job.detailErrorCode)).length
+  };
+  if (detailCoverage) logger.info("boss_detail_coverage", { batchId, ...detailCoverage });
   logger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
   const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => analyzeScannedJob(raw, { configs, analyzeJob }));
   let saved = 0;
@@ -197,6 +277,9 @@ async function scan(db, args) {
   const report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
   logger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
   console.log(`导入 ${saved} 个岗位`);
+  if (detailCoverage) {
+    console.log(`详情覆盖：应读 ${detailCoverage.detailRequired}，成功 ${detailCoverage.detailRead}，待补 ${detailCoverage.detailPending}；左栏明确排除 ${detailCoverage.hardFiltered}`);
+  }
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
 }
@@ -228,7 +311,11 @@ function checkpointScannedJob(raw, configs) {
       fitLevel: "C",
       confidence: null,
       fitReasons: ["岗位来源事实已保存，等待本批语义分析完成。"],
+      hardBlockers: [],
+      softGaps: [],
+      questionsToVerify: scored.risks || [],
       missingPoints: [],
+      blockingGaps: [],
       riskQuestions: scored.risks || [],
       evidence: { jd: [], resume: [] },
       greeting: "",
@@ -392,7 +479,6 @@ async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes,
     labels: snapshot.labels
   });
   for (const warning of snapshot.warnings || []) logger.warn("platform_filter_remapped", { site: "boss", ...warning });
-  console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(snapshot) || "未命中可用原生条件"}`);
   return snapshot;
 }
 
@@ -431,7 +517,11 @@ function ruleGateAnalysis(job, gate) {
     recommendedResumeVersionName: "",
     primaryProjects: [],
     fitReasons: [blocked ? "基础条件不满足，未进入模型匹配。" : "招聘方活跃状态未确认，等待刷新后再进入投递队列。"],
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: job.risks || [],
     missingPoints: [],
+    blockingGaps: [],
     riskQuestions: job.risks || [],
     evidence: { jd: [], resume: [] },
     greetingAngle: "",
@@ -645,6 +735,8 @@ function printHelp() {
   run.ps1 rescore-plan --plan <Search Plan ID>
   run.ps1 scan --site boss --input data\\sample_jobs.json
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID>
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode daily
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode broad
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 4
   run.ps1 refresh-details --browser edge --plan <Search Plan ID> --limit 8

@@ -84,6 +84,10 @@ class MockModelAdapter {
     const versions = resumeVersions.versions || resumeVersions || [];
     const version = chooseVersion(versions, jobUnderstanding);
     const highRisk = jobUnderstanding.isTrainingOrSales || (jobUnderstanding.hiddenRisks || []).some((risk) => risk.severity === "high");
+    const hardBlockers = highRisk
+      ? (jobUnderstanding.hiddenRisks || []).filter((risk) => risk.severity === "high").map((risk) => risk.evidence || risk.type).filter(Boolean)
+      : [];
+    if (highRisk && !hardBlockers.length) hardBlockers.push("岗位属于培训、销售或其他明确非目标职责");
     return {
       recommendation: highRisk ? "skip" : "apply",
       fitLevel: highRisk ? "D" : "B",
@@ -92,9 +96,9 @@ class MockModelAdapter {
         `${jobUnderstanding.realRoleType || "unknown"} 与候选方向可做初步匹配`,
         `核心要求：${(jobUnderstanding.coreRequirements || []).join("、") || "待确认"}`
       ],
-      missingPoints: ["mock 仅做结构稳定，真实语义缺口等待模型 adapter 判断"],
-      blockingGaps: [],
-      riskQuestions: (jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence),
+      hardBlockers,
+      softGaps: ["mock 仅做结构稳定，真实语义缺口等待模型 adapter 判断"],
+      questionsToVerify: (jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence),
       recommendedResumeVersion: version?.id || "",
       primaryProjects: version?.primaryProjects || pickProjectNames(candidateProfile.projects || []),
       greetingAngle: version ? `围绕${version.name}切入，先确认岗位真实职责。` : "先确认岗位真实职责，再介绍相关项目。",

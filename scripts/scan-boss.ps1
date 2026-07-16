@@ -3,9 +3,10 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidateRange(1, 2147483647)]
   [int]$PlanId,
-  [int]$MaxCards = 60,
-  [int]$DetailLimit = 5,
-  [int]$MaxDetailTotal = 150,
+  [ValidateSet("daily", "broad")]
+  [string]$ScanMode = "daily",
+  [int]$MaxCards = 0,
+  [int]$MaxDetailTotal = 0,
   [ValidateSet("auto", "plugin", "bundled")]
   [string]$BridgeSource = "auto",
   [string]$EdgeControlRoot = ""
@@ -32,10 +33,10 @@ $ScanArgs = @(
   "--site", "boss",
   "--browser", "edge",
   "--plan", [string]$PlanId,
-  "--max-cards", [string]$MaxCards,
-  "--detail-limit", [string]$DetailLimit,
-  "--max-detail-total", [string]$MaxDetailTotal
+  "--scan-mode", $ScanMode
 )
+if ($MaxCards -gt 0) { $ScanArgs += @("--max-cards", [string]$MaxCards) }
+if ($MaxDetailTotal -gt 0) { $ScanArgs += @("--max-detail-total", [string]$MaxDetailTotal) }
 
 & $RunScript @ScanArgs
 exit $LASTEXITCODE

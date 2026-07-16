@@ -1,6 +1,6 @@
 const assert = require("node:assert");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../src/core/profile_schema");
-const { profileToRuntimeConfigs } = require("../src/core/search_plan");
+const { profileToRuntimeConfigs, resolveScanPolicy, applyScanPolicyToFilters } = require("../src/core/search_plan");
 const { validateSearchPlan } = require("../src/core/plan_validation");
 const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
 const { prepareResumeTextForModel } = require("../src/core/profile_onboarding");
@@ -50,6 +50,40 @@ const plan = normalizeSearchPlan({
 assert.strictEqual(plan.bossActiveDays, 3);
 assert.deepStrictEqual(plan.jobTypes, ["全职"]);
 assert.deepStrictEqual(plan.degrees, []);
+assert.strictEqual(plan.scan.maxDetailTotal, 300);
+assert.strictEqual(Object.hasOwn(plan.scan, "detailLimit"), false);
+assert.strictEqual(normalizeSearchPlan({ scan: { maxDetailTotal: 500 } }, profile).scan.maxDetailTotal, 500);
+const modePlan = {
+  ...plan,
+  keywords: [
+    { word: "AI application", priority: "A" },
+    { word: "RAG", priority: "A" },
+    { word: "Agent", priority: "B" },
+    { word: "Python backend", priority: "C" }
+  ],
+  scan: { maxCards: 90, maxDetailTotal: 300, browserPageBudget: 90 }
+};
+const dailyPolicy = resolveScanPolicy(modePlan, "daily");
+assert.deepStrictEqual(dailyPolicy.keywordPlan.map((item) => item.word), ["AI application", "RAG", "Agent"]);
+assert.strictEqual(dailyPolicy.maxCards, 50);
+assert.strictEqual(dailyPolicy.maxDetailTotal, 220);
+assert.deepStrictEqual(dailyPolicy.detailLimits, { A: 40, B: 30 });
+assert.strictEqual(dailyPolicy.browserPageBudget, 40);
+const broadPolicy = resolveScanPolicy(modePlan, "broad");
+assert.strictEqual(broadPolicy.keywordPlan.length, 4);
+assert.strictEqual(broadPolicy.maxCards, 90);
+assert.strictEqual(broadPolicy.maxDetailTotal, 300);
+const filteredLanes = applyScanPolicyToFilters({
+  params: { salary: ["405"] },
+  labels: { salary: ["10-20K"] },
+  lanes: [
+    { id: "salary-405", params: { salary: ["405"] }, labels: { salary: ["10-20K"] } },
+    { id: "salary-404", params: { salary: ["404"] }, labels: { salary: ["5-10K"] } }
+  ]
+}, dailyPolicy);
+assert.strictEqual(filteredLanes.lanes.length, 1);
+assert.deepStrictEqual(filteredLanes.params.salary, ["405"]);
+assert.strictEqual(applyScanPolicyToFilters({ lanes: filteredLanes.lanes.concat({ id: "salary-404" }) }, broadPolicy).lanes.length, 2);
 const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile);
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));

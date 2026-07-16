@@ -3,6 +3,12 @@ const { mergeJobMetadata } = require("../../core/job_metadata");
 const { normalizePlatformFilterCatalog } = require("../../core/platform_filters");
 
 const DEFAULT_CITY_CODE = "101280100";
+const DETAIL_PACING = Object.freeze({
+  microEvery: [9, 13],
+  microDelayMs: [7000, 12000],
+  macroEvery: [32, 40],
+  macroDelayMs: [90000, 150000]
+});
 const BOSS_FILTER_FIELDS = {
   salary: { key: "salary", label: "\u85aa\u8d44\u5f85\u9047", urlParam: "salary", selection: "single", semantic: "salary_range" },
   exp: { key: "experience", label: "\u5de5\u4f5c\u7ecf\u9a8c", urlParam: "experience", selection: "multiple", semantic: "experience" },
@@ -73,8 +79,8 @@ const PAGE_HELPERS = String.raw`
       const flat = window.__bossDecode(card.innerText).replace(/\s+/g, " ");
       const title = window.__bossDecode((q(".job-name") || q(".job-title") || {}).innerText || lines[0] || "");
       const metadata = window.__bossJobMetadata(lines);
-      const salary = window.__bossDecode((q(".salary") || q(".red") || {}).innerText || metadata.salary || (flat.match(salaryRe) || [""])[0]);
-      const companyNode = q(".company-name");
+      const salary = window.__bossDecode((q(".job-salary") || q(".salary") || q(".red") || {}).innerText || metadata.salary || (flat.match(salaryRe) || [""])[0]);
+      const companyNode = q(".boss-name") || q(".company-name");
       let company = window.__bossDecode(companyNode?.innerText || "");
       const salaryIndex = lines.findIndex((line) => salaryLineRe.test(line));
       if (!company) {
@@ -93,7 +99,7 @@ const PAGE_HELPERS = String.raw`
         salary,
         experience: metadata.experience,
         education: metadata.education,
-        location: lines.find((line) => cityRe.test(line)) || "",
+        location: window.__bossDecode(q(".company-location")?.innerText || "") || lines.find((line) => cityRe.test(line)) || "",
         tags: lines.filter((line) => expRe.test(line)).slice(0, 8),
         url: href,
         cardText: flat.slice(0, 500),
@@ -117,6 +123,7 @@ const PAGE_HELPERS = String.raw`
     if (!target || target === document.body || target === document.documentElement || target.scrollHeight <= target.clientHeight + 8) {
       target = document.scrollingElement || document.documentElement;
     }
+    if (!target) return { target: "unavailable", before: 0, scrollTop: 0, viewport: 0, scrollHeight: 0, moved: false, atBottom: false };
     const isDocument = target === document.scrollingElement || target === document.documentElement || target === document.body;
     const before = isDocument ? window.scrollY : target.scrollTop;
     const viewport = isDocument ? window.innerHeight : target.clientHeight;
@@ -237,11 +244,15 @@ class BossSiteAdapter {
           const url = location.href;
           const path = location.pathname;
           const isBoss = /(^|\\.)zhipin\\.com$/i.test(location.hostname);
-          const isLoginPage = /\\/web\\/user\\//i.test(path)
-            || Boolean(document.querySelector(".sign-form, .login-register, [class*='login-form']"));
+          const hasVisibleLoginForm = [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+          });
+          const isLoginPage = /\\/web\\/user\\//i.test(path) || hasVisibleLoginForm;
           const isRiskPage = /\\/web\\/passport\\/zp\\/verify/i.test(path)
             || /安全验证|访问异常|行为验证/.test(document.title || "");
-          const hasUserSurface = Boolean(document.querySelector(".nav-figure, .user-nav, [ka='header-personal'], [class*='user-nav']"));
+          const hasUserSurface = Boolean(document.querySelector(".nav-figure, .user-nav, [ka='header-personal'], [ka='header-username'], [class*='user-nav']"));
           const hasJobStructure = Boolean(document.querySelector(".job-list-container, .rec-job-list, .job-card-box, .job-detail-container"));
           const isSearchPage = /\\/web\\/geek\\/jobs/i.test(path);
           return {
@@ -339,6 +350,7 @@ class BossSiteAdapter {
       scroll: [900, 1600],
       card: [1000, 2000],
       card_retry: [300, 700],
+      list_ready: [450, 750],
       refresh: [1200, 2200],
       target: [2500, 4500]
     };
@@ -356,6 +368,30 @@ class BossSiteAdapter {
   resetPacing() {
     this.pacedActions = 0;
     this.nextPacingCooldownAt = randomBetween(18, 26, this.random);
+    this.detailActions = 0;
+    this.nextDetailMicroCooldownAt = randomBetween(...DETAIL_PACING.microEvery, this.random);
+    this.nextDetailMacroCooldownAt = randomBetween(...DETAIL_PACING.macroEvery, this.random);
+  }
+
+  async waitAfterDetailAction() {
+    this.detailActions += 1;
+    if (this.detailActions >= this.nextDetailMacroCooldownAt) {
+      const cooldownMs = randomBetween(...DETAIL_PACING.macroDelayMs, this.random);
+      console.error(`[boss] 已读取 ${this.detailActions} 个右栏详情，阶段冷却 ${Math.ceil(cooldownMs / 1000)} 秒后继续`);
+      this.logger?.info("boss_detail_macro_cooldown", { detailActions: this.detailActions, cooldownMs });
+      await this.sleep(cooldownMs);
+      this.nextDetailMacroCooldownAt += randomBetween(...DETAIL_PACING.macroEvery, this.random);
+      while (this.nextDetailMicroCooldownAt <= this.detailActions) {
+        this.nextDetailMicroCooldownAt += randomBetween(...DETAIL_PACING.microEvery, this.random);
+      }
+      return;
+    }
+    if (this.detailActions >= this.nextDetailMicroCooldownAt) {
+      const cooldownMs = randomBetween(...DETAIL_PACING.microDelayMs, this.random);
+      this.logger?.info("boss_detail_micro_cooldown", { detailActions: this.detailActions, cooldownMs });
+      await this.sleep(cooldownMs);
+      this.nextDetailMicroCooldownAt += randomBetween(...DETAIL_PACING.microEvery, this.random);
+    }
   }
 
   async scanBrowser(options) {
@@ -366,28 +402,33 @@ class BossSiteAdapter {
     const cityScopes = normalizeCityScopes(options);
     const tabId = options.tabId || await this.browser.activeTabId();
     const maxCards = Number(options.maxCards || 60);
-    const detailLimit = Number(options.detailLimit ?? 5);
-    const maxDetailTotal = Math.min(24, Math.max(0, Number(options.maxDetailTotal ?? 24)));
+    const maxDetailTotal = Math.min(1000, Math.max(0, Number(options.maxDetailTotal ?? 300)));
     const nativeFilterLanes = normalizeNativeFilterLanes(options.nativeFilters);
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.pageBudget = normalizePageBudget(options.browserPageBudget);
     this.resetPacing();
     const candidates = new Map();
-    const quotaUsed = new Map();
+    const detailAttempts = new Set();
     let detailsRead = 0;
+    let detailsReused = 0;
+    let detailsFailed = 0;
     let successfulTargets = 0;
     let fatalError = null;
+    const targetCount = cityScopes.length * keywordPlan.length * nativeFilterLanes.length;
+    let targetPosition = 0;
 
     scanTargets: for (const [cityOrder, city] of cityScopes.entries()) {
       for (const item of keywordPlan) {
         const keyword = item.word;
         const cardLimit = weightedCardLimit(item.priority, maxCards);
         for (const lane of nativeFilterLanes) {
+          targetPosition += 1;
           const laneId = lane.id || "default";
           const targetKey = [city.cityCode, keyword, laneId].join("|");
           const startedAt = new Date().toISOString();
           let targetJobs = [];
+          let targetEntries = [];
           try {
             const url = buildBossSearchUrl({ keyword, cityCode: city.cityCode, nativeFilters: lane });
             console.error(`[boss] 打开城市：${city.city || city.cityCode} · ${keyword}（${item.priority}，最多 ${cardLimit} 条）`);
@@ -407,7 +448,15 @@ class BossSiteAdapter {
             console.error(`[boss] ${city.city || city.cityCode} · ${keyword} 列表岗位：${cards.length}`);
             this.logger?.info("boss_cards_collected", { targetKey, keyword, city: city.city || "", cardCount: cards.length, nativeFilterLane: laneId });
             const entries = cards.map((card, index) => {
-              const job = normalizeBossJob({ ...card, keyword, source: "boss", searchCity: city.city || "" });
+              const cardJob = normalizeBossJob({ ...card, keyword, source: "boss", searchCity: city.city || "" });
+              const reusable = typeof options.getReusableDetail === "function" ? options.getReusableDetail(cardJob) : null;
+              const job = reusable?.description ? normalizeBossJob({
+                ...cardJob,
+                ...reusable,
+                bossActiveText: cardJob.bossActiveText || reusable.bossActiveText || "",
+                detailRead: true
+              }) : cardJob;
+              if (reusable?.description) job.detailReused = true;
               return {
                 job,
                 keyword,
@@ -417,26 +466,55 @@ class BossSiteAdapter {
                 index,
                 laneRank: Number(lane.rank || 0),
                 laneId,
-                stretchCandidate: isStretchDetailCandidate(job, options.stretchSalaryMax),
                 quickScore: options.scoreQuick ? options.scoreQuick(job) : 0
               };
             });
+            targetEntries = entries;
 
-            const quotaKey = `${city.cityCode}|${keyword}`;
-            const quota = detailQuotaForPriority(item.priority, detailLimit);
-            const remainingQuota = Math.max(0, quota - Number(quotaUsed.get(quotaKey) || 0));
-            const detailEntries = [...entries]
-              .sort((left, right) => Number(right.stretchCandidate) - Number(left.stretchCandidate)
-                || right.quickScore - left.quickScore
-                || left.index - right.index)
-              .filter((entry) => !candidates.get(bossSourceId(entry.job))?.job?.detailRead)
-              .slice(0, Math.min(remainingQuota, Math.max(0, maxDetailTotal - detailsRead)));
-            const selectedIds = new Set(detailEntries.map((entry) => bossSourceId(entry.job)));
+            const eligibleDetailEntries = [];
             for (const entry of entries) {
-              entry.job.detailRequired = selectedIds.has(bossSourceId(entry.job));
+              const key = bossSourceId(entry.job);
+              const existing = candidates.get(key)?.job;
+              const detailRequired = typeof options.shouldReadDetail !== "function" || options.shouldReadDetail(entry.job) !== false;
+              entry.job.detailRequired = detailRequired;
+              if (entry.job.detailReused && !existing?.detailRead) detailsReused += 1;
+              if (detailRequired && !entry.job.detailRead && !existing?.detailRead && !detailAttempts.has(key)) {
+                eligibleDetailEntries.push(entry);
+              }
               mergeScanCandidate(candidates, entry);
             }
-            targetJobs = entries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
+            const remainingTargets = Math.max(1, targetCount - targetPosition + 1);
+            const remainingDetailBudget = Math.max(0, maxDetailTotal - detailAttempts.size);
+            const configuredDetailLimit = Number(options.detailLimits?.[item.priority]);
+            const targetDetailQuota = Number.isFinite(configuredDetailLimit)
+              ? Math.min(Math.max(0, configuredDetailLimit), remainingDetailBudget)
+              : Math.ceil(remainingDetailBudget / remainingTargets);
+            const detailEntries = eligibleDetailEntries.slice(0, targetDetailQuota);
+            const selectedDetailIds = new Set(detailEntries.map((entry) => bossSourceId(entry.job)));
+            for (const entry of eligibleDetailEntries) {
+              const key = bossSourceId(entry.job);
+              if (selectedDetailIds.has(key)) {
+                detailAttempts.add(key);
+                continue;
+              }
+              const pendingJob = {
+                ...entry.job,
+                detailErrorCode: remainingTargets === 1 ? "BOSS_DETAIL_SAFETY_LIMIT" : "BOSS_DETAIL_FAIR_SHARE_PENDING"
+              };
+              mergeScanCandidate(candidates, { ...entry, job: pendingJob });
+            }
+            this.logger?.info("boss_target_detail_allocation", {
+              targetKey,
+              targetPosition,
+              targetCount,
+              remainingTargets,
+              remainingDetailBudget,
+              eligibleDetails: eligibleDetailEntries.length,
+              configuredDetailLimit: Number.isFinite(configuredDetailLimit) ? configuredDetailLimit : null,
+              targetDetailQuota,
+              selectedDetails: detailEntries.length
+            });
+            targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
             for (const entry of detailEntries) {
               console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
@@ -455,8 +533,9 @@ class BossSiteAdapter {
                 detailedJob.detailRequired = true;
                 mergeScanCandidate(candidates, { ...entry, job: detailedJob });
                 detailsRead += 1;
-                quotaUsed.set(quotaKey, Number(quotaUsed.get(quotaKey) || 0) + 1);
+                await this.waitAfterDetailAction();
               } catch (error) {
+                detailsFailed += 1;
                 this.logger?.warn("boss_card_detail_read_failed", {
                   targetKey,
                   keyword,
@@ -467,10 +546,11 @@ class BossSiteAdapter {
                 const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
                 mergeScanCandidate(candidates, { ...entry, job: failedJob });
                 if (isFatalBrowserError(error)) throw error;
+                await this.waitAfterDetailAction();
               }
             }
 
-            targetJobs = entries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
+            targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
             successfulTargets += 1;
             if (typeof options.onTargetComplete === "function") {
               await options.onTargetComplete({
@@ -497,6 +577,7 @@ class BossSiteAdapter {
               errorCode: error?.code || "BOSS_SCAN_TARGET_FAILED",
               errorMessage: error?.message || String(error)
             });
+            targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
             if (typeof options.onTargetComplete === "function") {
               await options.onTargetComplete({
                 targetKey,
@@ -522,17 +603,35 @@ class BossSiteAdapter {
         }
       }
     }
+    const resultJobs = [...candidates.values()].map((item) => item.job);
+    const detailRequired = resultJobs.filter((job) => job.detailRequired).length;
+    const detailReadTotal = resultJobs.filter((job) => job.detailRequired && job.detailRead).length;
+    const detailsPending = resultJobs.filter((job) => job.detailRequired && !job.detailRead).length;
     this.logger?.info("boss_detail_plan", {
-      uniqueCandidates: candidates.size,
-      selectedDetails: detailsRead,
-      detailLimit,
+      uniqueCandidates: resultJobs.length,
+      detailRequired,
+      detailAttempts: detailAttempts.size,
+      detailsRead: detailReadTotal,
+      detailsReadNew: detailsRead,
+      detailsReused,
+      detailsFailed,
+      detailsPending,
       maxDetailTotal,
       listPageBudget: this.pageBudget,
       listPagesUsed: this.listNavigations
     });
+    if (fatalError?.code === "BOSS_RISK_CONTROL" && typeof options.onRiskControl === "function") {
+      await options.onRiskControl({
+        errorCode: fatalError.code,
+        errorMessage: fatalError.message,
+        detailsRead,
+        detailsReused,
+        candidates: resultJobs.length
+      });
+    }
     if (!successfulTargets && fatalError) throw fatalError;
     if (!successfulTargets) throw bossError("BOSS_SCAN_NO_TARGET_SUCCEEDED", "本轮所有 BOSS 搜索目标均失败，已保留逐目标错误记录。");
-    return [...candidates.values()].map((item) => item.job);
+    return resultJobs;
   }
 
   async refreshDetails(jobs, { limit = 8, tabId = null, onAttempt = null } = {}) {
@@ -616,6 +715,22 @@ class BossSiteAdapter {
 
   async collectCards(tabId, maxCards) {
     const found = new Map();
+    let readinessAttempts = 0;
+    while (!found.size && readinessAttempts < 10) {
+      await this.assertSearchPage(tabId);
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
+      for (const card of initialCards || []) {
+        const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
+        if (!found.has(key)) found.set(key, card);
+      }
+      if (found.size) break;
+      readinessAttempts += 1;
+      await this.waitWithPacing("list_ready");
+    }
+    if (readinessAttempts) {
+      this.logger?.info("boss_list_content_waited", { attempts: readinessAttempts, cardCount: found.size });
+    }
     let lastSize = 0;
     let bottomStable = 0;
     const maxRounds = Math.max(12, Math.min(40, Math.ceil(Number(maxCards || 60) / 5) + 4));
@@ -695,7 +810,11 @@ class BossSiteAdapter {
       path: location.pathname,
       title: document.title || "",
       isRiskPage: /\\/web\\/passport\\/zp\\/verify/i.test(location.pathname) || /安全验证|访问异常|行为验证/.test(document.title || ""),
-      isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || Boolean(document.querySelector(".sign-form, .login-register, [class*='login-form']")),
+      isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      }),
       isSearchPage: /\\/web\\/geek\\/jobs/i.test(location.pathname)
     }))()`);
     if (state?.isRiskPage) throw bossError("BOSS_RISK_CONTROL", "BOSS 当前要求安全验证，已停止本轮页面访问。");
@@ -709,7 +828,11 @@ class BossSiteAdapter {
       path: location.pathname,
       title: document.title || "",
       isRiskPage: /\\/web\\/passport\\/zp\\/verify/i.test(location.pathname) || /安全验证|访问异常|行为验证/.test(document.title || ""),
-      isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || Boolean(document.querySelector(".sign-form, .login-register, [class*='login-form']")),
+      isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      }),
       jobId: (location.pathname.match(/\\/job_detail\\/([^/?#]+)\\.html/i) || [])[1] || ""
     }))()`);
     if (state?.isRiskPage) throw bossError("BOSS_RISK_CONTROL", "BOSS 当前要求安全验证，已停止本轮页面访问。");
@@ -792,7 +915,7 @@ class BossSiteAdapter {
 }
 
 function normalizeBossJob(job) {
-  const description = cleanDetailText(job.description || job.detail || job.cardText || "");
+  const description = cleanDetailText(job.description || job.detail || "");
   const url = normalizeBossNavigationUrl(job.url || "");
   const metadata = mergeJobMetadata(job, description);
   return {
@@ -942,15 +1065,6 @@ function weightedCardLimit(priority, baseLimit) {
   return Math.max(10, Math.ceil(base * ratio));
 }
 
-function isStretchDetailCandidate(job = {}, salaryCeiling = Infinity) {
-  const experience = `${job.experience || ""} ${(job.tags || []).join(" ")}`;
-  if (!/3-5年|3年以上/.test(experience)) return false;
-  const salary = String(job.salary || "").match(/(\d+)\s*[-~—]\s*(\d+)\s*K/i);
-  if (!salary) return false;
-  const ceiling = Number(salaryCeiling);
-  return Number(salary[2]) <= (Number.isFinite(ceiling) && ceiling > 0 ? ceiling : Infinity);
-}
-
 function normalizePageBudget(value) {
   const budget = Number(value);
   return Number.isFinite(budget) ? Math.max(20, Math.min(300, Math.floor(budget))) : 90;
@@ -960,24 +1074,6 @@ function randomBetween(min, max, randomFn = Math.random) {
   const low = Math.min(min, max);
   const high = Math.max(min, max);
   return Math.round(low + (high - low) * Math.max(0, Math.min(1, Number(randomFn()) || 0)));
-}
-
-function detailQuotas(keywordPlan, detailLimit) {
-  const requested = Number(detailLimit);
-  const perKeyword = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 5;
-  const counts = { A: 0, B: 0, C: 0 };
-  for (const item of keywordPlan) counts[normalizePriority(item.priority)] += 1;
-  if (perKeyword === 0) return { A: 0, B: 0, C: 0 };
-  return {
-    A: counts.A * perKeyword,
-    B: counts.B * Math.max(1, Math.ceil(perKeyword * 0.55)),
-    C: counts.C * Math.max(1, Math.ceil(perKeyword * 0.25))
-  };
-}
-
-function detailQuotaForPriority(priority, detailLimit) {
-  const quotas = detailQuotas([{ priority }], detailLimit);
-  return quotas[normalizePriority(priority)] || 0;
 }
 
 function mergeScanCandidate(target, candidate) {
@@ -1021,28 +1117,6 @@ function mergeBossJobFacts(existing = {}, incoming = {}) {
     detailRead: Boolean(existing.detailRead || incoming.detailRead),
     detailErrorCode: incoming.detailRead ? "" : (incoming.detailErrorCode || existing.detailErrorCode || "")
   };
-}
-
-function selectDetailCandidates(candidates, keywordPlan, { detailLimit, maxDetailTotal } = {}) {
-  const quotas = detailQuotas(keywordPlan, detailLimit);
-  const selectedByPriority = { A: 0, B: 0, C: 0 };
-  const requestedTotal = Number(maxDetailTotal);
-  const total = Number.isFinite(requestedTotal) ? Math.max(0, requestedTotal) : 150;
-  return [...candidates]
-    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority)
-      || Number(b.stretchCandidate) - Number(a.stretchCandidate)
-      || Number(a.laneRank || 0) - Number(b.laneRank || 0)
-      || b.quickScore - a.quickScore
-      || a.cityOrder - b.cityOrder
-      || a.keywordOrder - b.keywordOrder
-      || a.index - b.index)
-    .filter((candidate) => {
-      const priority = normalizePriority(candidate.priority);
-      if (selectedByPriority[priority] >= quotas[priority]) return false;
-      if (Object.values(selectedByPriority).reduce((sum, value) => sum + value, 0) >= total) return false;
-      selectedByPriority[priority] += 1;
-      return true;
-    });
 }
 
 function dedupeJobs(jobs) {
@@ -1137,13 +1211,10 @@ module.exports = {
   bossSourceId,
   cleanDetailText,
   weightedCardLimit,
-  detailQuotas,
   mergeScanCandidate,
-  selectDetailCandidates,
   buildBossSearchUrl,
   normalizeNativeFilters,
   normalizeNativeFilterLanes,
-  isStretchDetailCandidate,
   normalizePageBudget,
   randomBetween,
   parseBossFilterCatalog,

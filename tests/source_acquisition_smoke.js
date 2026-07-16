@@ -9,8 +9,13 @@ const {
   createBatch,
   recordScanTargetResult,
   listScanTargetResults,
+  getSiteRuntimeState,
+  setSiteRuntimeState,
+  clearSiteRuntimeState,
+  listReusableJobDetails,
   recordJobRefreshAttempt,
-  listJobRefreshAttempts
+  listJobRefreshAttempts,
+  upsertJob
 } = require("../src/core/storage");
 
 const activeBoss = { id: "active-boss", active: true, url: "https://www.zhipin.com/web/geek/jobs?query=RAG" };
@@ -60,7 +65,14 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await preflightSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
+  await delayedListSmoke();
   await paneSwitchSmoke();
+  await fullDetailCoverageSmoke();
+  await fairDetailAllocationSmoke();
+  await priorityDetailBudgetSmoke();
+  await reusableDetailSmoke();
+  await detailSafetyLimitSmoke();
+  await detailFailureDedupeSmoke();
   await targetIsolationSmoke();
   await pageBudgetSmoke();
   await riskControlSmoke();
@@ -82,6 +94,8 @@ async function preflightSmoke() {
     async activeTabId() { return activeChat.id; },
     async evalValue(tabId, expression) {
       assert(expression.includes("loggedIn"));
+      assert(expression.includes("header-username"));
+      assert(expression.includes("getBoundingClientRect"));
       inspected.push(tabId);
       if (tabId === oldSearch.id) {
         return {
@@ -149,6 +163,28 @@ async function scrollSmoke() {
   const cards = await adapter.collectCards("tab", 35);
   assert.strictEqual(cards.length, 35);
   assert.strictEqual(page, 3);
+}
+
+async function delayedListSmoke() {
+  let reads = 0;
+  let scrolls = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (!expression.includes("__bossExtractCards")) return true;
+      reads += 1;
+      return reads < 4 ? [] : [card("delayed")];
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => {
+    scrolls += 1;
+    return { moved: false, atBottom: true };
+  };
+  const cards = await adapter.collectCards("tab", 1);
+  assert.strictEqual(cards.length, 1);
+  assert.strictEqual(scrolls, 0);
+  assert(reads >= 4);
 }
 
 async function paneSwitchSmoke() {
@@ -228,7 +264,6 @@ async function targetIsolationSmoke() {
     ],
     cityScopes: [{ city: "广州", cityCode: "101280100" }],
     maxCards: 20,
-    detailLimit: 1,
     maxDetailTotal: 3,
     onTargetComplete: async (result) => checkpoints.push(result),
     scoreQuick: () => 1
@@ -270,7 +305,6 @@ async function pageBudgetSmoke() {
     keywords: ["first", "second", "third"],
     cityScopes: [{ city: "广州", cityCode: "101280100" }],
     maxCards: 20,
-    detailLimit: 1,
     maxDetailTotal: 3,
     onTargetComplete: async (result) => checkpoints.push(result),
     scoreQuick: () => 1
@@ -293,19 +327,207 @@ async function riskControlSmoke() {
     throw Object.assign(new Error("risk control"), { code: "BOSS_RISK_CONTROL" });
   };
   const checkpoints = [];
+  const riskEvents = [];
   await assert.rejects(() => adapter.scanBrowser({
     tabId: activeBoss.id,
     keywords: ["first", "second", "third"],
     cityScopes: [{ city: "广州", cityCode: "101280100" }],
     maxCards: 20,
-    detailLimit: 1,
     maxDetailTotal: 3,
+    onRiskControl: async (event) => riskEvents.push(event),
     onTargetComplete: async (result) => checkpoints.push(result),
     scoreQuick: () => 1
   }), (error) => error.code === "BOSS_RISK_CONTROL");
   assert.strictEqual(checkpoints.length, 1);
   assert.strictEqual(checkpoints[0].status, "failed");
   assert.strictEqual(checkpoints[0].jobCount, 1);
+  assert.strictEqual(riskEvents.length, 1);
+  assert.strictEqual(riskEvents[0].errorCode, "BOSS_RISK_CONTROL");
+}
+
+async function fullDetailCoverageSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  const fixtures = {
+    primary: [card("shared"), card("primary-only"), card("internship")],
+    secondary: [card("shared"), card("secondary-only")],
+    broad: [card("broad-only")]
+  };
+  fixtures.primary[2].title = "AI开发实习生";
+  const reads = [];
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => fixtures[browser.keyword];
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads.push(job.sourceId);
+    return {
+      description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
+      bossActiveText: "今日活跃",
+      salary: job.salary,
+      experience: job.experience,
+      education: job.education
+    };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["primary", "secondary", "broad"],
+    keywordPlan: [
+      { word: "primary", priority: "A" },
+      { word: "secondary", priority: "B" },
+      { word: "broad", priority: "C" }
+    ],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 100,
+    shouldReadDetail: (job) => !/实习/.test(job.title)
+  });
+  assert.strictEqual(jobs.length, 5);
+  assert.strictEqual(reads.length, 4, "所有未硬排除的唯一岗位都应读取右栏");
+  assert.strictEqual(new Set(reads).size, 4, "跨关键词重复岗位不得重复点击");
+  assert(jobs.filter((job) => job.detailRequired).every((job) => job.detailRead));
+  assert.strictEqual(jobs.find((job) => /实习/.test(job.title)).detailRequired, false);
+}
+
+async function fairDetailAllocationSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  const reads = [];
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads.push(job.title);
+    return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["first", "second", "third"],
+    keywordPlan: [
+      { word: "first", priority: "A" },
+      { word: "second", priority: "A" },
+      { word: "third", priority: "A" }
+    ],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 6
+  });
+  assert.strictEqual(reads.length, 6);
+  assert.deepStrictEqual(["first", "second", "third"].map((keyword) => reads.filter((title) => title.startsWith(keyword)).length), [2, 2, 2]);
+  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 6);
+  assert(jobs.some((job) => job.detailErrorCode === "BOSS_DETAIL_FAIR_SHARE_PENDING"));
+}
+
+async function priorityDetailBudgetSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  const reads = [];
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads.push(job.title);
+    return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["primary", "secondary"],
+    keywordPlan: [{ word: "primary", priority: "A" }, { word: "secondary", priority: "B" }],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 7,
+    detailLimits: { A: 4, B: 3 }
+  });
+  assert.deepStrictEqual([
+    reads.filter((title) => title.startsWith("primary")).length,
+    reads.filter((title) => title.startsWith("secondary")).length
+  ], [4, 3]);
+}
+
+async function reusableDetailSmoke() {
+  const browser = { async activeTabId() { return activeBoss.id; }, async navigate() {} };
+  const reads = [];
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("cached"), card("fresh")];
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads.push(job.sourceId);
+    return { description: `实时职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["cache"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 2,
+    getReusableDetail: (job) => job.sourceId === "boss:cached" ? {
+      sourceId: job.sourceId,
+      description: "缓存职位描述 Python RAG ".repeat(12),
+      bossActiveText: "今日活跃"
+    } : null
+  });
+  assert.deepStrictEqual(reads, ["boss:fresh"]);
+  assert.strictEqual(jobs.find((job) => job.sourceId === "boss:cached").detailRead, true);
+  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 2);
+}
+
+async function detailSafetyLimitSmoke() {
+  const browser = { async activeTabId() { return activeBoss.id; }, async navigate() {} };
+  let reads = 0;
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => Array.from({ length: 5 }, (_, index) => card(`safety-${index}`));
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads += 1;
+    return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["safety"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 2
+  });
+  assert.strictEqual(reads, 2);
+  assert.strictEqual(jobs.filter((job) => job.detailRequired).length, 5);
+  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 2);
+  assert.strictEqual(jobs.filter((job) => job.detailErrorCode === "BOSS_DETAIL_SAFETY_LIMIT").length, 3);
+}
+
+async function detailFailureDedupeSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  let reads = 0;
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("same-failure")];
+  adapter.readCardDetail = async () => {
+    reads += 1;
+    throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["first", "second"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 10
+  });
+  assert.strictEqual(reads, 1, "同一岗位详情失败后不得在同一轮跨关键词反复点击");
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(jobs[0].detailRequired, true);
+  assert.strictEqual(jobs[0].detailRead, false);
+  assert.strictEqual(jobs[0].detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
 }
 
 async function refreshSafetySmoke() {
@@ -374,6 +596,34 @@ function storageSmoke() {
     const targets = listScanTargetResults(db, batchId);
     assert.strictEqual(targets.length, 1);
     assert.strictEqual(targets[0].errorCode, "BOSS_WHITE_PAGE");
+
+    setSiteRuntimeState(db, "boss", { status: "blocked", reasonCode: "BOSS_RISK_CONTROL", message: "verify" });
+    assert.strictEqual(getSiteRuntimeState(db, "boss").status, "blocked");
+    clearSiteRuntimeState(db, "boss");
+    assert.strictEqual(getSiteRuntimeState(db, "boss"), null);
+
+    upsertJob(db, {
+      source: "boss",
+      sourceId: "boss:reusable-smoke",
+      keyword: "RAG",
+      title: "Reusable",
+      company: "Quality Corp",
+      location: "广州",
+      salary: "10-15K",
+      experience: "1-3年",
+      education: "本科",
+      bossActiveText: "今日活跃",
+      url: "https://www.zhipin.com/job_detail/reusable-smoke.html",
+      tags: [],
+      description: "完整职位描述 Python RAG ".repeat(12),
+      matches: [],
+      risks: [],
+      qualityTags: [],
+      analysis: {}
+    }, batchId);
+    const reusable = listReusableJobDetails(db, { site: "boss", maxAgeDays: 7 });
+    assert.strictEqual(reusable.length, 1);
+    assert.strictEqual(reusable[0].sourceId, "boss:reusable-smoke");
 
     const now = new Date().toISOString();
     const jobId = Number(db.prepare(`INSERT INTO jobs(source,source_id,title,tags_json,matches_json,risks_json,quality_tags_json,analysis_json,first_seen_at,last_seen_at)

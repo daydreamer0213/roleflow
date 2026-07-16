@@ -7,6 +7,7 @@ const { parseBossActivityText } = require("../adapters/sites/boss");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
+const { effectiveHardBlockers } = require("./model_contract");
 
 const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
@@ -260,6 +261,15 @@ CREATE TABLE IF NOT EXISTS scan_target_results (
   FOREIGN KEY(batch_id) REFERENCES batches(id)
 );
 
+CREATE TABLE IF NOT EXISTS site_runtime_states (
+  site TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  reason_code TEXT,
+  message TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS job_refresh_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER NOT NULL,
@@ -457,6 +467,72 @@ function listScanTargetResults(db, batchId) {
     attemptNumber: Number(row.attempt_number || 1),
     startedAt: row.started_at,
     finishedAt: row.finished_at
+  }));
+}
+
+function getSiteRuntimeState(db, site) {
+  const row = db.prepare("SELECT * FROM site_runtime_states WHERE site = ?").get(String(site || "").trim().toLowerCase());
+  return row ? {
+    site: row.site,
+    status: row.status,
+    reasonCode: row.reason_code || "",
+    message: row.message || "",
+    details: parseJson(row.details_json, {}),
+    updatedAt: row.updated_at
+  } : null;
+}
+
+function setSiteRuntimeState(db, site, input = {}) {
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  if (!normalizedSite) throw new Error("site runtime state requires a site");
+  db.prepare(`
+    INSERT INTO site_runtime_states(site, status, reason_code, message, details_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(site) DO UPDATE SET status=excluded.status, reason_code=excluded.reason_code,
+      message=excluded.message, details_json=excluded.details_json, updated_at=excluded.updated_at
+  `).run(
+    normalizedSite,
+    String(input.status || "ready"),
+    String(input.reasonCode || "") || null,
+    String(input.message || "").slice(0, 1000) || null,
+    JSON.stringify(input.details || {}),
+    nowIso()
+  );
+  return getSiteRuntimeState(db, normalizedSite);
+}
+
+function clearSiteRuntimeState(db, site) {
+  db.prepare("DELETE FROM site_runtime_states WHERE site = ?").run(String(site || "").trim().toLowerCase());
+}
+
+function listReusableJobDetails(db, { site = "boss", profileId = 0, maxAgeDays = 7 } = {}) {
+  const parsedDays = Number(maxAgeDays);
+  const days = Number.isFinite(parsedDays) ? Math.max(1, Math.min(30, parsedDays)) : 7;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const normalizedProfileId = Number(profileId || 0);
+  const rows = db.prepare(`
+    WITH reusable AS (
+      SELECT jobs.source_id, o.salary, o.experience, o.education, o.boss_active_text,
+        o.description, o.seen_at,
+        ROW_NUMBER() OVER (PARTITION BY jobs.source_id ORDER BY o.seen_at DESC, o.id DESC) AS detail_rank
+      FROM job_observations o
+      JOIN jobs ON jobs.id = o.job_id
+      JOIN batches b ON b.id = o.batch_id
+      WHERE jobs.source = ?
+        AND LENGTH(TRIM(COALESCE(o.description, ''))) >= 120
+        AND o.seen_at >= ?
+        AND (? <= 0 OR b.profile_id = ?)
+    )
+    SELECT * FROM reusable WHERE detail_rank = 1
+  `).all(String(site || "boss"), cutoff, normalizedProfileId, normalizedProfileId);
+  return rows.map((row) => ({
+    sourceId: row.source_id,
+    salary: row.salary || "",
+    experience: row.experience || "",
+    education: row.education || "",
+    bossActiveText: Date.parse(row.seen_at) >= Date.now() - 3 * 24 * 60 * 60 * 1000 ? (row.boss_active_text || "") : "",
+    description: row.description || "",
+    seenAt: row.seen_at
   }));
 }
 
@@ -1454,7 +1530,11 @@ function reassessmentGateAnalysis(scored, gate) {
     recommendedResumeVersionName: "",
     primaryProjects: [],
     fitReasons: [blocked ? "基础岗位条件不符合当前投递范围。" : "招聘方活跃状态待刷新。"],
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: scored.risks || [],
     missingPoints: [],
+    blockingGaps: [],
     riskQuestions: scored.risks || [],
     evidence: { jd: [], resume: [] },
     greetingAngle: "",
@@ -1665,13 +1745,14 @@ function decisionBucket(job) {
   const analysis = job.analysis || {};
   const semanticStatus = analysis.semanticStatus || "";
   const recommendation = analysis.recommendation || "";
-  if ((analysis.blockingGaps || []).length) return "not_recommended";
+  if (effectiveHardBlockers(analysis).length) return "not_recommended";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
   if (semanticStatus === "partial") return "talk";
   if (semanticStatus === "complete") {
-    if (recommendation === "skip") return "not_recommended";
+    if (tags.has("experience_salary_overlap")) return "backup";
+    if (recommendation === "skip") return "talk";
     if (recommendation === "apply") {
       const evidence = analysis.evidence || {};
       const needsConversation = analysis.realRoleType === "implementation_presales"
@@ -1685,7 +1766,7 @@ function decisionBucket(job) {
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
   if ((job.risks || []).some((risk) => /薪资低于期望下限/.test(String(risk)))) return "backup";
-  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("core_stack_mismatch") || tags.has("java_backend_heavy") || tags.has("senior_engineering_heavy")) return "backup";
+  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_overlap") || tags.has("core_stack_mismatch") || tags.has("java_backend_heavy") || tags.has("senior_engineering_heavy")) return "backup";
   if (tags.has("salary_unverified") || tags.has("experience_unverified")) return "talk";
   const requiresConversation = tags.has("algorithm_hybrid")
     || tags.has("experience_stretch")
@@ -1875,6 +1956,10 @@ module.exports = {
   createBatch,
   recordScanTargetResult,
   listScanTargetResults,
+  getSiteRuntimeState,
+  setSiteRuntimeState,
+  clearSiteRuntimeState,
+  listReusableJobDetails,
   recordJobRefreshAttempt,
   listJobRefreshAttempts,
   getLatestJobRefreshAttempt,

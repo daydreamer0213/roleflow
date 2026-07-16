@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall } = require("../src/core/job_analysis");
-const { validateModelResult, ModelContractError } = require("../src/core/model_contract");
+const { validateModelResult, ModelContractError, effectiveHardBlockers } = require("../src/core/model_contract");
 const { runtimeAnalysisContext } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
@@ -29,6 +29,7 @@ const db = openDb(dbPath);
     await contractRepairAndFailureSmoke();
     await pipelineVersionCacheSmoke();
     await roleIntentGuardSmoke();
+    matchBoundaryContractSmoke();
     genericPolicySmoke();
     staleAnalysisSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
@@ -168,6 +169,44 @@ async function roleIntentGuardSmoke() {
   const riskResult = await createJobAnalysisRunner(configFor(["Python", "RAG"]), [], { db, analyzer: riskAnalyzer })(completeJob("outsourcing-risk"));
   assert.strictEqual(riskResult.recommendation, "caution");
   assert.strictEqual(riskResult.decisionSource, "semantic_risk_guard");
+}
+
+function matchBoundaryContractSmoke() {
+  const soft = validateModelResult("matchJob", {
+    recommendation: "caution",
+    fitLevel: "B",
+    confidence: 0.8,
+    fitReasons: ["核心职责与 Python/RAG 项目匹配"],
+    hardBlockers: [],
+    softGaps: ["岗位写 3-5 年，候选人企业经历年限较短"],
+    questionsToVerify: ["确认年限要求是否可放宽"],
+    evidence: { jd: ["负责 RAG 应用开发，要求 3-5 年"], resume: ["具备 Python/RAG 项目经验"] }
+  });
+  assert.deepStrictEqual(soft.hardBlockers, []);
+  assert.strictEqual(soft.blockingGaps.length, 0);
+  assert.strictEqual(soft.missingPoints.length, 1);
+  assert.throws(() => validateModelResult("matchJob", {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.7,
+    fitReasons: ["经验年限存在差距"],
+    hardBlockers: [],
+    softGaps: ["未达到 3-5 年"],
+    evidence: { jd: ["要求 3-5 年"], resume: ["企业经历较短"] }
+  }), ModelContractError);
+  const hard = validateModelResult("matchJob", {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.9,
+    fitReasons: ["岗位核心语言与候选人主栈不一致"],
+    hardBlockers: ["岗位核心要求 C++，候选人无 C++ 项目证据"],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["必须熟练掌握 C++"], resume: ["候选人主栈为 Python/FastAPI"] }
+  });
+  assert.strictEqual(hard.hardBlockers.length, 1);
+  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["3-5年经验不足", "学历偏好为 985", "未提供 RPA 经验"] }), []);
+  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"]);
 }
 
 function genericPolicySmoke() {

@@ -68,9 +68,8 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
     excludeWords: strings(input.excludeWords || input.excludeTerms || ["销售", "培训", "讲师", "课程顾问"], 20),
     hardExcludes: strings(input.hardExcludes, 20),
     scan: {
-      maxCards: Math.max(10, Math.min(200, number(object(input.scan).maxCards, 80))),
-      detailLimit: Math.max(0, Math.min(12, number(object(input.scan).detailLimit, 8))),
-      maxDetailTotal: Math.max(1, Math.min(24, number(object(input.scan).maxDetailTotal, 24))),
+      maxCards: Math.max(10, Math.min(200, number(object(input.scan).maxCards, 60))),
+      maxDetailTotal: Math.max(1, Math.min(1000, number(object(input.scan).maxDetailTotal, 300))),
       browserPageBudget: Math.max(20, Math.min(300, number(object(input.scan).browserPageBudget, 90)))
     },
     source: text(input.source || "model-recommended")

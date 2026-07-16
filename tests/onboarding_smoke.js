@@ -84,11 +84,15 @@ const generatedReports = [];
   assert(planHtml.includes("可直接开始扫描"));
   assert(planHtml.includes("筛选方案"));
   assert(planHtml.includes("搜索关键词"));
-  assert(planHtml.includes("单轮右栏读取上限"));
-  assert(planHtml.includes("列表页面上限"));
+  assert(planHtml.includes("广泛扫描预算"));
+  assert(planHtml.includes("右栏详情安全上限"));
+  assert(planHtml.includes("日常扫描"));
+  assert(planHtml.includes("广泛扫描"));
+  assert(planHtml.includes('name="scanKind" value="daily"'));
+  assert(planHtml.includes('name="scanKind" value="broad"'));
   assert(planHtml.includes("补读缺失详情"));
   assert(planHtml.includes("更新过期活跃状态"));
-  assert(planHtml.includes("按动作类型随机等待"));
+  assert(planHtml.includes("单标签串行、随机等待和风控即停"));
 
   const query = new URL(`${baseUrl}${planLocation}`).searchParams;
   const planId = Number(query.get("planId"));
@@ -169,7 +173,6 @@ const generatedReports = [];
       excludeWords: "销售,培训,讲师",
       hardExcludes: "培训贷",
       maxCards: "40",
-      detailLimit: "4",
       maxDetailTotal: "80"
     }),
     redirect: "manual"

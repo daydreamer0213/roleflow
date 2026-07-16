@@ -66,39 +66,68 @@ function validateJobUnderstanding(value) {
 
 function validateMatchDecision(value) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
-  if (list(value.blockingGaps).some((item) => typeof item !== "string")) throw new ModelContractError("matchJob", "blockingGaps 必须是字符串数组");
+  for (const [field, raw] of [
+    ["hardBlockers", value.hardBlockers ?? value.blockingGaps],
+    ["softGaps", value.softGaps ?? value.missingPoints],
+    ["questionsToVerify", value.questionsToVerify ?? value.riskQuestions]
+  ]) {
+    if (list(raw).some((item) => typeof item !== "string")) throw new ModelContractError("matchJob", `${field} 必须是字符串数组`);
+  }
   const recommendation = value.recommendation;
   const confidence = Number(value.confidence);
   if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
+  const legacyBlockingGaps = strings(value.blockingGaps, 8);
+  const explicitHardBlockers = Object.prototype.hasOwnProperty.call(value, "hardBlockers");
+  const hardBlockers = explicitHardBlockers ? strings(value.hardBlockers, 8) : legacyBlockingGaps.filter((item) => !isLegacySoftGap(item));
+  const softGaps = strings([
+    ...strings(value.softGaps ?? value.missingPoints, 8),
+    ...(!explicitHardBlockers ? legacyBlockingGaps.filter(isLegacySoftGap) : [])
+  ], 8);
+  const questionsToVerify = strings(value.questionsToVerify ?? value.riskQuestions, 8);
   const result = {
     recommendation,
     fitLevel: ["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C",
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     fitReasons: strings(value.fitReasons, 8),
-    missingPoints: strings(value.missingPoints, 8),
-    blockingGaps: strings(value.blockingGaps, 8),
-    riskQuestions: strings(value.riskQuestions, 8),
+    hardBlockers,
+    softGaps,
+    questionsToVerify,
+    missingPoints: softGaps,
+    blockingGaps: hardBlockers,
+    riskQuestions: questionsToVerify,
     recommendedResumeVersion: text(value.recommendedResumeVersion),
     primaryProjects: strings(value.primaryProjects, 4),
     greetingAngle: text(value.greetingAngle),
     evidence: normalizeEvidence(value.evidence),
     hrPrep: object(value.hrPrep)
   };
-  const inferredBlocking = result.missingPoints.filter((item) => /完全缺失|完全不匹配|不满足.{0,12}(?:核心|硬性)|不符合.{0,12}(?:核心|硬性|资格|届别)|核心.{0,16}(?:缺失|不匹配)|(?:无|缺少).{0,20}(?:C\+\+|Golang|Go语言|Java|Spring|CUDA|硬性资格|届别资格)/i.test(item));
-  if (!result.blockingGaps.length && inferredBlocking.length) result.blockingGaps = inferredBlocking;
-  if (result.blockingGaps.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性缺口时 recommendation 必须为 skip");
+  if (hardBlockers.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性阻断时 recommendation 必须为 skip");
+  if (recommendation === "skip" && !hardBlockers.length) throw new ModelContractError("matchJob", "skip 必须包含至少一条可核对的 hardBlockers");
   if (recommendation === "apply" && !["A", "B"].includes(result.fitLevel)) throw new ModelContractError("matchJob", "apply 的 fitLevel 必须为 A 或 B");
   if (["apply", "caution"].includes(recommendation)) {
     if (!result.fitReasons.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条具体匹配理由");
     if (!result.evidence.jd.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条 JD 证据");
     if (!result.evidence.resume.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条候选人证据");
+  } else if (recommendation === "skip") {
+    if (!result.evidence.jd.length || !result.evidence.resume.length) throw new ModelContractError("matchJob", "skip 的硬阻断必须同时提供 JD 与候选人证据");
   } else {
-    const hasReason = result.fitReasons.length || result.missingPoints.length || result.riskQuestions.length;
-    const statesInsufficientInfo = result.missingPoints.some((item) => /信息|未提供|缺少|无法确认|待确认/.test(item));
-    if (!hasReason) throw new ModelContractError("matchJob", "skip/review 必须说明岗位风险或信息不足");
-    if (!result.evidence.jd.length && !statesInsufficientInfo) throw new ModelContractError("matchJob", "skip/review 至少需要 JD 风险证据或明确的信息不足说明");
+    const hasReason = result.fitReasons.length || softGaps.length || questionsToVerify.length;
+    const statesInsufficientInfo = [...softGaps, ...questionsToVerify].some((item) => /信息|未提供|缺少|无法确认|待确认/.test(item));
+    if (!hasReason) throw new ModelContractError("matchJob", "review 必须说明待确认信息");
+    if (!result.evidence.jd.length && !statesInsufficientInfo) throw new ModelContractError("matchJob", "review 至少需要 JD 证据或明确的待确认信息");
   }
   return result;
+}
+
+function effectiveHardBlockers(analysis = {}) {
+  if (Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")) return strings(analysis.hardBlockers, 8);
+  return strings(analysis.blockingGaps, 8).filter((item) => !isLegacySoftGap(item));
+}
+
+function isLegacySoftGap(value) {
+  const gap = text(value);
+  if (/C\+\+|Golang|Go语言|\bGo\b|Spring|CUDA|模型训练|模型微调|算法训练|深度学习训练|(?:^|[^A-Za-z])Java(?:$|[^A-Za-z])|不符合.{0,12}(?:届别|在校|硬性资格)/i.test(gap)) return false;
+  return /(?:经验|年限).{0,20}(?:不足|未达到|较少|不满)|(?:3\s*[-~至]\s*5|\d+\s*年以上).{0,12}(?:经验|要求)|仅有.{0,12}实习|学历|本科|硕士|博士|985|211|RPA|MySQL|JavaScript|前端|未提及|未提供|无法确认|待确认/i.test(gap);
 }
 
 function validateCommunication(value) {
@@ -131,4 +160,4 @@ function list(value) { return Array.isArray(value) ? value : value ? [value] : [
 function text(value) { return String(value || "").trim().slice(0, 1000); }
 function strings(value, limit) { return [...new Set(list(value).map((item) => text(item)).filter(Boolean))].slice(0, limit); }
 
-module.exports = { ModelContractError, validateModelResult };
+module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers };

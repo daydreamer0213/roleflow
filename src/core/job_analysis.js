@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult } = require("./model_contract");
+const { validateModelResult, effectiveHardBlockers } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -87,7 +87,11 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
     recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
     primaryProjects: ruleMatch.primaryProjects || [],
     fitReasons: ["当前未启用语义模型，岗位只完成了基础边界检查。"],
+    hardBlockers: [],
+    softGaps: ruleMatch.missingPoints || [],
+    questionsToVerify: ruleMatch.riskQuestions || [],
     missingPoints: ruleMatch.missingPoints || [],
+    blockingGaps: [],
     riskQuestions: ruleMatch.riskQuestions || [],
     evidence: { jd: [], resume: [] },
     greetingAngle: "",
@@ -165,9 +169,12 @@ function compactAnalysis(configs, parts) {
     recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
     primaryProjects: decision.primaryProjects || [],
     fitReasons: decision.fitReasons || [],
-    missingPoints: decision.missingPoints || [],
-    blockingGaps: decision.blockingGaps || [],
-    riskQuestions: decision.riskQuestions || [],
+    hardBlockers: decision.hardBlockers || decision.blockingGaps || [],
+    softGaps: decision.softGaps || decision.missingPoints || [],
+    questionsToVerify: decision.questionsToVerify || decision.riskQuestions || [],
+    missingPoints: decision.softGaps || decision.missingPoints || [],
+    blockingGaps: decision.hardBlockers || decision.blockingGaps || [],
+    riskQuestions: decision.questionsToVerify || decision.riskQuestions || [],
     evidence: decision.evidence || { jd: [], resume: [] },
     greetingAngle: decision.greetingAngle || "",
     greeting: job.greeting || "",
@@ -196,7 +203,11 @@ function failedAnalysis(configs, job, revision, error) {
     recommendedResumeVersionName: "",
     primaryProjects: [],
     fitReasons: ["语义分析未完成，等待模型恢复后重试。"],
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
     missingPoints: [],
+    blockingGaps: [],
     riskQuestions: [],
     evidence: { jd: [], resume: [] },
     greetingAngle: "",
@@ -215,15 +226,21 @@ function applyRuleGuard(analysis, job) {
   if (analysis.semanticStatus === "partial") {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "当前只有卡片级信息，完整 JD 补齐前不进入主投。", "partial", "model_partial");
   }
+  const hardBlockers = effectiveHardBlockers(analysis);
+  if (hardBlockers.length) {
+    return addGuard({ ...analysis, hardBlockers, blockingGaps: hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockers[0]}`, analysis.semanticStatus, "hard_blocker_guard");
+  }
+  if (analysis.recommendation === "skip") {
+    return addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
+  }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
   if (analysis.recommendation === "apply" && materialRisk) {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
     return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
   }
-  if (analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange"))) {
+  if (analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
     return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
   }
-  if ((analysis.blockingGaps || []).length) return analysis;
   if (Number(analysis.confidence ?? 0) < 0.62) {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
   }

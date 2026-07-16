@@ -107,11 +107,11 @@ function scoreJob(job, configs) {
 
   const location = String(job.location || "").trim();
   const inTargetCity = location && (!targetCities.length || targetCities.some((city) => location.startsWith(city)));
-  const titleLocationConflict = explicitNonTargetCity(job.title, targetCities);
-  if ((targetCities.length && location && !inTargetCity) || titleLocationConflict) {
+  const explicitLocationConflict = explicitNonTargetCity(`${job.title || ""} ${job.description || ""}`, targetCities);
+  if ((targetCities.length && location && !inTargetCity) || explicitLocationConflict) {
     score -= 12;
     qualityTags.push("location_mismatch");
-    risks.push(`地点非目标城市：${titleLocationConflict || location}`);
+    risks.push(`地点非目标城市：${explicitLocationConflict || location}`);
   } else if (!location) {
     qualityTags.push("location_unverified");
     risks.push("地点待核验");
@@ -179,7 +179,19 @@ function scoreJob(job, configs) {
   const experienceFit = classifyExperienceFit(job, scoring.experience || {});
   const stretchRequested = experienceFit.stretch
     || (scoring.allowExperienceStretch !== false && /3-5年|3年以上|三年以上/.test(text));
+  const experienceSalaryAboveTarget = stretchRequested
+    && salaryMax > 0
+    && salary.min !== null
+    && salary.min >= salaryMax;
+  const experienceSalaryOverlap = stretchRequested
+    && salaryMax > 0
+    && salary.min !== null
+    && salary.max !== null
+    && salary.min < salaryMax
+    && salary.max > salaryMax;
   const stretchEligible = stretchRequested
+    && !experienceSalaryAboveTarget
+    && !experienceSalaryOverlap
     && salary.max !== null
     && salary.max <= Number(scoring.salary?.experience_flex_max_k || 18)
     && score >= 6
@@ -195,6 +207,14 @@ function scoreJob(job, configs) {
   if (experienceFit.inScope) {
     score += 1;
     matches.push("经验范围匹配");
+  } else if (experienceSalaryAboveTarget) {
+    score -= 12;
+    qualityTags.push("experience_salary_above_target");
+    risks.push("3-5年且薪资区间整体达到或高于目标上限");
+  } else if (experienceSalaryOverlap) {
+    score -= 2;
+    qualityTags.push("experience_salary_overlap");
+    risks.push("3-5年薪资区间与目标部分重叠，需结合完整职责判断");
   } else if (stretchEligible) {
     qualityTags.push("experience_stretch");
     qualityTags.push("experience_stretch_low_salary");
@@ -271,7 +291,7 @@ function isBossJobUrl(url) {
 }
 
 function isClearlyNonTechnicalRole(value) {
-  return /(电话销售|销售(?:代表|经理|顾问|专员)?|商务(?:经理|专员|拓展)?|客户经理|运营(?:经理|专员)?|产品经理|课程顾问|讲师|招生顾问|培训|直播主播|房产经纪|保险代理)/.test(String(value || ""));
+  return /(电话销售|销售(?:代表|经理|顾问|专员)?|商务(?:经理|专员|拓展)?|客户经理|运营(?:经理|专员)?|产品经理|课程顾问|讲师|训练师|知识运营|招生顾问|培训|直播主播|房产经纪|保险代理)/.test(String(value || ""));
 }
 
 function matchesTargetDirection(roleText, directions) {
@@ -283,7 +303,7 @@ function matchesTargetDirection(roleText, directions) {
     if (/销售|商务|客户经理/.test(value) && /销售|商务|客户经理/.test(text)) return true;
     if (/运营/.test(value) && /运营/.test(text)) return true;
     if (/实施|售前|解决方案/.test(value) && /实施|售前|解决方案/.test(text)) return true;
-    if (/讲师|培训/.test(value) && /讲师|培训/.test(text)) return true;
+    if (/讲师|训练师|知识运营|培训/.test(value) && /讲师|训练师|知识运营|培训/.test(text)) return true;
     return false;
   });
 }
@@ -307,10 +327,10 @@ function isStretchTechnicalMatch(job, role, technicalFit, roleMismatch) {
   return new Set(signals).size >= 2;
 }
 
-function explicitNonTargetCity(title, targetCities) {
+function explicitNonTargetCity(value, targetCities) {
   if (!(targetCities || []).length) return "";
-  const text = String(title || "");
-  const cityMatch = text.match(/(?:base|驻场|工作地|办公地)[：:\/\s-]*(广州|深圳|佛山|东莞|珠海|北京|上海|杭州|成都|武汉|南京|苏州|长沙|天津|西安|重庆)/i);
+  const text = String(value || "");
+  const cityMatch = text.match(/(?:base|驻场|工作地(?:点)?|办公地(?:点)?|上班地(?:点)?|项目地(?:点)?)[：:\/\s-]*(广州|深圳|佛山|东莞|珠海|北京|上海|杭州|成都|武汉|南京|苏州|长沙|天津|西安|重庆)/i);
   const city = cityMatch?.[1] || "";
   return city && !targetCities.some((target) => city === target) ? city : "";
 }
@@ -331,7 +351,7 @@ function parseWorkSchedule(value) {
 
 function decisionState(job) {
   const tags = new Set(job.qualityTags || []);
-  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "role_mismatch", "hard_exclude", "internship_role", "algorithm_role", "salary_out_of_range"].some((tag) => tags.has(tag))) {
+  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "role_mismatch", "hard_exclude", "internship_role", "algorithm_role", "salary_out_of_range", "experience_salary_above_target"].some((tag) => tags.has(tag))) {
     return "blocked";
   }
   if (tags.has("activity_unverified") || tags.has("stale_or_unknown_active") || tags.has("detail_unverified")) return "refresh";

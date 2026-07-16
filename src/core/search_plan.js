@@ -6,6 +6,13 @@ const CITY_CODES = {
 };
 const { runtimeAnalysisContext } = require("./analysis_revision");
 
+const DAILY_SCAN_LIMITS = Object.freeze({
+  maxCards: 50,
+  maxDetailTotal: 220,
+  browserPageBudget: 40,
+  detailLimits: Object.freeze({ A: 40, B: 30 })
+});
+
 function cityToBossCode(city) {
   return CITY_CODES[String(city || "").trim()] || "";
 }
@@ -85,7 +92,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
         hard_max_k: Number(salary.maxK || configs.scoring?.salary?.hard_max_k || 35) + 12,
         expected_min_k: Number(salary.minK || 0),
         expected_max_k: Number(salary.maxK || 0),
-        experience_flex_max_k: Number(salary.maxK || configs.scoring?.salary?.experience_flex_max_k || 18) + 4
+        experience_flex_max_k: Number(salary.maxK || configs.scoring?.salary?.experience_flex_max_k || 18)
       },
       experience_stretch_keywords: [...new Set([...(plan.directions || []), ...planKeywords(plan), ...(candidateProfile?.skills || []).map((item) => item.name || item)])],
       exclude_words: [...new Set([...(plan.hardExcludes || [])])]
@@ -115,6 +122,47 @@ function planKeywords(plan) {
   return (plan?.keywords || []).map((item) => typeof item === "string" ? item : item.word).filter(Boolean);
 }
 
+function resolveScanPolicy(plan = {}, requestedMode = "daily") {
+  const mode = requestedMode === "broad" ? "broad" : "daily";
+  const scan = plan.scan || {};
+  const allKeywords = (plan.keywords || []).map((item) => typeof item === "string"
+    ? { word: item, priority: "B", reason: "" }
+    : { ...item, priority: ["A", "B", "C"].includes(item.priority) ? item.priority : "B" })
+    .filter((item) => item.word);
+  const dailyKeywords = allKeywords.filter((item) => item.priority !== "C");
+  const broad = {
+    maxCards: bounded(scan.maxCards, 60, 10, 200),
+    maxDetailTotal: bounded(scan.maxDetailTotal, 300, 1, 1000),
+    browserPageBudget: bounded(scan.browserPageBudget, 90, 20, 300)
+  };
+  return {
+    mode,
+    keywordPlan: mode === "daily" ? (dailyKeywords.length ? dailyKeywords : allKeywords.slice(0, 4)) : allKeywords,
+    maxCards: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxCards, broad.maxCards) : broad.maxCards,
+    maxDetailTotal: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxDetailTotal, broad.maxDetailTotal) : broad.maxDetailTotal,
+    browserPageBudget: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.browserPageBudget, broad.browserPageBudget) : broad.browserPageBudget,
+    detailLimits: mode === "daily" ? DAILY_SCAN_LIMITS.detailLimits : null,
+    salaryLaneLimit: mode === "daily" ? 1 : Number.POSITIVE_INFINITY
+  };
+}
+
+function applyScanPolicyToFilters(snapshot = {}, policy = {}) {
+  const lanes = Array.isArray(snapshot.lanes) ? snapshot.lanes : [];
+  const selected = Number.isFinite(policy.salaryLaneLimit) ? lanes.slice(0, policy.salaryLaneLimit) : lanes;
+  const primary = selected[0];
+  return {
+    ...snapshot,
+    scanMode: policy.mode || "daily",
+    ...(primary ? { params: primary.params || {}, labels: primary.labels || {} } : {}),
+    lanes: selected
+  };
+}
+
+function bounded(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : fallback));
+}
+
 function safeActiveDays(value) {
   const days = Number(value);
   return [1, 3, 7].includes(days) ? days : 3;
@@ -127,4 +175,13 @@ function normalizeExperienceSelections(values) {
   }).filter(Boolean))];
 }
 
-module.exports = { CITY_CODES, cityToBossCode, profileToRuntimeConfigs, planKeywords, normalizeExperienceSelections };
+module.exports = {
+  CITY_CODES,
+  DAILY_SCAN_LIMITS,
+  cityToBossCode,
+  profileToRuntimeConfigs,
+  planKeywords,
+  normalizeExperienceSelections,
+  resolveScanPolicy,
+  applyScanPolicyToFilters
+};

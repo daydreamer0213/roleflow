@@ -18,6 +18,7 @@ const {
   getSearchPlan,
   getActiveSearchPlan,
   getPlatformFilterCatalog,
+  getSiteRuntimeState,
   saveProfileAnalysis,
   attachResumeDocumentFile,
   getResumeDocument,
@@ -43,7 +44,7 @@ const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../cor
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
-const { CITY_CODES, planKeywords, profileToRuntimeConfigs } = require("../core/search_plan");
+const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan } = require("../core/plan_validation");
@@ -457,7 +458,6 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       hardExcludes: splitTerms(params.hardExcludes),
       scan: {
         maxCards: params.maxCards,
-        detailLimit: params.detailLimit,
         maxDetailTotal: params.maxDetailTotal,
         browserPageBudget: params.browserPageBudget
       },
@@ -498,7 +498,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     if (getSearchPlanDependency(db, plan.id).stale) throw new Error("候选人画像已更新，当前筛选方案仍基于旧画像。请先检查并保存方案，再开始扫描。");
     const cdpPort = Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)));
     const browserMode = params.browserMode === "edge" ? "edge" : "portable";
-    const scanKind = ["refresh", "activity"].includes(params.scanKind) ? params.scanKind : "scan";
+    const scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
     startPlanScan(scanRuns, { root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, logger, requestId });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
@@ -506,7 +506,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   }
 }
 
-function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "scan", logger, requestId }) {
+function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", logger, requestId }) {
   const previous = scanRuns.get(Number(planId));
   if (previous?.state === "running") throw new Error("这个 Search Plan 正在扫描中，请等待当前任务结束。");
   if (!dbPath) throw new Error("扫描数据路径未配置。");
@@ -518,7 +518,7 @@ function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = 
     ? ["refresh-details", "--db", dbPath, "--plan", String(planId), "--limit", "8", ...browserArgs]
     : scanKind === "activity"
       ? ["refresh-activity", "--db", dbPath, "--plan", String(planId), "--limit", "8", ...browserArgs]
-      : ["scan", "--db", dbPath, "--plan", String(planId), "--site", "boss", ...browserArgs];
+      : ["scan", "--db", dbPath, "--plan", String(planId), "--site", "boss", "--scan-mode", scanKind === "broad" ? "broad" : "daily", ...browserArgs];
   const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", ...commandArgs], {
     cwd: root,
     windowsHide: true,
@@ -1174,6 +1174,8 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const planRecord = requestedPlan?.profileId === profile.id ? requestedPlan : getActiveSearchPlan(db, profile.id);
   if (!planRecord) return renderErrorPage("当前候选人没有可编辑的筛选计划。", "/onboarding");
   const plan = normalizeSearchPlan(planRecord.plan || {}, profile.profile);
+  const dailyScan = resolveScanPolicy(plan, "daily");
+  const broadScan = resolveScanPolicy(plan, "broad");
   const selectedExperience = plan.experience;
   const candidate = profile.profile.candidate || {};
   const run = scanStatus(scanRuns, planRecord.id);
@@ -1182,6 +1184,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const versionDiff = compareProfileVersions(db, profile.id);
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
+  const bossRuntimeState = getSiteRuntimeState(db, "boss");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
@@ -1189,12 +1192,16 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
   const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : "";
   const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
+  const riskControlNotice = bossRuntimeState?.status === "blocked"
+    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>请先在已登录 Edge 中完成验证，再重新点击扫描。预检通过后会自动解除暂停；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeState.reasonCode || "BOSS_RISK_CONTROL")} · ${escapeHtml(String(bossRuntimeState.updatedAt || "").replace("T", " ").slice(0, 19))}</p></section>`
+    : "";
   const planStyle = '<style>.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}@media(max-width:760px){.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
   return renderPage("筛选方案", `${planStyle}<main>
   <nav>${navLinks(`/plan?profileId=${profile.id}&planId=${planRecord.id}`)}</nav>
   <h1>筛选方案</h1>
   ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
   ${dependencyNotice}
+  ${riskControlNotice}
   ${renderPlanValidation(validation)}
   <section class="panel profile-summary">
     <div><a href="/onboarding?profileId=${profile.id}">重新解析简历</a>　<a href="/profile?profileId=${profile.id}">编辑画像</a>　<a href="/resumes?profileId=${profile.id}">管理简历版本</a></div>
@@ -1220,13 +1227,14 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
     <p class="plan-note">岗位质量会自动优先保留招聘方近 3 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
     <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
-    <details class="plan-advanced"><summary>高级筛选项</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="10" max="200" name="maxCards" value="${escapeAttr(plan.scan?.maxCards || 80)}"></label><label>A类每词详情数<input type="number" min="0" max="12" name="detailLimit" value="${escapeAttr(plan.scan?.detailLimit ?? 8)}"></label><label>单轮右栏读取上限<input type="number" min="1" max="24" name="maxDetailTotal" value="${escapeAttr(plan.scan?.maxDetailTotal || 24)}"></label><label>列表页面上限<input type="number" min="20" max="300" name="browserPageBudget" value="${escapeAttr(plan.scan?.browserPageBudget || 90)}"></label></div><p class="field-help">右栏详情单轮最多读取 24 个；BOSS 页面保持单标签串行，按动作类型随机等待，并在长任务中偶尔冷却，遇到验证页立即停止。</p></details>
+    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="10" max="200" name="maxCards" value="${escapeAttr(plan.scan?.maxCards || 60)}"></label><label>右栏详情安全上限<input type="number" min="1" max="1000" name="maxDetailTotal" value="${escapeAttr(plan.scan?.maxDetailTotal || 300)}"></label><label>搜索页面安全上限<input type="number" min="20" max="300" name="browserPageBudget" value="${escapeAttr(plan.scan?.browserPageBudget || 90)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
     <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
   </form>
   <section class="panel scan-panel">
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run))}</div>
+    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${Math.max(10, Math.ceil(dailyScan.maxCards * 0.65))} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="scan"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>开始扫描</button><button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
+    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button><button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
 }
@@ -1331,6 +1339,10 @@ function keywordLines(keywords = []) {
 }
 
 function scanLabel(run) {
+  if (run.state === "running" && run.kind === "daily") return "正在执行日常扫描";
+  if (run.state === "completed" && run.kind === "daily") return "日常扫描已完成";
+  if (run.state === "running" && run.kind === "broad") return "正在执行广泛扫描";
+  if (run.state === "completed" && run.kind === "broad") return "广泛扫描已完成";
   if (run.state === "running" && run.kind === "refresh") return "正在补读待刷新岗位";
   if (run.state === "completed" && run.kind === "refresh") return "待刷新岗位补读完成";
   if (run.state === "running" && run.kind === "activity") return "正在更新超过 3 天有效期的招聘方活跃状态";

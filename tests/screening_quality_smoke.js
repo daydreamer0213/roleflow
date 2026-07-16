@@ -12,10 +12,7 @@ const {
   buildBossSearchUrl,
   parseBossFilterCatalog,
   weightedCardLimit,
-  detailQuotas,
   mergeScanCandidate,
-  selectDetailCandidates,
-  isStretchDetailCandidate,
   normalizePageBudget,
   randomBetween
 } = require("../src/adapters/sites/boss");
@@ -77,7 +74,7 @@ assert.deepStrictEqual(normalizeBossJob({
 }), {
   source: "boss", sourceId: "boss:metadata", keyword: "", title: "Python Engineer", company: "Quality Corp", location: "广州",
   salary: "10-15K", experience: "2-3年", education: "本科", bossActiveText: "", url: "https://www.zhipin.com/job_detail/metadata.html",
-  tags: [], description: "广州 10-15K 2-3年 本科 Python FastAPI", detailRead: false
+  tags: [], description: "", detailRead: false
 });
 assert.strictEqual(parseBossActivityText("负责在线客服系统集成"), "");
 assert.strictEqual(parseBossActivityText("梁子其 近半年活跃"), "近半年活跃");
@@ -93,13 +90,10 @@ assert.strictEqual(normalizeBossJob({ title: "AI应用", bossActiveText: "在线
 assert.strictEqual(weightedCardLimit("A", 100), 100);
 assert.strictEqual(weightedCardLimit("B", 100), 65);
 assert.strictEqual(weightedCardLimit("C", 100), 40);
-assert.deepStrictEqual(detailQuotas([{ priority: "A" }, { priority: "B" }, { priority: "C" }], 20), { A: 20, B: 11, C: 5 });
 assert.strictEqual(normalizePageBudget(10), 20);
 assert.strictEqual(normalizePageBudget(500), 300);
 assert.strictEqual(randomBetween(100, 200, () => 0), 100);
 assert.strictEqual(randomBetween(100, 200, () => 1), 200);
-assert.strictEqual(isStretchDetailCandidate({ experience: "3-5\u5e74", salary: "10-16K" }, 18), true);
-assert.strictEqual(isStretchDetailCandidate({ experience: "3-5\u5e74", salary: "20-30K" }, 18), false);
 const bossCatalog = parseBossFilterCatalog([
   { options: [
     { ka: "sel-job-rec-salary-404", label: "5-10K" },
@@ -159,15 +153,6 @@ for (let index = 0; index < 4; index += 1) mergeScanCandidate(scanCandidates, { 
 assert.strictEqual(scanCandidates.size, 9);
 assert.strictEqual(scanCandidates.get("boss:same").priority, "A");
 assert.deepStrictEqual(scanCandidates.get("boss:same").keywords.sort(), ["Docker", "RAG"]);
-const detailSelection = selectDetailCandidates([...scanCandidates.values()], [{ word: "RAG", priority: "A" }, { word: "LangChain", priority: "B" }, { word: "Docker", priority: "C" }], { detailLimit: 4, maxDetailTotal: 20 });
-assert.strictEqual(detailSelection.filter((item) => item.priority === "A").length, 1);
-assert.strictEqual(detailSelection.filter((item) => item.priority === "B").length, 3);
-assert.strictEqual(detailSelection.filter((item) => item.priority === "C").length, 1);
-const stretchDetailSelection = selectDetailCandidates([
-  { job: scanJob("normal-a"), keyword: "RAG", priority: "A", laneRank: 0, stretchCandidate: false, quickScore: 99, cityOrder: 0, keywordOrder: 0, index: 0 },
-  { job: scanJob("stretch-a"), keyword: "RAG", priority: "A", laneRank: 1, stretchCandidate: true, quickScore: 1, cityOrder: 0, keywordOrder: 0, index: 1 }
-], [{ word: "RAG", priority: "A" }], { detailLimit: 1, maxDetailTotal: 1 });
-assert.strictEqual(stretchDetailSelection[0].job.title, "stretch-a");
 assert(!cleanDetailText("职位描述 负责 Python 开发 BOSS安全提示 求职安全提醒").includes("BOSS安全提示"));
 
 const configs = {
@@ -213,7 +198,7 @@ assert(stretch.qualityTags.includes("experience_stretch"));
 assert(stretch.qualityTags.includes("experience_stretch_low_salary"));
 assert.strictEqual(stretch.level, "可冲");
 const stretchAtMarket = scoreJob(job({ experience: "3-5年", salary: "20-30K" }), scopedConfigs);
-assert(stretchAtMarket.qualityTags.includes("experience_overrange"));
+assert(stretchAtMarket.qualityTags.includes("experience_salary_above_target"));
 assert(!stretchAtMarket.qualityTags.includes("experience_stretch_low_salary"));
 const stretchWithoutTechnicalEvidence = scoreJob(job({
   title: "AI应用开发工程师",
@@ -230,6 +215,30 @@ assert.strictEqual(decisionBucket({ ...overRange, analysis: {} }), "backup");
 const strictSalary = scoreJob(job({ experience: "0-3年", salary: "15-20K" }), scopedConfigs);
 assert.strictEqual(decisionState(strictSalary), "blocked");
 
+const finalSalaryConfigs = {
+  ...scopedConfigs,
+  scoring: {
+    ...scopedConfigs.scoring,
+    salary: { ...scopedConfigs.scoring.salary, expected_min_k: 10, expected_max_k: 20, experience_flex_max_k: 20, mode: "wide" }
+  }
+};
+const stretchWithinTarget = scoreJob(job({ experience: "3-5年", salary: "15-20K" }), finalSalaryConfigs);
+assert(stretchWithinTarget.qualityTags.includes("experience_stretch"));
+assert.strictEqual(decisionState(stretchWithinTarget), "ready");
+for (const salary of ["15-25K", "12-24K"]) {
+  const overlap = scoreJob(job({ experience: "3-5年", salary }), finalSalaryConfigs);
+  assert(overlap.qualityTags.includes("experience_salary_overlap"));
+  assert.strictEqual(decisionState(overlap), "ready");
+  assert.strictEqual(decisionBucket({ ...overlap, analysis: {} }), "backup");
+}
+const aboveTarget = scoreJob(job({ experience: "3-5年", salary: "20-30K" }), finalSalaryConfigs);
+assert(aboveTarget.qualityTags.includes("experience_salary_above_target"));
+assert.strictEqual(decisionState(aboveTarget), "blocked");
+const unknownStretchSalary = scoreJob(job({ experience: "3-5年", salary: "" }), finalSalaryConfigs);
+assert(unknownStretchSalary.qualityTags.includes("salary_unverified"));
+assert(!unknownStretchSalary.qualityTags.includes("experience_salary_above_target"));
+assert.strictEqual(decisionState(unknownStretchSalary), "ready");
+
 const doubleWeekend = scoreJob(job({ description: "负责企业 RAG 应用开发，周末双休。" }), configs);
 const alternatingWeekend = scoreJob(job({ description: "负责企业 RAG 应用开发，大小周。" }), configs);
 assert(doubleWeekend.qualityTags.includes("work_schedule_double"));
@@ -245,9 +254,23 @@ assert.strictEqual(decisionState(inactive), "blocked");
 
 const offCity = scoreJob(job({ title: "AI Agent 开发（base 佛山）" }), configs);
 assert.strictEqual(decisionState(offCity), "blocked");
+const offCityInJd = scoreJob(job({
+  title: "AI Agent 开发工程师",
+  location: "广州·荔湾区",
+  description: "负责企业 RAG 与 Agent 开发。上班地点：佛山南海。"
+}), configs);
+assert(offCityInJd.qualityTags.includes("location_mismatch"));
+assert.strictEqual(decisionState(offCityInJd), "blocked");
 
 const wrongRole = scoreJob(job({ title: "AI 培训讲师", bossActiveText: "今日活跃" }), configs);
 assert.strictEqual(decisionState(wrongRole), "blocked");
+const knowledgeTrainer = scoreJob(job({
+  title: "AI知识库训练师",
+  bossActiveText: "今日活跃",
+  description: "负责企业知识库资料整理、切片、标签管理、Prompt 调优和培训文档。"
+}), configs);
+assert(knowledgeTrainer.qualityTags.includes("role_mismatch"));
+assert.strictEqual(decisionState(knowledgeTrainer), "blocked");
 const internshipRole = scoreJob(job({ title: "大模型应用开发实习生", bossActiveText: "今日活跃" }), configs);
 assert(internshipRole.qualityTags.includes("internship_role"));
 assert.strictEqual(decisionState(internshipRole), "blocked");
@@ -388,20 +411,19 @@ async function browserAllocationSmoke() {
     keywords: ["RAG", "LangChain", "Docker"],
     keywordPlan: [{ word: "RAG", priority: "A" }, { word: "LangChain", priority: "B" }, { word: "Docker", priority: "C" }],
     maxCards: 100,
-    detailLimit: 4,
     maxDetailTotal: 20,
     nativeFilters: splitSalaryLanes,
     scoreQuick: () => 0
   });
   assert.deepStrictEqual(adapter.cardLimits, [100, 100, 65, 65, 40, 40]);
   assert.strictEqual(jobs.length, 12);
-  assert.strictEqual(adapter.detailUrls.length, 8);
-  assert.strictEqual(new Set(adapter.detailUrls).size, 8);
+  assert.strictEqual(adapter.detailUrls.length, 12);
+  assert.strictEqual(new Set(adapter.detailUrls).size, 12);
   assert.strictEqual(adapter.detailUrls.filter((url) => url.includes("same.html")).length, 1);
   assert.deepStrictEqual(browser.nativeFilterVisits.map((item) => item.salary), ["405", "404", "405", "404", "405", "404"]);
   assert(browser.nativeFilterVisits.every((item) => item.experience === "104,105"));
-  assert.strictEqual(jobs.filter((job) => job.detailRequired).length, 8);
-  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 8);
+  assert.strictEqual(jobs.filter((job) => job.detailRequired).length, 12);
+  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 12);
   const refreshedJobs = await adapter.refreshDetails([{ ...jobs[0], bossActiveText: "", detailRead: false }], { limit: 1 });
   assert.strictEqual(refreshedJobs.length, 1);
   assert.strictEqual(refreshedJobs[0].bossActiveText, "今日活跃");
@@ -432,7 +454,6 @@ async function browserAllocationSmoke() {
     keywordPlan: [{ word: "RAG", priority: "A" }],
     cityScopes: [{ city: "广州", cityCode: "101280100" }, { city: "深圳", cityCode: "101280600" }],
     maxCards: 20,
-    detailLimit: 1,
     maxDetailTotal: 10,
     scoreQuick: () => 0
   });
@@ -485,6 +506,18 @@ async function browserAllocationSmoke() {
   await periodic.waitWithPacing("card");
   assert.deepStrictEqual(cooldownSleeps, [1000, 4000]);
   assert.strictEqual(periodic.nextPacingCooldownAt, 19);
+
+  const detailCooldownSleeps = [];
+  const detailPacing = new BossSiteAdapter({ browser: {}, sleepFn: async (delay) => detailCooldownSleeps.push(delay), randomFn: () => 0 });
+  detailPacing.nextDetailMicroCooldownAt = 1;
+  detailPacing.nextDetailMacroCooldownAt = 99;
+  await detailPacing.waitAfterDetailAction();
+  assert.deepStrictEqual(detailCooldownSleeps, [7000]);
+  detailPacing.detailActions = 31;
+  detailPacing.nextDetailMicroCooldownAt = 99;
+  detailPacing.nextDetailMacroCooldownAt = 32;
+  await detailPacing.waitAfterDetailAction();
+  assert.deepStrictEqual(detailCooldownSleeps, [7000, 90000]);
 }
 
 function job(overrides = {}) {
