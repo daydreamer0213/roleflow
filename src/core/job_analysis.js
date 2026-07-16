@@ -39,7 +39,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         kind: "matchJob",
         pipelineVersion: PIPELINE_VERSIONS.matchJob,
         input: {
-          candidateProfile,
+          candidateProfile: candidateProfileForJobMatch(candidateProfile),
           resumeVersions: configs.resumeVersions,
           jobUnderstanding,
           jobEvidence: {
@@ -298,6 +298,13 @@ function searchPreferences(configs) {
     jobTypes: plan.jobTypes || [],
     directions: plan.directions || []
   };
+}
+
+function candidateProfileForJobMatch(profile) {
+  const candidate = { ...(profile?.candidate || {}) };
+  delete candidate.expectedSalary;
+  delete candidate.adjustableSalary;
+  return { ...profile, candidate };
 }
 
 function resumeVersionName(resumeVersions, id) {

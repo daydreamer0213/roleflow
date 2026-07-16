@@ -62,6 +62,9 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
     matchJob: async (input) => {
       calls.matchJob += 1;
       assert(input.candidateProfile);
+      assert.strictEqual(input.candidateProfile.candidate.expectedSalary, undefined);
+      assert.strictEqual(input.candidateProfile.candidate.adjustableSalary, undefined);
+      assert.deepStrictEqual(input.searchPreferences.salary, { minK: 10, maxK: 20 });
       assert(input.jobUnderstanding);
       assert(input.jobEvidence);
       assert.strictEqual(input.ruleMatch, undefined);
@@ -205,6 +208,21 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["必须熟练掌握 C++"], resume: ["候选人主栈为 Python/FastAPI"] }
   });
   assert.strictEqual(hard.hardBlockers.length, 1);
+  const downgraded = validateModelResult("matchJob", {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.8,
+    fitReasons: ["岗位年限要求高于候选人当前企业经历"],
+    hardBlockers: ["岗位要求 3-5 年经验，候选人当前企业经验年限不足"],
+    softGaps: [],
+    questionsToVerify: ["确认年限要求是否可放宽"],
+    evidence: { jd: ["要求 3-5 年经验"], resume: ["候选人具备相关实习与独立项目经验"] }
+  });
+  assert.strictEqual(downgraded.recommendation, "caution");
+  assert.strictEqual(downgraded.fitLevel, "C");
+  assert.deepStrictEqual(downgraded.hardBlockers, []);
+  assert.strictEqual(downgraded.softGaps.length, 1);
+  assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["3-5年经验不足", "学历偏好为 985", "未提供 RPA 经验"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"]);
 }

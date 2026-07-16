@@ -291,7 +291,7 @@ function isBossJobUrl(url) {
 }
 
 function isClearlyNonTechnicalRole(value) {
-  return /(电话销售|销售(?:代表|经理|顾问|专员)?|商务(?:经理|专员|拓展)?|客户经理|运营(?:经理|专员)?|产品经理|课程顾问|讲师|训练师|知识运营|招生顾问|培训|直播主播|房产经纪|保险代理)/.test(String(value || ""));
+  return /(电话销售|销售(?:代表|经理|顾问|专员)?|商务(?:经理|专员|拓展)?|客户经理|运营(?:经理|专员)?|产品经理|课程顾问|讲师|招生顾问|培训|直播主播|房产经纪|保险代理)/.test(String(value || ""));
 }
 
 function matchesTargetDirection(roleText, directions) {

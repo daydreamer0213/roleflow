@@ -173,9 +173,9 @@ async function scan(db, args) {
   const reusableDetails = new Map((args.input ? [] : listReusableJobDetails(db, {
     site,
     profileId: planRecord?.profileId,
-    maxAgeDays: 7
+    maxAgeDays: 3
   })).map((item) => [item.sourceId, item]));
-  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: 7 });
+  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: 3 });
   const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
     profileId: planRecord?.profileId,
     searchPlanId: planRecord?.id,

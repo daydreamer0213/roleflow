@@ -70,10 +70,12 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await scrollSafetyLimitSmoke();
   await delayedListSmoke();
   await paneSwitchSmoke();
+  await leftCardMetadataAvoidsPaneScrollSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
   await reusableDetailSmoke();
+  await changedCardFactsRejectCacheSmoke();
   await detailSafetyLimitSmoke();
   await detailFailureDedupeSmoke();
   await targetIsolationSmoke();
@@ -298,6 +300,41 @@ async function paneSwitchSmoke() {
   assert(detail.description.length >= 120);
   assert.strictEqual(detail.bossActiveText, "今日活跃");
   assert.deepStrictEqual(paneScrolls, ["down", "top"]);
+}
+
+async function leftCardMetadataAvoidsPaneScrollSmoke() {
+  const paneScrolls = [];
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      if (expression.startsWith("(() => window.__bossOpenCard")) return { clicked: true, jobId: "card-facts" };
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          currentJobId: "card-facts",
+          title: "AI应用开发",
+          description: "完整职位描述 Python RAG Agent ".repeat(20),
+          bossActiveText: "",
+          salary: "",
+          experience: "",
+          education: "",
+          canScroll: true
+        };
+      }
+      if (expression.includes("window.__bossScrollPane(false)")) paneScrolls.push("down");
+      if (expression.includes("window.__bossScrollPane(true)")) paneScrolls.push("top");
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const detail = await adapter.readCardDetail("pane-tab", {
+    title: "AI应用开发",
+    url: "https://www.zhipin.com/job_detail/card-facts.html",
+    salary: "10-15K",
+    experience: "1-3年",
+    bossActiveText: "今日活跃"
+  }, 0);
+  assert(detail.description.length >= 120);
+  assert.deepStrictEqual(paneScrolls, ["top"]);
 }
 
 async function targetIsolationSmoke() {
@@ -583,6 +620,45 @@ async function reusableDetailSmoke() {
   assert.strictEqual(jobs.filter((job) => job.detailRead).length, 2);
 }
 
+async function changedCardFactsRejectCacheSmoke() {
+  const browser = { async activeTabId() { return activeBoss.id; }, async navigate() {} };
+  const reads = [];
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("changed-cache")];
+  adapter.readCardDetail = async (_tabId, job) => {
+    reads.push(job.sourceId);
+    return {
+      description: `实时职位描述 ${job.title} Python RAG `.repeat(12),
+      bossActiveText: "今日活跃",
+      salary: job.salary,
+      experience: job.experience,
+      education: job.education
+    };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["cache-change"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    getReusableDetail: (job) => ({
+      sourceId: job.sourceId,
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      salary: "8-10K",
+      experience: job.experience,
+      education: job.education,
+      description: "旧职位描述 Python RAG ".repeat(12),
+      bossActiveText: "今日活跃"
+    })
+  });
+  assert.deepStrictEqual(reads, ["boss:changed-cache"]);
+  assert.strictEqual(jobs[0].salary, "10-15K");
+  assert(!jobs[0].description.includes("旧职位描述"));
+}
+
 async function detailSafetyLimitSmoke() {
   const browser = { async activeTabId() { return activeBoss.id; }, async navigate() {} };
   let reads = 0;
@@ -730,6 +806,9 @@ function storageSmoke() {
     const reusable = listReusableJobDetails(db, { site: "boss", maxAgeDays: 7 });
     assert.strictEqual(reusable.length, 1);
     assert.strictEqual(reusable[0].sourceId, "boss:reusable-smoke");
+    assert.strictEqual(reusable[0].title, "Reusable");
+    assert.strictEqual(reusable[0].company, "Quality Corp");
+    assert.strictEqual(reusable[0].salary, "10-15K");
 
     const now = new Date().toISOString();
     const jobId = Number(db.prepare(`INSERT INTO jobs(source,source_id,title,tags_json,matches_json,risks_json,quality_tags_json,analysis_json,first_seen_at,last_seen_at)

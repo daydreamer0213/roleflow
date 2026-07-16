@@ -465,10 +465,12 @@ class BossSiteAdapter {
             });
             const entries = cards.map((card, index) => {
               const cardJob = normalizeBossJob({ ...card, keyword, source: "boss", searchCity: city.city || "" });
-              const reusable = typeof options.getReusableDetail === "function" ? options.getReusableDetail(cardJob) : null;
+              const cachedDetail = typeof options.getReusableDetail === "function" ? options.getReusableDetail(cardJob) : null;
+              const reusable = reusableDetailMatches(cardJob, cachedDetail) ? cachedDetail : null;
               const job = reusable?.description ? normalizeBossJob({
-                ...cardJob,
                 ...reusable,
+                ...cardJob,
+                description: reusable.description,
                 bossActiveText: cardJob.bossActiveText || reusable.bossActiveText || "",
                 detailRead: true
               }) : cardJob;
@@ -833,9 +835,9 @@ class BossSiteAdapter {
         : titleMatches;
       if (identityMatches && detail?.description) {
         const missingUsefulField = detail.description.length < 120
-          || !detail.salary
-          || !detail.experience
-          || !detail.bossActiveText;
+          || !(detail.salary || job.salary)
+          || !(detail.experience || job.experience)
+          || !(detail.bossActiveText || job.bossActiveText);
         if (!scrolled && detail.canScroll && missingUsefulField) {
           scrolled = true;
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
@@ -1137,6 +1139,15 @@ function mergeUniqueCards(found, cards) {
     if (!found.has(key)) found.set(key, card);
   }
   return found.size - before;
+}
+
+function reusableDetailMatches(job, cached) {
+  if (!cached?.description) return false;
+  return ["title", "company", "location", "salary", "experience", "education"].every((field) => {
+    const current = normalizedComparableText(job?.[field]);
+    const previous = normalizedComparableText(cached?.[field]);
+    return !current || !previous || current === previous;
+  });
 }
 
 function mergeScanCandidate(target, candidate) {

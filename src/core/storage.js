@@ -517,7 +517,7 @@ function listReusableJobDetails(db, { site = "boss", profileId = 0, maxAgeDays =
   const normalizedProfileId = Number(profileId || 0);
   const rows = db.prepare(`
     WITH reusable AS (
-      SELECT jobs.source_id, o.salary, o.experience, o.education, o.boss_active_text,
+      SELECT jobs.source_id, o.title, o.company, o.location, o.salary, o.experience, o.education, o.boss_active_text,
         o.description, o.seen_at,
         ROW_NUMBER() OVER (PARTITION BY jobs.source_id ORDER BY o.seen_at DESC, o.id DESC) AS detail_rank
       FROM job_observations o
@@ -532,6 +532,9 @@ function listReusableJobDetails(db, { site = "boss", profileId = 0, maxAgeDays =
   `).all(String(site || "boss"), cutoff, normalizedProfileId, normalizedProfileId);
   return rows.map((row) => ({
     sourceId: row.source_id,
+    title: row.title || "",
+    company: row.company || "",
+    location: row.location || "",
     salary: row.salary || "",
     experience: row.experience || "",
     education: row.education || "",

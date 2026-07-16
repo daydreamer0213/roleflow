@@ -269,8 +269,8 @@ const knowledgeTrainer = scoreJob(job({
   bossActiveText: "今日活跃",
   description: "负责企业知识库资料整理、切片、标签管理、Prompt 调优和培训文档。"
 }), configs);
-assert(knowledgeTrainer.qualityTags.includes("role_mismatch"));
-assert.strictEqual(decisionState(knowledgeTrainer), "blocked");
+assert(!knowledgeTrainer.qualityTags.includes("role_mismatch"));
+assert.strictEqual(decisionState(knowledgeTrainer), "ready");
 const internshipRole = scoreJob(job({ title: "大模型应用开发实习生", bossActiveText: "今日活跃" }), configs);
 assert(internshipRole.qualityTags.includes("internship_role"));
 assert.strictEqual(decisionState(internshipRole), "blocked");

@@ -73,20 +73,23 @@ function validateMatchDecision(value) {
   ]) {
     if (list(raw).some((item) => typeof item !== "string")) throw new ModelContractError("matchJob", `${field} 必须是字符串数组`);
   }
-  const recommendation = value.recommendation;
   const confidence = Number(value.confidence);
   if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
   const legacyBlockingGaps = strings(value.blockingGaps, 8);
   const explicitHardBlockers = Object.prototype.hasOwnProperty.call(value, "hardBlockers");
-  const hardBlockers = explicitHardBlockers ? strings(value.hardBlockers, 8) : legacyBlockingGaps.filter((item) => !isLegacySoftGap(item));
+  const blockerCandidates = explicitHardBlockers ? strings(value.hardBlockers, 8) : legacyBlockingGaps;
+  const hardBlockers = blockerCandidates.filter((item) => !isPolicySoftGap(item));
+  const downgradedSoftGaps = blockerCandidates.filter(isPolicySoftGap);
+  const softOnlySkip = value.recommendation === "skip" && !hardBlockers.length && downgradedSoftGaps.length;
+  const recommendation = softOnlySkip ? "caution" : value.recommendation;
   const softGaps = strings([
     ...strings(value.softGaps ?? value.missingPoints, 8),
-    ...(!explicitHardBlockers ? legacyBlockingGaps.filter(isLegacySoftGap) : [])
+    ...downgradedSoftGaps
   ], 8);
   const questionsToVerify = strings(value.questionsToVerify ?? value.riskQuestions, 8);
   const result = {
     recommendation,
-    fitLevel: ["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C",
+    fitLevel: softOnlySkip && value.fitLevel === "D" ? "C" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     fitReasons: strings(value.fitReasons, 8),
     hardBlockers,
@@ -120,11 +123,13 @@ function validateMatchDecision(value) {
 }
 
 function effectiveHardBlockers(analysis = {}) {
-  if (Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")) return strings(analysis.hardBlockers, 8);
-  return strings(analysis.blockingGaps, 8).filter((item) => !isLegacySoftGap(item));
+  const blockers = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
+    ? strings(analysis.hardBlockers, 8)
+    : strings(analysis.blockingGaps, 8);
+  return blockers.filter((item) => !isPolicySoftGap(item));
 }
 
-function isLegacySoftGap(value) {
+function isPolicySoftGap(value) {
   const gap = text(value);
   if (/C\+\+|Golang|Go语言|\bGo\b|Spring|CUDA|模型训练|模型微调|算法训练|深度学习训练|(?:^|[^A-Za-z])Java(?:$|[^A-Za-z])|不符合.{0,12}(?:届别|在校|硬性资格)/i.test(gap)) return false;
   return /(?:经验|年限).{0,20}(?:不足|未达到|较少|不满)|(?:3\s*[-~至]\s*5|\d+\s*年以上).{0,12}(?:经验|要求)|仅有.{0,12}实习|学历|本科|硕士|博士|985|211|RPA|MySQL|JavaScript|前端|未提及|未提供|无法确认|待确认/i.test(gap);
