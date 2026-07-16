@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS scan_target_results (
   job_count INTEGER NOT NULL DEFAULT 0,
   error_code TEXT,
   error_message TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}',
   attempt_number INTEGER NOT NULL DEFAULT 1,
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL,
@@ -324,6 +325,8 @@ function migrate(db) {
   if (!planColumns.has("profile_version_id")) db.exec("ALTER TABLE search_plans ADD COLUMN profile_version_id INTEGER");
   const observationColumns = new Set(db.prepare("PRAGMA table_info(job_observations)").all().map((column) => column.name));
   if (!observationColumns.has("content_hash_version")) db.exec("ALTER TABLE job_observations ADD COLUMN content_hash_version INTEGER NOT NULL DEFAULT 0");
+  const scanTargetColumns = new Set(db.prepare("PRAGMA table_info(scan_target_results)").all().map((column) => column.name));
+  if (!scanTargetColumns.has("details_json")) db.exec("ALTER TABLE scan_target_results ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'");
   db.exec(`
     INSERT OR IGNORE INTO job_observations(
       job_id, batch_id, keyword, title, company, location, salary, experience, education,
@@ -433,8 +436,8 @@ function recordScanTargetResult(db, input = {}) {
   const startedAt = String(input.startedAt || finishedAt);
   db.prepare(`INSERT INTO scan_target_results(
     batch_id, target_key, city, keyword, lane_id, status, job_count, error_code, error_message,
-    attempt_number, started_at, finished_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    details_json, attempt_number, started_at, finished_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       batchId,
       targetKey,
@@ -445,6 +448,7 @@ function recordScanTargetResult(db, input = {}) {
       Math.max(0, Number(input.jobCount || 0)),
       String(input.errorCode || "") || null,
       String(input.errorMessage || "").slice(0, 1000) || null,
+      JSON.stringify(input.details || {}),
       attemptNumber,
       startedAt,
       finishedAt
@@ -464,6 +468,7 @@ function listScanTargetResults(db, batchId) {
     jobCount: Number(row.job_count || 0),
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
+    details: parseJson(row.details_json, {}),
     attemptNumber: Number(row.attempt_number || 1),
     startedAt: row.started_at,
     finishedAt: row.finished_at

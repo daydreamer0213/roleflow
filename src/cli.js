@@ -213,6 +213,7 @@ async function scan(db, args) {
       jobCount: result.jobCount,
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
+      details: result.details,
       startedAt: result.startedAt,
       finishedAt: result.finishedAt
     });

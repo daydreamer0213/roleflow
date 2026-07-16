@@ -65,6 +65,9 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await preflightSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
+  await delayedAppendAtBottomSmoke();
+  await confirmedListEndSmoke();
+  await scrollSafetyLimitSmoke();
   await delayedListSmoke();
   await paneSwitchSmoke();
   await fullDetailCoverageSmoke();
@@ -74,6 +77,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await detailSafetyLimitSmoke();
   await detailFailureDedupeSmoke();
   await targetIsolationSmoke();
+  await partialTargetCheckpointSmoke();
   await pageBudgetSmoke();
   await riskControlSmoke();
   await refreshSafetySmoke();
@@ -160,9 +164,71 @@ async function scrollSmoke() {
     page += 1;
     return { moved: true, atBottom: page >= 3, scrollTop: page * 700 };
   };
-  const cards = await adapter.collectCards("tab", 35);
-  assert.strictEqual(cards.length, 35);
+  const result = await adapter.collectCards("tab", 35);
+  assert.strictEqual(result.cards.length, 35);
+  assert.strictEqual(result.status, "completed");
+  assert.strictEqual(result.stopReason, "card_limit_reached");
   assert.strictEqual(page, 3);
+}
+
+async function delayedAppendAtBottomSmoke() {
+  let reads = 0;
+  let scrolls = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      if (!expression.includes("__bossExtractCards")) return true;
+      reads += 1;
+      const total = reads >= 8 ? 30 : 15;
+      return Array.from({ length: total }, (_, index) => card(`lazy-${index}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => {
+    scrolls += 1;
+    return { moved: true, atBottom: true, scrollTop: 1700, scrollHeight: 2400 };
+  };
+  const result = await adapter.collectCards("tab", 30);
+  assert.strictEqual(result.cards.length, 30);
+  assert.strictEqual(result.status, "completed");
+  assert.strictEqual(result.stopReason, "card_limit_reached");
+  assert(scrolls >= 1);
+}
+
+async function confirmedListEndSmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      if (!expression.includes("__bossExtractCards")) return true;
+      return Array.from({ length: 15 }, (_, index) => card(`end-${index}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => ({ moved: false, atBottom: true, scrollTop: 1700, scrollHeight: 2400 });
+  const result = await adapter.collectCards("tab", 30);
+  assert.strictEqual(result.cards.length, 15);
+  assert.strictEqual(result.status, "completed");
+  assert.strictEqual(result.stopReason, "confirmed_end");
+  assert.strictEqual(result.quietWindows, 2);
+}
+
+async function scrollSafetyLimitSmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      if (!expression.includes("__bossExtractCards")) return true;
+      return Array.from({ length: 15 }, (_, index) => card(`limit-${index}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => ({ moved: true, atBottom: false, scrollTop: 600, scrollHeight: 9000 });
+  const result = await adapter.collectCards("tab", 30);
+  assert.strictEqual(result.cards.length, 15);
+  assert.strictEqual(result.status, "partial");
+  assert.strictEqual(result.stopReason, "scroll_safety_limit");
 }
 
 async function delayedListSmoke() {
@@ -181,8 +247,8 @@ async function delayedListSmoke() {
     scrolls += 1;
     return { moved: false, atBottom: true };
   };
-  const cards = await adapter.collectCards("tab", 1);
-  assert.strictEqual(cards.length, 1);
+  const result = await adapter.collectCards("tab", 1);
+  assert.strictEqual(result.cards.length, 1);
   assert.strictEqual(scrolls, 0);
   assert(reads >= 4);
 }
@@ -273,6 +339,44 @@ async function targetIsolationSmoke() {
   assert.deepStrictEqual(checkpoints.map((item) => item.status), ["completed", "failed", "completed"]);
   assert(jobs.every((job) => job.detailRead));
   assert(jobs.every((job) => job.detailRequired));
+}
+
+async function partialTargetCheckpointSmoke() {
+  const browser = { async activeTabId() { return activeBoss.id; }, async navigate() {} };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => ({
+    cards: [card("partial")],
+    status: "partial",
+    stopReason: "scroll_safety_limit",
+    scrollRounds: 35,
+    growthRounds: 1,
+    quietWindows: 0
+  });
+  adapter.readCardDetail = async (_tabId, job) => ({
+    description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
+    bossActiveText: "今日活跃",
+    salary: job.salary,
+    experience: job.experience,
+    education: job.education
+  });
+  const checkpoints = [];
+  await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["partial"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onTargetComplete: async (result) => checkpoints.push(result)
+  });
+  assert.strictEqual(checkpoints[0].status, "partial");
+  assert.deepStrictEqual(checkpoints[0].details, {
+    cardLimit: 13,
+    stopReason: "scroll_safety_limit",
+    scrollRounds: 35,
+    growthRounds: 1,
+    quietWindows: 0
+  });
 }
 
 async function pageBudgetSmoke() {
@@ -591,11 +695,13 @@ function storageSmoke() {
       status: "failed",
       jobCount: 12,
       errorCode: "BOSS_WHITE_PAGE",
-      errorMessage: "white page"
+      errorMessage: "white page",
+      details: { cardLimit: 50, stopReason: "page_error", scrollRounds: 3 }
     });
     const targets = listScanTargetResults(db, batchId);
     assert.strictEqual(targets.length, 1);
     assert.strictEqual(targets[0].errorCode, "BOSS_WHITE_PAGE");
+    assert.deepStrictEqual(targets[0].details, { cardLimit: 50, stopReason: "page_error", scrollRounds: 3 });
 
     setSiteRuntimeState(db, "boss", { status: "blocked", reasonCode: "BOSS_RISK_CONTROL", message: "verify" });
     assert.strictEqual(getSiteRuntimeState(db, "boss").status, "blocked");

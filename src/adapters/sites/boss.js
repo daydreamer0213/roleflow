@@ -444,9 +444,25 @@ class BossSiteAdapter {
             });
             await this.navigateWithPacing(tabId, url, "list");
             await this.assertSearchPage(tabId);
-            const cards = await this.collectCards(tabId, cardLimit);
+            const collected = await this.collectCards(tabId, cardLimit);
+            const collection = Array.isArray(collected)
+              ? { cards: collected, status: "completed", stopReason: "external_collection", scrollRounds: 0, growthRounds: 0, quietWindows: 0 }
+              : collected;
+            const cards = Array.isArray(collection?.cards) ? collection.cards : [];
             console.error(`[boss] ${city.city || city.cityCode} · ${keyword} 列表岗位：${cards.length}`);
-            this.logger?.info("boss_cards_collected", { targetKey, keyword, city: city.city || "", cardCount: cards.length, nativeFilterLane: laneId });
+            this.logger?.info("boss_cards_collected", {
+              targetKey,
+              keyword,
+              city: city.city || "",
+              cardCount: cards.length,
+              cardLimit,
+              collectionStatus: collection.status,
+              stopReason: collection.stopReason,
+              scrollRounds: collection.scrollRounds,
+              growthRounds: collection.growthRounds,
+              quietWindows: collection.quietWindows,
+              nativeFilterLane: laneId
+            });
             const entries = cards.map((card, index) => {
               const cardJob = normalizeBossJob({ ...card, keyword, source: "boss", searchCity: city.city || "" });
               const reusable = typeof options.getReusableDetail === "function" ? options.getReusableDetail(cardJob) : null;
@@ -559,9 +575,16 @@ class BossSiteAdapter {
                 cityCode: city.cityCode,
                 keyword,
                 laneId,
-                status: "completed",
+                status: collection.status === "partial" ? "partial" : "completed",
                 jobs: targetJobs,
                 jobCount: targetJobs.length,
+                details: {
+                  cardLimit,
+                  stopReason: collection.stopReason || "",
+                  scrollRounds: Number(collection.scrollRounds || 0),
+                  growthRounds: Number(collection.growthRounds || 0),
+                  quietWindows: Number(collection.quietWindows || 0)
+                },
                 startedAt,
                 finishedAt: new Date().toISOString()
               });
@@ -720,10 +743,7 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      for (const card of initialCards || []) {
-        const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
-        if (!found.has(key)) found.set(key, card);
-      }
+      mergeUniqueCards(found, initialCards);
       if (found.size) break;
       readinessAttempts += 1;
       await this.waitWithPacing("list_ready");
@@ -731,26 +751,60 @@ class BossSiteAdapter {
     if (readinessAttempts) {
       this.logger?.info("boss_list_content_waited", { attempts: readinessAttempts, cardCount: found.size });
     }
-    let lastSize = 0;
-    let bottomStable = 0;
-    const maxRounds = Math.max(12, Math.min(40, Math.ceil(Number(maxCards || 60) / 5) + 4));
+    let quietWindows = 0;
+    let growthRounds = 0;
+    let scrollRounds = 0;
+    let confirmedEnd = false;
+    const maxRounds = Math.max(20, Math.min(80, Math.ceil(Number(maxCards || 60) / 2) + 10));
     for (let round = 0; round < maxRounds && found.size < maxCards; round += 1) {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      for (const card of cards || []) {
-        const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
-        if (!found.has(key)) found.set(key, card);
-      }
-      const noGrowth = found.size === lastSize;
-      lastSize = found.size;
+      if (mergeUniqueCards(found, cards) > 0) growthRounds += 1;
       if (found.size >= maxCards) break;
       const scroll = await this.scrollList(tabId);
-      bottomStable = noGrowth && scroll?.atBottom ? bottomStable + 1 : 0;
-      if (bottomStable >= 2) break;
+      scrollRounds += 1;
+      if (scroll?.atBottom) {
+        const growth = await this.waitForCardGrowth(tabId, maxCards, found);
+        if (growth.grew) {
+          growthRounds += 1;
+          quietWindows = 0;
+          continue;
+        }
+        quietWindows += 1;
+        if (quietWindows >= 2) {
+          confirmedEnd = true;
+          break;
+        }
+        continue;
+      }
+      quietWindows = 0;
       await this.waitWithPacing("scroll");
     }
-    return [...found.values()].slice(0, maxCards);
+    const reachedLimit = found.size >= maxCards;
+    return {
+      cards: [...found.values()].slice(0, maxCards),
+      status: reachedLimit || confirmedEnd ? "completed" : "partial",
+      stopReason: reachedLimit ? "card_limit_reached" : confirmedEnd ? "confirmed_end" : "scroll_safety_limit",
+      scrollRounds,
+      growthRounds,
+      quietWindows
+    };
+  }
+
+  async waitForCardGrowth(tabId, maxCards, found) {
+    const timeoutMs = randomBetween(2400, 3400, this.random);
+    const pollMs = randomBetween(350, 650, this.random);
+    const maxPolls = Math.max(4, Math.ceil(timeoutMs / pollMs));
+    for (let poll = 0; poll < maxPolls; poll += 1) {
+      await this.sleep(pollMs);
+      await this.assertSearchPage(tabId);
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
+      const added = mergeUniqueCards(found, cards);
+      if (added > 0 || found.size >= maxCards) return { grew: true, added, polls: poll + 1 };
+    }
+    return { grew: false, added: 0, polls: maxPolls };
   }
 
   async scrollList(tabId) {
@@ -1074,6 +1128,15 @@ function randomBetween(min, max, randomFn = Math.random) {
   const low = Math.min(min, max);
   const high = Math.max(min, max);
   return Math.round(low + (high - low) * Math.max(0, Math.min(1, Number(randomFn()) || 0)));
+}
+
+function mergeUniqueCards(found, cards) {
+  const before = found.size;
+  for (const card of cards || []) {
+    const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
+    if (!found.has(key)) found.set(key, card);
+  }
+  return found.size - before;
 }
 
 function mergeScanCandidate(target, candidate) {
