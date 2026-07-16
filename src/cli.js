@@ -652,6 +652,7 @@ async function reassessBatch(db, args) {
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
   const result = await reassessBatchObservations(db, {
     batchId,
+    planId,
     configs,
     analyzeJob,
     cleanDescription: cleanDetailText
