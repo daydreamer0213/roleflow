@@ -1,4 +1,5 @@
 const { cityToBossCode } = require("./search_plan");
+const { PRODUCT_POLICY } = require("./product_policy");
 
 function validateSearchPlan(plan = {}, candidateProfile = {}) {
   const errors = [];
@@ -22,7 +23,7 @@ function validateSearchPlan(plan = {}, candidateProfile = {}) {
   const conflict = keywords.find((word) => excluded.has(normalize(word)));
   if (conflict) errors.push(`关键词「${conflict}」同时出现在排除项中。`);
   const scan = plan.scan || {};
-  if (Number(scan.maxCards || 0) > 120) warnings.push("A 类关键词读取岗位数较高，建议先用 60-100 验证质量。");
+  if (Number(scan.maxCards || 0) > PRODUCT_POLICY.searchPlan.highCardWarning) warnings.push("A 类关键词读取岗位数较高，建议先用 60-100 验证质量。");
   return { valid: errors.length === 0, errors, warnings };
 }
 

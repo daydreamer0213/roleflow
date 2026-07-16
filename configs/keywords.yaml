@@ -1,20 +1,3 @@
 {
-  "default_city": "广州",
-  "keywords": [
-    {"word": "AI应用开发", "source": "core"},
-    {"word": "AI开发工程师", "source": "core"},
-    {"word": "大模型应用开发", "source": "core"},
-    {"word": "LLM应用开发", "source": "core"},
-    {"word": "Agent工程师", "source": "core"},
-    {"word": "RAG工程师", "source": "core"},
-    {"word": "Python AI", "source": "core"},
-    {"word": "Python大模型", "source": "core"},
-    {"word": "AI后端开发", "source": "core"},
-    {"word": "知识库工程师", "source": "core"},
-    {"word": "智能问答开发", "source": "core"},
-    {"word": "Dify", "source": "tool"},
-    {"word": "Coze", "source": "tool"},
-    {"word": "FastGPT", "source": "tool"},
-    {"word": "MCP", "source": "tool"}
-  ]
+  "keywords": []
 }

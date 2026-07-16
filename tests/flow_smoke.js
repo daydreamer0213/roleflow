@@ -23,7 +23,11 @@ const dbHandles = [];
     "--db",
     dbPath,
     "--input",
-    path.join("data", "sample_jobs.json")
+    path.join("data", "sample_jobs.json"),
+    "--profile",
+    path.join("profiles", "example_profile.json"),
+    "--resume-versions",
+    path.join("profiles", "example_resume_versions.json")
   ], { cwd: root, encoding: "utf8" });
   assert.strictEqual(scan.status, 0, scan.stderr || scan.stdout);
   collectGeneratedReports(scan.stdout);
@@ -31,6 +35,9 @@ const dbHandles = [];
   const db = trackDb(openDb(dbPath));
   const latestBatchId = getLatestBatchId(db);
   assert(latestBatchId, "scan did not create a batch");
+  const batchSnapshot = JSON.parse(db.prepare("SELECT filter_snapshot_json FROM batches WHERE id = ?").get(latestBatchId).filter_snapshot_json);
+  assert.match(batchSnapshot.runtimePolicyHash, /^[a-f0-9]{64}$/);
+  assert.strictEqual(batchSnapshot.runtimePolicy.version, "2026-07-16.1");
   const jobs = listReportJobs(db, { batch: "latest" });
   assert(jobs.length > 0, "scan did not import jobs");
   const firstJob = jobs[0];

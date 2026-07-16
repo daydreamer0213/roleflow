@@ -4,6 +4,7 @@ const { profileToRuntimeConfigs, resolveScanPolicy, applyScanPolicyToFilters } =
 const { validateSearchPlan, assertSearchPlanReady } = require("../src/core/plan_validation");
 const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
 const { prepareResumeTextForModel } = require("../src/core/profile_onboarding");
+const { PRODUCT_POLICY_VERSION, PRODUCT_POLICY } = require("../src/core/product_policy");
 
 const preparedResume = prepareResumeTextForModel(`姓名：测试候选人
 手机：13800138000
@@ -51,6 +52,7 @@ assert.strictEqual(plan.bossActiveDays, 3);
 assert.deepStrictEqual(plan.jobTypes, ["全职"]);
 assert.deepStrictEqual(plan.degrees, []);
 assert.strictEqual(plan.scan.maxDetailTotal, 300);
+assert.strictEqual(plan.scan.maxCards, PRODUCT_POLICY.searchPlan.broadScanDefaults.maxCards);
 assert.strictEqual(Object.hasOwn(plan.scan, "detailLimit"), false);
 assert.strictEqual(normalizeSearchPlan({ scan: { maxDetailTotal: 500 } }, profile).scan.maxDetailTotal, 500);
 const modePlan = {
@@ -69,10 +71,14 @@ assert.strictEqual(dailyPolicy.maxCards, 50);
 assert.strictEqual(dailyPolicy.maxDetailTotal, 220);
 assert.deepStrictEqual(dailyPolicy.detailLimits, { A: 40, B: 30 });
 assert.strictEqual(dailyPolicy.browserPageBudget, 40);
+assert.strictEqual(dailyPolicy.policyVersion, PRODUCT_POLICY_VERSION);
+assert.match(dailyPolicy.policyHash, /^[a-f0-9]{64}$/);
+assert.strictEqual(resolveScanPolicy(modePlan, "daily").policyHash, dailyPolicy.policyHash);
 const broadPolicy = resolveScanPolicy(modePlan, "broad");
 assert.strictEqual(broadPolicy.keywordPlan.length, 4);
 assert.strictEqual(broadPolicy.maxCards, 90);
 assert.strictEqual(broadPolicy.maxDetailTotal, 300);
+assert.notStrictEqual(broadPolicy.policyHash, dailyPolicy.policyHash);
 const filteredLanes = applyScanPolicyToFilters({
   params: { salary: ["405"] },
   labels: { salary: ["10-20K"] },

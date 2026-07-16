@@ -4,14 +4,10 @@ const CITY_CODES = {
   "苏州": "101190400", "长沙": "101250100", "佛山": "101280800", "东莞": "101281600",
   "珠海": "101281800", "天津": "101030100", "西安": "101110100", "重庆": "101040100"
 };
-const { runtimeAnalysisContext } = require("./analysis_revision");
+const { runtimeAnalysisContext, stableHash } = require("./analysis_revision");
+const { PRODUCT_POLICY_VERSION, PRODUCT_POLICY } = require("./product_policy");
 
-const DAILY_SCAN_LIMITS = Object.freeze({
-  maxCards: 50,
-  maxDetailTotal: 220,
-  browserPageBudget: 40,
-  detailLimits: Object.freeze({ A: 40, B: 30 })
-});
+const DAILY_SCAN_LIMITS = PRODUCT_POLICY.dailyScan;
 
 function cityToBossCode(city) {
   return CITY_CODES[String(city || "").trim()] || "";
@@ -89,7 +85,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
         ...configs.scoring?.salary,
         mode: plan.salaryMode === "strict" ? "strict" : "wide",
         preferred_max_k: Number(salary.maxK || configs.scoring?.salary?.preferred_max_k || 24),
-        hard_max_k: Number(salary.maxK || configs.scoring?.salary?.hard_max_k || 35) + 12,
+        hard_max_k: Number(salary.maxK || configs.scoring?.salary?.hard_max_k || 35) + PRODUCT_POLICY.matching.salaryHardMaxMarginK,
         expected_min_k: Number(salary.minK || 0),
         expected_max_k: Number(salary.maxK || 0),
         experience_flex_max_k: Number(salary.maxK || configs.scoring?.salary?.experience_flex_max_k || 18)
@@ -123,27 +119,54 @@ function planKeywords(plan) {
 }
 
 function resolveScanPolicy(plan = {}, requestedMode = "daily") {
+  const planPolicy = PRODUCT_POLICY.searchPlan;
   const mode = requestedMode === "broad" ? "broad" : "daily";
   const scan = plan.scan || {};
   const allKeywords = (plan.keywords || []).map((item) => typeof item === "string"
     ? { word: item, priority: "B", reason: "" }
     : { ...item, priority: ["A", "B", "C"].includes(item.priority) ? item.priority : "B" })
     .filter((item) => item.word);
-  const dailyKeywords = allKeywords.filter((item) => item.priority !== "C");
+  const dailyKeywords = allKeywords.filter((item) => DAILY_SCAN_LIMITS.priorities.includes(item.priority));
   const broad = {
-    maxCards: bounded(scan.maxCards, 60, 10, 200),
-    maxDetailTotal: bounded(scan.maxDetailTotal, 300, 1, 1000),
-    browserPageBudget: bounded(scan.browserPageBudget, 90, 20, 300)
+    maxCards: bounded(scan.maxCards, planPolicy.broadScanDefaults.maxCards, ...planPolicy.scanBounds.maxCards),
+    maxDetailTotal: bounded(scan.maxDetailTotal, planPolicy.broadScanDefaults.maxDetailTotal, ...planPolicy.scanBounds.maxDetailTotal),
+    browserPageBudget: bounded(scan.browserPageBudget, planPolicy.broadScanDefaults.browserPageBudget, ...planPolicy.scanBounds.browserPageBudget)
   };
-  return {
+  const resolved = {
     mode,
     keywordPlan: mode === "daily" ? (dailyKeywords.length ? dailyKeywords : allKeywords.slice(0, 4)) : allKeywords,
     maxCards: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxCards, broad.maxCards) : broad.maxCards,
     maxDetailTotal: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.maxDetailTotal, broad.maxDetailTotal) : broad.maxDetailTotal,
     browserPageBudget: mode === "daily" ? Math.min(DAILY_SCAN_LIMITS.browserPageBudget, broad.browserPageBudget) : broad.browserPageBudget,
     detailLimits: mode === "daily" ? DAILY_SCAN_LIMITS.detailLimits : null,
-    salaryLaneLimit: mode === "daily" ? 1 : Number.POSITIVE_INFINITY
+    salaryLaneLimit: mode === "daily" ? DAILY_SCAN_LIMITS.salaryLaneLimit : null
   };
+  const snapshot = {
+    version: PRODUCT_POLICY_VERSION,
+    mode: resolved.mode,
+    keywords: resolved.keywordPlan.map(({ word, priority }) => ({ word, priority })),
+    platform: plan.platform || {},
+    cities: plan.cities || [],
+    directions: plan.directions || [],
+    salary: plan.salary || {},
+    salaryMode: plan.salaryMode || planPolicy.defaultSalaryMode,
+    experience: plan.experience || [],
+    allowExperienceStretch: plan.allowExperienceStretch !== false,
+    jobTypes: plan.jobTypes || [],
+    degrees: plan.degrees || [],
+    excludeWords: plan.excludeWords || [],
+    hardExcludes: plan.hardExcludes || [],
+    bossActiveDays: safeActiveDays(plan.bossActiveDays),
+    workSchedulePreference: plan.workSchedulePreference || planPolicy.defaultWorkSchedulePreference,
+    limits: {
+      maxCards: resolved.maxCards,
+      maxDetailTotal: resolved.maxDetailTotal,
+      browserPageBudget: resolved.browserPageBudget,
+      detailLimits: resolved.detailLimits,
+      salaryLaneLimit: resolved.salaryLaneLimit
+    }
+  };
+  return { ...resolved, policyVersion: PRODUCT_POLICY_VERSION, policyHash: stableHash(snapshot), snapshot };
 }
 
 function applyScanPolicyToFilters(snapshot = {}, policy = {}) {
@@ -164,8 +187,9 @@ function bounded(value, fallback, min, max) {
 }
 
 function safeActiveDays(value) {
+  const policy = PRODUCT_POLICY.searchPlan;
   const days = Number(value);
-  return [1, 3, 7].includes(days) ? days : 3;
+  return policy.allowedBossActiveDays.includes(days) ? days : policy.defaultBossActiveDays;
 }
 
 function normalizeExperienceSelections(values) {

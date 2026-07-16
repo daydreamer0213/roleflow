@@ -30,6 +30,14 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
   assert(source.includes('"--plan"'));
   assert(!source.includes('"--keywords"'));
 }
+const portableLauncher = fs.readFileSync(path.join(root, "ScanPortable.bat"), "utf8");
+assert(!portableLauncher.includes("DetailLimit"));
+assert(!portableLauncher.includes("MaxCards"));
+const defaultConfigs = loadConfigs(root);
+assert.strictEqual(defaultConfigs.candidateProfile, null);
+assert.deepStrictEqual(defaultConfigs.resumeVersions, { versions: [] });
+assert.deepStrictEqual(defaultConfigs.keywords, { keywords: [] });
+assert.deepStrictEqual(resolvePlannedKeywords({}, defaultConfigs).keywords, []);
 const configs = loadConfigs(root, { profile: "profiles/example_profile.json", resumeVersions: "profiles/example_resume_versions.json" });
 assert.strictEqual(configs.candidateProfile.candidate.name, "示例候选人");
 const sample = JSON.parse(fs.readFileSync(path.join(root, "data", "sample_jobs.json"), "utf8"));
@@ -46,15 +54,24 @@ assert(keywordPlan.some((item) => item.word === "RAG" && item.resumeVersion === 
 assert(keywordPlan.every((item) => item.priority && item.reason && Array.isArray(item.avoidTerms)));
 assert(resolvePlannedKeywords({ keywords: "手动词" }, configs).keywords.includes("手动词"));
 
-const good = scoreJob(sample[0], configs);
+const runtimeConfigs = profileToRuntimeConfigs(configs, configs.candidateProfile, {
+  cities: ["广州"],
+  salary: { minK: 9, maxK: 18 },
+  experience: ["经验不限", "0-3年", "1-3年", "3-5年（可冲）"],
+  jobTypes: ["全职"],
+  directions: configs.candidateProfile.candidate.directions,
+  keywords: keywordPlan
+});
+
+const good = scoreJob(sample[0], runtimeConfigs);
 assert(good.score > 0);
-const explained = explainJobMatch({ ...sample[0], ...good }, configs, keywordPlan);
+const explained = explainJobMatch({ ...sample[0], ...good }, runtimeConfigs, keywordPlan);
 assert.strictEqual(explained.provider, "rule-mock");
 assert(explained.llmReady);
 assert(explained.recommendedResumeVersion);
 assert(good.canStretch, "3-5年 + 18K以内 + AI应用，应标记可冲");
 
-const risky = scoreJob(sample[1], configs);
+const risky = scoreJob(sample[1], runtimeConfigs);
 assert(risky.score < good.score);
 assert(risky.risks.length > 0);
 assert.strictEqual(parseBossActivityText("HR 今日活跃，欢迎沟通"), "今日活跃");
@@ -65,14 +82,14 @@ const trainer = scoreJob({
   ...sample[0],
   title: "AI Agent 课程讲师",
   description: `${sample[0].description} 负责课程设计和培训交付。`
-}, configs);
+}, runtimeConfigs);
 assert.strictEqual(trainer.level, "不建议");
 assert(trainer.score < good.score);
 
 const selfCheckDbPath = path.join(selfCheckDir, `self-check-${Date.now()}.sqlite`);
 const db = openDb(selfCheckDbPath);
 const batchId = createBatch(db, "boss", "self-check");
-const greeting = createGreeting(sample[0], configs.profile);
+const greeting = createGreeting(sample[0], runtimeConfigs.profile);
 upsertJob(db, { ...sample[0], ...good, greeting }, batchId);
 assert.strictEqual(listReportJobs(db).length, 1);
 

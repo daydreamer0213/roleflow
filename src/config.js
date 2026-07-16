@@ -1,6 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 
+const DEFAULT_PROFILE = Object.freeze({
+  candidate: { name: "候选人", city: "", target_roles: [], strengths: [] },
+  location: { target_cities: [], default_city: "", boss_city_code: "" },
+  safety: { read_only: true, manual_confirmation_required: true }
+});
+
 function readConfig(file) {
   const text = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
   return JSON.parse(text);
@@ -12,16 +18,15 @@ function readOptionalConfig(file, fallback) {
 }
 
 function loadConfigs(root = process.cwd(), options = {}) {
-  const exampleProfile = readConfig(path.join(root, "configs", "profile.example.json"));
-  const exampleCandidateProfile = readOptionalConfig(path.join(root, "profiles", "example_profile.json"), null);
-  const exampleResumeVersions = readOptionalConfig(path.join(root, "profiles", "example_resume_versions.json"), { versions: [] });
+  const candidateProfilePath = options.candidateProfile || options.profile;
+  const resumeVersionsPath = options.resumeVersions;
   return {
-    profile: readOptionalConfig(path.join(root, "configs", "profile.yaml"), exampleProfile),
+    profile: readOptionalConfig(path.join(root, "configs", "profile.yaml"), DEFAULT_PROFILE),
     keywords: readConfig(path.join(root, "configs", "keywords.yaml")),
     scoring: readConfig(path.join(root, "configs", "scoring.yaml")),
     model: readOptionalConfig(path.join(root, "configs", "model.json"), { provider: "mock", providers: { mock: {} } }),
-    candidateProfile: readOptionalConfig(resolvePath(root, options.candidateProfile || options.profile || path.join("profiles", "guo_mingfu.json")), exampleCandidateProfile),
-    resumeVersions: readOptionalConfig(resolvePath(root, options.resumeVersions || path.join("profiles", "resume_versions.json")), exampleResumeVersions)
+    candidateProfile: candidateProfilePath ? readOptionalConfig(resolvePath(root, candidateProfilePath), null) : null,
+    resumeVersions: resumeVersionsPath ? readOptionalConfig(resolvePath(root, resumeVersionsPath), { versions: [] }) : { versions: [] }
   };
 }
 

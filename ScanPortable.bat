@@ -5,7 +5,7 @@ if "%PLAN_ID%"=="" (
   echo Search Plan ID is required. Create and save a plan in the dashboard first.
   goto :end
 )
-powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\scan-portable.ps1" -PlanId "%PLAN_ID%" -MaxCards 60 -DetailLimit 5
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\scan-portable.ps1" -PlanId "%PLAN_ID%"
 :end
 echo.
 pause

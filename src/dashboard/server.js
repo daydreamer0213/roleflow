@@ -53,6 +53,7 @@ const { createLogger, errorMeta, publicError } = require("../core/observability"
 const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
+const { PRODUCT_POLICY } = require("../core/product_policy");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
 
@@ -451,7 +452,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       jobTypes: params.jobTypes === undefined ? ["全职"] : splitTerms(params.jobTypes),
       degrees: splitTerms(params.degrees),
       allowExperienceStretch: true,
-      bossActiveDays: 3,
+      bossActiveDays: PRODUCT_POLICY.searchPlan.defaultBossActiveDays,
       workSchedulePreference: params.workSchedulePreference,
       directions: splitTerms(params.directions),
       keywords: parseKeywordLines(params.keywords),
@@ -517,9 +518,9 @@ function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = 
     ? ["--browser", "edge"]
     : ["--browser", "portable", "--cdp-port", String(cdpPort)];
   const commandArgs = scanKind === "refresh"
-    ? ["refresh-details", "--db", dbPath, "--plan", String(planId), "--limit", "8", ...browserArgs]
+    ? ["refresh-details", "--db", dbPath, "--plan", String(planId), "--limit", String(PRODUCT_POLICY.operations.refreshLimit), ...browserArgs]
     : scanKind === "activity"
-      ? ["refresh-activity", "--db", dbPath, "--plan", String(planId), "--limit", "8", ...browserArgs]
+      ? ["refresh-activity", "--db", dbPath, "--plan", String(planId), "--limit", String(PRODUCT_POLICY.operations.refreshLimit), ...browserArgs]
       : ["scan", "--db", dbPath, "--plan", String(planId), "--site", "boss", "--scan-mode", scanKind === "broad" ? "broad" : "daily", ...browserArgs];
   const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", ...commandArgs], {
     cwd: root,
@@ -1158,9 +1159,9 @@ function renderModelOptions(preset, selectedModel) {
 }
 
 const PLAN_CITY_OPTIONS = Object.keys(CITY_CODES);
-const PLAN_EXPERIENCE_OPTIONS = ["经验不限", "0-1年", "0-3年", "1-3年", "2-3年", "3-5年（可冲）"];
-const PLAN_JOB_TYPE_OPTIONS = ["全职", "兼职", "实习"];
-const PLAN_DEGREE_OPTIONS = ["初中及以下", "中专/中技", "高中", "大专", "本科", "硕士", "博士"];
+const PLAN_EXPERIENCE_OPTIONS = PRODUCT_POLICY.searchPlan.experienceOptions;
+const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
+const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
 function renderPlanChoices(name, options, selectedValues = []) {
   const selected = new Set(selectedValues || []);
@@ -1232,7 +1233,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
     <p class="plan-note">岗位质量会自动优先保留招聘方近 3 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
     <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
-    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="10" max="200" name="maxCards" value="${escapeAttr(plan.scan?.maxCards || 60)}"></label><label>右栏详情安全上限<input type="number" min="1" max="1000" name="maxDetailTotal" value="${escapeAttr(plan.scan?.maxDetailTotal || 300)}"></label><label>搜索页面安全上限<input type="number" min="20" max="300" name="browserPageBudget" value="${escapeAttr(plan.scan?.browserPageBudget || 90)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
+    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="10" max="200" name="maxCards" value="${escapeAttr(plan.scan.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="1" max="1000" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="20" max="300" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
     <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
   </form>
   <section class="panel scan-panel">

@@ -59,6 +59,7 @@ const { resolveRuntimeModelConfig } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
+const { PRODUCT_POLICY } = require("./core/product_policy");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -205,13 +206,13 @@ async function scan(db, args) {
   const reusableDetails = new Map((args.input ? [] : listReusableJobDetails(db, {
     site,
     profileId: planRecord?.profileId,
-    maxAgeDays: 3
+    maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays
   })).map((item) => [item.sourceId, item]));
-  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: 3 });
+  if (reusableDetails.size) logger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays });
   const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
     profileId: planRecord?.profileId,
     searchPlanId: planRecord?.id,
-    filterSnapshot: nativeFilterSnapshot
+    filterSnapshot: { ...nativeFilterSnapshot, runtimePolicy: scanPolicy.snapshot, runtimePolicyHash: scanPolicy.policyHash }
   });
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
   logger.info("scan_started", {
@@ -220,6 +221,8 @@ async function scan(db, args) {
     keywordCount: keywords.length,
     source,
     scanMode,
+    runtimePolicyVersion: scanPolicy.policyVersion,
+    runtimePolicyHash: scanPolicy.policyHash,
     browser: args.browser || "input",
     hasInput: Boolean(args.input),
     analysisConcurrency,
@@ -383,7 +386,7 @@ async function refreshDetails(db, args) {
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);
-  const limit = Math.max(1, Math.min(8, Number(args.limit) || 8));
+  const limit = Math.max(1, Math.min(PRODUCT_POLICY.operations.refreshLimit, Number(args.limit) || PRODUCT_POLICY.operations.refreshLimit));
   const pending = listDecisionPool(db, { planId })
     .filter((job) => {
       const tags = new Set(job.qualityTags || []);
@@ -420,7 +423,7 @@ async function refreshDetails(db, args) {
     onAttempt: async (attempt) => {
       const nextRetryAt = attempt.result === "failed"
         ? refreshRetryAt(attempt.errorCode)
-        : activityOnly ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString() : "";
+        : activityOnly ? new Date(Date.now() + PRODUCT_POLICY.operations.activityRefreshDays * 24 * 60 * 60 * 1000).toISOString() : "";
       recordJobRefreshAttempt(db, {
         jobId: attempt.job.id,
         result: attempt.result,

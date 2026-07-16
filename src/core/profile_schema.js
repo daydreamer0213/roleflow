@@ -1,4 +1,5 @@
 const { cityToBossCode } = require("./search_plan");
+const { PRODUCT_POLICY } = require("./product_policy");
 
 function normalizeCandidateProfile(input = {}, meta = {}) {
   const source = object(input.source);
@@ -38,6 +39,7 @@ function normalizeCandidateProfile(input = {}, meta = {}) {
 }
 
 function normalizeSearchPlan(input = {}, candidateProfile = {}) {
+  const policy = PRODUCT_POLICY.searchPlan;
   const candidate = object(candidateProfile.candidate);
   const city = strings(input.cities || input.city || candidate.city, 5);
   const keywordInput = input.keywords || input.includeKeywords || input.searchKeywords;
@@ -56,21 +58,21 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
     cities: city,
     bossCityCode: text(input.bossCityCode || cityToBossCode(city[0]) || ""),
     salary: { minK, maxK },
-    salaryMode: input.salaryMode === "strict" ? "strict" : "wide",
-    experience: normalizeExperience(input.experience || ["经验不限", "0-3年", "1-3年"]),
-    jobTypes: strings(input.jobTypes || input.jobType || ["全职"], 4),
+    salaryMode: input.salaryMode === "strict" ? "strict" : policy.defaultSalaryMode,
+    experience: normalizeExperience(input.experience || policy.defaultExperience),
+    jobTypes: strings(input.jobTypes || input.jobType || policy.defaultJobTypes, 4),
     degrees: strings(input.degrees || input.degree, 8),
     allowExperienceStretch: input.allowExperienceStretch !== false,
     bossActiveDays: normalizeBossActiveDays(input.bossActiveDays),
     workSchedulePreference: normalizeWorkSchedulePreference(input.workSchedulePreference),
     directions: strings(input.directions || candidate.targetTitles, 10),
     keywords: fallbackKeywords,
-    excludeWords: strings(input.excludeWords || input.excludeTerms || ["销售", "培训", "讲师", "课程顾问"], 20),
+    excludeWords: strings(input.excludeWords || input.excludeTerms, 20),
     hardExcludes: strings(input.hardExcludes, 20),
     scan: {
-      maxCards: Math.max(10, Math.min(200, number(object(input.scan).maxCards, 60))),
-      maxDetailTotal: Math.max(1, Math.min(1000, number(object(input.scan).maxDetailTotal, 300))),
-      browserPageBudget: Math.max(20, Math.min(300, number(object(input.scan).browserPageBudget, 90)))
+      maxCards: boundedPolicyValue(object(input.scan).maxCards, policy.broadScanDefaults.maxCards, policy.scanBounds.maxCards),
+      maxDetailTotal: boundedPolicyValue(object(input.scan).maxDetailTotal, policy.broadScanDefaults.maxDetailTotal, policy.scanBounds.maxDetailTotal),
+      browserPageBudget: boundedPolicyValue(object(input.scan).browserPageBudget, policy.broadScanDefaults.browserPageBudget, policy.scanBounds.browserPageBudget)
     },
     source: text(input.source || "model-recommended")
   };
@@ -172,7 +174,7 @@ function inferSalary(value) {
 
 function normalizeExperience(value) {
   const result = [...new Set(strings(value, 8).map(normalizeExperienceValue).filter(Boolean))];
-  return result.length ? result : ["经验不限", "0-3年", "1-3年"];
+  return result.length ? result : [...PRODUCT_POLICY.searchPlan.defaultExperience];
 }
 
 function normalizeExperienceValue(value) {
@@ -182,12 +184,13 @@ function normalizeExperienceValue(value) {
 }
 
 function normalizeBossActiveDays(value) {
-  const days = number(value, 3);
-  return [1, 3, 7].includes(days) ? days : 3;
+  const policy = PRODUCT_POLICY.searchPlan;
+  const days = number(value, policy.defaultBossActiveDays);
+  return policy.allowedBossActiveDays.includes(days) ? days : policy.defaultBossActiveDays;
 }
 
 function normalizeWorkSchedulePreference(value) {
-  return value === "no_preference" ? "no_preference" : "prefer_double_weekend";
+  return value === "no_preference" ? "no_preference" : PRODUCT_POLICY.searchPlan.defaultWorkSchedulePreference;
 }
 
 function normalizePlatformSite(value) {
@@ -199,6 +202,7 @@ function list(value) { return Array.isArray(value) ? value : value ? [value] : [
 function text(value) { return String(value || "").trim().slice(0, 1000); }
 function strings(value, limit) { return [...new Set(list(value).map((item) => text(item)).filter(Boolean))].slice(0, limit); }
 function number(value, fallback) { const result = Number(value); return Number.isFinite(result) ? result : fallback; }
+function boundedPolicyValue(value, fallback, [min, max]) { return Math.max(min, Math.min(max, number(value, fallback))); }
 function slug(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
 
 module.exports = { normalizeCandidateProfile, normalizeSearchPlan, inferSalary, normalizeBossActiveDays, normalizeWorkSchedulePreference };
