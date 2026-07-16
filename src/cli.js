@@ -20,7 +20,11 @@ const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary }
 const {
   openDb,
   createBatch,
-  recordScanTargetResult,
+  beginScanRun,
+  heartbeatScanRun,
+  finishScanRun,
+  checkpointScanTarget,
+  summarizeScanTargets,
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
@@ -66,11 +70,13 @@ const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
 const logger = createLogger({ root: ROOT, component: "cli" });
 
-main().catch((err) => {
-  logger.error("cli_command_failed", { command: process.argv[2] || "help", error: errorMeta(err) });
-  console.error(err.stack || err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    logger.error("cli_command_failed", { command: process.argv[2] || "help", error: errorMeta(err) });
+    console.error(err.stack || err.message);
+    process.exit(1);
+  });
+}
 
 async function main() {
   const [command = "help", ...argv] = process.argv.slice(2);
@@ -84,9 +90,9 @@ async function main() {
     return;
   }
 
-  if (command === "scan") return executeWithSiteScanLease(db, args, command, (signal) => scan(db, args, { signal }));
-  if (command === "refresh-details") return executeWithSiteScanLease(db, args, command, (signal) => refreshDetails(db, args, { signal }));
-  if (command === "refresh-activity") return executeWithSiteScanLease(db, args, command, (signal) => refreshDetails(db, { ...args, "activity-only": true }, { signal }));
+  if (command === "scan") return executeWithSiteScanLease(db, args, command, (signal, execution) => scan(db, args, { signal, execution }));
+  if (command === "refresh-details") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, args, { signal, execution }));
+  if (command === "refresh-activity") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, { ...args, "activity-only": true }, { signal, execution }));
   if (command === "profile-create") return createProfile(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
@@ -102,12 +108,14 @@ async function main() {
 }
 
 async function executeWithSiteScanLease(db, args, command, run) {
-  if (command === "scan" && args.input) return run(null);
+  if (command === "scan" && args.input) return run(null, null);
   const planRecord = args.plan ? getSearchPlan(db, args.plan) : null;
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const scanKind = resolveScanKind(command, args);
-  const runId = String(args["run-id"] || "").trim();
-  const owner = `${runId || crypto.randomUUID()}:${process.pid}`;
+  const runId = String(args["run-id"] || crypto.randomUUID()).trim();
+  const owner = `${runId}:${process.pid}`;
+  const planId = Number(args.plan || 0) || null;
+  let runClaimed = false;
   return runWithSiteScanLease({
     acquire(input) {
       const lease = acquireSiteScanLease(db, input);
@@ -116,6 +124,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
     },
     renew(input) {
       const expiresAt = renewSiteScanLease(db, { site, owner });
+      if (runClaimed) heartbeatScanRun(db, { runId, leaseOwner: owner, processId: process.pid });
       logger.info("site_scan_lease_renewed", { site, scanKind, owner, expiresAt, runId: runId || null });
       return { site, owner, expiresAt };
     },
@@ -128,11 +137,51 @@ async function executeWithSiteScanLease(db, args, command, run) {
     site,
     owner,
     command: scanKind,
-    planId: Number(args.plan || 0) || null
-  }, run);
+    planId
+  }, async (signal) => {
+    const scanRun = beginScanRun(db, {
+      runId,
+      site,
+      command: scanKind,
+      planId,
+      leaseOwner: owner,
+      processId: process.pid
+    });
+    runClaimed = true;
+    const execution = { runId, leaseOwner: owner, site, scanKind, planId };
+    logger.info("scan_run_started", { ...execution, status: scanRun.status });
+    try {
+      const result = await run(signal, execution);
+      const status = normalizeScanTerminalStatus(result?.status || "completed");
+      const finished = finishScanRun(db, {
+        runId,
+        leaseOwner: owner,
+        status,
+        stopCode: result?.stopCode,
+        stopMessage: result?.stopMessage
+      });
+      logger.info("scan_run_finished", { ...execution, batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+      return result;
+    } catch (error) {
+      const status = scanFailureStatus(error);
+      try {
+        const finished = finishScanRun(db, {
+          runId,
+          leaseOwner: owner,
+          status,
+          stopCode: error?.code || "SCAN_FAILED",
+          stopMessage: error?.message || String(error)
+        });
+        logger.warn("scan_run_finished", { ...execution, batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
+      } catch (finishError) {
+        logger.error("scan_run_finish_failed", { ...execution, status, error: errorMeta(finishError) });
+      }
+      throw error;
+    }
+  });
 }
 
-async function scan(db, args, { signal = null } = {}) {
+async function scan(db, args, { signal = null, execution = null } = {}) {
   assertScanActive(signal);
   if (!args.plan && !args.input) {
     throw new Error("真实浏览器扫描必须传入 --plan <Search Plan ID>，避免岗位和投递状态脱离候选人画像。");
@@ -223,6 +272,14 @@ async function scan(db, args, { signal = null } = {}) {
     searchPlanId: planRecord?.id,
     filterSnapshot: { ...nativeFilterSnapshot, runtimePolicy: scanPolicy.snapshot, runtimePolicyHash: scanPolicy.policyHash }
   });
+  if (execution) {
+    beginScanRun(db, {
+      runId: execution.runId,
+      batchId,
+      leaseOwner: execution.leaseOwner,
+      processId: process.pid
+    });
+  }
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
   logger.info("scan_started", {
     batchId,
@@ -246,25 +303,24 @@ async function scan(db, args, { signal = null } = {}) {
   });
 
   let checkpointed = 0;
+  let scanSummary = null;
   const onTargetComplete = args.input ? null : async (result) => {
     assertScanActive(signal);
-    recordScanTargetResult(db, {
-      batchId,
-      targetKey: result.targetKey,
-      city: result.city,
-      keyword: result.keyword,
-      laneId: result.laneId,
-      status: result.status,
-      jobCount: result.jobCount,
-      errorCode: result.errorCode,
-      errorMessage: result.errorMessage,
-      details: result.details,
-      startedAt: result.startedAt,
-      finishedAt: result.finishedAt
-    });
-    for (const raw of result.jobs || []) {
-      upsertJob(db, checkpointScannedJob(raw, configs), batchId);
-      checkpointed += 1;
+    try {
+      const jobs = (result.jobs || []).map((raw) => checkpointScannedJob(raw, configs));
+      checkpointScanTarget(db, {
+        runId: execution.runId,
+        batchId,
+        leaseOwner: execution.leaseOwner,
+        target: result,
+        jobs
+      });
+      checkpointed += jobs.length;
+    } catch (error) {
+      const checkpointError = new Error(`扫描目标 ${result.targetKey} 保存失败：${error.message}`);
+      checkpointError.code = "SCAN_CHECKPOINT_FAILED";
+      checkpointError.cause = error;
+      throw checkpointError;
     }
     logger.info("scan_target_checkpointed", {
       batchId,
@@ -298,6 +354,7 @@ async function scan(db, args, { signal = null } = {}) {
       });
     },
     onTargetComplete,
+    onScanComplete: (summary) => { scanSummary = summary; },
     signal
   });
   assertScanActive(signal);
@@ -334,6 +391,13 @@ async function scan(db, args, { signal = null } = {}) {
   }
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
+  const targetSummary = execution ? summarizeScanTargets(db, batchId) : null;
+  return {
+    status: scanSummary?.status || targetSummary?.status || "completed",
+    batchId,
+    stopCode: scanSummary?.fatalErrorCode || (scanSummary?.status === "partial" ? "SCAN_TARGETS_PARTIAL" : ""),
+    stopMessage: scanSummary?.fatalErrorMessage || ""
+  };
 }
 
 async function analyzeScannedJob(raw, { configs, analyzeJob }) {
@@ -382,7 +446,7 @@ function checkpointScannedJob(raw, configs) {
   return { ...raw, ...scored, analysis, greeting: "" };
 }
 
-async function refreshDetails(db, args, { signal = null } = {}) {
+async function refreshDetails(db, args, { signal = null, execution = null } = {}) {
   assertScanActive(signal);
   const activityOnly = args["activity-only"] === true;
   const planId = Number(args.plan);
@@ -424,7 +488,7 @@ async function refreshDetails(db, args, { signal = null } = {}) {
     .slice(0, limit);
   if (!pending.length) {
     console.log(activityOnly ? "当前没有超过 3 天有效期、需要更新活跃状态的历史岗位。" : "当前没有需要补读的岗位详情。");
-    return;
+    return { status: "completed", batchId: null };
   }
 
   const refreshKind = activityOnly ? "activity-probe" : "detail-refresh";
@@ -433,6 +497,14 @@ async function refreshDetails(db, args, { signal = null } = {}) {
     searchPlanId: planId,
     filterSnapshot: { mode: refreshKind, requested: pending.length }
   });
+  if (execution) {
+    beginScanRun(db, {
+      runId: execution.runId,
+      batchId,
+      leaseOwner: execution.leaseOwner,
+      processId: process.pid
+    });
+  }
   logger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
   const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
   const rawJobs = await refreshMethod(pending, {
@@ -467,6 +539,7 @@ async function refreshDetails(db, args, { signal = null } = {}) {
   console.log(`${activityOnly ? "活跃状态更新" : "补读"}完成：请求 ${pending.length} 条，成功 ${analyzedJobs.length} 条`);
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
+  return { status: "completed", batchId };
 }
 
 async function analyzeActivityProbe(raw, { configs, analyzeJob }) {
@@ -506,6 +579,26 @@ function assertScanActive(signal) {
   const error = new Error("扫描已中止。");
   error.code = "SCAN_ABORTED";
   throw error;
+}
+
+function normalizeScanTerminalStatus(status) {
+  const normalized = String(status || "completed").trim().toLowerCase();
+  return ["completed", "partial", "failed", "interrupted"].includes(normalized) ? normalized : "completed";
+}
+
+function scanFailureStatus(error) {
+  const code = String(error?.code || "");
+  return new Set([
+    "SCAN_LEASE_LOST",
+    "SCAN_ABORTED",
+    "BOSS_RISK_CONTROL",
+    "BOSS_LOGIN_REQUIRED",
+    "BOSS_TAB_REQUIRED",
+    "BOSS_SEARCH_PAGE_LOST",
+    "BOSS_DETAIL_PAGE_LOST",
+    "BROWSER_TIMEOUT",
+    "BROWSER_DISCONNECTED"
+  ]).has(code) ? "interrupted" : "failed";
 }
 
 function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false } = {}) {
@@ -823,3 +916,9 @@ function printHelp() {
 
 安全边界：只读岗位信息，不自动点“立即沟通”，不自动发送消息。`);
 }
+
+module.exports = {
+  executeWithSiteScanLease,
+  normalizeScanTerminalStatus,
+  scanFailureStatus
+};
