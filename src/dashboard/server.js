@@ -1,6 +1,7 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const {
   listReportJobs,
@@ -20,6 +21,10 @@ const {
   getPlatformFilterCatalog,
   getSiteRuntimeState,
   getSiteScanLease,
+  createScanRun,
+  getLatestScanRun,
+  recordScanRunProcessExit,
+  interruptOrphanedScanRuns,
   saveProfileAnalysis,
   attachResumeDocumentFile,
   getResumeDocument,
@@ -54,13 +59,16 @@ const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, tes
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
+const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }) }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
   const scanRuns = new Map();
+  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: 120_000 });
+  if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const offlineMockState = {
     source: "runtime",
     settings: { preset: "mock", provider: "mock", baseUrl: "", model: "offline-structured-mock", timeoutMs: 30000, connection: { status: "verified" } },
@@ -101,7 +109,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
     } catch (error) {
       logger.error("http_unhandled_error", { requestId, method: req.method, path: url?.pathname || req.url, error: errorMeta(error) });
@@ -489,72 +497,120 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
   }
 }
 
-async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId }) {
+async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess }) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
     const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
     if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
-    if ([...scanRuns.values()].some((run) => run.state === "running")) throw new Error("BOSS 已有扫描任务正在启动或运行，请等待当前任务结束。");
+    const latestRun = getLatestScanRun(db, { planId: plan.id, site: "boss" });
+    if (latestRun?.status === "running" || [...scanRuns.values()].some((run) => !run.exited)) {
+      throw new Error("BOSS 已有扫描任务正在启动或运行，请等待当前任务结束。");
+    }
     const activeLease = getSiteScanLease(db, "boss");
     if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
     const cdpPort = Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)));
     const browserMode = params.browserMode === "edge" ? "edge" : "portable";
     const scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
-    startPlanScan(scanRuns, { root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, logger, requestId });
+    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, logger, requestId, spawnProcess });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
     respondUiError(res, error, "/plan", { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
   }
 }
 
-function startPlanScan(scanRuns, { root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", logger, requestId }) {
-  const previous = scanRuns.get(Number(planId));
-  if (previous?.state === "running") throw new Error("这个 Search Plan 正在扫描中，请等待当前任务结束。");
+function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
-  const run = { state: "running", kind: scanKind, startedAt: new Date().toISOString(), output: "", error: "", exitCode: null };
-  const browserArgs = browserMode === "edge"
-    ? ["--browser", "edge"]
-    : ["--browser", "portable", "--cdp-port", String(cdpPort)];
-  const commandArgs = scanKind === "refresh"
-    ? ["refresh-details", "--db", dbPath, "--plan", String(planId), "--limit", String(PRODUCT_POLICY.operations.refreshLimit), ...browserArgs]
-    : scanKind === "activity"
-      ? ["refresh-activity", "--db", dbPath, "--plan", String(planId), "--limit", String(PRODUCT_POLICY.operations.refreshLimit), ...browserArgs]
-      : ["scan", "--db", dbPath, "--plan", String(planId), "--site", "boss", "--scan-mode", scanKind === "broad" ? "broad" : "daily", ...browserArgs];
-  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", ...commandArgs], {
-    cwd: root,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  const runId = randomUUID();
+  const commandArgs = buildScanCliArgs({ kind: scanKind, dbPath, planId, browserMode, cdpPort, runId });
+  const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
+  const run = { runId, kind: scanKind, startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
   scanRuns.set(Number(planId), run);
-  logger.info("scan_process_started", { requestId, planId: Number(planId), scanKind, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
-  const append = (chunk) => { run.output = `${run.output}${String(chunk)}`.slice(-4000); };
-  child.stdout.on("data", append);
-  child.stderr.on("data", append);
-  child.on("error", (error) => {
-    run.state = "failed";
-    run.error = error.message;
-    run.finishedAt = new Date().toISOString();
-    logger.error("scan_process_error", { requestId, planId: Number(planId), error: errorMeta(error) });
-  });
-  child.on("close", (code) => {
-    run.exitCode = code;
-    run.state = code === 0 ? "completed" : "failed";
-    if (code !== 0) run.error = run.output || `扫描进程退出：${code}`;
-    run.finishedAt = new Date().toISOString();
-    const context = { requestId, planId: Number(planId), exitCode: code, durationMs: Date.parse(run.finishedAt) - Date.parse(run.startedAt) };
-    if (code === 0) logger.info("scan_process_completed", context);
-    else logger.error("scan_process_failed", { ...context, outputTail: run.output });
-  });
+  let exitRecorded = false;
+  const recordExit = ({ exitCode = null, signal = "", error = null } = {}) => {
+    if (exitRecorded) return;
+    try {
+      const finished = recordScanRunProcessExit(db, {
+        runId,
+        exitCode,
+        signal,
+        status: error ? "failed" : undefined,
+        stopCode: error ? "SCAN_PROCESS_ERROR" : undefined,
+        stopMessage: error?.message
+      });
+      exitRecorded = true;
+      run.exited = true;
+      run.child = null;
+      run.exitCode = finished.processExitCode;
+      run.error = finished.status === "completed" ? "" : error?.message || finished.stopMessage || run.output;
+      const context = {
+        requestId,
+        runId,
+        planId: Number(planId),
+        scanKind,
+        status: finished.status,
+        exitCode: finished.processExitCode,
+        signal: finished.processSignal || null,
+        durationMs: Date.parse(finished.finishedAt) - Date.parse(run.startedAt)
+      };
+      if (finished.status === "completed") logger.info("scan_process_completed", context);
+      else if (finished.status === "failed") logger.error("scan_process_failed", { ...context, outputTail: run.output });
+      else logger.warn("scan_process_stopped", { ...context, outputTail: run.output });
+    } catch (recordError) {
+      run.error = recordError.message;
+      logger.error("scan_process_exit_record_failed", { requestId, runId, planId: Number(planId), error: errorMeta(recordError) });
+    }
+  };
+
+  try {
+    const child = spawnProcess(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", ...commandArgs], {
+      cwd: root,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    run.child = child;
+    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
+    const append = (chunk) => { run.output = `${run.output}${String(chunk)}`.slice(-4000); };
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
+    child.on("error", (error) => {
+      logger.error("scan_process_error", { requestId, runId, planId: Number(planId), error: errorMeta(error) });
+      recordExit({ error });
+    });
+    child.on("close", (code, signal) => recordExit({ exitCode: code, signal }));
+    return run;
+  } catch (error) {
+    recordExit({ error });
+    throw error;
+  }
 }
 
 function scanStatus(scanRuns, planId, db = null) {
-  const run = scanRuns.get(Number(planId));
-  if (run?.state === "running") return run;
+  const normalizedPlanId = Number(planId || 0);
+  const local = scanRuns.get(normalizedPlanId);
+  const persisted = db && normalizedPlanId ? getLatestScanRun(db, { planId: normalizedPlanId, site: "boss" }) : null;
+  if (persisted) {
+    const diagnostic = local?.runId === persisted.runId ? local : null;
+    return {
+      state: persisted.status,
+      kind: persisted.command,
+      runId: persisted.runId,
+      planId: persisted.planId,
+      batchId: persisted.batchId,
+      startedAt: persisted.startedAt || persisted.createdAt,
+      finishedAt: persisted.finishedAt,
+      exitCode: persisted.processExitCode,
+      output: diagnostic?.output || "",
+      error: diagnostic?.error || persisted.stopMessage || "",
+      recovered: !diagnostic
+    };
+  }
   const lease = db ? getSiteScanLease(db, "boss") : null;
-  if (lease) return { state: "running", kind: lease.command, startedAt: lease.acquiredAt, recovered: true, planId: lease.planId };
-  return run || { state: "idle" };
+  if (lease && (!normalizedPlanId || Number(lease.planId) === normalizedPlanId)) {
+    return { state: "running", kind: lease.command, startedAt: lease.acquiredAt, recovered: true, planId: lease.planId };
+  }
+  return { state: "idle" };
 }
 
 async function handlePost(req, res, handler, { logger, requestId, action }) {
@@ -1353,7 +1409,14 @@ function scanLabel(run) {
   if (run.state === "completed" && run.kind === "refresh") return "待刷新岗位补读完成";
   if (run.state === "running" && run.kind === "activity") return "正在更新超过 3 天有效期的招聘方活跃状态";
   if (run.state === "completed" && run.kind === "activity") return "招聘方活跃状态更新完成";
-  return { idle: "尚未运行", running: "扫描中", completed: "本次扫描已完成", failed: "扫描未完成，请查看错误" }[run.state] || "尚未运行";
+  return {
+    idle: "尚未运行",
+    running: "扫描中",
+    completed: "本次扫描已完成",
+    partial: "本次扫描部分完成，可查看诊断后继续",
+    failed: "扫描失败，请查看错误",
+    interrupted: "扫描已中断，可重新启动"
+  }[run.state] || "尚未运行";
 }
 
 function navLinks(current = "") {
@@ -1649,4 +1712,4 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-module.exports = { createDashboardServer, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage };
+module.exports = { createDashboardServer, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage };

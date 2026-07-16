@@ -502,6 +502,18 @@ function getScanRun(db, runId) {
   return row ? scanRunRow(row) : null;
 }
 
+function getLatestScanRun(db, { planId, site = "" } = {}) {
+  const normalizedPlanId = optionalPositiveInteger(planId, "planId");
+  if (!normalizedPlanId) return null;
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  const row = db.prepare(`SELECT * FROM scan_runs
+    WHERE plan_id = ? AND (? = '' OR site = ?)
+    ORDER BY created_at DESC, rowid DESC
+    LIMIT 1`)
+    .get(normalizedPlanId, normalizedSite, normalizedSite);
+  return row ? scanRunRow(row) : null;
+}
+
 function beginScanRun(db, input = {}) {
   const requestedId = String(input.runId || input.id || "").trim();
   let run = requestedId ? getScanRun(db, requestedId) : null;
@@ -2522,6 +2534,7 @@ module.exports = {
   createBatch,
   createScanRun,
   getScanRun,
+  getLatestScanRun,
   beginScanRun,
   claimScanRun,
   heartbeatScanRun,
