@@ -6,6 +6,8 @@ const { spawn } = require("node:child_process");
 const {
   listReportJobs,
   createBatch,
+  getBatch,
+  getLatestResumableBatch,
   upsertJob,
   markApplication,
   markCandidateJob,
@@ -54,7 +56,7 @@ const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } =
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
-const { createLogger, errorMeta, publicError } = require("../core/observability");
+const { createLogger, appError, errorMeta, publicError } = require("../core/observability");
 const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
@@ -512,20 +514,33 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
     const cdpPort = Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)));
     const browserMode = params.browserMode === "edge" ? "edge" : "portable";
-    const scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
-    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, logger, requestId, spawnProcess });
+    const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
+    let scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
+    if (resumeBatchId) {
+      if (!Number.isInteger(resumeBatchId) || resumeBatchId <= 0) throw appError("SCAN_RESUME_BATCH_INVALID", "恢复批次编号无效。");
+      const batch = getBatch(db, resumeBatchId);
+      if (!batch || batch.site !== "boss" || batch.searchPlanId !== plan.id) {
+        throw appError("SCAN_RESUME_BATCH_MISMATCH", "该恢复批次不属于当前 Search Plan。");
+      }
+      if (!["partial", "failed", "interrupted"].includes(batch.status) || !batch.filterSnapshot?.execution) {
+        throw appError("SCAN_RESUME_STATUS_INVALID", "该批次当前不能安全恢复。");
+      }
+      scanKind = batch.filterSnapshot.execution.scanKind;
+      if (!["daily", "broad"].includes(scanKind)) throw appError("SCAN_RESUME_KIND_INVALID", "只有日常或广泛扫描批次可以断点恢复。");
+    }
+    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, logger, requestId, spawnProcess });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
     respondUiError(res, error, "/plan", { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
   }
 }
 
-function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", logger, requestId, spawnProcess = spawn }) {
+function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", resumeBatchId = null, logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
   const runId = randomUUID();
-  const commandArgs = buildScanCliArgs({ kind: scanKind, dbPath, planId, browserMode, cdpPort, runId });
+  const commandArgs = buildScanCliArgs({ kind: scanKind, dbPath, planId, browserMode, cdpPort, runId, resumeBatchId });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
-  const run = { runId, kind: scanKind, startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
+  const run = { runId, kind: scanKind, resumeBatchId, startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
   scanRuns.set(Number(planId), run);
   let exitRecorded = false;
   const recordExit = ({ exitCode = null, signal = "", error = null } = {}) => {
@@ -570,7 +585,7 @@ function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMod
       stdio: ["ignore", "pipe", "pipe"]
     });
     run.child = child;
-    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
+    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, resumeBatchId, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
     const append = (chunk) => { run.output = `${run.output}${String(chunk)}`.slice(-4000); };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
@@ -1241,6 +1256,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const selectedExperience = plan.experience;
   const candidate = profile.profile.candidate || {};
   const run = scanStatus(scanRuns, planRecord.id, db);
+  const resumableBatch = getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" });
   const validation = validateSearchPlan(plan, profile.profile);
   const planDependency = getSearchPlanDependency(db, planRecord.id);
   const versionDiff = compareProfileVersions(db, profile.id);
@@ -1249,6 +1265,9 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const bossRuntimeState = getSiteRuntimeState(db, "boss");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
+  const resumeButton = resumableBatch
+    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
+    : "";
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
@@ -1296,7 +1315,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run))}</div>
     <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${Math.max(10, Math.ceil(dailyScan.maxCards * 0.65))} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button><button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
+    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
 }

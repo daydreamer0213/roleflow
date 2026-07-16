@@ -1,14 +1,17 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { executeWithSiteScanLease } = require("../src/cli");
+const { executeWithSiteScanLease, resolveResumeBatch } = require("../src/cli");
 const {
   openDb,
   createBatch,
   beginScanRun,
   getScanRun,
-  getSiteScanLease
+  getSiteScanLease,
+  getLatestResumableBatch,
+  recordScanTargetResult
 } = require("../src/core/storage");
+const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 
 const smokeDir = path.join(__dirname, "..", ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `scan-cli-lifecycle-${Date.now()}.sqlite`);
@@ -34,6 +37,7 @@ async function main() {
   await partialRunWithBatchSmoke();
   await interruptedRunSmoke();
   await failedRunSmoke();
+  resumeBatchSmoke();
 }
 
 async function completedRunSmoke() {
@@ -89,4 +93,73 @@ async function failedRunSmoke() {
   }), (error) => error.code === "SCAN_CHECKPOINT_FAILED");
   assert.strictEqual(getScanRun(db, runId).status, "failed");
   assert.strictEqual(getSiteScanLease(db, "boss"), null);
+}
+
+function resumeBatchSmoke() {
+  const planId = 77;
+  const snapshot = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    runtimePolicyHash: "resume-policy",
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    keywordPlan: [{ word: "RAG", priority: "A" }, { word: "Agent", priority: "B" }],
+    nativeFilters: { lanes: [{ id: "main", rank: 0, params: { salary: ["405"] } }] },
+    limits: { maxCards: 50, maxDetailTotal: 80, browserPageBudget: 20, detailLimits: { A: 40, B: 30 } }
+  });
+  const batchId = createBatch(db, "boss", "resume", "resume smoke", {
+    searchPlanId: planId,
+    filterSnapshot: { execution: snapshot }
+  });
+  db.prepare("UPDATE batches SET status = 'interrupted' WHERE id = ?").run(batchId);
+  recordScanTargetResult(db, {
+    batchId,
+    targetKey: snapshot.targets[0].targetKey,
+    status: "completed",
+    jobCount: 4
+  });
+  recordScanTargetResult(db, {
+    batchId,
+    targetKey: snapshot.targets[1].targetKey,
+    status: "partial",
+    jobCount: 2
+  });
+
+  const resolved = resolveResumeBatch(db, {
+    resumeBatchId: batchId,
+    site: "boss",
+    planId,
+    executionSnapshot: snapshot
+  });
+  assert.strictEqual(getLatestResumableBatch(db, { planId, site: "boss" }).id, batchId);
+  assert.deepStrictEqual(resolved.targetKeys, [snapshot.targets[1].targetKey]);
+  assert.deepStrictEqual(resolved.progress, {
+    total: 2,
+    completed: 1,
+    pending: 1,
+    partial: 1,
+    failed: 0,
+    targetKeys: [snapshot.targets[1].targetKey]
+  });
+
+  assert.throws(() => resolveResumeBatch(db, {
+    resumeBatchId: batchId,
+    site: "boss",
+    planId: planId + 1,
+    executionSnapshot: snapshot
+  }), (error) => error.code === "SCAN_RESUME_BATCH_MISMATCH");
+  const changed = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    runtimePolicyHash: "resume-policy",
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    keywordPlan: [{ word: "RAG", priority: "A" }, { word: "Agent", priority: "B" }],
+    nativeFilters: { lanes: [{ id: "main", rank: 0, params: { salary: ["405"] } }] },
+    limits: { maxCards: 40, maxDetailTotal: 80, browserPageBudget: 20, detailLimits: { A: 40, B: 30 } }
+  });
+  assert.throws(() => resolveResumeBatch(db, {
+    resumeBatchId: batchId,
+    site: "boss",
+    planId,
+    executionSnapshot: changed
+  }), (error) => error.code === "SCAN_SNAPSHOT_MISMATCH");
 }

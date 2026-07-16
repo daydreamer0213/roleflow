@@ -89,6 +89,24 @@ function commandAndSuccessfulExitSmoke(database) {
     assert.strictEqual(scanStatus(new Map(), planId, database).state, "completed");
     assert.strictEqual(scanStatus(new Map(), planId, database).recovered, true);
   }
+
+  const resumeCalls = [];
+  startPlanScan(new Map(), {
+    db: database,
+    root,
+    dbPath,
+    planId: 150,
+    cdpPort: 9222,
+    browserMode: "edge",
+    scanKind: "daily",
+    resumeBatchId: 88,
+    logger,
+    requestId: "request-resume",
+    spawnProcess: spawnHarness(database, 150, resumeCalls)
+  });
+  const resumeArgs = resumeCalls[0].args.slice(2);
+  assert.strictEqual(resumeArgs[resumeArgs.indexOf("--resume-batch") + 1], "88");
+  resumeCalls[0].child.emit("close", 7, null);
 }
 
 function failedAndInterruptedExitSmoke(database) {

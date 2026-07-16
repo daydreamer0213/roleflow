@@ -492,6 +492,20 @@ function getBatch(db, batchId) {
   };
 }
 
+function getLatestResumableBatch(db, { planId, site = "boss" } = {}) {
+  const normalizedPlanId = optionalPositiveInteger(planId, "planId");
+  if (!normalizedPlanId) return null;
+  const normalizedSite = String(site || "boss").trim().toLowerCase();
+  const rows = db.prepare(`SELECT id FROM batches
+    WHERE search_plan_id = ? AND site = ? AND status IN ('partial', 'failed', 'interrupted')
+    ORDER BY started_at DESC, id DESC`).all(normalizedPlanId, normalizedSite);
+  for (const row of rows) {
+    const batch = getBatch(db, row.id);
+    if (batch?.filterSnapshot?.execution) return batch;
+  }
+  return null;
+}
+
 function createScanRun(db, input = {}) {
   const runId = String(input.runId || input.id || crypto.randomUUID()).trim();
   const site = String(input.site || "boss").trim().toLowerCase();
@@ -2556,6 +2570,7 @@ module.exports = {
   openDb,
   createBatch,
   getBatch,
+  getLatestResumableBatch,
   createScanRun,
   getScanRun,
   getLatestScanRun,

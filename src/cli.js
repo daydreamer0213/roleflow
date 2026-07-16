@@ -20,11 +20,12 @@ const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary }
 const {
   openDb,
   createBatch,
+  getBatch,
   beginScanRun,
   heartbeatScanRun,
   finishScanRun,
   checkpointScanTarget,
-  summarizeScanTargets,
+  listLatestScanTargetResults,
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
@@ -65,6 +66,12 @@ const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
+const {
+  buildScanExecutionSnapshot,
+  assertScanSnapshotCompatible,
+  remainingTargetKeys,
+  summarizeResumePlan
+} = require("./core/scan_snapshot");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -263,17 +270,57 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       scanPolicy
     );
   if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
+  const scanLimits = {
+    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
+    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
+    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget),
+    detailLimits: scanPolicy.detailLimits
+  };
+  const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
+    site,
+    scanKind: scanMode,
+    runtimePolicyHash: scanPolicy.policyHash,
+    cityScopes,
+    keywordPlan,
+    nativeFilters: nativeFilterSnapshot,
+    limits: scanLimits
+  });
+  const resumeBatchId = parseOptionalPositiveIntegerArg(args, "resume-batch");
+  if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");
   const reusableDetails = new Map((args.input ? [] : listReusableJobDetails(db, {
     site,
     profileId: planRecord?.profileId,
     maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays
   })).map((item) => [item.sourceId, item]));
   if (reusableDetails.size) scanLogger.info("boss_reusable_details_loaded", { count: reusableDetails.size, maxAgeDays: PRODUCT_POLICY.operations.detailCacheMaxAgeDays });
-  const batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
-    profileId: planRecord?.profileId,
-    searchPlanId: planRecord?.id,
-    filterSnapshot: { ...nativeFilterSnapshot, runtimePolicy: scanPolicy.snapshot, runtimePolicyHash: scanPolicy.policyHash }
-  });
+  let batchId;
+  let resumeTargetKeys;
+  if (resumeBatchId) {
+    const resume = resolveResumeBatch(db, {
+      resumeBatchId,
+      site,
+      planId: planRecord?.id,
+      executionSnapshot
+    });
+    resumeTargetKeys = resume.targetKeys;
+    batchId = resume.batchId;
+    scanLogger.info("scan_resume_prepared", {
+      batchId,
+      snapshotHash: executionSnapshot.snapshotHash,
+      ...resume.progress
+    });
+  } else {
+    batchId = createBatch(db, site, keywords.join(", "), args.input ? `json-input:${source}` : `browser:${args.browser || "none"}:${source}`, {
+      profileId: planRecord?.profileId,
+      searchPlanId: planRecord?.id,
+      filterSnapshot: {
+        ...nativeFilterSnapshot,
+        runtimePolicy: scanPolicy.snapshot,
+        runtimePolicyHash: scanPolicy.policyHash,
+        ...(executionSnapshot ? { execution: executionSnapshot } : {})
+      }
+    });
+  }
   if (execution) {
     beginScanRun(db, {
       runId: execution.runId,
@@ -295,11 +342,9 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     hasInput: Boolean(args.input),
     analysisConcurrency,
     nativeFilters: args.input ? null : nativeFilterSnapshot,
-    scanLimits: {
-      maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
-      maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
-      browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget)
-    },
+    scanLimits,
+    resumeBatchId: resumeBatchId || null,
+    resumeTargetCount: resumeTargetKeys?.length ?? null,
     modelProvider: configs.model?.provider || "mock",
     model: configs.model?.providers?.[configs.model?.provider || "mock"]?.model || ""
   });
@@ -340,10 +385,11 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     keywordPlan,
     cityScopes,
     nativeFilters: nativeFilterSnapshot,
-    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget),
-    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards),
-    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal),
-    detailLimits: scanPolicy.detailLimits,
+    browserPageBudget: scanLimits.browserPageBudget,
+    maxCards: scanLimits.maxCards,
+    maxDetailTotal: scanLimits.maxDetailTotal,
+    detailLimits: scanLimits.detailLimits,
+    targetKeys: resumeTargetKeys,
     scoreQuick: (job) => scoreJob(job, configs).score,
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
     getReusableDetail: (job) => reusableDetails.get(job.sourceId),
@@ -373,8 +419,18 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       && !["BOSS_DETAIL_SAFETY_LIMIT", "BOSS_DETAIL_FAIR_SHARE_PENDING"].includes(job.detailErrorCode)).length
   };
   if (detailCoverage) scanLogger.info("boss_detail_coverage", { batchId, ...detailCoverage });
-  scanLogger.info("job_analysis_started", { batchId, jobCount: rawJobs.length, analysisConcurrency });
-  const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
+  const analysisCandidates = new Map();
+  if (resumeBatchId) {
+    for (const job of listReportJobs(db, { batchId, limit: 10000 })) {
+      if (job.analysis?.semanticStatus === "pending" || job.analysis?.decisionSource === "analysis_pending") {
+        analysisCandidates.set(job.sourceId || job.url || String(job.id), job);
+      }
+    }
+  }
+  for (const job of rawJobs) analysisCandidates.set(job.sourceId || job.url, job);
+  const jobsToAnalyze = [...analysisCandidates.values()];
+  scanLogger.info("job_analysis_started", { batchId, jobCount: jobsToAnalyze.length, analysisConcurrency, resumedPending: Math.max(0, jobsToAnalyze.length - rawJobs.length) });
+  const analyzedJobs = await mapWithConcurrency(jobsToAnalyze, analysisConcurrency, (raw) => {
     assertScanActive(signal);
     return analyzeScannedJob(raw, { configs, analyzeJob });
   });
@@ -393,11 +449,16 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   }
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
-  const targetSummary = execution ? summarizeScanTargets(db, batchId) : null;
+  const targetSummary = executionSnapshot
+    ? summarizeResumePlan(executionSnapshot, listLatestScanTargetResults(db, batchId))
+    : null;
+  const finalStatus = targetSummary
+    ? (targetSummary.pending === 0 ? "completed" : "partial")
+    : scanSummary?.status || "completed";
   return {
-    status: scanSummary?.status || targetSummary?.status || "completed",
+    status: finalStatus,
     batchId,
-    stopCode: scanSummary?.fatalErrorCode || (scanSummary?.status === "partial" ? "SCAN_TARGETS_PARTIAL" : ""),
+    stopCode: scanSummary?.fatalErrorCode || (finalStatus === "partial" ? "SCAN_TARGETS_PARTIAL" : ""),
     stopMessage: scanSummary?.fatalErrorMessage || ""
   };
 }
@@ -609,6 +670,40 @@ function resolveScanLimit(args, key, plannedValue, fallback, { allowZero = false
   const value = Number(raw);
   if (Number.isFinite(value) && (allowZero ? value >= 0 : value > 0)) return value;
   return fallback;
+}
+
+function parseOptionalPositiveIntegerArg(args, key) {
+  const raw = args?.[key];
+  if (raw === undefined || raw === null || raw === "") return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) throw codedError("INVALID_SCAN_INPUT", `--${key} 必须是正整数。`);
+  return value;
+}
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function resolveResumeBatch(db, { resumeBatchId, site, planId, executionSnapshot }) {
+  const resumedBatch = getBatch(db, resumeBatchId);
+  if (!resumedBatch) throw codedError("SCAN_RESUME_BATCH_NOT_FOUND", `恢复批次 #${resumeBatchId} 不存在。`);
+  if (resumedBatch.site !== site || resumedBatch.searchPlanId !== Number(planId || 0)) {
+    throw codedError("SCAN_RESUME_BATCH_MISMATCH", `批次 #${resumeBatchId} 不属于当前站点和 Search Plan。`);
+  }
+  if (!["partial", "failed", "interrupted"].includes(resumedBatch.status)) {
+    throw codedError("SCAN_RESUME_STATUS_INVALID", `批次 #${resumeBatchId} 当前状态为 ${resumedBatch.status}，不能恢复。`);
+  }
+  const storedSnapshot = resumedBatch.filterSnapshot?.execution;
+  if (!storedSnapshot) throw codedError("SCAN_RESUME_SNAPSHOT_MISSING", `批次 #${resumeBatchId} 没有执行快照，无法安全恢复。`);
+  assertScanSnapshotCompatible(storedSnapshot, executionSnapshot);
+  const latestResults = listLatestScanTargetResults(db, resumeBatchId);
+  return {
+    batchId: resumeBatchId,
+    targetKeys: remainingTargetKeys(storedSnapshot, latestResults),
+    progress: summarizeResumePlan(storedSnapshot, latestResults)
+  };
 }
 
 async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes, keyword, tabId, logger: scopedLogger = logger }) {
@@ -922,6 +1017,7 @@ function printHelp() {
 
 module.exports = {
   executeWithSiteScanLease,
+  resolveResumeBatch,
   normalizeScanTerminalStatus,
   scanFailureStatus
 };
