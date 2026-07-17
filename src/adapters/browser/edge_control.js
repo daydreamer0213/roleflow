@@ -104,9 +104,19 @@ class EdgeControlAdapter {
   }
 
   async createTab(openerTabId, url = "about:blank") {
-    const result = await this.cdp(openerTabId, "Target.createTarget", { url: String(url || "about:blank") });
-    if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
-    return result.targetId;
+    const tabs = await this.listTabs();
+    const opener = tabs.find((tab) => tab.id === openerTabId);
+    if (!opener) throw browserError("BROWSER_COMMAND_FAILED", `Edge Control tab not found: ${openerTabId}`);
+    const args = {
+      url: String(url || "about:blank"),
+      createNewTab: true,
+      active: false
+    };
+    if (opener.windowId !== undefined && opener.windowId !== null) args.windowId = opener.windowId;
+    const result = await this.command("navigate", args);
+    const tabId = typeof result === "string" ? result : result?.id || result?.tabId;
+    if (!tabId) throw browserError("BROWSER_COMMAND_FAILED", "Edge Control did not return a new tab id.");
+    return tabId;
   }
 
   async bringToFront(tabId) {

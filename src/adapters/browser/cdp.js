@@ -44,7 +44,16 @@ class CdpBrowserAdapter {
   }
 
   async createTab(openerTabId, url = "about:blank") {
-    const result = await this.cdp(openerTabId, "Target.createTarget", { url: String(url || "about:blank") });
+    const version = await this.requestJson("/json/version");
+    if (!version?.webSocketDebuggerUrl) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP browser version response has no browser websocket URL.");
+    }
+    const result = await sendCdp(
+      version.webSocketDebuggerUrl,
+      "Target.createTarget",
+      { url: String(url || "about:blank") },
+      this.timeoutMs
+    );
     if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
     return result.targetId;
   }

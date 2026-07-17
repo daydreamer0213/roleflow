@@ -7,6 +7,8 @@ const state = {
   mode: "ok",
   edgeRequests: [],
   tabRequests: 0,
+  versionRequests: 0,
+  edgeNavigateResult: { id: "edge-created-tab" },
   edgeCdpFailureAt: null,
   edgeCdpDispatchCount: 0
 };
@@ -29,8 +31,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     let result = payload.command === "list_tabs"
-      ? [{ id: "edge-tab", active: true, url: "https://www.zhipin.com/web/geek/jobs" }]
-      : { accepted: true };
+      ? [{ id: "edge-tab", windowId: 42, active: true, url: "https://www.zhipin.com/web/geek/jobs" }]
+      : payload.command === "navigate"
+        ? state.edgeNavigateResult
+        : { accepted: true };
     if (payload.command === "send_cdp") {
       const { method } = payload.args;
       if (method === "Target.createTarget") result = { targetId: "edge-created-tab" };
@@ -43,6 +47,15 @@ const server = http.createServer(async (req, res) => {
       }
     }
     res.end(JSON.stringify({ ok: true, result }));
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/json/version") {
+    state.versionRequests += 1;
+    res.end(JSON.stringify({
+      Browser: "Edge/140",
+      webSocketDebuggerUrl: "ws://transport.test/devtools/browser/cdp-browser"
+    }));
     return;
   }
 
@@ -152,7 +165,12 @@ async function main() {
 
     websocket.mode = "respond";
     websocket.messages.length = 0;
+    websocket.urls.length = 0;
+    state.versionRequests = 0;
     assert.strictEqual(await cdp.createTab("cdp-tab", "https://example.test/new"), "cdp-created-tab");
+    assert.strictEqual(state.versionRequests, 1);
+    assert.strictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/browser/cdp-browser");
+    assert.notStrictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/page/cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
     await cdp.bringToFront("cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
@@ -177,13 +195,34 @@ async function main() {
 
     reset("ok");
     assert.strictEqual(await edge.createTab("edge-tab", "https://example.test/new"), "edge-created-tab");
-    assert.strictEqual(
-      state.edgeRequests.filter((request) => request.command === "send_cdp").length,
-      1
-    );
-    assert.strictEqual(state.edgeRequests[0].args.method, "Target.createTarget");
+    assert.strictEqual(state.edgeRequests[0].command, "list_tabs");
+    assert.strictEqual(state.edgeRequests[1].command, "navigate");
+    assert.deepStrictEqual(state.edgeRequests[1].args, {
+      url: "https://example.test/new",
+      createNewTab: true,
+      active: false,
+      windowId: 42
+    });
+    reset("ok");
+    state.edgeNavigateResult = { tabId: "edge-created-tab-by-tab-id" };
+    assert.strictEqual(await edge.createTab("edge-tab"), "edge-created-tab-by-tab-id");
+    assert.deepStrictEqual(state.edgeRequests[1].args, {
+      url: "about:blank",
+      createNewTab: true,
+      active: false,
+      windowId: 42
+    });
+    reset("ok");
+    state.edgeNavigateResult = { accepted: true };
+    await rejectsWithCode(() => edge.createTab("edge-tab"), "BROWSER_COMMAND_FAILED");
+    assert.strictEqual(state.edgeRequests.length, 2, "missing Edge tab id must not retry or send another command");
+    reset("ok");
+    await rejectsWithCode(() => edge.createTab("missing-tab"), "BROWSER_COMMAND_FAILED");
+    assert.deepStrictEqual(state.edgeRequests.map((request) => request.command), ["list_tabs"]);
+
+    reset("ok");
     await edge.bringToFront("edge-tab");
-    assert.strictEqual(state.edgeRequests[1].args.method, "Page.bringToFront");
+    assert.strictEqual(state.edgeRequests[0].args.method, "Page.bringToFront");
     await edge.clickAt("edge-tab", { x: 120, y: 48 });
     const edgeClickRequests = state.edgeRequests
       .filter((request) => request.command === "send_cdp")
@@ -228,14 +267,17 @@ function reset(mode) {
   state.mode = mode;
   state.edgeRequests = [];
   state.tabRequests = 0;
+  state.versionRequests = 0;
+  state.edgeNavigateResult = { id: "edge-created-tab" };
   state.edgeCdpFailureAt = null;
   state.edgeCdpDispatchCount = 0;
 }
 
 function installFakeWebSocket() {
-  const control = { mode: "disconnect", messages: [] };
+  const control = { mode: "disconnect", messages: [], urls: [] };
   control.FakeWebSocket = class FakeWebSocket {
-    constructor() {
+    constructor(url) {
+      control.urls.push(url);
       this.listeners = new Map();
       queueMicrotask(() => this.emit("open", {}));
     }
