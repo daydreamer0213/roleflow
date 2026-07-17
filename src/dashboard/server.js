@@ -524,6 +524,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
     if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
     const latestRun = getLatestScanRun(db, { planId: plan.id, site: "boss" });
@@ -557,6 +558,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
 
 function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", resumeBatchId = null, logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
+  assertBossRuntimeAvailable(db);
   const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
   if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const runId = randomUUID();
@@ -985,7 +987,16 @@ function communicationQuota(db) {
 function communicationRuntimeBlock(db) {
   const state = getSiteRuntimeState(db, "boss");
   if (!state || state.status !== "blocked") return null;
-  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil: state.details?.blockedUntil || null };
+  const blockedUntil = state.details?.blockedUntil || null;
+  const blockedUntilMs = Date.parse(blockedUntil || "");
+  if (Number.isFinite(blockedUntilMs) && blockedUntilMs <= Date.now()) return null;
+  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
+}
+
+function assertBossRuntimeAvailable(db) {
+  const block = communicationRuntimeBlock(db);
+  if (!block) return;
+  throw appError(block.reasonCode, "BOSS 访问仍处于安全暂停期。", { statusCode: 409 });
 }
 
 function arrayValue(value) {
@@ -1396,19 +1407,20 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const versionDiff = compareProfileVersions(db, profile.id);
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
-  const bossRuntimeState = getSiteRuntimeState(db, "boss");
+  const bossRuntimeBlock = communicationRuntimeBlock(db);
+  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock);
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
   const resumeButton = resumableBatch
-    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
+    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${scanDisabled ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
     : "";
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
   const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : "";
   const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
-  const riskControlNotice = bossRuntimeState?.status === "blocked"
-    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>请先在已登录 Edge 中完成验证，再重新点击扫描。预检通过后会自动解除暂停；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeState.reasonCode || "BOSS_RISK_CONTROL")} · ${escapeHtml(String(bossRuntimeState.updatedAt || "").replace("T", " ").slice(0, 19))}</p></section>`
+  const riskControlNotice = bossRuntimeBlock
+    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
     : "";
   const planStyle = '<style>.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}@media(max-width:760px){.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
   return renderPage("筛选方案", `${planStyle}<main>
@@ -1449,7 +1461,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
     <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
+    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
 }

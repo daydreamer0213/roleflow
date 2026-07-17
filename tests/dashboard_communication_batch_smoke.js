@@ -110,6 +110,9 @@ let server;
   setSiteRuntimeState(db, "boss", { status: "blocked", reasonCode: "BOSS_RISK_CONTROL", details: { blockedUntil: "2099-01-01T00:00:00.000Z" } });
   const blockedBuilder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
   assert.match(blockedBuilder.body, /BOSS_RISK_CONTROL/);
+  const blockedPlan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
+  assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="daily" disabled/);
+  assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="broad" disabled/);
   assert.strictEqual(spawnCalls, 0);
   console.log("dashboard_communication_batch_smoke ok");
 })().catch((error) => {
