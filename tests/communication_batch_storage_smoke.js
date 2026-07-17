@@ -144,10 +144,26 @@ try {
     () => resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "pending" }),
     (error) => error.code === "COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID"
   );
+  assert.throws(
+    () => resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "succeeded" }),
+    (error) => error.code === "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED"
+  );
+  const successNote = "聊天页已显示对应岗位和招聘方";
   assert.strictEqual(
-    resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "succeeded" }).status,
+    resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "succeeded", evidenceNote: successNote }).status,
     "succeeded"
   );
+  const resolvedItem = listCommunicationBatchItems(db, selected.id).find((item) => item.id === talkItem.id);
+  assert.strictEqual(resolvedItem.evidence.manualResolution.status, "succeeded");
+  assert.strictEqual(resolvedItem.evidence.manualResolution.note, successNote);
+  const successAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(talkId);
+  assert.deepStrictEqual(JSON.parse(successAudit.payload_json), {
+    batchId: selected.id,
+    itemId: talkItem.id,
+    jobId: talkId,
+    status: "succeeded",
+    note: successNote
+  });
   const resolvedState = db.prepare("SELECT status, note FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(profileId, talkId);
   assert.strictEqual(resolvedState.status, "applied");
   assert.strictEqual(resolvedState.note, `RoleFlow 批量沟通 #${selected.id}`);
@@ -157,7 +173,7 @@ try {
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(backupItem) });
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   assert.strictEqual(
-    resolveAmbiguousCommunicationItem(db, { itemId: backupItem.id, status: "stopped" }).status,
+    resolveAmbiguousCommunicationItem(db, { itemId: backupItem.id, status: "stopped", evidenceNote: "页面无法确认沟通结果，人工停止" }).status,
     "stopped"
   );
   const alreadyCommunicatedItem = listCommunicationBatchItems(db, alreadyCommunicated.id)[0];

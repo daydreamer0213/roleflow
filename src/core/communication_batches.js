@@ -263,9 +263,33 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
   if (!["succeeded", "stopped"].includes(status)) {
     throw codedError("COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID", "ambiguous items can only resolve to succeeded or stopped");
   }
+  const evidenceNote = String(input.evidenceNote || "").trim().slice(0, 1000);
+  if (!evidenceNote) {
+    throw codedError("COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED", "manual resolution evidence is required");
+  }
   db.exec("BEGIN IMMEDIATE");
   try {
-    const item = transitionCommunicationItem(db, { ...input, expectedStatus: "ambiguous", status }, { allowAmbiguousResolution: true });
+    const current = getCommunicationBatchItem(db, positiveInteger(input.itemId ?? input.id, "COMMUNICATION_ITEM_INVALID", "itemId is required"));
+    const resolvedAt = timestamp(input.now);
+    const evidence = {
+      ...(current?.evidence || {}),
+      manualResolution: { status, note: evidenceNote, resolvedAt }
+    };
+    const item = transitionCommunicationItem(db, {
+      ...input,
+      expectedStatus: "ambiguous",
+      status,
+      evidence,
+      now: resolvedAt
+    }, { allowAmbiguousResolution: true });
+    db.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, 'communication_manual_resolution', ?, ?)")
+      .run(item.jobId, JSON.stringify({
+        batchId: item.batchId,
+        itemId: item.id,
+        jobId: item.jobId,
+        status,
+        note: evidenceNote
+      }), resolvedAt);
     if (status === "succeeded") {
       const batch = getCommunicationBatch(db, item.batchId);
       markCandidateJob(db, {
