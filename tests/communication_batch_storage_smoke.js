@@ -40,6 +40,7 @@ try {
     title: "Backup role",
     qualityTags: ["experience_overrange"]
   }), scanBatchId);
+  const atomicId = upsertJob(db, job("atomic"), scanBatchId);
   const notRecommendedId = upsertJob(db, job("not-recommended", {
     title: "Not recommended role",
     level: "不建议",
@@ -72,6 +73,7 @@ try {
   );
   const duplicate = createCommunicationBatch(db, { planId, jobIds: [primaryId], browserMode: "edge" });
   const alreadyCommunicated = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" });
+  const atomic = createCommunicationBatch(db, { planId, jobIds: [atomicId], browserMode: "edge" });
 
   markCandidateJob(db, { profileId, planId, jobId: backupId, status: "applied" });
   assert.throws(
@@ -90,7 +92,8 @@ try {
     itemId: primaryItem.id,
     expectedStatus: "verified",
     status: "click_dispatched",
-    evidence: { dispatched: true }
+    evidence: { dispatched: true },
+    audit: clickAudit(primaryItem)
   });
   assert.strictEqual(dispatched.clickCount, 1);
   transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "click_dispatched", status: "succeeded" });
@@ -102,7 +105,7 @@ try {
   transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "opening", status: "verified" });
   assert.throws(
-    () => transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "verified", status: "click_dispatched" }),
+    () => transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(duplicateItem) }),
     (error) => error.code === "COMMUNICATION_CLICK_ALREADY_DISPATCHED"
   );
 
@@ -112,7 +115,7 @@ try {
     (error) => error.code === "COMMUNICATION_ITEM_TRANSITION_INVALID"
   );
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(talkItem) });
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   assert.throws(
     () => resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "pending" }),
@@ -125,7 +128,7 @@ try {
 
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(backupItem) });
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   assert.strictEqual(
     resolveAmbiguousCommunicationItem(db, { itemId: backupItem.id, status: "stopped" }).status,
@@ -134,7 +137,7 @@ try {
   const alreadyCommunicatedItem = listCommunicationBatchItems(db, alreadyCommunicated.id)[0];
   transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(alreadyCommunicatedItem) });
   transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "click_dispatched", status: "already_communicated" });
   assert.throws(
     () => createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" }),
@@ -152,6 +155,7 @@ try {
     succeeded: 2
   });
   batchStatusOptimisticConflictSmoke();
+  atomicClickAuditSmoke(db, atomic.id);
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
@@ -191,6 +195,43 @@ function completeAnalysis() {
     confidence: 0.9,
     evidence: { jd: ["Python"], resume: ["Python"] }
   };
+}
+
+function clickAudit(item) {
+  return {
+    eventType: "communication_click",
+    payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
+  };
+}
+
+function atomicClickAuditSmoke(db, batchId) {
+  const item = listCommunicationBatchItems(db, batchId)[0];
+  transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "opening", status: "verified" });
+  assert.throws(
+    () => transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched" }),
+    (error) => error.code === "COMMUNICATION_CLICK_AUDIT_REQUIRED"
+  );
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (String(sql).includes("INSERT INTO events")) throw new Error("audit write failed");
+    return originalPrepare(sql);
+  };
+  try {
+    assert.throws(
+      () => transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) }),
+      /audit write failed/
+    );
+  } finally {
+    db.prepare = originalPrepare;
+  }
+  const unchanged = listCommunicationBatchItems(db, batchId)[0];
+  assert.strictEqual(unchanged.status, "verified");
+  assert.strictEqual(unchanged.clickCount, 0);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'communication_click'").get().count, 4);
+  transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
+  assert.strictEqual(listCommunicationBatchItems(db, batchId)[0].clickCount, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'communication_click'").get().count, 5);
 }
 
 function batchStatusOptimisticConflictSmoke() {

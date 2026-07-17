@@ -31,58 +31,59 @@ async function runCommunicationBatch({
   validateDependencies({ db, batchId, adapter, accessController });
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-  if (["confirmed", "paused"].includes(batch.status)) {
-    batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
-  }
-  if (batch.status === "stopping") return stopPendingItems(db, batchId, logger);
+  if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
+  if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
   if (batch.status !== "running") throw codedError("COMMUNICATION_BATCH_STATUS_INVALID", "communication batch is not runnable");
 
   while (true) {
-    throwIfAborted(signal, db, batchId);
-    batch = getCommunicationBatch(db, batchId);
-    if (batch.status === "paused") {
-      logger?.info("communication_batch_paused", { batchId });
-      return communicationBatchSummary(db, batchId);
+    const control = observeControl(db, batchId, signal, logger);
+    if (control) return control;
+    const item = listCommunicationBatchItems(db, batchId).find((candidate) => !TERMINAL_ITEM_STATUSES.has(candidate.status));
+    if (!item) return finalizeBatch(db, batchId, logger);
+    if (item.status !== "pending") return recoverIncompleteItem(db, batchId, item, logger);
+
+    try {
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "opening" });
+    } catch (error) {
+      if (error.code === "COMMUNICATION_ITEM_TRANSITION_CONFLICT") continue;
+      throw error;
     }
-    if (batch.status === "stopping") return stopPendingItems(db, batchId, logger);
-    if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
 
-    const items = listCommunicationBatchItems(db, batchId);
-    const pending = items.find((item) => item.status === "pending");
-    if (!pending) return finalizeBatch(db, batchId, logger);
-
-    await accessController.reserve("communication_visit", {
-      batchId: pending.batchId,
-      itemId: pending.id,
-      jobId: pending.jobId
-    });
-    throwIfAborted(signal, db, batchId);
-    transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "pending", status: "opening" });
+    const afterClaim = observeControl(db, batchId, signal, logger);
+    if (afterClaim) return afterClaim;
+    await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
+    const afterReserve = observeControl(db, batchId, signal, logger);
+    if (afterReserve) return afterReserve;
 
     let inspection;
     try {
-      inspection = await adapter.inspectCommunicationJob(immutableJob(pending), signal);
+      inspection = await adapter.inspectCommunicationJob(immutableJob(item), signal);
     } catch (error) {
-      transitionToUnavailable(db, batchId, pending, error);
+      const afterInspectFailure = observeControl(db, batchId, signal, logger);
+      if (afterInspectFailure) return afterInspectFailure;
+      transitionToUnavailable(db, batchId, item, error);
       if (isFatal(error) || signal?.aborted) return interruptAndThrow(db, batchId, error, logger);
-      await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
+      const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
+      if (pacing) return pacing;
       continue;
     }
 
+    const afterInspect = observeControl(db, batchId, signal, logger);
+    if (afterInspect) return afterInspect;
     const state = communicationState(inspection);
     if (state === "ready") {
-      await dispatchAndVerify({ db, batchId, batch, pending, inspection, adapter, logger, signal });
+      await dispatchAndVerify({ db, batchId, batch: getCommunicationBatch(db, batchId), item, inspection, adapter, logger, signal });
     } else if (state === "already_communicated") {
-      transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "opening", status: "already_communicated" });
-      markApplied(db, batch, pending);
-      recordAudit(db, pending, "communication_result", "already_communicated");
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
+      markApplied(db, getCommunicationBatch(db, batchId), item);
+      recordAudit(db, item, "communication_result", "already_communicated");
     } else {
       const finalState = ["job_unavailable", "target_mismatch", "action_unavailable"].includes(state)
         ? state
         : "action_unavailable";
-      transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "opening", status: finalState });
-      recordAudit(db, pending, "communication_result", finalState);
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: finalState });
+      recordAudit(db, item, "communication_result", finalState);
     }
 
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
@@ -90,35 +91,42 @@ async function runCommunicationBatch({
   }
 }
 
-async function dispatchAndVerify({ db, batchId, batch, pending, inspection, adapter, logger, signal }) {
-  transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "verified", status: "click_dispatched" });
-  recordAudit(db, pending, "communication_click", "click_dispatched");
+async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal }) {
+  const beforeDispatch = observeControl(db, batchId, signal, logger);
+  if (beforeDispatch) return beforeDispatch;
+  transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, {
+    itemId: item.id,
+    batchId,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: clickAudit(item)
+  });
 
   try {
     await adapter.dispatchCommunication(inspection, signal);
   } catch (error) {
-    return ambiguousAndThrow(db, batchId, pending, error, logger);
+    return ambiguousAndThrow(db, batchId, item, error, logger);
   }
 
   let result;
   try {
-    result = await adapter.verifyCommunicationResult(immutableJob(pending), signal);
+    result = await adapter.verifyCommunicationResult(immutableJob(item), signal);
   } catch (error) {
-    return ambiguousAndThrow(db, batchId, pending, error, logger);
+    return ambiguousAndThrow(db, batchId, item, error, logger);
   }
   if (communicationState(result) !== "succeeded") {
     return ambiguousAndThrow(
       db,
       batchId,
-      pending,
+      item,
       codedError("COMMUNICATION_RESULT_AMBIGUOUS", "communication result could not be verified"),
       logger
     );
   }
-  transitionCommunicationItem(db, { itemId: pending.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
-  markApplied(db, batch, pending);
-  recordAudit(db, pending, "communication_result", "succeeded");
+  transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
+  markApplied(db, batch, item);
+  recordAudit(db, item, "communication_result", "succeeded");
 }
 
 async function paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal }) {
@@ -126,29 +134,45 @@ async function paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, s
   let remainingMs = randomDelay(PRODUCT_POLICY.operations.bossCommunication.delayMs, randomFn);
   logger?.info("communication_batch_pacing", { batchId, delayMs: remainingMs });
   while (remainingMs > 0) {
-    throwIfAborted(signal, db, batchId);
-    const batch = getCommunicationBatch(db, batchId);
-    if (batch.status === "paused") {
-      logger?.info("communication_batch_paused", { batchId });
-      return communicationBatchSummary(db, batchId);
-    }
-    if (batch.status === "stopping") return stopPendingItems(db, batchId, logger);
+    const control = observeControl(db, batchId, signal, logger);
+    if (control) return control;
     const sliceMs = Math.min(1000, remainingMs);
-    await sleepFn(sliceMs, signal);
+    try {
+      await sleepFn(sliceMs, signal);
+    } catch (error) {
+      return interruptAndThrow(db, batchId, error, logger);
+    }
     remainingMs -= sliceMs;
   }
-  throwIfAborted(signal, db, batchId);
+  return observeControl(db, batchId, signal, logger);
+}
+
+function observeControl(db, batchId, signal, logger) {
+  if (signal?.aborted) {
+    const error = signal.reason instanceof Error
+      ? signal.reason
+      : codedError("COMMUNICATION_ABORTED", "communication execution aborted");
+    return interruptAndThrow(db, batchId, error, logger);
+  }
   const batch = getCommunicationBatch(db, batchId);
-  if (batch.status === "paused") return communicationBatchSummary(db, batchId);
-  if (batch.status === "stopping") return stopPendingItems(db, batchId, logger);
+  if (batch.status === "paused") {
+    logger?.info("communication_batch_paused", { batchId });
+    return communicationBatchSummary(db, batchId);
+  }
+  if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
+  if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
   return null;
 }
 
-function stopPendingItems(db, batchId, logger) {
+function stopUnfinishedItems(db, batchId, logger) {
   for (const item of listCommunicationBatchItems(db, batchId)) {
-    if (item.status !== "pending") continue;
-    transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "stopped" });
-    recordAudit(db, item, "communication_result", "stopped");
+    if (item.status === "pending" || item.status === "opening" || item.status === "verified") {
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
+      recordAudit(db, item, "communication_result", "stopped");
+    } else if (item.status === "click_dispatched") {
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
+      recordAudit(db, item, "communication_result", "ambiguous");
+    }
   }
   const batch = getCommunicationBatch(db, batchId);
   if (!isTerminalBatch(batch.status)) setCommunicationBatchStatus(db, { batchId, status: "stopped", stopCode: "COMMUNICATION_STOP_REQUESTED" });
@@ -156,15 +180,22 @@ function stopPendingItems(db, batchId, logger) {
   return communicationBatchSummary(db, batchId);
 }
 
+function recoverIncompleteItem(db, batchId, item, logger) {
+  const state = item.status === "click_dispatched" ? "ambiguous" : "stopped";
+  transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: state });
+  recordAudit(db, item, "communication_result", state);
+  return interruptAndThrow(
+    db,
+    batchId,
+    codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "communication batch contains an unfinished item"),
+    logger
+  );
+}
+
 function finalizeBatch(db, batchId, logger) {
   const batch = getCommunicationBatch(db, batchId);
   if (batch.status === "paused") return communicationBatchSummary(db, batchId);
-  if (batch.status === "stopping") return stopPendingItems(db, batchId, logger);
-  const unfinished = listCommunicationBatchItems(db, batchId).find((item) => !TERMINAL_ITEM_STATUSES.has(item.status));
-  if (unfinished) {
-    const error = codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "communication batch contains an unfinished item");
-    return interruptAndThrow(db, batchId, error, logger);
-  }
+  if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   setCommunicationBatchStatus(db, { batchId, status: "completed" });
   logger?.info("communication_batch_completed", { batchId });
   return communicationBatchSummary(db, batchId);
@@ -208,12 +239,25 @@ function interruptAndThrow(db, batchId, error, logger) {
 }
 
 function markApplied(db, batch, item) {
-  markCandidateJob(db, { profileId: batch.profileId, planId: batch.planId, jobId: item.jobId, status: "applied" });
+  markCandidateJob(db, {
+    profileId: batch.profileId,
+    planId: batch.planId,
+    jobId: item.jobId,
+    status: "applied",
+    note: `RoleFlow batch #${batch.id}`
+  });
 }
 
 function recordAudit(db, item, eventType, state) {
   db.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)")
     .run(item.jobId, eventType, JSON.stringify({ batchId: item.batchId, itemId: item.id, jobId: item.jobId, state }), new Date().toISOString());
+}
+
+function clickAudit(item) {
+  return {
+    eventType: "communication_click",
+    payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
+  };
 }
 
 function immutableJob(item) {
@@ -236,7 +280,7 @@ function randomDelay([first, second], randomFn) {
   const low = Math.min(Number(first), Number(second));
   const high = Math.max(Number(first), Number(second));
   const random = Math.max(0, Math.min(1, Number(randomFn()) || 0));
-  return Math.floor(low + random * (high - low + 1));
+  return Math.floor(low + random * (high - low));
 }
 
 function isFatal(error) {
@@ -249,14 +293,6 @@ function isTerminalBatch(status) {
 
 function errorCode(error) {
   return String(error?.code || "COMMUNICATION_EXECUTION_FAILED");
-}
-
-function throwIfAborted(signal, db, batchId) {
-  if (!signal?.aborted) return;
-  const error = signal.reason instanceof Error
-    ? signal.reason
-    : codedError("COMMUNICATION_ABORTED", "communication execution aborted");
-  interruptAndThrow(db, batchId, error, null);
 }
 
 function validateDependencies({ db, batchId, adapter, accessController }) {

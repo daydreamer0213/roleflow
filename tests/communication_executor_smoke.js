@@ -9,7 +9,8 @@ const {
   createCommunicationBatch,
   getCommunicationBatch,
   listCommunicationBatchItems,
-  setCommunicationBatchStatus
+  setCommunicationBatchStatus,
+  transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
 
@@ -38,6 +39,11 @@ async function successFlowSmoke() {
   assert.strictEqual(summary.batchStatus, "completed");
   assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.clickCount), [1, 1]);
   assert.deepStrictEqual(candidateStatuses(fixture), ["applied", "applied"]);
+  assert.deepStrictEqual(
+    fixture.db.prepare("SELECT payload_json FROM candidate_job_events WHERE event_type = 'applied' ORDER BY id").all()
+      .map((event) => JSON.parse(event.payload_json).note),
+    [`RoleFlow batch #${fixture.batch.id}`, `RoleFlow batch #${fixture.batch.id}`]
+  );
   fixture.close();
 }
 
@@ -222,6 +228,223 @@ async function auditSanitizationSmoke() {
   fixture.close();
 }
 
+async function claimBeforeReserveSmoke() {
+  const fixture = createFixture(2);
+  let firstReserves = 0;
+  let secondReserves = 0;
+  let inspections = 0;
+  let releaseReserve;
+  const reserveStarted = new Promise((resolve) => { releaseReserve = resolve; });
+  let unblockReserve;
+  const reserveBlocked = new Promise((resolve) => { unblockReserve = resolve; });
+  const first = runCommunicationBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: {
+      async reserve() {
+        firstReserves += 1;
+        releaseReserve();
+        await reserveBlocked;
+      }
+    },
+    adapter: {
+      async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+      async dispatchCommunication() {},
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  await reserveStarted;
+  assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "opening");
+  await assert.rejects(
+    () => runCommunicationBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() { secondReserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    }),
+    (error) => error.code === "COMMUNICATION_RESUME_REQUIRES_REVIEW"
+  );
+  unblockReserve();
+  await first;
+  assert.strictEqual(firstReserves, 1);
+  assert.strictEqual(secondReserves, 0);
+  assert.strictEqual(inspections, 0);
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["stopped", "pending"]);
+  fixture.close();
+}
+
+async function incompleteRecoverySmoke() {
+  for (const status of ["opening", "verified", "click_dispatched"]) {
+    const fixture = createFixture(2);
+    const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+    if (status !== "opening") transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
+    if (status === "verified" || status === "click_dispatched") {
+      transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "opening", status: "verified" });
+    }
+    if (status === "click_dispatched") {
+      transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(first) });
+    }
+    if (status === "opening") transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
+    let reserves = 0;
+    await assert.rejects(
+      () => runCommunicationBatch({
+        db: fixture.db,
+        batchId: fixture.batch.id,
+        accessController: { async reserve() { reserves += 1; } },
+        adapter: { async inspectCommunicationJob() {}, async dispatchCommunication() {}, async verifyCommunicationResult() {} },
+        sleepFn: async () => {}
+      }),
+      (error) => error.code === "COMMUNICATION_RESUME_REQUIRES_REVIEW"
+    );
+    assert.strictEqual(reserves, 0);
+    assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "interrupted");
+    assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, status === "click_dispatched" ? "ambiguous" : "stopped");
+    assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[1].status, "pending");
+    fixture.close();
+  }
+}
+
+async function controlBeforeDispatchSmoke() {
+  const fixture = createFixture(2);
+  let dispatches = 0;
+  await runCommunicationBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() {
+        setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+        return { state: "ready" };
+      },
+      async dispatchCommunication() { dispatches += 1; },
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(dispatches, 0);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "paused");
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["opening", "pending"]);
+  fixture.close();
+}
+
+async function controlAfterReserveAndInspectFailureSmoke() {
+  const afterReserve = createFixture(2);
+  let inspections = 0;
+  await runCommunicationBatch({
+    db: afterReserve.db,
+    batchId: afterReserve.batch.id,
+    accessController: {
+      async reserve() { setCommunicationBatchStatus(afterReserve.db, { batchId: afterReserve.batch.id, status: "stopping" }); }
+    },
+    adapter: {
+      async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+      async dispatchCommunication() {},
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(inspections, 0);
+  assert.deepStrictEqual(listCommunicationBatchItems(afterReserve.db, afterReserve.batch.id).map((item) => item.status), ["stopped", "stopped"]);
+  afterReserve.close();
+
+  const afterInspectFailure = createFixture(2);
+  await runCommunicationBatch({
+    db: afterInspectFailure.db,
+    batchId: afterInspectFailure.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() {
+        setCommunicationBatchStatus(afterInspectFailure.db, { batchId: afterInspectFailure.batch.id, status: "stopping" });
+        throw new Error("inspection ended during stop");
+      },
+      async dispatchCommunication() {},
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  assert.deepStrictEqual(listCommunicationBatchItems(afterInspectFailure.db, afterInspectFailure.batch.id).map((item) => item.status), ["stopped", "stopped"]);
+  afterInspectFailure.close();
+}
+
+async function stoppingSafetySmoke() {
+  const fixture = createFixture(4);
+  const [, opening, verified, dispatched] = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  transitionCommunicationItem(fixture.db, { itemId: opening.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: verified.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: verified.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(dispatched) });
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "stopping" });
+  await runCommunicationBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: { async reserve() { throw new Error("must not reserve"); } },
+    adapter: { async inspectCommunicationJob() {}, async dispatchCommunication() {}, async verifyCommunicationResult() {} },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "stopped");
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["stopped", "stopped", "stopped", "ambiguous"]);
+  fixture.close();
+}
+
+async function cooldownAbortAndUpperBoundSmoke() {
+  const aborted = createFixture(2);
+  const abortController = new AbortController();
+  const abortError = Object.assign(new Error("cooldown aborted"), { code: "COMMUNICATION_ABORTED" });
+  await assert.rejects(
+    () => runCommunicationBatch({
+      db: aborted.db,
+      batchId: aborted.batch.id,
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      signal: abortController.signal,
+      sleepFn: async () => {
+        abortController.abort(abortError);
+        throw abortError;
+      }
+    }),
+    (error) => error === abortError
+  );
+  assert.strictEqual(getCommunicationBatch(aborted.db, aborted.batch.id).status, "interrupted");
+  aborted.close();
+
+  const bounded = createFixture(2);
+  const waits = [];
+  await runCommunicationBatch({
+    db: bounded.db,
+    batchId: bounded.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() { return { state: "ready" }; },
+      async dispatchCommunication() {},
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    randomFn: () => 1,
+    sleepFn: async (ms) => waits.push(ms)
+  });
+  assert.strictEqual(waits.reduce((sum, ms) => sum + ms, 0), 20_000);
+  assert(waits.every((ms) => ms <= 1000));
+  bounded.close();
+}
+
+function clickAudit(item) {
+  return {
+    eventType: "communication_click",
+    payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
+  };
+}
+
 function createFixture(count) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
@@ -274,6 +497,12 @@ Promise.resolve()
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
   .then(auditSanitizationSmoke)
+  .then(claimBeforeReserveSmoke)
+  .then(incompleteRecoverySmoke)
+  .then(controlBeforeDispatchSmoke)
+  .then(controlAfterReserveAndInspectFailureSmoke)
+  .then(stoppingSafetySmoke)
+  .then(cooldownAbortAndUpperBoundSmoke)
   .then(() => console.log("communication_executor_smoke ok"))
   .catch((error) => {
     console.error(error.stack || error.message);

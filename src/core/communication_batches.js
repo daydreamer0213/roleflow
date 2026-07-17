@@ -138,6 +138,7 @@ function transitionCommunicationItem(db, input = {}, options = {}) {
       WHERE job_id = ? AND click_count = 1 AND id <> ? LIMIT 1`).get(current.jobId, itemId))) {
       throw codedError("COMMUNICATION_CLICK_ALREADY_DISPATCHED", "communication click was already dispatched");
     }
+    const clickAudit = dispatching ? validatedClickAudit(input.audit, current) : null;
     const now = timestamp(input.now);
     const terminal = TERMINAL_ITEM_STATUSES.has(status);
     const evidence = input.evidence === undefined ? current.evidence : input.evidence;
@@ -177,6 +178,10 @@ function transitionCommunicationItem(db, input = {}, options = {}) {
       }
       throw codedError("COMMUNICATION_ITEM_TRANSITION_CONFLICT", "communication item status changed before transition");
     }
+    if (clickAudit) {
+      db.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)")
+        .run(current.jobId, clickAudit.eventType, JSON.stringify(clickAudit.payload), now);
+    }
     const item = getCommunicationBatchItem(db, itemId);
     if (dispatching) db.exec("COMMIT");
     return item;
@@ -186,6 +191,20 @@ function transitionCommunicationItem(db, input = {}, options = {}) {
     }
     throw error;
   }
+}
+
+function validatedClickAudit(value, item) {
+  if (!value || typeof value !== "object") {
+    throw codedError("COMMUNICATION_CLICK_AUDIT_REQUIRED", "click dispatch requires an audit event");
+  }
+  const payload = value.payload;
+  const expected = { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" };
+  if (value.eventType !== "communication_click" || !payload || typeof payload !== "object"
+    || Object.keys(payload).sort().join(",") !== "batchId,itemId,jobId,state"
+    || Object.entries(expected).some(([key, expectedValue]) => payload[key] !== expectedValue)) {
+    throw codedError("COMMUNICATION_CLICK_AUDIT_INVALID", "invalid click audit event");
+  }
+  return { eventType: value.eventType, payload: expected };
 }
 
 function resolveAmbiguousCommunicationItem(db, input = {}) {
