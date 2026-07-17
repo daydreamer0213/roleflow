@@ -103,6 +103,26 @@ class EdgeControlAdapter {
     return this.command("navigate", { tabId, url });
   }
 
+  async createTab(openerTabId, url = "about:blank") {
+    const result = await this.cdp(openerTabId, "Target.createTarget", { url: String(url || "about:blank") });
+    if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
+    return result.targetId;
+  }
+
+  async bringToFront(tabId) {
+    return this.cdp(tabId, "Page.bringToFront");
+  }
+
+  async clickAt(tabId, { x, y }) {
+    const point = { x: Number(x), y: Number(y) };
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw browserError("BROWSER_COMMAND_FAILED", "Click coordinates must be finite numbers.");
+    }
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+    return this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+  }
+
   async cdp(tabId, method, params = {}) {
     const result = await this.command("send_cdp", { tabId, method, params });
     return result.result ?? result;

@@ -6,7 +6,9 @@ const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
 const state = {
   mode: "ok",
   edgeRequests: [],
-  tabRequests: 0
+  tabRequests: 0,
+  edgeCdpFailureAt: null,
+  edgeCdpDispatchCount: 0
 };
 
 const server = http.createServer(async (req, res) => {
@@ -26,9 +28,20 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "bridge unavailable" }));
       return;
     }
-    const result = payload.command === "list_tabs"
+    let result = payload.command === "list_tabs"
       ? [{ id: "edge-tab", active: true, url: "https://www.zhipin.com/web/geek/jobs" }]
       : { accepted: true };
+    if (payload.command === "send_cdp") {
+      const { method } = payload.args;
+      if (method === "Target.createTarget") result = { targetId: "edge-created-tab" };
+      if (method === "Input.dispatchMouseEvent") {
+        state.edgeCdpDispatchCount += 1;
+        if (state.edgeCdpDispatchCount === state.edgeCdpFailureAt) {
+          res.end(JSON.stringify({ ok: false, error: "dispatch failed" }));
+          return;
+        }
+      }
+    }
     res.end(JSON.stringify({ ok: true, result }));
     return;
   }
@@ -136,6 +149,66 @@ async function main() {
       "BROWSER_TIMEOUT"
     );
     assert.strictEqual(countMethod(websocket.messages, "Runtime.getIsolateId"), 1);
+
+    websocket.mode = "respond";
+    websocket.messages.length = 0;
+    assert.strictEqual(await cdp.createTab("cdp-tab", "https://example.test/new"), "cdp-created-tab");
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    await cdp.bringToFront("cdp-tab");
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
+    await cdp.clickAt("cdp-tab", { x: 120, y: 48 });
+    assert.deepStrictEqual(
+      websocket.messages.slice(-3).map((message) => message.method),
+      ["Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent"]
+    );
+    assert.deepStrictEqual(
+      websocket.messages.slice(-3).map((message) => message.params.type),
+      ["mouseMoved", "mousePressed", "mouseReleased"]
+    );
+    await rejectsWithCode(
+      () => cdp.clickAt("cdp-tab", { x: "not-a-number", y: 48 }),
+      "BROWSER_COMMAND_FAILED"
+    );
+
+    websocket.mode = "fail-third-dispatch";
+    websocket.messages.length = 0;
+    await rejectsWithCode(() => cdp.clickAt("cdp-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
+    assert.strictEqual(countMethod(websocket.messages, "Input.dispatchMouseEvent"), 3);
+
+    reset("ok");
+    assert.strictEqual(await edge.createTab("edge-tab", "https://example.test/new"), "edge-created-tab");
+    assert.strictEqual(
+      state.edgeRequests.filter((request) => request.command === "send_cdp").length,
+      1
+    );
+    assert.strictEqual(state.edgeRequests[0].args.method, "Target.createTarget");
+    await edge.bringToFront("edge-tab");
+    assert.strictEqual(state.edgeRequests[1].args.method, "Page.bringToFront");
+    await edge.clickAt("edge-tab", { x: 120, y: 48 });
+    const edgeClickRequests = state.edgeRequests
+      .filter((request) => request.command === "send_cdp")
+      .slice(-3);
+    assert.deepStrictEqual(
+      edgeClickRequests.map((request) => request.args.method),
+      ["Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent"]
+    );
+    assert.deepStrictEqual(
+      edgeClickRequests.map((request) => request.args.params.type),
+      ["mouseMoved", "mousePressed", "mouseReleased"]
+    );
+    await rejectsWithCode(
+      () => edge.clickAt("edge-tab", { x: 120, y: "not-a-number" }),
+      "BROWSER_COMMAND_FAILED"
+    );
+
+    reset("ok");
+    state.edgeCdpFailureAt = 3;
+    await rejectsWithCode(() => edge.clickAt("edge-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
+    assert.strictEqual(
+      state.edgeRequests.filter((request) => request.command === "send_cdp").length,
+      3,
+      "failed Edge click dispatch must not be retried"
+    );
   } finally {
     global.WebSocket = originalWebSocket;
     server.closeAllConnections?.();
@@ -155,6 +228,8 @@ function reset(mode) {
   state.mode = mode;
   state.edgeRequests = [];
   state.tabRequests = 0;
+  state.edgeCdpFailureAt = null;
+  state.edgeCdpDispatchCount = 0;
 }
 
 function installFakeWebSocket() {
@@ -172,10 +247,22 @@ function installFakeWebSocket() {
     }
 
     send(message) {
-      control.messages.push(JSON.parse(message));
+      const payload = JSON.parse(message);
+      control.messages.push(payload);
       if (control.mode === "disconnect") {
         queueMicrotask(() => this.emit("close", { code: 1006, reason: "test disconnect" }));
+        return;
       }
+      if (control.mode === "timeout") return;
+      queueMicrotask(() => {
+        const dispatchCount = control.messages.filter((item) => item.method === "Input.dispatchMouseEvent").length;
+        const response = control.mode === "fail-third-dispatch"
+          && payload.method === "Input.dispatchMouseEvent"
+          && dispatchCount === 3
+          ? { id: payload.id, error: { message: "dispatch failed" } }
+          : { id: payload.id, result: payload.method === "Target.createTarget" ? { targetId: "cdp-created-tab" } : {} };
+        this.emit("message", { data: JSON.stringify(response) });
+      });
     }
 
     close() {}
