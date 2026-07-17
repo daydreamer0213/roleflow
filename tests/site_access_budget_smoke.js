@@ -1,10 +1,14 @@
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   openDb,
   recordSiteAccessEvent,
   listSiteAccessEvents
 } = require("../src/core/storage");
 const { createSiteAccessController } = require("../src/core/site_access_budget");
+const { PRODUCT_POLICY } = require("../src/core/product_policy");
 
 async function rollingWindowSmoke() {
   const db = openDb(":memory:");
@@ -110,6 +114,262 @@ async function abortDuringWindowWaitSmoke() {
   db.close();
 }
 
+async function communicationTenMinuteBudgetSmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 8; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "detail_open",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+  for (let index = 0; index < 21; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 30_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    }
+  });
+  const first = await controller.reserve("communication_visit", { batchId: 1, jobId: 9 });
+  assert.strictEqual(first.usage["10m"], 30);
+  assert.strictEqual(sleeps.length, 0);
+  await controller.reserve("communication_visit", { batchId: 1, jobId: 10 });
+  assert.deepStrictEqual(sleeps, [541_000]);
+  db.close();
+}
+
+async function communicationThirtyMinuteBudgetSmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 60; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: index % 2 === 0 ? "detail_open" : "communication_visit",
+      createdAt: new Date(now - 20 * 60_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    }
+  });
+  await controller.reserve("communication_visit", { batchId: 1, jobId: 11 });
+  assert.deepStrictEqual(sleeps, [601_000]);
+  db.close();
+}
+
+async function communicationWindowBoundarySmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  recordSiteAccessEvent(db, {
+    site: "boss",
+    action: "detail_open",
+    createdAt: new Date(now - 10 * 60_000).toISOString()
+  });
+  for (let index = 0; index < 30; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    }
+  });
+  await controller.reserve("communication_visit", { batchId: 1, jobId: 13 });
+  assert.deepStrictEqual(sleeps, [541_000]);
+  db.close();
+}
+
+async function communicationUsesControllerPolicySmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 8; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "detail_open",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+  for (let index = 0; index < 29; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 30_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    policy: {
+      ...PRODUCT_POLICY.operations.bossAccessBudget,
+      combinedUsage: {
+        ...PRODUCT_POLICY.operations.bossCommunication.combinedUsage,
+        "10m": ["communication_visit"]
+      }
+    },
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => sleeps.push(delayMs)
+  });
+  const result = await controller.reserve("communication_visit", { batchId: 1, jobId: 14 });
+  assert.strictEqual(result.usage["10m"], 30);
+  assert.deepStrictEqual(sleeps, []);
+  db.close();
+}
+
+async function communicationDailyBudgetSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 500; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "detail_open",
+      createdAt: new Date(now - 23 * 60 * 60_000 + index).toISOString()
+    });
+  }
+  for (let index = 0; index < 150; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 2 * 60 * 60_000 + index).toISOString()
+    });
+  }
+
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  await assert.rejects(
+    () => controller.reserve("communication_visit", { batchId: 1, jobId: 12 }),
+    (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      && error.window === "24h"
+      && error.limit === 150
+      && error.usage["24h"] === 150
+  );
+  db.close();
+}
+
+async function transactionBoundarySmoke() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-access-transaction-"));
+  const dbPath = path.join(root, "jobs.sqlite");
+  const db = openDb(dbPath);
+  const observer = openDb(dbPath);
+  try {
+    let now = Date.parse("2026-07-21T12:00:00+08:00");
+    for (let index = 0; index < 12; index += 1) {
+      recordSiteAccessEvent(db, {
+        site: "boss",
+        action: "detail_open",
+        createdAt: new Date(now - 60_000 + index).toISOString()
+      });
+    }
+
+    const transaction = instrumentTransactions(db);
+    const controller = createSiteAccessController({
+      db,
+      site: "boss",
+      nowFn: () => now,
+      randomFn: () => 0,
+      sleepFn: async (delayMs) => {
+        assert.strictEqual(transaction.open, false, "budget transaction must be released before waiting");
+        observer.exec("BEGIN IMMEDIATE");
+        observer.exec("ROLLBACK");
+        now += delayMs;
+      }
+    });
+    await controller.reserve("detail_open", { jobId: "atomic-wait" });
+    assert(transaction.commands.includes("BEGIN IMMEDIATE"));
+    assert(transaction.commands.includes("COMMIT"));
+    assert.strictEqual(transaction.recordedOutsideTransaction, 0, "usage read and event insert must share one write transaction");
+
+    const dailyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-access-daily-"));
+    const dailyPath = path.join(dailyRoot, "jobs.sqlite");
+    const dailyDb = openDb(dailyPath);
+    const dailyObserver = openDb(dailyPath);
+    try {
+      const dailyNow = Date.parse("2026-07-21T12:00:00+08:00");
+      recordSiteAccessEvent(dailyDb, {
+        site: "boss",
+        action: "risk_control",
+        createdAt: new Date(dailyNow - 2 * 60 * 60_000).toISOString()
+      });
+      for (let index = 0; index < 20; index += 1) {
+        recordSiteAccessEvent(dailyDb, {
+          site: "boss",
+          action: "detail_open",
+          createdAt: new Date(dailyNow - 60_000 + index).toISOString()
+        });
+      }
+      const dailyTransaction = instrumentTransactions(dailyDb);
+      const dailyController = createSiteAccessController({ db: dailyDb, site: "boss", nowFn: () => dailyNow });
+      await assert.rejects(
+        () => dailyController.reserve("detail_open"),
+        (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      );
+      assert.strictEqual(dailyTransaction.open, false, "budget transaction must be released before throwing");
+      dailyObserver.exec("BEGIN IMMEDIATE");
+      dailyObserver.exec("ROLLBACK");
+      assert.deepStrictEqual(dailyTransaction.commands.slice(-2), ["BEGIN IMMEDIATE", "COMMIT"]);
+    } finally {
+      dailyDb.close();
+      dailyObserver.close();
+      fs.rmSync(dailyRoot, { recursive: true, force: true });
+    }
+  } finally {
+    db.close();
+    observer.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function instrumentTransactions(db) {
+  const state = { open: false, commands: [], recordedOutsideTransaction: 0 };
+  const originalExec = db.exec.bind(db);
+  const originalPrepare = db.prepare.bind(db);
+  db.exec = (sql) => {
+    const command = String(sql).trim().toUpperCase();
+    if (["BEGIN IMMEDIATE", "COMMIT", "ROLLBACK"].includes(command)) state.commands.push(command);
+    const result = originalExec(sql);
+    if (command === "BEGIN IMMEDIATE") state.open = true;
+    if (command === "COMMIT" || command === "ROLLBACK") state.open = false;
+    return result;
+  };
+  db.prepare = (sql) => {
+    if (String(sql).includes("INSERT INTO events") && !state.open) state.recordedOutsideTransaction += 1;
+    return originalPrepare(sql);
+  };
+  return state;
+}
+
 function filteredLedgerLimitSmoke() {
   const db = openDb(":memory:");
   const base = Date.parse("2026-07-21T12:00:00+08:00");
@@ -139,6 +399,12 @@ Promise.resolve()
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
   .then(abortDuringWindowWaitSmoke)
+  .then(communicationTenMinuteBudgetSmoke)
+  .then(communicationThirtyMinuteBudgetSmoke)
+  .then(communicationWindowBoundarySmoke)
+  .then(communicationUsesControllerPolicySmoke)
+  .then(communicationDailyBudgetSmoke)
+  .then(transactionBoundarySmoke)
   .then(filteredLedgerLimitSmoke)
   .then(() => console.log("site_access_budget_smoke ok"))
   .catch((error) => {

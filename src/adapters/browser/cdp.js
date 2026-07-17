@@ -43,6 +43,35 @@ class CdpBrowserAdapter {
     return this.cdp(tabId, "Page.navigate", { url });
   }
 
+  async createTab(openerTabId, url = "about:blank") {
+    const version = await this.requestJson("/json/version");
+    if (!version?.webSocketDebuggerUrl) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP browser version response has no browser websocket URL.");
+    }
+    const result = await sendCdp(
+      version.webSocketDebuggerUrl,
+      "Target.createTarget",
+      { url: String(url || "about:blank") },
+      this.timeoutMs
+    );
+    if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
+    return result.targetId;
+  }
+
+  async bringToFront(tabId) {
+    return this.cdp(tabId, "Page.bringToFront");
+  }
+
+  async clickAt(tabId, { x, y }) {
+    const point = { x: Number(x), y: Number(y) };
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw browserError("BROWSER_COMMAND_FAILED", "Click coordinates must be finite numbers.");
+    }
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+    return this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+  }
+
   async cdp(tabId, method, params = {}) {
     const tab = await this.findTab(tabId);
     return sendCdp(tab.webSocketDebuggerUrl, method, params, this.timeoutMs);

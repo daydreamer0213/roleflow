@@ -48,6 +48,16 @@ const {
   isJobAwaitingAction,
   OUTCOME_STATUSES
 } = require("../core/storage");
+const {
+  createCommunicationBatch,
+  getCommunicationBatch,
+  listCommunicationBatchItems,
+  setCommunicationBatchStatus,
+  resolveAmbiguousCommunicationItem,
+  transitionCommunicationItem,
+  communicationBatchSummary,
+  communicationQuotaSnapshot
+} = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
@@ -61,6 +71,7 @@ const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, tes
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
+const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
@@ -96,10 +107,16 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
+      if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
+      if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
@@ -507,6 +524,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
     if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
     const latestRun = getLatestScanRun(db, { planId: plan.id, site: "boss" });
@@ -540,6 +558,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
 
 function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", resumeBatchId = null, logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
+  assertBossRuntimeAvailable(db);
   const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
   if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const runId = randomUUID();
@@ -873,6 +892,120 @@ function parseBody(rawBody, contentType) {
     else result[key] = [result[key], value];
   }
   return result;
+}
+
+async function handleCommunicationBatch(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const quota = communicationQuota(db);
+    const jobIds = arrayValue(params.jobIds);
+    if (jobIds.length > quota.remaining) throw appError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
+    const batch = createCommunicationBatch(db, {
+      planId: params.planId,
+      jobIds,
+      browserMode: params.browserMode,
+      policySnapshot: { calibration: communicationCalibrationStatus() }
+    });
+    return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota: communicationQuota(db) };
+  });
+  if (!result.ok) return sendJson(res, result.statusCode, result.body);
+  if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function handleCommunicationControl(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const action = String(params.action || "").trim().toLowerCase();
+    if (action === "start" || action === "resume") assertCommunicationExecutionEnabled();
+    if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "only discard is available while calibration is pending");
+    const batchId = Number(params.batchId);
+    const batch = getCommunicationBatch(db, batchId);
+    if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+    const items = listCommunicationBatchItems(db, batchId);
+    if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
+      throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
+    }
+    for (const item of items) {
+      if (["pending", "opening", "verified"].includes(item.status)) {
+        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
+      } else if (item.status === "click_dispatched") {
+        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
+      }
+    }
+    const updated = setCommunicationBatchStatus(db, { batchId, status: "stopped", stopCode: "COMMUNICATION_BATCH_DISCARDED", stopMessage: "discarded before calibrated execution" });
+    return { batch: updated, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
+  });
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function handleCommunicationResolve(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const item = resolveAmbiguousCommunicationItem(db, {
+      batchId: params.batchId,
+      itemId: params.itemId,
+      status: params.status,
+      evidenceNote: params.evidenceNote
+    });
+    return { item, batch: getCommunicationBatch(db, item.batchId), summary: communicationBatchSummary(db, item.batchId) };
+  });
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+function handleCommunicationStatus(res, db, batchId) {
+  const result = communicationApiResult(() => communicationStatus(db, batchId));
+  sendJson(res, result.statusCode, result.body);
+}
+
+function communicationApiResult(action) {
+  try {
+    return { ok: true, statusCode: 200, body: action() };
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
+    return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };
+  }
+}
+
+function communicationStatus(db, batchId) {
+  const batch = getCommunicationBatch(db, batchId);
+  if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+  return {
+    batch,
+    summary: communicationBatchSummary(db, batch.id),
+    items: listCommunicationBatchItems(db, batch.id),
+    quota: communicationQuota(db),
+    calibration: communicationCalibrationStatus(),
+    runtimeBlock: communicationRuntimeBlock(db)
+  };
+}
+
+function communicationQuota(db) {
+  return communicationQuotaSnapshot(db);
+}
+
+function communicationRuntimeBlock(db) {
+  const state = getSiteRuntimeState(db, "boss");
+  if (!state || state.status !== "blocked") return null;
+  const blockedUntil = state.details?.blockedUntil || null;
+  const blockedUntilMs = Date.parse(blockedUntil || "");
+  if (Number.isFinite(blockedUntilMs) && blockedUntilMs <= Date.now()) return null;
+  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
+}
+
+function assertBossRuntimeAvailable(db) {
+  const block = communicationRuntimeBlock(db);
+  if (!block) return;
+  throw appError(block.reasonCode, "BOSS 访问仍处于安全暂停期。", { statusCode: 409 });
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : value === undefined || value === null || value === "" ? [] : [value];
 }
 
 function readBody(req) {
@@ -1279,19 +1412,20 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const versionDiff = compareProfileVersions(db, profile.id);
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
-  const bossRuntimeState = getSiteRuntimeState(db, "boss");
+  const bossRuntimeBlock = communicationRuntimeBlock(db);
+  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock);
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
   const resumeButton = resumableBatch
-    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
+    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${scanDisabled ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
     : "";
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
   const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : "";
   const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
-  const riskControlNotice = bossRuntimeState?.status === "blocked"
-    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>请先在已登录 Edge 中完成验证，再重新点击扫描。预检通过后会自动解除暂停；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeState.reasonCode || "BOSS_RISK_CONTROL")} · ${escapeHtml(String(bossRuntimeState.updatedAt || "").replace("T", " ").slice(0, 19))}</p></section>`
+  const riskControlNotice = bossRuntimeBlock
+    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
     : "";
   const planStyle = '<style>.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}@media(max-width:760px){.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
   return renderPage("筛选方案", `${planStyle}<main>
@@ -1332,7 +1466,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
     <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${run.state === "running" || !validation.valid || planDependency.stale ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
+    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
 }
@@ -1429,6 +1563,7 @@ function renderFeedbackInsight(feedback = {}) {
 function renderPage(title, body) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
 body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:0;background:#f6f7f9;color:#1f2328}main{max-width:1160px;margin:0 auto;padding:24px}nav{display:flex;gap:14px;margin-bottom:18px}nav a{color:#0969da;text-decoration:none}h1{font-size:24px;margin:0 0 8px;letter-spacing:0}h2{font-size:16px;margin:0 0 10px}.hint,.line{color:#57606a;margin:7px 0}.notice{color:#0a6b2b}.risk-text{color:#b42318}.error-code{font-family:Consolas,monospace;color:#57606a}.panel{background:#fff;border:1px solid #d8dee4;border-radius:8px;padding:16px;margin:12px 0}.form-stack{display:grid;gap:12px;max-width:560px}.plan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.plan-form .wide{grid-column:1/-1}.plan-form label,.form-stack label,.inline-form label{display:grid;gap:5px;font-size:14px}.plan-form .checkbox{display:flex;align-items:center;gap:8px;padding-top:24px}.plan-form .checkbox input{width:auto}input,select,textarea,button{font:inherit}input,select,textarea{min-width:0;padding:8px;border:1px solid #b8c0cc;border-radius:4px;background:#fff}textarea{min-height:118px;resize:vertical}button,.button-link{padding:8px 12px;border:1px solid #0969da;border-radius:4px;background:#0969da;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}.button-link{line-height:20px}.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}.inline-form input{width:120px}.resume-preview pre{max-height:360px;overflow:auto;white-space:pre-wrap;background:#f6f8fa;padding:10px;border:1px solid #d8dee4}.scan-error{white-space:pre-wrap;background:#fff1f0;padding:10px;max-height:180px;overflow:auto}.profile-summary{display:grid;gap:3px}.validation{border-left:4px solid #bf8700}.validation-error{border-left-color:#b42318}.validation strong{display:block}.validation ul,.profile-diff ul{margin:7px 0 0;padding-left:20px}.profile-diff{border-top:1px solid #d8dee4;padding-top:8px}.diagnostics{width:100%;border-collapse:collapse;font-size:12px}.diagnostics th,.diagnostics td{border-bottom:1px solid #d8dee4;padding:7px;text-align:left;vertical-align:top;word-break:break-word}@media(max-width:760px){main{padding:16px}.plan-form{grid-template-columns:1fr}.plan-form .wide{grid-column:auto}.plan-form .checkbox{padding-top:0}.inline-form{display:grid;grid-template-columns:1fr}.diagnostics{display:block;overflow-x:auto}}
+button:disabled{cursor:not-allowed;background:#8c959f;border-color:#8c959f;opacity:.65}nav{flex-wrap:wrap}
 </style>${body}</html>`;
 }
 
@@ -1456,6 +1591,8 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
 }
 
 function navLinks(current = "") {
+  const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
+  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">筛选方案</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
   return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
 }
 
@@ -1523,6 +1660,34 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
   });
 }
 
+function renderCommunicationBuilderPage({ db, searchParams }) {
+  const plan = getSearchPlan(db, searchParams.get("planId"));
+  if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
+  const quota = communicationQuota(db);
+  const runtimeBlock = communicationRuntimeBlock(db);
+  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "talk", "backup"].includes(job.decisionBucket)
+    && String(job.applicationStatus ?? "").length === 0);
+  const rows = eligible.map((job) => {
+    const checked = ["primary", "talk"].includes(job.decisionBucket) ? " checked" : "";
+    return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
+  }).join("") || "<p>当前没有可加入的岗位。</p>";
+  const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
+}
+
+function renderCommunicationReviewPage({ db, searchParams }) {
+  const result = communicationApiResult(() => communicationStatus(db, searchParams.get("batchId")));
+  if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
+  const { batch, summary, items, quota, calibration, runtimeBlock } = result.body;
+  const counts = Object.entries(summary.statusCounts).map(([status, count]) => `${escapeHtml(status)}: ${count}`).join(" · ") || "pending: 0";
+  const rows = items.map((item) => {
+    const resolution = item.status === "ambiguous" ? `<form class="communication-resolution" method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><label>处理依据<input name="evidenceNote" maxlength="1000" placeholder="例如：聊天页已显示对应岗位和招聘方" required></label><div><button name="status" value="succeeded">确认已沟通</button><button name="status" value="stopped">标记停止</button></div></form>` : "";
+    return `<tr><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
+  }).join("");
+  const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
+  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls"><button disabled>开始沟通</button><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form></div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+}
+
 function compactAwaitingAction(job) {
   return isJobAwaitingAction(job);
 }
@@ -1546,7 +1711,8 @@ ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=
 function renderCompactPoolTabs(queue, planId) {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
   const tabs = [["focus", "主投 + 先聊", (queue.counts.primary || 0) + (queue.counts.talk || 0)], ["primary", "主投", queue.counts.primary || 0], ["talk", "先聊确认", queue.counts.talk || 0], ["backup", "备选", queue.counts.backup || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不建议", queue.counts.not_recommended || 0]];
-  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
+  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
+    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`;
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);

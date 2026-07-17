@@ -7,7 +7,9 @@ const {
   createScanRun,
   getLatestScanRun,
   finishScanRun,
-  acquireSiteScanLease
+  acquireSiteScanLease,
+  setSiteRuntimeState,
+  clearSiteRuntimeState
 } = require("../src/core/storage");
 const {
   createDashboardServer,
@@ -34,6 +36,7 @@ try {
   failedAndInterruptedExitSmoke(db);
   orphanRecheckSmoke(db);
   restartRecoveryAndOrphanCleanupSmoke(db);
+  blockedRuntimeGuardSmoke(db);
   console.log("dashboard_scan_lifecycle_smoke ok");
 } finally {
   if (db) db.close();
@@ -198,6 +201,30 @@ function restartRecoveryAndOrphanCleanupSmoke(database) {
   assert.strictEqual(recovered.state, "running");
   assert.strictEqual(recovered.kind, "daily");
   assert.strictEqual(recovered.recovered, true);
+}
+
+function blockedRuntimeGuardSmoke(database) {
+  setSiteRuntimeState(database, "boss", {
+    status: "blocked",
+    reasonCode: "BOSS_RISK_CONTROL",
+    details: { blockedUntil: "2099-01-01T00:00:00.000Z" }
+  });
+  let spawnCalls = 0;
+  assert.throws(() => startPlanScan(new Map(), {
+    db: database,
+    root,
+    dbPath,
+    planId: 401,
+    cdpPort: 9222,
+    browserMode: "edge",
+    scanKind: "daily",
+    logger,
+    requestId: "request-blocked",
+    spawnProcess() { spawnCalls += 1; }
+  }), (error) => error.code === "BOSS_RISK_CONTROL" && error.statusCode === 409);
+  assert.strictEqual(spawnCalls, 0);
+  assert.strictEqual(getLatestScanRun(database, { planId: 401, site: "boss" }), null);
+  clearSiteRuntimeState(database, "boss");
 }
 
 function launch(database, planId) {

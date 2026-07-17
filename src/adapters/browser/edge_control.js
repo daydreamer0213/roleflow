@@ -103,6 +103,36 @@ class EdgeControlAdapter {
     return this.command("navigate", { tabId, url });
   }
 
+  async createTab(openerTabId, url = "about:blank") {
+    const tabs = await this.listTabs();
+    const opener = tabs.find((tab) => tab.id === openerTabId);
+    if (!opener) throw browserError("BROWSER_COMMAND_FAILED", `Edge Control tab not found: ${openerTabId}`);
+    const args = {
+      url: String(url || "about:blank"),
+      createNewTab: true,
+      active: false
+    };
+    if (opener.windowId !== undefined && opener.windowId !== null) args.windowId = opener.windowId;
+    const result = await this.command("navigate", args);
+    const tabId = typeof result === "string" ? result : result?.id || result?.tabId;
+    if (!tabId) throw browserError("BROWSER_COMMAND_FAILED", "Edge Control did not return a new tab id.");
+    return tabId;
+  }
+
+  async bringToFront(tabId) {
+    return this.cdp(tabId, "Page.bringToFront");
+  }
+
+  async clickAt(tabId, { x, y }) {
+    const point = { x: Number(x), y: Number(y) };
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw browserError("BROWSER_COMMAND_FAILED", "Click coordinates must be finite numbers.");
+    }
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+    return this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+  }
+
   async cdp(tabId, method, params = {}) {
     const result = await this.command("send_cdp", { tabId, method, params });
     return result.result ?? result;

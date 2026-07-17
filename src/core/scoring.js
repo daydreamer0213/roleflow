@@ -287,7 +287,14 @@ function scoreJob(job, configs) {
 }
 
 function isBossJobUrl(url) {
-  return /https:\/\/www\.zhipin\.com\/job_detail\/[^/?#]+\.html/i.test(String(url || ""));
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "https:"
+      && parsed.hostname === "www.zhipin.com"
+      && /^\/job_detail\/[^/?#]+\.html$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function isClearlyNonTechnicalRole(value) {

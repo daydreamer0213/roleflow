@@ -1,7 +1,10 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { recordSiteAccessEvent, listSiteAccessEvents } = require("./storage");
 
-const DEFAULT_POLICY = PRODUCT_POLICY.operations.bossAccessBudget;
+const DEFAULT_POLICY = Object.freeze({
+  ...PRODUCT_POLICY.operations.bossAccessBudget,
+  combinedUsage: PRODUCT_POLICY.operations.bossCommunication.combinedUsage
+});
 
 function createSiteAccessController({
   db,
@@ -23,25 +26,43 @@ function createSiteAccessController({
       while (true) {
         throwIfAborted(signal);
         const nowMs = Number(nowFn());
-        const mode = resolveAccessMode(db, { site, nowMs, policy });
-        const limits = policy.modes[mode]?.[normalizedAction] || {};
-        const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
-        const blockers = Object.entries(limits)
-          .filter(([window]) => usage[window] >= limits[window])
-          .map(([window, limit]) => ({ window, limit, retryAtMs: nextAvailableAt(db, { site, action: normalizedAction, window, nowMs, policy }) }));
+        let transactionOpen = false;
+        let decision;
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          transactionOpen = true;
+          const mode = resolveAccessMode(db, { site, nowMs, policy });
+          const limits = policy.modes[mode]?.[normalizedAction] || {};
+          const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
+          const blockers = Object.entries(limits)
+            .filter(([window]) => usage[window] >= limits[window])
+            .map(([window, limit]) => ({ window, limit, retryAtMs: nextAvailableAt(db, { site, action: normalizedAction, window, nowMs, policy }) }));
 
-        if (!blockers.length) {
-          recordSiteAccessEvent(db, {
-            site,
-            action: normalizedAction,
-            runId,
-            details,
-            createdAt: new Date(nowMs).toISOString()
-          });
-          const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
-          logger?.info("site_access_reserved", { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits });
-          return { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits };
+          if (!blockers.length) {
+            recordSiteAccessEvent(db, {
+              site,
+              action: normalizedAction,
+              runId,
+              details,
+              createdAt: new Date(nowMs).toISOString()
+            });
+            const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
+            db.exec("COMMIT");
+            transactionOpen = false;
+            logger?.info("site_access_reserved", { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits });
+            return { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits };
+          }
+          decision = { mode, limits, usage, blockers };
+          db.exec("COMMIT");
+          transactionOpen = false;
+        } catch (error) {
+          if (transactionOpen) {
+            try { db.exec("ROLLBACK"); } catch {}
+          }
+          throw error;
         }
+
+        const { mode, limits, usage, blockers } = decision;
 
         const daily = blockers.find((item) => item.window === "24h");
         if (daily) throw accessBudgetError({ site, action: normalizedAction, mode, usage, ...daily });
@@ -88,12 +109,12 @@ function readUsage(db, { site, action, nowMs, policy = DEFAULT_POLICY }) {
   const longestWindowMs = Math.max(...Object.values(policy.windowsMs));
   const events = listSiteAccessEvents(db, {
     site,
-    action,
     since: new Date(nowMs - longestWindowMs).toISOString()
   });
   return Object.fromEntries(Object.entries(policy.windowsMs).map(([window, windowMs]) => [
     window,
-    events.filter((event) => Date.parse(event.createdAt) > nowMs - windowMs).length
+    events.filter((event) => actionsForWindow(action, window, policy).includes(event.action)
+      && Date.parse(event.createdAt) > nowMs - windowMs).length
   ]));
 }
 
@@ -101,15 +122,22 @@ function nextAvailableAt(db, { site, action, window, nowMs, policy = DEFAULT_POL
   const windowMs = policy.windowsMs[window];
   const events = listSiteAccessEvents(db, {
     site,
-    action,
     since: new Date(nowMs - windowMs).toISOString()
-  });
+  }).filter((event) => actionsForWindow(action, window, policy).includes(event.action)
+    && Date.parse(event.createdAt) > nowMs - windowMs);
   const oldestMs = Date.parse(events[0]?.createdAt || "");
   return (Number.isFinite(oldestMs) ? oldestMs : nowMs) + windowMs;
 }
 
+function actionsForWindow(action, window, policy) {
+  if (action !== "communication_visit") return [action];
+  return policy.combinedUsage?.[window] || [action];
+}
+
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
-  const label = { detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
+  const label = action === "communication_visit"
+    ? "岗位沟通"
+    : { detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
   const retryAt = new Date(retryAtMs).toISOString();
   const error = new Error(`${site.toUpperCase()} 过去 ${window} 的${label}访问已达到安全额度 ${limit} 次；未完成岗位已保留，请在 ${retryAt} 后恢复批次。`);
   error.code = "BOSS_ACCESS_BUDGET_EXHAUSTED";
