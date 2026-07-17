@@ -429,6 +429,39 @@ function databaseMigrationError(code, message, cause) {
   return error;
 }
 
+function recordSiteAccessEvent(db, {
+  site,
+  action,
+  runId = "",
+  details = {},
+  createdAt = new Date().toISOString()
+}) {
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  if (!normalizedSite || !normalizedAction) throw new Error("站点访问事件必须包含 site 和 action。");
+  const payload = { ...details, site: normalizedSite, action: normalizedAction, runId: String(runId || "") };
+  const result = db.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (NULL, 'site_access', ?, ?)")
+    .run(JSON.stringify(payload), String(createdAt));
+  return { id: Number(result.lastInsertRowid), site: normalizedSite, action: normalizedAction, createdAt: String(createdAt), details: payload };
+}
+
+function listSiteAccessEvents(db, { site, action = "", since = "1970-01-01T00:00:00.000Z", limit = 10000 } = {}) {
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  const actionClause = normalizedAction ? " AND json_extract(payload_json, '$.action') = ?" : "";
+  const params = [String(since), normalizedSite];
+  if (normalizedAction) params.push(normalizedAction);
+  params.push(Math.max(1, Math.min(10000, Number(limit) || 10000)));
+  return db.prepare(`SELECT id, payload_json, created_at FROM events
+    WHERE event_type = 'site_access' AND created_at >= ?
+      AND json_extract(payload_json, '$.site') = ?${actionClause}
+    ORDER BY created_at ASC, id ASC LIMIT ?`)
+    .all(...params)
+    .map((row) => ({ id: Number(row.id), createdAt: row.created_at, details: parseJson(row.payload_json, {}) }))
+    .filter((event) => event.details.site === normalizedSite && (!normalizedAction || event.details.action === normalizedAction))
+    .map((event) => ({ ...event, site: event.details.site, action: event.details.action }));
+}
+
 function migrateLegacySchema(db) {
   const columns = new Set(db.prepare("PRAGMA table_info(jobs)").all().map((column) => column.name));
   if (!columns.has("analysis_json")) {
@@ -2812,6 +2845,8 @@ module.exports = {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
+  recordSiteAccessEvent,
+  listSiteAccessEvents,
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,

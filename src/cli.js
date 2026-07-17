@@ -31,6 +31,7 @@ const {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
+  recordSiteAccessEvent,
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,
@@ -58,6 +59,7 @@ const {
   rescorePlanObservations,
   reassessBatchObservations
 } = require("./core/storage");
+const { createSiteAccessController } = require("./core/site_access_budget");
 const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
@@ -204,6 +206,25 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
     return result;
   } catch (error) {
     const status = scanFailureStatus(error);
+    if (error?.code === "BOSS_RISK_CONTROL") {
+      const site = execution?.site || "boss";
+      setSiteRuntimeState(db, site, {
+        status: "blocked",
+        reasonCode: error.code,
+        message: error.message,
+        details: { phase: "tracked_run", runId }
+      });
+      recordSiteAccessEvent(db, {
+        site,
+        action: "risk_control",
+        runId,
+        details: {
+          errorCode: error.code,
+          errorMessage: error.message,
+          blockedUntil: error.blockedUntil || ""
+        }
+      });
+    }
     try {
       const finished = finishScanRun(db, {
         runId,
@@ -272,7 +293,10 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const analysisConcurrency = resolveAnalysisConcurrency(args);
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const browser = createBrowser(args);
-  const adapter = createSiteAdapter(site, { browser, logger: scanLogger });
+  const accessController = !args.input && site === "boss"
+    ? createSiteAccessController({ db, site, runId: execution?.runId || "", logger: scanLogger, signal })
+    : null;
+  const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
   const cityScopes = resolveCityScopes(args, planRecord, configs);
   let browserState = null;
   if (!args.input) {
@@ -450,6 +474,12 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
         message: risk.errorMessage || "BOSS 要求安全验证，扫描已暂停。",
         details: { batchId, detailsRead: risk.detailsRead, candidates: risk.candidates }
       });
+      recordSiteAccessEvent(db, {
+        site,
+        action: "risk_control",
+        runId: execution?.runId || "",
+        details: { batchId, errorCode: risk.errorCode || "BOSS_RISK_CONTROL", errorMessage: risk.errorMessage || "" }
+      });
     },
     onTargetComplete,
     onScanComplete: (summary) => { scanSummary = summary; },
@@ -573,7 +603,8 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
-  const adapter = createSiteAdapter("boss", { browser, logger: scanLogger });
+  const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
+  const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
   const browserState = await adapter.preflight();
   assertScanActive(signal);
 
@@ -759,6 +790,7 @@ function scanFailureStatus(error) {
     "BOSS_TAB_REQUIRED",
     "BOSS_SEARCH_PAGE_LOST",
     "BOSS_DETAIL_PAGE_LOST",
+    "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BROWSER_TIMEOUT",
     "BROWSER_DISCONNECTED"
   ]).has(code) ? "interrupted" : "failed";

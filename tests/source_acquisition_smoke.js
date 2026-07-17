@@ -75,6 +75,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await scrollSafetyLimitSmoke();
   await maxCardScrollBudgetSmoke();
   await delayedListSmoke();
+  await accessReservationSmoke();
   await paneSwitchSmoke();
   await leftCardMetadataAvoidsPaneScrollSmoke();
   await fullDetailCoverageSmoke();
@@ -152,7 +153,10 @@ async function riskPreflightSmoke() {
         { id: "verify", active: false, url: "https://www.zhipin.com/web/passport/zp/verify" }
       ];
     },
-    async evalValue(tabId) {
+    async evalValue(tabId, expression) {
+      assert(expression.includes("403"));
+      assert(expression.includes("访问受限"));
+      assert(expression.includes("没有更多职位"));
       if (tabId === "verify") return { isBoss: true, isRiskPage: true, isLoginPage: false, loggedIn: false, isSearchPage: false };
       return { isBoss: true, isRiskPage: false, isLoginPage: false, loggedIn: true, isSearchPage: true, hasJobStructure: true };
     }
@@ -290,6 +294,7 @@ async function delayedListSmoke() {
 async function paneSwitchSmoke() {
   let paneReads = 0;
   const paneScrolls = [];
+  const accessActions = [];
   const browser = {
     async evalValue(_tabId, expression) {
       if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
@@ -324,7 +329,12 @@ async function paneSwitchSmoke() {
       return true;
     }
   };
-  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const adapter = new BossSiteAdapter({
+    browser,
+    sleepFn: async () => {},
+    randomFn: () => 0,
+    accessController: { reserve: async (action, details) => accessActions.push({ action, details }) }
+  });
   const detail = await adapter.readCardDetail("pane-tab", {
     title: "AI应用开发",
     url: "https://www.zhipin.com/job_detail/pane-job.html"
@@ -332,6 +342,30 @@ async function paneSwitchSmoke() {
   assert(detail.description.length >= 120);
   assert.strictEqual(detail.bossActiveText, "今日活跃");
   assert.deepStrictEqual(paneScrolls, ["down", "top"]);
+  assert.deepStrictEqual(accessActions.map((item) => item.action), ["detail_open"]);
+  assert.strictEqual(accessActions[0].details.jobId, "pane-job");
+}
+
+async function accessReservationSmoke() {
+  const accessActions = [];
+  const browser = {
+    async navigate() {},
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      if (expression.includes("window.__bossScrollList()")) return { moved: true, atBottom: false };
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({
+    browser,
+    sleepFn: async () => {},
+    randomFn: () => 0,
+    accessController: { reserve: async (action, details) => accessActions.push({ action, details }) }
+  });
+  await adapter.navigateWithPacing("tab", "https://www.zhipin.com/web/geek/jobs?query=RAG", "list");
+  await adapter.navigateWithPacing("tab", "https://www.zhipin.com/job_detail/detail-job.html", "detail");
+  await adapter.scrollList("tab");
+  assert.deepStrictEqual(accessActions.map((item) => item.action), ["list_navigation", "detail_open", "list_scroll"]);
 }
 
 async function leftCardMetadataAvoidsPaneScrollSmoke() {

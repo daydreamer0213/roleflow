@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-16.3";
+const PRODUCT_POLICY_VERSION = "2026-07-17.2";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -37,7 +37,50 @@ const PRODUCT_POLICY = Object.freeze({
     scanLeaseMinTtlMs: 60_000,
     scanOrphanTimeoutMs: 120_000,
     refreshLimit: 8,
-    activityRefreshDays: 3
+    activityRefreshDays: 3,
+    bossPacing: Object.freeze({
+      delayMs: Object.freeze({
+        catalog: Object.freeze([1500, 2500]),
+        list: Object.freeze([2500, 4000]),
+        detail: Object.freeze([3000, 5000]),
+        retry: Object.freeze([400, 800]),
+        scroll: Object.freeze([2500, 4000]),
+        card: Object.freeze([3000, 5000]),
+        card_retry: Object.freeze([300, 700]),
+        list_ready: Object.freeze([450, 750]),
+        refresh: Object.freeze([3000, 5000]),
+        target: Object.freeze([20000, 40000])
+      }),
+      periodicEvery: Object.freeze([18, 26]),
+      periodicDelayMs: Object.freeze([4000, 7000]),
+      detail: Object.freeze({
+        microEvery: Object.freeze([6, 8]),
+        microDelayMs: Object.freeze([15000, 25000]),
+        macroEvery: Object.freeze([16, 20]),
+        macroDelayMs: Object.freeze([90000, 150000])
+      })
+    }),
+    bossAccessBudget: Object.freeze({
+      recoveryHours: 48,
+      waitJitterMs: Object.freeze([1000, 3000]),
+      windowsMs: Object.freeze({
+        "10m": 10 * 60_000,
+        "1h": 60 * 60_000,
+        "24h": 24 * 60 * 60_000
+      }),
+      modes: Object.freeze({
+        recovery: Object.freeze({
+          detail_open: Object.freeze({ "10m": 8, "1h": 15, "24h": 20 }),
+          list_navigation: Object.freeze({ "24h": 8 }),
+          list_scroll: Object.freeze({ "24h": 60 })
+        }),
+        normal: Object.freeze({
+          detail_open: Object.freeze({ "10m": 12, "1h": 25, "24h": 40 }),
+          list_navigation: Object.freeze({ "24h": 10 }),
+          list_scroll: Object.freeze({ "24h": 80 })
+        })
+      })
+    })
   }),
   matching: Object.freeze({
     salaryHardMaxMarginK: 12

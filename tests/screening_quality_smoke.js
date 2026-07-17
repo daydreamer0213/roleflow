@@ -519,12 +519,12 @@ async function browserAllocationSmoke() {
   await pacingAdapterMin.waitWithPacing("scroll");
   await pacingAdapterMin.waitWithPacing("target");
   await pacingAdapterMax.waitWithPacing("refresh");
-  assert.deepStrictEqual(pacingSleeps, [900, 2500, 2200]);
+  assert.deepStrictEqual(pacingSleeps, [2500, 20000, 5000]);
   const cooldownSleeps = [];
   const periodic = new BossSiteAdapter({ browser: {}, sleepFn: async (delay) => cooldownSleeps.push(delay), randomFn: () => 0 });
   periodic.nextPacingCooldownAt = 1;
   await periodic.waitWithPacing("card");
-  assert.deepStrictEqual(cooldownSleeps, [1000, 4000]);
+  assert.deepStrictEqual(cooldownSleeps, [3000, 4000]);
   assert.strictEqual(periodic.nextPacingCooldownAt, 19);
 
   const detailCooldownSleeps = [];
@@ -532,12 +532,12 @@ async function browserAllocationSmoke() {
   detailPacing.nextDetailMicroCooldownAt = 1;
   detailPacing.nextDetailMacroCooldownAt = 99;
   await detailPacing.waitAfterDetailAction();
-  assert.deepStrictEqual(detailCooldownSleeps, [7000]);
-  detailPacing.detailActions = 31;
+  assert.deepStrictEqual(detailCooldownSleeps, [15000]);
+  detailPacing.detailActions = 15;
   detailPacing.nextDetailMicroCooldownAt = 99;
-  detailPacing.nextDetailMacroCooldownAt = 32;
+  detailPacing.nextDetailMacroCooldownAt = 16;
   await detailPacing.waitAfterDetailAction();
-  assert.deepStrictEqual(detailCooldownSleeps, [7000, 90000]);
+  assert.deepStrictEqual(detailCooldownSleeps, [15000, 90000]);
 }
 
 function job(overrides = {}) {

@@ -6,14 +6,9 @@ const { PRODUCT_POLICY } = require("../../core/product_policy");
 
 const SEARCH_PLAN_POLICY = PRODUCT_POLICY.searchPlan;
 const REFRESH_LIMIT = PRODUCT_POLICY.operations.refreshLimit;
+const BOSS_PACING_POLICY = PRODUCT_POLICY.operations.bossPacing;
 
 const DEFAULT_CITY_CODE = "101280100";
-const DETAIL_PACING = Object.freeze({
-  microEvery: [9, 13],
-  microDelayMs: [7000, 12000],
-  macroEvery: [32, 40],
-  macroDelayMs: [90000, 150000]
-});
 const BOSS_FILTER_FIELDS = {
   salary: { key: "salary", label: "\u85aa\u8d44\u5f85\u9047", urlParam: "salary", selection: "single", semantic: "salary_range" },
   exp: { key: "experience", label: "\u5de5\u4f5c\u7ecf\u9a8c", urlParam: "experience", selection: "multiple", semantic: "experience" },
@@ -220,11 +215,12 @@ const PAGE_HELPERS = String.raw`
 `;
 
 class BossSiteAdapter {
-  constructor({ browser = null, logger = null, sleepFn = sleep, randomFn = Math.random } = {}) {
+  constructor({ browser = null, logger = null, sleepFn = sleep, randomFn = Math.random, accessController = null } = {}) {
     this.browser = browser;
     this.logger = logger;
     this.sleep = sleepFn;
     this.random = randomFn;
+    this.accessController = accessController;
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
@@ -248,15 +244,19 @@ class BossSiteAdapter {
         const state = await this.browser.evalValue(tab.id, `(() => {
           const url = location.href;
           const path = location.pathname;
+          const bodyText = String(document.body?.innerText || "").replace(/\\s+/g, " ").slice(0, 3000);
           const isBoss = /(^|\\.)zhipin\\.com$/i.test(location.hostname);
           const hasVisibleLoginForm = [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
             return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
           });
-          const isLoginPage = /\\/web\\/user\\//i.test(path) || hasVisibleLoginForm;
-          const isRiskPage = /\\/web\\/passport\\/zp\\/verify/i.test(path)
-            || /安全验证|访问异常|行为验证/.test(document.title || "");
+          const isLoginPage = /\\/web\\/user\\//i.test(path) || hasVisibleLoginForm
+            || /没有更多职位.{0,20}登录查看全部职位|登录后可查看/.test(bodyText);
+          const isRiskPage = /\\/web\\/passport\\/zp\\/(?:verify|403)/i.test(path)
+            || new URLSearchParams(location.search).get("code") === "32"
+            || /安全验证|访问异常|行为验证|访问受限/.test(document.title || "")
+            || /账户存在异常行为|暂时无法访问此页面|请勿频繁提交刷新请求/.test(bodyText);
           const hasUserSurface = Boolean(document.querySelector(".nav-figure, .user-nav, [ka='header-personal'], [ka='header-username'], [class*='user-nav']"));
           const hasJobStructure = Boolean(document.querySelector(".job-list-container, .rec-job-list, .job-card-box, .job-detail-container"));
           const isSearchPage = /\\/web\\/geek\\/jobs/i.test(path);
@@ -340,6 +340,10 @@ class BossSiteAdapter {
       error.code = "BOSS_PAGE_BUDGET_REACHED";
       throw error;
     }
+    const accessAction = kind === "detail"
+      ? "detail_open"
+      : ["catalog", "list"].includes(kind) ? "list_navigation" : "";
+    if (accessAction) await this.reserveAccess(accessAction, { kind, url });
     await this.browser.navigate(tabId, url);
     this.pageNavigations += 1;
     if (kind === "list") this.listNavigations += 1;
@@ -347,55 +351,48 @@ class BossSiteAdapter {
   }
 
   async waitWithPacing(kind) {
-    const ranges = {
-      catalog: [1500, 2500],
-      list: [1800, 3200],
-      detail: [1800, 3000],
-      retry: [400, 800],
-      scroll: [900, 1600],
-      card: [1000, 2000],
-      card_retry: [300, 700],
-      list_ready: [450, 750],
-      refresh: [1200, 2200],
-      target: [2500, 4500]
-    };
-    const [min, max] = ranges[kind] || ranges.list;
+    const [min, max] = BOSS_PACING_POLICY.delayMs[kind] || BOSS_PACING_POLICY.delayMs.list;
     await this.sleep(randomBetween(min, max, this.random));
     if (!["catalog", "list", "detail", "scroll", "card", "refresh", "target"].includes(kind)) return;
     this.pacedActions += 1;
     if (this.pacedActions < this.nextPacingCooldownAt) return;
-    const cooldownMs = randomBetween(4000, 7000, this.random);
+    const cooldownMs = randomBetween(...BOSS_PACING_POLICY.periodicDelayMs, this.random);
     this.logger?.info("boss_pacing_cooldown", { pacedActions: this.pacedActions, cooldownMs });
     await this.sleep(cooldownMs);
-    this.nextPacingCooldownAt += randomBetween(18, 26, this.random);
+    this.nextPacingCooldownAt += randomBetween(...BOSS_PACING_POLICY.periodicEvery, this.random);
+  }
+
+  async reserveAccess(action, details = {}) {
+    if (typeof this.accessController?.reserve !== "function") return null;
+    return this.accessController.reserve(action, details);
   }
 
   resetPacing() {
     this.pacedActions = 0;
-    this.nextPacingCooldownAt = randomBetween(18, 26, this.random);
+    this.nextPacingCooldownAt = randomBetween(...BOSS_PACING_POLICY.periodicEvery, this.random);
     this.detailActions = 0;
-    this.nextDetailMicroCooldownAt = randomBetween(...DETAIL_PACING.microEvery, this.random);
-    this.nextDetailMacroCooldownAt = randomBetween(...DETAIL_PACING.macroEvery, this.random);
+    this.nextDetailMicroCooldownAt = randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
+    this.nextDetailMacroCooldownAt = randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
   }
 
   async waitAfterDetailAction() {
     this.detailActions += 1;
     if (this.detailActions >= this.nextDetailMacroCooldownAt) {
-      const cooldownMs = randomBetween(...DETAIL_PACING.macroDelayMs, this.random);
+      const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.macroDelayMs, this.random);
       console.error(`[boss] 已读取 ${this.detailActions} 个右栏详情，阶段冷却 ${Math.ceil(cooldownMs / 1000)} 秒后继续`);
       this.logger?.info("boss_detail_macro_cooldown", { detailActions: this.detailActions, cooldownMs });
       await this.sleep(cooldownMs);
-      this.nextDetailMacroCooldownAt += randomBetween(...DETAIL_PACING.macroEvery, this.random);
+      this.nextDetailMacroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
       while (this.nextDetailMicroCooldownAt <= this.detailActions) {
-        this.nextDetailMicroCooldownAt += randomBetween(...DETAIL_PACING.microEvery, this.random);
+        this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
       }
       return;
     }
     if (this.detailActions >= this.nextDetailMicroCooldownAt) {
-      const cooldownMs = randomBetween(...DETAIL_PACING.microDelayMs, this.random);
+      const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.microDelayMs, this.random);
       this.logger?.info("boss_detail_micro_cooldown", { detailActions: this.detailActions, cooldownMs });
       await this.sleep(cooldownMs);
-      this.nextDetailMicroCooldownAt += randomBetween(...DETAIL_PACING.microEvery, this.random);
+      this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
     }
   }
 
@@ -868,6 +865,7 @@ class BossSiteAdapter {
   async scrollList(tabId) {
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
+    await this.reserveAccess("list_scroll");
     const result = await this.browser.evalValue(tabId, "(() => window.__bossScrollList())()");
     this.logger?.info("boss_list_scrolled", result || {});
     return result || { moved: false, atBottom: false };
@@ -878,6 +876,7 @@ class BossSiteAdapter {
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
     const expectedJobId = (normalizeBossUrl(job?.url || "").match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    await this.reserveAccess("detail_open", { jobId: expectedJobId, title: job?.title || "", url: job?.url || "" });
     const opened = await this.browser.evalValue(tabId, `(() => window.__bossOpenCard(${JSON.stringify(expectedJobId)}, ${Number(fallbackIndex) || 0}, ${JSON.stringify(job?.title || "")}))()`);
     if (!opened?.clicked) throw bossError("BOSS_CARD_NOT_FOUND", `左侧岗位卡片未找到：${job?.title || expectedJobId || "unknown"}`);
     await this.waitWithPacing("card");
@@ -923,12 +922,15 @@ class BossSiteAdapter {
     const state = await this.browser.evalValue(tabId, `(() => ({
       path: location.pathname,
       title: document.title || "",
-      isRiskPage: /\\/web\\/passport\\/zp\\/verify/i.test(location.pathname) || /安全验证|访问异常|行为验证/.test(document.title || ""),
+      isRiskPage: /\\/web\\/passport\\/zp\\/(?:verify|403)/i.test(location.pathname)
+        || new URLSearchParams(location.search).get("code") === "32"
+        || /安全验证|访问异常|行为验证|访问受限/.test(document.title || "")
+        || /账户存在异常行为|暂时无法访问此页面|请勿频繁提交刷新请求/.test(String(document.body?.innerText || "")),
       isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      }),
+      }) || /没有更多职位.{0,20}登录查看全部职位|登录后可查看/.test(String(document.body?.innerText || "")),
       isSearchPage: /\\/web\\/geek\\/jobs/i.test(location.pathname)
     }))()`);
     if (state?.isRiskPage) throw bossError("BOSS_RISK_CONTROL", "BOSS 当前要求安全验证，已停止本轮页面访问。");
@@ -941,12 +943,15 @@ class BossSiteAdapter {
     const state = await this.browser.evalValue(tabId, `(() => ({
       path: location.pathname,
       title: document.title || "",
-      isRiskPage: /\\/web\\/passport\\/zp\\/verify/i.test(location.pathname) || /安全验证|访问异常|行为验证/.test(document.title || ""),
+      isRiskPage: /\\/web\\/passport\\/zp\\/(?:verify|403)/i.test(location.pathname)
+        || new URLSearchParams(location.search).get("code") === "32"
+        || /安全验证|访问异常|行为验证|访问受限/.test(document.title || "")
+        || /账户存在异常行为|暂时无法访问此页面|请勿频繁提交刷新请求/.test(String(document.body?.innerText || "")),
       isLoginPage: /\\/web\\/user\\//i.test(location.pathname) || [...document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")].some((element) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-      }),
+      }) || /没有更多职位.{0,20}登录查看全部职位|登录后可查看/.test(String(document.body?.innerText || "")),
       jobId: (location.pathname.match(/\\/job_detail\\/([^/?#]+)\\.html/i) || [])[1] || ""
     }))()`);
     if (state?.isRiskPage) throw bossError("BOSS_RISK_CONTROL", "BOSS 当前要求安全验证，已停止本轮页面访问。");
@@ -1355,6 +1360,7 @@ function isFatalBrowserError(error) {
     "BOSS_PAGE_BUDGET_REACHED",
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
+    "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BOSS_TAB_REQUIRED",
     "BOSS_SEARCH_PAGE_LOST",
     "BOSS_DETAIL_PAGE_LOST",
