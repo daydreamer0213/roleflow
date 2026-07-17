@@ -14,8 +14,20 @@ try {
   assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.deepStrictEqual(
     db.prepare("SELECT version, name, backup_path FROM schema_migrations").all().map((row) => ({ ...row })),
-    [{ version: SCHEMA_VERSION, name: "stable_scan_runtime", backup_path: null }]
+    [
+      { version: 1, name: "stable_scan_runtime", backup_path: null },
+      { version: 2, name: "communication_batches_v1", backup_path: null }
+    ]
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batch_items'").get().n,
+    1
+  );
+  assert(SCHEMA_VERSION >= 2);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -85,7 +97,7 @@ try {
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM job_observations").get().n, 1);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM scan_runs").get().n, 0);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
-  const migration = db.prepare("SELECT version, backup_path FROM schema_migrations").get();
+  const migration = db.prepare("SELECT version, backup_path FROM schema_migrations ORDER BY version DESC LIMIT 1").get();
   assert.strictEqual(migration.version, SCHEMA_VERSION);
   assert.ok(migration.backup_path && fs.existsSync(migration.backup_path));
   db.close();

@@ -15,6 +15,53 @@ const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
 const SCAN_RUN_STATUSES = ["running", "completed", "partial", "failed", "interrupted"];
 const TERMINAL_SCAN_RUN_STATUSES = new Set(SCAN_RUN_STATUSES.slice(1));
 
+const COMMUNICATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS communication_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site TEXT NOT NULL DEFAULT 'boss',
+  profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  browser_mode TEXT NOT NULL CHECK(browser_mode IN ('edge', 'portable')),
+  status TEXT NOT NULL CHECK(status IN ('confirmed','running','paused','stopping','completed','stopped','interrupted','failed')),
+  policy_json TEXT NOT NULL DEFAULT '{}',
+  confirmed_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  stop_code TEXT,
+  stop_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id)
+);
+
+CREATE TABLE IF NOT EXISTS communication_batch_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  job_url TEXT NOT NULL,
+  title_snapshot TEXT NOT NULL,
+  company_snapshot TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK(status IN ('pending','opening','verified','click_dispatched','succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable','ambiguous','stopped')),
+  click_count INTEGER NOT NULL DEFAULT 0 CHECK(click_count BETWEEN 0 AND 1),
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  error_code TEXT,
+  error_message TEXT,
+  started_at TEXT,
+  clicked_at TEXT,
+  finished_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(batch_id, job_id),
+  FOREIGN KEY(batch_id) REFERENCES communication_batches(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_communication_batches_plan ON communication_batches(plan_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_communication_items_batch ON communication_batch_items(batch_id, position);
+CREATE INDEX IF NOT EXISTS idx_communication_items_job ON communication_batch_items(job_id, status);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -337,6 +384,7 @@ CREATE INDEX IF NOT EXISTS idx_platform_filter_catalogs_updated ON platform_filt
 CREATE INDEX IF NOT EXISTS idx_scan_target_results_batch ON scan_target_results(batch_id, target_key, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs(status, heartbeat_at);
 CREATE INDEX IF NOT EXISTS idx_job_refresh_attempts_job ON job_refresh_attempts(job_id, created_at);
+${COMMUNICATION_SCHEMA}
 `;
 
 const MIGRATIONS = [
@@ -346,6 +394,13 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(SCHEMA);
       migrateLegacySchema(db);
+    }
+  },
+  {
+    version: 2,
+    name: "communication_batches_v1",
+    apply(db) {
+      db.exec(COMMUNICATION_SCHEMA);
     }
   }
 ];
