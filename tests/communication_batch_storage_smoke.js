@@ -60,6 +60,12 @@ try {
     listCommunicationBatchItems(db, selected.id).map((item) => item.status),
     ["pending", "pending", "pending"]
   );
+  const safeStop = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" });
+  const safeStopItem = listCommunicationBatchItems(db, safeStop.id)[0];
+  assert.strictEqual(
+    transitionCommunicationItem(db, { itemId: safeStopItem.id, expectedStatus: "pending", status: "stopped" }).status,
+    "stopped"
+  );
   assert.throws(
     () => createCommunicationBatch(db, { planId, jobIds: [notRecommendedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"

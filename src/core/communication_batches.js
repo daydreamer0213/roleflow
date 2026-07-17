@@ -8,8 +8,8 @@ const ALLOWED_BUCKETS = new Set(["primary", "talk", "backup"]);
 const CONTACTED_STATUSES = new Set(["applied", "no_reply", "interview", "rejected"]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const ITEM_TRANSITIONS = new Map([
-  ["pending", new Set(["opening"])],
-  ["opening", new Set(["verified", "job_unavailable", "target_mismatch", "action_unavailable", "stopped"])],
+  ["pending", new Set(["opening", "stopped"])],
+  ["opening", new Set(["verified", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "stopped"])],
   ["verified", new Set(["click_dispatched", "stopped"])],
   ["click_dispatched", new Set(["succeeded", "already_communicated", "ambiguous", "stopped"])],
   ["ambiguous", new Set(["succeeded", "stopped"])]
