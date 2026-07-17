@@ -32,6 +32,41 @@ try {
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
 
+  const productionV1Path = path.join(root, "production-v1.sqlite");
+  db = openDb(productionV1Path);
+  db.prepare("INSERT INTO keyword_sources(keyword, source, created_at) VALUES (?, ?, ?)")
+    .run("v1-preserved", "migration-smoke", "2026-07-15T00:00:00.000Z");
+  db.exec(`
+    DROP TABLE communication_batch_items;
+    DROP TABLE communication_batches;
+    DELETE FROM schema_migrations WHERE version = 2;
+    PRAGMA user_version = 1;
+  `);
+  db.close();
+
+  db = openDb(productionV1Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.deepStrictEqual(
+    db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all().map((row) => ({ ...row })),
+    [
+      { version: 1, name: "stable_scan_runtime" },
+      { version: 2, name: "communication_batches_v1" }
+    ]
+  );
+  assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batch_items'").get().n,
+    1
+  );
+  db.close();
+  const backupDir = path.join(root, "backups");
+  const backupsAfterProductionV1Migration = fs.readdirSync(backupDir).filter((name) => name.endsWith(".sqlite"));
+  assert.strictEqual(backupsAfterProductionV1Migration.length, 1);
+
   const legacyPath = path.join(root, "legacy.sqlite");
   db = new DatabaseSync(legacyPath);
   db.exec(`
@@ -102,10 +137,9 @@ try {
   assert.ok(migration.backup_path && fs.existsSync(migration.backup_path));
   db.close();
 
-  const backupDir = path.join(root, "backups");
   const backupsAfterMigration = fs.readdirSync(backupDir).filter((name) => name.endsWith(".sqlite"));
-  assert.strictEqual(backupsAfterMigration.length, 1);
-  const backup = new DatabaseSync(path.join(backupDir, backupsAfterMigration[0]), { readOnly: true });
+  assert.strictEqual(backupsAfterMigration.length, backupsAfterProductionV1Migration.length + 1);
+  const backup = new DatabaseSync(migration.backup_path, { readOnly: true });
   assert.strictEqual(backup.prepare("PRAGMA user_version").get().user_version, 0);
   assert.strictEqual(backup.prepare("SELECT count(*) AS n FROM jobs").get().n, 1);
   assert.strictEqual(

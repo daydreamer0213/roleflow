@@ -7,7 +7,9 @@ const {
 } = require("../src/core/storage");
 const {
   createCommunicationBatch,
+  getCommunicationBatch,
   listCommunicationBatchItems,
+  setCommunicationBatchStatus,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
   communicationBatchSummary
@@ -40,6 +42,9 @@ try {
     level: "不建议",
     qualityTags: ["role_mismatch"]
   }), scanBatchId);
+  const alreadyCommunicatedId = upsertJob(db, job("already-communicated", {
+    title: "Already communicated role"
+  }), scanBatchId);
 
   const selected = createCommunicationBatch(db, {
     planId,
@@ -56,6 +61,8 @@ try {
     () => createCommunicationBatch(db, { planId, jobIds: [notRecommendedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
   );
+  const duplicate = createCommunicationBatch(db, { planId, jobIds: [primaryId], browserMode: "edge" });
+  const alreadyCommunicated = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" });
 
   markCandidateJob(db, { profileId, planId, jobId: backupId, status: "applied" });
   assert.throws(
@@ -64,6 +71,10 @@ try {
   );
 
   const [primaryItem, talkItem, backupItem] = listCommunicationBatchItems(db, selected.id);
+  assert.throws(
+    () => transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "pending", status: "succeeded" }),
+    (error) => error.code === "COMMUNICATION_ITEM_TRANSITION_INVALID"
+  );
   transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "opening", status: "verified" });
   const dispatched = transitionCommunicationItem(db, {
@@ -73,13 +84,27 @@ try {
     evidence: { dispatched: true }
   });
   assert.strictEqual(dispatched.clickCount, 1);
+  transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "click_dispatched", status: "succeeded" });
   assert.throws(
-    () => transitionCommunicationItem(db, { itemId: primaryItem.id, expectedStatus: "verified", status: "click_dispatched" }),
+    () => createCommunicationBatch(db, { planId, jobIds: [primaryId], browserMode: "edge" }),
+    (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
+  );
+  const duplicateItem = listCommunicationBatchItems(db, duplicate.id)[0];
+  transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "opening", status: "verified" });
+  assert.throws(
+    () => transitionCommunicationItem(db, { itemId: duplicateItem.id, expectedStatus: "verified", status: "click_dispatched" }),
     (error) => error.code === "COMMUNICATION_CLICK_ALREADY_DISPATCHED"
   );
 
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "pending", status: "opening" });
-  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "ambiguous" });
+  assert.throws(
+    () => transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "ambiguous" }),
+    (error) => error.code === "COMMUNICATION_ITEM_TRANSITION_INVALID"
+  );
+  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   assert.throws(
     () => resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "pending" }),
     (error) => error.code === "COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID"
@@ -90,15 +115,32 @@ try {
   );
 
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "pending", status: "opening" });
-  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "opening", status: "ambiguous" });
+  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   assert.strictEqual(
     resolveAmbiguousCommunicationItem(db, { itemId: backupItem.id, status: "stopped" }).status,
     "stopped"
   );
+  const alreadyCommunicatedItem = listCommunicationBatchItems(db, alreadyCommunicated.id)[0];
+  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "verified", status: "click_dispatched" });
+  transitionCommunicationItem(db, { itemId: alreadyCommunicatedItem.id, expectedStatus: "click_dispatched", status: "already_communicated" });
+  assert.throws(
+    () => createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" }),
+    (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
+  );
+  const completed = setCommunicationBatchStatus(db, { batchId: selected.id, status: "completed" });
+  assert.ok(completed.finishedAt);
+  assert.throws(
+    () => setCommunicationBatchStatus(db, { batchId: selected.id, status: "running" }),
+    (error) => error.code === "COMMUNICATION_BATCH_TERMINAL"
+  );
+  assert.strictEqual(getCommunicationBatch(db, selected.id).status, "completed");
   assert.deepStrictEqual(communicationBatchSummary(db, selected.id).statusCounts, {
-    click_dispatched: 1,
     stopped: 1,
-    succeeded: 1
+    succeeded: 2
   });
 
   console.log("communication_batch_storage_smoke ok");
