@@ -40,6 +40,7 @@ let server;
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.appliedId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
+  assert.match(builder.body, /form\.addEventListener\('change',update\);update\(\)/);
 
   const queue = await getText(baseUrl, `/queue?planId=${fixture.planId}`);
   const plan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
