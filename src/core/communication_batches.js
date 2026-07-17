@@ -85,17 +85,21 @@ function setCommunicationBatchStatus(db, input = {}) {
   const now = timestamp(input.now);
   const startedAt = status === "running" ? current.startedAt || now : current.startedAt;
   const finishedAt = TERMINAL_BATCH_STATUSES.has(status) ? current.finishedAt || now : current.finishedAt;
-  db.prepare(`UPDATE communication_batches SET
+  const result = db.prepare(`UPDATE communication_batches SET
     status = ?, started_at = ?, finished_at = ?, stop_code = ?, stop_message = ?, updated_at = ?
-    WHERE id = ?`).run(
+    WHERE id = ? AND status = ?`).run(
     status,
     startedAt || null,
     finishedAt || null,
     input.stopCode === undefined ? current.stopCode : stringOrNull(input.stopCode),
     input.stopMessage === undefined ? current.stopMessage : stringOrNull(input.stopMessage),
     now,
-    batchId
+    batchId,
+    current.status
   );
+  if (Number(result.changes) === 0) {
+    throw codedError("COMMUNICATION_BATCH_TRANSITION_CONFLICT", "communication batch status changed before transition");
+  }
   return getCommunicationBatch(db, batchId);
 }
 

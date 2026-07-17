@@ -1,4 +1,7 @@
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   openDb,
   createBatch,
@@ -142,6 +145,7 @@ try {
     stopped: 1,
     succeeded: 2
   });
+  batchStatusOptimisticConflictSmoke();
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
@@ -181,4 +185,41 @@ function completeAnalysis() {
     confidence: 0.9,
     evidence: { jd: ["Python"], resume: ["Python"] }
   };
+}
+
+function batchStatusOptimisticConflictSmoke() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-batch-status-race-"));
+  const dbPath = path.join(root, "jobs.sqlite");
+  const first = openDb(dbPath);
+  const second = openDb(dbPath);
+  try {
+    const now = new Date().toISOString();
+    const profileId = Number(first.prepare(`INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?)`).run("Race smoke", "{}", now, now).lastInsertRowid);
+    const planId = Number(first.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)`).run(profileId, "Race smoke", "{}", now, now).lastInsertRowid);
+    const batchId = Number(first.prepare(`INSERT INTO communication_batches(
+      site, profile_id, plan_id, browser_mode, status, policy_json, confirmed_at, created_at, updated_at
+    ) VALUES ('boss', ?, ?, 'edge', 'confirmed', '{}', ?, ?, ?)`)
+      .run(profileId, planId, now, now, now).lastInsertRowid);
+    const originalPrepare = first.prepare.bind(first);
+    let injected = false;
+    first.prepare = (sql) => {
+      if (!injected && String(sql).includes("UPDATE communication_batches SET")) {
+        injected = true;
+        second.prepare(`UPDATE communication_batches SET status = 'completed', finished_at = ?, updated_at = ? WHERE id = ?`)
+          .run(now, now, batchId);
+      }
+      return originalPrepare(sql);
+    };
+    assert.throws(
+      () => setCommunicationBatchStatus(first, { batchId, status: "running" }),
+      (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_CONFLICT"
+    );
+    assert.strictEqual(getCommunicationBatch(second, batchId).status, "completed");
+  } finally {
+    first.close();
+    second.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
