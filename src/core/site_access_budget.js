@@ -88,12 +88,12 @@ function readUsage(db, { site, action, nowMs, policy = DEFAULT_POLICY }) {
   const longestWindowMs = Math.max(...Object.values(policy.windowsMs));
   const events = listSiteAccessEvents(db, {
     site,
-    action,
     since: new Date(nowMs - longestWindowMs).toISOString()
   });
   return Object.fromEntries(Object.entries(policy.windowsMs).map(([window, windowMs]) => [
     window,
-    events.filter((event) => Date.parse(event.createdAt) > nowMs - windowMs).length
+    events.filter((event) => actionsForWindow(action, window).includes(event.action)
+      && Date.parse(event.createdAt) > nowMs - windowMs).length
   ]));
 }
 
@@ -101,15 +101,21 @@ function nextAvailableAt(db, { site, action, window, nowMs, policy = DEFAULT_POL
   const windowMs = policy.windowsMs[window];
   const events = listSiteAccessEvents(db, {
     site,
-    action,
     since: new Date(nowMs - windowMs).toISOString()
-  });
+  }).filter((event) => actionsForWindow(action, window).includes(event.action));
   const oldestMs = Date.parse(events[0]?.createdAt || "");
   return (Number.isFinite(oldestMs) ? oldestMs : nowMs) + windowMs;
 }
 
+function actionsForWindow(action, window) {
+  if (action !== "communication_visit") return [action];
+  return PRODUCT_POLICY.operations.bossCommunication.combinedUsage[window] || [action];
+}
+
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
-  const label = { detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
+  const label = action === "communication_visit"
+    ? "岗位沟通"
+    : { detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
   const retryAt = new Date(retryAtMs).toISOString();
   const error = new Error(`${site.toUpperCase()} 过去 ${window} 的${label}访问已达到安全额度 ${limit} 次；未完成岗位已保留，请在 ${retryAt} 后恢复批次。`);
   error.code = "BOSS_ACCESS_BUDGET_EXHAUSTED";

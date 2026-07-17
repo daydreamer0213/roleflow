@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-17.2";
+const PRODUCT_POLICY_VERSION = "2026-07-17.3";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -65,20 +65,32 @@ const PRODUCT_POLICY = Object.freeze({
       waitJitterMs: Object.freeze([1000, 3000]),
       windowsMs: Object.freeze({
         "10m": 10 * 60_000,
+        "30m": 30 * 60_000,
         "1h": 60 * 60_000,
         "24h": 24 * 60 * 60_000
       }),
       modes: Object.freeze({
         recovery: Object.freeze({
           detail_open: Object.freeze({ "10m": 8, "1h": 15, "24h": 20 }),
+          communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 8 }),
           list_scroll: Object.freeze({ "24h": 60 })
         }),
         normal: Object.freeze({
           detail_open: Object.freeze({ "10m": 12, "1h": 25, "24h": 40 }),
+          communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 10 }),
           list_scroll: Object.freeze({ "24h": 80 })
         })
+      })
+    }),
+    bossCommunication: Object.freeze({
+      delayMs: Object.freeze([15000, 20000]),
+      limits: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
+      combinedUsage: Object.freeze({
+        "10m": Object.freeze(["detail_open", "communication_visit"]),
+        "30m": Object.freeze(["detail_open", "communication_visit"]),
+        "24h": Object.freeze(["communication_visit"])
       })
     })
   }),
