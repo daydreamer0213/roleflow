@@ -22,7 +22,6 @@ const {
   getActiveSearchPlan,
   getPlatformFilterCatalog,
   getSiteRuntimeState,
-  listSiteAccessEvents,
   getSiteScanLease,
   createScanRun,
   getLatestScanRun,
@@ -56,7 +55,8 @@ const {
   setCommunicationBatchStatus,
   resolveAmbiguousCommunicationItem,
   transitionCommunicationItem,
-  communicationBatchSummary
+  communicationBatchSummary,
+  communicationQuotaSnapshot
 } = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
@@ -904,7 +904,7 @@ async function handleCommunicationBatch(req, res, db) {
       browserMode: params.browserMode,
       policySnapshot: { calibration: communicationCalibration() }
     });
-    return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota };
+    return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota: communicationQuota(db) };
   });
   if (!result.ok) return sendJson(res, result.statusCode, result.body);
   if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
@@ -978,10 +978,7 @@ function communicationStatus(db, batchId) {
 }
 
 function communicationQuota(db) {
-  const limit = Number(PRODUCT_POLICY.operations.bossCommunication.limits["24h"]);
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const used = listSiteAccessEvents(db, { site: "boss", action: "communication_visit", since }).length;
-  return { limit, used, remaining: Math.max(0, limit - used) };
+  return communicationQuotaSnapshot(db);
 }
 
 function communicationCalibration() {
@@ -1587,7 +1584,7 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
 
 function navLinks(current = "") {
   const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
-  if (planId) return `<a href="/onboarding">Resume</a><a href="${escapeAttr(current)}">Plan</a><a href="/queue?planId=${escapeAttr(planId)}">Queue</a><a href="/communication/new?planId=${escapeAttr(planId)}">Communication batch</a><a href="/settings">Settings</a>`;
+  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">筛选方案</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
   return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
 }
 
@@ -1657,17 +1654,17 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
 
 function renderCommunicationBuilderPage({ db, searchParams }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
-  if (!plan) return renderErrorPage("communication plan not found", "/queue");
+  if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
   const quota = communicationQuota(db);
   const runtimeBlock = communicationRuntimeBlock(db);
   const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "talk", "backup"].includes(job.decisionBucket)
-    && !["applied", "no_reply", "interview", "rejected"].includes(job.applicationStatus || ""));
+    && String(job.applicationStatus ?? "").length === 0);
   const rows = eligible.map((job) => {
     const checked = ["primary", "talk"].includes(job.decisionBucket) ? " checked" : "";
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
-  }).join("") || "<p>No eligible jobs are available.</p>";
+  }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("Communication batch", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/queue?planId=${plan.id}`)}</nav><h1>Communication batch</h1>${blockNotice}<p>Daily quota: ${quota.used}/${quota.limit}; ${quota.remaining} remaining.</p><form method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>Browser mode <select name="browserMode"><option value="edge">Edge</option><option value="portable">Portable Edge</option></select></label><section>${rows}</section><div class="communication-summary"><button${quota.remaining ? "" : " disabled"}>Create batch</button></div></form></main>`);
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update}());</script>`);
 }
 
 function renderCommunicationReviewPage({ db, searchParams }) {
@@ -1676,11 +1673,11 @@ function renderCommunicationReviewPage({ db, searchParams }) {
   const { batch, summary, items, quota, calibration, runtimeBlock } = result.body;
   const counts = Object.entries(summary.statusCounts).map(([status, count]) => `${escapeHtml(status)}: ${count}`).join(" · ") || "pending: 0";
   const rows = items.map((item) => {
-    const resolution = item.status === "ambiguous" ? `<form method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><button name="status" value="succeeded">Mark succeeded</button><button name="status" value="stopped">Mark stopped</button></form>` : "";
+    const resolution = item.status === "ambiguous" ? `<form method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><button name="status" value="succeeded">确认已沟通</button><button name="status" value="stopped">标记停止</button></form>` : "";
     return `<tr><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
   }).join("");
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("Communication review", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}</style><main class="communication-layout"><nav>${navLinks(`/queue?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">New batch</a></nav><h1>Communication review #${batch.id}</h1><p class="communication-warning">Calibration ${escapeHtml(calibration.status)}. Execution remains disabled.</p>${blockNotice}<p>Batch: ${escapeHtml(batch.status)} · Selected: ${summary.total} · ${counts}</p><p>Daily quota: ${quota.used}/${quota.limit}; ${quota.remaining} remaining.</p><div class="communication-controls"><button disabled>Start communication</button><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">Discard batch</button></form></div><table class="communication-table"><thead><tr><th>#</th><th>Job</th><th>Status</th><th>Manual resolution</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls"><button disabled>开始沟通</button><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form></div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
 }
 
 function compactAwaitingAction(job) {
@@ -1707,7 +1704,7 @@ function renderCompactPoolTabs(queue, planId) {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
   const tabs = [["focus", "主投 + 先聊", (queue.counts.primary || 0) + (queue.counts.talk || 0)], ["primary", "主投", queue.counts.primary || 0], ["talk", "先聊确认", queue.counts.talk || 0], ["backup", "备选", queue.counts.backup || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不建议", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
-    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">Communication batch</a>`;
+    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`;
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);

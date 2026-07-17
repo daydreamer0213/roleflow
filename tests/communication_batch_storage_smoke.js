@@ -6,7 +6,8 @@ const {
   openDb,
   createBatch,
   upsertJob,
-  markCandidateJob
+  markCandidateJob,
+  recordSiteAccessEvent
 } = require("../src/core/storage");
 const {
   createCommunicationBatch,
@@ -15,7 +16,8 @@ const {
   setCommunicationBatchStatus,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
-  communicationBatchSummary
+  communicationBatchSummary,
+  communicationQuotaSnapshot
 } = require("../src/core/communication_batches");
 
 const db = openDb(":memory:");
@@ -49,6 +51,10 @@ try {
   const alreadyCommunicatedId = upsertJob(db, job("already-communicated", {
     title: "Already communicated role"
   }), scanBatchId);
+  const evilUrlId = upsertJob(db, job("evil-url", {
+    title: "Evil URL role",
+    url: "https://evil.example/job_detail/evil.html?next=https://www.zhipin.com/job_detail/good.html"
+  }), scanBatchId);
 
   const selected = createCommunicationBatch(db, {
     planId,
@@ -71,6 +77,10 @@ try {
     () => createCommunicationBatch(db, { planId, jobIds: [notRecommendedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
   );
+  assert.throws(
+    () => createCommunicationBatch(db, { planId, jobIds: [evilUrlId], browserMode: "edge" }),
+    (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
+  );
   const duplicate = createCommunicationBatch(db, { planId, jobIds: [primaryId], browserMode: "edge" });
   const alreadyCommunicated = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" });
   const atomic = createCommunicationBatch(db, { planId, jobIds: [atomicId], browserMode: "edge" });
@@ -80,6 +90,14 @@ try {
     () => createCommunicationBatch(db, { planId, jobIds: [backupId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
   );
+  for (const status of ["no_reply", "interview", "rejected", "skipped", "invalid", "salary_mismatch", "later", "review"]) {
+    const jobId = upsertJob(db, job(`status-${status}`, { title: `Status ${status}` }), scanBatchId);
+    markCandidateJob(db, { profileId, planId, jobId, status });
+    assert.throws(
+      () => createCommunicationBatch(db, { planId, jobIds: [jobId], browserMode: "edge" }),
+      (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
+    );
+  }
 
   const [primaryItem, talkItem, backupItem] = listCommunicationBatchItems(db, selected.id);
   assert.throws(
@@ -125,6 +143,9 @@ try {
     resolveAmbiguousCommunicationItem(db, { itemId: talkItem.id, status: "succeeded" }).status,
     "succeeded"
   );
+  const resolvedState = db.prepare("SELECT status, note FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(profileId, talkId);
+  assert.strictEqual(resolvedState.status, "applied");
+  assert.strictEqual(resolvedState.note, `RoleFlow 批量沟通 #${selected.id}`);
 
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "opening", status: "verified" });
@@ -156,6 +177,7 @@ try {
   });
   batchStatusOptimisticConflictSmoke();
   atomicClickAuditSmoke(db, atomic.id);
+  quotaReservationAtomicitySmoke();
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
@@ -232,6 +254,35 @@ function atomicClickAuditSmoke(db, batchId) {
   transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
   assert.strictEqual(listCommunicationBatchItems(db, batchId)[0].clickCount, 1);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'communication_click'").get().count, 5);
+}
+
+function quotaReservationAtomicitySmoke() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-quota-reservation-"));
+  const dbPath = path.join(root, "jobs.sqlite");
+  const quotaDb = openDb(dbPath);
+  const secondRequestDb = openDb(dbPath);
+  try {
+    const now = "2030-01-02T00:00:00.000Z";
+    const profileId = Number(quotaDb.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Quota smoke", "{}", now, now).lastInsertRowid);
+    const planId = Number(quotaDb.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Quota smoke", "{}", now, now).lastInsertRowid);
+    const scanBatchId = createBatch(quotaDb, "boss", "quota", "quota smoke", { profileId, searchPlanId: planId });
+    const firstId = upsertJob(quotaDb, job("quota-first", { analysis: completeAnalysis() }), scanBatchId);
+    const secondId = upsertJob(quotaDb, job("quota-second", { analysis: completeAnalysis() }), scanBatchId);
+    const windowStart = new Date(Date.parse(now) - 24 * 60 * 60 * 1000).toISOString();
+    recordSiteAccessEvent(quotaDb, { site: "boss", action: "communication_visit", createdAt: windowStart });
+    for (let index = 0; index < 149; index += 1) recordSiteAccessEvent(quotaDb, { site: "boss", action: "communication_visit", createdAt: "2030-01-01T00:00:00.001Z" });
+    assert.deepStrictEqual(communicationQuotaSnapshot(quotaDb, { now }), { limit: 150, used: 149, reserved: 0, remaining: 1 });
+    createCommunicationBatch(quotaDb, { planId, jobIds: [firstId], browserMode: "edge", now });
+    assert.deepStrictEqual(communicationQuotaSnapshot(quotaDb, { now }), { limit: 150, used: 149, reserved: 1, remaining: 0 });
+    assert.throws(
+      () => createCommunicationBatch(secondRequestDb, { planId, jobIds: [secondId], browserMode: "edge", now }),
+      (error) => error.code === "COMMUNICATION_QUOTA_EXHAUSTED"
+    );
+  } finally {
+    quotaDb.close();
+    secondRequestDb.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function batchStatusOptimisticConflictSmoke() {

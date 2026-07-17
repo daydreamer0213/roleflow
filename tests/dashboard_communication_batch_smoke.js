@@ -38,14 +38,20 @@ let server;
   assert.doesNotMatch(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}" checked`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.notRecommendedId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.appliedId}"`));
+  assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
+  assert.match(builder.body, /<output[^>]*id="selected-count"/);
 
   const queue = await getText(baseUrl, `/queue?planId=${fixture.planId}`);
   const plan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
   assert.match(queue.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(plan.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
+  assert.match(queue.body, /批量沟通清单/);
+  assert.match(plan.body, /批量沟通清单/);
+  assert.doesNotMatch(plan.body, />Resume</);
 
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.notRecommendedId, browserMode: "edge", title: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.appliedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
+  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.skippedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
 
   const created = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: [fixture.primaryId, fixture.backupId], browserMode: "edge", title: "forged", company: "forged", bucket: "not_recommended", url: "https://invalid.example" });
@@ -57,7 +63,7 @@ let server;
   ]);
 
   const review = await getText(baseUrl, `/communication?batchId=${batchId}`);
-  assert.match(review.body, /calibration pending/i);
+  assert.match(review.body, /校准状态：pending/);
   assert.match(review.body, /disabled/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
@@ -80,6 +86,7 @@ let server;
   const resolved = await postJson(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "stopped" });
   assert.strictEqual(resolved.status, 200);
   assert.strictEqual(resolved.body.item.status, "stopped");
+  assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
   assert.strictEqual(spawnCalls, 0);
 
   const discardable = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });
@@ -126,8 +133,10 @@ function seed(database) {
   const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", qualityTags: ["role_mismatch"] }), scanBatchId);
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
+  const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
   markCandidateJob(database, { profileId, planId, jobId: appliedId, status: "applied" });
-  return { planId, primaryId, talkId, backupId, notRecommendedId, appliedId, safeId };
+  markCandidateJob(database, { profileId, planId, jobId: skippedId, status: "skipped" });
+  return { planId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
 }
 
 function job(sourceId, overrides = {}) {

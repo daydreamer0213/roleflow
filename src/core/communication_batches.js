@@ -1,11 +1,11 @@
-const { getSearchPlan, listDecisionPool } = require("./storage");
+const { getSearchPlan, listDecisionPool, listSiteAccessEvents, markCandidateJob } = require("./storage");
 const { isBossJobUrl } = require("./scoring");
+const { PRODUCT_POLICY } = require("./product_policy");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
 const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
 const ALLOWED_BUCKETS = new Set(["primary", "talk", "backup"]);
-const CONTACTED_STATUSES = new Set(["applied", "no_reply", "interview", "rejected"]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const ITEM_TRANSITIONS = new Map([
   ["pending", new Set(["opening", "stopped"])],
@@ -29,6 +29,10 @@ function createCommunicationBatch(db, input = {}) {
 
   db.exec("BEGIN IMMEDIATE");
   try {
+    const quota = communicationQuotaSnapshot(db, { now });
+    if (jobIds.length > quota.remaining) {
+      throw codedError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
+    }
     const jobsById = new Map(listDecisionPool(db, { planId }).map((job) => [Number(job.id), job]));
     const conflicts = db.prepare(`SELECT communication_batch_items.id FROM communication_batch_items
       JOIN communication_batches ON communication_batches.id = communication_batch_items.batch_id
@@ -38,7 +42,7 @@ function createCommunicationBatch(db, input = {}) {
     const selected = jobIds.map((jobId) => {
       const job = jobsById.get(jobId);
       if (!job || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url)
-        || CONTACTED_STATUSES.has(job.applicationStatus || "") || conflicts.get(jobId)) {
+        || hasUserApplicationStatus(job) || conflicts.get(jobId)) {
         throw codedError("COMMUNICATION_JOB_INELIGIBLE", `job ${jobId} is not eligible for communication`);
       }
       return job;
@@ -212,7 +216,48 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
   if (!["succeeded", "stopped"].includes(status)) {
     throw codedError("COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID", "ambiguous items can only resolve to succeeded or stopped");
   }
-  return transitionCommunicationItem(db, { ...input, expectedStatus: "ambiguous", status }, { allowAmbiguousResolution: true });
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const item = transitionCommunicationItem(db, { ...input, expectedStatus: "ambiguous", status }, { allowAmbiguousResolution: true });
+    if (status === "succeeded") {
+      const batch = getCommunicationBatch(db, item.batchId);
+      markCandidateJob(db, {
+        profileId: batch.profileId,
+        planId: batch.planId,
+        jobId: item.jobId,
+        status: "applied",
+        note: `RoleFlow 批量沟通 #${batch.id}`
+      });
+    }
+    db.exec("COMMIT");
+    return item;
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+function communicationQuotaSnapshot(db, { now } = {}) {
+  const at = timestamp(now);
+  const endMs = Date.parse(at);
+  const startMs = endMs - 24 * 60 * 60 * 1000;
+  const since = new Date(startMs).toISOString();
+  const used = listSiteAccessEvents(db, { site: "boss", action: "communication_visit", since })
+    .filter((event) => {
+      const eventMs = Date.parse(event.createdAt);
+      return Number.isFinite(eventMs) && eventMs > startMs && eventMs <= endMs;
+    }).length;
+  const reserved = Number(db.prepare(`SELECT COUNT(*) AS count
+    FROM communication_batch_items items
+    JOIN communication_batches batches ON batches.id = items.batch_id
+    WHERE batches.status IN ('confirmed', 'running', 'paused', 'stopping')
+      AND items.status IN ('pending', 'opening', 'verified', 'click_dispatched')`).get().count);
+  const limit = Number(PRODUCT_POLICY.operations.bossCommunication.limits["24h"]);
+  return { limit, used, reserved, remaining: Math.max(0, limit - used - reserved) };
+}
+
+function hasUserApplicationStatus(job) {
+  return String(job?.applicationStatus ?? "").length > 0;
 }
 
 function communicationBatchSummary(db, batchId) {
@@ -325,5 +370,6 @@ module.exports = {
   setCommunicationBatchStatus,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
-  communicationBatchSummary
+  communicationBatchSummary,
+  communicationQuotaSnapshot
 };
