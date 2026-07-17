@@ -5,6 +5,7 @@ const {
   listSiteAccessEvents
 } = require("../src/core/storage");
 const { createSiteAccessController } = require("../src/core/site_access_budget");
+const { PRODUCT_POLICY } = require("../src/core/product_policy");
 
 async function rollingWindowSmoke() {
   const db = openDb(":memory:");
@@ -143,7 +144,7 @@ async function communicationTenMinuteBudgetSmoke() {
   assert.strictEqual(first.usage["10m"], 30);
   assert.strictEqual(sleeps.length, 0);
   await controller.reserve("communication_visit", { batchId: 1, jobId: 10 });
-  assert.strictEqual(sleeps.length, 1);
+  assert.deepStrictEqual(sleeps, [541_000]);
   db.close();
 }
 
@@ -170,7 +171,78 @@ async function communicationThirtyMinuteBudgetSmoke() {
     }
   });
   await controller.reserve("communication_visit", { batchId: 1, jobId: 11 });
-  assert.strictEqual(sleeps.length, 1);
+  assert.deepStrictEqual(sleeps, [601_000]);
+  db.close();
+}
+
+async function communicationWindowBoundarySmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  recordSiteAccessEvent(db, {
+    site: "boss",
+    action: "detail_open",
+    createdAt: new Date(now - 10 * 60_000).toISOString()
+  });
+  for (let index = 0; index < 30; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    }
+  });
+  await controller.reserve("communication_visit", { batchId: 1, jobId: 13 });
+  assert.deepStrictEqual(sleeps, [541_000]);
+  db.close();
+}
+
+async function communicationUsesControllerPolicySmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 8; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "detail_open",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+  for (let index = 0; index < 29; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 30_000 + index).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    policy: {
+      ...PRODUCT_POLICY.operations.bossAccessBudget,
+      combinedUsage: {
+        ...PRODUCT_POLICY.operations.bossCommunication.combinedUsage,
+        "10m": ["communication_visit"]
+      }
+    },
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => sleeps.push(delayMs)
+  });
+  const result = await controller.reserve("communication_visit", { batchId: 1, jobId: 14 });
+  assert.strictEqual(result.usage["10m"], 30);
+  assert.deepStrictEqual(sleeps, []);
   db.close();
 }
 
@@ -234,6 +306,8 @@ Promise.resolve()
   .then(abortDuringWindowWaitSmoke)
   .then(communicationTenMinuteBudgetSmoke)
   .then(communicationThirtyMinuteBudgetSmoke)
+  .then(communicationWindowBoundarySmoke)
+  .then(communicationUsesControllerPolicySmoke)
   .then(communicationDailyBudgetSmoke)
   .then(filteredLedgerLimitSmoke)
   .then(() => console.log("site_access_budget_smoke ok"))

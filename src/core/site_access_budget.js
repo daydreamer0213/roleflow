@@ -1,7 +1,10 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { recordSiteAccessEvent, listSiteAccessEvents } = require("./storage");
 
-const DEFAULT_POLICY = PRODUCT_POLICY.operations.bossAccessBudget;
+const DEFAULT_POLICY = Object.freeze({
+  ...PRODUCT_POLICY.operations.bossAccessBudget,
+  combinedUsage: PRODUCT_POLICY.operations.bossCommunication.combinedUsage
+});
 
 function createSiteAccessController({
   db,
@@ -92,7 +95,7 @@ function readUsage(db, { site, action, nowMs, policy = DEFAULT_POLICY }) {
   });
   return Object.fromEntries(Object.entries(policy.windowsMs).map(([window, windowMs]) => [
     window,
-    events.filter((event) => actionsForWindow(action, window).includes(event.action)
+    events.filter((event) => actionsForWindow(action, window, policy).includes(event.action)
       && Date.parse(event.createdAt) > nowMs - windowMs).length
   ]));
 }
@@ -102,14 +105,15 @@ function nextAvailableAt(db, { site, action, window, nowMs, policy = DEFAULT_POL
   const events = listSiteAccessEvents(db, {
     site,
     since: new Date(nowMs - windowMs).toISOString()
-  }).filter((event) => actionsForWindow(action, window).includes(event.action));
+  }).filter((event) => actionsForWindow(action, window, policy).includes(event.action)
+    && Date.parse(event.createdAt) > nowMs - windowMs);
   const oldestMs = Date.parse(events[0]?.createdAt || "");
   return (Number.isFinite(oldestMs) ? oldestMs : nowMs) + windowMs;
 }
 
-function actionsForWindow(action, window) {
+function actionsForWindow(action, window, policy) {
   if (action !== "communication_visit") return [action];
-  return PRODUCT_POLICY.operations.bossCommunication.combinedUsage[window] || [action];
+  return policy.combinedUsage?.[window] || [action];
 }
 
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
