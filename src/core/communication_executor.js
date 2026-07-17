@@ -1,9 +1,11 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { markCandidateJob } = require("./storage");
+const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
 const {
   TERMINAL_ITEM_STATUSES,
   getCommunicationBatch,
   listCommunicationBatchItems,
+  pauseCommunicationBatchAfterReservationFailure,
   setCommunicationBatchStatus,
   transitionCommunicationItem,
   communicationBatchSummary
@@ -26,9 +28,11 @@ async function runCommunicationBatch({
   logger = null,
   sleepFn = sleep,
   randomFn = Math.random,
-  signal = null
+  signal = null,
+  executionGate = assertCommunicationExecutionEnabled
 }) {
-  validateDependencies({ db, batchId, adapter, accessController });
+  validateDependencies({ db, batchId, adapter, accessController, executionGate });
+  assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
@@ -52,7 +56,20 @@ async function runCommunicationBatch({
 
     const afterClaim = observeControl(db, batchId, signal, logger);
     if (afterClaim) return afterClaim;
-    await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
+    try {
+      await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
+    } catch (error) {
+      try {
+        pauseCommunicationBatchAfterReservationFailure(db, { batchId, itemId: item.id });
+      } catch (rollbackError) {
+        logger?.error("communication_reservation_rollback_failed", {
+          batchId,
+          itemId: item.id,
+          code: errorCode(rollbackError)
+        });
+      }
+      throw error;
+    }
     const afterReserve = observeControl(db, batchId, signal, logger);
     if (afterReserve) return afterReserve;
 
@@ -73,7 +90,17 @@ async function runCommunicationBatch({
     if (afterInspect) return afterInspect;
     const state = communicationState(inspection);
     if (state === "ready") {
-      await dispatchAndVerify({ db, batchId, batch: getCommunicationBatch(db, batchId), item, inspection, adapter, logger, signal });
+      await dispatchAndVerify({
+        db,
+        batchId,
+        batch: getCommunicationBatch(db, batchId),
+        item,
+        inspection,
+        adapter,
+        logger,
+        signal,
+        executionGate
+      });
     } else if (state === "already_communicated") {
       transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
       markApplied(db, getCommunicationBatch(db, batchId), item);
@@ -91,9 +118,22 @@ async function runCommunicationBatch({
   }
 }
 
-async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal }) {
+async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate }) {
   const beforeDispatch = observeControl(db, batchId, signal, logger);
   if (beforeDispatch) return beforeDispatch;
+  try {
+    assertExecutionEnabled(executionGate);
+  } catch (error) {
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      batchId,
+      expectedStatus: "opening",
+      status: "stopped",
+      errorCode: errorCode(error)
+    });
+    recordAudit(db, item, "communication_result", "stopped");
+    return interruptAndThrow(db, batchId, error, logger);
+  }
   transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(db, {
     itemId: item.id,
@@ -295,13 +335,22 @@ function errorCode(error) {
   return String(error?.code || "COMMUNICATION_EXECUTION_FAILED");
 }
 
-function validateDependencies({ db, batchId, adapter, accessController }) {
+function validateDependencies({ db, batchId, adapter, accessController, executionGate }) {
   if (!db) throw new Error("db is required");
   if (!Number.isInteger(Number(batchId)) || Number(batchId) <= 0) throw codedError("COMMUNICATION_BATCH_INVALID", "batchId is required");
   for (const method of ["inspectCommunicationJob", "dispatchCommunication", "verifyCommunicationResult"]) {
     if (typeof adapter?.[method] !== "function") throw new Error(`adapter.${method} is required`);
   }
   if (typeof accessController?.reserve !== "function") throw new Error("accessController.reserve is required");
+  if (typeof executionGate !== "function") throw new Error("executionGate is required");
+}
+
+function assertExecutionEnabled(executionGate) {
+  const result = executionGate();
+  if (result === false || result?.executionEnabled === false) {
+    throw codedError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication calibration is required before execution");
+  }
+  return result;
 }
 
 function codedError(code, message) {

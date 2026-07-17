@@ -14,6 +14,10 @@ const {
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
 
+function runPermittedBatch(input) {
+  return runCommunicationBatch({ ...input, executionGate: () => true });
+}
+
 async function successFlowSmoke() {
   const fixture = createFixture(2);
   const calls = [];
@@ -23,7 +27,7 @@ async function successFlowSmoke() {
     async verifyCommunicationResult() { calls.push("verify"); return { state: "succeeded" }; }
   };
   const accessController = { async reserve() { calls.push("reserve"); } };
-  const summary = await runCommunicationBatch({
+  const summary = await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     adapter,
@@ -50,7 +54,7 @@ async function successFlowSmoke() {
 async function alreadyCommunicatedSmoke() {
   const fixture = createFixture(1);
   let dispatches = 0;
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
@@ -71,7 +75,7 @@ async function unavailableAndMismatchContinueSmoke() {
   const fixture = createFixture(3);
   const states = ["job_unavailable", "target_mismatch", "ready"];
   let inspected = 0;
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
@@ -91,7 +95,7 @@ async function ambiguousAndFatalStopSmoke() {
   const ambiguous = createFixture(2);
   let ambiguousInspections = 0;
   await assert.rejects(
-    () => runCommunicationBatch({
+    () => runPermittedBatch({
       db: ambiguous.db,
       batchId: ambiguous.batch.id,
       accessController: { async reserve() {} },
@@ -113,7 +117,7 @@ async function ambiguousAndFatalStopSmoke() {
   let fatalInspections = 0;
   const fatalError = Object.assign(new Error("detail page disappeared"), { code: "BOSS_DETAIL_PAGE_LOST" });
   await assert.rejects(
-    () => runCommunicationBatch({
+    () => runPermittedBatch({
       db: fatal.db,
       batchId: fatal.batch.id,
       accessController: { async reserve() {} },
@@ -143,10 +147,10 @@ async function pauseResumeSmoke() {
       return { state: "succeeded" };
     }
   };
-  await runCommunicationBatch({ db: fixture.db, batchId: fixture.batch.id, adapter, accessController: { async reserve() {} }, sleepFn: async () => {} });
+  await runPermittedBatch({ db: fixture.db, batchId: fixture.batch.id, adapter, accessController: { async reserve() {} }, sleepFn: async () => {} });
   assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "paused");
   assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["succeeded", "pending"]);
-  await runCommunicationBatch({ db: fixture.db, batchId: fixture.batch.id, adapter, accessController: { async reserve() {} }, sleepFn: async () => {} });
+  await runPermittedBatch({ db: fixture.db, batchId: fixture.batch.id, adapter, accessController: { async reserve() {} }, sleepFn: async () => {} });
   assert.strictEqual(inspected, 2);
   assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "completed");
   fixture.close();
@@ -156,7 +160,7 @@ async function stopDuringSlicedPacingSmoke() {
   const fixture = createFixture(2);
   let inspected = 0;
   const waits = [];
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
@@ -183,7 +187,7 @@ async function dispatchFailureSmoke() {
   let dispatches = 0;
   const dispatchError = Object.assign(new Error("transport failed"), { code: "BROWSER_DISCONNECTED" });
   await assert.rejects(
-    () => runCommunicationBatch({
+    () => runPermittedBatch({
       db: fixture.db,
       batchId: fixture.batch.id,
       accessController: { async reserve() {} },
@@ -204,7 +208,7 @@ async function dispatchFailureSmoke() {
 
 async function auditSanitizationSmoke() {
   const fixture = createFixture(1);
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
@@ -237,7 +241,7 @@ async function claimBeforeReserveSmoke() {
   const reserveStarted = new Promise((resolve) => { releaseReserve = resolve; });
   let unblockReserve;
   const reserveBlocked = new Promise((resolve) => { unblockReserve = resolve; });
-  const first = runCommunicationBatch({
+  const first = runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: {
@@ -257,7 +261,7 @@ async function claimBeforeReserveSmoke() {
   await reserveStarted;
   assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "opening");
   await assert.rejects(
-    () => runCommunicationBatch({
+    () => runPermittedBatch({
       db: fixture.db,
       batchId: fixture.batch.id,
       accessController: { async reserve() { secondReserves += 1; } },
@@ -293,7 +297,7 @@ async function incompleteRecoverySmoke() {
     if (status === "opening") transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
     let reserves = 0;
     await assert.rejects(
-      () => runCommunicationBatch({
+      () => runPermittedBatch({
         db: fixture.db,
         batchId: fixture.batch.id,
         accessController: { async reserve() { reserves += 1; } },
@@ -313,7 +317,7 @@ async function incompleteRecoverySmoke() {
 async function controlBeforeDispatchSmoke() {
   const fixture = createFixture(2);
   let dispatches = 0;
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
@@ -336,7 +340,7 @@ async function controlBeforeDispatchSmoke() {
 async function controlAfterReserveAndInspectFailureSmoke() {
   const afterReserve = createFixture(2);
   let inspections = 0;
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: afterReserve.db,
     batchId: afterReserve.batch.id,
     accessController: {
@@ -354,7 +358,7 @@ async function controlAfterReserveAndInspectFailureSmoke() {
   afterReserve.close();
 
   const afterInspectFailure = createFixture(2);
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: afterInspectFailure.db,
     batchId: afterInspectFailure.batch.id,
     accessController: { async reserve() {} },
@@ -381,8 +385,9 @@ async function stoppingSafetySmoke() {
   transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(fixture.db, { itemId: dispatched.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(dispatched) });
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
   setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "stopping" });
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() { throw new Error("must not reserve"); } },
@@ -399,7 +404,7 @@ async function cooldownAbortAndUpperBoundSmoke() {
   const abortController = new AbortController();
   const abortError = Object.assign(new Error("cooldown aborted"), { code: "COMMUNICATION_ABORTED" });
   await assert.rejects(
-    () => runCommunicationBatch({
+    () => runPermittedBatch({
       db: aborted.db,
       batchId: aborted.batch.id,
       accessController: { async reserve() {} },
@@ -421,7 +426,7 @@ async function cooldownAbortAndUpperBoundSmoke() {
 
   const bounded = createFixture(2);
   const waits = [];
-  await runCommunicationBatch({
+  await runPermittedBatch({
     db: bounded.db,
     batchId: bounded.batch.id,
     accessController: { async reserve() {} },
@@ -436,6 +441,90 @@ async function cooldownAbortAndUpperBoundSmoke() {
   assert.strictEqual(waits.reduce((sum, ms) => sum + ms, 0), 20_000);
   assert(waits.every((ms) => ms <= 1000));
   bounded.close();
+}
+
+async function calibrationGateSmoke() {
+  const closedAtEntry = createFixture(1);
+  let entryInspections = 0;
+  await assert.rejects(
+    () => runCommunicationBatch({
+      db: closedAtEntry.db,
+      batchId: closedAtEntry.batch.id,
+      accessController: { async reserve() { throw new Error("must not reserve"); } },
+      adapter: {
+        async inspectCommunicationJob() { entryInspections += 1; },
+        async dispatchCommunication() { throw new Error("must not dispatch"); },
+        async verifyCommunicationResult() { throw new Error("must not verify"); }
+      }
+    }),
+    (error) => error.code === "BOSS_COMMUNICATION_CALIBRATION_REQUIRED"
+  );
+  assert.strictEqual(entryInspections, 0);
+  assert.strictEqual(getCommunicationBatch(closedAtEntry.db, closedAtEntry.batch.id).status, "confirmed");
+  assert.strictEqual(listCommunicationBatchItems(closedAtEntry.db, closedAtEntry.batch.id)[0].status, "pending");
+  closedAtEntry.close();
+
+  const closedBeforeDispatch = createFixture(1);
+  const gateError = Object.assign(new Error("calibration revoked"), { code: "BOSS_COMMUNICATION_CALIBRATION_REQUIRED" });
+  let gateCalls = 0;
+  let dispatches = 0;
+  await assert.rejects(
+    () => runCommunicationBatch({
+      db: closedBeforeDispatch.db,
+      batchId: closedBeforeDispatch.batch.id,
+      executionGate() {
+        gateCalls += 1;
+        if (gateCalls === 2) throw gateError;
+        return true;
+      },
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      }
+    }),
+    (error) => error === gateError
+  );
+  assert.strictEqual(gateCalls, 2);
+  assert.strictEqual(dispatches, 0);
+  assert.strictEqual(getCommunicationBatch(closedBeforeDispatch.db, closedBeforeDispatch.batch.id).status, "interrupted");
+  assert.strictEqual(listCommunicationBatchItems(closedBeforeDispatch.db, closedBeforeDispatch.batch.id)[0].status, "stopped");
+  closedBeforeDispatch.close();
+}
+
+async function reserveFailureRollbackSmoke() {
+  const fixture = createFixture(1);
+  const reserveError = Object.assign(new Error("daily budget exhausted"), { code: "BOSS_ACCESS_BUDGET_EXHAUSTED" });
+  let inspections = 0;
+  const adapter = {
+    async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+    async dispatchCommunication() {},
+    async verifyCommunicationResult() { return { state: "succeeded" }; }
+  };
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() { throw reserveError; } },
+      adapter
+    }),
+    (error) => error === reserveError
+  );
+  assert.strictEqual(inspections, 0);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "paused");
+  assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "pending");
+
+  await runPermittedBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: { async reserve() {} },
+    adapter,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(inspections, 1);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "completed");
+  fixture.close();
 }
 
 function clickAudit(item) {
@@ -503,6 +592,8 @@ Promise.resolve()
   .then(controlAfterReserveAndInspectFailureSmoke)
   .then(stoppingSafetySmoke)
   .then(cooldownAbortAndUpperBoundSmoke)
+  .then(calibrationGateSmoke)
+  .then(reserveFailureRollbackSmoke)
   .then(() => console.log("communication_executor_smoke ok"))
   .catch((error) => {
     console.error(error.stack || error.message);

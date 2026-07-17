@@ -73,6 +73,7 @@ try {
     transitionCommunicationItem(db, { itemId: safeStopItem.id, expectedStatus: "pending", status: "stopped" }).status,
     "stopped"
   );
+  assert.strictEqual(setCommunicationBatchStatus(db, { batchId: safeStop.id, status: "stopped" }).status, "stopped");
   assert.throws(
     () => createCommunicationBatch(db, { planId, jobIds: [notRecommendedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
@@ -132,6 +133,10 @@ try {
     () => transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "ambiguous" }),
     (error) => error.code === "COMMUNICATION_ITEM_TRANSITION_INVALID"
   );
+  assert.throws(
+    () => transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "pending" }),
+    (error) => error.code === "COMMUNICATION_ITEM_TRANSITION_INVALID"
+  );
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(talkItem) });
   transitionCommunicationItem(db, { itemId: talkItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
@@ -164,6 +169,15 @@ try {
     () => createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
   );
+  assert.throws(
+    () => setCommunicationBatchStatus(db, { batchId: selected.id, status: "completed" }),
+    (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_INVALID"
+  );
+  setCommunicationBatchStatus(db, { batchId: selected.id, status: "running" });
+  assert.throws(
+    () => setCommunicationBatchStatus(db, { batchId: selected.id, status: "running" }),
+    (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_INVALID"
+  );
   const completed = setCommunicationBatchStatus(db, { batchId: selected.id, status: "completed" });
   assert.ok(completed.finishedAt);
   assert.throws(
@@ -178,6 +192,7 @@ try {
   batchStatusOptimisticConflictSmoke();
   atomicClickAuditSmoke(db, atomic.id);
   quotaReservationAtomicitySmoke();
+  batchTransitionGraphSmoke();
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
@@ -318,6 +333,47 @@ function batchStatusOptimisticConflictSmoke() {
   } finally {
     first.close();
     second.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function batchTransitionGraphSmoke() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-batch-transition-"));
+  const transitionDb = openDb(path.join(root, "jobs.sqlite"));
+  try {
+    const now = new Date().toISOString();
+    const profileId = Number(transitionDb.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run("Transition smoke", "{}", now, now).lastInsertRowid);
+    const planId = Number(transitionDb.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(profileId, "Transition smoke", "{}", now, now).lastInsertRowid);
+    const scanBatchId = createBatch(transitionDb, "boss", "transition-smoke", "transition smoke", { profileId, searchPlanId: planId });
+    const jobId = upsertJob(transitionDb, job("transition-smoke", { analysis: completeAnalysis() }), scanBatchId);
+    const batch = createCommunicationBatch(transitionDb, { planId, jobIds: [jobId], browserMode: "edge" });
+
+    assert.throws(
+      () => setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "confirmed" }),
+      (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_INVALID"
+    );
+    assert.throws(
+      () => setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "completed" }),
+      (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_INVALID"
+    );
+    setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "running" });
+    assert.throws(
+      () => setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "completed" }),
+      (error) => error.code === "COMMUNICATION_BATCH_ITEMS_UNFINISHED"
+    );
+    setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "paused" });
+    assert.throws(
+      () => setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "confirmed" }),
+      (error) => error.code === "COMMUNICATION_BATCH_TRANSITION_INVALID"
+    );
+    setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "stopping" });
+    const item = listCommunicationBatchItems(transitionDb, batch.id)[0];
+    transitionCommunicationItem(transitionDb, { itemId: item.id, expectedStatus: "pending", status: "stopped" });
+    assert.strictEqual(setCommunicationBatchStatus(transitionDb, { batchId: batch.id, status: "stopped" }).status, "stopped");
+  } finally {
+    transitionDb.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

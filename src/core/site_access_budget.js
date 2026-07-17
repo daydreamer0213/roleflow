@@ -26,25 +26,43 @@ function createSiteAccessController({
       while (true) {
         throwIfAborted(signal);
         const nowMs = Number(nowFn());
-        const mode = resolveAccessMode(db, { site, nowMs, policy });
-        const limits = policy.modes[mode]?.[normalizedAction] || {};
-        const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
-        const blockers = Object.entries(limits)
-          .filter(([window]) => usage[window] >= limits[window])
-          .map(([window, limit]) => ({ window, limit, retryAtMs: nextAvailableAt(db, { site, action: normalizedAction, window, nowMs, policy }) }));
+        let transactionOpen = false;
+        let decision;
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          transactionOpen = true;
+          const mode = resolveAccessMode(db, { site, nowMs, policy });
+          const limits = policy.modes[mode]?.[normalizedAction] || {};
+          const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
+          const blockers = Object.entries(limits)
+            .filter(([window]) => usage[window] >= limits[window])
+            .map(([window, limit]) => ({ window, limit, retryAtMs: nextAvailableAt(db, { site, action: normalizedAction, window, nowMs, policy }) }));
 
-        if (!blockers.length) {
-          recordSiteAccessEvent(db, {
-            site,
-            action: normalizedAction,
-            runId,
-            details,
-            createdAt: new Date(nowMs).toISOString()
-          });
-          const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
-          logger?.info("site_access_reserved", { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits });
-          return { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits };
+          if (!blockers.length) {
+            recordSiteAccessEvent(db, {
+              site,
+              action: normalizedAction,
+              runId,
+              details,
+              createdAt: new Date(nowMs).toISOString()
+            });
+            const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
+            db.exec("COMMIT");
+            transactionOpen = false;
+            logger?.info("site_access_reserved", { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits });
+            return { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits };
+          }
+          decision = { mode, limits, usage, blockers };
+          db.exec("COMMIT");
+          transactionOpen = false;
+        } catch (error) {
+          if (transactionOpen) {
+            try { db.exec("ROLLBACK"); } catch {}
+          }
+          throw error;
         }
+
+        const { mode, limits, usage, blockers } = decision;
 
         const daily = blockers.find((item) => item.window === "24h");
         if (daily) throw accessBudgetError({ site, action: normalizedAction, mode, usage, ...daily });

@@ -7,6 +7,12 @@ const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatch
 const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
 const ALLOWED_BUCKETS = new Set(["primary", "talk", "backup"]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
+const BATCH_TRANSITIONS = new Map([
+  ["confirmed", new Set(["running", "stopped"])],
+  ["running", new Set(["paused", "stopping", "completed", "interrupted", "failed"])],
+  ["paused", new Set(["running", "stopping", "stopped", "interrupted"])],
+  ["stopping", new Set(["stopped", "interrupted", "failed"])]
+]);
 const ITEM_TRANSITIONS = new Map([
   ["pending", new Set(["opening", "stopped"])],
   ["opening", new Set(["verified", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "stopped"])],
@@ -83,8 +89,14 @@ function setCommunicationBatchStatus(db, input = {}) {
   if (!BATCH_STATUSES.has(status)) throw codedError("COMMUNICATION_BATCH_STATUS_INVALID", "invalid communication batch status");
   const current = getCommunicationBatch(db, batchId);
   if (!current) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-  if (TERMINAL_BATCH_STATUSES.has(current.status) && !TERMINAL_BATCH_STATUSES.has(status)) {
+  if (TERMINAL_BATCH_STATUSES.has(current.status)) {
     throw codedError("COMMUNICATION_BATCH_TERMINAL", "terminal communication batch cannot resume");
+  }
+  if (!BATCH_TRANSITIONS.get(current.status)?.has(status)) {
+    throw codedError("COMMUNICATION_BATCH_TRANSITION_INVALID", "invalid communication batch transition");
+  }
+  if (status === "completed" && hasUnfinishedCommunicationItems(db, batchId)) {
+    throw codedError("COMMUNICATION_BATCH_ITEMS_UNFINISHED", "communication batch cannot complete while items remain unfinished");
   }
   const now = timestamp(input.now);
   const startedAt = status === "running" ? current.startedAt || now : current.startedAt;
@@ -105,6 +117,41 @@ function setCommunicationBatchStatus(db, input = {}) {
     throw codedError("COMMUNICATION_BATCH_TRANSITION_CONFLICT", "communication batch status changed before transition");
   }
   return getCommunicationBatch(db, batchId);
+}
+
+function pauseCommunicationBatchAfterReservationFailure(db, input = {}) {
+  const batchId = positiveInteger(input.batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required");
+  const itemId = positiveInteger(input.itemId, "COMMUNICATION_ITEM_INVALID", "itemId is required");
+  const now = timestamp(input.now);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const batch = getCommunicationBatch(db, batchId);
+    const item = getCommunicationBatchItem(db, itemId);
+    if (!batch || batch.status !== "running" || !item || item.batchId !== batchId
+      || item.status !== "opening" || item.clickCount !== 0) {
+      throw codedError("COMMUNICATION_RESERVATION_ROLLBACK_CONFLICT", "communication reservation rollback state changed");
+    }
+    const result = db.prepare(`UPDATE communication_batch_items SET
+      status = 'pending', started_at = NULL, finished_at = NULL,
+      error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE id = ? AND batch_id = ? AND status = 'opening' AND click_count = 0`)
+      .run(now, itemId, batchId);
+    if (Number(result.changes) !== 1) {
+      throw codedError("COMMUNICATION_RESERVATION_ROLLBACK_CONFLICT", "communication item changed before reservation rollback");
+    }
+    setCommunicationBatchStatus(db, { batchId, status: "paused", now });
+    db.exec("COMMIT");
+    return { batch: getCommunicationBatch(db, batchId), item: getCommunicationBatchItem(db, itemId) };
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+function hasUnfinishedCommunicationItems(db, batchId) {
+  const terminal = [...TERMINAL_ITEM_STATUSES].map(() => "?").join(", ");
+  return Number(db.prepare(`SELECT COUNT(*) AS count FROM communication_batch_items
+    WHERE batch_id = ? AND status NOT IN (${terminal})`).get(batchId, ...TERMINAL_ITEM_STATUSES).count) > 0;
 }
 
 function transitionCommunicationItem(db, input = {}, options = {}) {
@@ -368,6 +415,7 @@ module.exports = {
   getCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
+  pauseCommunicationBatchAfterReservationFailure,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
   communicationBatchSummary,
