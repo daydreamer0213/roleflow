@@ -71,6 +71,7 @@ const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, tes
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
+const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
@@ -902,7 +903,7 @@ async function handleCommunicationBatch(req, res, db) {
       planId: params.planId,
       jobIds,
       browserMode: params.browserMode,
-      policySnapshot: { calibration: communicationCalibration() }
+      policySnapshot: { calibration: communicationCalibrationStatus() }
     });
     return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota: communicationQuota(db) };
   });
@@ -916,7 +917,7 @@ async function handleCommunicationControl(req, res, db) {
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
     const action = String(params.action || "").trim().toLowerCase();
-    if (action === "start" || action === "resume") assertCommunicationCalibration();
+    if (action === "start" || action === "resume") assertCommunicationExecutionEnabled();
     if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "only discard is available while calibration is pending");
     const batchId = Number(params.batchId);
     const batch = getCommunicationBatch(db, batchId);
@@ -972,24 +973,13 @@ function communicationStatus(db, batchId) {
     summary: communicationBatchSummary(db, batch.id),
     items: listCommunicationBatchItems(db, batch.id),
     quota: communicationQuota(db),
-    calibration: communicationCalibration(),
+    calibration: communicationCalibrationStatus(),
     runtimeBlock: communicationRuntimeBlock(db)
   };
 }
 
 function communicationQuota(db) {
   return communicationQuotaSnapshot(db);
-}
-
-function communicationCalibration() {
-  const calibration = PRODUCT_POLICY.operations.bossCommunication.calibration;
-  return { status: calibration.status, executionEnabled: calibration.executionEnabled };
-}
-
-function assertCommunicationCalibration() {
-  if (!communicationCalibration().executionEnabled) {
-    throw appError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication calibration is required before execution", { statusCode: 409 });
-  }
 }
 
 function communicationRuntimeBlock(db) {

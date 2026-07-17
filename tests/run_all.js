@@ -16,6 +16,7 @@ const tests = [
   "communication_batch_storage_smoke.js",
   "communication_executor_smoke.js",
   "dashboard_communication_batch_smoke.js",
+  "communication_calibration_gate_smoke.js",
   "dashboard_scan_lifecycle_smoke.js",
   "model_adapter_smoke.js",
   "model_parser_resilience_smoke.js",
