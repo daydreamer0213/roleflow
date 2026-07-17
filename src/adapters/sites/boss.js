@@ -199,6 +199,56 @@ const PAGE_HELPERS = String.raw`
     return { clicked: true, cardCount: cards.length };
   };
 
+  window.__bossCommunicationState = function() {
+    const decode = window.__bossDecode || ((value) => String(value || ""));
+    const root = document.querySelector(".job-detail-container")
+      || document.querySelector(".job-detail")
+      || document.querySelector(".detail-content")
+      || document.querySelector(".job-detail-box");
+    const currentJobId = (location.pathname.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    const chatRoot = document.querySelector(".chat-container, .chat-content, [class*='chat-container'], [class*='chat-content']");
+    const chatLink = chatRoot?.querySelector('a[href*="/job_detail/"]');
+    const chatJobId = (chatLink?.href?.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!root) {
+      return { currentJobId, title: "", company: "", unavailableText: "", candidateCount: 0, actionLabel: "", clickPoint: null, chatJobId };
+    }
+    const header = root.querySelector(".job-primary")
+      || root.querySelector(".job-banner")
+      || root.querySelector(".job-detail-header")
+      || root;
+    const titleNode = header.querySelector(".name, .job-name, .job-title, h1, h2") || header;
+    const companyNode = header.querySelector(".company-name, .boss-name, [class*='company-name'], [class*='boss-name']")
+      || root.querySelector(".company-name, .boss-name, [class*='company-name'], [class*='boss-name']");
+    const labels = new Set(["\u7acb\u5373\u6c9f\u901a", "\u7ee7\u7eed\u6c9f\u901a", "\u5df2\u6c9f\u901a"]);
+    const candidates = Array.from(root.querySelectorAll("button, a, [role='button']"))
+      .map((element) => ({ element, label: decode(element.innerText || element.textContent || "").replace(/\s+/g, "").trim() }))
+      .filter(({ element, label }) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return labels.has(label)
+          && rect.width > 0
+          && rect.height > 0
+          && style.display !== "none"
+          && style.visibility !== "hidden"
+          && !element.disabled
+          && element.getAttribute("aria-disabled") !== "true";
+      });
+    const candidate = candidates.length === 1 ? candidates[0] : null;
+    const rect = candidate?.element.getBoundingClientRect();
+    const detailText = decode(root.innerText || "").replace(/\s+/g, " ");
+    const unavailable = detailText.match(/\u804c\u4f4d\u5df2(?:\u5173\u95ed|\u4e0b\u67b6)|\u5c97\u4f4d\u5df2(?:\u5173\u95ed|\u4e0b\u67b6)|\u804c\u4f4d\u4e0d\u5b58\u5728|\u5df2\u7ed3\u675f\u62db\u8058|\u505c\u6b62\u62db\u8058/);
+    return {
+      currentJobId,
+      title: decode(titleNode.innerText || "").split(/\n+/)[0].trim(),
+      company: decode(companyNode?.innerText || "").split(/\n+/)[0].trim(),
+      unavailableText: unavailable ? unavailable[0] : "",
+      candidateCount: candidates.length,
+      actionLabel: candidate?.label || "",
+      clickPoint: rect ? { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) } : null,
+      chatJobId
+    };
+  };
+
   window.__bossScrollPane = function(toTop) {
     const root = document.querySelector(".job-detail-container")
       || document.querySelector(".job-detail")
@@ -918,6 +968,81 @@ class BossSiteAdapter {
     throw bossError("BOSS_PANE_SWITCH_TIMEOUT", `右侧详情未切换到目标岗位：${job?.title || expectedJobId || "unknown"}`);
   }
 
+  async prepareCommunicationTab(searchTabId) {
+    if (!this.browser || typeof this.browser.listTabs !== "function") {
+      throw bossError("BOSS_BROWSER_REQUIRED", "BOSS \u6c9f\u901a\u9700\u8981\u6d4f\u89c8\u5668\u8fde\u63a5\u3002");
+    }
+    const tabs = await this.browser.listTabs();
+    const existing = tabs.find((tab) => isBossCommunicationTab(tab));
+    if (existing) {
+      await this.browser.bringToFront(existing.id);
+      return existing.id;
+    }
+    await this.assertSearchPage(searchTabId);
+    const tabId = await this.browser.createTab(searchTabId, "about:blank");
+    await this.browser.bringToFront(tabId);
+    return tabId;
+  }
+
+  async inspectCommunicationJob(tabId, job, signal = null) {
+    throwIfAborted(signal);
+    const expected = communicationIdentity(job);
+    if (!expected.jobId) throw bossError("BOSS_DETAIL_PAGE_LOST", "BOSS \u5c97\u4f4d\u94fe\u63a5\u65e0\u6548\u3002");
+    await this.navigateWithPacing(tabId, expected.url, "detail");
+    throwIfAborted(signal);
+    await this.assertDetailPage(tabId, expected.jobId);
+    const state = await this.readCommunicationState(tabId);
+    const identity = communicationResultIdentity(state);
+    if (state?.unavailableText) return { state: "job_unavailable", ...identity };
+    if (!communicationIdentityMatches(expected, state)) return { state: "target_mismatch", ...identity };
+    if (["\u7ee7\u7eed\u6c9f\u901a", "\u5df2\u6c9f\u901a"].includes(state.actionLabel) && state.candidateCount === 1) {
+      return { state: "already_communicated", ...identity };
+    }
+    if (state.candidateCount !== 1 || state.actionLabel !== "\u7acb\u5373\u6c9f\u901a" || !validClickPoint(state.clickPoint)) {
+      return { state: "action_unavailable", ...identity };
+    }
+    return {
+      state: "ready",
+      ...identity,
+      actionLabel: state.actionLabel,
+      clickPoint: state.clickPoint
+    };
+  }
+
+  async dispatchCommunication(tabId, inspection, signal = null) {
+    throwIfAborted(signal);
+    if (inspection?.state !== "ready" || !validClickPoint(inspection.clickPoint)) {
+      throw bossError("BOSS_COMMUNICATION_ACTION_UNAVAILABLE", "BOSS \u6c9f\u901a\u6309\u94ae\u4e0d\u53ef\u7528\u3002");
+    }
+    await this.browser.clickAt(tabId, inspection.clickPoint);
+  }
+
+  async verifyCommunicationResult(tabId, job, signal = null) {
+    const expected = communicationIdentity(job);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      throwIfAborted(signal);
+      try {
+        await this.assertDetailPage(tabId, expected.jobId);
+      } catch (error) {
+        if (error?.code !== "BOSS_DETAIL_PAGE_LOST") throw error;
+      }
+      const state = await this.readCommunicationState(tabId);
+      if (communicationIdentityMatches(expected, state)
+        && state.candidateCount === 1
+        && ["\u7ee7\u7eed\u6c9f\u901a", "\u5df2\u6c9f\u901a"].includes(state.actionLabel)) {
+        return { state: "succeeded", evidence: "already_communicated" };
+      }
+      if (state?.chatJobId === expected.jobId) return { state: "succeeded", evidence: "chat_surface" };
+      if (attempt < 3) await this.sleep(250);
+    }
+    return { state: "ambiguous" };
+  }
+
+  async readCommunicationState(tabId) {
+    await this.browser.evalValue(tabId, PAGE_HELPERS);
+    return this.browser.evalValue(tabId, "(() => window.__bossCommunicationState())()");
+  }
+
   async assertSearchPage(tabId) {
     const state = await this.browser.evalValue(tabId, `(() => ({
       path: location.pathname,
@@ -1382,6 +1507,48 @@ function throwIfAborted(signal) {
 
 function normalizedComparableText(value) {
   return String(value || "").toLowerCase().replace(/[\s·._()（）\-_/]/g, "");
+}
+
+function communicationIdentity(job) {
+  const url = normalizeBossUrl(job?.url || "");
+  const sourceId = bossSourceId({ ...job, url });
+  const jobId = sourceId.startsWith("boss:") ? sourceId.slice("boss:".length) : "";
+  return {
+    url,
+    jobId,
+    title: normalizedComparableText(job?.title || job?.name || ""),
+    company: normalizedComparableText(job?.company || "")
+  };
+}
+
+function communicationResultIdentity(state) {
+  return {
+    jobId: state?.currentJobId || "",
+    title: state?.title || "",
+    company: state?.company || ""
+  };
+}
+
+function communicationIdentityMatches(expected, state) {
+  return Boolean(
+    expected.jobId
+    && state?.currentJobId === expected.jobId
+    && expected.title
+    && expected.company
+    && normalizedComparableText(state?.title) === expected.title
+    && normalizedComparableText(state?.company) === expected.company
+  );
+}
+
+function validClickPoint(point) {
+  return Number.isFinite(point?.x) && Number.isFinite(point?.y);
+}
+
+function isBossCommunicationTab(tab) {
+  const url = String(tab?.url || "");
+  return /zhipin\.com/i.test(url)
+    && !/\/web\/geek\/jobs/i.test(url)
+    && (/\/job_detail\/[^/?#]+\.html/i.test(url) || /\/web\/geek\/chat/i.test(url));
 }
 
 module.exports = {
