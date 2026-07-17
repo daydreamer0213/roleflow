@@ -22,6 +22,7 @@ const {
   getActiveSearchPlan,
   getPlatformFilterCatalog,
   getSiteRuntimeState,
+  listSiteAccessEvents,
   getSiteScanLease,
   createScanRun,
   getLatestScanRun,
@@ -48,6 +49,15 @@ const {
   isJobAwaitingAction,
   OUTCOME_STATUSES
 } = require("../core/storage");
+const {
+  createCommunicationBatch,
+  getCommunicationBatch,
+  listCommunicationBatchItems,
+  setCommunicationBatchStatus,
+  resolveAmbiguousCommunicationItem,
+  transitionCommunicationItem,
+  communicationBatchSummary
+} = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
@@ -96,10 +106,16 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
+      if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
+      if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
@@ -875,6 +891,120 @@ function parseBody(rawBody, contentType) {
   return result;
 }
 
+async function handleCommunicationBatch(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const quota = communicationQuota(db);
+    const jobIds = arrayValue(params.jobIds);
+    if (jobIds.length > quota.remaining) throw appError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
+    const batch = createCommunicationBatch(db, {
+      planId: params.planId,
+      jobIds,
+      browserMode: params.browserMode,
+      policySnapshot: { calibration: communicationCalibration() }
+    });
+    return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota };
+  });
+  if (!result.ok) return sendJson(res, result.statusCode, result.body);
+  if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function handleCommunicationControl(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const action = String(params.action || "").trim().toLowerCase();
+    if (action === "start" || action === "resume") assertCommunicationCalibration();
+    if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "only discard is available while calibration is pending");
+    const batchId = Number(params.batchId);
+    const batch = getCommunicationBatch(db, batchId);
+    if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+    const items = listCommunicationBatchItems(db, batchId);
+    if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
+      throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
+    }
+    for (const item of items) {
+      if (["pending", "opening", "verified"].includes(item.status)) {
+        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
+      } else if (item.status === "click_dispatched") {
+        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
+      }
+    }
+    const updated = setCommunicationBatchStatus(db, { batchId, status: "stopped", stopCode: "COMMUNICATION_BATCH_DISCARDED", stopMessage: "discarded before calibrated execution" });
+    return { batch: updated, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
+  });
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function handleCommunicationResolve(req, res, db) {
+  const rawBody = await readBody(req);
+  const result = communicationApiResult(() => {
+    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    const item = resolveAmbiguousCommunicationItem(db, { batchId: params.batchId, itemId: params.itemId, status: params.status });
+    return { item, batch: getCommunicationBatch(db, item.batchId), summary: communicationBatchSummary(db, item.batchId) };
+  });
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+function handleCommunicationStatus(res, db, batchId) {
+  const result = communicationApiResult(() => communicationStatus(db, batchId));
+  sendJson(res, result.statusCode, result.body);
+}
+
+function communicationApiResult(action) {
+  try {
+    return { ok: true, statusCode: 200, body: action() };
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
+    return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };
+  }
+}
+
+function communicationStatus(db, batchId) {
+  const batch = getCommunicationBatch(db, batchId);
+  if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+  return {
+    batch,
+    summary: communicationBatchSummary(db, batch.id),
+    items: listCommunicationBatchItems(db, batch.id),
+    quota: communicationQuota(db),
+    calibration: communicationCalibration(),
+    runtimeBlock: communicationRuntimeBlock(db)
+  };
+}
+
+function communicationQuota(db) {
+  const limit = Number(PRODUCT_POLICY.operations.bossCommunication.limits["24h"]);
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const used = listSiteAccessEvents(db, { site: "boss", action: "communication_visit", since }).length;
+  return { limit, used, remaining: Math.max(0, limit - used) };
+}
+
+function communicationCalibration() {
+  const calibration = PRODUCT_POLICY.operations.bossCommunication.calibration;
+  return { status: calibration.status, executionEnabled: calibration.executionEnabled };
+}
+
+function assertCommunicationCalibration() {
+  if (!communicationCalibration().executionEnabled) {
+    throw appError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication calibration is required before execution", { statusCode: 409 });
+  }
+}
+
+function communicationRuntimeBlock(db) {
+  const state = getSiteRuntimeState(db, "boss");
+  if (!state || state.status !== "blocked") return null;
+  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil: state.details?.blockedUntil || null };
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : value === undefined || value === null || value === "" ? [] : [value];
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -1456,6 +1586,8 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
 }
 
 function navLinks(current = "") {
+  const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
+  if (planId) return `<a href="/onboarding">Resume</a><a href="${escapeAttr(current)}">Plan</a><a href="/queue?planId=${escapeAttr(planId)}">Queue</a><a href="/communication/new?planId=${escapeAttr(planId)}">Communication batch</a><a href="/settings">Settings</a>`;
   return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
 }
 
@@ -1523,6 +1655,34 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
   });
 }
 
+function renderCommunicationBuilderPage({ db, searchParams }) {
+  const plan = getSearchPlan(db, searchParams.get("planId"));
+  if (!plan) return renderErrorPage("communication plan not found", "/queue");
+  const quota = communicationQuota(db);
+  const runtimeBlock = communicationRuntimeBlock(db);
+  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "talk", "backup"].includes(job.decisionBucket)
+    && !["applied", "no_reply", "interview", "rejected"].includes(job.applicationStatus || ""));
+  const rows = eligible.map((job) => {
+    const checked = ["primary", "talk"].includes(job.decisionBucket) ? " checked" : "";
+    return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
+  }).join("") || "<p>No eligible jobs are available.</p>";
+  const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
+  return renderPage("Communication batch", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/queue?planId=${plan.id}`)}</nav><h1>Communication batch</h1>${blockNotice}<p>Daily quota: ${quota.used}/${quota.limit}; ${quota.remaining} remaining.</p><form method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>Browser mode <select name="browserMode"><option value="edge">Edge</option><option value="portable">Portable Edge</option></select></label><section>${rows}</section><div class="communication-summary"><button${quota.remaining ? "" : " disabled"}>Create batch</button></div></form></main>`);
+}
+
+function renderCommunicationReviewPage({ db, searchParams }) {
+  const result = communicationApiResult(() => communicationStatus(db, searchParams.get("batchId")));
+  if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
+  const { batch, summary, items, quota, calibration, runtimeBlock } = result.body;
+  const counts = Object.entries(summary.statusCounts).map(([status, count]) => `${escapeHtml(status)}: ${count}`).join(" · ") || "pending: 0";
+  const rows = items.map((item) => {
+    const resolution = item.status === "ambiguous" ? `<form method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><button name="status" value="succeeded">Mark succeeded</button><button name="status" value="stopped">Mark stopped</button></form>` : "";
+    return `<tr><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
+  }).join("");
+  const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
+  return renderPage("Communication review", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}</style><main class="communication-layout"><nav>${navLinks(`/queue?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">New batch</a></nav><h1>Communication review #${batch.id}</h1><p class="communication-warning">Calibration ${escapeHtml(calibration.status)}. Execution remains disabled.</p>${blockNotice}<p>Batch: ${escapeHtml(batch.status)} · Selected: ${summary.total} · ${counts}</p><p>Daily quota: ${quota.used}/${quota.limit}; ${quota.remaining} remaining.</p><div class="communication-controls"><button disabled>Start communication</button><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">Discard batch</button></form></div><table class="communication-table"><thead><tr><th>#</th><th>Job</th><th>Status</th><th>Manual resolution</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+}
+
 function compactAwaitingAction(job) {
   return isJobAwaitingAction(job);
 }
@@ -1546,7 +1706,8 @@ ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=
 function renderCompactPoolTabs(queue, planId) {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
   const tabs = [["focus", "主投 + 先聊", (queue.counts.primary || 0) + (queue.counts.talk || 0)], ["primary", "主投", queue.counts.primary || 0], ["talk", "先聊确认", queue.counts.talk || 0], ["backup", "备选", queue.counts.backup || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不建议", queue.counts.not_recommended || 0]];
-  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
+  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
+    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">Communication batch</a>`;
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);
