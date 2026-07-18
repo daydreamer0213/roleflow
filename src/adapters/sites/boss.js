@@ -210,6 +210,72 @@ const PAGE_HELPERS = String.raw`
     root.dispatchEvent(new Event("scroll", { bubbles: true }));
     return { found: true, top, scrollHeight: root.scrollHeight, clientHeight: root.clientHeight };
   };
+
+  window.__bossCommunicationSnapshot = function() {
+    const decode = window.__bossDecode || ((value) => String(value || "").replace(/\s+/g, " ").trim());
+    const path = location.pathname;
+    const isDetailPath = /^\/job_detail\/[^/?#]+\.html$/i.test(path);
+    const bodyText = String(document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 3000);
+    const hasVisibleLoginForm = Array.from(document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")).some((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    });
+    const risk = /\/web\/passport\/zp\/(?:verify|403)/i.test(path)
+      || new URLSearchParams(location.search).get("code") === "32"
+      || /\u5b89\u5168\u9a8c\u8bc1|\u8bbf\u95ee\u5f02\u5e38|\u884c\u4e3a\u9a8c\u8bc1|\u8bbf\u95ee\u53d7\u9650/.test(document.title || "")
+      || /\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a|\u6682\u65f6\u65e0\u6cd5\u8bbf\u95ee\u6b64\u9875\u9762|\u8bf7\u52ff\u9891\u7e41\u63d0\u4ea4\u5237\u65b0\u8bf7\u6c42/.test(bodyText);
+    const login = /\/web\/user\//i.test(path)
+      || hasVisibleLoginForm
+      || /\u6ca1\u6709\u66f4\u591a\u804c\u4f4d.{0,20}\u767b\u5f55\u67e5\u770b\u5168\u90e8\u804c\u4f4d|\u767b\u5f55\u540e\u53ef\u67e5\u770b/.test(bodyText);
+    const header = document.querySelector(".job-primary.detail-box")
+      || document.querySelector(".job-primary")
+      || document.querySelector(".job-banner");
+    const actionRoot = header?.querySelector(".job-op") || header;
+    const isVisibleAndEnabled = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && style.opacity !== "0"
+        && style.pointerEvents !== "none"
+        && !element.disabled
+        && !element.matches(":disabled")
+        && !element.classList.contains("disabled")
+        && element.getAttribute("aria-disabled") !== "true";
+    };
+    const actions = Array.from(actionRoot?.querySelectorAll("a, button, [role='button']") || [])
+      .filter(isVisibleAndEnabled)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          label: decode(element.innerText || element.textContent || ""),
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      })
+      .filter((item) => item.label.includes("\u6c9f\u901a"));
+    const text = (selector, root = document) => {
+      const node = root?.querySelector(selector);
+      return decode(node?.innerText || node?.textContent || "");
+    };
+    return {
+      url: location.href,
+      jobId: (path.match(/^\/job_detail\/([^/?#]+)\.html$/i) || [])[1] || "",
+      risk,
+      login,
+      pageReady: Boolean(isDetailPath && header),
+      jobStatus: text(".job-status"),
+      title: text(".job-primary h1"),
+      salary: text(".job-primary .salary"),
+      company: text(".sider-company .company-info"),
+      bossActiveText: text(".job-boss-info .boss-active-time"),
+      actions
+    };
+  };
   return true;
 })()
 `;
@@ -224,6 +290,10 @@ class BossSiteAdapter {
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
+    this.communicationTabId = null;
+    this.communicationSearchTabId = null;
+    this.communicationInspectionInFlight = false;
+    this.communicationTabPreparationPromise = null;
     this.resetPacing();
   }
 
@@ -1031,6 +1101,116 @@ class BossSiteAdapter {
     }
     return "";
   }
+
+  async prepareCommunicationTab(searchTabId = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication inspection requires a browser connection.");
+    if (this.communicationTabPreparationPromise) return this.communicationTabPreparationPromise;
+    const preparation = this.prepareCommunicationTabOnce(searchTabId);
+    this.communicationTabPreparationPromise = preparation;
+    try {
+      return await preparation;
+    } finally {
+      if (this.communicationTabPreparationPromise === preparation) this.communicationTabPreparationPromise = null;
+    }
+  }
+
+  async prepareCommunicationTabOnce(searchTabId = null) {
+    const hasCachedSearchTab = this.communicationSearchTabId !== null;
+    const hasExplicitSearchTab = searchTabId !== null && searchTabId !== undefined;
+    if (hasCachedSearchTab
+      && hasExplicitSearchTab
+      && String(searchTabId) !== String(this.communicationSearchTabId)) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
+    }
+    const tabs = await this.browser.listTabs();
+    const searchTab = searchTabId === null || searchTabId === undefined
+      ? hasCachedSearchTab
+        ? tabs.find((tab) => String(tab.id) === String(this.communicationSearchTabId))
+        : tabs.filter(isBossSearchTab).sort(compareBossTabs)[0]
+      : tabs.find((tab) => String(tab.id) === String(searchTabId));
+    if (!searchTab || !isBossSearchTab(searchTab)) {
+      throw bossError(
+        hasCachedSearchTab ? "BOSS_SEARCH_PAGE_LOST" : "BOSS_TAB_REQUIRED",
+        "A verified fixed BOSS search tab is required to prepare communication inspection."
+      );
+    }
+    if (!hasKnownBossWindow(searchTab)) {
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "The fixed BOSS search tab has no reliable browser window identity.");
+    }
+    await this.assertSearchPage(searchTab.id);
+    this.communicationSearchTabId = searchTab.id;
+
+    const reusableCandidates = tabs.filter(isReusableBossCommunicationTab);
+    if (reusableCandidates.some((tab) => !hasKnownBossWindow(tab))) {
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "A reusable BOSS communication tab has no reliable browser window identity.");
+    }
+
+    const stored = this.communicationTabId === null
+      ? null
+      : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
+    if (stored) {
+      if (!sameBossWindow(searchTab, stored)) {
+        throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH", "The fixed BOSS communication tab is in a different browser window.");
+      }
+      if (!isCachedBossCommunicationTab(stored)) {
+        throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
+      }
+      await this.browser.bringToFront(stored.id);
+      return stored.id;
+    }
+    this.communicationTabId = null;
+
+    const reusable = reusableCandidates.filter((tab) => sameBossWindow(searchTab, tab)).sort(compareBossTabs)[0];
+    if (reusable) {
+      this.communicationTabId = reusable.id;
+      await this.browser.bringToFront(reusable.id);
+      return reusable.id;
+    }
+
+    const tabId = await this.browser.createTab(searchTab.id, "about:blank");
+    this.communicationTabId = tabId;
+    await this.browser.bringToFront(tabId);
+    return tabId;
+  }
+
+  async inspectCommunicationJob(job, signal = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication inspection requires a browser connection.");
+    if (this.communicationInspectionInFlight) {
+      throw bossError("BOSS_COMMUNICATION_BUSY", "A BOSS communication inspection is already in progress.");
+    }
+    this.communicationInspectionInFlight = true;
+    try {
+      throwIfAborted(signal);
+      const url = normalizeTrustedBossCommunicationUrl(job?.url);
+      if (!url) {
+        throw bossError("BOSS_COMMUNICATION_URL_INVALID", "BOSS communication inspection requires a trusted standalone detail URL.");
+      }
+      const tabId = await this.prepareCommunicationTab();
+      await this.browser.navigate(tabId, url);
+      await this.waitWithPacing("detail");
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+
+      let inspection = { state: "action_unavailable" };
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        throwIfAborted(signal);
+        const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+        inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
+        if (["ready", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
+        if (attempt < 3) await this.waitWithPacing("retry");
+      }
+      return inspection;
+    } finally {
+      this.communicationInspectionInFlight = false;
+    }
+  }
+
+  async dispatchCommunication() {
+    throw bossError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication clicks require live-page calibration.");
+  }
+
+  async verifyCommunicationResult() {
+    throw bossError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication result verification requires live-page calibration.");
+  }
 }
 
 function normalizeBossJob(job) {
@@ -1384,8 +1564,131 @@ function normalizedComparableText(value) {
   return String(value || "").toLowerCase().replace(/[\s·._()（）\-_/]/g, "");
 }
 
+function normalizeCommunicationText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s\u00b7._()\[\]{}<>\-_/\\,;:!?\u3000-\u303f\uff00-\uff65]/g, "");
+}
+
+function communicationJobId(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    if (parsed.origin !== "https://www.zhipin.com" || parsed.username || parsed.password) return "";
+    return (parsed.pathname.match(/^\/job_detail\/([^/?#]+)\.html$/i) || [])[1] || "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeTrustedBossCommunicationUrl(url) {
+  const jobId = communicationJobId(url);
+  if (!jobId) return "";
+  try {
+    const parsed = new URL(String(url));
+    const securityId = parsed.searchParams.get("securityId");
+    const canonical = `https://www.zhipin.com/job_detail/${jobId}.html`;
+    return securityId ? `${canonical}?securityId=${encodeURIComponent(securityId)}` : canonical;
+  } catch {
+    return "";
+  }
+}
+
+function sameBossCommunicationJob(snapshot, expectedJob) {
+  const expectedJobId = communicationJobId(expectedJob?.url);
+  const snapshotUrlJobId = communicationJobId(snapshot?.url);
+  const snapshotJobId = String(snapshot?.jobId || "").trim();
+  return Boolean(expectedJobId && snapshotUrlJobId && snapshotJobId)
+    && expectedJobId === snapshotUrlJobId
+    && snapshotUrlJobId === snapshotJobId;
+}
+
+function sameBossCommunicationTitle(snapshot, expectedJob) {
+  const snapshotTitle = normalizeCommunicationText(snapshot?.title);
+  const expectedTitle = normalizeCommunicationText(expectedJob?.title);
+  return Boolean(snapshotTitle && expectedTitle) && snapshotTitle === expectedTitle;
+}
+
+function sameBossCommunicationCompany(snapshot, expectedJob) {
+  const snapshotCompany = normalizeCommunicationText(snapshot?.company);
+  const expectedCompany = normalizeCommunicationText(expectedJob?.company);
+  if (!snapshotCompany || !expectedCompany) return false;
+  if (snapshotCompany === expectedCompany) return true;
+  return snapshotCompany.length >= 4
+    && expectedCompany.length >= 4
+    && (snapshotCompany.includes(expectedCompany) || expectedCompany.includes(snapshotCompany));
+}
+
+function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
+  if (snapshot?.risk) {
+    throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication inspection has stopped.");
+  }
+  if (snapshot?.login) {
+    throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication inspection has stopped.");
+  }
+  if (!snapshot?.pageReady) return { state: "action_unavailable" };
+  if (!sameBossCommunicationJob(snapshot, expectedJob)
+    || !sameBossCommunicationTitle(snapshot, expectedJob)
+    || !sameBossCommunicationCompany(snapshot, expectedJob)) {
+    return { state: "target_mismatch" };
+  }
+  const jobStatus = String(snapshot?.jobStatus || "").trim();
+  if (!jobStatus) return { state: "action_unavailable" };
+  if (normalizeCommunicationText(jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
+    return { state: "job_unavailable" };
+  }
+  const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
+  if (actions.length !== 1) return { state: "action_unavailable" };
+  const action = actions[0] || {};
+  const hasSafeAction = action.label === "\u7acb\u5373\u6c9f\u901a"
+    && action.visible !== false
+    && action.disabled !== true
+    && [action.x, action.y, action.width, action.height].every((value) => Number.isFinite(Number(value)))
+    && Number(action.width) > 0
+    && Number(action.height) > 0;
+  if (!hasSafeAction) return { state: "action_unavailable" };
+  return {
+    state: "ready",
+    jobId: String(snapshot.jobId),
+    title: snapshot.title,
+    company: snapshot.company,
+    salary: snapshot.salary || "",
+    bossActiveText: snapshot.bossActiveText || "",
+    actionLabel: action.label,
+    clickPoint: {
+      x: Number(action.x) + Number(action.width) / 2,
+      y: Number(action.y) + Number(action.height) / 2
+    }
+  };
+}
+
+function isBossSearchTab(tab) {
+  return /^https:\/\/www\.zhipin\.com\/web\/geek\/jobs(?:[/?#]|$)/i.test(String(tab?.url || ""));
+}
+
+function isReusableBossCommunicationTab(tab) {
+  const url = String(tab?.url || "");
+  return /^https:\/\/www\.zhipin\.com\/job_detail\/[^/?#]+\.html(?:[?#]|$)/i.test(url)
+    || /^https:\/\/www\.zhipin\.com\/web\/geek\/chat(?:[/?#]|$)/i.test(url);
+}
+
+function isCachedBossCommunicationTab(tab) {
+  return /^about:blank$/i.test(String(tab?.url || "")) || isReusableBossCommunicationTab(tab);
+}
+
+function sameBossWindow(first, second) {
+  if (!hasKnownBossWindow(first) || !hasKnownBossWindow(second)) return false;
+  return String(first.windowId) === String(second.windowId);
+}
+
+function hasKnownBossWindow(tab) {
+  return String(tab?.windowId ?? "").trim().length > 0;
+}
+
 module.exports = {
   BossSiteAdapter,
+  classifyBossCommunicationSnapshot,
   normalizeBossJob,
   parseBossActivityText,
   normalizeBossUrl,
