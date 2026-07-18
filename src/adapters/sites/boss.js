@@ -232,14 +232,17 @@ const PAGE_HELPERS = String.raw`
       || document.querySelector(".job-primary")
       || document.querySelector(".job-banner");
     const actionRoot = header?.querySelector(".job-op") || header;
-    const isVisibleAndEnabled = (element) => {
+    const isVisible = (element) => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0
         && style.display !== "none"
         && style.visibility !== "hidden"
         && style.opacity !== "0"
-        && style.pointerEvents !== "none"
+        && style.pointerEvents !== "none";
+    };
+    const isVisibleAndEnabled = (element) => {
+      return isVisible(element)
         && !element.disabled
         && !element.matches(":disabled")
         && !element.classList.contains("disabled")
@@ -249,18 +252,34 @@ const PAGE_HELPERS = String.raw`
       .filter(isVisibleAndEnabled)
       .map((element) => {
         const rect = element.getBoundingClientRect();
+        let redirectJobId = "";
+        let hasChatIdentity = false;
+        try {
+          const redirect = new URL(element.getAttribute("redirect-url") || "", location.origin);
+          redirectJobId = redirect.searchParams.get("jobId") || "";
+          hasChatIdentity = Boolean(redirect.searchParams.get("id"));
+        } catch {}
         return {
           label: decode(element.innerText || element.textContent || ""),
           x: rect.x,
           y: rect.y,
           width: rect.width,
-          height: rect.height
+          height: rect.height,
+          isFriend: element.getAttribute("data-isfriend") || "",
+          redirectJobId,
+          hasChatIdentity
         };
       })
       .filter((item) => item.label.includes("\u6c9f\u901a"));
     const text = (selector, root = document) => {
       const node = root?.querySelector(selector);
       return decode(node?.innerText || node?.textContent || "");
+    };
+    const successDialogRoot = document.querySelector(".greet-boss-pop, .greet-pop");
+    const successDialog = {
+      visible: Boolean(successDialogRoot && isVisible(successDialogRoot)),
+      title: text(".dialog-title", successDialogRoot),
+      footer: text(".dialog-footer", successDialogRoot)
     };
     return {
       url: location.href,
@@ -273,7 +292,8 @@ const PAGE_HELPERS = String.raw`
       salary: text(".job-primary .salary"),
       company: text(".sider-company .company-info"),
       bossActiveText: text(".job-boss-info .boss-active-time"),
-      actions
+      actions,
+      successDialog
     };
   };
   return true;
@@ -292,9 +312,22 @@ class BossSiteAdapter {
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.communicationTabId = null;
     this.communicationSearchTabId = null;
-    this.communicationInspectionInFlight = false;
     this.communicationTabPreparationPromise = null;
+    this.communicationOperationInFlight = "";
+    this.communicationDispatchedJobIds = new Set();
+    this.lastCommunicationDispatch = null;
     this.resetPacing();
+  }
+
+  beginCommunicationOperation(kind) {
+    if (this.communicationOperationInFlight) {
+      throw bossError("BOSS_COMMUNICATION_BUSY", `A BOSS communication ${this.communicationOperationInFlight} is already in progress.`);
+    }
+    this.communicationOperationInFlight = kind;
+  }
+
+  finishCommunicationOperation(kind) {
+    if (this.communicationOperationInFlight === kind) this.communicationOperationInFlight = "";
   }
 
   async preflight({ tabId = null } = {}) {
@@ -1175,10 +1208,7 @@ class BossSiteAdapter {
 
   async inspectCommunicationJob(job, signal = null) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication inspection requires a browser connection.");
-    if (this.communicationInspectionInFlight) {
-      throw bossError("BOSS_COMMUNICATION_BUSY", "A BOSS communication inspection is already in progress.");
-    }
-    this.communicationInspectionInFlight = true;
+    this.beginCommunicationOperation("inspection");
     try {
       throwIfAborted(signal);
       const url = normalizeTrustedBossCommunicationUrl(job?.url);
@@ -1195,21 +1225,86 @@ class BossSiteAdapter {
         throwIfAborted(signal);
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
-        if (["ready", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
+        if (["ready", "already_communicated", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
         if (attempt < 3) await this.waitWithPacing("retry");
       }
       return inspection;
     } finally {
-      this.communicationInspectionInFlight = false;
+      this.finishCommunicationOperation("inspection");
     }
   }
 
-  async dispatchCommunication() {
-    throw bossError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication clicks require live-page calibration.");
+  async dispatchCommunication(inspection, signal = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication dispatch requires a browser connection.");
+    this.beginCommunicationOperation("dispatch");
+    try {
+      const expectedJob = communicationJobFromInspection(inspection);
+      if (!expectedJob) {
+        throw bossError("BOSS_COMMUNICATION_INSPECTION_INVALID", "A verified BOSS communication inspection is required before dispatch.");
+      }
+      if (this.communicationDispatchedJobIds.has(expectedJob.jobId)) {
+        throw bossError("BOSS_COMMUNICATION_ALREADY_DISPATCHED", "This BOSS job already entered communication dispatch and cannot be clicked again.");
+      }
+      throwIfAborted(signal);
+      const tabId = await this.prepareCommunicationTab();
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+      const freshInspection = classifyBossCommunicationSnapshot(snapshot, expectedJob);
+      if (freshInspection.state !== "ready" || freshInspection.jobId !== expectedJob.jobId) {
+        throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The BOSS detail page changed before communication dispatch.");
+      }
+      throwIfAborted(signal);
+      this.communicationDispatchedJobIds.add(expectedJob.jobId);
+      const clickResult = await this.browser.evalValue(tabId, guardedBossCommunicationClickExpression(expectedJob));
+      if (clickResult?.clicked !== true || clickResult?.jobId !== expectedJob.jobId) {
+        if (clickResult?.reason === "risk_control") {
+          throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication dispatch has stopped.");
+        }
+        if (clickResult?.reason === "login_required") {
+          throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication dispatch has stopped.");
+        }
+        throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The guarded BOSS communication target changed before click dispatch.");
+      }
+      this.lastCommunicationDispatch = { jobId: expectedJob.jobId, tabId, expectedJob };
+      return { state: "dispatched", jobId: expectedJob.jobId };
+    } finally {
+      this.finishCommunicationOperation("dispatch");
+    }
   }
 
-  async verifyCommunicationResult() {
-    throw bossError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication result verification requires live-page calibration.");
+  async verifyCommunicationResult(job, signal = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication verification requires a browser connection.");
+    this.beginCommunicationOperation("verification");
+    try {
+      const dispatch = this.lastCommunicationDispatch;
+      const expectedJobId = communicationJobId(job?.url);
+      if (!dispatch) {
+        throw bossError("BOSS_COMMUNICATION_VERIFICATION_UNAVAILABLE", "No completed BOSS communication dispatch is available to verify.");
+      }
+      if (!expectedJobId
+        || expectedJobId !== dispatch.jobId
+        || !sameBossCommunicationTitle({ title: dispatch.expectedJob.title }, job)
+        || !sameBossCommunicationCompany({ company: dispatch.expectedJob.company }, job)) {
+        throw bossError("BOSS_COMMUNICATION_VERIFICATION_TARGET_MISMATCH", "The BOSS job being verified does not match the dispatched job.");
+      }
+      throwIfAborted(signal);
+      const tabId = await this.prepareCommunicationTab();
+      if (String(tabId) !== String(dispatch.tabId)) {
+        throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The fixed BOSS communication tab changed before result verification.");
+      }
+      await this.waitWithPacing("detail");
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        throwIfAborted(signal);
+        const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+        const result = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
+        if (["succeeded", "target_mismatch", "job_unavailable"].includes(result.state)) return result;
+        if (attempt < 3) await this.waitWithPacing("retry");
+      }
+      return { state: "ambiguous" };
+    } finally {
+      this.finishCommunicationOperation("verification");
+    }
   }
 }
 
@@ -1620,6 +1715,104 @@ function sameBossCommunicationCompany(snapshot, expectedJob) {
     && (snapshotCompany.includes(expectedCompany) || expectedCompany.includes(snapshotCompany));
 }
 
+function communicationJobFromInspection(inspection = {}) {
+  const jobId = String(inspection.jobId || "").trim();
+  const title = String(inspection.title || "").trim();
+  const company = String(inspection.company || "").trim();
+  const point = inspection.clickPoint || {};
+  const url = normalizeTrustedBossCommunicationUrl(`https://www.zhipin.com/job_detail/${jobId}.html`);
+  if (inspection.state !== "ready"
+    || inspection.actionLabel !== "\u7acb\u5373\u6c9f\u901a"
+    || !url
+    || !/^[A-Za-z0-9_-]+$/.test(jobId)
+    || !title
+    || !company
+    || ![point.x, point.y].every((value) => Number.isFinite(Number(value)))) {
+    return null;
+  }
+  return { jobId, url, title, company };
+}
+
+function guardedBossCommunicationClickExpression(expectedJob) {
+  const expected = JSON.stringify({
+    jobId: expectedJob.jobId,
+    title: expectedJob.title,
+    company: expectedJob.company
+  });
+  return `(() => {
+    const operation = "__bossGuardedCommunicationClick";
+    const expected = ${expected};
+    const normalize = (value) => String(value || "").toLowerCase().replace(/[\\s\u00b7._()\uFF08\uFF09\\-_/]/g, "");
+    const fail = (reason) => ({ clicked: false, reason, operation });
+    if (typeof window.__bossCommunicationSnapshot !== "function") return fail("snapshot_helper_missing");
+    const snapshot = window.__bossCommunicationSnapshot();
+    if (snapshot.risk) return fail("risk_control");
+    if (snapshot.login) return fail("login_required");
+    const pathJobId = (location.pathname.match(/^\\/job_detail\\/([^/?#]+)\\.html$/i) || [])[1] || "";
+    const snapshotCompany = normalize(snapshot.company);
+    const expectedCompany = normalize(expected.company);
+    const sameCompany = snapshotCompany === expectedCompany
+      || (snapshotCompany.length >= 4 && expectedCompany.length >= 4
+        && (snapshotCompany.includes(expectedCompany) || expectedCompany.includes(snapshotCompany)));
+    const actions = Array.isArray(snapshot.actions) ? snapshot.actions : [];
+    const action = actions.length === 1 ? actions[0] : null;
+    const snapshotReady = snapshot.pageReady === true
+      && snapshot.jobId === expected.jobId
+      && pathJobId === expected.jobId
+      && normalize(snapshot.title) === normalize(expected.title)
+      && sameCompany
+      && String(snapshot.jobStatus || "").trim() === "\u62db\u8058\u4e2d"
+      && action
+      && action.label === "\u7acb\u5373\u6c9f\u901a"
+      && action.isFriend === "false"
+      && action.redirectJobId === expected.jobId
+      && action.hasChatIdentity === true
+      && Number(action.width) > 0
+      && Number(action.height) > 0;
+    if (!snapshotReady) return fail("snapshot_changed");
+    const header = document.querySelector(".job-primary.detail-box")
+      || document.querySelector(".job-primary")
+      || document.querySelector(".job-banner");
+    const actionRoot = header?.querySelector(".job-op") || header;
+    const candidates = Array.from(actionRoot?.querySelectorAll("a, button, [role='button']") || []).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      if (rect.width <= 0 || rect.height <= 0
+        || style.display === "none"
+        || style.visibility === "hidden"
+        || style.opacity === "0"
+        || style.pointerEvents === "none"
+        || element.disabled
+        || element.matches(":disabled")
+        || element.classList.contains("disabled")
+        || element.getAttribute("aria-disabled") === "true"
+        || String(element.innerText || element.textContent || "").replace(/\\s+/g, " ").trim() !== "\u7acb\u5373\u6c9f\u901a"
+        || element.getAttribute("data-isfriend") !== "false") return false;
+      try {
+        const redirect = new URL(element.getAttribute("redirect-url") || "", location.origin);
+        return redirect.origin === location.origin
+          && redirect.pathname === "/web/geek/chat"
+          && redirect.searchParams.get("jobId") === expected.jobId
+          && Boolean(redirect.searchParams.get("id"));
+      } catch {
+        return false;
+      }
+    });
+    if (candidates.length !== 1) return fail("action_not_unique");
+    candidates[0].click();
+    return { clicked: true, jobId: expected.jobId, operation };
+  })()`;
+}
+
+function hasSafeCommunicationAction(action = {}) {
+  action = action || {};
+  return action.visible !== false
+    && action.disabled !== true
+    && [action.x, action.y, action.width, action.height].every((value) => Number.isFinite(Number(value)))
+    && Number(action.width) > 0
+    && Number(action.height) > 0;
+}
+
 function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
   if (snapshot?.risk) {
     throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication inspection has stopped.");
@@ -1641,14 +1834,16 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
   const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
   if (actions.length !== 1) return { state: "action_unavailable" };
   const action = actions[0] || {};
-  const hasSafeAction = action.visible !== false
-    && action.disabled !== true
-    && [action.x, action.y, action.width, action.height].every((value) => Number.isFinite(Number(value)))
-    && Number(action.width) > 0
-    && Number(action.height) > 0;
-  if (!hasSafeAction) return { state: "action_unavailable" };
-  if (action.label === "\u7ee7\u7eed\u6c9f\u901a") return { state: "already_communicated" };
+  if (!hasSafeCommunicationAction(action)) return { state: "action_unavailable" };
+  const expectedJobId = communicationJobId(expectedJob?.url);
+  const hasTrustedChatTarget = action.redirectJobId === expectedJobId && action.hasChatIdentity === true;
+  if (action.label === "\u7ee7\u7eed\u6c9f\u901a") {
+    return hasTrustedChatTarget && action.isFriend === "true"
+      ? { state: "already_communicated" }
+      : { state: "action_unavailable" };
+  }
   if (action.label !== "\u7acb\u5373\u6c9f\u901a") return { state: "action_unavailable" };
+  if (!hasTrustedChatTarget || action.isFriend !== "false") return { state: "action_unavailable" };
   return {
     state: "ready",
     jobId: String(snapshot.jobId),
@@ -1662,6 +1857,39 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
       y: Number(action.y) + Number(action.height) / 2
     }
   };
+}
+
+function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}) {
+  if (snapshot?.risk) {
+    throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication verification has stopped.");
+  }
+  if (snapshot?.login) {
+    throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication verification has stopped.");
+  }
+  if (!snapshot?.pageReady) return { state: "ambiguous" };
+  if (!sameBossCommunicationJob(snapshot, expectedJob)
+    || !sameBossCommunicationTitle(snapshot, expectedJob)
+    || !sameBossCommunicationCompany(snapshot, expectedJob)) {
+    return { state: "target_mismatch" };
+  }
+  const jobStatus = String(snapshot?.jobStatus || "").trim();
+  if (!jobStatus) return { state: "ambiguous" };
+  if (normalizeCommunicationText(jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
+    return { state: "job_unavailable" };
+  }
+  const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
+  const action = actions.length === 1 ? actions[0] : null;
+  const dialog = snapshot?.successDialog || {};
+  const expectedJobId = communicationJobId(expectedJob?.url);
+  const succeeded = hasSafeCommunicationAction(action)
+    && action.label === "\u7ee7\u7eed\u6c9f\u901a"
+    && action.isFriend === "true"
+    && action.redirectJobId === expectedJobId
+    && action.hasChatIdentity === true
+    && dialog.visible === true
+    && dialog.title === "\u5df2\u5411BOSS\u53d1\u9001\u6d88\u606f"
+    && dialog.footer === "\u7559\u5728\u6b64\u9875\u7ee7\u7eed\u6c9f\u901a";
+  return succeeded ? { state: "succeeded", jobId: expectedJobId } : { state: "ambiguous" };
 }
 
 function isBossSearchTab(tab) {

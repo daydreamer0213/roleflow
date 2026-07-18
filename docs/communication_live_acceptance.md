@@ -4,7 +4,7 @@
 
 - Calibration status: `pending`
 - Execution enabled: `false`
-- Real communication clicks completed: `0`
+- Real communication clicks completed: `1`
 - Production communication CLI/dashboard execution: disabled
 
 ## 2026-07-18 Read-Only Evidence
@@ -65,15 +65,35 @@ One previously applied local record was inspected through the merged adapter wit
 
 The classifier now exposes this as a distinct `already_communicated` read-only state. It does not treat `继续沟通` as a fresh `立即沟通` action or click it during initial application dispatch.
 
+### User-Approved Single Click
+
+One recommended, locally unprocessed job was selected for explicit user-approved calibration. The merged read-only inspection confirmed the expected job ID, title, company, `招聘中` status, and exactly one visible and enabled `立即沟通` control before the click.
+
+- Real communication clicks: 1
+- Additional reloads: 0
+- Additional communication clicks or text input: 0
+- Detail page after click: unchanged canonical job URL
+- Action after click: exact text `继续沟通`
+- Friend state after click: `data-isfriend=true`
+- Redirect job identity: matched the expected job ID
+- Chat identity parameter: present, value not retained
+- Success dialog title: exact text `已向BOSS发送消息`
+- Success dialog footer: exact text `留在此页继续沟通`
+- Default greeting: sent by BOSS, content not retained
+- Risk-control or login-loss signals: none
+- Local candidate state: recorded as `applied`
+
+This evidence supports a fail-closed implementation that rechecks the current detail DOM immediately before one click and requires the same job identity, friend state, chat identity presence, and exact success dialog immediately afterward.
+
 No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
 
 ## Confirmed Design Consequences
 
 1. Search-page capture and standalone-detail communication inspection require different DOM helpers.
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
-3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
+3. The action element's `ka` value is not a job identity. Pre-click identity uses the URL job ID, visible title and company, the action redirect's matching job ID, chat identity presence, and `data-isfriend=false`.
 4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
-5. The current evidence supports one `立即沟通` ready state and one `继续沟通` state classified as `already_communicated`. It does not support a click implementation.
+5. The current evidence supports one `立即沟通` ready state, one `继续沟通` state classified as `already_communicated`, and one explicitly approved immediate post-click success state. Production execution remains disabled pending review.
 
 ## Window Identity and Transport Boundary
 
@@ -86,6 +106,8 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 
 - The standalone-detail helper is executed against a sanitized minimal DOM with Node's built-in `vm` module.
 - A unique visible and enabled `继续沟通` control maps to `already_communicated`; hidden, disabled, mixed, or ambiguous controls still fail closed.
+- Inspection, dispatch, and verification share one communication-operation lock. Dispatch rechecks the fixed detail tab, then performs one synchronous guarded DOM command that verifies the current URL, visible job identity, recruiting status, unique visible action, exact redirect job ID, chat identity presence, `data-isfriend=false`, and exact `立即沟通` text before clicking that element; the adapter refuses a second dispatch for the same job even when the first click result is uncertain.
+- Verification requires the expected job identity, exact success dialog, `继续沟通`, friend state, and a matching redirect job ID with a chat identity; incomplete evidence returns `ambiguous`.
 - The fake-browser regression verifies two jobs reuse one communication tab, with one navigation per job and zero click calls.
 - The tab-identity regression rejects an attempted search-tab rebind before page assertion and rejects a fixed search tab without `windowId`; stored or reusable communication tabs without a known matching window are not reused.
 - A cached communication tab that changes into a search or unrelated page fails closed before navigation.
@@ -98,8 +120,6 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 The following states still require separate, explicitly approved, low-frequency observation:
 
 - an unavailable or closed job page;
-- the immediate post-click standalone detail state;
-- active chat identity for the same expected job;
-- one explicitly approved single communication click, followed by UI and stored-state verification.
+- active chat-page DOM identity, only if a future workflow needs to leave the verified success dialog and enter chat.
 
 Do not enable production communication until every required state has current real-page evidence and the calibration review passes.
