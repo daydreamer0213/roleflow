@@ -1115,8 +1115,14 @@ class BossSiteAdapter {
   }
 
   async prepareCommunicationTabOnce(searchTabId = null) {
-    const tabs = await this.browser.listTabs();
     const hasCachedSearchTab = this.communicationSearchTabId !== null;
+    const hasExplicitSearchTab = searchTabId !== null && searchTabId !== undefined;
+    if (hasCachedSearchTab
+      && hasExplicitSearchTab
+      && String(searchTabId) !== String(this.communicationSearchTabId)) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
+    }
+    const tabs = await this.browser.listTabs();
     const searchTab = searchTabId === null || searchTabId === undefined
       ? hasCachedSearchTab
         ? tabs.find((tab) => String(tab.id) === String(this.communicationSearchTabId))
@@ -1127,6 +1133,9 @@ class BossSiteAdapter {
         hasCachedSearchTab ? "BOSS_SEARCH_PAGE_LOST" : "BOSS_TAB_REQUIRED",
         "A verified fixed BOSS search tab is required to prepare communication inspection."
       );
+    }
+    if (!hasKnownBossWindow(searchTab)) {
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "The fixed BOSS search tab has no reliable browser window identity.");
     }
     await this.assertSearchPage(searchTab.id);
     this.communicationSearchTabId = searchTab.id;
@@ -1664,9 +1673,12 @@ function isCachedBossCommunicationTab(tab) {
 }
 
 function sameBossWindow(first, second) {
-  if (first?.windowId === undefined || first?.windowId === null) return true;
-  if (second?.windowId === undefined || second?.windowId === null) return true;
+  if (!hasKnownBossWindow(first) || !hasKnownBossWindow(second)) return false;
   return String(first.windowId) === String(second.windowId);
+}
+
+function hasKnownBossWindow(tab) {
+  return String(tab?.windowId ?? "").trim().length > 0;
 }
 
 module.exports = {

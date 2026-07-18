@@ -209,6 +209,21 @@ function assertNoPageAction(browser, before) {
   assert.strictEqual(browser.calls.clickAt.length, before.clickAt);
 }
 
+function preparationCallCounts(browser) {
+  return {
+    listTabs: browser.calls.listTabs,
+    createTab: browser.calls.createTab.length,
+    bringToFront: browser.calls.bringToFront.length,
+    navigate: browser.calls.navigate.length,
+    evalValue: browser.calls.evalValue.length,
+    clickAt: browser.calls.clickAt.length
+  };
+}
+
+function assertNoPreparationAction(browser, before) {
+  assert.deepStrictEqual(preparationCallCounts(browser), before);
+}
+
 (async () => {
   const existingBrowser = fakeBrowser({
     tabs: [
@@ -220,6 +235,61 @@ function assertNoPageAction(browser, before) {
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
   assert.deepStrictEqual(existingBrowser.calls.createTab, []);
+
+  const pinnedSearchBrowser = fakeBrowser({
+    tabs: [
+      { id: "search-1", url: searchUrl, windowId: "window-1" },
+      { id: "search-2", url: `${searchUrl}&page=2`, windowId: "window-1" }
+    ]
+  });
+  const pinnedSearchAdapter = new BossSiteAdapter({ browser: pinnedSearchBrowser, sleepFn: async () => {} });
+  await pinnedSearchAdapter.prepareCommunicationTab("search-1");
+  const callsBeforeSearchRebind = preparationCallCounts(pinnedSearchBrowser);
+  await assert.rejects(
+    () => pinnedSearchAdapter.prepareCommunicationTab("search-2"),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
+  );
+  assertNoPreparationAction(pinnedSearchBrowser, callsBeforeSearchRebind);
+
+  const unknownSearchWindowBrowser = fakeBrowser({ tabs: [{ id: "search", url: searchUrl }] });
+  const unknownSearchWindowCalls = preparationCallCounts(unknownSearchWindowBrowser);
+  await assert.rejects(
+    () => new BossSiteAdapter({ browser: unknownSearchWindowBrowser, sleepFn: async () => {} }).prepareCommunicationTab("search"),
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
+  );
+  assert.deepStrictEqual(preparationCallCounts(unknownSearchWindowBrowser), {
+    ...unknownSearchWindowCalls,
+    listTabs: unknownSearchWindowCalls.listTabs + 1
+  });
+
+  const storedUnknownWindowBrowser = fakeBrowser({
+    tabs: [
+      { id: "search", url: searchUrl, windowId: "window-1" },
+      { id: "stored-detail", url: jobUrl }
+    ]
+  });
+  const storedUnknownWindowAdapter = new BossSiteAdapter({ browser: storedUnknownWindowBrowser, sleepFn: async () => {} });
+  storedUnknownWindowAdapter.communicationTabId = "stored-detail";
+  const storedUnknownWindowCalls = preparationCallCounts(storedUnknownWindowBrowser);
+  await assert.rejects(
+    () => storedUnknownWindowAdapter.prepareCommunicationTab("search"),
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH"
+  );
+  assert.strictEqual(storedUnknownWindowBrowser.calls.createTab.length, storedUnknownWindowCalls.createTab);
+  assert.strictEqual(storedUnknownWindowBrowser.calls.bringToFront.length, storedUnknownWindowCalls.bringToFront);
+  assert.strictEqual(storedUnknownWindowBrowser.calls.navigate.length, storedUnknownWindowCalls.navigate);
+  assert.strictEqual(storedUnknownWindowBrowser.calls.clickAt.length, storedUnknownWindowCalls.clickAt);
+
+  const reusableUnknownWindowBrowser = fakeBrowser({
+    tabs: [
+      { id: "search", url: searchUrl, windowId: "window-1" },
+      { id: "untrusted-detail", url: jobUrl }
+    ]
+  });
+  const reusableUnknownWindowAdapter = new BossSiteAdapter({ browser: reusableUnknownWindowBrowser, sleepFn: async () => {} });
+  assert.strictEqual(await reusableUnknownWindowAdapter.prepareCommunicationTab("search"), "communication-created");
+  assert.deepStrictEqual(reusableUnknownWindowBrowser.calls.createTab, [["search", "about:blank"]]);
+  assert.deepStrictEqual(reusableUnknownWindowBrowser.calls.bringToFront, ["communication-created"]);
 
   existingBrowser.setTabUrl("search", jobUrl);
   const callsBeforeSearchDrift = {

@@ -40,13 +40,21 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 1. Search-page capture and standalone-detail communication inspection require different DOM helpers.
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
 3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
-4. Visible, enabled controls whose labels contain "communication" are candidates. Exactly one candidate with the exact label "immediate communication" is required; non-communication controls such as favorite are ignored. Missing status, missing or ambiguous candidates, and a non-exact candidate fail closed. Hidden or disabled controls are excluded from candidates.
+4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
 5. The current evidence supports read-only recognition of exactly one `立即沟通` state. It does not support a click implementation.
+
+## Window Identity and Transport Boundary
+
+- The current Edge Control `listTabs` result provides `windowId`. Read-only communication tab preparation pins one immutable search-tab ID and requires that fixed search tab to have a non-empty `windowId` before any page assertion, tab creation, navigation, or click.
+- Stored and reusable communication tabs must have the same known `windowId`; a missing ID is never treated as a same-window match or synthesized from a tab ID, URL, title, or ordering.
+- CDP does not currently provide a reliable window identity, and communication execution is not wired to CDP. Before any future CDP communication connection, the transport must supply a reliable window identity with the same semantics. Do not silently synthesize one.
+- This document records a read-only Edge Control sample and offline regression coverage only. It does not claim that the end-to-end communication flow is available.
 
 ## Offline Engineering Verification
 
 - The standalone-detail helper is executed against a sanitized minimal DOM with Node's built-in `vm` module.
 - The fake-browser regression verifies two jobs reuse one communication tab, with one navigation per job and zero click calls.
+- The tab-identity regression rejects an attempted search-tab rebind before page assertion and rejects a fixed search tab without `windowId`; stored or reusable communication tabs without a known matching window are not reused.
 - A cached communication tab that changes into a search or unrelated page fails closed before navigation.
 - Syntax checks passed for the adapter and its smoke test.
 - `npm test` passed all 33 offline checks on 2026-07-18.
