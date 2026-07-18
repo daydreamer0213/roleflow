@@ -1,0 +1,65 @@
+# BOSS Communication Live Acceptance
+
+## Current Status
+
+- Calibration status: `pending`
+- Execution enabled: `false`
+- Real communication clicks completed: `0`
+- Production communication CLI/dashboard execution: disabled
+
+## 2026-07-18 Read-Only Evidence
+
+One existing logged-in Edge session was inspected at low frequency. The test used one saved-style BOSS job URL and did not reload the page or click any communication/application action.
+
+Observed standalone detail structure:
+
+| Field | Observed selector or rule |
+| --- | --- |
+| URL | `/job_detail/<job-id>.html` |
+| Header | `.job-primary.detail-box` |
+| Recruiting status | `.job-status`, observed text `招聘中` |
+| Job title | `.job-primary h1` |
+| Salary | `.job-primary .salary` |
+| Company | `.sider-company .company-info` |
+| Ready action | `a.btn.btn-startchat`, exact text `立即沟通` |
+| Recruiter activity | `.job-boss-info .boss-active-time` |
+
+Safety evidence:
+
+- Detail navigations: 1
+- Reloads: 0
+- Communication/application clicks: 0
+- Risk-control signals: none
+- Login-loss signals: none
+- Parallel BOSS operations: none
+
+No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
+
+## Confirmed Design Consequences
+
+1. Search-page capture and standalone-detail communication inspection require different DOM helpers.
+2. Communication must open the saved canonical detail URL; it must not search for the old card again.
+3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
+4. Visible, enabled controls whose labels contain "communication" are candidates. Exactly one candidate with the exact label "immediate communication" is required; non-communication controls such as favorite are ignored. Missing status, missing or ambiguous candidates, and a non-exact candidate fail closed. Hidden or disabled controls are excluded from candidates.
+5. The current evidence supports read-only recognition of exactly one `立即沟通` state. It does not support a click implementation.
+
+## Offline Engineering Verification
+
+- The standalone-detail helper is executed against a sanitized minimal DOM with Node's built-in `vm` module.
+- The fake-browser regression verifies two jobs reuse one communication tab, with one navigation per job and zero click calls.
+- A cached communication tab that changes into a search or unrelated page fails closed before navigation.
+- Syntax checks passed for the adapter and its smoke test.
+- `npm test` passed all 33 offline checks on 2026-07-18.
+- `PRODUCT_POLICY.operations.bossCommunication.calibration.executionEnabled` remains `false`.
+
+## Remaining Live Calibration
+
+The following states still require separate, explicitly approved, low-frequency observation:
+
+- an already-communicated standalone detail page;
+- an unavailable or closed job page;
+- the immediate post-click standalone detail state;
+- active chat identity for the same expected job;
+- one explicitly approved single communication click, followed by UI and stored-state verification.
+
+Do not enable production communication until every required state has current real-page evidence and the calibration review passes.

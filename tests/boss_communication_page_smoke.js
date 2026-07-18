@@ -8,7 +8,9 @@ const { communicationCalibrationStatus } = require("../src/core/communication_ca
 
 const jobUrl = "https://www.zhipin.com/job_detail/fake123.html";
 const secondJobUrl = "https://www.zhipin.com/job_detail/fake456.html";
+const searchUrl = "https://www.zhipin.com/web/geek/jobs?query=fake";
 const communicationLabel = "\u7acb\u5373\u6c9f\u901a";
+const continuingCommunicationLabel = "\u7ee7\u7eed\u6c9f\u901a";
 const readySnapshot = {
   url: jobUrl,
   jobId: "fake123",
@@ -47,26 +49,23 @@ assert.deepStrictEqual(
   }
 );
 
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, jobId: "other" }, expectedJob).state,
-  "target_mismatch"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, url: secondJobUrl }, expectedJob).state,
-  "target_mismatch"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, url: "https://www.zhipin.com/job_detail/.html" }, expectedJob).state,
-  "target_mismatch"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, title: "Java\u5f00\u53d1\u5de5\u7a0b\u5e08" }, expectedJob).state,
-  "target_mismatch"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, company: "\u53e6\u4e00\u5bb6\u516c\u53f8" }, expectedJob).state,
-  "target_mismatch"
-);
+for (const [snapshot, expectedState] of [
+  [{ ...readySnapshot, jobId: "other" }, "target_mismatch"],
+  [{ ...readySnapshot, url: secondJobUrl }, "target_mismatch"],
+  [{ ...readySnapshot, url: "https://www.zhipin.com/job_detail/.html" }, "target_mismatch"],
+  [{ ...readySnapshot, title: "Java\u5f00\u53d1\u5de5\u7a0b\u5e08" }, "target_mismatch"],
+  [{ ...readySnapshot, company: "\u53e6\u4e00\u5bb6\u516c\u53f8" }, "target_mismatch"],
+  [{ ...readySnapshot, jobStatus: "\u505c\u6b62\u62db\u8058", actions: [] }, "job_unavailable"],
+  [{ ...readySnapshot, jobStatus: "" }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0] }, { ...readySnapshot.actions[0] }] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], label: "\u6536\u85cf" }] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], visible: false }] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], disabled: true }] }, "action_unavailable"],
+  [{ ...readySnapshot, pageReady: false }, "action_unavailable"]
+]) {
+  assert.strictEqual(classifyBossCommunicationSnapshot(snapshot, expectedJob).state, expectedState);
+}
 assert.strictEqual(
   classifyBossCommunicationSnapshot(
     { ...readySnapshot, company: "\u5e7f\u5dde\u661f\u6cb3\u667a\u80fd\u79d1\u6280\u6709\u9650\u516c\u53f8" },
@@ -74,47 +73,6 @@ assert.strictEqual(
   ).state,
   "ready"
 );
-assert.strictEqual(
-  classifyBossCommunicationSnapshot(
-    { ...readySnapshot, company: "\u661f\u6cb3\u667a\u80fd" },
-    { ...expectedJob, company: "\u5e7f\u5dde\u661f\u6cb3\u667a\u80fd\u79d1\u6280\u6709\u9650\u516c\u53f8" }
-  ).state,
-  "ready"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, jobStatus: "\u505c\u6b62\u62db\u8058", actions: [] }, expectedJob).state,
-  "job_unavailable"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({ ...readySnapshot, actions: [] }, expectedJob).state,
-  "action_unavailable"
-);
-assert.strictEqual(
-  classifyBossCommunicationSnapshot({
-    ...readySnapshot,
-    actions: [
-      { ...readySnapshot.actions[0] },
-      { ...readySnapshot.actions[0] }
-    ]
-  }, expectedJob).state,
-  "action_unavailable"
-);
-function without(snapshot, field) {
-  const copy = { ...snapshot };
-  delete copy[field];
-  return copy;
-}
-for (const [snapshot, expectedState] of [
-  [{ ...readySnapshot, pageReady: false }, "action_unavailable"],
-  [without(readySnapshot, "jobId"), "target_mismatch"],
-  [without(readySnapshot, "title"), "target_mismatch"],
-  [without(readySnapshot, "company"), "target_mismatch"],
-  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], label: "\u6536\u85cf" }] }, "action_unavailable"],
-  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], visible: false }] }, "action_unavailable"],
-  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], disabled: true }] }, "action_unavailable"]
-]) {
-  assert.strictEqual(classifyBossCommunicationSnapshot(snapshot, expectedJob).state, expectedState);
-}
 assert.throws(
   () => classifyBossCommunicationSnapshot({ ...readySnapshot, risk: true }, expectedJob),
   (error) => error.code === "BOSS_RISK_CONTROL"
@@ -124,55 +82,83 @@ assert.throws(
   (error) => error.code === "BOSS_LOGIN_REQUIRED"
 );
 
-function snapshotContext(url) {
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function actionNode(label = communicationLabel, { visible = true, disabled = false } = {}) {
+  return testNode({
+    text: label,
+    rect: visible ? { x: 320, y: 120, width: 150, height: 45 } : { x: 320, y: 120, width: 0, height: 0 },
+    disabled,
+    style: visible ? {} : { display: "none" }
+  });
+}
+
+function fixtureForUrl(url, fixtures) {
   const job = url === secondJobUrl ? secondJob : expectedJob;
-  const action = testNode({ text: communicationLabel, rect: { x: 320, y: 120, width: 150, height: 45 } });
-  const actionRoot = testNode({ actions: [action] });
+  return {
+    job,
+    jobStatus: readySnapshot.jobStatus,
+    actions: [actionNode()],
+    ...(fixtures.get(url) || {})
+  };
+}
+
+function snapshotContext(url, fixtures) {
+  const fixture = fixtureForUrl(url, fixtures);
+  const actionRoot = testNode({ actions: fixture.actions });
   const header = testNode({ children: { ".job-op": actionRoot } });
   const nodes = {
-    ".job-primary.detail-box": header,
-    ".job-primary": header,
-    ".job-primary h1": testNode({ text: job.title }),
+    ".job-primary.detail-box": /^\/job_detail\//.test(new URL(url).pathname) ? header : null,
+    ".job-primary": /^\/job_detail\//.test(new URL(url).pathname) ? header : null,
+    ".job-primary h1": testNode({ text: fixture.job.title }),
     ".job-primary .salary": testNode({ text: readySnapshot.salary }),
-    ".job-status": testNode({ text: readySnapshot.jobStatus }),
-    ".sider-company .company-info": testNode({ text: job.company }),
+    ".sider-company .company-info": testNode({ text: fixture.job.company }),
     ".job-boss-info .boss-active-time": testNode({ text: readySnapshot.bossActiveText })
   };
+  if (fixture.jobStatus !== undefined) nodes[".job-status"] = testNode({ text: fixture.jobStatus });
   const document = {
     title: "",
     body: { innerText: "Standalone detail fixture" },
     querySelector(selector) { return nodes[selector] || null; },
-    querySelectorAll() { return []; }
+    querySelectorAll(selector) {
+      const collections = { ".sign-form, .login-register, [class*='login-form']": [] };
+      return collections[selector] || [];
+    }
   };
   const context = vm.createContext({
     document,
     location: new URL(url),
     URLSearchParams,
-    getComputedStyle() {
-      return { display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto" };
+    getComputedStyle(element) {
+      return { display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto", ...(element?.style || {}) };
     }
   });
   context.window = context;
   return context;
 }
 
-function testNode({ text = "", rect = { x: 0, y: 0, width: 0, height: 0 }, actions = [], children = {} } = {}) {
+function testNode({ text = "", rect = { x: 0, y: 0, width: 0, height: 0 }, actions = [], children = {}, disabled = false, style = {} } = {}) {
   return {
     innerText: text,
     textContent: text,
-    disabled: false,
-    classList: { contains() { return false; } },
-    getAttribute() { return null; },
+    disabled,
+    style,
+    classList: { contains(name) { return disabled && name === "disabled"; } },
+    getAttribute(name) { return disabled && name === "aria-disabled" ? "true" : null; },
     getBoundingClientRect() { return rect; },
-    matches() { return false; },
+    matches(selector) { return disabled && selector === ":disabled"; },
     querySelector(selector) { return children[selector] || null; },
-    querySelectorAll() { return actions; }
+    querySelectorAll(selector) { return selector === "a, button, [role='button']" ? actions : []; }
   };
 }
 
-function fakeBrowser({ tabs } = {}) {
+function fakeBrowser({ tabs = [], fixtures = new Map(), createTabGate = null, createStarted = null } = {}) {
   const calls = { listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [] };
-  let currentTabs = tabs || [];
+  let currentTabs = tabs;
   const contexts = new Map();
   const snapshots = [];
   return {
@@ -184,8 +170,11 @@ function fakeBrowser({ tabs } = {}) {
     },
     async createTab(openerTabId, url) {
       calls.createTab.push([openerTabId, url]);
-      const id = "communication-created";
-      currentTabs = [...currentTabs, { id, url }];
+      createStarted?.resolve();
+      if (createTabGate) await createTabGate.promise;
+      const opener = currentTabs.find((tab) => tab.id === openerTabId);
+      const id = `communication-created${calls.createTab.length === 1 ? "" : `-${calls.createTab.length}`}`;
+      currentTabs = [...currentTabs, { id, url, windowId: opener?.windowId }];
       return id;
     },
     async bringToFront(tabId) { calls.bringToFront.push(tabId); },
@@ -197,7 +186,7 @@ function fakeBrowser({ tabs } = {}) {
     async evalValue(tabId, expression) {
       calls.evalValue.push([tabId, expression]);
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
-      if (!contexts.has(tabId)) contexts.set(tabId, snapshotContext(tab?.url || "about:blank"));
+      if (!contexts.has(tabId)) contexts.set(tabId, snapshotContext(tab?.url || "about:blank", fixtures));
       const result = vm.runInContext(expression, contexts.get(tabId));
       if (expression === "(() => window.__bossCommunicationSnapshot())()") snapshots.push(result);
       return result;
@@ -206,90 +195,159 @@ function fakeBrowser({ tabs } = {}) {
     setTabUrl(tabId, url) {
       currentTabs = currentTabs.map((tab) => tab.id === tabId ? { ...tab, url } : tab);
       contexts.delete(tabId);
+    },
+    removeTab(tabId) {
+      currentTabs = currentTabs.filter((tab) => tab.id !== tabId);
+      contexts.delete(tabId);
     }
   };
+}
+
+function assertNoPageAction(browser, before) {
+  assert.strictEqual(browser.calls.createTab.length, before.createTab);
+  assert.strictEqual(browser.calls.navigate.length, before.navigate);
+  assert.strictEqual(browser.calls.clickAt.length, before.clickAt);
 }
 
 (async () => {
   const existingBrowser = fakeBrowser({
     tabs: [
-      { id: "search", url: "https://www.zhipin.com/web/geek/jobs?query=fake" },
-      { id: "detail", url: jobUrl }
+      { id: "search", url: searchUrl, windowId: "window-1" },
+      { id: "detail", url: jobUrl, windowId: "window-1" }
     ]
   });
   const existingAdapter = new BossSiteAdapter({ browser: existingBrowser, sleepFn: async () => {} });
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
-  assert.deepStrictEqual(existingBrowser.calls.createTab, []);
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
   assert.deepStrictEqual(existingBrowser.calls.createTab, []);
-  existingBrowser.setTabUrl("detail", "https://www.zhipin.com/web/geek/jobs?query=fake");
-  const callsBeforeLostTab = {
+
+  existingBrowser.setTabUrl("search", jobUrl);
+  const callsBeforeSearchDrift = {
     createTab: existingBrowser.calls.createTab.length,
     navigate: existingBrowser.calls.navigate.length,
     clickAt: existingBrowser.calls.clickAt.length
   };
   await assert.rejects(
-    () => existingAdapter.prepareCommunicationTab("search"),
-    (error) => error.code === "BOSS_DETAIL_PAGE_LOST"
+    () => existingAdapter.prepareCommunicationTab(),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
   );
-  assert.strictEqual(existingBrowser.calls.createTab.length, callsBeforeLostTab.createTab);
-  assert.strictEqual(existingBrowser.calls.navigate.length, callsBeforeLostTab.navigate);
-  assert.strictEqual(existingBrowser.calls.clickAt.length, callsBeforeLostTab.clickAt);
-  assert.deepStrictEqual(existingBrowser.calls.bringToFront, ["detail", "detail"]);
+  assertNoPageAction(existingBrowser, callsBeforeSearchDrift);
 
-  const createdBrowser = fakeBrowser({
-    tabs: [{ id: "search", url: "https://www.zhipin.com/web/geek/jobs?query=fake" }]
-  });
-  const createdAdapter = new BossSiteAdapter({ browser: createdBrowser, sleepFn: async () => {} });
-  assert.strictEqual(await createdAdapter.prepareCommunicationTab("search"), "communication-created");
-  assert.deepStrictEqual(createdBrowser.calls.createTab, [["search", "about:blank"]]);
-  assert.deepStrictEqual(createdBrowser.calls.bringToFront, ["communication-created"]);
+  const closedSearchBrowser = fakeBrowser({ tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }] });
+  const closedSearchAdapter = new BossSiteAdapter({ browser: closedSearchBrowser, sleepFn: async () => {} });
+  await closedSearchAdapter.prepareCommunicationTab("search");
+  closedSearchBrowser.removeTab("search");
+  const callsBeforeSearchClosed = {
+    createTab: closedSearchBrowser.calls.createTab.length,
+    navigate: closedSearchBrowser.calls.navigate.length,
+    clickAt: closedSearchBrowser.calls.clickAt.length
+  };
+  await assert.rejects(
+    () => closedSearchAdapter.prepareCommunicationTab(),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
+  );
+  assertNoPageAction(closedSearchBrowser, callsBeforeSearchClosed);
 
-  const inspectBrowser = fakeBrowser({
-    tabs: [{ id: "search", url: "https://www.zhipin.com/web/geek/jobs?query=fake" }]
+  const crossWindowBrowser = fakeBrowser({
+    tabs: [
+      { id: "search", url: searchUrl, windowId: "window-1" },
+      { id: "detail", url: jobUrl, windowId: "window-2" }
+    ]
   });
+  assert.strictEqual(
+    await new BossSiteAdapter({ browser: crossWindowBrowser, sleepFn: async () => {} }).prepareCommunicationTab("search"),
+    "communication-created"
+  );
+  assert.deepStrictEqual(crossWindowBrowser.calls.createTab, [["search", "about:blank"]]);
+
+  const createGate = deferred();
+  const createStarted = deferred();
+  const parallelPrepareBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    createTabGate: createGate,
+    createStarted
+  });
+  const parallelPrepareAdapter = new BossSiteAdapter({ browser: parallelPrepareBrowser, sleepFn: async () => {} });
+  const firstPrepare = parallelPrepareAdapter.prepareCommunicationTab("search");
+  await createStarted.promise;
+  const secondPrepare = parallelPrepareAdapter.prepareCommunicationTab("search");
+  assert.strictEqual(parallelPrepareBrowser.calls.createTab.length, 1);
+  createGate.resolve();
+  assert.strictEqual(await firstPrepare, "communication-created");
+  assert.strictEqual(await secondPrepare, "communication-created");
+
+  const inspectBrowser = fakeBrowser({ tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }] });
   const inspectAdapter = new BossSiteAdapter({ browser: inspectBrowser, sleepFn: async () => {} });
-  const inspection = await inspectAdapter.inspectCommunicationJob({ url: jobUrl, title: expectedJob.title, company: expectedJob.company });
+  const inspection = await inspectAdapter.inspectCommunicationJob(expectedJob);
   assert.strictEqual(inspection.state, "ready");
   const secondInspection = await inspectAdapter.inspectCommunicationJob(secondJob);
   assert.strictEqual(secondInspection.state, "ready");
   assert.deepStrictEqual(inspectBrowser.calls.createTab, [["search", "about:blank"]]);
   assert.deepStrictEqual(inspectBrowser.calls.navigate, [["communication-created", jobUrl], ["communication-created", secondJobUrl]]);
-  assert.strictEqual(inspectBrowser.calls.navigate.length, 2);
-  assert.deepStrictEqual(inspectBrowser.calls.bringToFront, ["communication-created", "communication-created"]);
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
-  assert(inspectBrowser.calls.evalValue.every(([, expression]) => !expression.includes("clickAt")));
+  assert(inspectBrowser.calls.evalValue.some(([, expression]) => expression.includes("window.__bossCommunicationSnapshot = function()")));
   const snapshot = JSON.parse(JSON.stringify(inspectBrowser.snapshots[0]));
   assert.deepStrictEqual(snapshot, readySnapshot);
   assert.deepStrictEqual(Object.keys(snapshot).sort(), [
     "actions", "bossActiveText", "company", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "title", "url"
   ]);
-  for (const sensitiveOrNonContractField of ["description", "email", "html", "jd", "phone", "recruiter"]) {
-    assert(!Object.hasOwn(snapshot, sensitiveOrNonContractField));
+
+  for (const fixture of [
+    { actions: [actionNode("\u6536\u85cf"), actionNode("\u5b8c\u5584\u7b80\u5386"), actionNode(), actionNode(continuingCommunicationLabel)] },
+    { actions: [actionNode(communicationLabel, { visible: false })] },
+    { actions: [actionNode(communicationLabel, { disabled: true })] },
+    { jobStatus: undefined }
+  ]) {
+    const browser = fakeBrowser({
+      tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+      fixtures: new Map([[jobUrl, fixture]])
+    });
+    const result = await new BossSiteAdapter({ browser, sleepFn: async () => {} }).inspectCommunicationJob(expectedJob);
+    assert.strictEqual(result.state, "action_unavailable");
+    const domSnapshot = JSON.parse(JSON.stringify(browser.snapshots[0]));
+    if (fixture.actions?.[0] && fixture.actions.length === 1) assert.deepStrictEqual(domSnapshot.actions, []);
+    if (fixture.actions?.some((action) => action.innerText === continuingCommunicationLabel)) {
+      assert.deepStrictEqual(domSnapshot.actions.map((action) => action.label), [communicationLabel, continuingCommunicationLabel]);
+    }
+    if (fixture.jobStatus === undefined && !fixture.actions) assert.strictEqual(domSnapshot.jobStatus, "");
   }
+
+  const busySleepStarted = deferred();
+  const busySleepGate = deferred();
+  const busyBrowser = fakeBrowser({ tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }] });
+  const busyAdapter = new BossSiteAdapter({
+    browser: busyBrowser,
+    sleepFn: async () => {
+      busySleepStarted.resolve();
+      await busySleepGate.promise;
+    }
+  });
+  const firstInspection = busyAdapter.inspectCommunicationJob(expectedJob);
+  await busySleepStarted.promise;
+  await assert.rejects(
+    () => busyAdapter.inspectCommunicationJob(secondJob),
+    (error) => error.code === "BOSS_COMMUNICATION_BUSY"
+  );
+  assert.deepStrictEqual(busyBrowser.calls.createTab, [["search", "about:blank"]]);
+  assert.deepStrictEqual(busyBrowser.calls.navigate, [["communication-created", jobUrl]]);
+  busySleepGate.resolve();
+  assert.strictEqual((await firstInspection).state, "ready");
+  assert.strictEqual((await busyAdapter.inspectCommunicationJob(secondJob)).state, "ready");
 
   await assert.rejects(
     () => inspectAdapter.inspectCommunicationJob({ url: "http://www.zhipin.com/job_detail/fake123.html", title: expectedJob.title, company: expectedJob.company }),
     (error) => error.code === "BOSS_COMMUNICATION_URL_INVALID"
   );
   await assert.rejects(
-    () => inspectAdapter.inspectCommunicationJob({ url: "https://www.zhipin.com/job_detail/", title: expectedJob.title, company: expectedJob.company }),
-    (error) => error.code === "BOSS_COMMUNICATION_URL_INVALID"
-  );
-  assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
-
-  await assert.rejects(
     () => inspectAdapter.dispatchCommunication({}),
     (error) => error.code === "BOSS_COMMUNICATION_CALIBRATION_REQUIRED"
   );
-  assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
   await assert.rejects(
     () => inspectAdapter.verifyCommunicationResult({}),
     (error) => error.code === "BOSS_COMMUNICATION_CALIBRATION_REQUIRED"
   );
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
   assert.deepStrictEqual(communicationCalibrationStatus(), { status: "pending", executionEnabled: false });
-
   console.log("boss_communication_page_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);

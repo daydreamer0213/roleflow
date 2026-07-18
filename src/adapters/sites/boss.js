@@ -257,7 +257,7 @@ const PAGE_HELPERS = String.raw`
           height: rect.height
         };
       })
-      .filter((item) => item.label === "\u7acb\u5373\u6c9f\u901a");
+      .filter((item) => item.label.includes("\u6c9f\u901a"));
     const text = (selector, root = document) => {
       const node = root?.querySelector(selector);
       return decode(node?.innerText || node?.textContent || "");
@@ -291,6 +291,9 @@ class BossSiteAdapter {
     this.listNavigations = 0;
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.communicationTabId = null;
+    this.communicationSearchTabId = null;
+    this.communicationInspectionInFlight = false;
+    this.communicationTabPreparationPromise = null;
     this.resetPacing();
   }
 
@@ -1101,11 +1104,40 @@ class BossSiteAdapter {
 
   async prepareCommunicationTab(searchTabId = null) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication inspection requires a browser connection.");
+    if (this.communicationTabPreparationPromise) return this.communicationTabPreparationPromise;
+    const preparation = this.prepareCommunicationTabOnce(searchTabId);
+    this.communicationTabPreparationPromise = preparation;
+    try {
+      return await preparation;
+    } finally {
+      if (this.communicationTabPreparationPromise === preparation) this.communicationTabPreparationPromise = null;
+    }
+  }
+
+  async prepareCommunicationTabOnce(searchTabId = null) {
     const tabs = await this.browser.listTabs();
+    const hasCachedSearchTab = this.communicationSearchTabId !== null;
+    const searchTab = searchTabId === null || searchTabId === undefined
+      ? hasCachedSearchTab
+        ? tabs.find((tab) => String(tab.id) === String(this.communicationSearchTabId))
+        : tabs.filter(isBossSearchTab).sort(compareBossTabs)[0]
+      : tabs.find((tab) => String(tab.id) === String(searchTabId));
+    if (!searchTab || !isBossSearchTab(searchTab)) {
+      throw bossError(
+        hasCachedSearchTab ? "BOSS_SEARCH_PAGE_LOST" : "BOSS_TAB_REQUIRED",
+        "A verified fixed BOSS search tab is required to prepare communication inspection."
+      );
+    }
+    await this.assertSearchPage(searchTab.id);
+    this.communicationSearchTabId = searchTab.id;
+
     const stored = this.communicationTabId === null
       ? null
       : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
     if (stored) {
+      if (!sameBossWindow(searchTab, stored)) {
+        throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH", "The fixed BOSS communication tab is in a different browser window.");
+      }
       if (!isCachedBossCommunicationTab(stored)) {
         throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
       }
@@ -1114,19 +1146,13 @@ class BossSiteAdapter {
     }
     this.communicationTabId = null;
 
-    const reusable = tabs.filter(isReusableBossCommunicationTab).sort(compareBossTabs)[0];
+    const reusable = tabs.filter((tab) => isReusableBossCommunicationTab(tab) && sameBossWindow(searchTab, tab)).sort(compareBossTabs)[0];
     if (reusable) {
       this.communicationTabId = reusable.id;
       await this.browser.bringToFront(reusable.id);
       return reusable.id;
     }
 
-    const searchTab = searchTabId === null || searchTabId === undefined
-      ? tabs.filter(isBossSearchTab).sort(compareBossTabs)[0]
-      : tabs.find((tab) => String(tab.id) === String(searchTabId));
-    if (!searchTab || !isBossSearchTab(searchTab)) {
-      throw bossError("BOSS_TAB_REQUIRED", "A verified BOSS search tab is required to prepare communication inspection.");
-    }
     const tabId = await this.browser.createTab(searchTab.id, "about:blank");
     this.communicationTabId = tabId;
     await this.browser.bringToFront(tabId);
@@ -1135,25 +1161,33 @@ class BossSiteAdapter {
 
   async inspectCommunicationJob(job, signal = null) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication inspection requires a browser connection.");
-    throwIfAborted(signal);
-    const url = normalizeTrustedBossCommunicationUrl(job?.url);
-    if (!url) {
-      throw bossError("BOSS_COMMUNICATION_URL_INVALID", "BOSS communication inspection requires a trusted standalone detail URL.");
+    if (this.communicationInspectionInFlight) {
+      throw bossError("BOSS_COMMUNICATION_BUSY", "A BOSS communication inspection is already in progress.");
     }
-    const tabId = await this.prepareCommunicationTab();
-    await this.browser.navigate(tabId, url);
-    await this.waitWithPacing("detail");
-    await this.browser.evalValue(tabId, PAGE_HELPERS);
-
-    let inspection = { state: "action_unavailable" };
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    this.communicationInspectionInFlight = true;
+    try {
       throwIfAborted(signal);
-      const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
-      inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
-      if (["ready", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
-      if (attempt < 3) await this.waitWithPacing("retry");
+      const url = normalizeTrustedBossCommunicationUrl(job?.url);
+      if (!url) {
+        throw bossError("BOSS_COMMUNICATION_URL_INVALID", "BOSS communication inspection requires a trusted standalone detail URL.");
+      }
+      const tabId = await this.prepareCommunicationTab();
+      await this.browser.navigate(tabId, url);
+      await this.waitWithPacing("detail");
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+
+      let inspection = { state: "action_unavailable" };
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        throwIfAborted(signal);
+        const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+        inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
+        if (["ready", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
+        if (attempt < 3) await this.waitWithPacing("retry");
+      }
+      return inspection;
+    } finally {
+      this.communicationInspectionInFlight = false;
     }
-    return inspection;
   }
 
   async dispatchCommunication() {
@@ -1585,7 +1619,9 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
     || !sameBossCommunicationCompany(snapshot, expectedJob)) {
     return { state: "target_mismatch" };
   }
-  if (String(snapshot?.jobStatus || "").trim() && normalizeCommunicationText(snapshot.jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
+  const jobStatus = String(snapshot?.jobStatus || "").trim();
+  if (!jobStatus) return { state: "action_unavailable" };
+  if (normalizeCommunicationText(jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
     return { state: "job_unavailable" };
   }
   const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
@@ -1625,6 +1661,12 @@ function isReusableBossCommunicationTab(tab) {
 
 function isCachedBossCommunicationTab(tab) {
   return /^about:blank$/i.test(String(tab?.url || "")) || isReusableBossCommunicationTab(tab);
+}
+
+function sameBossWindow(first, second) {
+  if (first?.windowId === undefined || first?.windowId === null) return true;
+  if (second?.windowId === undefined || second?.windowId === null) return true;
+  return String(first.windowId) === String(second.windowId);
 }
 
 module.exports = {
