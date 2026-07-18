@@ -1106,6 +1106,9 @@ class BossSiteAdapter {
       ? null
       : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
     if (stored) {
+      if (!isCachedBossCommunicationTab(stored)) {
+        throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
+      }
       await this.browser.bringToFront(stored.id);
       return stored.id;
     }
@@ -1616,9 +1619,12 @@ function isBossSearchTab(tab) {
 
 function isReusableBossCommunicationTab(tab) {
   const url = String(tab?.url || "");
-  return /^https:\/\/www\.zhipin\.com\//i.test(url)
-    && !isBossSearchTab(tab)
-    && (/\/job_detail\//i.test(url) || /\/web\/geek\/chat(?:[/?#]|$)/i.test(url));
+  return /^https:\/\/www\.zhipin\.com\/job_detail\/[^/?#]+\.html(?:[?#]|$)/i.test(url)
+    || /^https:\/\/www\.zhipin\.com\/web\/geek\/chat(?:[/?#]|$)/i.test(url);
+}
+
+function isCachedBossCommunicationTab(tab) {
+  return /^about:blank$/i.test(String(tab?.url || "")) || isReusableBossCommunicationTab(tab);
 }
 
 module.exports = {
