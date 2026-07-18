@@ -1140,6 +1140,11 @@ class BossSiteAdapter {
     await this.assertSearchPage(searchTab.id);
     this.communicationSearchTabId = searchTab.id;
 
+    const reusableCandidates = tabs.filter(isReusableBossCommunicationTab);
+    if (reusableCandidates.some((tab) => !hasKnownBossWindow(tab))) {
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "A reusable BOSS communication tab has no reliable browser window identity.");
+    }
+
     const stored = this.communicationTabId === null
       ? null
       : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
@@ -1155,7 +1160,7 @@ class BossSiteAdapter {
     }
     this.communicationTabId = null;
 
-    const reusable = tabs.filter((tab) => isReusableBossCommunicationTab(tab) && sameBossWindow(searchTab, tab)).sort(compareBossTabs)[0];
+    const reusable = reusableCandidates.filter((tab) => sameBossWindow(searchTab, tab)).sort(compareBossTabs)[0];
     if (reusable) {
       this.communicationTabId = reusable.id;
       await this.browser.bringToFront(reusable.id);

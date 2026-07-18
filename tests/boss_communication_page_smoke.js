@@ -273,7 +273,7 @@ function assertNoPreparationAction(browser, before) {
   const storedUnknownWindowCalls = preparationCallCounts(storedUnknownWindowBrowser);
   await assert.rejects(
     () => storedUnknownWindowAdapter.prepareCommunicationTab("search"),
-    (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH"
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
   );
   assert.strictEqual(storedUnknownWindowBrowser.calls.createTab.length, storedUnknownWindowCalls.createTab);
   assert.strictEqual(storedUnknownWindowBrowser.calls.bringToFront.length, storedUnknownWindowCalls.bringToFront);
@@ -287,9 +287,14 @@ function assertNoPreparationAction(browser, before) {
     ]
   });
   const reusableUnknownWindowAdapter = new BossSiteAdapter({ browser: reusableUnknownWindowBrowser, sleepFn: async () => {} });
-  assert.strictEqual(await reusableUnknownWindowAdapter.prepareCommunicationTab("search"), "communication-created");
-  assert.deepStrictEqual(reusableUnknownWindowBrowser.calls.createTab, [["search", "about:blank"]]);
-  assert.deepStrictEqual(reusableUnknownWindowBrowser.calls.bringToFront, ["communication-created"]);
+  const reusableUnknownWindowCalls = preparationCallCounts(reusableUnknownWindowBrowser);
+  await assert.rejects(
+    () => reusableUnknownWindowAdapter.prepareCommunicationTab("search"),
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
+  );
+  assert.strictEqual(reusableUnknownWindowBrowser.calls.createTab.length, reusableUnknownWindowCalls.createTab);
+  assert.strictEqual(reusableUnknownWindowBrowser.calls.navigate.length, reusableUnknownWindowCalls.navigate);
+  assert.strictEqual(reusableUnknownWindowBrowser.calls.clickAt.length, reusableUnknownWindowCalls.clickAt);
 
   existingBrowser.setTabUrl("search", jobUrl);
   const callsBeforeSearchDrift = {
