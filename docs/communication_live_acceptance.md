@@ -48,6 +48,23 @@ The merged production adapter was then exercised once against an existing logged
 - Risk-control or login-loss signals: none
 - Database writes: none
 
+### Already-Communicated State
+
+One previously applied local record was inspected through the merged adapter with one additional standalone-detail navigation. The adapter failed closed as `action_unavailable`; a follow-up read-only DOM inspection established the missing semantic state.
+
+- Recruiting status: exact text `招聘中`
+- Communication candidates: exactly one visible, enabled control
+- Exact action label: `继续沟通`
+- Action class: `btn btn-startchat`
+- Adapter result before semantic support: `action_unavailable`
+- Adapter elapsed time: 5,781 ms
+- Browser operations: 1 detail navigation, 0 reloads, 0 clicks
+- Tab topology: the fixed search tab and fixed communication tab remained separate in the same known window
+- Risk-control or login-loss signals: none
+- Database writes: none
+
+The classifier should eventually expose this as a distinct `already_communicated` read-only state. It must not treat `继续沟通` as a fresh `立即沟通` action or click it during initial application dispatch.
+
 No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
 
 ## Confirmed Design Consequences
@@ -56,7 +73,7 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
 3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
 4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
-5. The current evidence supports read-only recognition of exactly one `立即沟通` state through the merged adapter. It does not support a click implementation.
+5. The current evidence supports one `立即沟通` ready state through the merged adapter and one observed `继续沟通` state that still needs explicit `already_communicated` classification. It does not support a click implementation.
 
 ## Window Identity and Transport Boundary
 
@@ -79,7 +96,6 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 
 The following states still require separate, explicitly approved, low-frequency observation:
 
-- an already-communicated standalone detail page;
 - an unavailable or closed job page;
 - the immediate post-click standalone detail state;
 - active chat identity for the same expected job;
