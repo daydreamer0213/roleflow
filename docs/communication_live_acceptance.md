@@ -33,6 +33,21 @@ Safety evidence:
 - Login-loss signals: none
 - Parallel BOSS operations: none
 
+### Merged Adapter Smoke Test
+
+The merged production adapter was then exercised once against an existing logged-in Edge session. The run used the project's default randomized pacing and completed in 4,628 ms.
+
+- Adapter result: `ready`
+- Exact action label: `立即沟通`
+- Salary and recruiter-activity fields: identified
+- Browser operations: 1 detail navigation, 0 reloads, 0 clicks
+- Tab topology: 2 tabs before and after the run
+- Search tab: preserved with the same fixed tab ID
+- Communication tab: reused with the same fixed tab ID
+- Window identity: both tabs retained the same known `windowId`
+- Risk-control or login-loss signals: none
+- Database writes: none
+
 No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
 
 ## Confirmed Design Consequences
@@ -41,7 +56,7 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
 3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
 4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
-5. The current evidence supports read-only recognition of exactly one `立即沟通` state. It does not support a click implementation.
+5. The current evidence supports read-only recognition of exactly one `立即沟通` state through the merged adapter. It does not support a click implementation.
 
 ## Window Identity and Transport Boundary
 
