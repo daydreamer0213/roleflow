@@ -48,6 +48,13 @@ assert.deepStrictEqual(
     clickPoint: { x: 395, y: 142.5 }
   }
 );
+assert.deepStrictEqual(
+  classifyBossCommunicationSnapshot({
+    ...readySnapshot,
+    actions: [{ ...readySnapshot.actions[0], label: continuingCommunicationLabel }]
+  }, expectedJob),
+  { state: "already_communicated" }
+);
 
 for (const [snapshot, expectedState] of [
   [{ ...readySnapshot, jobId: "other" }, "target_mismatch"],
@@ -62,6 +69,8 @@ for (const [snapshot, expectedState] of [
   [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], label: "\u6536\u85cf" }] }, "action_unavailable"],
   [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], visible: false }] }, "action_unavailable"],
   [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], disabled: true }] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], label: continuingCommunicationLabel, visible: false }] }, "action_unavailable"],
+  [{ ...readySnapshot, actions: [{ ...readySnapshot.actions[0], label: continuingCommunicationLabel, disabled: true }] }, "action_unavailable"],
   [{ ...readySnapshot, pageReady: false }, "action_unavailable"]
 ]) {
   assert.strictEqual(classifyBossCommunicationSnapshot(snapshot, expectedJob).state, expectedState);
@@ -366,6 +375,21 @@ function assertNoPreparationAction(browser, before) {
   assert.deepStrictEqual(Object.keys(snapshot).sort(), [
     "actions", "bossActiveText", "company", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "title", "url"
   ]);
+
+  const alreadyCommunicatedBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    fixtures: new Map([[jobUrl, { actions: [actionNode(continuingCommunicationLabel)] }]])
+  });
+  const alreadyCommunicatedResult = await new BossSiteAdapter({
+    browser: alreadyCommunicatedBrowser,
+    sleepFn: async () => {}
+  }).inspectCommunicationJob(expectedJob);
+  assert.strictEqual(alreadyCommunicatedResult.state, "already_communicated");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(alreadyCommunicatedBrowser.snapshots[0].actions.map((action) => action.label))),
+    [continuingCommunicationLabel]
+  );
+  assert.strictEqual(alreadyCommunicatedBrowser.calls.clickAt.length, 0);
 
   for (const fixture of [
     { actions: [actionNode("\u6536\u85cf"), actionNode("\u5b8c\u5584\u7b80\u5386"), actionNode(), actionNode(continuingCommunicationLabel)] },

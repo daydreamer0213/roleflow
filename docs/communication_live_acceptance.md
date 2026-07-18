@@ -56,14 +56,14 @@ One previously applied local record was inspected through the merged adapter wit
 - Communication candidates: exactly one visible, enabled control
 - Exact action label: `继续沟通`
 - Action class: `btn btn-startchat`
-- Adapter result before semantic support: `action_unavailable`
+- Live adapter result before semantic support: `action_unavailable`
 - Adapter elapsed time: 5,781 ms
 - Browser operations: 1 detail navigation, 0 reloads, 0 clicks
 - Tab topology: the fixed search tab and fixed communication tab remained separate in the same known window
 - Risk-control or login-loss signals: none
 - Database writes: none
 
-The classifier should eventually expose this as a distinct `already_communicated` read-only state. It must not treat `继续沟通` as a fresh `立即沟通` action or click it during initial application dispatch.
+The classifier now exposes this as a distinct `already_communicated` read-only state. It does not treat `继续沟通` as a fresh `立即沟通` action or click it during initial application dispatch.
 
 No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
 
@@ -73,7 +73,7 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
 3. The action element's `ka` value is not a job identity. Pre-click identity must use URL job ID plus visible title and company.
 4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
-5. The current evidence supports one `立即沟通` ready state through the merged adapter and one observed `继续沟通` state that still needs explicit `already_communicated` classification. It does not support a click implementation.
+5. The current evidence supports one `立即沟通` ready state and one `继续沟通` state classified as `already_communicated`. It does not support a click implementation.
 
 ## Window Identity and Transport Boundary
 
@@ -85,6 +85,7 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 ## Offline Engineering Verification
 
 - The standalone-detail helper is executed against a sanitized minimal DOM with Node's built-in `vm` module.
+- A unique visible and enabled `继续沟通` control maps to `already_communicated`; hidden, disabled, mixed, or ambiguous controls still fail closed.
 - The fake-browser regression verifies two jobs reuse one communication tab, with one navigation per job and zero click calls.
 - The tab-identity regression rejects an attempted search-tab rebind before page assertion and rejects a fixed search tab without `windowId`; stored or reusable communication tabs without a known matching window are not reused.
 - A cached communication tab that changes into a search or unrelated page fails closed before navigation.

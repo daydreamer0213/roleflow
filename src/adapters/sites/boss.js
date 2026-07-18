@@ -1641,13 +1641,14 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
   const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
   if (actions.length !== 1) return { state: "action_unavailable" };
   const action = actions[0] || {};
-  const hasSafeAction = action.label === "\u7acb\u5373\u6c9f\u901a"
-    && action.visible !== false
+  const hasSafeAction = action.visible !== false
     && action.disabled !== true
     && [action.x, action.y, action.width, action.height].every((value) => Number.isFinite(Number(value)))
     && Number(action.width) > 0
     && Number(action.height) > 0;
   if (!hasSafeAction) return { state: "action_unavailable" };
+  if (action.label === "\u7ee7\u7eed\u6c9f\u901a") return { state: "already_communicated" };
+  if (action.label !== "\u7acb\u5373\u6c9f\u901a") return { state: "action_unavailable" };
   return {
     state: "ready",
     jobId: String(snapshot.jobId),
