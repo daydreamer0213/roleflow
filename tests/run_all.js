@@ -7,6 +7,7 @@ const tests = [
   "browser_transport_smoke.js",
   "scan_execution_smoke.js",
   "site_access_budget_smoke.js",
+  "workflow_planner_smoke.js",
   "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",
   "batch_state_consistency_smoke.js",

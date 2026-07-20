@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-20.3";
+const PRODUCT_POLICY_VERSION = "2026-07-20.4";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -31,6 +31,15 @@ const PRODUCT_POLICY = Object.freeze({
     salaryLaneLimit: 1
   }),
   operations: Object.freeze({
+    workflow: Object.freeze({
+      dailyTarget: 70,
+      maxRunsPerDay: 2,
+      maxRunTarget: 40,
+      replacementBuffer: 5,
+      fallbackYield: 0.2,
+      minimumYieldSample: 20,
+      maxKeywordsPerRun: 3
+    }),
     detailCacheMaxAgeDays: 3,
     scanHeartbeatMs: 60_000,
     scanLeaseTtlMs: 10 * 60_000,
