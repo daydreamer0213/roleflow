@@ -19,6 +19,9 @@ const {
 const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("./core/platform_filters");
 const {
   openDb,
+  getWorkflowRun,
+  transitionWorkflowRun,
+  attachWorkflowScan,
   createBatch,
   createAndBindScanBatch,
   getBatch,
@@ -59,6 +62,7 @@ const {
   rescorePlanObservations,
   reassessBatchObservations
 } = require("./core/storage");
+const { listWorkflowInventory } = require("./core/workflow_inventory");
 const { createSiteAccessController } = require("./core/site_access_budget");
 const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
@@ -175,6 +179,8 @@ async function executeWithSiteScanLease(db, args, command, run) {
   const scanKind = resolveScanKind(command, args);
   const runId = String(args["run-id"] || crypto.randomUUID()).trim();
   const planId = Number(args.plan || 0) || null;
+  const workflowRun = prepareWorkflowExecution(db, args, planId);
+  const workflowRunId = workflowRun?.id || "";
   const runLogger = logger.child({ runId, planId, scanKind, site });
   interruptOrphanedScanRuns(db, { site });
   if (command === "scan" && args.input) {
@@ -185,7 +191,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
       planId,
       processId: process.pid
     });
-    const execution = { runId, leaseOwner: "", site, scanKind, planId, logger: runLogger };
+    const execution = { runId, leaseOwner: "", site, scanKind, planId, workflowRunId, logger: runLogger };
     runLogger.info("scan_run_started", { status: scanRun.status, localInput: true });
     return executeTrackedScanRun(db, { runId, leaseOwner: "", runLogger, run, signal: null, execution });
   }
@@ -224,7 +230,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
       processId: process.pid
     });
     runClaimed = true;
-    const execution = { runId, leaseOwner: owner, site, scanKind, planId, logger: runLogger };
+    const execution = { runId, leaseOwner: owner, site, scanKind, planId, workflowRunId, logger: runLogger };
     runLogger.info("scan_run_started", { status: scanRun.status });
     return executeTrackedScanRun(db, { runId, leaseOwner: owner, runLogger, run, signal, execution });
   });
@@ -257,6 +263,7 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
     return result;
   } catch (error) {
     const status = scanFailureStatus(error);
+    transitionWorkflowScanFailure(db, execution?.workflowRunId, status, error);
     if (error?.code === "BOSS_RISK_CONTROL") {
       const site = execution?.site || "boss";
       setSiteRuntimeState(db, site, {
@@ -319,7 +326,14 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
     configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
   }
-  const planned = planRecord && !args.keywords && !args.keyword
+  const workflowRun = resolveWorkflowScanContext(db, args, planRecord);
+  const planned = workflowRun
+    ? {
+      keywords: workflowRun.keywords.map((item) => item.word),
+      keywordPlan: workflowRun.keywords.map((item) => ({ ...item })),
+      source: `workflow-run:${workflowRun.id}`
+    }
+    : planRecord && !args.keywords && !args.keyword
     ? (() => {
       const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
       return { keywords: keywordPlan.map((item) => item.word), keywordPlan, source: `search-plan:${planRecord.id}` };
@@ -327,7 +341,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     : resolvePlannedKeywords(args, configs);
   if (!planned.keywords.length) throw new Error("Search Plan 没有可用关键词，请先在页面补充后再扫描。");
   const requestedScanMode = String(args["scan-mode"] || "");
-  const scanMode = requestedScanMode === "broad"
+  const scanMode = workflowRun ? "daily" : requestedScanMode === "broad"
     ? "broad"
     : requestedScanMode === "daily"
       ? "daily"
@@ -378,11 +392,17 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       scanPolicy
     );
   if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
-  assertScanLimitOverridesAllowed(args, scanMode);
+  assertScanLimitOverridesAllowed(args, scanMode, Boolean(workflowRun));
+  const workflowMaxCards = workflowRun
+    ? Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0))
+    : 0;
   const scanLimits = {
-    maxCards: resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards, "maxCards"),
-    maxDetailTotal: resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal, "maxDetailTotal"),
-    browserPageBudget: resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget, "browserPageBudget"),
+    maxCards: workflowRun ? workflowMaxCards
+      : resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards, "maxCards"),
+    maxDetailTotal: workflowRun ? Number(workflowRun.budget.maxDetailTotal)
+      : resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal, "maxDetailTotal"),
+    browserPageBudget: workflowRun ? Number(workflowRun.budget.browserPageBudget)
+      : resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget, "browserPageBudget"),
     detailLimits: scanPolicy.detailLimits
   };
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
@@ -450,6 +470,13 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       leaseOwner: execution.leaseOwner,
       processId: process.pid
     });
+    if (workflowRun) {
+      attachWorkflowScan(db, {
+        id: workflowRun.id,
+        scanRunId: execution.runId,
+        scanBatchId: batchId
+      });
+    }
   }
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
   scanLogger.info("scan_started", {
@@ -560,6 +587,13 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   }
   for (const job of rawJobs) analysisCandidates.set(job.sourceId || job.url, job);
   const jobsToAnalyze = [...analysisCandidates.values()];
+  if (workflowRun) {
+    transitionWorkflowRun(db, {
+      id: workflowRun.id,
+      status: "analyzing",
+      metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0 })
+    });
+  }
   scanLogger.info("job_analysis_started", { batchId, jobCount: jobsToAnalyze.length, analysisConcurrency, resumedPending: Math.max(0, jobsToAnalyze.length - rawJobs.length) });
   const analyzedJobs = await mapWithConcurrency(jobsToAnalyze, analysisConcurrency, (raw) => {
     assertScanActive(signal);
@@ -587,6 +621,27 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const defaultStopCode = finalStatus === "partial"
     ? "SCAN_TARGETS_PARTIAL"
     : finalStatus === "failed" ? "SCAN_TARGETS_FAILED" : "";
+  if (workflowRun) {
+    const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
+    const metrics = workflowMetrics({ detailCoverage, rawJobs, analyzed: analyzedJobs.length, saved, inventoryCount });
+    if (finalStatus === "completed") {
+      transitionWorkflowRun(db, {
+        id: workflowRun.id,
+        status: "review_required",
+        inventoryCount,
+        metrics
+      });
+    } else {
+      transitionWorkflowRun(db, {
+        id: workflowRun.id,
+        status: finalStatus === "failed" ? "failed" : "interrupted",
+        inventoryCount,
+        metrics,
+        errorCode: scanSummary?.fatalErrorCode || defaultStopCode || "SCAN_INCOMPLETE",
+        errorMessage: scanSummary?.fatalErrorMessage || "scan did not complete all planned targets"
+      });
+    }
+  }
   return {
     status: finalStatus,
     batchId,
@@ -847,10 +902,91 @@ function scanFailureStatus(error) {
   ]).has(code) ? "interrupted" : "failed";
 }
 
-function assertScanLimitOverridesAllowed(args, scanMode) {
+function prepareWorkflowExecution(db, args, planId) {
+  const workflowRunId = String(args?.["workflow-run"] || "").trim();
+  if (!workflowRunId) return null;
+  const run = getWorkflowRun(db, workflowRunId);
+  if (!run) throw codedError("WORKFLOW_RUN_NOT_FOUND", `Workflow run ${workflowRunId} does not exist.`);
+  if (!planId || run.planId !== Number(planId)) {
+    throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run belongs to another search plan.");
+  }
+  if (!["created", "scanning", "interrupted"].includes(run.status)) {
+    throw codedError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run cannot scan from ${run.status}.`);
+  }
+  return run.status === "scanning" ? run : transitionWorkflowRun(db, { id: run.id, status: "scanning" });
+}
+
+function resolveWorkflowScanContext(db, args, planRecord) {
+  const workflowRunId = String(args?.["workflow-run"] || "").trim();
+  if (!workflowRunId) return null;
+  const run = getWorkflowRun(db, workflowRunId);
+  if (!run) throw codedError("WORKFLOW_RUN_NOT_FOUND", `Workflow run ${workflowRunId} does not exist.`);
+  if (!planRecord || run.planId !== Number(planRecord.id) || run.profileId !== Number(planRecord.profileId)) {
+    throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not match the selected search plan and profile.");
+  }
+  if (run.status !== "scanning") {
+    throw codedError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run must be scanning, not ${run.status}.`);
+  }
+  if (!run.scanNeeded) throw codedError("WORKFLOW_SCAN_NOT_NEEDED", "Workflow run already has enough valid inventory.");
+  const persistedKeywords = run.keywords.map((item) => String(item.word || "").trim()).filter(Boolean);
+  const suppliedKeywords = splitWorkflowKeywords(args.keywords || args.keyword);
+  if (!persistedKeywords.length || suppliedKeywords.length !== persistedKeywords.length
+    || suppliedKeywords.some((word, index) => word !== persistedKeywords[index])) {
+    throw codedError("WORKFLOW_SCAN_INPUT_MISMATCH", "Workflow keywords differ from the persisted run plan.");
+  }
+  const expected = {
+    "max-cards": Math.max(...run.keywords.map((item) => Number(item.maxCards) || 0)),
+    "max-detail-total": Number(run.budget.maxDetailTotal),
+    "browser-page-budget": Number(run.budget.browserPageBudget)
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (!Number.isInteger(value) || value <= 0 || Number(args[key]) !== value) {
+      throw codedError("WORKFLOW_SCAN_INPUT_MISMATCH", `--${key} differs from the persisted workflow budget.`);
+    }
+  }
+  const resumeBatchId = parseOptionalPositiveIntegerArg(args, "resume-batch");
+  if (run.scanBatchId && resumeBatchId !== run.scanBatchId) {
+    throw codedError("WORKFLOW_SCAN_INPUT_MISMATCH", "Workflow resume batch differs from the persisted scan batch.");
+  }
+  if (!run.scanBatchId && resumeBatchId) {
+    throw codedError("WORKFLOW_SCAN_INPUT_MISMATCH", "A new workflow run cannot resume an unrelated scan batch.");
+  }
+  return run;
+}
+
+function transitionWorkflowScanFailure(db, workflowRunId, scanStatus, error) {
+  if (!workflowRunId) return null;
+  const run = getWorkflowRun(db, workflowRunId);
+  if (!run || !["scanning", "analyzing", "interrupted"].includes(run.status)) return run;
+  return transitionWorkflowRun(db, {
+    id: run.id,
+    status: scanStatus === "failed" ? "failed" : "interrupted",
+    errorCode: error?.code || "SCAN_FAILED",
+    errorMessage: error?.message || String(error || "scan failed")
+  });
+}
+
+function workflowMetrics({ detailCoverage, rawJobs = [], analyzed = 0, saved = 0, inventoryCount = 0 } = {}) {
+  return {
+    cards: Number(detailCoverage?.collected ?? rawJobs.length ?? 0),
+    detailsRequired: Number(detailCoverage?.detailRequired || 0),
+    detailsRead: Number(detailCoverage?.detailRead || 0),
+    detailsPending: Number(detailCoverage?.detailPending || 0),
+    detailsFailed: Number(detailCoverage?.detailFailed || 0),
+    analyzed: Number(analyzed || 0),
+    saved: Number(saved || 0),
+    eligible: Number(inventoryCount || 0)
+  };
+}
+
+function splitWorkflowKeywords(value) {
+  return String(value || "").split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function assertScanLimitOverridesAllowed(args, scanMode, workflowBound = false) {
   const keys = ["max-cards", "max-detail-total", "browser-page-budget"]
     .filter((key) => Object.hasOwn(args, key));
-  if (scanMode === "daily" && keys.length) {
+  if (scanMode === "daily" && keys.length && !workflowBound) {
     throw codedError(
       "DAILY_SCAN_LIMIT_OVERRIDE",
       `日常扫描预算由产品策略固定；${keys.map((key) => `--${key}`).join("、")} 仅可用于 broad 模式。`

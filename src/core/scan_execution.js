@@ -19,7 +19,20 @@ function resolveScanKind(command, args = {}) {
   throw unknownScanKind(kind);
 }
 
-function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId, resumeBatchId = null } = {}) {
+function buildScanCliArgs({
+  kind,
+  dbPath,
+  planId,
+  browserMode,
+  cdpPort,
+  runId,
+  resumeBatchId = null,
+  workflowRunId = "",
+  keywords = null,
+  maxCards = null,
+  maxDetailTotal = null,
+  browserPageBudget = null
+} = {}) {
   const normalizedKind = normalizeScanKind(kind);
   const normalizedDbPath = requiredText(dbPath, "dbPath");
   const normalizedRunId = requiredText(runId, "runId");
@@ -48,6 +61,22 @@ function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId, r
       }
       cliArgs.push("--resume-batch", String(normalizedResumeBatchId));
     }
+    if (workflowRunId) {
+      const normalizedWorkflowRunId = requiredText(workflowRunId, "workflowRunId");
+      const normalizedKeywords = Array.isArray(keywords)
+        ? [...new Set(keywords.map((keyword) => String(keyword || "").trim()).filter(Boolean))]
+        : [];
+      if (!normalizedKeywords.length) {
+        throw scanExecutionError("INVALID_SCAN_INPUT", "workflow scan requires at least one keyword");
+      }
+      cliArgs.push(
+        "--workflow-run", normalizedWorkflowRunId,
+        "--keywords", normalizedKeywords.join(","),
+        "--max-cards", String(positiveInteger(maxCards, "maxCards")),
+        "--max-detail-total", String(positiveInteger(maxDetailTotal, "maxDetailTotal")),
+        "--browser-page-budget", String(positiveInteger(browserPageBudget, "browserPageBudget"))
+      );
+    }
   } else if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
     throw scanExecutionError("INVALID_SCAN_INPUT", "resumeBatchId is only valid for daily or broad scans");
   }
@@ -60,6 +89,14 @@ function buildScanCliArgs({ kind, dbPath, planId, browserMode, cdpPort, runId, r
     cliArgs.push("--cdp-port", String(normalizedPort));
   }
   return cliArgs;
+}
+
+function positiveInteger(value, name) {
+  const normalized = Number(value);
+  if (!Number.isInteger(normalized) || normalized <= 0) {
+    throw scanExecutionError("INVALID_SCAN_INPUT", `${name} must be a positive integer`);
+  }
+  return normalized;
 }
 
 async function withSiteScanLease(deps, input, run) {

@@ -72,6 +72,31 @@ function cliArgsMatrixSmoke() {
     buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", resumeBatchId: 73 }),
     [...expectedByKind.daily, "--resume-batch", "73", "--browser", "edge"]
   );
+  assert.deepStrictEqual(
+    buildScanCliArgs({
+      ...common,
+      kind: "daily",
+      browserMode: "edge",
+      workflowRunId: "workflow-run-1",
+      keywords: ["Agent engineer", "AI knowledge base"],
+      maxCards: 50,
+      maxDetailTotal: 120,
+      browserPageBudget: 20
+    }),
+    [
+      ...expectedByKind.daily,
+      "--workflow-run", "workflow-run-1",
+      "--keywords", "Agent engineer,AI knowledge base",
+      "--max-cards", "50",
+      "--max-detail-total", "120",
+      "--browser-page-budget", "20",
+      "--browser", "edge"
+    ]
+  );
+  assert.throws(
+    () => buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", workflowRunId: "workflow-run-1" }),
+    (error) => error.code === "INVALID_SCAN_INPUT"
+  );
   assert.throws(
     () => buildScanCliArgs({ ...common, kind: "refresh", browserMode: "edge", resumeBatchId: 73 }),
     (error) => error.code === "INVALID_SCAN_INPUT"

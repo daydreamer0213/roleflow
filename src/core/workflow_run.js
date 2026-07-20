@@ -129,7 +129,7 @@ function normalizeKeyword(item, index, policy) {
     sampleSize,
     eligibleCount,
     measuredYield,
-    maxCards: Math.floor(PRODUCT_POLICY.dailyScan.maxCards * ratio),
+    maxCards: Math.round(PRODUCT_POLICY.dailyScan.maxCards * ratio),
     detailCap: nonNegativeInteger(PRODUCT_POLICY.dailyScan.detailLimits[priority] || 0)
   };
 }

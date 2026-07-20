@@ -24,6 +24,8 @@ const {
   getSiteRuntimeState,
   getSiteScanLease,
   createScanRun,
+  getWorkflowRun,
+  transitionWorkflowRun,
   getLatestScanRun,
   recordScanRunProcessExit,
   interruptOrphanedScanRuns,
@@ -556,15 +558,58 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   }
 }
 
-function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMode = "portable", scanKind = "daily", resumeBatchId = null, logger, requestId, spawnProcess = spawn }) {
+function startPlanScan(scanRuns, {
+  db,
+  root,
+  dbPath,
+  planId,
+  cdpPort,
+  browserMode = "portable",
+  scanKind = "daily",
+  resumeBatchId = null,
+  workflowRunId = "",
+  logger,
+  requestId,
+  spawnProcess = spawn
+}) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
   assertBossRuntimeAvailable(db);
   const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
   if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const runId = randomUUID();
-  const commandArgs = buildScanCliArgs({ kind: scanKind, dbPath, planId, browserMode, cdpPort, runId, resumeBatchId });
+  let workflowRun = workflowRunId ? getWorkflowRun(db, workflowRunId) : null;
+  if (workflowRunId && (!workflowRun || workflowRun.planId !== Number(planId))) {
+    throw appError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not belong to this search plan.");
+  }
+  if (workflowRun && !["created", "scanning", "interrupted"].includes(workflowRun.status)) {
+    throw appError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run cannot scan from ${workflowRun.status}.`);
+  }
+  if (workflowRun && workflowRun.status !== "scanning") {
+    workflowRun = transitionWorkflowRun(db, { id: workflowRun.id, status: "scanning" });
+  }
+  const persistedResumeBatchId = workflowRun?.scanBatchId || null;
+  if (workflowRun && resumeBatchId && persistedResumeBatchId !== Number(resumeBatchId)) {
+    throw appError("WORKFLOW_SCAN_INPUT_MISMATCH", "Resume batch differs from the persisted workflow run.");
+  }
+  const effectiveResumeBatchId = workflowRun ? persistedResumeBatchId : resumeBatchId;
+  const commandArgs = buildScanCliArgs({
+    kind: scanKind,
+    dbPath,
+    planId,
+    browserMode,
+    cdpPort,
+    runId,
+    resumeBatchId: effectiveResumeBatchId,
+    ...(workflowRun ? {
+      workflowRunId: workflowRun.id,
+      keywords: workflowRun.keywords.map((item) => item.word),
+      maxCards: Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0)),
+      maxDetailTotal: workflowRun.budget.maxDetailTotal,
+      browserPageBudget: workflowRun.budget.browserPageBudget
+    } : {})
+  });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
-  const run = { runId, kind: scanKind, resumeBatchId, startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
+  const run = { runId, kind: scanKind, resumeBatchId: effectiveResumeBatchId, workflowRunId: workflowRun?.id || "", startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
   scanRuns.set(Number(planId), run);
   let exitRecorded = false;
   const recordExit = ({ exitCode = null, signal = "", error = null } = {}) => {
@@ -583,6 +628,17 @@ function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMod
       run.child = null;
       run.exitCode = finished.processExitCode;
       run.error = finished.status === "completed" ? "" : error?.message || finished.stopMessage || run.output;
+      if (workflowRun && error) {
+        const currentWorkflow = getWorkflowRun(db, workflowRun.id);
+        if (["scanning", "analyzing"].includes(currentWorkflow?.status)) {
+          transitionWorkflowRun(db, {
+            id: workflowRun.id,
+            status: "failed",
+            errorCode: "SCAN_PROCESS_ERROR",
+            errorMessage: error.message
+          });
+        }
+      }
       const context = {
         requestId,
         runId,
@@ -609,7 +665,7 @@ function startPlanScan(scanRuns, { db, root, dbPath, planId, cdpPort, browserMod
       stdio: ["ignore", "pipe", "pipe"]
     });
     run.child = child;
-    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, resumeBatchId, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
+    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, resumeBatchId: effectiveResumeBatchId, workflowRunId: workflowRun?.id || null, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
     const append = (chunk) => { run.output = `${run.output}${String(chunk)}`.slice(-4000); };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);

@@ -67,6 +67,7 @@ const second = planWorkflowRun(fixture({
 }));
 assert.strictEqual(second.selectedKeywords.length, 3);
 assert(second.selectedKeywords.every((item) => !firstWords.has(item.word)));
+assert.strictEqual(second.selectedKeywords.find((item) => item.priority === "B").maxCards, 33);
 
 const yieldOrdered = planWorkflowRun(fixture({
   keywords: [
