@@ -29,6 +29,7 @@ const {
   bindBatchToPlan,
   rescorePlanObservations,
   listReportJobs,
+  listDecisionPool,
   listDecisionQueue,
   decisionBucket,
   applyJobQualityGovernance,
@@ -365,6 +366,18 @@ try {
   assert.strictEqual(bound.migratedStates, 1);
   assert.strictEqual(db.prepare("SELECT profile_id, search_plan_id FROM batches WHERE id = ?").get(batchId).search_plan_id, planId);
   assert.strictEqual(rescorePlanObservations(db, { planId, configs }).rescored, 2);
+
+  const salaryOrderIds = [
+    upsertJob(db, job({ sourceId: "salary-order-core", qualityTags: ["salary_target_core"], analysis: { semanticStatus: "partial", recommendation: "review" } }), batchId),
+    upsertJob(db, job({ sourceId: "salary-order-stretch", qualityTags: ["salary_target_stretch"], analysis: { semanticStatus: "partial", recommendation: "review" } }), batchId),
+    upsertJob(db, job({ sourceId: "salary-order-unclassified", qualityTags: [], analysis: { semanticStatus: "partial", recommendation: "review" } }), batchId),
+    upsertJob(db, job({ sourceId: "salary-order-high", qualityTags: ["salary_target_high"], analysis: { semanticStatus: "partial", recommendation: "review" } }), batchId)
+  ];
+  const salaryOrderedJobs = listDecisionPool(db, { planId }).filter((item) => salaryOrderIds.includes(item.id));
+  assert.deepStrictEqual(
+    salaryOrderedJobs.map((item) => item.qualityTags.find((tag) => tag.startsWith("salary_target_")) || "unclassified"),
+    ["salary_target_core", "salary_target_stretch", "unclassified", "salary_target_high"]
+  );
 
   const reports = listReportJobs(db, { planId, batch: "latest" });
   assert.strictEqual(reports.find((item) => item.id === appliedId).applicationStatus, "applied");

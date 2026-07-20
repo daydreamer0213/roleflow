@@ -2768,6 +2768,7 @@ function withFeedback(job, summary) {
 function compareReportJobs(a, b) {
   return statusRank(a) - statusRank(b)
     || decisionBucketRank(a.decisionBucket) - decisionBucketRank(b.decisionBucket)
+    || salaryPreferenceRank(a) - salaryPreferenceRank(b)
     || modelConfidenceRank(a) - modelConfidenceRank(b)
     || workScheduleRank(a) - workScheduleRank(b)
     || (a.feedbackRank || 0) - (b.feedbackRank || 0)
@@ -2775,6 +2776,14 @@ function compareReportJobs(a, b) {
     || (a.risks || []).length - (b.risks || []).length
     || activeRank(a.effectiveBossActiveDays ?? a.bossActiveDays) - activeRank(b.effectiveBossActiveDays ?? b.bossActiveDays)
     || String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || ""));
+}
+
+function salaryPreferenceRank(job) {
+  const tags = new Set(job.qualityTags || []);
+  if (tags.has("salary_target_core")) return 0;
+  if (tags.has("salary_target_stretch")) return 1;
+  if (tags.has("salary_target_high")) return 3;
+  return 2;
 }
 
 function statusRank(job) {
