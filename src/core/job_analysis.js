@@ -293,7 +293,6 @@ function searchPreferences(configs) {
   const plan = configs.searchPlan || {};
   return {
     cities: plan.cities || [],
-    salary: plan.salary || {},
     experience: plan.experience || [],
     jobTypes: plan.jobTypes || [],
     directions: plan.directions || []

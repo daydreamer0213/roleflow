@@ -10,17 +10,26 @@ function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(sortValue(value))).digest("hex");
 }
 
+function modelSearchPlanContext(searchPlan = {}) {
+  return {
+    cities: searchPlan.cities || [],
+    experience: searchPlan.experience || [],
+    jobTypes: searchPlan.jobTypes || [],
+    directions: searchPlan.directions || []
+  };
+}
+
 function runtimeAnalysisContext(candidateProfile, searchPlan) {
   return {
     profileVersion: stableHash(candidateProfile || {}),
-    searchPlanVersion: stableHash(searchPlan || {})
+    searchPlanVersion: stableHash(modelSearchPlanContext(searchPlan))
   };
 }
 
 function buildAnalysisRevision(configs, sourceContentHash) {
   return {
     profileVersion: configs.analysisContext?.profileVersion || stableHash(configs.candidateProfile || {}),
-    searchPlanVersion: configs.analysisContext?.searchPlanVersion || stableHash(configs.searchPlan || {}),
+    searchPlanVersion: configs.analysisContext?.searchPlanVersion || stableHash(modelSearchPlanContext(configs.searchPlan)),
     sourceContentHash: String(sourceContentHash || ""),
     pipelineVersions: PIPELINE_VERSIONS
   };

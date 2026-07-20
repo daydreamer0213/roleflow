@@ -71,7 +71,7 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
         sanitizedSourceSeen = true;
       }
       assert(!JSON.stringify({ candidateProfile: input.candidateProfile, resumeVersions: input.resumeVersions }).includes("8-12K"));
-      assert.deepStrictEqual(input.searchPreferences.salary, { minK: 10, maxK: 20 });
+      assert.strictEqual(Object.hasOwn(input.searchPreferences, "salary"), false);
       assert(input.jobUnderstanding);
       assert(input.jobEvidence);
       assert.strictEqual(input.ruleMatch, undefined);
@@ -299,11 +299,20 @@ function staleAnalysisSmoke() {
   saveSearchPlan(db, { id: planId, profileId, plan: changedPlan });
   const changedConfigs = profileToRuntimeConfigs(loadConfigs(root), candidate, changedPlan, []);
   rescorePlanObservations(db, { planId, configs: changedConfigs });
-  const stored = listReportJobs(db, { planId, limit: 100 }).find((job) => job.sourceId === "stale-analysis");
-  assert.strictEqual(stored.analysis.semanticStatus, "stale");
-  assert(stored.analysis.staleReasons.includes("search_plan_changed"));
-  assert.strictEqual(stored.decisionBucket, "analysis_pending");
-  assert.notDeepStrictEqual(configs.analysisContext, changedConfigs.analysisContext);
+  const salaryChanged = listReportJobs(db, { planId, limit: 100 }).find((job) => job.sourceId === "stale-analysis");
+  assert.strictEqual(salaryChanged.analysis.semanticStatus, "complete");
+  assert.notStrictEqual(salaryChanged.decisionBucket, "analysis_pending");
+  assert.deepStrictEqual(configs.analysisContext, changedConfigs.analysisContext);
+
+  const directionPlan = { ...changedPlan, directions: ["AI解决方案"] };
+  saveSearchPlan(db, { id: planId, profileId, plan: directionPlan });
+  const directionConfigs = profileToRuntimeConfigs(loadConfigs(root), candidate, directionPlan, []);
+  rescorePlanObservations(db, { planId, configs: directionConfigs });
+  const directionChanged = listReportJobs(db, { planId, limit: 100 }).find((job) => job.sourceId === "stale-analysis");
+  assert.strictEqual(directionChanged.analysis.semanticStatus, "stale");
+  assert(directionChanged.analysis.staleReasons.includes("search_plan_changed"));
+  assert.strictEqual(directionChanged.decisionBucket, "analysis_pending");
+  assert.notDeepStrictEqual(configs.analysisContext, directionConfigs.analysisContext);
 }
 
 function configFor(skills) {
