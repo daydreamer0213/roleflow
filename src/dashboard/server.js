@@ -115,7 +115,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
@@ -914,16 +914,26 @@ async function handleCommunicationBatch(req, res, db) {
   redirect(res, `/communication?batchId=${result.body.batch.id}`);
 }
 
-async function handleCommunicationControl(req, res, db) {
+async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn }) {
   const rawBody = await readBody(req);
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
     const action = String(params.action || "").trim().toLowerCase();
-    if (action === "start" || action === "resume") assertCommunicationExecutionEnabled();
-    if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "only discard is available while calibration is pending");
     const batchId = Number(params.batchId);
     const batch = getCommunicationBatch(db, batchId);
     if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+    if (action === "start" || action === "resume") {
+      assertCommunicationExecutionEnabled();
+      assertBossRuntimeAvailable(db);
+      const expected = action === "start" ? "confirmed" : "paused";
+      if (batch.status !== expected) {
+        throw appError("COMMUNICATION_BATCH_STATUS_INVALID", `${action} requires a ${expected} communication batch`, { statusCode: 409 });
+      }
+      const running = setCommunicationBatchStatus(db, { batchId, status: "running" });
+      startCommunicationProcess({ db, root, dbPath, batch: running, logger, requestId, spawnProcess });
+      return { batch: running, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
+    }
+    if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "communication action must be start, resume, or discard");
     const items = listCommunicationBatchItems(db, batchId);
     if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
       throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
@@ -940,6 +950,46 @@ async function handleCommunicationControl(req, res, db) {
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
   redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
+  if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
+  let child;
+  try {
+    child = spawnProcess(process.execPath, [
+      "--disable-warning=ExperimentalWarning",
+      "src/cli.js",
+      "communicate",
+      "--db", dbPath,
+      "--batch", String(batch.id),
+      "--browser", batch.browserMode
+    ], {
+      cwd: root,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED", stopMessage: error.message });
+    throw error;
+  }
+  logger.info("communication_process_started", { requestId, batchId: batch.id, planId: batch.planId, browserMode: batch.browserMode, childPid: child.pid });
+  child.stdout?.on("data", (chunk) => logger.info("communication_process_output", { batchId: batch.id, stream: "stdout", message: String(chunk).slice(-2000) }));
+  child.stderr?.on("data", (chunk) => logger.info("communication_process_output", { batchId: batch.id, stream: "stderr", message: String(chunk).slice(-2000) }));
+  const interruptRunning = (code, message) => {
+    const current = getCommunicationBatch(db, batch.id);
+    if (current?.status === "running") {
+      setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: code, stopMessage: message });
+    }
+  };
+  child.on("error", (error) => {
+    interruptRunning("COMMUNICATION_PROCESS_ERROR", error.message);
+    logger.error("communication_process_error", { requestId, batchId: batch.id, error: errorMeta(error) });
+  });
+  child.on("close", (code, signal) => {
+    if (code !== 0) interruptRunning("COMMUNICATION_PROCESS_EXITED", signal ? `signal ${signal}` : `exit ${code}`);
+    logger.info("communication_process_closed", { requestId, batchId: batch.id, exitCode: code, signal: signal || null });
+  });
+  return child;
 }
 
 async function handleCommunicationResolve(req, res, db) {
@@ -1685,7 +1735,14 @@ function renderCommunicationReviewPage({ db, searchParams }) {
     return `<tr><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
   }).join("");
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls"><button disabled>开始沟通</button><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form></div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+  const action = batch.status === "confirmed" ? "start" : batch.status === "paused" ? "resume" : "";
+  const executeControl = action && calibration.executionEnabled && !runtimeBlock
+    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="${action}">${action === "start" ? "开始沟通" : "继续沟通"}</button></form>`
+    : batch.status === "running" ? "<strong>沟通执行中</strong>" : "";
+  const discardControl = ["confirmed", "paused"].includes(batch.status)
+    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form>` : "";
+  const calibrationNotice = calibration.executionEnabled ? "" : `<p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>`;
+  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
 }
 
 function compactAwaitingAction(job) {

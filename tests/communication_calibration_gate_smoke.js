@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const { openDb, createBatch, upsertJob } = require("../src/core/storage");
-const { createCommunicationBatch } = require("../src/core/communication_batches");
+const { createCommunicationBatch, getCommunicationBatch } = require("../src/core/communication_batches");
 const {
   communicationCalibrationStatus,
   assertCommunicationExecutionEnabled
@@ -12,29 +13,42 @@ let db;
 let server;
 
 (async () => {
-  assert.deepStrictEqual(communicationCalibrationStatus(), { status: "pending", executionEnabled: false });
-  assert.throws(
-    () => assertCommunicationExecutionEnabled(),
-    (error) => error.code === "BOSS_COMMUNICATION_CALIBRATION_REQUIRED" && error.statusCode === 409
-  );
+  assert.deepStrictEqual(communicationCalibrationStatus(), { status: "calibrated", executionEnabled: true });
+  assert.deepStrictEqual(assertCommunicationExecutionEnabled(), { status: "calibrated", executionEnabled: true });
 
   db = openDb(":memory:");
   const { planId, jobId } = seed(db);
   const batch = createCommunicationBatch(db, { planId, jobIds: [jobId], browserMode: "edge" });
-  let spawnCalls = 0;
+  const spawns = [];
+  let spawnedChild;
   server = createDashboardServer({
     db,
+    root: process.cwd(),
+    dbPath: "D:\\RoleFlow\\calibration-smoke.sqlite",
     logger,
-    spawnProcess() { spawnCalls += 1; throw new Error("communication must remain gated"); }
+    spawnProcess(file, args, options) {
+      spawns.push({ file, args, options });
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      spawnedChild = child;
+      return child;
+    }
   });
   const baseUrl = await listen(server);
 
-  for (const action of ["start", "resume"]) {
-    const response = await postJson(baseUrl, "/api/communication-control", { batchId: batch.id, action });
-    assert.strictEqual(response.status, 409);
-    assert.strictEqual(response.body.errorCode, "BOSS_COMMUNICATION_CALIBRATION_REQUIRED");
-  }
-  assert.strictEqual(spawnCalls, 0);
+  const response = await postJson(baseUrl, "/api/communication-control", { batchId: batch.id, action: "start" });
+  assert.strictEqual(response.status, 200);
+  assert.strictEqual(response.body.batch.status, "running");
+  assert.strictEqual(getCommunicationBatch(db, batch.id).status, "running");
+  assert.strictEqual(spawns.length, 1);
+  assert.deepStrictEqual(spawns[0].args.slice(0, 4), ["--disable-warning=ExperimentalWarning", "src/cli.js", "communicate", "--db"]);
+  assert(spawns[0].args.includes(String(batch.id)));
+  assert(spawns[0].args.includes("edge"));
+  spawnedChild.emit("close", 1, null);
+  assert.strictEqual(getCommunicationBatch(db, batch.id).status, "interrupted");
+  assert.strictEqual(getCommunicationBatch(db, batch.id).stopCode, "COMMUNICATION_PROCESS_EXITED");
 
   console.log("communication_calibration_gate_smoke ok");
 })().catch((error) => {

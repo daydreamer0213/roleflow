@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
@@ -27,8 +28,15 @@ let server;
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
   const fixture = seed(db);
-  let spawnCalls = 0;
-  server = createDashboardServer({ db, root, dbPath, logger, spawnProcess() { spawnCalls += 1; throw new Error("must not spawn"); } });
+  const spawns = [];
+  server = createDashboardServer({ db, root, dbPath, logger, spawnProcess(file, args, options) {
+    spawns.push({ file, args, options });
+    const child = new EventEmitter();
+    child.pid = 5252;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    return child;
+  } });
   const baseUrl = await listen(server);
 
   const builder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
@@ -64,19 +72,20 @@ let server;
   ]);
 
   const review = await getText(baseUrl, `/communication?batchId=${batchId}`);
-  assert.match(review.body, /校准状态：pending/);
-  assert.match(review.body, /disabled/);
+  assert.match(review.body, /校准状态：calibrated/);
+  assert.match(review.body, /name="action" value="start"/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
-  assert.strictEqual(status.body.calibration.executionEnabled, false);
+  assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
 
-  for (const action of ["start", "resume"]) {
-    const response = await postJson(baseUrl, "/api/communication-control", { batchId, action });
-    assert.strictEqual(response.status, 409);
-    assert.strictEqual(response.body.errorCode, "BOSS_COMMUNICATION_CALIBRATION_REQUIRED");
-  }
-  assert.strictEqual(spawnCalls, 0);
+  const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
+  assert.strictEqual(started.status, 200);
+  assert.strictEqual(started.body.batch.status, "running");
+  assert.strictEqual(spawns.length, 1);
+  assert(spawns[0].args.includes("communicate"));
+  assert(spawns[0].args.includes(String(batchId)));
+  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
   const ambiguousItem = listCommunicationBatchItems(db, batchId)[0];
   transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
@@ -94,7 +103,7 @@ let server;
   const resolutionAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(fixture.primaryId);
   assert.strictEqual(JSON.parse(resolutionAudit.payload_json).note, evidenceNote);
   assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
-  assert.strictEqual(spawnCalls, 0);
+  assert.strictEqual(spawns.length, 1);
 
   const discardable = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });
   const discarded = await postForm(baseUrl, "/api/communication-control", { batchId: discardable.body.batch.id, action: "discard" });
@@ -119,7 +128,7 @@ let server;
   const blockedPlan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="daily" disabled/);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="broad" disabled/);
-  assert.strictEqual(spawnCalls, 0);
+  assert.strictEqual(spawns.length, 1);
   console.log("dashboard_communication_batch_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -191,8 +200,8 @@ async function postForm(baseUrl, pathname, body) {
   return { status: response.status, location: response.headers.get("location") };
 }
 
-async function expectApiError(baseUrl, pathname, body, code) {
+async function expectApiError(baseUrl, pathname, body, code, status = 400) {
   const response = await postJson(baseUrl, pathname, body);
-  assert.strictEqual(response.status, 400);
+  assert.strictEqual(response.status, status);
   assert.strictEqual(response.body.errorCode, code);
 }

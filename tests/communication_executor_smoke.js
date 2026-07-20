@@ -444,25 +444,22 @@ async function cooldownAbortAndUpperBoundSmoke() {
 }
 
 async function calibrationGateSmoke() {
-  const closedAtEntry = createFixture(1);
+  const enabledAtEntry = createFixture(1);
   let entryInspections = 0;
-  await assert.rejects(
-    () => runCommunicationBatch({
-      db: closedAtEntry.db,
-      batchId: closedAtEntry.batch.id,
-      accessController: { async reserve() { throw new Error("must not reserve"); } },
-      adapter: {
-        async inspectCommunicationJob() { entryInspections += 1; },
-        async dispatchCommunication() { throw new Error("must not dispatch"); },
-        async verifyCommunicationResult() { throw new Error("must not verify"); }
-      }
-    }),
-    (error) => error.code === "BOSS_COMMUNICATION_CALIBRATION_REQUIRED"
-  );
-  assert.strictEqual(entryInspections, 0);
-  assert.strictEqual(getCommunicationBatch(closedAtEntry.db, closedAtEntry.batch.id).status, "confirmed");
-  assert.strictEqual(listCommunicationBatchItems(closedAtEntry.db, closedAtEntry.batch.id)[0].status, "pending");
-  closedAtEntry.close();
+  await runCommunicationBatch({
+    db: enabledAtEntry.db,
+    batchId: enabledAtEntry.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() { entryInspections += 1; return { state: "ready" }; },
+      async dispatchCommunication() {},
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    }
+  });
+  assert.strictEqual(entryInspections, 1);
+  assert.strictEqual(getCommunicationBatch(enabledAtEntry.db, enabledAtEntry.batch.id).status, "completed");
+  assert.strictEqual(listCommunicationBatchItems(enabledAtEntry.db, enabledAtEntry.batch.id)[0].status, "succeeded");
+  enabledAtEntry.close();
 
   const closedBeforeDispatch = createFixture(1);
   const gateError = Object.assign(new Error("calibration revoked"), { code: "BOSS_COMMUNICATION_CALIBRATION_REQUIRED" });

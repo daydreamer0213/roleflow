@@ -70,6 +70,8 @@ const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
+const { getCommunicationBatch, setCommunicationBatchStatus } = require("./core/communication_batches");
+const { runCommunicationBatch } = require("./core/communication_executor");
 const {
   buildScanExecutionSnapshot,
   assertScanSnapshotCompatible,
@@ -112,10 +114,59 @@ async function main() {
   if (command === "dashboard") return startDashboard(db, args);
   if (command === "feedback-summary") return printFeedbackSummary(db);
   if (command === "batch-summary") return printBatchSummary(db, args);
+  if (command === "communicate") return communicate(db, args);
   if (command === "mark-applied") return mark(db, args, "applied");
   if (command === "mark-skipped") return mark(db, args, "skipped");
   if (command === "mark-no-reply") return mark(db, args, "no_reply");
   throw new Error(`未知命令：${command}`);
+}
+
+async function communicate(db, args) {
+  const batchId = Number(args.batch);
+  if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
+  const batch = getCommunicationBatch(db, batchId);
+  if (!batch) throw new Error(`未找到沟通批次 #${batchId}`);
+  const browserMode = String(args.browser || batch.browserMode || "").trim().toLowerCase();
+  if (browserMode !== batch.browserMode) throw new Error(`沟通批次固定使用 ${batch.browserMode}，不能切换为 ${browserMode}。`);
+  const browser = createBrowser({ ...args, browser: browserMode });
+  if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
+  const runId = `communication-${batchId}-${crypto.randomUUID()}`;
+  const communicationLogger = logger.child({ runId, batchId, planId: batch.planId, site: "boss", operation: "communication" });
+  const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
+  const adapter = createSiteAdapter("boss", { browser, logger: communicationLogger, accessController });
+
+  try {
+    const browserState = await adapter.preflight();
+    await adapter.prepareCommunicationTab(browserState.tabId);
+    const summary = await runCommunicationBatch({ db, batchId, adapter, accessController, logger: communicationLogger });
+    console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
+    return summary;
+  } catch (error) {
+    const current = getCommunicationBatch(db, batchId);
+    if (current?.status === "running") {
+      setCommunicationBatchStatus(db, {
+        batchId,
+        status: "interrupted",
+        stopCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
+        stopMessage: error?.message || String(error)
+      });
+    }
+    if (error?.code === "BOSS_RISK_CONTROL") {
+      setSiteRuntimeState(db, "boss", {
+        status: "blocked",
+        reasonCode: error.code,
+        message: error.message,
+        details: { phase: "communication", batchId }
+      });
+      recordSiteAccessEvent(db, {
+        site: "boss",
+        action: "risk_control",
+        runId,
+        details: { batchId, errorCode: error.code, errorMessage: error.message }
+      });
+    }
+    throw error;
+  }
 }
 
 async function executeWithSiteScanLease(db, args, command, run) {
@@ -1157,11 +1208,12 @@ function printHelp() {
   run.ps1 rebuild-report --batch <Batch ID>
   run.ps1 feedback-summary
   run.ps1 batch-summary --batch latest
+  run.ps1 communicate --batch <Communication Batch ID> --browser edge
   run.ps1 mark-applied --job-id <id> --note "人工确认已沟通"
   run.ps1 mark-skipped --job-id <id> --reason "地点不合适"
   run.ps1 mark-no-reply --job-id <id> --note "已投递，暂未回复"
 
-安全边界：只读岗位信息，不自动点“立即沟通”，不自动发送消息。`);
+安全边界：扫描只读岗位信息；批量沟通必须先在本地页面确认清单，再由 communicate 命令串行执行。`);
 }
 
 module.exports = {
