@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const {
   chinaLocalDay,
-  planWorkflowRun
+  planWorkflowRun,
+  consumedWorkflowBudget
 } = require("../src/core/workflow_run");
 
 function fixture(overrides = {}) {
@@ -88,5 +89,10 @@ const partiallyUsedBudget = planWorkflowRun(fixture({
   usedBudget: { details: 115, pages: 18 }
 }));
 assert.deepStrictEqual(partiallyUsedBudget.budget, { maxDetailTotal: 125, browserPageBudget: 22 });
+
+assert.deepStrictEqual(consumedWorkflowBudget([
+  { scanNeeded: false, budget: { maxDetailTotal: 120, browserPageBudget: 20 } },
+  { scanNeeded: true, budget: { maxDetailTotal: 30, browserPageBudget: 6 } }
+]), { details: 30, pages: 6 });
 
 console.log("workflow_planner_smoke ok");

@@ -75,6 +75,21 @@ let server;
   assert.match(scanningPage.body, /本轮目标\s*<strong>35/);
   assert.doesNotMatch(scanningPage.body, /上午|下午/);
 
+  spawns[0].child.emit("error", new Error("spawn failed"));
+  const interruptedWorkflow = getWorkflowRun(db, workflow.id);
+  assert.strictEqual(interruptedWorkflow.status, "interrupted");
+  assert.strictEqual(interruptedWorkflow.sequence, 1);
+  assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
+
+  const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "edge"
+  });
+  assert.strictEqual(resumed.status, 303);
+  assert.strictEqual(resumed.location, `/workflow?runId=${workflow.id}`);
+  assert.strictEqual(spawns.length, 2);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
+
   const batchId = createBatch(db, "boss", "workflow-dashboard", "workflow dashboard", {
     profileId: saved.profileId,
     searchPlanId: saved.planId

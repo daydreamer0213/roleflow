@@ -3,6 +3,7 @@ const {
   openDb,
   createBatch,
   createScanRun,
+  finishScanRun,
   createWorkflowRun,
   getWorkflowRun,
   listWorkflowRuns,
@@ -92,6 +93,28 @@ try {
   assert.strictEqual(resumed.status, "scanning");
   assert.strictEqual(resumed.errorCode, "");
   transitionWorkflowRun(db, { id: second.id, status: "stopped" });
+
+  const resumedScanWorkflow = createWorkflowRun(db, input({
+    profileId,
+    planId,
+    localDay: "2026-07-22",
+    sequence: 1
+  }));
+  transitionWorkflowRun(db, { id: resumedScanWorkflow.id, status: "scanning" });
+  const resumedBatchId = createBatch(db, "boss", "RAG", "workflow scan resume", { profileId, searchPlanId: planId });
+  const oldScan = createScanRun(db, { runId: "workflow-resume-old", planId, batchId: resumedBatchId });
+  attachWorkflowScan(db, { id: resumedScanWorkflow.id, scanRunId: oldScan.id, scanBatchId: resumedBatchId });
+  finishScanRun(db, { runId: oldScan.id, status: "interrupted", stopCode: "BROWSER_TIMEOUT" });
+  transitionWorkflowRun(db, { id: resumedScanWorkflow.id, status: "interrupted", errorCode: "BROWSER_TIMEOUT" });
+  transitionWorkflowRun(db, { id: resumedScanWorkflow.id, status: "scanning" });
+  const newScan = createScanRun(db, { runId: "workflow-resume-new", planId, batchId: resumedBatchId });
+  const rebound = attachWorkflowScan(db, {
+    id: resumedScanWorkflow.id,
+    scanRunId: newScan.id,
+    scanBatchId: resumedBatchId
+  });
+  assert.strictEqual(rebound.scanRunId, newScan.id);
+  assert.strictEqual(rebound.scanBatchId, resumedBatchId);
 
   console.log("workflow_storage_smoke ok");
 } finally {

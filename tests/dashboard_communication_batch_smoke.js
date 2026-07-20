@@ -13,6 +13,7 @@ const {
 const {
   getCommunicationBatch,
   listCommunicationBatchItems,
+  setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { createDashboardServer } = require("../src/dashboard/server");
@@ -91,6 +92,19 @@ let server;
   assert.strictEqual(started.status, 200);
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
+
+  setCommunicationBatchStatus(db, {
+    batchId,
+    status: "interrupted",
+    stopCode: "BROWSER_DISCONNECTED",
+    stopMessage: "test interruption"
+  });
+  const interruptedReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
+  assert.match(interruptedReview.body, /name="action" value="resume"/);
+  const resumedBatch = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
+  assert.strictEqual(resumedBatch.status, 200);
+  assert.strictEqual(resumedBatch.body.batch.status, "running");
+  assert.strictEqual(spawns.length, 2);
   assert(spawns[0].args.includes("communicate"));
   assert(spawns[0].args.includes(String(batchId)));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
@@ -100,8 +114,15 @@ let server;
   transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(ambiguousItem) });
   transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  setCommunicationBatchStatus(db, {
+    batchId,
+    status: "interrupted",
+    stopCode: "COMMUNICATION_RESULT_AMBIGUOUS",
+    stopMessage: "manual review required"
+  });
   const ambiguousReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
+  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "pending", evidenceNote: "invalid status" }, "COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID");
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "stopped" }, "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED");
   const evidenceNote = "岗位页无法确认结果，人工停止";
@@ -111,7 +132,10 @@ let server;
   const resolutionAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(fixture.primaryId);
   assert.strictEqual(JSON.parse(resolutionAudit.payload_json).note, evidenceNote);
   assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
-  assert.strictEqual(spawns.length, 1);
+  const resumedAfterReview = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
+  assert.strictEqual(resumedAfterReview.status, 200);
+  assert.strictEqual(resumedAfterReview.body.batch.status, "running");
+  assert.strictEqual(spawns.length, 3);
 
   const discardable = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });
   const discarded = await postForm(baseUrl, "/api/communication-control", { batchId: discardable.body.batch.id, action: "discard" });
@@ -136,7 +160,7 @@ let server;
   const blockedPlan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="daily" disabled/);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="broad" disabled/);
-  assert.strictEqual(spawns.length, 1);
+  assert.strictEqual(spawns.length, 3);
   console.log("dashboard_communication_batch_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);

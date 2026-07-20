@@ -14,6 +14,7 @@ const {
   getCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
+  resumeInterruptedCommunicationBatch,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
   communicationBatchSummary,
@@ -209,6 +210,7 @@ try {
   atomicClickAuditSmoke(db, atomic.id);
   quotaReservationAtomicitySmoke();
   batchTransitionGraphSmoke();
+  interruptedResumeSmoke();
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
@@ -391,5 +393,51 @@ function batchTransitionGraphSmoke() {
   } finally {
     transitionDb.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function interruptedResumeSmoke() {
+  const database = openDb(":memory:");
+  try {
+    const now = new Date().toISOString();
+    const profileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run("Resume smoke", "{}", now, now).lastInsertRowid);
+    const planId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(profileId, "Resume smoke", "{}", now, now).lastInsertRowid);
+    const scanBatchId = createBatch(database, "boss", "resume-smoke", "resume smoke", { profileId, searchPlanId: planId });
+    const jobIds = [0, 1].map((index) => upsertJob(database, job(`resume-${index}`, { analysis: completeAnalysis() }), scanBatchId));
+    const batch = createCommunicationBatch(database, { planId, jobIds, browserMode: "edge" });
+    setCommunicationBatchStatus(database, { batchId: batch.id, status: "running" });
+    const [verified, dispatched] = listCommunicationBatchItems(database, batch.id);
+    transitionCommunicationItem(database, { itemId: verified.id, expectedStatus: "pending", status: "opening" });
+    transitionCommunicationItem(database, { itemId: verified.id, expectedStatus: "opening", status: "verified" });
+    transitionCommunicationItem(database, { itemId: dispatched.id, expectedStatus: "pending", status: "opening" });
+    transitionCommunicationItem(database, { itemId: dispatched.id, expectedStatus: "opening", status: "verified" });
+    transitionCommunicationItem(database, {
+      itemId: dispatched.id,
+      expectedStatus: "verified",
+      status: "click_dispatched",
+      audit: clickAudit(dispatched)
+    });
+    setCommunicationBatchStatus(database, { batchId: batch.id, status: "interrupted", stopCode: "BROWSER_DISCONNECTED" });
+
+    const blocked = resumeInterruptedCommunicationBatch(database, { batchId: batch.id });
+    assert.strictEqual(blocked.requiresReview, true);
+    assert.strictEqual(blocked.batch.status, "interrupted");
+    assert.deepStrictEqual(listCommunicationBatchItems(database, batch.id).map((item) => item.status), ["pending", "ambiguous"]);
+
+    resolveAmbiguousCommunicationItem(database, {
+      batchId: batch.id,
+      itemId: dispatched.id,
+      status: "stopped",
+      evidenceNote: "No verified chat result"
+    });
+    const resumed = resumeInterruptedCommunicationBatch(database, { batchId: batch.id });
+    assert.strictEqual(resumed.requiresReview, false);
+    assert.strictEqual(resumed.batch.status, "running");
+    assert.strictEqual(resumed.batch.finishedAt, null);
+    assert.strictEqual(resumed.batch.stopCode, null);
+  } finally {
+    database.close();
   }
 }

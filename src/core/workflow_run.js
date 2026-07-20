@@ -97,6 +97,16 @@ function fairBudget(input, remainingRunSlots) {
   };
 }
 
+function consumedWorkflowBudget(runs = []) {
+  return (Array.isArray(runs) ? runs : []).reduce((sum, run) => {
+    if (run?.scanNeeded === false) return sum;
+    return {
+      details: sum.details + nonNegativeInteger(run?.budget?.maxDetailTotal),
+      pages: sum.pages + nonNegativeInteger(run?.budget?.browserPageBudget)
+    };
+  }, { details: 0, pages: 0 });
+}
+
 function selectKeywords(keywords = [], remainingRunSlots, policy, detailBudget) {
   const normalized = (Array.isArray(keywords) ? keywords : [])
     .map((item, index) => normalizeKeyword(item, index, policy))
@@ -431,6 +441,7 @@ module.exports = {
   chinaLocalDay,
   planWorkflowRun,
   selectKeywords,
+  consumedWorkflowBudget,
   recoverWorkflowRuns,
   communicationWorkflowMetrics
 };

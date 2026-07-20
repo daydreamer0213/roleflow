@@ -48,6 +48,13 @@ try {
     reviewAt: "2099-01-01T00:00:00.000Z"
   });
   seedAmbiguousCommunication(db, { profileId, planId, jobId: ids.ambiguous, now });
+  const otherCandidate = seedPlan(db, now);
+  seedAmbiguousCommunication(db, {
+    profileId: otherCandidate.profileId,
+    planId: otherCandidate.planId,
+    jobId: ids.primary,
+    now
+  });
 
   const inventory = listWorkflowInventory(db, { planId, now });
   assert.deepStrictEqual(

@@ -59,6 +59,7 @@ const {
   getCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
+  resumeInterruptedCommunicationBatch,
   resolveAmbiguousCommunicationItem,
   transitionCommunicationItem,
   communicationBatchSummary,
@@ -81,7 +82,7 @@ const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = 
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
-const { chinaLocalDay, planWorkflowRun, recoverWorkflowRuns } = require("../core/workflow_run");
+const { chinaLocalDay, planWorkflowRun, consumedWorkflowBudget, recoverWorkflowRuns } = require("../core/workflow_run");
 const {
   workflowEligibility,
   listWorkflowInventory,
@@ -593,10 +594,7 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
   });
   const successfulToday = runs.reduce((sum, run) => sum + Number(run.successfulCount || 0), 0);
   const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
-  const usedBudget = runs.reduce((sum, run) => ({
-    details: sum.details + Number(run.budget?.maxDetailTotal || 0),
-    pages: sum.pages + Number(run.budget?.browserPageBudget || 0)
-  }), { details: 0, pages: 0 });
+  const usedBudget = consumedWorkflowBudget(runs);
   const usedKeywords = new Set(runs.flatMap((run) => run.keywords || []).map((item) => String(item.word || item)));
   const jobs = listDecisionPool(db, { planId: planRecord.id });
   const keywordStats = new Map();
@@ -923,7 +921,7 @@ function startPlanScan(scanRuns, {
         if (["scanning", "analyzing"].includes(currentWorkflow?.status)) {
           transitionWorkflowRun(db, {
             id: workflowRun.id,
-            status: "failed",
+            status: "interrupted",
             errorCode: "SCAN_PROCESS_ERROR",
             errorMessage: error.message
           });
@@ -1277,11 +1275,16 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
     if (action === "start" || action === "resume") {
       assertCommunicationExecutionEnabled();
       assertBossRuntimeAvailable(db);
-      const expected = action === "start" ? "confirmed" : "paused";
-      if (batch.status !== expected) {
-        throw appError("COMMUNICATION_BATCH_STATUS_INVALID", `${action} requires a ${expected} communication batch`, { statusCode: 409 });
+      const expected = action === "start" ? ["confirmed"] : ["paused", "interrupted"];
+      if (!expected.includes(batch.status)) {
+        throw appError("COMMUNICATION_BATCH_STATUS_INVALID", `${action} requires a ${expected.join(" or ")} communication batch`, { statusCode: 409 });
       }
-      const running = setCommunicationBatchStatus(db, { batchId, status: "running" });
+      const running = batch.status === "interrupted"
+        ? resumeInterruptedCommunicationBatch(db, { batchId }).batch
+        : setCommunicationBatchStatus(db, { batchId, status: "running" });
+      if (running.status !== "running") {
+        throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
+      }
       startCommunicationProcess({ db, root, dbPath, batch: running, logger, requestId, spawnProcess });
       return { batch: running, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
     }
@@ -2008,7 +2011,7 @@ function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
 
 function renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock) {
   const batch = communication.batch;
-  const action = batch.status === "confirmed" ? "start" : batch.status === "paused" ? "resume" : "";
+  const action = batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
   const actionLabel = action === "resume" ? "继续沟通" : "开始沟通";
   const control = action && communication.calibration.executionEnabled && !runtimeBlock
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="${action}">${actionLabel}</button></form>`
@@ -2273,7 +2276,7 @@ function renderCommunicationReviewPage({ db, searchParams }) {
     return `<tr><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
   }).join("");
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  const action = batch.status === "confirmed" ? "start" : batch.status === "paused" ? "resume" : "";
+  const action = batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
   const executeControl = action && calibration.executionEnabled && !runtimeBlock
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="${action}">${action === "start" ? "开始沟通" : "继续沟通"}</button></form>`
     : batch.status === "running" ? "<strong>沟通执行中</strong>" : "";

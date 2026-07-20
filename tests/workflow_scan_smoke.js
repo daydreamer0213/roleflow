@@ -7,6 +7,7 @@ const {
   saveProfileAnalysis,
   createWorkflowRun,
   getWorkflowRun,
+  getScanRun,
   transitionWorkflowRun,
   createBatch,
   beginScanRun,
@@ -119,6 +120,36 @@ async function main() {
   assert.strictEqual(preserved.sequence, 1);
   assert.strictEqual(preserved.scanBatchId, batchId);
   assert.strictEqual(transitionWorkflowRun(db, { id: interrupted.id, status: "scanning" }).scanBatchId, batchId);
+
+  const modelInterrupted = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-model-interrupted",
+    localDay: "2026-07-22",
+    sequence: 1
+  }));
+  transitionWorkflowRun(db, { id: modelInterrupted.id, status: "scanning" });
+  const modelBatchId = createBatch(db, "boss", "resume", "workflow model interrupted", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "running"
+  });
+  await assert.rejects(
+    () => executeWithSiteScanLease(db, {
+      "run-id": "workflow-model-interrupted-scan",
+      "workflow-run": modelInterrupted.id,
+      plan: String(saved.planId),
+      input: "fixture.json"
+    }, "scan", async (_signal, execution) => {
+      beginScanRun(db, { runId: execution.runId, batchId: modelBatchId, processId: process.pid });
+      attachWorkflowScan(db, { id: modelInterrupted.id, scanRunId: execution.runId, scanBatchId: modelBatchId });
+      throw Object.assign(new Error("model request failed"), { code: "MODEL_REQUEST_FAILED" });
+    }),
+    (error) => error.code === "MODEL_REQUEST_FAILED"
+  );
+  const modelPreserved = getWorkflowRun(db, modelInterrupted.id);
+  assert.strictEqual(modelPreserved.status, "interrupted");
+  assert.strictEqual(modelPreserved.sequence, 1);
+  assert.strictEqual(modelPreserved.scanBatchId, modelBatchId);
+  assert.strictEqual(getScanRun(db, "workflow-model-interrupted-scan").status, "failed");
 }
 
 function seedProfile(database) {

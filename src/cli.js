@@ -657,7 +657,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     } else {
       transitionWorkflowRun(db, {
         id: workflowRun.id,
-        status: finalStatus === "failed" ? "failed" : "interrupted",
+        status: "interrupted",
         inventoryCount,
         metrics,
         errorCode: scanSummary?.fatalErrorCode || defaultStopCode || "SCAN_INCOMPLETE",
@@ -977,13 +977,15 @@ function resolveWorkflowScanContext(db, args, planRecord) {
   return run;
 }
 
-function transitionWorkflowScanFailure(db, workflowRunId, scanStatus, error) {
+function transitionWorkflowScanFailure(db, workflowRunId, _scanStatus, error) {
   if (!workflowRunId) return null;
   const run = getWorkflowRun(db, workflowRunId);
   if (!run || !["scanning", "analyzing", "interrupted"].includes(run.status)) return run;
+  // The child scan keeps its failed/partial status for diagnostics; the workflow
+  // remains resumable so a transient dependency cannot consume a daily slot.
   return transitionWorkflowRun(db, {
     id: run.id,
-    status: scanStatus === "failed" ? "failed" : "interrupted",
+    status: "interrupted",
     errorCode: error?.code || "SCAN_FAILED",
     errorMessage: error?.message || String(error || "scan failed")
   });

@@ -1,6 +1,7 @@
 const {
   decisionBucket,
   getWorkflowRun,
+  getSearchPlan,
   listDecisionPool,
   markCandidateJob
 } = require("./storage");
@@ -69,7 +70,7 @@ function workflowEligibility(job = {}, context = {}) {
 }
 
 function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = {}) {
-  const communicationStates = latestCommunicationStates(db);
+  const communicationStates = latestCommunicationStates(db, getSearchPlan(db, planId)?.profileId);
   return listDecisionPool(db, { planId })
     .map((job) => {
       const result = workflowEligibility(job, {
@@ -87,7 +88,7 @@ function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = 
 function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toISOString() } = {}) {
   const workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) throw inventoryError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
-  const communicationStates = latestCommunicationStates(db);
+  const communicationStates = latestCommunicationStates(db, workflow.profileId);
   const candidates = listDecisionPool(db, { planId: workflow.planId })
     .map((job) => {
       const result = workflowEligibility(job, {
@@ -165,13 +166,15 @@ function reconcileCommunicationOutcome(db, {
   return { reconciled: true, status: mapping.candidateStatus, reviewAt };
 }
 
-function latestCommunicationStates(db) {
+function latestCommunicationStates(db, profileId) {
   const rows = db.prepare(`WITH ranked AS (
-      SELECT job_id, status,
-        ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY updated_at DESC, id DESC) AS rank
-      FROM communication_batch_items
+      SELECT items.job_id, items.status,
+        ROW_NUMBER() OVER (PARTITION BY items.job_id ORDER BY items.updated_at DESC, items.id DESC) AS rank
+      FROM communication_batch_items items
+      JOIN communication_batches batches ON batches.id = items.batch_id
+      WHERE batches.profile_id = ?
     )
-    SELECT job_id, status FROM ranked WHERE rank = 1`).all();
+    SELECT job_id, status FROM ranked WHERE rank = 1`).all(Number(profileId || 0));
   return new Map(rows.map((row) => [Number(row.job_id), row.status]));
 }
 

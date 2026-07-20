@@ -322,6 +322,53 @@ function validatedClickAudit(value, item) {
   } : expected };
 }
 
+function resumeInterruptedCommunicationBatch(db, input = {}) {
+  const batchId = positiveInteger(input.batchId ?? input.id, "COMMUNICATION_BATCH_INVALID", "batchId is required");
+  const now = timestamp(input.now);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const batch = getCommunicationBatch(db, batchId);
+    if (!batch || batch.status !== "interrupted") {
+      throw codedError("COMMUNICATION_BATCH_STATUS_INVALID", "resume requires an interrupted communication batch");
+    }
+    const items = listCommunicationBatchItems(db, batchId);
+    for (const item of items) {
+      if (["opening", "verified"].includes(item.status) && item.clickCount === 0) {
+        db.prepare(`UPDATE communication_batch_items SET
+          status = 'pending', started_at = NULL, finished_at = NULL,
+          error_code = NULL, error_message = NULL, updated_at = ?
+          WHERE id = ? AND batch_id = ? AND status = ? AND click_count = 0`)
+          .run(now, item.id, batchId, item.status);
+      } else if (item.status === "click_dispatched") {
+        db.prepare(`UPDATE communication_batch_items SET
+          status = 'ambiguous', finished_at = COALESCE(finished_at, ?),
+          error_code = COALESCE(error_code, 'COMMUNICATION_RESUME_REQUIRES_REVIEW'), updated_at = ?
+          WHERE id = ? AND batch_id = ? AND status = 'click_dispatched'`)
+          .run(now, now, item.id, batchId);
+      }
+    }
+    const requiresReview = db.prepare(`SELECT 1 FROM communication_batch_items
+      WHERE batch_id = ? AND status = 'ambiguous' LIMIT 1`).get(batchId);
+    if (requiresReview) {
+      db.prepare("UPDATE communication_batches SET updated_at = ? WHERE id = ?").run(now, batchId);
+      db.exec("COMMIT");
+      return { batch: getCommunicationBatch(db, batchId), requiresReview: true };
+    }
+    const result = db.prepare(`UPDATE communication_batches SET
+      status = 'running', started_at = COALESCE(started_at, ?), finished_at = NULL,
+      stop_code = NULL, stop_message = NULL, updated_at = ?
+      WHERE id = ? AND status = 'interrupted'`).run(now, now, batchId);
+    if (Number(result.changes) !== 1) {
+      throw codedError("COMMUNICATION_BATCH_TRANSITION_CONFLICT", "communication batch changed before resume");
+    }
+    db.exec("COMMIT");
+    return { batch: getCommunicationBatch(db, batchId), requiresReview: false };
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 function resolveAmbiguousCommunicationItem(db, input = {}) {
   const status = String(input.status ?? input.toStatus ?? input.resolution ?? "").trim();
   if (!["succeeded", "stopped"].includes(status)) {
@@ -508,6 +555,7 @@ module.exports = {
   getCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
+  resumeInterruptedCommunicationBatch,
   pauseCommunicationBatchAfterReservationFailure,
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
