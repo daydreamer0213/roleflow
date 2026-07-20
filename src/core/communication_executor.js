@@ -1,5 +1,5 @@
 const { PRODUCT_POLICY } = require("./product_policy");
-const { markCandidateJob } = require("./storage");
+const { reconcileCommunicationOutcome } = require("./workflow_inventory");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
 const {
   TERMINAL_ITEM_STATUSES,
@@ -103,13 +103,18 @@ async function runCommunicationBatch({
       });
     } else if (state === "already_communicated") {
       transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
-      markApplied(db, getCommunicationBatch(db, batchId), item);
+      reconcileCommunicationOutcome(db, {
+        batch: getCommunicationBatch(db, batchId), item, status: "already_communicated", note: `RoleFlow batch #${batchId}`
+      });
       recordAudit(db, item, "communication_result", "already_communicated");
     } else {
       const finalState = ["job_unavailable", "target_mismatch", "action_unavailable"].includes(state)
         ? state
         : "action_unavailable";
       transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: finalState });
+      reconcileCommunicationOutcome(db, {
+        batch: getCommunicationBatch(db, batchId), item, status: finalState, note: `RoleFlow batch #${batchId}`
+      });
       recordAudit(db, item, "communication_result", finalState);
     }
 
@@ -165,7 +170,7 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     );
   }
   transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
-  markApplied(db, batch, item);
+  reconcileCommunicationOutcome(db, { batch, item, status: "succeeded", note: `RoleFlow batch #${batch.id}` });
   recordAudit(db, item, "communication_result", "succeeded");
 }
 
@@ -249,6 +254,9 @@ function transitionToUnavailable(db, batchId, item, error) {
     status: "action_unavailable",
     errorCode: errorCode(error)
   });
+  reconcileCommunicationOutcome(db, {
+    batch: getCommunicationBatch(db, batchId), item, status: "action_unavailable", note: `RoleFlow batch #${batchId}`
+  });
   recordAudit(db, item, "communication_result", "action_unavailable");
 }
 
@@ -276,16 +284,6 @@ function interruptAndThrow(db, batchId, error, logger) {
   }
   logger?.warn("communication_batch_interrupted", { batchId, code: errorCode(error) });
   throw error;
-}
-
-function markApplied(db, batch, item) {
-  markCandidateJob(db, {
-    profileId: batch.profileId,
-    planId: batch.planId,
-    jobId: item.jobId,
-    status: "applied",
-    note: `RoleFlow batch #${batch.id}`
-  });
 }
 
 function recordAudit(db, item, eventType, state) {

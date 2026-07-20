@@ -88,6 +88,7 @@ async function unavailableAndMismatchContinueSmoke() {
     sleepFn: async () => {}
   });
   assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["job_unavailable", "target_mismatch", "succeeded"]);
+  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", "applied"]);
   fixture.close();
 }
 
@@ -133,6 +134,9 @@ async function ambiguousAndFatalStopSmoke() {
   assert.strictEqual(fatalInspections, 1);
   assert.strictEqual(getCommunicationBatch(fatal.db, fatal.batch.id).status, "interrupted");
   assert.deepStrictEqual(listCommunicationBatchItems(fatal.db, fatal.batch.id).map((item) => item.status), ["action_unavailable", "pending"]);
+  assert.deepStrictEqual(candidateStatuses(fatal), ["later", ""]);
+  assert(Date.parse(fatal.db.prepare("SELECT review_at FROM candidate_job_states WHERE profile_id = ? AND job_id = ?")
+    .get(fatal.profileId, fatal.jobIds[0]).review_at) > Date.now());
   fatal.close();
 }
 

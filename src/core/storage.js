@@ -475,6 +475,7 @@ const MIGRATIONS = [
     name: "workflow_runs_v1",
     apply(db) {
       db.exec(WORKFLOW_SCHEMA);
+      backfillHistoricalCommunicationOutcomes(db);
     }
   }
 ];
@@ -731,6 +732,44 @@ function workScheduleQualityTag(kind) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function backfillHistoricalCommunicationOutcomes(db) {
+  const result = db.prepare(`WITH ranked AS (
+      SELECT batches.profile_id, batches.plan_id, items.job_id, items.status, items.updated_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY batches.profile_id, items.job_id
+          ORDER BY CASE items.status
+            WHEN 'succeeded' THEN 0
+            WHEN 'already_communicated' THEN 0
+            WHEN 'job_unavailable' THEN 1
+            WHEN 'target_mismatch' THEN 2
+            WHEN 'action_unavailable' THEN 3
+            ELSE 9 END,
+            items.updated_at DESC, items.id DESC
+        ) AS rank
+      FROM communication_batch_items items
+      JOIN communication_batches batches ON batches.id = items.batch_id
+      WHERE items.status IN ('succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable')
+    )
+    INSERT OR IGNORE INTO candidate_job_states(
+      profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+    )
+    SELECT profile_id, job_id, plan_id,
+      CASE status
+        WHEN 'succeeded' THEN 'applied'
+        WHEN 'already_communicated' THEN 'applied'
+        WHEN 'job_unavailable' THEN 'invalid'
+        WHEN 'target_mismatch' THEN 'review'
+        WHEN 'action_unavailable' THEN 'later'
+      END,
+      status,
+      'RoleFlow v3 communication outcome backfill',
+      CASE WHEN status = 'action_unavailable'
+        THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+1 day') ELSE NULL END,
+      updated_at
+    FROM ranked WHERE rank = 1`).run();
+  return Number(result.changes || 0);
 }
 
 function createWorkflowRun(db, input = {}) {
@@ -3199,6 +3238,7 @@ module.exports = {
   SCAN_RUN_STATUSES,
   WORKFLOW_RUN_STATUSES,
   openDb,
+  backfillHistoricalCommunicationOutcomes,
   createWorkflowRun,
   getWorkflowRun,
   listWorkflowRuns,

@@ -1,6 +1,7 @@
-const { getSearchPlan, listDecisionPool, listSiteAccessEvents, markCandidateJob } = require("./storage");
+const { getSearchPlan, listDecisionPool, listSiteAccessEvents } = require("./storage");
 const { isBossJobUrl } = require("./scoring");
 const { PRODUCT_POLICY } = require("./product_policy");
+const { reconcileCommunicationOutcome } = require("./workflow_inventory");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
@@ -292,11 +293,11 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
       }), resolvedAt);
     if (status === "succeeded") {
       const batch = getCommunicationBatch(db, item.batchId);
-      markCandidateJob(db, {
-        profileId: batch.profileId,
-        planId: batch.planId,
-        jobId: item.jobId,
-        status: "applied",
+      reconcileCommunicationOutcome(db, {
+        batch,
+        item,
+        status,
+        now: resolvedAt,
         note: `RoleFlow 批量沟通 #${batch.id}`
       });
     }

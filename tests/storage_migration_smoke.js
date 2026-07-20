@@ -234,6 +234,43 @@ try {
   );
   db.close();
 
+  const historicalOutcomePath = path.join(root, "historical-outcome-v2.sqlite");
+  db = openDb(historicalOutcomePath);
+  const historyProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('History Candidate', '{}', NULL, ?, ?)`).run(v2Now, v2Now).lastInsertRowid);
+  const historyPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'History Plan', '{}', NULL, 1, ?, ?)`).run(historyProfileId, v2Now, v2Now).lastInsertRowid);
+  const historyJobId = Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', 'historical-unavailable', 'Historical unavailable job', ?, ?)`)
+    .run(v2Now, v2Now).lastInsertRowid);
+  const historyBatchId = Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, started_at, finished_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'edge', 'completed', '{}', ?, ?, ?, ?, ?)`)
+    .run(historyProfileId, historyPlanId, v2Now, v2Now, v2Now, v2Now, v2Now).lastInsertRowid);
+  db.prepare(`INSERT INTO communication_batch_items(
+    batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+    status, click_count, finished_at, updated_at
+  ) VALUES (?, ?, 1, 'https://www.zhipin.com/job_detail/historical-unavailable.html',
+    'Historical unavailable job', 'History Company', 'job_unavailable', 0, ?, ?)`)
+    .run(historyBatchId, historyJobId, v2Now, v2Now);
+  db.exec(`
+    DROP TABLE workflow_runs;
+    DELETE FROM schema_migrations WHERE version = 3;
+    PRAGMA user_version = 2;
+  `);
+  db.close();
+  db = openDb(historicalOutcomePath);
+  assert.strictEqual(
+    db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?")
+      .get(historyProfileId, historyJobId).status,
+    "invalid"
+  );
+  db.close();
+
   const futurePath = path.join(root, "future.sqlite");
   db = openDb(futurePath);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
