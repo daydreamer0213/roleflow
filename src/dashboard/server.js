@@ -1717,12 +1717,21 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
   const runtimeBlock = communicationRuntimeBlock(db);
   const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "talk", "backup"].includes(job.decisionBucket)
     && String(job.applicationStatus ?? "").length === 0);
+  const selection = PRODUCT_POLICY.operations.bossCommunication.selection;
+  const defaultIds = new Set(eligible
+    .filter((job) => ["primary", "talk"].includes(job.decisionBucket))
+    .slice(0, selection.targetCount)
+    .map((job) => job.id));
+  const defaultCount = defaultIds.size;
+  const targetNotice = defaultCount >= selection.acceptableMin
+    ? `已达到日常沟通区间，无需为凑满 ${selection.targetCount} 个补扫。`
+    : `当前可沟通候选不足 ${selection.acceptableMin} 个，可在风险额度允许时补扫一轮。`;
   const rows = eligible.map((job) => {
-    const checked = ["primary", "talk"].includes(job.decisionBucket) ? " checked" : "";
+    const checked = defaultIds.has(job.id) ? " checked" : "";
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
 }
 
 function renderCommunicationReviewPage({ db, searchParams }) {

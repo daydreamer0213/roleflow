@@ -41,7 +41,7 @@ let server;
 
   const builder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.primaryId}" checked`));
-  assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.talkId}" checked`));
+  assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.talkId}"`));
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}" checked`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.notRecommendedId}"`));
@@ -49,6 +49,13 @@ let server;
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
   assert.match(builder.body, /form\.addEventListener\('change',update\);update\(\)/);
+  assert.strictEqual((builder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 30);
+  assert.match(builder.body, /已达到日常沟通区间，无需为凑满 30 个补扫/);
+
+  const smallBuilder = await getText(baseUrl, `/communication/new?planId=${fixture.smallPlanId}`);
+  assert.strictEqual((smallBuilder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 21);
+  assert.match(smallBuilder.body, /当前可沟通候选不足 22 个，可在风险额度允许时补扫一轮/);
+  assert.doesNotMatch(smallBuilder.body, /自动补扫|开始补扫/);
 
   const queue = await getText(baseUrl, `/queue?planId=${fixture.planId}`);
   const plan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
@@ -153,9 +160,18 @@ function seed(database) {
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
+  for (let index = 0; index < 35; index += 1) {
+    upsertJob(database, job(`extra-${index}`, { title: `Extra role ${index}`, analysis: { semanticStatus: "partial", recommendation: "review" } }), scanBatchId);
+  }
   markCandidateJob(database, { profileId, planId, jobId: appliedId, status: "applied" });
   markCandidateJob(database, { profileId, planId, jobId: skippedId, status: "skipped" });
-  return { planId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
+
+  const smallPlanId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Small dashboard smoke", "{}", now, now).lastInsertRowid);
+  const smallBatchId = createBatch(database, "boss", "small-dashboard-communication", "small dashboard communication smoke", { profileId, searchPlanId: smallPlanId });
+  for (let index = 0; index < 21; index += 1) {
+    upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: { semanticStatus: "partial", recommendation: "review" } }), smallBatchId);
+  }
+  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
 }
 
 function job(sourceId, overrides = {}) {

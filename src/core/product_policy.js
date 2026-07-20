@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-20.2";
+const PRODUCT_POLICY_VERSION = "2026-07-20.3";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -91,6 +91,7 @@ const PRODUCT_POLICY = Object.freeze({
         status: "calibrated",
         executionEnabled: true
       }),
+      selection: Object.freeze({ targetCount: 30, acceptableMin: 22 }),
       delayMs: Object.freeze([15000, 20000]),
       limits: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
       combinedUsage: Object.freeze({
