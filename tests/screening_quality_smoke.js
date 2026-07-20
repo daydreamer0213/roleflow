@@ -246,11 +246,40 @@ for (const salary of ["15-25K", "12-24K"]) {
 }
 const aboveTarget = scoreJob(job({ experience: "3-5年", salary: "20-30K" }), finalSalaryConfigs);
 assert(aboveTarget.qualityTags.includes("experience_salary_above_target"));
-assert.strictEqual(decisionState(aboveTarget), "blocked");
+assert.strictEqual(decisionState(aboveTarget), "ready");
+assert.strictEqual(decisionBucket({ ...aboveTarget, analysis: {} }), "backup");
 const unknownStretchSalary = scoreJob(job({ experience: "3-5年", salary: "" }), finalSalaryConfigs);
 assert(unknownStretchSalary.qualityTags.includes("salary_unverified"));
 assert(!unknownStretchSalary.qualityTags.includes("experience_salary_above_target"));
 assert.strictEqual(decisionState(unknownStretchSalary), "ready");
+
+const salaryTargetConfigs = {
+  ...configs,
+  scoring: {
+    ...configs.scoring,
+    experience: { selected: ["经验不限", "0-3年", "1-3年", "3-5年（可冲）"], allowStretch: true },
+    salary: { ...configs.scoring.salary, expected_min_k: 9, expected_max_k: 14, mode: "wide" }
+  }
+};
+const coreSalary = scoreJob(job({ experience: "1-3年", salary: "12-18K" }), salaryTargetConfigs);
+assert(coreSalary.qualityTags.includes("salary_target_core"));
+
+const stretchSalary = scoreJob(job({ experience: "1-3年", salary: "15-20K" }), salaryTargetConfigs);
+assert(stretchSalary.qualityTags.includes("salary_target_stretch"));
+assert.notStrictEqual(decisionBucket({ ...stretchSalary, analysis: completeApplyAnalysis() }), "primary");
+
+const highExperienceSalary = scoreJob(job({ experience: "3-5年", salary: "15-20K" }), salaryTargetConfigs);
+assert(highExperienceSalary.qualityTags.includes("salary_target_high"));
+assert.strictEqual(decisionState(highExperienceSalary), "ready");
+assert.strictEqual(decisionBucket({ ...highExperienceSalary, analysis: completeApplyAnalysis() }), "backup");
+
+const highSalary = scoreJob(job({ experience: "1-3年", salary: "17-25K" }), salaryTargetConfigs);
+assert(highSalary.qualityTags.includes("salary_target_high"));
+assert.strictEqual(decisionBucket({ ...highSalary, analysis: completeApplyAnalysis() }), "backup");
+
+const unknownTargetSalary = scoreJob(job({ experience: "1-3年", salary: "" }), salaryTargetConfigs);
+assert(unknownTargetSalary.qualityTags.includes("salary_unverified"));
+assert(!unknownTargetSalary.qualityTags.some((tag) => tag.startsWith("salary_target_")));
 
 const doubleWeekend = scoreJob(job({ description: "负责企业 RAG 应用开发，周末双休。" }), configs);
 const alternatingWeekend = scoreJob(job({ description: "负责企业 RAG 应用开发，大小周。" }), configs);
@@ -557,4 +586,8 @@ function job(overrides = {}) {
     description: "负责企业知识库和 RAG 应用开发。",
     ...overrides
   };
+}
+
+function completeApplyAnalysis() {
+  return { semanticStatus: "complete", recommendation: "apply", confidence: 0.9, evidence: { jd: ["Python"], resume: ["Python"] } };
 }

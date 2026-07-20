@@ -179,6 +179,18 @@ function scoreJob(job, configs) {
   const experienceFit = classifyExperienceFit(job, scoring.experience || {});
   const stretchRequested = experienceFit.stretch
     || (scoring.allowExperienceStretch !== false && /3-5年|3年以上|三年以上/.test(text));
+  const salaryTargetTag = salary.min === null || salary.max === null || salaryMax <= 0
+    ? ""
+    : (salary.min >= salaryMax + 3 || (stretchRequested && salary.min >= salaryMax + 1))
+      ? "salary_target_high"
+      : salary.min >= salaryMax + 1
+        ? "salary_target_stretch"
+        : salary.max >= salaryMin && salary.min <= salaryMax
+          ? "salary_target_core"
+          : "";
+  if (salaryTargetTag) qualityTags.push(salaryTargetTag);
+  if (salaryTargetTag === "salary_target_stretch") risks.push("薪资起点略高于目标，需结合职责确认");
+  if (salaryTargetTag === "salary_target_high") risks.push("薪资起点与经验门槛明显高于当前目标，作为备选");
   const experienceSalaryAboveTarget = stretchRequested
     && salaryMax > 0
     && salary.min !== null
@@ -358,7 +370,7 @@ function parseWorkSchedule(value) {
 
 function decisionState(job) {
   const tags = new Set(job.qualityTags || []);
-  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "role_mismatch", "hard_exclude", "internship_role", "algorithm_role", "salary_out_of_range", "experience_salary_above_target"].some((tag) => tags.has(tag))) {
+  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "role_mismatch", "hard_exclude", "internship_role", "algorithm_role", "salary_out_of_range"].some((tag) => tags.has(tag))) {
     return "blocked";
   }
   if (tags.has("activity_unverified") || tags.has("stale_or_unknown_active") || tags.has("detail_unverified")) return "refresh";

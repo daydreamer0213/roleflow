@@ -2670,6 +2670,7 @@ function decisionBucket(job) {
   const semanticStatus = analysis.semanticStatus || "";
   const recommendation = analysis.recommendation || "";
   if (effectiveHardBlockers(analysis).length) return "not_recommended";
+  if (tags.has("salary_target_high")) return "backup";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
@@ -2680,6 +2681,7 @@ function decisionBucket(job) {
     if (recommendation === "apply") {
       const evidence = analysis.evidence || {};
       const needsConversation = analysis.realRoleType === "implementation_presales"
+        || tags.has("salary_target_stretch")
         || tags.has("experience_stretch")
         || tags.has("experience_overrange")
         || (analysis.hiddenRisks || []).some((risk) => ["medium", "high"].includes(risk?.severity));
@@ -2690,9 +2692,10 @@ function decisionBucket(job) {
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
   if ((job.risks || []).some((risk) => /薪资低于期望下限/.test(String(risk)))) return "backup";
-  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_overlap") || tags.has("core_stack_mismatch") || tags.has("java_backend_heavy") || tags.has("senior_engineering_heavy")) return "backup";
+  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_above_target") || tags.has("experience_salary_overlap") || tags.has("core_stack_mismatch") || tags.has("java_backend_heavy") || tags.has("senior_engineering_heavy")) return "backup";
   if (tags.has("salary_unverified") || tags.has("experience_unverified")) return "talk";
   const requiresConversation = tags.has("algorithm_hybrid")
+    || tags.has("salary_target_stretch")
     || tags.has("experience_stretch")
     || (job.risks || []).some((risk) => /偏训练|算法框架|Java占比|Spring占比|全栈|顾问|实施|应届|学历|经验门槛/.test(String(risk)));
   if (["优先", "可投"].includes(job.level || "") && !requiresConversation && !(job.risks || []).length) return "talk";
