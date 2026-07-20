@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-17.4";
+const PRODUCT_POLICY_VERSION = "2026-07-20.1";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -25,9 +25,9 @@ const PRODUCT_POLICY = Object.freeze({
   dailyScan: Object.freeze({
     priorities: Object.freeze(["A", "B"]),
     maxCards: 50,
-    maxDetailTotal: 220,
+    maxDetailTotal: 240,
     browserPageBudget: 40,
-    detailLimits: Object.freeze({ A: 40, B: 30 }),
+    detailLimits: Object.freeze({ A: 45, B: 30 }),
     salaryLaneLimit: 1
   }),
   operations: Object.freeze({
@@ -71,13 +71,15 @@ const PRODUCT_POLICY = Object.freeze({
       }),
       modes: Object.freeze({
         recovery: Object.freeze({
-          detail_open: Object.freeze({ "10m": 8, "1h": 15, "24h": 20 }),
+          pane_detail_read: Object.freeze({ "10m": 20, "1h": 80, "24h": 120 }),
+          detail_open: Object.freeze({ "10m": 5, "1h": 15, "24h": 30 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 8 }),
           list_scroll: Object.freeze({ "24h": 60 })
         }),
         normal: Object.freeze({
-          detail_open: Object.freeze({ "10m": 12, "1h": 25, "24h": 40 }),
+          pane_detail_read: Object.freeze({ "10m": 45, "1h": 240, "24h": 280 }),
+          detail_open: Object.freeze({ "10m": 8, "1h": 25, "24h": 60 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 10 }),
           list_scroll: Object.freeze({ "24h": 80 })

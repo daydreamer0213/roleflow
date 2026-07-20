@@ -137,7 +137,7 @@ function actionsForWindow(action, window, policy) {
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
   const label = action === "communication_visit"
     ? "岗位沟通"
-    : { detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
+    : { pane_detail_read: "右栏详情", detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
   const retryAt = new Date(retryAtMs).toISOString();
   const error = new Error(`${site.toUpperCase()} 过去 ${window} 的${label}访问已达到安全额度 ${limit} 次；未完成岗位已保留，请在 ${retryAt} 后恢复批次。`);
   error.code = "BOSS_ACCESS_BUDGET_EXHAUSTED";

@@ -68,8 +68,8 @@ const modePlan = {
 const dailyPolicy = resolveScanPolicy(modePlan, "daily");
 assert.deepStrictEqual(dailyPolicy.keywordPlan.map((item) => item.word), ["AI application", "RAG", "Agent"]);
 assert.strictEqual(dailyPolicy.maxCards, 50);
-assert.strictEqual(dailyPolicy.maxDetailTotal, 220);
-assert.deepStrictEqual(dailyPolicy.detailLimits, { A: 40, B: 30 });
+assert.strictEqual(dailyPolicy.maxDetailTotal, 240);
+assert.deepStrictEqual(dailyPolicy.detailLimits, { A: 45, B: 30 });
 assert.strictEqual(dailyPolicy.browserPageBudget, 40);
 assert.strictEqual(dailyPolicy.policyVersion, PRODUCT_POLICY_VERSION);
 assert.match(dailyPolicy.policyHash, /^[a-f0-9]{64}$/);
@@ -80,7 +80,7 @@ const lowBudgetPlan = {
 };
 const dailyWithLowBroadBudget = resolveScanPolicy(lowBudgetPlan, "daily");
 assert.strictEqual(dailyWithLowBroadBudget.maxCards, 50);
-assert.strictEqual(dailyWithLowBroadBudget.maxDetailTotal, 220);
+assert.strictEqual(dailyWithLowBroadBudget.maxDetailTotal, 240);
 assert.strictEqual(dailyWithLowBroadBudget.browserPageBudget, 40);
 const broadPolicy = resolveScanPolicy(modePlan, "broad");
 assert.strictEqual(broadPolicy.keywordPlan.length, 4);

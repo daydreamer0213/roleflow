@@ -342,7 +342,7 @@ async function paneSwitchSmoke() {
   assert(detail.description.length >= 120);
   assert.strictEqual(detail.bossActiveText, "今日活跃");
   assert.deepStrictEqual(paneScrolls, ["down", "top"]);
-  assert.deepStrictEqual(accessActions.map((item) => item.action), ["detail_open"]);
+  assert.deepStrictEqual(accessActions.map((item) => item.action), ["pane_detail_read"]);
   assert.strictEqual(accessActions[0].details.jobId, "pane-job");
 }
 

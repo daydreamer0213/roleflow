@@ -979,7 +979,7 @@ class BossSiteAdapter {
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
     const expectedJobId = (normalizeBossUrl(job?.url || "").match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.reserveAccess("detail_open", { jobId: expectedJobId, title: job?.title || "", url: job?.url || "" });
+    await this.reserveAccess("pane_detail_read", { jobId: expectedJobId, title: job?.title || "", url: job?.url || "" });
     const opened = await this.browser.evalValue(tabId, `(() => window.__bossOpenCard(${JSON.stringify(expectedJobId)}, ${Number(fallbackIndex) || 0}, ${JSON.stringify(job?.title || "")}))()`);
     if (!opened?.clicked) throw bossError("BOSS_CARD_NOT_FOUND", `左侧岗位卡片未找到：${job?.title || expectedJobId || "unknown"}`);
     await this.waitWithPacing("card");

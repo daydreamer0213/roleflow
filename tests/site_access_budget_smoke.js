@@ -20,7 +20,7 @@ async function rollingWindowSmoke() {
     createdAt: new Date(unlockAt - 24 * 60 * 60 * 1000).toISOString(),
     details: { blockedUntil: new Date(unlockAt).toISOString() }
   });
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     recordSiteAccessEvent(db, {
       site: "boss",
       action: "detail_open",
@@ -47,7 +47,7 @@ async function rollingWindowSmoke() {
     site: "boss",
     action: "detail_open",
     since: new Date(unlockAt - 24 * 60 * 60 * 1000).toISOString()
-  }).length, 9);
+  }).length, 6);
   db.close();
 }
 
@@ -59,7 +59,7 @@ async function rollingDayStopSmoke() {
     action: "risk_control",
     createdAt: new Date(now - 2 * 60 * 60 * 1000).toISOString()
   });
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 30; index += 1) {
     recordSiteAccessEvent(db, {
       site: "boss",
       action: "detail_open",
@@ -72,7 +72,7 @@ async function rollingDayStopSmoke() {
     (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
       && error.mode === "recovery"
       && error.window === "24h"
-      && error.limit === 20
+      && error.limit === 30
       && Date.parse(error.retryAt) > now
   );
   db.close();
@@ -88,10 +88,56 @@ async function normalModeSmoke() {
   db.close();
 }
 
+function configuredDetailBudgetsSmoke() {
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.pane_detail_read, {
+    "10m": 45,
+    "1h": 240,
+    "24h": 280
+  });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.pane_detail_read, {
+    "10m": 20,
+    "1h": 80,
+    "24h": 120
+  });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.detail_open, {
+    "10m": 8,
+    "1h": 25,
+    "24h": 60
+  });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.detail_open, {
+    "10m": 5,
+    "1h": 15,
+    "24h": 30
+  });
+  assert.strictEqual(PRODUCT_POLICY.dailyScan.maxDetailTotal, 240);
+  assert.deepStrictEqual(PRODUCT_POLICY.dailyScan.detailLimits, { A: 45, B: 30 });
+}
+
+async function paneDetailDailyStopSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 280; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "pane_detail_read",
+      createdAt: new Date(now - 2 * 60 * 60_000 + index).toISOString()
+    });
+  }
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  await assert.rejects(
+    () => controller.reserve("pane_detail_read"),
+    (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      && error.window === "24h"
+      && error.limit === 280
+      && error.message.includes("右栏详情")
+  );
+  db.close();
+}
+
 async function abortDuringWindowWaitSmoke() {
   const db = openDb(":memory:");
   let now = Date.parse("2026-07-21T12:00:00+08:00");
-  for (let index = 0; index < 12; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     recordSiteAccessEvent(db, {
       site: "boss",
       action: "detail_open",
@@ -285,7 +331,7 @@ async function transactionBoundarySmoke() {
   const observer = openDb(dbPath);
   try {
     let now = Date.parse("2026-07-21T12:00:00+08:00");
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       recordSiteAccessEvent(db, {
         site: "boss",
         action: "detail_open",
@@ -322,7 +368,7 @@ async function transactionBoundarySmoke() {
         action: "risk_control",
         createdAt: new Date(dailyNow - 2 * 60 * 60_000).toISOString()
       });
-      for (let index = 0; index < 20; index += 1) {
+      for (let index = 0; index < 30; index += 1) {
         recordSiteAccessEvent(dailyDb, {
           site: "boss",
           action: "detail_open",
@@ -398,6 +444,8 @@ Promise.resolve()
   .then(rollingWindowSmoke)
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
+  .then(configuredDetailBudgetsSmoke)
+  .then(paneDetailDailyStopSmoke)
   .then(abortDuringWindowWaitSmoke)
   .then(communicationTenMinuteBudgetSmoke)
   .then(communicationThirtyMinuteBudgetSmoke)
