@@ -24,7 +24,11 @@ const {
   getSiteRuntimeState,
   getSiteScanLease,
   createScanRun,
+  createWorkflowRun,
   getWorkflowRun,
+  getWorkflowRunByCommunicationBatch,
+  listWorkflowRuns,
+  getActiveWorkflowRun,
   transitionWorkflowRun,
   getLatestScanRun,
   recordScanRunProcessExit,
@@ -77,6 +81,12 @@ const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = 
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
+const { chinaLocalDay, planWorkflowRun } = require("../core/workflow_run");
+const {
+  workflowEligibility,
+  listWorkflowInventory,
+  listWorkflowReviewCandidates
+} = require("../core/workflow_inventory");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
@@ -108,6 +118,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
+      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
@@ -115,6 +126,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
+      if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"));
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
@@ -131,6 +143,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady(), logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
     } catch (error) {
@@ -221,7 +235,7 @@ function redirectHome(res, db) {
   if (!profile) return redirect(res, "/onboarding");
   const plan = getActiveSearchPlan(db, profile.id);
   if (!plan) return redirect(res, `/onboarding?profileId=${profile.id}`);
-  return redirect(res, getLatestBatchId(db, { planId: plan.id }) ? `/queue?planId=${plan.id}` : `/plan?profileId=${plan.profileId}&planId=${plan.id}`);
+  return redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}`);
 }
 
 async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady, logger, requestId }) {
@@ -556,6 +570,263 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   } catch (error) {
     respondUiError(res, error, "/plan", { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
   }
+}
+
+function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
+  if (!planRecord) throw appError("WORKFLOW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
+  const localDay = chinaLocalDay(now);
+  const runs = listWorkflowRuns(db, {
+    profileId: planRecord.profileId,
+    planId: planRecord.id,
+    localDay,
+    limit: PRODUCT_POLICY.operations.workflow.maxRunsPerDay
+  }).sort((a, b) => a.sequence - b.sequence);
+  const activeRun = getActiveWorkflowRun(db, {
+    profileId: planRecord.profileId,
+    planId: planRecord.id,
+    localDay
+  });
+  const successfulToday = runs.reduce((sum, run) => sum + Number(run.successfulCount || 0), 0);
+  const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
+  const usedBudget = runs.reduce((sum, run) => ({
+    details: sum.details + Number(run.budget?.maxDetailTotal || 0),
+    pages: sum.pages + Number(run.budget?.browserPageBudget || 0)
+  }), { details: 0, pages: 0 });
+  const usedKeywords = new Set(runs.flatMap((run) => run.keywords || []).map((item) => String(item.word || item)));
+  const jobs = listDecisionPool(db, { planId: planRecord.id });
+  const keywordStats = new Map();
+  for (const job of jobs) {
+    const word = String(job.keyword || "").trim();
+    if (!word) continue;
+    const stats = keywordStats.get(word) || { sampleSize: 0, eligibleCount: 0 };
+    stats.sampleSize += 1;
+    const probe = { ...job, applicationStatus: "", applicationReasonCode: "", reviewAt: "" };
+    if (workflowEligibility(probe, { now: asIso(now) }).eligible) stats.eligibleCount += 1;
+    keywordStats.set(word, stats);
+  }
+  const keywords = (planRecord.plan?.keywords || []).map((item, index) => {
+    const source = typeof item === "string" ? { word: item, priority: "B" } : item;
+    const stats = keywordStats.get(String(source.word || "")) || { sampleSize: 0, eligibleCount: 0 };
+    return {
+      word: String(source.word || "").trim(),
+      priority: source.priority || "B",
+      planOrder: index,
+      usedToday: usedKeywords.has(String(source.word || "").trim()),
+      ...stats
+    };
+  }).filter((item) => item.word);
+  const policy = PRODUCT_POLICY.operations.workflow;
+  const nextPlan = activeRun ? null : planWorkflowRun({
+    now,
+    localDay,
+    successfulToday,
+    completedRuns: runs.length,
+    inventoryCount: inventory.length,
+    dailyBudget: {
+      details: PRODUCT_POLICY.dailyScan.maxDetailTotal,
+      pages: PRODUCT_POLICY.dailyScan.browserPageBudget
+    },
+    usedBudget,
+    keywords
+  });
+  return {
+    localDay,
+    runs,
+    activeRun,
+    successfulToday,
+    dailyTarget: policy.dailyTarget,
+    slotsUsed: runs.length,
+    maxRuns: policy.maxRunsPerDay,
+    inventory,
+    usedBudget,
+    remainingBudget: {
+      details: Math.max(0, PRODUCT_POLICY.dailyScan.maxDetailTotal - usedBudget.details),
+      pages: Math.max(0, PRODUCT_POLICY.dailyScan.browserPageBudget - usedBudget.pages)
+    },
+    nextPlan,
+    keywords
+  };
+}
+
+async function handleWorkflowRunStart(req, res, {
+  db,
+  root,
+  dbPath,
+  scanRuns,
+  modelReady,
+  logger,
+  requestId,
+  spawnProcess
+}) {
+  let planId = 0;
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    planId = Number(params.planId || 0);
+    const plan = getSearchPlan(db, planId);
+    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
+    if (!profile) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
+    assertSearchPlanReady(plan, profile.profile, getSearchPlanDependency(db, plan.id));
+    const state = buildWorkflowDashboardState(db, plan);
+    if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
+    if (state.nextPlan?.errorCode) {
+      throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode), { statusCode: 409 });
+    }
+    if (state.nextPlan.scanNeeded && !modelReady) {
+      throw appError("MODEL_CONFIGURATION_REQUIRED", "执行新一轮前，请先完成模型连接测试。", { statusCode: 409 });
+    }
+    if (state.nextPlan.scanNeeded) assertWorkflowScanAvailable(db, scanRuns, plan.id, logger);
+    const workflow = createWorkflowRun(db, {
+      profileId: plan.profileId,
+      planId: plan.id,
+      localDay: state.localDay,
+      sequence: state.runs.length + 1,
+      targetSuccessCount: state.nextPlan.targetSuccessCount,
+      inventoryCount: state.nextPlan.inventoryCount,
+      candidateGap: state.nextPlan.candidateGap,
+      scanNeeded: state.nextPlan.scanNeeded,
+      keywords: state.nextPlan.selectedKeywords,
+      budget: state.nextPlan.budget,
+      planner: state.nextPlan,
+      shortfallCode: state.nextPlan.shortfallReason || "",
+      metrics: {
+        planning: {
+          inventory: state.nextPlan.inventoryCount,
+          candidateGap: state.nextPlan.candidateGap,
+          projectedNewCandidates: state.nextPlan.projectedNewCandidates
+        }
+      }
+    });
+    if (workflow.scanNeeded) {
+      startPlanScan(scanRuns, {
+        db,
+        root,
+        dbPath,
+        planId: plan.id,
+        cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
+        browserMode: params.browserMode === "portable" ? "portable" : "edge",
+        scanKind: "daily",
+        workflowRunId: workflow.id,
+        logger,
+        requestId,
+        spawnProcess
+      });
+    } else {
+      transitionWorkflowRun(db, {
+        id: workflow.id,
+        status: "review_required",
+        inventoryCount: state.inventory.length,
+        metrics: { ...workflow.metrics, planning: { ...workflow.metrics.planning, scanSkipped: true } }
+      });
+    }
+    logger.info("workflow_run_started", {
+      requestId,
+      workflowRunId: workflow.id,
+      planId: plan.id,
+      sequence: workflow.sequence,
+      targetSuccessCount: workflow.targetSuccessCount,
+      scanNeeded: workflow.scanNeeded
+    });
+    redirect(res, `/workflow?runId=${encodeURIComponent(workflow.id)}`);
+  } catch (error) {
+    respondUiError(res, error, planId ? `/plan?planId=${planId}` : "/plan", {
+      logger,
+      requestId,
+      event: "workflow_run_start_failed",
+      fallbackCode: "WORKFLOW_RUN_START_FAILED"
+    });
+  }
+}
+
+function assertWorkflowScanAvailable(db, scanRuns, planId, logger) {
+  assertBossRuntimeAvailable(db);
+  const orphaned = interruptOrphanedScanRuns(db, {
+    site: "boss",
+    heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  });
+  if (orphaned.interrupted) logger?.warn("orphaned_scan_runs_interrupted", orphaned);
+  const latestRun = getLatestScanRun(db, { planId, site: "boss" });
+  if (latestRun?.status === "running" || [...scanRuns.values()].some((run) => !run.exited)) {
+    throw appError("WORKFLOW_SCAN_ALREADY_RUNNING", "BOSS 已有扫描任务正在运行，请先完成当前任务。", { statusCode: 409 });
+  }
+  const activeLease = getSiteScanLease(db, "boss");
+  if (activeLease) {
+    throw appError("WORKFLOW_SCAN_LEASE_ACTIVE", `BOSS 已有扫描任务运行中（${activeLease.command}）。`, { statusCode: 409 });
+  }
+}
+
+async function handleWorkflowRunResume(req, res, {
+  db,
+  root,
+  dbPath,
+  scanRuns,
+  logger,
+  requestId,
+  spawnProcess
+}) {
+  let workflowRunId = "";
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    workflowRunId = String(params.workflowRunId || params.runId || "").trim();
+    const workflow = getWorkflowRun(db, workflowRunId);
+    if (!workflow) throw appError("WORKFLOW_RUN_NOT_FOUND", "本轮任务不存在。", { statusCode: 404 });
+    if (["completed", "failed", "stopped"].includes(workflow.status)) {
+      throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
+    }
+    if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
+      if (workflow.scanNeeded) {
+        assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
+        startPlanScan(scanRuns, {
+          db,
+          root,
+          dbPath,
+          planId: workflow.planId,
+          cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
+          browserMode: params.browserMode === "portable" ? "portable" : "edge",
+          scanKind: "daily",
+          resumeBatchId: workflow.scanBatchId,
+          workflowRunId: workflow.id,
+          logger,
+          requestId,
+          spawnProcess
+        });
+      } else {
+        transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
+      }
+    }
+    redirect(res, `/workflow?runId=${encodeURIComponent(workflow.id)}`);
+  } catch (error) {
+    respondUiError(res, error, workflowRunId ? `/workflow?runId=${encodeURIComponent(workflowRunId)}` : "/plan", {
+      logger,
+      requestId,
+      event: "workflow_run_resume_failed",
+      fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
+    });
+  }
+}
+
+function handleWorkflowStatus(res, db, workflowRunId) {
+  const workflow = getWorkflowRun(db, workflowRunId);
+  if (!workflow) return sendJson(res, 404, { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" });
+  const plan = getSearchPlan(db, workflow.planId);
+  const daily = plan ? buildWorkflowDashboardState(db, plan) : null;
+  const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
+  sendJson(res, 200, {
+    workflow,
+    communication,
+    today: daily ? { successful: daily.successfulToday, target: daily.dailyTarget, slotsUsed: daily.slotsUsed } : null
+  });
+}
+
+function workflowBlockedMessage(code) {
+  return {
+    WORKFLOW_DAILY_RUN_LIMIT: "今天的两轮任务都已创建。",
+    WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。"
+  }[code] || "当前不能创建新一轮。";
+}
+
+function asIso(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString();
 }
 
 function startPlanScan(scanRuns, {
@@ -958,6 +1229,7 @@ async function handleCommunicationBatch(req, res, db) {
     const jobIds = arrayValue(params.jobIds);
     if (jobIds.length > quota.remaining) throw appError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
     const batch = createCommunicationBatch(db, {
+      workflowRunId: params.workflowRunId,
       planId: params.planId,
       jobIds,
       browserMode: params.browserMode,
@@ -967,7 +1239,8 @@ async function handleCommunicationBatch(req, res, db) {
   });
   if (!result.ok) return sendJson(res, result.statusCode, result.body);
   if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
-  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+  const workflow = getWorkflowRunByCommunicationBatch(db, result.body.batch.id);
+  redirect(res, workflow ? `/workflow?runId=${encodeURIComponent(workflow.id)}` : `/communication?batchId=${result.body.batch.id}`);
 }
 
 async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn }) {
@@ -1005,7 +1278,8 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
     return { batch: updated, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
-  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+  const workflow = getWorkflowRunByCommunicationBatch(db, result.body.batch.id);
+  redirect(res, workflow ? `/workflow?runId=${encodeURIComponent(workflow.id)}` : `/communication?batchId=${result.body.batch.id}`);
 }
 
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
@@ -1519,7 +1793,10 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
   const bossRuntimeBlock = communicationRuntimeBlock(db);
+  const workflowState = buildWorkflowDashboardState(db, planRecord);
   const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock);
+  const workflowStartDisabled = !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock)
+    || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
   const resumeButton = resumableBatch
@@ -1533,10 +1810,11 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const riskControlNotice = bossRuntimeBlock
     ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
     : "";
-  const planStyle = '<style>.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}@media(max-width:760px){.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
+  const planStyle = '<style>.workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.workflow-kicker{margin:0 0 4px;color:#176b5b;font-size:12px;font-weight:700}.workflow-launch h2{font-size:20px;margin:0}.workflow-start{display:flex;align-items:center;gap:8px}.workflow-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px;border:1px solid #d4dde2}.workflow-metrics div{padding:11px 13px;border-right:1px solid #d4dde2}.workflow-metrics div:last-child{border-right:0}.workflow-metrics span{display:block;color:#5c6870;font-size:12px}.workflow-metrics strong{display:block;margin-top:4px;font-size:19px}.workflow-budget{margin-top:9px;color:#5c6870;font-size:13px}.workflow-primary{min-width:112px;text-align:center;background:#176b5b!important;border-color:#176b5b!important}.plan-settings>summary,.legacy-operations>summary{cursor:pointer;font-weight:600}.plan-settings .plan-form{margin-top:16px}.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}.legacy-operations .scan-panel{padding-top:12px}@media(max-width:760px){.workflow-launch-head{align-items:stretch;flex-direction:column}.workflow-start{display:grid}.workflow-metrics{grid-template-columns:1fr 1fr}.workflow-metrics div:nth-child(2){border-right:0}.workflow-metrics div:nth-child(-n+2){border-bottom:1px solid #d4dde2}.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
   return renderPage("筛选方案", `${planStyle}<main>
   <nav>${navLinks(`/plan?profileId=${profile.id}&planId=${planRecord.id}`)}</nav>
   <h1>筛选方案</h1>
+  ${renderWorkflowLaunchPanel({ planRecord, workflowState, disabled: workflowStartDisabled })}
   ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
   ${dependencyNotice}
   ${riskControlNotice}
@@ -1550,7 +1828,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     ${renderFeedbackInsight(feedback)}
     ${renderBossFilterPreview(bossFilterPreview, bossCatalog)}
   </section>
-  <form id="plan-form" class="panel plan-form" method="post" action="/api/plan">
+  <details class="panel plan-settings"><summary>调整筛选条件</summary><form id="plan-form" class="plan-form" method="post" action="/api/plan">
     <input type="hidden" name="profileId" value="${profile.id}"><input type="hidden" name="planId" value="${planRecord.id}">
     <label class="wide">方案名称<input name="name" value="${escapeAttr(plan.name || "")}" required></label>
     <div class="choice-section"><strong>目标城市</strong><div class="choice-list">${renderPlanChoices("cities", PLAN_CITY_OPTIONS, plan.cities)}</div></div>
@@ -1567,14 +1845,170 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
     <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="${scanBounds.maxCards[0]}" max="${scanBounds.maxCards[1]}" name="maxCards" value="${escapeAttr(plan.scan.maxCards ?? scanDefaults.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="${scanBounds.maxDetailTotal[0]}" max="${scanBounds.maxDetailTotal[1]}" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal ?? scanDefaults.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="${scanBounds.browserPageBudget[0]}" max="${scanBounds.browserPageBudget[1]}" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget ?? scanDefaults.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
     <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
-  </form>
-  <section class="panel scan-panel">
+  </form></details>
+  <details class="panel legacy-operations"><summary>高级扫描与维护</summary><section class="scan-panel">
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
     <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
     <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
-  </section>
+  </section></details>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
+}
+
+function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false }) {
+  const active = workflowState.activeRun;
+  const next = workflowState.nextPlan;
+  const target = active?.targetSuccessCount ?? next?.targetSuccessCount ?? 0;
+  const action = active
+    ? `<a class="button-link workflow-primary" href="/workflow?runId=${escapeAttr(active.id)}">继续本轮</a>`
+    : next?.errorCode
+      ? `<button class="workflow-primary" disabled>今日任务已结束</button>`
+      : `<form class="workflow-start" method="post" action="/api/workflow-run">
+          <input type="hidden" name="planId" value="${planRecord.id}">
+          <input type="hidden" name="cdpPort" value="9222">
+          <select name="browserMode" aria-label="浏览器"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select>
+          <button class="workflow-primary" name="action" value="start"${disabled ? " disabled" : ""}>执行一轮</button>
+        </form>`;
+  const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode) : "可以开始新一轮";
+  return `<section class="workflow-launch" aria-labelledby="workflow-launch-title">
+    <div class="workflow-launch-head"><div><p class="workflow-kicker">今日求职任务</p><h2 id="workflow-launch-title">${escapeHtml(status)}</h2></div>${action}</div>
+    <div class="workflow-metrics">
+      <div><span>今日进度</span><strong>${workflowState.successfulToday} / ${workflowState.dailyTarget}</strong></div>
+      <div><span>${active ? "本轮目标" : "下一轮目标"}</span><strong>${target}</strong></div>
+      <div><span>可用候选</span><strong>${workflowState.inventory.length}</strong></div>
+      <div><span>已用轮次</span><strong>${workflowState.slotsUsed} / ${workflowState.maxRuns}</strong></div>
+    </div>
+    <div class="workflow-budget">剩余详情读取预算 ${workflowState.remainingBudget.details} · 剩余搜索页预算 ${workflowState.remainingBudget.pages}${next?.shortfallReason ? ` · ${escapeHtml(workflowShortfallLabel(next.shortfallReason))}` : ""}</div>
+  </section>`;
+}
+
+function workflowStatusLabel(status) {
+  return {
+    created: "本轮已建立",
+    scanning: "正在筛选岗位",
+    analyzing: "正在分析岗位",
+    review_required: "等待确认本轮清单",
+    communicating: "正在沟通",
+    interrupted: "本轮已中断，等待继续",
+    completed: "本轮已完成",
+    failed: "本轮未完成",
+    stopped: "本轮已停止"
+  }[status] || "本轮进行中";
+}
+
+function workflowShortfallLabel(code) {
+  return {
+    WORKFLOW_PROJECTED_SUPPLY_SHORTFALL: "预计候选可能不足，不会用明显弱岗位凑数",
+    WORKFLOW_SCAN_BUDGET_EMPTY: "今日安全预算不足",
+    WORKFLOW_NO_KEYWORDS: "没有可用搜索关键词"
+  }[code] || "候选可能不足";
+}
+
+function renderWorkflowPage({ db, searchParams }) {
+  const workflow = getWorkflowRun(db, searchParams.get("runId"));
+  if (!workflow) return renderErrorPage("本轮任务不存在。", "/plan", { code: "WORKFLOW_RUN_NOT_FOUND" });
+  const plan = getSearchPlan(db, workflow.planId);
+  if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
+  const daily = buildWorkflowDashboardState(db, plan);
+  const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
+  const runtimeBlock = communicationRuntimeBlock(db);
+  const phase = renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock });
+  const polling = shouldPollWorkflow(workflow, communication)
+    ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
+    : "";
+  const style = `<style>
+    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.talk{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.high_salary_backup{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
+  </style>`;
+  return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
+    <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
+      <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
+    </header>${phase}</main>${polling}`);
+}
+
+function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock }) {
+  if (["created", "scanning", "analyzing"].includes(workflow.status)) {
+    const title = workflow.status === "analyzing" ? "正在用模型分析岗位" : "正在筛选岗位";
+    const detail = workflow.status === "analyzing"
+      ? "已完成页面读取，正在保存匹配结论。"
+      : `本轮使用 ${workflow.keywords.length} 个关键词，详情预算 ${workflow.budget.maxDetailTotal || 0}。`;
+    return `<section class="workflow-phase"><h2>${title}</h2><p class="hint">${escapeHtml(detail)}</p>${workflow.errorCode ? `<div class="workflow-alert">${escapeHtml(workflow.errorCode)} · ${escapeHtml(workflow.errorMessage)}</div>` : ""}</section>`;
+  }
+  if (workflow.status === "review_required") {
+    if (communication) return renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock);
+    return renderWorkflowReview({ db, workflow, plan, runtimeBlock });
+  }
+  if (workflow.status === "communicating") {
+    return renderRunningWorkflowCommunication(workflow, communication, runtimeBlock);
+  }
+  if (workflow.status === "completed") {
+    const shortfall = workflow.shortfallCode
+      ? `<p class="hint">${workflow.shortfallCode === "WORKFLOW_SUPPLY_EXHAUSTED" ? "本轮可用候选已处理完，没有用弱岗位凑数。" : escapeHtml(workflow.shortfallCode)}</p>`
+      : "";
+    return `<section class="workflow-phase"><div class="workflow-done"><h2>本轮已完成</h2><p>本轮成功 ${workflow.successfulCount}，今日进度 ${daily.successfulToday} / ${daily.dailyTarget}。</p>${shortfall}</div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a><a class="button-link" href="/queue?planId=${plan.id}">查看岗位记录</a></div></section>`;
+  }
+  if (workflow.status === "interrupted") {
+    const communicationReview = workflow.communicationBatchId
+      ? `<a class="button-link" href="/communication?batchId=${workflow.communicationBatchId}">检查沟通中断项</a>`
+      : `<form method="post" action="/api/workflow-run/resume"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button>继续本轮</button></form>`;
+    return `<section class="workflow-phase"><div class="workflow-alert"><strong>本轮已中断</strong><p>${escapeHtml(workflow.errorCode || "WORKFLOW_INTERRUPTED")} · ${escapeHtml(workflow.errorMessage || "请检查诊断后继续。")}</p></div><div class="workflow-actions">${communicationReview}</div></section>`;
+  }
+  return `<section class="workflow-phase"><div class="workflow-alert"><strong>${escapeHtml(workflowStatusLabel(workflow.status))}</strong><p>${escapeHtml(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。")}</p></div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a></div></section>`;
+}
+
+function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
+  const candidates = listWorkflowReviewCandidates(db, workflow.id);
+  const quota = communicationQuota(db);
+  const defaultCount = candidates.filter((candidate) => candidate.defaultChecked).length;
+  const rows = candidates.map((job) => {
+    const fitReason = (job.analysis?.fitReasons || []).slice(0, 2).join("；") || (job.matches || []).slice(0, 3).join("、") || "匹配证据已保存";
+    return `<label class="workflow-job"><input type="checkbox" name="jobIds" value="${job.id}"${job.defaultChecked ? " checked" : ""}><span class="workflow-job-main"><strong><a href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a></strong><span class="workflow-job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.salary || "薪资待确认")} · ${escapeHtml(job.experience || "经验待确认")} · ${escapeHtml(compactScheduleLabel(job.analysis))}</span><span class="workflow-job-reason">${escapeHtml(fitReason)}</span></span><span class="workflow-tier ${escapeAttr(job.workflowTier)}">${escapeHtml(workflowTierLabel(job.workflowTier))}</span></label>`;
+  }).join("") || `<p class="hint">本轮没有满足有效期、详情和匹配证据要求的候选。</p>`;
+  const blocked = Boolean(runtimeBlock) || quota.remaining <= 0 || defaultCount === 0 || defaultCount > quota.remaining;
+  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；默认勾选 ${defaultCount} 个，包含补位项。高薪备选仅展示，不会默认勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="edge"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 24 小时剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
+}
+
+function renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock) {
+  const batch = communication.batch;
+  const action = batch.status === "confirmed" ? "start" : batch.status === "paused" ? "resume" : "";
+  const actionLabel = action === "resume" ? "继续沟通" : "开始沟通";
+  const control = action && communication.calibration.executionEnabled && !runtimeBlock
+    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="${action}">${actionLabel}</button></form>`
+    : "";
+  return `<section class="workflow-phase"><h2>清单已确认</h2><p>已选择 ${communication.summary.total} 个岗位，本轮成功目标 ${workflow.targetSuccessCount}。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}</div>` : ""}<div class="workflow-actions">${control}<a class="button-link" href="/communication?batchId=${batch.id}">检查清单详情</a></div></section>`;
+}
+
+function renderRunningWorkflowCommunication(workflow, communication, runtimeBlock) {
+  if (!communication) return `<section class="workflow-phase"><div class="workflow-alert">沟通批次尚未建立，请查看诊断。</div></section>`;
+  const rows = Object.entries(communication.summary.statusCounts)
+    .map(([status, count]) => `<tr><th>${escapeHtml(status)}</th><td>${count}</td></tr>`)
+    .join("");
+  return `<section class="workflow-phase"><h2>正在沟通</h2>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}</div>` : ""}<table class="workflow-status-table"><tbody>${rows}</tbody></table><div class="workflow-actions"><a class="button-link" href="/communication?batchId=${communication.batch.id}">查看执行明细</a></div></section>`;
+}
+
+function workflowTierLabel(tier) {
+  return {
+    primary: "主投",
+    talk: "可沟通",
+    low_risk_backup: "低风险备选",
+    high_salary_backup: "高薪备选"
+  }[tier] || "备选";
+}
+
+function shouldPollWorkflow(workflow, communication) {
+  return ["created", "scanning", "analyzing", "communicating"].includes(workflow.status)
+    || ["running", "stopping"].includes(communication?.batch?.status);
+}
+
+function workflowPollKey(workflow, communication) {
+  const counts = communication?.summary?.statusCounts || {};
+  return [
+    workflow.status,
+    communication?.batch?.status || "",
+    workflow.successfulCount,
+    counts.succeeded || 0,
+    counts.already_communicated || 0,
+    communication?.summary?.terminal || 0
+  ].join("|");
 }
 
 function renderBossFilterPreview(snapshot, catalog) {
@@ -1668,7 +2102,7 @@ function renderFeedbackInsight(feedback = {}) {
 
 function renderPage(title, body) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:0;background:#f6f7f9;color:#1f2328}main{max-width:1160px;margin:0 auto;padding:24px}nav{display:flex;gap:14px;margin-bottom:18px}nav a{color:#0969da;text-decoration:none}h1{font-size:24px;margin:0 0 8px;letter-spacing:0}h2{font-size:16px;margin:0 0 10px}.hint,.line{color:#57606a;margin:7px 0}.notice{color:#0a6b2b}.risk-text{color:#b42318}.error-code{font-family:Consolas,monospace;color:#57606a}.panel{background:#fff;border:1px solid #d8dee4;border-radius:8px;padding:16px;margin:12px 0}.form-stack{display:grid;gap:12px;max-width:560px}.plan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.plan-form .wide{grid-column:1/-1}.plan-form label,.form-stack label,.inline-form label{display:grid;gap:5px;font-size:14px}.plan-form .checkbox{display:flex;align-items:center;gap:8px;padding-top:24px}.plan-form .checkbox input{width:auto}input,select,textarea,button{font:inherit}input,select,textarea{min-width:0;padding:8px;border:1px solid #b8c0cc;border-radius:4px;background:#fff}textarea{min-height:118px;resize:vertical}button,.button-link{padding:8px 12px;border:1px solid #0969da;border-radius:4px;background:#0969da;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}.button-link{line-height:20px}.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}.inline-form input{width:120px}.resume-preview pre{max-height:360px;overflow:auto;white-space:pre-wrap;background:#f6f8fa;padding:10px;border:1px solid #d8dee4}.scan-error{white-space:pre-wrap;background:#fff1f0;padding:10px;max-height:180px;overflow:auto}.profile-summary{display:grid;gap:3px}.validation{border-left:4px solid #bf8700}.validation-error{border-left-color:#b42318}.validation strong{display:block}.validation ul,.profile-diff ul{margin:7px 0 0;padding-left:20px}.profile-diff{border-top:1px solid #d8dee4;padding-top:8px}.diagnostics{width:100%;border-collapse:collapse;font-size:12px}.diagnostics th,.diagnostics td{border-bottom:1px solid #d8dee4;padding:7px;text-align:left;vertical-align:top;word-break:break-word}@media(max-width:760px){main{padding:16px}.plan-form{grid-template-columns:1fr}.plan-form .wide{grid-column:auto}.plan-form .checkbox{padding-top:0}.inline-form{display:grid;grid-template-columns:1fr}.diagnostics{display:block;overflow-x:auto}}
+body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:0;background:#f6f7f9;color:#1f2328}main{max-width:1160px;margin:0 auto;padding:24px}nav{display:flex;gap:14px;margin-bottom:18px}nav a{color:#0969da;text-decoration:none}h1{font-size:24px;margin:0 0 8px;letter-spacing:0}h2{font-size:16px;margin:0 0 10px}.hint,.line{color:#57606a;margin:7px 0}.notice{color:#0a6b2b}.risk-text{color:#b42318}.error-code{font-family:Consolas,monospace;color:#57606a}.panel{background:#fff;border:1px solid #d8dee4;border-radius:8px;padding:16px;margin:12px 0}.form-stack{display:grid;gap:12px;max-width:560px}.plan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.plan-form .wide{grid-column:1/-1}.plan-form label,.form-stack label,.inline-form label{display:grid;gap:5px;font-size:14px}.plan-form .checkbox{display:flex;align-items:center;gap:8px;padding-top:24px}.plan-form .checkbox input{width:auto}input,select,textarea,button{font:inherit}input,select,textarea{min-width:0;padding:8px;border:1px solid #b8c0cc;border-radius:4px;background:#fff}input,select,button,.button-link{min-height:44px;box-sizing:border-box}textarea{min-height:118px;resize:vertical}button,.button-link{padding:8px 12px;border:1px solid #0969da;border-radius:4px;background:#0969da;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.button-link{line-height:20px}.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}.inline-form input{width:120px}.resume-preview pre{max-height:360px;overflow:auto;white-space:pre-wrap;background:#f6f8fa;padding:10px;border:1px solid #d8dee4}.scan-error{white-space:pre-wrap;background:#fff1f0;padding:10px;max-height:180px;overflow:auto}.profile-summary{display:grid;gap:3px}.validation{border-left:4px solid #bf8700}.validation-error{border-left-color:#b42318}.validation strong{display:block}.validation ul,.profile-diff ul{margin:7px 0 0;padding-left:20px}.profile-diff{border-top:1px solid #d8dee4;padding-top:8px}.diagnostics{width:100%;border-collapse:collapse;font-size:12px}.diagnostics th,.diagnostics td{border-bottom:1px solid #d8dee4;padding:7px;text-align:left;vertical-align:top;word-break:break-word}@media(max-width:760px){main{padding:16px}.plan-form{grid-template-columns:1fr}.plan-form .wide{grid-column:auto}.plan-form .checkbox{padding-top:0}.inline-form{display:grid;grid-template-columns:1fr}.diagnostics{display:block;overflow-x:auto}}
 button:disabled{cursor:not-allowed;background:#8c959f;border-color:#8c959f;opacity:.65}nav{flex-wrap:wrap}
 </style>${body}</html>`;
 }
@@ -1698,7 +2132,7 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
 
 function navLinks(current = "") {
   const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
-  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">筛选方案</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
+  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">今日任务</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
   return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
 }
 
