@@ -20,6 +20,7 @@ const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary }
 const {
   openDb,
   getWorkflowRun,
+  getWorkflowRunByCommunicationBatch,
   transitionWorkflowRun,
   attachWorkflowScan,
   createBatch,
@@ -67,7 +68,7 @@ const { createSiteAccessController } = require("./core/site_access_budget");
 const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
-const { createLogger, errorMeta } = require("./core/observability");
+const { createLogger, errorMeta, workflowLogContext } = require("./core/observability");
 const { resolveRuntimeModelConfig } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
@@ -135,7 +136,15 @@ async function communicate(db, args) {
   const browser = createBrowser({ ...args, browser: browserMode });
   if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
   const runId = `communication-${batchId}-${crypto.randomUUID()}`;
-  const communicationLogger = logger.child({ runId, batchId, planId: batch.planId, site: "boss", operation: "communication" });
+  const workflowRun = getWorkflowRunByCommunicationBatch(db, batchId);
+  const communicationLogger = logger.child({
+    ...workflowLogContext({ ...(workflowRun || {}), communicationBatchId: batchId }),
+    runId,
+    batchId,
+    planId: batch.planId,
+    site: "boss",
+    operation: "communication"
+  });
   const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
   const adapter = createSiteAdapter("boss", { browser, logger: communicationLogger, accessController });
 
@@ -181,7 +190,13 @@ async function executeWithSiteScanLease(db, args, command, run) {
   const planId = Number(args.plan || 0) || null;
   const workflowRun = prepareWorkflowExecution(db, args, planId);
   const workflowRunId = workflowRun?.id || "";
-  const runLogger = logger.child({ runId, planId, scanKind, site });
+  const runLogger = logger.child({
+    ...workflowLogContext({ ...(workflowRun || {}), scanRunId: runId }),
+    runId,
+    planId,
+    scanKind,
+    site
+  });
   interruptOrphanedScanRuns(db, { site });
   if (command === "scan" && args.input) {
     const scanRun = beginScanRun(db, {
@@ -303,7 +318,7 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
 
 async function scan(db, args, { signal = null, execution = null } = {}) {
   assertScanActive(signal);
-  const scanLogger = execution?.logger || logger;
+  let scanLogger = execution?.logger || logger;
   if (!args.plan && !args.input) {
     throw new Error("真实浏览器扫描必须传入 --plan <Search Plan ID>，避免岗位和投递状态脱离候选人画像。");
   }
@@ -477,6 +492,13 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
         scanBatchId: batchId
       });
     }
+    if (scanLogger.child) {
+      scanLogger = scanLogger.child(workflowLogContext({
+        ...(workflowRun || {}),
+        scanRunId: execution.runId,
+        scanBatchId: batchId
+      }));
+    }
   }
   for (const keyword of keywords) upsertKeywordSource(db, keyword, source);
   scanLogger.info("scan_started", {
@@ -570,6 +592,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     hardFiltered: rawJobs.filter((job) => !job.detailRequired).length,
     detailRequired: rawJobs.filter((job) => job.detailRequired).length,
     detailRead: rawJobs.filter((job) => job.detailRequired && job.detailRead).length,
+    detailsReused: rawJobs.filter((job) => job.detailRequired && job.detailRead && job.detailReused).length,
     detailPending: rawJobs.filter((job) => job.detailRequired && !job.detailRead).length,
     detailFailed: rawJobs.filter((job) => job.detailRequired
       && !job.detailRead
@@ -967,10 +990,13 @@ function transitionWorkflowScanFailure(db, workflowRunId, scanStatus, error) {
 }
 
 function workflowMetrics({ detailCoverage, rawJobs = [], analyzed = 0, saved = 0, inventoryCount = 0 } = {}) {
+  const collected = Number(detailCoverage?.collected ?? rawJobs.length ?? 0);
   return {
-    cards: Number(detailCoverage?.collected ?? rawJobs.length ?? 0),
+    collected,
+    cards: collected,
     detailsRequired: Number(detailCoverage?.detailRequired || 0),
     detailsRead: Number(detailCoverage?.detailRead || 0),
+    detailsReused: Number(detailCoverage?.detailsReused || 0),
     detailsPending: Number(detailCoverage?.detailPending || 0),
     detailsFailed: Number(detailCoverage?.detailFailed || 0),
     analyzed: Number(analyzed || 0),
@@ -1360,5 +1386,6 @@ module.exports = {
   scanFailureStatus,
   resolveScanLimit,
   persistRefreshAttempt,
-  assertScanLimitOverridesAllowed
+  assertScanLimitOverridesAllowed,
+  workflowMetrics
 };

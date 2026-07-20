@@ -149,4 +149,24 @@ function redactText(value) {
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED]");
 }
 
-module.exports = { createLogger, appError, errorMeta, publicError, listRecentLogs };
+function workflowLogContext(value = {}) {
+  const workflow = value.workflow || value;
+  return {
+    workflowRunId: textId(workflow.workflowRunId || workflow.id),
+    scanRunId: textId(workflow.scanRunId),
+    scanBatchId: numericId(workflow.scanBatchId),
+    communicationBatchId: numericId(workflow.communicationBatchId)
+  };
+}
+
+function textId(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function numericId(value) {
+  const normalized = Number(value || 0);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
+module.exports = { createLogger, appError, errorMeta, publicError, listRecentLogs, workflowLogContext };

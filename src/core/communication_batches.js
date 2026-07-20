@@ -2,6 +2,7 @@ const {
   getSearchPlan,
   getWorkflowRun,
   attachWorkflowCommunication,
+  transitionWorkflowRun,
   listDecisionPool,
   listSiteAccessEvents
 } = require("./storage");
@@ -98,7 +99,23 @@ function createCommunicationBatch(db, input = {}) {
     selected.forEach((job, index) => {
       insertItem.run(batchId, Number(job.id), index + 1, String(job.url), String(job.title || ""), String(job.company || ""), now);
     });
-    if (workflow) attachWorkflowCommunication(db, { id: workflow.id, communicationBatchId: batchId });
+    if (workflow) {
+      const linked = attachWorkflowCommunication(db, { id: workflow.id, communicationBatchId: batchId });
+      transitionWorkflowRun(db, {
+        id: linked.id,
+        status: "review_required",
+        metrics: {
+          ...linked.metrics,
+          selected: selected.length,
+          communication: {
+            ...(linked.metrics.communication || {}),
+            batchId,
+            selected: selected.length,
+            target: linked.targetSuccessCount
+          }
+        }
+      });
+    }
     db.exec("COMMIT");
     return getCommunicationBatch(db, batchId);
   } catch (error) {
@@ -286,12 +303,23 @@ function validatedClickAudit(value, item) {
   }
   const payload = value.payload;
   const expected = { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" };
+  const keys = Object.keys(payload || {}).sort().join(",");
+  const legacyKeys = "batchId,itemId,jobId,state";
+  const workflowKeys = "batchId,communicationBatchId,itemId,jobId,scanBatchId,scanRunId,state,workflowRunId";
   if (value.eventType !== "communication_click" || !payload || typeof payload !== "object"
-    || Object.keys(payload).sort().join(",") !== "batchId,itemId,jobId,state"
+    || ![legacyKeys, workflowKeys].includes(keys)
     || Object.entries(expected).some(([key, expectedValue]) => payload[key] !== expectedValue)) {
     throw codedError("COMMUNICATION_CLICK_AUDIT_INVALID", "invalid click audit event");
   }
-  return { eventType: value.eventType, payload: expected };
+  if (keys === workflowKeys && payload.communicationBatchId !== item.batchId) {
+    throw codedError("COMMUNICATION_CLICK_AUDIT_INVALID", "invalid click audit workflow context");
+  }
+  return { eventType: value.eventType, payload: keys === workflowKeys ? { ...expected,
+    workflowRunId: payload.workflowRunId,
+    scanRunId: payload.scanRunId,
+    scanBatchId: payload.scanBatchId,
+    communicationBatchId: payload.communicationBatchId
+  } : expected };
 }
 
 function resolveAmbiguousCommunicationItem(db, input = {}) {

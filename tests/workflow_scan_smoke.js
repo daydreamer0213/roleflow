@@ -12,7 +12,7 @@ const {
   beginScanRun,
   attachWorkflowScan
 } = require("../src/core/storage");
-const { executeWithSiteScanLease } = require("../src/cli");
+const { executeWithSiteScanLease, workflowMetrics } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -33,6 +33,30 @@ main()
   });
 
 async function main() {
+  assert.deepStrictEqual(workflowMetrics({
+    detailCoverage: {
+      collected: 3,
+      detailRequired: 3,
+      detailRead: 2,
+      detailsReused: 1,
+      detailPending: 1,
+      detailFailed: 1
+    },
+    analyzed: 2,
+    saved: 2,
+    inventoryCount: 1
+  }), {
+    collected: 3,
+    cards: 3,
+    detailsRequired: 3,
+    detailsRead: 2,
+    detailsReused: 1,
+    detailsPending: 1,
+    detailsFailed: 1,
+    analyzed: 2,
+    saved: 2,
+    eligible: 1
+  });
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
   const saved = seedProfile(db);

@@ -2,6 +2,8 @@ const { PRODUCT_POLICY } = require("./product_policy");
 const { reconcileCommunicationOutcome } = require("./workflow_inventory");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
 const { getWorkflowRunByCommunicationBatch, transitionWorkflowRun } = require("./storage");
+const { communicationWorkflowMetrics } = require("./workflow_run");
+const { workflowLogContext } = require("./observability");
 const {
   TERMINAL_ITEM_STATUSES,
   getCommunicationBatch,
@@ -152,7 +154,7 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     batchId,
     expectedStatus: "verified",
     status: "click_dispatched",
-    audit: clickAudit(item)
+    audit: clickAudit(db, item)
   });
 
   try {
@@ -258,6 +260,7 @@ function finalizeBatch(db, batchId, logger) {
   if (batch.status === "paused") return communicationBatchSummary(db, batchId);
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   setCommunicationBatchStatus(db, { batchId, status: "completed" });
+  const completedBatch = getCommunicationBatch(db, batchId);
   const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
   const successfulCount = successfulCommunicationCount(db, batchId);
   if (workflow && workflow.status === "communicating") {
@@ -266,15 +269,11 @@ function finalizeBatch(db, batchId, logger) {
       status: "completed",
       successfulCount,
       shortfallCode: successfulCount >= workflow.targetSuccessCount ? "" : "WORKFLOW_SUPPLY_EXHAUSTED",
-      metrics: {
-        ...workflow.metrics,
-        communication: {
-          batchId,
-          selected: listCommunicationBatchItems(db, batchId).length,
-          successful: successfulCount,
-          target: workflow.targetSuccessCount
-        }
-      }
+      metrics: communicationWorkflowMetrics(
+        workflow,
+        communicationBatchSummary(db, batchId),
+        completedBatch
+      )
     });
   }
   logger?.info("communication_batch_completed", { batchId, workflowRunId: workflow?.id || null, successfulCount });
@@ -358,12 +357,15 @@ function interruptAndThrow(db, batchId, error, logger) {
       stopMessage: "communication execution interrupted"
     });
   }
+  const interruptedBatch = getCommunicationBatch(db, batchId);
+  const summary = communicationBatchSummary(db, batchId);
   const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
   if (workflow && workflow.status === "communicating") {
     transitionWorkflowRun(db, {
       id: workflow.id,
       status: "interrupted",
       successfulCount: successfulCommunicationCount(db, batchId),
+      metrics: communicationWorkflowMetrics(workflow, summary, interruptedBatch),
       errorCode: errorCode(error),
       errorMessage: "communication execution interrupted"
     });
@@ -374,14 +376,31 @@ function interruptAndThrow(db, batchId, error, logger) {
 
 function recordAudit(db, item, eventType, state) {
   db.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)")
-    .run(item.jobId, eventType, JSON.stringify({ batchId: item.batchId, itemId: item.id, jobId: item.jobId, state }), new Date().toISOString());
+    .run(item.jobId, eventType, JSON.stringify({
+      ...workflowAuditContext(db, item.batchId),
+      batchId: item.batchId,
+      itemId: item.id,
+      jobId: item.jobId,
+      state
+    }), new Date().toISOString());
 }
 
-function clickAudit(item) {
+function clickAudit(db, item) {
   return {
     eventType: "communication_click",
-    payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
+    payload: {
+      ...workflowAuditContext(db, item.batchId),
+      batchId: item.batchId,
+      itemId: item.id,
+      jobId: item.jobId,
+      state: "click_dispatched"
+    }
   };
+}
+
+function workflowAuditContext(db, batchId) {
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  return workflowLogContext({ ...(workflow || {}), communicationBatchId: batchId });
 }
 
 function immutableJob(item) {

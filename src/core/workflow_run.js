@@ -1,4 +1,16 @@
 const { PRODUCT_POLICY } = require("./product_policy");
+const {
+  getWorkflowRun,
+  listWorkflowRuns,
+  getScanRun,
+  interruptOrphanedScanRuns,
+  transitionWorkflowRun
+} = require("./storage");
+const {
+  getCommunicationBatch,
+  setCommunicationBatchStatus,
+  communicationBatchSummary
+} = require("./communication_batches");
 
 const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 
@@ -210,9 +222,215 @@ function workflowError(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+function recoverWorkflowRuns(db, input = {}) {
+  const now = workflowDate(input.now || new Date());
+  const orphanTimeoutMs = Math.max(0, Number(
+    input.orphanTimeoutMs ?? PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  ));
+  const orphaned = interruptOrphanedScanRuns(db, {
+    site: input.site || "boss",
+    now,
+    heartbeatTimeoutMs: orphanTimeoutMs
+  });
+  const runs = recoverableRuns(db, input);
+  const report = {
+    inspected: runs.length,
+    scanRunsInterrupted: orphaned.interrupted,
+    workflowRunsInterrupted: 0,
+    workflowRunsCompleted: 0,
+    reviewRunsPreserved: 0,
+    activeRunsPreserved: 0,
+    browserActionsStarted: 0
+  };
+
+  for (const run of runs) {
+    if (run.status === "created") {
+      if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
+        transitionWorkflowRun(db, {
+          id: run.id,
+          status: "interrupted",
+          errorCode: "WORKFLOW_CHILD_NOT_STARTED",
+          errorMessage: "workflow child process was not started"
+        });
+        report.workflowRunsInterrupted += 1;
+      } else {
+        report.activeRunsPreserved += 1;
+      }
+      continue;
+    }
+    if (run.status === "review_required") {
+      report.reviewRunsPreserved += 1;
+      continue;
+    }
+    if (["scanning", "analyzing"].includes(run.status)) {
+      recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs });
+      continue;
+    }
+    if (run.status === "communicating") {
+      recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs });
+      continue;
+    }
+    report.activeRunsPreserved += 1;
+  }
+  return report;
+}
+
+function recoverableRuns(db, input) {
+  const workflowRunId = String(input.workflowRunId || "").trim();
+  if (workflowRunId) {
+    const run = getWorkflowRun(db, workflowRunId);
+    return run && !["completed", "failed", "stopped"].includes(run.status) ? [run] : [];
+  }
+  return listWorkflowRuns(db, {
+    profileId: input.profileId,
+    planId: input.planId,
+    statuses: ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted"],
+    limit: 500
+  });
+}
+
+function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
+  const scan = run.scanRunId ? getScanRun(db, run.scanRunId) : null;
+  if (!scan) {
+    if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
+      transitionWorkflowRun(db, {
+        id: run.id,
+        status: "interrupted",
+        errorCode: "SCAN_RUN_MISSING",
+        errorMessage: "workflow scan child record is missing"
+      });
+      report.workflowRunsInterrupted += 1;
+    } else {
+      report.activeRunsPreserved += 1;
+    }
+    return;
+  }
+  if (scan.status === "running") {
+    report.activeRunsPreserved += 1;
+    return;
+  }
+  transitionWorkflowRun(db, {
+    id: run.id,
+    status: "interrupted",
+    errorCode: scan.stopCode || `SCAN_RUN_${String(scan.status).toUpperCase()}`,
+    errorMessage: scan.stopMessage || `scan run ended as ${scan.status}`
+  });
+  report.workflowRunsInterrupted += 1;
+}
+
+function recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs }) {
+  const batch = run.communicationBatchId ? getCommunicationBatch(db, run.communicationBatchId) : null;
+  if (!batch) {
+    if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
+      transitionWorkflowRun(db, {
+        id: run.id,
+        status: "interrupted",
+        errorCode: "COMMUNICATION_BATCH_MISSING",
+        errorMessage: "communication batch link is missing"
+      });
+      report.workflowRunsInterrupted += 1;
+    } else {
+      report.activeRunsPreserved += 1;
+    }
+    return;
+  }
+  if (batch.status === "completed") {
+    const summary = communicationBatchSummary(db, batch.id);
+    const succeeded = Number(summary.statusCounts.succeeded || 0)
+      + Number(summary.statusCounts.already_communicated || 0);
+    transitionWorkflowRun(db, {
+      id: run.id,
+      status: "completed",
+      successfulCount: succeeded,
+      shortfallCode: succeeded >= run.targetSuccessCount ? "" : "WORKFLOW_SUPPLY_EXHAUSTED",
+      metrics: communicationWorkflowMetrics(run, summary, batch)
+    });
+    report.workflowRunsCompleted += 1;
+    return;
+  }
+  if (["interrupted", "failed", "stopped"].includes(batch.status)) {
+    const summary = communicationBatchSummary(db, batch.id);
+    transitionWorkflowRun(db, {
+      id: run.id,
+      status: batch.status,
+      successfulCount: successfulCount(summary),
+      metrics: communicationWorkflowMetrics(run, summary, batch),
+      errorCode: batch.stopCode || `COMMUNICATION_BATCH_${batch.status.toUpperCase()}`,
+      errorMessage: batch.stopMessage || `communication batch ended as ${batch.status}`
+    });
+    if (batch.status === "interrupted") report.workflowRunsInterrupted += 1;
+    return;
+  }
+  if (["running", "stopping"].includes(batch.status) && isOlderThan(batch.updatedAt, now, orphanTimeoutMs)) {
+    const interruptedBatch = setCommunicationBatchStatus(db, {
+      batchId: batch.id,
+      status: "interrupted",
+      now,
+      stopCode: "COMMUNICATION_RUN_ORPHANED",
+      stopMessage: "communication batch activity expired"
+    });
+    const summary = communicationBatchSummary(db, batch.id);
+    transitionWorkflowRun(db, {
+      id: run.id,
+      status: "interrupted",
+      successfulCount: successfulCount(summary),
+      metrics: communicationWorkflowMetrics(run, summary, interruptedBatch),
+      errorCode: "COMMUNICATION_RUN_ORPHANED",
+      errorMessage: "communication batch activity expired"
+    });
+    report.workflowRunsInterrupted += 1;
+    return;
+  }
+  report.activeRunsPreserved += 1;
+}
+
+function communicationWorkflowMetrics(run, summary, batch) {
+  const counts = summary.statusCounts;
+  const succeeded = successfulCount(summary);
+  const finishedAt = workflowDate(batch.finishedAt || batch.updatedAt || new Date());
+  const startedAt = workflowDate(run.startedAt || run.createdAt);
+  return {
+    ...run.metrics,
+    selected: summary.total,
+    succeeded,
+    unavailable: Number(counts.job_unavailable || 0),
+    durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+    communication: {
+      batchId: batch.id,
+      selected: summary.total,
+      succeeded,
+      alreadyCommunicated: Number(counts.already_communicated || 0),
+      unavailable: Number(counts.job_unavailable || 0),
+      targetMismatch: Number(counts.target_mismatch || 0),
+      actionUnavailable: Number(counts.action_unavailable || 0),
+      ambiguous: Number(counts.ambiguous || 0),
+      stopped: Number(counts.stopped || 0),
+      target: run.targetSuccessCount
+    }
+  };
+}
+
+function successfulCount(summary) {
+  return Number(summary.statusCounts.succeeded || 0)
+    + Number(summary.statusCounts.already_communicated || 0);
+}
+
+function isOlderThan(value, now, timeoutMs) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) && timestamp <= now.getTime() - timeoutMs;
+}
+
+function workflowDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw workflowError("WORKFLOW_DATE_INVALID", "Invalid workflow date.");
+  return date;
+}
+
 module.exports = {
   SHANGHAI_TIME_ZONE,
   chinaLocalDay,
   planWorkflowRun,
-  selectKeywords
+  selectKeywords,
+  recoverWorkflowRuns,
+  communicationWorkflowMetrics
 };

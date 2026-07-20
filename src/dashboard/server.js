@@ -72,7 +72,7 @@ const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } =
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
-const { createLogger, appError, errorMeta, publicError } = require("../core/observability");
+const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
 const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
@@ -81,7 +81,7 @@ const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = 
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
-const { chinaLocalDay, planWorkflowRun } = require("../core/workflow_run");
+const { chinaLocalDay, planWorkflowRun, recoverWorkflowRuns } = require("../core/workflow_run");
 const {
   workflowEligibility,
   listWorkflowInventory,
@@ -93,8 +93,13 @@ const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
 function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
   const scanRuns = new Map();
-  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
-  if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
+  const recovery = recoverWorkflowRuns(db, {
+    site: "boss",
+    orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  });
+  if (recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) {
+    logger.warn("workflow_recovery_reconciled", recovery);
+  }
   const offlineMockState = {
     source: "runtime",
     settings: { preset: "mock", provider: "mock", baseUrl: "", model: "offline-structured-mock", timeoutMs: 30000, connection: { status: "verified" } },
@@ -118,7 +123,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
-      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
@@ -126,7 +131,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
-      if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"));
+      if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"), logger);
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
@@ -804,7 +809,14 @@ async function handleWorkflowRunResume(req, res, {
   }
 }
 
-function handleWorkflowStatus(res, db, workflowRunId) {
+function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
+  const recovery = recoverWorkflowRuns(db, {
+    workflowRunId,
+    orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  });
+  if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
+    logger.warn("workflow_status_reconciled", { workflowRunId, ...recovery });
+  }
   const workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) return sendJson(res, 404, { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" });
   const plan = getSearchPlan(db, workflow.planId);
@@ -858,6 +870,13 @@ function startPlanScan(scanRuns, {
   if (workflowRun && workflowRun.status !== "scanning") {
     workflowRun = transitionWorkflowRun(db, { id: workflowRun.id, status: "scanning" });
   }
+  const processLogger = typeof logger.child === "function" ? logger.child({
+    ...workflowLogContext({ ...(workflowRun || {}), scanRunId: runId }),
+    requestId,
+    runId,
+    planId: Number(planId),
+    scanKind
+  }) : logger;
   const persistedResumeBatchId = workflowRun?.scanBatchId || null;
   if (workflowRun && resumeBatchId && persistedResumeBatchId !== Number(resumeBatchId)) {
     throw appError("WORKFLOW_SCAN_INPUT_MISMATCH", "Resume batch differs from the persisted workflow run.");
@@ -920,12 +939,16 @@ function startPlanScan(scanRuns, {
         signal: finished.processSignal || null,
         durationMs: Date.parse(finished.finishedAt) - Date.parse(run.startedAt)
       };
-      if (finished.status === "completed") logger.info("scan_process_completed", context);
-      else if (finished.status === "failed") logger.error("scan_process_failed", { ...context, outputTail: run.output });
-      else logger.warn("scan_process_stopped", { ...context, outputTail: run.output });
+      const linkedContext = workflowLogContext({
+        ...(workflowRun ? getWorkflowRun(db, workflowRun.id) : {}),
+        scanRunId: runId
+      });
+      if (finished.status === "completed") processLogger.info("scan_process_completed", { ...context, ...linkedContext });
+      else if (finished.status === "failed") processLogger.error("scan_process_failed", { ...context, ...linkedContext, outputTail: run.output });
+      else processLogger.warn("scan_process_stopped", { ...context, ...linkedContext, outputTail: run.output });
     } catch (recordError) {
       run.error = recordError.message;
-      logger.error("scan_process_exit_record_failed", { requestId, runId, planId: Number(planId), error: errorMeta(recordError) });
+      processLogger.error("scan_process_exit_record_failed", { error: errorMeta(recordError) });
     }
   };
 
@@ -936,12 +959,12 @@ function startPlanScan(scanRuns, {
       stdio: ["ignore", "pipe", "pipe"]
     });
     run.child = child;
-    logger.info("scan_process_started", { requestId, runId, planId: Number(planId), scanKind, resumeBatchId: effectiveResumeBatchId, workflowRunId: workflowRun?.id || null, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
+    processLogger.info("scan_process_started", { resumeBatchId: effectiveResumeBatchId, browserMode, cdpPort: browserMode === "portable" ? cdpPort : null, childPid: child.pid });
     const append = (chunk) => { run.output = `${run.output}${String(chunk)}`.slice(-4000); };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
     child.on("error", (error) => {
-      logger.error("scan_process_error", { requestId, runId, planId: Number(planId), error: errorMeta(error) });
+      processLogger.error("scan_process_error", { error: errorMeta(error) });
       recordExit({ error });
     });
     child.on("close", (code, signal) => recordExit({ exitCode: code, signal }));
@@ -1284,6 +1307,14 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
 
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
   if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
+  const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
+  const processLogger = typeof logger.child === "function" ? logger.child({
+    ...workflowLogContext({ ...(workflow || {}), communicationBatchId: batch.id }),
+    requestId,
+    batchId: batch.id,
+    planId: batch.planId,
+    operation: "communication"
+  }) : logger;
   let child;
   try {
     child = spawnProcess(process.execPath, [
@@ -1302,9 +1333,9 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
     setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED", stopMessage: error.message });
     throw error;
   }
-  logger.info("communication_process_started", { requestId, batchId: batch.id, planId: batch.planId, browserMode: batch.browserMode, childPid: child.pid });
-  child.stdout?.on("data", (chunk) => logger.info("communication_process_output", { batchId: batch.id, stream: "stdout", message: String(chunk).slice(-2000) }));
-  child.stderr?.on("data", (chunk) => logger.info("communication_process_output", { batchId: batch.id, stream: "stderr", message: String(chunk).slice(-2000) }));
+  processLogger.info("communication_process_started", { browserMode: batch.browserMode, childPid: child.pid });
+  child.stdout?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stdout", message: String(chunk).slice(-2000) }));
+  child.stderr?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stderr", message: String(chunk).slice(-2000) }));
   const interruptRunning = (code, message) => {
     const current = getCommunicationBatch(db, batch.id);
     if (current?.status === "running") {
@@ -1313,11 +1344,11 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   };
   child.on("error", (error) => {
     interruptRunning("COMMUNICATION_PROCESS_ERROR", error.message);
-    logger.error("communication_process_error", { requestId, batchId: batch.id, error: errorMeta(error) });
+    processLogger.error("communication_process_error", { error: errorMeta(error) });
   });
   child.on("close", (code, signal) => {
     if (code !== 0) interruptRunning("COMMUNICATION_PROCESS_EXITED", signal ? `signal ${signal}` : `exit ${code}`);
-    logger.info("communication_process_closed", { requestId, batchId: batch.id, exitCode: code, signal: signal || null });
+    processLogger.info("communication_process_closed", { exitCode: code, signal: signal || null });
   });
   return child;
 }
@@ -1904,8 +1935,16 @@ function workflowShortfallLabel(code) {
   }[code] || "候选可能不足";
 }
 
-function renderWorkflowPage({ db, searchParams }) {
-  const workflow = getWorkflowRun(db, searchParams.get("runId"));
+function renderWorkflowPage({ db, searchParams, logger = null }) {
+  const workflowRunId = searchParams.get("runId");
+  const recovery = recoverWorkflowRuns(db, {
+    workflowRunId,
+    orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  });
+  if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
+    logger.warn("workflow_page_reconciled", { workflowRunId, ...recovery });
+  }
+  const workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) return renderErrorPage("本轮任务不存在。", "/plan", { code: "WORKFLOW_RUN_NOT_FOUND" });
   const plan = getSearchPlan(db, workflow.planId);
   if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });

@@ -62,6 +62,9 @@ async function workflowCommunicationSmoke() {
     });
     assert.strictEqual(getWorkflowRun(db, workflow.id).communicationBatchId, batch.id);
     assert.strictEqual(batch.policySnapshot.targetSuccessCount, 3);
+    const confirmedWorkflow = getWorkflowRun(db, workflow.id);
+    assert.strictEqual(confirmedWorkflow.metrics.selected, 5);
+    assert.strictEqual(confirmedWorkflow.metrics.communication.selected, 5);
 
     const states = ["ready", "job_unavailable", "ready", "ready"];
     let visits = 0;
@@ -104,6 +107,23 @@ async function workflowCommunicationSmoke() {
     assert.strictEqual(completed.status, "completed");
     assert.strictEqual(completed.successfulCount, 3);
     assert.strictEqual(completed.shortfallCode, "");
+    assert.strictEqual(completed.metrics.selected, 5);
+    assert.strictEqual(completed.metrics.succeeded, 3);
+    assert.strictEqual(completed.metrics.unavailable, 1);
+    assert.strictEqual(completed.metrics.communication.succeeded, 3);
+    assert.strictEqual(completed.metrics.communication.unavailable, 1);
+    assert(Number.isFinite(completed.metrics.durationMs));
+    const auditRows = db.prepare(`SELECT event_type, payload_json FROM events
+      WHERE job_id = ? AND event_type IN ('communication_click', 'communication_result')
+      ORDER BY id`).all(selectedIds[0]);
+    assert.strictEqual(auditRows.length, 2);
+    for (const row of auditRows) {
+      const payload = JSON.parse(row.payload_json);
+      assert.strictEqual(payload.workflowRunId, workflow.id);
+      assert.strictEqual(payload.scanRunId, null);
+      assert.strictEqual(payload.scanBatchId, null);
+      assert.strictEqual(payload.communicationBatchId, batch.id);
+    }
   } finally {
     db.close();
   }

@@ -28,7 +28,7 @@ const WORKFLOW_RUN_STATUSES = [
 const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted"];
 const TERMINAL_WORKFLOW_RUN_STATUSES = new Set(["completed", "failed", "stopped"]);
 const WORKFLOW_TRANSITIONS = Object.freeze({
-  created: new Set(["scanning", "review_required", "stopped"]),
+  created: new Set(["scanning", "review_required", "interrupted", "stopped"]),
   scanning: new Set(["analyzing", "interrupted", "failed", "stopped"]),
   analyzing: new Set(["review_required", "interrupted", "failed", "stopped"]),
   review_required: new Set(["communicating", "stopped"]),

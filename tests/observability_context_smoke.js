@@ -1,7 +1,7 @@
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createLogger } = require("../src/core/observability");
+const { createLogger, workflowLogContext } = require("../src/core/observability");
 
 const root = path.join(__dirname, "..", ".runtime", `observability-context-smoke-${Date.now()}`);
 
@@ -73,6 +73,33 @@ async function main() {
     for (const secret of ["sk-parent-context-secret", "child-context-secret", "private resume context"]) {
       assert(!rawLogs.includes(secret), `context secret leaked into logs: ${secret}`);
     }
+
+    const workflowLogger = logger.child(workflowLogContext({
+      id: "workflow-1",
+      scanRunId: "scan-1",
+      scanBatchId: 31,
+      communicationBatchId: 42
+    }));
+    workflowLogger.info("workflow_context_linked");
+    const workflowRow = logger.listRecent(10).find((row) => row.event === "workflow_context_linked");
+    assert.deepStrictEqual({
+      workflowRunId: workflowRow.workflowRunId,
+      scanRunId: workflowRow.scanRunId,
+      scanBatchId: workflowRow.scanBatchId,
+      communicationBatchId: workflowRow.communicationBatchId
+    }, {
+      workflowRunId: "workflow-1",
+      scanRunId: "scan-1",
+      scanBatchId: 31,
+      communicationBatchId: 42
+    });
+
+    assert.deepStrictEqual(workflowLogContext({ workflowRunId: "workflow-2" }), {
+      workflowRunId: "workflow-2",
+      scanRunId: null,
+      scanBatchId: null,
+      communicationBatchId: null
+    });
 
     console.log("observability_context_smoke ok");
   } finally {
