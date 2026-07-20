@@ -16,7 +16,8 @@ try {
     db.prepare("SELECT version, name, backup_path FROM schema_migrations").all().map((row) => ({ ...row })),
     [
       { version: 1, name: "stable_scan_runtime", backup_path: null },
-      { version: 2, name: "communication_batches_v1", backup_path: null }
+      { version: 2, name: "communication_batches_v1", backup_path: null },
+      { version: 3, name: "workflow_runs_v1", backup_path: null }
     ]
   );
   assert.strictEqual(
@@ -27,7 +28,11 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batch_items'").get().n,
     1
   );
-  assert(SCHEMA_VERSION >= 2);
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
+    1
+  );
+  assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -39,18 +44,20 @@ try {
   db.exec(`
     DROP TABLE communication_batch_items;
     DROP TABLE communication_batches;
-    DELETE FROM schema_migrations WHERE version = 2;
+    DROP TABLE workflow_runs;
+    DELETE FROM schema_migrations WHERE version IN (2, 3);
     PRAGMA user_version = 1;
   `);
   db.close();
 
   db = openDb(productionV1Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.deepStrictEqual(
     db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all().map((row) => ({ ...row })),
     [
       { version: 1, name: "stable_scan_runtime" },
-      { version: 2, name: "communication_batches_v1" }
+      { version: 2, name: "communication_batches_v1" },
+      { version: 3, name: "workflow_runs_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -60,6 +67,10 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batch_items'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
     1
   );
   db.close();
@@ -184,6 +195,43 @@ try {
   );
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM jobs").get().n, 1);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+
+  const productionV2Path = path.join(root, "production-v2.sqlite");
+  db = openDb(productionV2Path);
+  const v2Now = "2026-07-20T00:00:00.000Z";
+  const v2ProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('V2 Candidate', '{}', NULL, ?, ?)`).run(v2Now, v2Now).lastInsertRowid);
+  const v2PlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'V2 Plan', '{}', NULL, 1, ?, ?)`).run(v2ProfileId, v2Now, v2Now).lastInsertRowid);
+  const v2JobId = Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', 'v2-preserved-job', 'V2 preserved job', ?, ?)`).run(v2Now, v2Now).lastInsertRowid);
+  db.prepare(`INSERT INTO candidate_job_states(
+    profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+  ) VALUES (?, ?, ?, 'review', 'v2-preserved', '', NULL, ?)`)
+    .run(v2ProfileId, v2JobId, v2PlanId, v2Now);
+  const v2Counts = {
+    jobs: db.prepare("SELECT COUNT(*) AS count FROM jobs").get().count,
+    states: db.prepare("SELECT COUNT(*) AS count FROM candidate_job_states").get().count
+  };
+  db.exec(`
+    DROP TABLE workflow_runs;
+    DELETE FROM schema_migrations WHERE version = 3;
+    PRAGMA user_version = 2;
+  `);
+  db.close();
+  db = openDb(productionV2Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 3);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM jobs").get().count, v2Counts.jobs);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM candidate_job_states").get().count, v2Counts.states);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='index' AND name='idx_workflow_runs_active'").get().count,
+    1
+  );
   db.close();
 
   const futurePath = path.join(root, "future.sqlite");

@@ -14,6 +14,30 @@ const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
 const SCAN_RUN_STATUSES = ["running", "completed", "partial", "failed", "interrupted"];
 const TERMINAL_SCAN_RUN_STATUSES = new Set(SCAN_RUN_STATUSES.slice(1));
+const WORKFLOW_RUN_STATUSES = [
+  "created",
+  "scanning",
+  "analyzing",
+  "review_required",
+  "communicating",
+  "completed",
+  "interrupted",
+  "failed",
+  "stopped"
+];
+const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted"];
+const TERMINAL_WORKFLOW_RUN_STATUSES = new Set(["completed", "failed", "stopped"]);
+const WORKFLOW_TRANSITIONS = Object.freeze({
+  created: new Set(["scanning", "review_required", "stopped"]),
+  scanning: new Set(["analyzing", "interrupted", "failed", "stopped"]),
+  analyzing: new Set(["review_required", "interrupted", "failed", "stopped"]),
+  review_required: new Set(["communicating", "stopped"]),
+  communicating: new Set(["completed", "interrupted", "failed", "stopped"]),
+  interrupted: new Set(["scanning", "review_required", "communicating", "stopped"]),
+  completed: new Set(),
+  failed: new Set(),
+  stopped: new Set()
+});
 
 const COMMUNICATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS communication_batches (
@@ -60,6 +84,48 @@ CREATE TABLE IF NOT EXISTS communication_batch_items (
 CREATE INDEX IF NOT EXISTS idx_communication_batches_plan ON communication_batches(plan_id, status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_communication_items_batch ON communication_batch_items(batch_id, position);
 CREATE INDEX IF NOT EXISTS idx_communication_items_job ON communication_batch_items(job_id, status);
+`;
+
+const WORKFLOW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  local_day TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 2),
+  status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','completed','interrupted','failed','stopped')),
+  target_success_count INTEGER NOT NULL CHECK(target_success_count >= 0),
+  successful_count INTEGER NOT NULL DEFAULT 0 CHECK(successful_count >= 0),
+  inventory_count INTEGER NOT NULL DEFAULT 0 CHECK(inventory_count >= 0),
+  candidate_gap INTEGER NOT NULL DEFAULT 0 CHECK(candidate_gap >= 0),
+  scan_needed INTEGER NOT NULL DEFAULT 1 CHECK(scan_needed IN (0, 1)),
+  keywords_json TEXT NOT NULL DEFAULT '[]',
+  budget_json TEXT NOT NULL DEFAULT '{}',
+  planner_json TEXT NOT NULL DEFAULT '{}',
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  scan_run_id TEXT,
+  scan_batch_id INTEGER,
+  communication_batch_id INTEGER,
+  shortfall_code TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  review_ready_at TEXT,
+  finished_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, local_day, sequence),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+  FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id),
+  FOREIGN KEY(scan_batch_id) REFERENCES batches(id),
+  FOREIGN KEY(communication_batch_id) REFERENCES communication_batches(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_active
+  ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_daily
+  ON workflow_runs(profile_id, local_day, sequence);
 `;
 
 const SCHEMA = `
@@ -385,6 +451,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_target_results_batch ON scan_target_results(
 CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs(status, heartbeat_at);
 CREATE INDEX IF NOT EXISTS idx_job_refresh_attempts_job ON job_refresh_attempts(job_id, created_at);
 ${COMMUNICATION_SCHEMA}
+${WORKFLOW_SCHEMA}
 `;
 
 const MIGRATIONS = [
@@ -401,6 +468,13 @@ const MIGRATIONS = [
     name: "communication_batches_v1",
     apply(db) {
       db.exec(COMMUNICATION_SCHEMA);
+    }
+  },
+  {
+    version: 3,
+    name: "workflow_runs_v1",
+    apply(db) {
+      db.exec(WORKFLOW_SCHEMA);
     }
   }
 ];
@@ -657,6 +731,239 @@ function workScheduleQualityTag(kind) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function createWorkflowRun(db, input = {}) {
+  const id = String(input.id || crypto.randomUUID()).trim();
+  const profileId = optionalPositiveInteger(input.profileId, "profileId");
+  const planId = optionalPositiveInteger(input.planId, "planId");
+  const localDay = String(input.localDay || "").trim();
+  const sequence = optionalPositiveInteger(input.sequence, "sequence");
+  if (!id) throw workflowRunError("WORKFLOW_RUN_ID_REQUIRED", "workflow run id is required");
+  if (!profileId || !planId) throw workflowRunError("WORKFLOW_OWNER_REQUIRED", "workflow run profile and plan are required");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(localDay)) {
+    throw workflowRunError("WORKFLOW_LOCAL_DAY_INVALID", "workflow local day must use YYYY-MM-DD");
+  }
+  if (![1, 2].includes(sequence)) {
+    throw workflowRunError("WORKFLOW_SEQUENCE_INVALID", "workflow run sequence must be 1 or 2");
+  }
+  const owner = db.prepare("SELECT profile_id FROM search_plans WHERE id = ?").get(planId);
+  if (!owner || Number(owner.profile_id) !== profileId) {
+    throw workflowRunError("WORKFLOW_PLAN_PROFILE_MISMATCH", "workflow plan does not belong to the selected profile");
+  }
+  const now = String(input.createdAt || nowIso());
+  try {
+    db.prepare(`INSERT INTO workflow_runs(
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      shortfall_code, error_code, error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        id,
+        profileId,
+        planId,
+        localDay,
+        sequence,
+        nonNegativeInteger(input.targetSuccessCount),
+        nonNegativeInteger(input.successfulCount),
+        nonNegativeInteger(input.inventoryCount),
+        nonNegativeInteger(input.candidateGap),
+        input.scanNeeded === false ? 0 : 1,
+        JSON.stringify(Array.isArray(input.keywords) ? input.keywords : []),
+        JSON.stringify(input.budget || {}),
+        JSON.stringify(input.planner || {}),
+        JSON.stringify(input.metrics || {}),
+        nullableText(input.shortfallCode),
+        nullableText(input.errorCode),
+        nullableText(input.errorMessage, 2000),
+        now,
+        now
+      );
+  } catch (error) {
+    if (/workflow_runs\.profile_id, workflow_runs\.local_day, workflow_runs\.sequence|UNIQUE constraint failed: workflow_runs/i.test(error.message)) {
+      throw workflowRunError("WORKFLOW_RUN_SLOT_EXISTS", "workflow run slot already exists for this local day");
+    }
+    throw error;
+  }
+  return getWorkflowRun(db, id);
+}
+
+function getWorkflowRun(db, id) {
+  const normalizedId = String(id || "").trim();
+  if (!normalizedId) return null;
+  const row = db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(normalizedId);
+  return row ? workflowRunRow(row) : null;
+}
+
+function listWorkflowRuns(db, filters = {}) {
+  const clauses = [];
+  const params = [];
+  const profileId = optionalPositiveInteger(filters.profileId, "profileId");
+  const planId = optionalPositiveInteger(filters.planId, "planId");
+  if (profileId) { clauses.push("profile_id = ?"); params.push(profileId); }
+  if (planId) { clauses.push("plan_id = ?"); params.push(planId); }
+  if (filters.localDay) { clauses.push("local_day = ?"); params.push(String(filters.localDay)); }
+  const statuses = (Array.isArray(filters.statuses) ? filters.statuses : [])
+    .map((status) => String(status || "").trim())
+    .filter((status) => WORKFLOW_RUN_STATUSES.includes(status));
+  if (statuses.length) {
+    clauses.push(`status IN (${statuses.map(() => "?").join(",")})`);
+    params.push(...statuses);
+  }
+  const limit = Math.max(1, Math.min(500, Number(filters.limit) || 100));
+  params.push(limit);
+  return db.prepare(`SELECT * FROM workflow_runs
+    ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+    ORDER BY local_day DESC, sequence DESC, created_at DESC LIMIT ?`)
+    .all(...params)
+    .map(workflowRunRow);
+}
+
+function getActiveWorkflowRun(db, filters = {}) {
+  return listWorkflowRuns(db, {
+    ...filters,
+    statuses: ACTIVE_WORKFLOW_RUN_STATUSES,
+    limit: 1
+  })[0] || null;
+}
+
+function transitionWorkflowRun(db, input = {}) {
+  const id = String(input.id || input.workflowRunId || "").trim();
+  const nextStatus = String(input.status || "").trim();
+  const current = getWorkflowRun(db, id);
+  if (!current) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+  if (!WORKFLOW_RUN_STATUSES.includes(nextStatus)) {
+    throw workflowRunError("WORKFLOW_STATUS_INVALID", "workflow run status is invalid");
+  }
+  if (nextStatus !== current.status && !WORKFLOW_TRANSITIONS[current.status]?.has(nextStatus)) {
+    throw workflowRunError("WORKFLOW_TRANSITION_INVALID", `workflow run cannot transition from ${current.status} to ${nextStatus}`);
+  }
+  const now = String(input.updatedAt || nowIso());
+  const resumed = current.status === "interrupted" && ["scanning", "review_required", "communicating"].includes(nextStatus);
+  const errorCode = resumed ? null
+    : Object.hasOwn(input, "errorCode") ? nullableText(input.errorCode)
+      : nullableText(current.errorCode);
+  const errorMessage = resumed ? null
+    : Object.hasOwn(input, "errorMessage") ? nullableText(input.errorMessage, 2000)
+      : nullableText(current.errorMessage, 2000);
+  const metrics = Object.hasOwn(input, "metrics") ? input.metrics : current.metrics;
+  db.prepare(`UPDATE workflow_runs SET
+      status = ?,
+      successful_count = ?,
+      inventory_count = ?,
+      metrics_json = ?,
+      shortfall_code = ?,
+      error_code = ?,
+      error_message = ?,
+      started_at = CASE WHEN ? IN ('scanning','review_required') THEN COALESCE(started_at, ?) ELSE started_at END,
+      review_ready_at = CASE WHEN ? = 'review_required' THEN COALESCE(review_ready_at, ?) ELSE review_ready_at END,
+      finished_at = CASE WHEN ? IN ('completed','failed','stopped') THEN COALESCE(finished_at, ?) ELSE finished_at END,
+      updated_at = ?
+    WHERE id = ?`)
+    .run(
+      nextStatus,
+      Object.hasOwn(input, "successfulCount") ? nonNegativeInteger(input.successfulCount) : current.successfulCount,
+      Object.hasOwn(input, "inventoryCount") ? nonNegativeInteger(input.inventoryCount) : current.inventoryCount,
+      JSON.stringify(metrics || {}),
+      Object.hasOwn(input, "shortfallCode") ? nullableText(input.shortfallCode) : nullableText(current.shortfallCode),
+      errorCode,
+      errorMessage,
+      nextStatus,
+      now,
+      nextStatus,
+      now,
+      nextStatus,
+      now,
+      now,
+      id
+    );
+  return getWorkflowRun(db, id);
+}
+
+function attachWorkflowScan(db, input = {}) {
+  const id = String(input.id || input.workflowRunId || "").trim();
+  const run = getWorkflowRun(db, id);
+  if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+  if (!["scanning", "interrupted"].includes(run.status)) {
+    throw workflowRunError("WORKFLOW_SCAN_LINK_INVALID", "workflow scan can only be attached during scanning or interruption");
+  }
+  const scanRunId = String(input.scanRunId || "").trim();
+  const scanBatchId = optionalPositiveInteger(input.scanBatchId, "scanBatchId");
+  if (!scanRunId || !scanBatchId) throw workflowRunError("WORKFLOW_SCAN_LINK_REQUIRED", "scan run and batch are required");
+  if ((run.scanRunId && run.scanRunId !== scanRunId) || (run.scanBatchId && run.scanBatchId !== scanBatchId)) {
+    throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another scan");
+  }
+  const scan = db.prepare("SELECT plan_id, batch_id FROM scan_runs WHERE id = ?").get(scanRunId);
+  const batch = db.prepare("SELECT search_plan_id FROM batches WHERE id = ?").get(scanBatchId);
+  if (!scan || !batch || Number(scan.plan_id || 0) !== run.planId || Number(batch.search_plan_id || 0) !== run.planId
+    || (scan.batch_id && Number(scan.batch_id) !== scanBatchId)) {
+    throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "scan run or batch does not belong to this workflow plan");
+  }
+  db.prepare("UPDATE workflow_runs SET scan_run_id = ?, scan_batch_id = ?, updated_at = ? WHERE id = ?")
+    .run(scanRunId, scanBatchId, nowIso(), id);
+  return getWorkflowRun(db, id);
+}
+
+function attachWorkflowCommunication(db, input = {}) {
+  const id = String(input.id || input.workflowRunId || "").trim();
+  const run = getWorkflowRun(db, id);
+  if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+  if (!["review_required", "communicating", "interrupted"].includes(run.status)) {
+    throw workflowRunError("WORKFLOW_COMMUNICATION_LINK_INVALID", "communication can only be attached after review");
+  }
+  const communicationBatchId = optionalPositiveInteger(input.communicationBatchId, "communicationBatchId");
+  if (!communicationBatchId) throw workflowRunError("WORKFLOW_COMMUNICATION_LINK_REQUIRED", "communication batch is required");
+  if (run.communicationBatchId && run.communicationBatchId !== communicationBatchId) {
+    throw workflowRunError("WORKFLOW_COMMUNICATION_LINK_MISMATCH", "workflow run is already attached to another communication batch");
+  }
+  const batch = db.prepare("SELECT profile_id, plan_id FROM communication_batches WHERE id = ?").get(communicationBatchId);
+  if (!batch || Number(batch.profile_id) !== run.profileId || Number(batch.plan_id) !== run.planId) {
+    throw workflowRunError("WORKFLOW_COMMUNICATION_LINK_MISMATCH", "communication batch does not belong to this workflow run");
+  }
+  db.prepare("UPDATE workflow_runs SET communication_batch_id = ?, updated_at = ? WHERE id = ?")
+    .run(communicationBatchId, nowIso(), id);
+  return getWorkflowRun(db, id);
+}
+
+function workflowRunRow(row) {
+  return {
+    id: row.id,
+    profileId: Number(row.profile_id),
+    planId: Number(row.plan_id),
+    localDay: row.local_day,
+    sequence: Number(row.sequence),
+    status: row.status,
+    targetSuccessCount: Number(row.target_success_count),
+    successfulCount: Number(row.successful_count),
+    inventoryCount: Number(row.inventory_count),
+    candidateGap: Number(row.candidate_gap),
+    scanNeeded: Boolean(row.scan_needed),
+    keywords: parseJson(row.keywords_json, []),
+    budget: parseJson(row.budget_json, {}),
+    planner: parseJson(row.planner_json, {}),
+    metrics: parseJson(row.metrics_json, {}),
+    scanRunId: row.scan_run_id || "",
+    scanBatchId: Number(row.scan_batch_id || 0) || null,
+    communicationBatchId: Number(row.communication_batch_id || 0) || null,
+    shortfallCode: row.shortfall_code || "",
+    errorCode: row.error_code || "",
+    errorMessage: row.error_message || "",
+    createdAt: row.created_at,
+    startedAt: row.started_at || null,
+    reviewReadyAt: row.review_ready_at || null,
+    finishedAt: row.finished_at || null,
+    updatedAt: row.updated_at
+  };
+}
+
+function nonNegativeInteger(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+}
+
+function workflowRunError(code, message) {
+  return Object.assign(new Error(message), { code });
 }
 
 function createBatch(db, site, keyword, note = "", context = {}) {
@@ -2890,7 +3197,15 @@ module.exports = {
   SCHEMA_VERSION,
   OUTCOME_STATUSES,
   SCAN_RUN_STATUSES,
+  WORKFLOW_RUN_STATUSES,
   openDb,
+  createWorkflowRun,
+  getWorkflowRun,
+  listWorkflowRuns,
+  getActiveWorkflowRun,
+  transitionWorkflowRun,
+  attachWorkflowScan,
+  attachWorkflowCommunication,
   createBatch,
   createAndBindScanBatch,
   getBatch,
