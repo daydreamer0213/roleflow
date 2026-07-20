@@ -1,7 +1,13 @@
-const { getSearchPlan, listDecisionPool, listSiteAccessEvents } = require("./storage");
+const {
+  getSearchPlan,
+  getWorkflowRun,
+  attachWorkflowCommunication,
+  listDecisionPool,
+  listSiteAccessEvents
+} = require("./storage");
 const { isBossJobUrl } = require("./scoring");
 const { PRODUCT_POLICY } = require("./product_policy");
-const { reconcileCommunicationOutcome } = require("./workflow_inventory");
+const { listWorkflowReviewCandidates, reconcileCommunicationOutcome } = require("./workflow_inventory");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
@@ -23,16 +29,41 @@ const ITEM_TRANSITIONS = new Map([
 ]);
 
 function createCommunicationBatch(db, input = {}) {
-  const planId = positiveInteger(input.planId, "COMMUNICATION_PLAN_INVALID", "planId is required");
+  const workflowRunId = String(input.workflowRunId || "").trim();
+  const workflow = workflowRunId ? getWorkflowRun(db, workflowRunId) : null;
+  if (workflowRunId && !workflow) throw codedError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+  const planId = positiveInteger(input.planId ?? workflow?.planId, "COMMUNICATION_PLAN_INVALID", "planId is required");
   const plan = getSearchPlan(db, planId);
   if (!plan) throw codedError("COMMUNICATION_PLAN_NOT_FOUND", "communication plan not found");
+  if (workflow && (workflow.planId !== planId || workflow.profileId !== plan.profileId)) {
+    throw codedError("WORKFLOW_COMMUNICATION_LINK_MISMATCH", "communication plan does not belong to this workflow run");
+  }
+  if (workflow && workflow.status !== "review_required") {
+    throw codedError("WORKFLOW_COMMUNICATION_LINK_INVALID", "workflow communication can only be confirmed during review");
+  }
+  if (workflow?.communicationBatchId) {
+    throw codedError("WORKFLOW_COMMUNICATION_ALREADY_LINKED", "workflow run already has a communication batch");
+  }
   const browserMode = String(input.browserMode || "").trim().toLowerCase();
   if (!["edge", "portable"].includes(browserMode)) {
     throw codedError("COMMUNICATION_BROWSER_MODE_INVALID", "browserMode must be edge or portable");
   }
   const jobIds = normalizedJobIds(input.jobIds);
   const now = timestamp(input.now);
-  const policyJson = JSON.stringify(input.policySnapshot || {});
+  const replacementBuffer = workflow
+    ? nonNegativeInteger(workflow.planner?.replacementBuffer ?? PRODUCT_POLICY.operations.workflow.replacementBuffer)
+    : 0;
+  if (workflow && jobIds.length > workflow.targetSuccessCount + replacementBuffer) {
+    throw codedError("WORKFLOW_COMMUNICATION_SELECTION_LIMIT", "workflow selection exceeds target and replacement buffer");
+  }
+  const policyJson = JSON.stringify({
+    ...(input.policySnapshot || {}),
+    ...(workflow ? {
+      workflowRunId: workflow.id,
+      targetSuccessCount: workflow.targetSuccessCount,
+      replacementBuffer
+    } : {})
+  });
 
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -40,7 +71,10 @@ function createCommunicationBatch(db, input = {}) {
     if (jobIds.length > quota.remaining) {
       throw codedError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
     }
-    const jobsById = new Map(listDecisionPool(db, { planId }).map((job) => [Number(job.id), job]));
+    const jobsById = new Map((workflow
+      ? listWorkflowReviewCandidates(db, workflow.id, { now })
+      : listDecisionPool(db, { planId }))
+      .map((job) => [Number(job.id), job]));
     const conflicts = db.prepare(`SELECT communication_batch_items.id FROM communication_batch_items
       JOIN communication_batches ON communication_batches.id = communication_batch_items.batch_id
       WHERE communication_batch_items.job_id = ?
@@ -64,6 +98,7 @@ function createCommunicationBatch(db, input = {}) {
     selected.forEach((job, index) => {
       insertItem.run(batchId, Number(job.id), index + 1, String(job.url), String(job.title || ""), String(job.company || ""), now);
     });
+    if (workflow) attachWorkflowCommunication(db, { id: workflow.id, communicationBatchId: batchId });
     db.exec("COMMIT");
     return getCommunicationBatch(db, batchId);
   } catch (error) {
@@ -410,6 +445,11 @@ function positiveInteger(value, code, message) {
   const number = Number(value);
   if (!Number.isInteger(number) || number <= 0) throw codedError(code, message);
   return number;
+}
+
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
 }
 
 function parseJson(value, fallback) {

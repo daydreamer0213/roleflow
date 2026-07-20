@@ -835,6 +835,13 @@ function getWorkflowRun(db, id) {
   return row ? workflowRunRow(row) : null;
 }
 
+function getWorkflowRunByCommunicationBatch(db, communicationBatchId) {
+  const batchId = optionalPositiveInteger(communicationBatchId, "communicationBatchId");
+  if (!batchId) return null;
+  const row = db.prepare("SELECT * FROM workflow_runs WHERE communication_batch_id = ?").get(batchId);
+  return row ? workflowRunRow(row) : null;
+}
+
 function listWorkflowRuns(db, filters = {}) {
   const clauses = [];
   const params = [];
@@ -3241,6 +3248,7 @@ module.exports = {
   backfillHistoricalCommunicationOutcomes,
   createWorkflowRun,
   getWorkflowRun,
+  getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
   getActiveWorkflowRun,
   transitionWorkflowRun,

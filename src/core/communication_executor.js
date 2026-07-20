@@ -1,6 +1,7 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { reconcileCommunicationOutcome } = require("./workflow_inventory");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
+const { getWorkflowRunByCommunicationBatch, transitionWorkflowRun } = require("./storage");
 const {
   TERMINAL_ITEM_STATUSES,
   getCommunicationBatch,
@@ -39,10 +40,15 @@ async function runCommunicationBatch({
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
   if (batch.status !== "running") throw codedError("COMMUNICATION_BATCH_STATUS_INVALID", "communication batch is not runnable");
+  ensureWorkflowCommunicating(db, batchId);
 
   while (true) {
     const control = observeControl(db, batchId, signal, logger);
     if (control) return control;
+    if (workflowTargetReached(db, batchId)) {
+      stopPendingReplacements(db, batchId, logger);
+      return finalizeBatch(db, batchId, logger);
+    }
     const item = listCommunicationBatchItems(db, batchId).find((candidate) => !TERMINAL_ITEM_STATUSES.has(candidate.status));
     if (!item) return finalizeBatch(db, batchId, logger);
     if (item.status !== "pending") return recoverIncompleteItem(db, batchId, item, logger);
@@ -118,6 +124,7 @@ async function runCommunicationBatch({
       recordAudit(db, item, "communication_result", finalState);
     }
 
+    if (workflowTargetReached(db, batchId)) continue;
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
     if (pacing) return pacing;
   }
@@ -221,6 +228,15 @@ function stopUnfinishedItems(db, batchId, logger) {
   }
   const batch = getCommunicationBatch(db, batchId);
   if (!isTerminalBatch(batch.status)) setCommunicationBatchStatus(db, { batchId, status: "stopped", stopCode: "COMMUNICATION_STOP_REQUESTED" });
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  if (workflow && ["review_required", "communicating", "interrupted"].includes(workflow.status)) {
+    transitionWorkflowRun(db, {
+      id: workflow.id,
+      status: "stopped",
+      successfulCount: successfulCommunicationCount(db, batchId),
+      shortfallCode: "WORKFLOW_STOP_REQUESTED"
+    });
+  }
   logger?.info("communication_batch_stopped", { batchId });
   return communicationBatchSummary(db, batchId);
 }
@@ -242,8 +258,68 @@ function finalizeBatch(db, batchId, logger) {
   if (batch.status === "paused") return communicationBatchSummary(db, batchId);
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   setCommunicationBatchStatus(db, { batchId, status: "completed" });
-  logger?.info("communication_batch_completed", { batchId });
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  const successfulCount = successfulCommunicationCount(db, batchId);
+  if (workflow && workflow.status === "communicating") {
+    transitionWorkflowRun(db, {
+      id: workflow.id,
+      status: "completed",
+      successfulCount,
+      shortfallCode: successfulCount >= workflow.targetSuccessCount ? "" : "WORKFLOW_SUPPLY_EXHAUSTED",
+      metrics: {
+        ...workflow.metrics,
+        communication: {
+          batchId,
+          selected: listCommunicationBatchItems(db, batchId).length,
+          successful: successfulCount,
+          target: workflow.targetSuccessCount
+        }
+      }
+    });
+  }
+  logger?.info("communication_batch_completed", { batchId, workflowRunId: workflow?.id || null, successfulCount });
   return communicationBatchSummary(db, batchId);
+}
+
+function ensureWorkflowCommunicating(db, batchId) {
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  if (!workflow) return null;
+  if (["review_required", "interrupted"].includes(workflow.status)) {
+    return transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
+  }
+  if (workflow.status !== "communicating" && workflow.status !== "completed") {
+    throw codedError("WORKFLOW_COMMUNICATION_STATE_INVALID", "workflow run is not ready for communication");
+  }
+  return workflow;
+}
+
+function workflowTargetReached(db, batchId) {
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  return Boolean(workflow && workflow.targetSuccessCount > 0
+    && successfulCommunicationCount(db, batchId) >= workflow.targetSuccessCount);
+}
+
+function successfulCommunicationCount(db, batchId) {
+  return listCommunicationBatchItems(db, batchId)
+    .filter((item) => item.status === "succeeded" || item.status === "already_communicated")
+    .length;
+}
+
+function stopPendingReplacements(db, batchId, logger) {
+  let stopped = 0;
+  for (const item of listCommunicationBatchItems(db, batchId)) {
+    if (item.status !== "pending") continue;
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      batchId,
+      expectedStatus: "pending",
+      status: "stopped",
+      errorCode: "WORKFLOW_TARGET_REACHED"
+    });
+    stopped += 1;
+  }
+  logger?.info("workflow_replacements_released", { batchId, stopped });
+  return stopped;
 }
 
 function transitionToUnavailable(db, batchId, item, error) {
@@ -280,6 +356,16 @@ function interruptAndThrow(db, batchId, error, logger) {
       status: "interrupted",
       stopCode: errorCode(error),
       stopMessage: "communication execution interrupted"
+    });
+  }
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  if (workflow && workflow.status === "communicating") {
+    transitionWorkflowRun(db, {
+      id: workflow.id,
+      status: "interrupted",
+      successfulCount: successfulCommunicationCount(db, batchId),
+      errorCode: errorCode(error),
+      errorMessage: "communication execution interrupted"
     });
   }
   logger?.warn("communication_batch_interrupted", { batchId, code: errorCode(error) });
