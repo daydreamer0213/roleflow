@@ -1,6 +1,7 @@
 const assert = require("node:assert");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../src/core/profile_schema");
 const { profileToRuntimeConfigs, resolveScanPolicy, applyScanPolicyToFilters } = require("../src/core/search_plan");
+const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { validateSearchPlan, assertSearchPlanReady } = require("../src/core/plan_validation");
 const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
 const { prepareResumeTextForModel } = require("../src/core/profile_onboarding");
@@ -102,6 +103,31 @@ const filteredLanes = applyScanPolicyToFilters({
 assert.strictEqual(filteredLanes.lanes.length, 1);
 assert.deepStrictEqual(filteredLanes.params.salary, ["405"]);
 assert.strictEqual(applyScanPolicyToFilters({ lanes: filteredLanes.lanes.concat({ id: "salary-404" }) }, broadPolicy).lanes.length, 2);
+const targetSalaryPlan = normalizeSearchPlan({
+  ...modePlan,
+  salaryMinK: 9,
+  salaryMaxK: 14,
+  platform: { site: "boss", salaryLanes: ["10-20K"] }
+}, profile);
+const targetSalaryFilter = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog: {
+    site: "boss",
+    fields: {
+      salary: {
+        urlParam: "salary",
+        selection: "single",
+        options: [
+          { code: "404", label: "5-10K" },
+          { code: "405", label: "10-20K" }
+        ]
+      }
+    }
+  },
+  plan: targetSalaryPlan
+});
+assert.deepStrictEqual(targetSalaryPlan.salary, { minK: 9, maxK: 14 });
+assert.deepStrictEqual(targetSalaryFilter.params.salary, ["405"]);
 const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile);
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));

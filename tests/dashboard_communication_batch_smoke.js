@@ -62,6 +62,7 @@ let server;
   assert.match(queue.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(plan.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(queue.body, /批量沟通清单/);
+  assert.match(queue.body, /薪资与目标贴合/);
   assert.match(plan.body, /批量沟通清单/);
   assert.doesNotMatch(plan.body, />Resume</);
 
@@ -153,7 +154,7 @@ function seed(database) {
   const profileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Dashboard smoke", "{}", now, now).lastInsertRowid);
   const planId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Dashboard smoke", "{}", now, now).lastInsertRowid);
   const scanBatchId = createBatch(database, "boss", "dashboard-communication", "dashboard communication smoke", { profileId, searchPlanId: planId });
-  const primaryId = upsertJob(database, job("primary", { title: "Primary role", analysis: completeAnalysis() }), scanBatchId);
+  const primaryId = upsertJob(database, job("primary", { title: "Primary role", qualityTags: ["salary_target_core"], analysis: completeAnalysis() }), scanBatchId);
   const talkId = upsertJob(database, job("talk", { title: "Talk role", analysis: { semanticStatus: "partial", recommendation: "review" } }), scanBatchId);
   const backupId = upsertJob(database, job("backup", { title: "Backup role", qualityTags: ["experience_overrange"] }), scanBatchId);
   const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", qualityTags: ["role_mismatch"] }), scanBatchId);
