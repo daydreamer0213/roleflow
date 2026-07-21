@@ -338,6 +338,7 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
   assert.strictEqual(await existingAdapter.prepareCommunicationTab("search"), "detail");
   assert.deepStrictEqual(existingBrowser.calls.createTab, []);
+  assert.deepStrictEqual(existingBrowser.calls.bringToFront, []);
 
   const pinnedSearchBrowser = fakeBrowser({
     tabs: [
@@ -462,6 +463,7 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(secondInspection.state, "ready");
   assert.deepStrictEqual(inspectBrowser.calls.createTab, [["search", "about:blank"]]);
   assert.deepStrictEqual(inspectBrowser.calls.navigate, [["communication-created", jobUrl], ["communication-created", secondJobUrl]]);
+  assert.deepStrictEqual(inspectBrowser.calls.bringToFront, []);
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
   assert(inspectBrowser.calls.evalValue.some(([, expression]) => expression.includes("window.__bossCommunicationSnapshot = function()")));
   const snapshot = JSON.parse(JSON.stringify(inspectBrowser.snapshots[0]));

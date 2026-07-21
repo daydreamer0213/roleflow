@@ -548,13 +548,13 @@ class BossSiteAdapter {
 
     scanTargetLoop: for (const target of scanTargets) {
           throwIfAborted(options.signal);
-          const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey } = target;
+          const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey, detailLimitOverride } = target;
           targetPosition += 1;
           const startedAt = new Date().toISOString();
           let targetJobs = [];
           let targetEntries = [];
           try {
-            const url = buildBossSearchUrl({ keyword, cityCode: city.cityCode, nativeFilters: lane });
+            const url = buildBossSearchUrl({ keyword, cityCode: city.cityCode, nativeFilters: lane, searchTemplate: options.searchTemplate });
             console.error(`[boss] 打开城市：${city.city || city.cityCode} · ${keyword}（${item.priority}，最多 ${cardLimit} 条）`);
             this.logger?.info("boss_keyword_opened", {
               targetKey,
@@ -629,7 +629,11 @@ class BossSiteAdapter {
             }
             const remainingTargets = Math.max(1, targetCount - targetPosition + 1);
             const remainingDetailBudget = Math.max(0, maxDetailTotal - detailAttempts.size);
-            const configuredDetailLimit = Number(options.detailLimits?.[item.priority]);
+            const configuredDetailLimit = detailLimitOverride !== null
+              && detailLimitOverride !== undefined
+              && Number.isFinite(Number(detailLimitOverride))
+              ? Number(detailLimitOverride)
+              : Number(options.detailLimits?.[item.priority]);
             const targetDetailQuota = Number.isFinite(configuredDetailLimit)
               ? Math.min(Math.max(0, configuredDetailLimit), remainingDetailBudget)
               : Math.ceil(remainingDetailBudget / remainingTargets);
@@ -1188,7 +1192,6 @@ class BossSiteAdapter {
       if (!isCachedBossCommunicationTab(stored)) {
         throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
       }
-      await this.browser.bringToFront(stored.id);
       return stored.id;
     }
     this.communicationTabId = null;
@@ -1196,13 +1199,11 @@ class BossSiteAdapter {
     const reusable = reusableCandidates.filter((tab) => sameBossWindow(searchTab, tab)).sort(compareBossTabs)[0];
     if (reusable) {
       this.communicationTabId = reusable.id;
-      await this.browser.bringToFront(reusable.id);
       return reusable.id;
     }
 
     const tabId = await this.browser.createTab(searchTab.id, "about:blank");
     this.communicationTabId = tabId;
-    await this.browser.bringToFront(tabId);
     return tabId;
   }
 
@@ -1402,7 +1403,16 @@ function normalizePriority(value) {
   return ["A", "B", "C"].includes(value) ? value : "B";
 }
 
-function buildBossSearchUrl({ keyword, cityCode, nativeFilters } = {}) {
+function buildBossSearchUrl({ keyword, cityCode, nativeFilters, searchTemplate } = {}) {
+  const template = normalizeBossSearchTemplate(searchTemplate);
+  if (template.mode === "inherited") {
+    const url = new URL(template.url);
+    if (keyword) url.searchParams.set("query", keyword);
+    else url.searchParams.delete("query");
+    url.searchParams.delete("page");
+    url.hash = "";
+    return url.toString();
+  }
   const filters = normalizeNativeFilters(nativeFilters);
   const url = new URL("https://www.zhipin.com/web/geek/jobs");
   if (keyword) url.searchParams.set("query", keyword);
@@ -1411,6 +1421,41 @@ function buildBossSearchUrl({ keyword, cityCode, nativeFilters } = {}) {
     if (values.length) url.searchParams.set(name, values.join(","));
   }
   return url.toString();
+}
+
+function normalizeBossSearchTemplate(value) {
+  const raw = typeof value === "string" ? value : value?.url;
+  try {
+    const url = new URL(String(raw || ""));
+    if (url.protocol !== "https:" || url.hostname !== "www.zhipin.com" || !/^\/web\/geek\/jobs\/?$/i.test(url.pathname)) {
+      return { mode: "generated", url: "", cityCode: "" };
+    }
+    url.searchParams.delete("query");
+    url.searchParams.delete("page");
+    url.hash = "";
+    return {
+      mode: "inherited",
+      url: url.toString(),
+      cityCode: url.searchParams.get("city") || ""
+    };
+  } catch {
+    return { mode: "generated", url: "", cityCode: "" };
+  }
+}
+
+function resolveBossSearchContext({ currentUrl = "", storedTemplate = null, cityScopes = [] } = {}) {
+  const hasStoredTemplate = storedTemplate && typeof storedTemplate === "object" && Object.hasOwn(storedTemplate, "mode");
+  const searchTemplate = normalizeBossSearchTemplate(hasStoredTemplate ? storedTemplate : currentUrl);
+  const scopes = Array.isArray(cityScopes) ? cityScopes : [];
+  if (searchTemplate.mode !== "inherited") return { searchTemplate, cityScopes: scopes };
+  const matched = scopes.find((scope) => String(scope?.cityCode || "") === searchTemplate.cityCode);
+  return {
+    searchTemplate,
+    cityScopes: [{
+      city: matched?.city || "",
+      cityCode: searchTemplate.cityCode || matched?.cityCode || scopes[0]?.cityCode || ""
+    }]
+  };
 }
 
 function normalizeNativeFilterLanes(value = {}) {
@@ -1429,27 +1474,60 @@ function buildBossScanTargets(options = {}) {
   const cityScopes = normalizeCityScopes(options);
   const nativeFilterLanes = normalizeNativeFilterLanes(options.nativeFilters);
   const maxCards = normalizeCardLimit(options.maxCards);
+  const supplementalKeywordLimit = normalizeOptionalLimit(options.supplementalSalaryLaneKeywordLimit);
+  const supplementalCardLimit = normalizeOptionalLimit(options.supplementalSalaryLaneCardLimit);
+  const supplementalDetailLimit = normalizeOptionalLimit(options.supplementalSalaryLaneDetailLimit);
   const targets = [];
   for (const [cityOrder, city] of cityScopes.entries()) {
+    const primaryLane = nativeFilterLanes[0];
+    const supplementalLanes = nativeFilterLanes.slice(1);
     for (const item of keywordPlan) {
       const keyword = item.word;
       const cardLimit = weightedCardLimit(item.priority, maxCards);
-      for (const lane of nativeFilterLanes) {
-        const laneId = lane.id || "default";
-        targets.push({
+      targets.push(bossScanTarget({ cityOrder, city, item, keyword, cardLimit, lane: primaryLane }));
+    }
+    const supplementalKeywords = supplementalKeywordLimit === null
+      ? keywordPlan
+      : keywordPlan.slice(0, supplementalKeywordLimit);
+    for (const lane of supplementalLanes) {
+      for (const item of supplementalKeywords) {
+        const keyword = item.word;
+        const weightedLimit = weightedCardLimit(item.priority, maxCards);
+        const cardLimit = supplementalCardLimit === null ? weightedLimit : Math.min(weightedLimit, supplementalCardLimit);
+        targets.push(bossScanTarget({
           cityOrder,
           city,
           item,
           keyword,
           cardLimit,
           lane,
-          laneId,
-          targetKey: [city.cityCode, keyword, laneId].join("|")
-        });
+          detailLimitOverride: supplementalDetailLimit
+        }));
       }
     }
   }
   return targets;
+}
+
+function bossScanTarget({ cityOrder, city, item, keyword, cardLimit, lane, detailLimitOverride = null }) {
+  const laneId = lane.id || "default";
+  return {
+    cityOrder,
+    city,
+    item,
+    keyword,
+    cardLimit,
+    lane,
+    laneId,
+    detailLimitOverride,
+    targetKey: [city.cityCode, keyword, laneId].join("|")
+  };
+}
+
+function normalizeOptionalLimit(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : null;
 }
 
 function normalizeNativeFilters(value = {}) {
@@ -1928,6 +2006,8 @@ module.exports = {
   mergeScanCandidate,
   buildBossScanTargets,
   buildBossSearchUrl,
+  normalizeBossSearchTemplate,
+  resolveBossSearchContext,
   normalizeNativeFilters,
   normalizeNativeFilterLanes,
   normalizePageBudget,

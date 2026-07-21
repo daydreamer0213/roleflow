@@ -72,6 +72,10 @@ assert.strictEqual(dailyPolicy.maxCards, 50);
 assert.strictEqual(dailyPolicy.maxDetailTotal, 240);
 assert.deepStrictEqual(dailyPolicy.detailLimits, { A: 45, B: 30 });
 assert.strictEqual(dailyPolicy.browserPageBudget, 40);
+assert.strictEqual(dailyPolicy.salaryLaneLimit, 2);
+assert.strictEqual(dailyPolicy.supplementalSalaryLaneKeywordLimit, 1);
+assert.strictEqual(dailyPolicy.supplementalSalaryLaneCardLimit, 20);
+assert.strictEqual(dailyPolicy.supplementalSalaryLaneDetailLimit, 10);
 assert.strictEqual(dailyPolicy.policyVersion, PRODUCT_POLICY_VERSION);
 assert.match(dailyPolicy.policyHash, /^[a-f0-9]{64}$/);
 assert.strictEqual(resolveScanPolicy(modePlan, "daily").policyHash, dailyPolicy.policyHash);
@@ -100,9 +104,9 @@ const filteredLanes = applyScanPolicyToFilters({
     { id: "salary-404", params: { salary: ["404"] }, labels: { salary: ["5-10K"] } }
   ]
 }, dailyPolicy);
-assert.strictEqual(filteredLanes.lanes.length, 1);
+assert.strictEqual(filteredLanes.lanes.length, 2);
 assert.deepStrictEqual(filteredLanes.params.salary, ["405"]);
-assert.strictEqual(applyScanPolicyToFilters({ lanes: filteredLanes.lanes.concat({ id: "salary-404" }) }, broadPolicy).lanes.length, 2);
+assert.strictEqual(applyScanPolicyToFilters({ lanes: filteredLanes.lanes }, broadPolicy).lanes.length, 2);
 const targetSalaryPlan = normalizeSearchPlan({
   ...modePlan,
   salaryMinK: 9,

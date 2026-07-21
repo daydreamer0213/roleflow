@@ -70,6 +70,16 @@ try {
     batchUpdatedAt: "2026-07-20T07:55:00.000Z",
     itemStatuses: ["pending", "pending"]
   });
+  const activeCommunication = seedCommunicatingWorkflow(db, {
+    profileId,
+    planId,
+    localDay: "2026-07-18",
+    sequence: 2,
+    batchStatus: "running",
+    batchUpdatedAt: "2026-07-20T07:55:00.000Z",
+    itemUpdatedAt: "2026-07-20T07:59:30.000Z",
+    itemStatuses: ["opening", "pending"]
+  });
   const completedCommunication = seedCommunicatingWorkflow(db, {
     profileId,
     planId,
@@ -112,6 +122,9 @@ try {
   assert.strictEqual(interruptedCommunication.metrics.communication.selected, 2);
   assert.strictEqual(interruptedCommunication.metrics.communication.succeeded, 0);
   assert(Number.isFinite(interruptedCommunication.metrics.durationMs));
+
+  assert.strictEqual(getCommunicationBatch(db, activeCommunication.batchId).status, "running");
+  assert.strictEqual(getWorkflowRun(db, activeCommunication.workflow.id).status, "communicating");
 
   const completed = getWorkflowRun(db, completedCommunication.workflow.id);
   assert.strictEqual(completed.status, "completed");
@@ -274,7 +287,7 @@ function seedCommunicationBatch(database, input) {
         status,
         ["succeeded", "already_communicated"].includes(status) ? 1 : 0,
         ["succeeded", "already_communicated", "stopped"].includes(status) ? input.batchUpdatedAt : null,
-        input.batchUpdatedAt
+        input.itemUpdatedAt || input.batchUpdatedAt
       );
   });
   return batchId;

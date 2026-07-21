@@ -11,9 +11,10 @@ const {
   transitionWorkflowRun,
   createBatch,
   beginScanRun,
-  attachWorkflowScan
+  attachWorkflowScan,
+  recordSiteAccessEvent
 } = require("../src/core/storage");
-const { executeWithSiteScanLease, workflowMetrics } = require("../src/cli");
+const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -60,6 +61,11 @@ async function main() {
   });
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
+  for (const action of ["list_navigation", "list_scroll", "pane_detail_read", "pane_detail_read"]) {
+    recordSiteAccessEvent(db, { site: "boss", action, runId: "usage-probe" });
+  }
+  recordSiteAccessEvent(db, { site: "boss", action: "pane_detail_read", runId: "other-run" });
+  assert.deepStrictEqual(workflowAccessUsage(db, "usage-probe"), { details: 2, pages: 1, scrolls: 1 });
   const saved = seedProfile(db);
   const workflow = createWorkflowRun(db, workflowInput(saved));
   db.close();

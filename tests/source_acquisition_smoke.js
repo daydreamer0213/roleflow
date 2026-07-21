@@ -465,15 +465,41 @@ async function scanTargetPlanSmoke() {
   });
   assert.deepStrictEqual(targets.map((target) => target.targetKey), [
     "101280100|primary|main",
-    "101280100|primary|stretch",
     "101280100|secondary|main",
+    "101280100|primary|stretch",
     "101280100|secondary|stretch",
     "101280600|primary|main",
-    "101280600|primary|stretch",
     "101280600|secondary|main",
+    "101280600|primary|stretch",
     "101280600|secondary|stretch"
   ]);
-  assert.deepStrictEqual(targets.map((target) => target.cardLimit), [50, 50, 33, 33, 50, 50, 33, 33]);
+  assert.deepStrictEqual(targets.map((target) => target.cardLimit), [50, 33, 50, 33, 50, 33, 50, 33]);
+
+  const dailyTargets = buildBossScanTargets({
+    keywords: ["secondary", "primary"],
+    keywordPlan: [
+      { word: "secondary", priority: "B", order: 0 },
+      { word: "primary", priority: "A", order: 1 }
+    ],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    nativeFilters: {
+      lanes: [
+        { id: "salary-405", rank: 0, params: { salary: ["405"] } },
+        { id: "salary-404", rank: 1, params: { salary: ["404"] } }
+      ]
+    },
+    maxCards: 50,
+    supplementalSalaryLaneKeywordLimit: 1,
+    supplementalSalaryLaneCardLimit: 20,
+    supplementalSalaryLaneDetailLimit: 10
+  });
+  assert.deepStrictEqual(dailyTargets.map((target) => target.targetKey), [
+    "101280100|primary|salary-405",
+    "101280100|secondary|salary-405",
+    "101280100|primary|salary-404"
+  ]);
+  assert.deepStrictEqual(dailyTargets.map((target) => target.cardLimit), [50, 33, 20]);
+  assert.deepStrictEqual(dailyTargets.map((target) => target.detailLimitOverride), [null, null, 10]);
 }
 
 async function scanTargetResumeFilterSmoke() {

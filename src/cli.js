@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const { loadConfigs } = require("./config");
 const { EdgeControlAdapter } = require("./adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
-const { BossSiteAdapter, cleanDetailText } = require("./adapters/sites/boss");
+const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("./adapters/sites/boss");
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner } = require("./core/job_analysis");
@@ -36,6 +36,7 @@ const {
   setSiteRuntimeState,
   clearSiteRuntimeState,
   recordSiteAccessEvent,
+  listSiteAccessEvents,
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,
@@ -75,7 +76,7 @@ const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
-const { getCommunicationBatch, setCommunicationBatchStatus } = require("./core/communication_batches");
+const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
 const { runCommunicationBatch } = require("./core/communication_executor");
 const {
   buildScanExecutionSnapshot,
@@ -147,6 +148,7 @@ async function communicate(db, args) {
   });
   const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
   const adapter = createSiteAdapter("boss", { browser, logger: communicationLogger, accessController });
+  const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
 
   try {
     const browserState = await adapter.preflight();
@@ -179,7 +181,25 @@ async function communicate(db, args) {
       });
     }
     throw error;
+  } finally {
+    stopHeartbeat();
   }
+}
+
+function startCommunicationHeartbeat(db, batchId, communicationLogger) {
+  const timer = setInterval(() => {
+    try {
+      touchCommunicationBatch(db, batchId);
+    } catch (error) {
+      communicationLogger?.warn("communication_heartbeat_failed", {
+        batchId,
+        errorCode: error?.code || "COMMUNICATION_HEARTBEAT_FAILED",
+        errorMessage: error?.message || String(error)
+      });
+    }
+  }, PRODUCT_POLICY.operations.communicationHeartbeatMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 async function executeWithSiteScanLease(db, args, command, run) {
@@ -377,7 +397,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     ? createSiteAccessController({ db, site, runId: execution?.runId || "", logger: scanLogger, signal })
     : null;
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
-  const cityScopes = resolveCityScopes(args, planRecord, configs);
+  const plannedCityScopes = resolveCityScopes(args, planRecord, configs);
   let browserState = null;
   if (!args.input) {
     try {
@@ -400,13 +420,30 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       throw error;
     }
   }
+  const resumeBatchId = parseOptionalPositiveIntegerArg(args, "resume-batch");
+  if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");
+  const storedExecution = resumeBatchId ? getBatch(db, resumeBatchId)?.filterSnapshot?.execution : null;
+  const searchContext = args.input
+    ? { searchTemplate: { mode: "generated", url: "", cityCode: "" }, cityScopes: plannedCityScopes }
+    : resolveBossSearchContext({
+      currentUrl: browserState?.url || browserState?.tab?.url || "",
+      storedTemplate: storedExecution?.searchTemplate,
+      cityScopes: plannedCityScopes
+    });
+  const { searchTemplate, cityScopes } = searchContext;
   const nativeFilterSnapshot = args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
-    : applyScanPolicyToFilters(
-      await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId, logger: scanLogger }),
-      scanPolicy
-    );
-  if (!args.input) console.error(`[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
+    : searchTemplate.mode === "inherited"
+      ? { site, scanMode, source: "search_template", params: {}, labels: {}, lanes: [] }
+      : applyScanPolicyToFilters(
+        await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId, logger: scanLogger }),
+        scanPolicy
+      );
+  if (!args.input) {
+    console.error(searchTemplate.mode === "inherited"
+      ? `[platform] BOSS 预筛：继承当前搜索页（仅替换关键词）`
+      : `[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
+  }
   assertScanLimitOverridesAllowed(args, scanMode, Boolean(workflowRun));
   const workflowMaxCards = workflowRun
     ? Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0))
@@ -418,19 +455,21 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       : resolveScanLimit(args, "max-detail-total", scanPolicy.maxDetailTotal, scanPolicy.maxDetailTotal, "maxDetailTotal"),
     browserPageBudget: workflowRun ? Number(workflowRun.budget.browserPageBudget)
       : resolveScanLimit(args, "browser-page-budget", scanPolicy.browserPageBudget, scanPolicy.browserPageBudget, "browserPageBudget"),
-    detailLimits: scanPolicy.detailLimits
+    detailLimits: scanPolicy.detailLimits,
+    supplementalSalaryLaneKeywordLimit: scanPolicy.supplementalSalaryLaneKeywordLimit,
+    supplementalSalaryLaneCardLimit: scanPolicy.supplementalSalaryLaneCardLimit,
+    supplementalSalaryLaneDetailLimit: scanPolicy.supplementalSalaryLaneDetailLimit
   };
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
     site,
     scanKind: scanMode,
     runtimePolicyHash: scanPolicy.policyHash,
+    searchTemplate,
     cityScopes,
     keywordPlan,
     nativeFilters: nativeFilterSnapshot,
     limits: scanLimits
   });
-  const resumeBatchId = parseOptionalPositiveIntegerArg(args, "resume-batch");
-  if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");
   const reusableDetails = new Map((args.input ? [] : listReusableJobDetails(db, {
     site,
     profileId: planRecord?.profileId,
@@ -463,6 +502,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
         ...nativeFilterSnapshot,
         runtimePolicy: scanPolicy.snapshot,
         runtimePolicyHash: scanPolicy.policyHash,
+        searchTemplate,
         ...(executionSnapshot ? { execution: executionSnapshot } : {})
       }
     };
@@ -513,6 +553,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     hasInput: Boolean(args.input),
     analysisConcurrency,
     nativeFilters: args.input ? null : nativeFilterSnapshot,
+    searchTemplate: args.input ? null : searchTemplate,
     scanLimits,
     resumeBatchId: resumeBatchId || null,
     resumeTargetCount: resumeTargetKeys?.length ?? null,
@@ -559,10 +600,14 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     keywordPlan,
     cityScopes,
     nativeFilters: nativeFilterSnapshot,
+    searchTemplate,
     browserPageBudget: scanLimits.browserPageBudget,
     maxCards: scanLimits.maxCards,
     maxDetailTotal: scanLimits.maxDetailTotal,
     detailLimits: scanLimits.detailLimits,
+    supplementalSalaryLaneKeywordLimit: scanLimits.supplementalSalaryLaneKeywordLimit,
+    supplementalSalaryLaneCardLimit: scanLimits.supplementalSalaryLaneCardLimit,
+    supplementalSalaryLaneDetailLimit: scanLimits.supplementalSalaryLaneDetailLimit,
     targetKeys: resumeTargetKeys,
     scoreQuick: (job) => scoreJob(job, configs).score,
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
@@ -611,10 +656,11 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   for (const job of rawJobs) analysisCandidates.set(job.sourceId || job.url, job);
   const jobsToAnalyze = [...analysisCandidates.values()];
   if (workflowRun) {
+    const access = workflowAccessUsage(db, execution?.runId || workflowRun.scanRunId);
     transitionWorkflowRun(db, {
       id: workflowRun.id,
       status: "analyzing",
-      metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0 })
+      metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0, access })
     });
   }
   scanLogger.info("job_analysis_started", { batchId, jobCount: jobsToAnalyze.length, analysisConcurrency, resumedPending: Math.max(0, jobsToAnalyze.length - rawJobs.length) });
@@ -646,7 +692,8 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     : finalStatus === "failed" ? "SCAN_TARGETS_FAILED" : "";
   if (workflowRun) {
     const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
-    const metrics = workflowMetrics({ detailCoverage, rawJobs, analyzed: analyzedJobs.length, saved, inventoryCount });
+    const access = workflowAccessUsage(db, execution?.runId || workflowRun.scanRunId);
+    const metrics = workflowMetrics({ detailCoverage, rawJobs, analyzed: analyzedJobs.length, saved, inventoryCount, access });
     if (finalStatus === "completed") {
       transitionWorkflowRun(db, {
         id: workflowRun.id,
@@ -868,8 +915,9 @@ async function analyzeActivityProbe(raw, { configs, analyzeJob }) {
 }
 
 function resolveAnalysisConcurrency(args) {
-  const parsed = Number(args["analysis-concurrency"] ?? 4);
-  if (!Number.isInteger(parsed)) return 4;
+  const fallback = PRODUCT_POLICY.operations.modelAnalysis.scanConcurrency;
+  const parsed = Number(args["analysis-concurrency"] ?? fallback);
+  if (!Number.isInteger(parsed)) return fallback;
   return Math.max(1, Math.min(8, parsed));
 }
 
@@ -991,9 +1039,9 @@ function transitionWorkflowScanFailure(db, workflowRunId, _scanStatus, error) {
   });
 }
 
-function workflowMetrics({ detailCoverage, rawJobs = [], analyzed = 0, saved = 0, inventoryCount = 0 } = {}) {
+function workflowMetrics({ detailCoverage, rawJobs = [], analyzed = 0, saved = 0, inventoryCount = 0, access } = {}) {
   const collected = Number(detailCoverage?.collected ?? rawJobs.length ?? 0);
-  return {
+  const metrics = {
     collected,
     cards: collected,
     detailsRequired: Number(detailCoverage?.detailRequired || 0),
@@ -1005,6 +1053,27 @@ function workflowMetrics({ detailCoverage, rawJobs = [], analyzed = 0, saved = 0
     saved: Number(saved || 0),
     eligible: Number(inventoryCount || 0)
   };
+  if (access) {
+    metrics.access = {
+      details: Number(access.details || 0),
+      pages: Number(access.pages || 0),
+      scrolls: Number(access.scrolls || 0)
+    };
+  }
+  return metrics;
+}
+
+function workflowAccessUsage(db, scanRunId) {
+  const normalizedRunId = String(scanRunId || "").trim();
+  if (!normalizedRunId) return null;
+  const usage = { details: 0, pages: 0, scrolls: 0 };
+  for (const event of listSiteAccessEvents(db, { site: "boss", limit: 10000 })) {
+    if (String(event.details?.runId || "") !== normalizedRunId) continue;
+    if (event.action === "pane_detail_read") usage.details += 1;
+    if (event.action === "list_navigation") usage.pages += 1;
+    if (event.action === "list_scroll") usage.scrolls += 1;
+  }
+  return usage;
 }
 
 function splitWorkflowKeywords(value) {
@@ -1364,7 +1433,7 @@ function printHelp() {
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode daily
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode broad
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
-  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 4
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 3
   run.ps1 refresh-details --browser edge --plan <Search Plan ID> --limit 8
   run.ps1 refresh-activity --browser edge --plan <Search Plan ID> --limit 8
   run.ps1 scan --input data\\sample_jobs.json --profile profiles\\guo_mingfu.json --resume-versions profiles\\resume_versions.json
@@ -1389,5 +1458,7 @@ module.exports = {
   resolveScanLimit,
   persistRefreshAttempt,
   assertScanLimitOverridesAllowed,
-  workflowMetrics
+  workflowMetrics,
+  workflowAccessUsage,
+  resolveAnalysisConcurrency
 };

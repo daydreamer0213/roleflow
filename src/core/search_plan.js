@@ -139,7 +139,10 @@ function resolveScanPolicy(plan = {}, requestedMode = "daily") {
     maxDetailTotal: mode === "daily" ? DAILY_SCAN_LIMITS.maxDetailTotal : broad.maxDetailTotal,
     browserPageBudget: mode === "daily" ? DAILY_SCAN_LIMITS.browserPageBudget : broad.browserPageBudget,
     detailLimits: mode === "daily" ? DAILY_SCAN_LIMITS.detailLimits : null,
-    salaryLaneLimit: mode === "daily" ? DAILY_SCAN_LIMITS.salaryLaneLimit : null
+    salaryLaneLimit: mode === "daily" ? DAILY_SCAN_LIMITS.salaryLaneLimit : null,
+    supplementalSalaryLaneKeywordLimit: mode === "daily" ? DAILY_SCAN_LIMITS.supplementalSalaryLaneKeywordLimit : null,
+    supplementalSalaryLaneCardLimit: mode === "daily" ? DAILY_SCAN_LIMITS.supplementalSalaryLaneCardLimit : null,
+    supplementalSalaryLaneDetailLimit: mode === "daily" ? DAILY_SCAN_LIMITS.supplementalSalaryLaneDetailLimit : null
   };
   const snapshot = {
     version: PRODUCT_POLICY_VERSION,
@@ -163,7 +166,10 @@ function resolveScanPolicy(plan = {}, requestedMode = "daily") {
       maxDetailTotal: resolved.maxDetailTotal,
       browserPageBudget: resolved.browserPageBudget,
       detailLimits: resolved.detailLimits,
-      salaryLaneLimit: resolved.salaryLaneLimit
+      salaryLaneLimit: resolved.salaryLaneLimit,
+      supplementalSalaryLaneKeywordLimit: resolved.supplementalSalaryLaneKeywordLimit,
+      supplementalSalaryLaneCardLimit: resolved.supplementalSalaryLaneCardLimit,
+      supplementalSalaryLaneDetailLimit: resolved.supplementalSalaryLaneDetailLimit
     }
   };
   return { ...resolved, policyVersion: PRODUCT_POLICY_VERSION, policyHash: stableHash(snapshot), snapshot };

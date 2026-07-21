@@ -10,6 +10,11 @@ const input = {
   site: "boss",
   scanKind: "daily",
   runtimePolicyHash: "policy-v1",
+  searchTemplate: {
+    mode: "inherited",
+    url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405",
+    cityCode: "101280100"
+  },
   cityScopes: [
     { city: "Guangzhou", cityCode: "101280100" },
     { city: "Shenzhen", cityCode: "101280600" }
@@ -28,12 +33,15 @@ const input = {
     maxCards: 50,
     maxDetailTotal: 220,
     browserPageBudget: 90,
-    detailLimits: { A: 5, B: 3 }
+    detailLimits: { A: 5, B: 3 },
+    supplementalSalaryLaneKeywordLimit: 1,
+    supplementalSalaryLaneCardLimit: 20,
+    supplementalSalaryLaneDetailLimit: 10
   }
 };
 
 const snapshot = buildScanExecutionSnapshot(input);
-assert.strictEqual(snapshot.schemaVersion, 1);
+assert.strictEqual(snapshot.schemaVersion, 2);
 assert.match(snapshot.createdAt, /^\d{4}-\d{2}-\d{2}T/);
 assert.match(snapshot.snapshotHash, /^[a-f0-9]{64}$/);
 assert.deepStrictEqual(snapshot.targets[0], {
@@ -44,13 +52,24 @@ assert.deepStrictEqual(snapshot.targets[0], {
   laneId: "main",
   cardLimit: 50
 });
+assert.deepStrictEqual(snapshot.targets.map((target) => target.targetKey), [
+  "101280100|RAG|main",
+  "101280100|Agent|main",
+  "101280100|RAG|stretch",
+  "101280600|RAG|main",
+  "101280600|Agent|main",
+  "101280600|RAG|stretch"
+]);
 
 const reordered = buildScanExecutionSnapshot({
   limits: {
     detailLimits: { B: 3, A: 5 },
     browserPageBudget: 90,
     maxDetailTotal: 220,
-    maxCards: 50
+    maxCards: 50,
+    supplementalSalaryLaneKeywordLimit: 1,
+    supplementalSalaryLaneCardLimit: 20,
+    supplementalSalaryLaneDetailLimit: 10
   },
   nativeFilters: {
     lanes: [
@@ -67,6 +86,7 @@ const reordered = buildScanExecutionSnapshot({
     { cityCode: "101280600", city: "Shenzhen" }
   ],
   runtimePolicyHash: "policy-v1",
+  searchTemplate: input.searchTemplate,
   scanKind: "daily",
   site: "boss"
 });
@@ -91,6 +111,7 @@ for (const mutate of [
   (value) => { value.keywordPlan[0].word = "LLM"; },
   (value) => { value.cityScopes[0].cityCode = "101280700"; },
   (value) => { value.nativeFilters.lanes[0].params.salary = ["406"]; },
+  (value) => { value.searchTemplate.url += "&degree=203"; },
   (value) => { value.limits.maxDetailTotal += 1; }
 ]) {
   const changedInput = JSON.parse(JSON.stringify(input));
@@ -128,7 +149,7 @@ assert.throws(
   (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /limits differs/.test(error.message)
 );
 assert.throws(
-  () => assertScanSnapshotCompatible(snapshot, { ...snapshot, schemaVersion: 2 }),
+  () => assertScanSnapshotCompatible(snapshot, { ...snapshot, schemaVersion: 1 }),
   (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /schemaVersion/.test(error.message)
 );
 const missingLimits = { ...snapshot };

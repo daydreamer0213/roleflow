@@ -82,8 +82,16 @@ try {
     targetSuccessCount: 40
   }));
   assert.strictEqual(second.sequence, 2);
+  const third = createWorkflowRun(db, input({
+    profileId,
+    planId,
+    localDay: "2026-07-20",
+    sequence: 3,
+    targetSuccessCount: 40
+  }));
+  assert.strictEqual(third.sequence, 3);
   assert.throws(
-    () => createWorkflowRun(db, input({ profileId, planId, localDay: "2026-07-20", sequence: 3 })),
+    () => createWorkflowRun(db, input({ profileId, planId, localDay: "2026-07-20", sequence: 4 })),
     (error) => error.code === "WORKFLOW_SEQUENCE_INVALID"
   );
 
@@ -93,6 +101,7 @@ try {
   assert.strictEqual(resumed.status, "scanning");
   assert.strictEqual(resumed.errorCode, "");
   transitionWorkflowRun(db, { id: second.id, status: "stopped" });
+  transitionWorkflowRun(db, { id: third.id, status: "stopped" });
 
   const resumedScanWorkflow = createWorkflowRun(db, input({
     profileId,

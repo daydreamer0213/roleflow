@@ -10,6 +10,8 @@ const {
   parseBossActivityText,
   BossSiteAdapter,
   buildBossSearchUrl,
+  normalizeBossSearchTemplate,
+  resolveBossSearchContext,
   parseBossFilterCatalog,
   weightedCardLimit,
   mergeScanCandidate,
@@ -157,6 +159,51 @@ const extendedSearchUrl = new URL(buildBossSearchUrl({
 }));
 assert.strictEqual(extendedSearchUrl.searchParams.get("degree"), "203");
 assert.strictEqual(extendedSearchUrl.searchParams.get("jobType"), "1901");
+
+const inheritedTemplate = normalizeBossSearchTemplate("https://www.zhipin.com/web/geek/jobs?query=old&page=3&city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020");
+assert.deepStrictEqual(inheritedTemplate, {
+  mode: "inherited",
+  url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020",
+  cityCode: "101280100"
+});
+const inheritedSearchUrl = new URL(buildBossSearchUrl({
+  keyword: "RAG工程师",
+  cityCode: "should-not-override",
+  nativeFilters: { params: { salary: ["404"] } },
+  searchTemplate: inheritedTemplate
+}));
+assert.strictEqual(inheritedSearchUrl.searchParams.get("query"), "RAG工程师");
+assert.strictEqual(inheritedSearchUrl.searchParams.get("city"), "101280100");
+assert.strictEqual(inheritedSearchUrl.searchParams.get("district"), "101280105");
+assert.strictEqual(inheritedSearchUrl.searchParams.get("salary"), "405");
+assert.strictEqual(inheritedSearchUrl.searchParams.get("page"), null);
+assert.deepStrictEqual(normalizeBossSearchTemplate("https://www.zhipin.com/guangzhou/"), { mode: "generated", url: "", cityCode: "" });
+assert.deepStrictEqual(resolveBossSearchContext({
+  currentUrl: inheritedTemplate.url,
+  cityScopes: [
+    { city: "广州", cityCode: "101280100" },
+    { city: "深圳", cityCode: "101280600" }
+  ]
+}), {
+  searchTemplate: inheritedTemplate,
+  cityScopes: [{ city: "广州", cityCode: "101280100" }]
+});
+assert.deepStrictEqual(resolveBossSearchContext({
+  currentUrl: "https://www.zhipin.com/guangzhou/",
+  storedTemplate: inheritedTemplate,
+  cityScopes: [{ city: "深圳", cityCode: "101280600" }]
+}), {
+  searchTemplate: inheritedTemplate,
+  cityScopes: [{ city: "", cityCode: "101280100" }]
+});
+assert.deepStrictEqual(resolveBossSearchContext({
+  currentUrl: inheritedTemplate.url,
+  storedTemplate: { mode: "generated", url: "", cityCode: "" },
+  cityScopes: [{ city: "广州", cityCode: "101280100" }]
+}), {
+  searchTemplate: { mode: "generated", url: "", cityCode: "" },
+  cityScopes: [{ city: "广州", cityCode: "101280100" }]
+});
 
 const scanCandidates = new Map();
 const scanJob = (id) => ({ source: "boss", url: `https://www.zhipin.com/job_detail/${id}.html`, title: id, company: "Quality Corp" });
@@ -470,12 +517,12 @@ async function browserAllocationSmoke() {
     nativeFilters: splitSalaryLanes,
     scoreQuick: () => 0
   });
-  assert.deepStrictEqual(adapter.cardLimits, [100, 100, 65, 65, 40, 40]);
+  assert.deepStrictEqual(adapter.cardLimits, [100, 65, 40, 100, 65, 40]);
   assert.strictEqual(jobs.length, 12);
   assert.strictEqual(adapter.detailUrls.length, 12);
   assert.strictEqual(new Set(adapter.detailUrls).size, 12);
   assert.strictEqual(adapter.detailUrls.filter((url) => url.includes("same.html")).length, 1);
-  assert.deepStrictEqual(browser.nativeFilterVisits.map((item) => item.salary), ["405", "404", "405", "404", "405", "404"]);
+  assert.deepStrictEqual(browser.nativeFilterVisits.map((item) => item.salary), ["405", "405", "405", "404", "404", "404"]);
   assert(browser.nativeFilterVisits.every((item) => item.experience === "104,105"));
   assert.strictEqual(jobs.filter((job) => job.detailRequired).length, 12);
   assert.strictEqual(jobs.filter((job) => job.detailRead).length, 12);

@@ -12,6 +12,7 @@ const {
 const {
   createCommunicationBatch,
   getCommunicationBatch,
+  touchCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
   resumeInterruptedCommunicationBatch,
@@ -209,6 +210,7 @@ try {
   batchStatusOptimisticConflictSmoke();
   atomicClickAuditSmoke(db, atomic.id);
   quotaReservationAtomicitySmoke();
+  communicationNaturalDayResetSmoke();
   batchTransitionGraphSmoke();
   interruptedResumeSmoke();
 
@@ -295,18 +297,29 @@ function quotaReservationAtomicitySmoke() {
   const quotaDb = openDb(dbPath);
   const secondRequestDb = openDb(dbPath);
   try {
-    const now = "2030-01-02T00:00:00.000Z";
+    const now = "2030-01-02T08:00:00.000Z";
     const profileId = Number(quotaDb.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Quota smoke", "{}", now, now).lastInsertRowid);
     const planId = Number(quotaDb.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Quota smoke", "{}", now, now).lastInsertRowid);
     const scanBatchId = createBatch(quotaDb, "boss", "quota", "quota smoke", { profileId, searchPlanId: planId });
     const firstId = upsertJob(quotaDb, job("quota-first", { analysis: completeAnalysis() }), scanBatchId);
     const secondId = upsertJob(quotaDb, job("quota-second", { analysis: completeAnalysis() }), scanBatchId);
-    const windowStart = new Date(Date.parse(now) - 24 * 60 * 60 * 1000).toISOString();
+    const windowStart = "2030-01-01T15:59:59.999Z";
     recordSiteAccessEvent(quotaDb, { site: "boss", action: "communication_visit", createdAt: windowStart });
-    for (let index = 0; index < 149; index += 1) recordSiteAccessEvent(quotaDb, { site: "boss", action: "communication_visit", createdAt: "2030-01-01T00:00:00.001Z" });
+    for (let index = 0; index < 149; index += 1) recordSiteAccessEvent(quotaDb, { site: "boss", action: "communication_visit", createdAt: "2030-01-01T16:00:00.001Z" });
     assert.deepStrictEqual(communicationQuotaSnapshot(quotaDb, { now }), { limit: 150, used: 149, reserved: 0, remaining: 1 });
-    createCommunicationBatch(quotaDb, { planId, jobIds: [firstId], browserMode: "edge", now });
+    const firstBatch = createCommunicationBatch(quotaDb, { planId, jobIds: [firstId], browserMode: "edge", now });
     assert.deepStrictEqual(communicationQuotaSnapshot(quotaDb, { now }), { limit: 150, used: 149, reserved: 1, remaining: 0 });
+    setCommunicationBatchStatus(quotaDb, { batchId: firstBatch.id, status: "running", now });
+    assert.strictEqual(touchCommunicationBatch(quotaDb, firstBatch.id, "2030-01-02T00:01:00.000Z"), 1);
+    assert.strictEqual(getCommunicationBatch(quotaDb, firstBatch.id).updatedAt, "2030-01-02T00:01:00.000Z");
+    const firstItem = listCommunicationBatchItems(quotaDb, firstBatch.id)[0];
+    recordSiteAccessEvent(quotaDb, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: now,
+      details: { batchId: firstBatch.id, itemId: firstItem.id, jobId: firstId }
+    });
+    assert.deepStrictEqual(communicationQuotaSnapshot(quotaDb, { now }), { limit: 150, used: 150, reserved: 0, remaining: 0 });
     assert.throws(
       () => createCommunicationBatch(secondRequestDb, { planId, jobIds: [secondId], browserMode: "edge", now }),
       (error) => error.code === "COMMUNICATION_QUOTA_EXHAUSTED"
@@ -315,6 +328,28 @@ function quotaReservationAtomicitySmoke() {
     quotaDb.close();
     secondRequestDb.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function communicationNaturalDayResetSmoke() {
+  const database = openDb(":memory:");
+  try {
+    const now = "2030-01-02T16:01:00.000Z";
+    for (let index = 0; index < 150; index += 1) {
+      recordSiteAccessEvent(database, {
+        site: "boss",
+        action: "communication_visit",
+        createdAt: `2030-01-02T15:59:59.${String(index).padStart(3, "0")}Z`
+      });
+    }
+    assert.deepStrictEqual(communicationQuotaSnapshot(database, { now }), {
+      limit: 150,
+      used: 0,
+      reserved: 0,
+      remaining: 150
+    });
+  } finally {
+    database.close();
   }
 }
 

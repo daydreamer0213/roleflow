@@ -8,7 +8,7 @@
       "baseUrl": "https://api.openai.com/v1",
       "apiKeyEnv": "OPENAI_API_KEY",
       "model": "gpt-4.1-mini",
-      "timeoutMs": 30000
+      "timeoutMs": 60000
     }
   }
 }

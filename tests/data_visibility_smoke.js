@@ -185,7 +185,9 @@ function planPolicyUiSmoke({ planId }) {
   }
 
   assert.deepStrictEqual(calls, [["B", PRODUCT_POLICY.dailyScan.maxCards]], "B 类预览必须调用 BOSS 加权卡片上限");
-  assert(html.includes("A/B 每词最多 " + PRODUCT_POLICY.dailyScan.maxCards + "/17 张卡片"));
+  assert(html.includes("A/B 主档每词最多 " + PRODUCT_POLICY.dailyScan.maxCards + "/17 张卡片"));
+  assert(html.includes("补充档最多 " + PRODUCT_POLICY.dailyScan.supplementalSalaryLaneCardLimit + " 张卡片和 "
+    + PRODUCT_POLICY.dailyScan.supplementalSalaryLaneDetailLimit + " 个新详情"));
   assert(html.includes("招聘方近 3 天活跃"), "活跃有效期必须显示当前计划值");
   const policy = PRODUCT_POLICY.searchPlan;
   for (const [name, bounds, fallback] of [

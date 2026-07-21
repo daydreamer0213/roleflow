@@ -6,6 +6,7 @@ const { secretPath, hasSecret, saveSecret, loadSecret, inspectSecret, clearSecre
 
 const SETTINGS_RELATIVE_PATH = path.join(".runtime", "settings", "model.json");
 const SECRET_ID = "model-api-key";
+const DEFAULT_MODEL_TIMEOUT_MS = 60000;
 
 const MODEL_PRESETS = {
   deepseek: {
@@ -293,8 +294,8 @@ function normalizeBaseUrl(value) {
 }
 
 function normalizeTimeout(value) {
-  const number = Number(value || 30000);
-  if (!Number.isFinite(number)) return 30000;
+  const number = Number(value || DEFAULT_MODEL_TIMEOUT_MS);
+  if (!Number.isFinite(number)) return DEFAULT_MODEL_TIMEOUT_MS;
   return Math.max(3000, Math.min(120000, Math.round(number)));
 }
 

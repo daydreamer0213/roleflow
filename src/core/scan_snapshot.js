@@ -1,11 +1,12 @@
 const { stableHash } = require("./analysis_revision");
 const { buildBossScanTargets } = require("../adapters/sites/boss");
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const PAYLOAD_FIELDS = [
   "site",
   "scanKind",
   "runtimePolicyHash",
+  "searchTemplate",
   "cityScopes",
   "keywordPlan",
   "nativeFilters",
@@ -24,13 +25,17 @@ function buildScanExecutionSnapshot(input = {}) {
     priority: String(typeof item === "string" ? "B" : item?.priority || "B")
   })).filter((item) => item.word);
   const nativeFilters = normalizeExecutionFilters(input.nativeFilters);
+  const searchTemplate = normalizeSearchTemplate(input.searchTemplate);
   const limits = normalizeExecutionLimits(input.limits);
   const targets = buildBossScanTargets({
     keywords: keywordPlan.map((item) => typeof item === "string" ? item : item?.word).filter(Boolean),
     keywordPlan,
     cityScopes,
     nativeFilters,
-    maxCards: limits.maxCards
+    maxCards: limits.maxCards,
+    supplementalSalaryLaneKeywordLimit: limits.supplementalSalaryLaneKeywordLimit,
+    supplementalSalaryLaneCardLimit: limits.supplementalSalaryLaneCardLimit,
+    supplementalSalaryLaneDetailLimit: limits.supplementalSalaryLaneDetailLimit
   }).map((target) => ({
     targetKey: target.targetKey,
     cityCode: target.city.cityCode,
@@ -45,6 +50,7 @@ function buildScanExecutionSnapshot(input = {}) {
     site: String(input.site || "boss").trim().toLowerCase(),
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
+    searchTemplate,
     cityScopes,
     keywordPlan,
     nativeFilters,
@@ -52,6 +58,14 @@ function buildScanExecutionSnapshot(input = {}) {
     targets
   };
   return { ...snapshot, snapshotHash: stableHash(deterministicPayload(snapshot)) };
+}
+
+function normalizeSearchTemplate(value = {}) {
+  return cloneJson({
+    mode: value?.mode === "inherited" ? "inherited" : "generated",
+    url: String(value?.url || ""),
+    cityCode: String(value?.cityCode || "")
+  });
 }
 
 function assertScanSnapshotCompatible(stored, current) {
@@ -178,8 +192,16 @@ function normalizeExecutionLimits(value = {}) {
     maxCards: Number(value?.maxCards || 0),
     maxDetailTotal: Number(value?.maxDetailTotal || 0),
     browserPageBudget: Number(value?.browserPageBudget || 0),
-    detailLimits: value?.detailLimits || null
+    detailLimits: value?.detailLimits || null,
+    supplementalSalaryLaneKeywordLimit: nullableNumber(value?.supplementalSalaryLaneKeywordLimit),
+    supplementalSalaryLaneCardLimit: nullableNumber(value?.supplementalSalaryLaneCardLimit),
+    supplementalSalaryLaneDetailLimit: nullableNumber(value?.supplementalSalaryLaneDetailLimit)
   });
+}
+
+function nullableNumber(value) {
+  const number = Number(value);
+  return value === null || value === undefined || !Number.isFinite(number) ? null : number;
 }
 
 function comparableHash(value) {

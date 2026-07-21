@@ -88,11 +88,48 @@ async function normalModeSmoke() {
   db.close();
 }
 
+async function naturalDayResetSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-22T00:01:00+08:00");
+  for (let index = 0; index < 16; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "list_navigation",
+      createdAt: new Date(Date.parse("2026-07-21T23:59:00+08:00") + index).toISOString()
+    });
+  }
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  const result = await controller.reserve("list_navigation", { keyword: "RAG" });
+  assert.strictEqual(result.usage["24h"], 1, "previous China-local day must not consume today's quota");
+  db.close();
+}
+
+async function naturalDayRetryAtSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T23:59:00+08:00");
+  for (let index = 0; index < 16; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "list_navigation",
+      createdAt: new Date(now - 60_000 + index).toISOString()
+    });
+  }
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  await assert.rejects(
+    () => controller.reserve("list_navigation"),
+    (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      && error.window === "24h"
+      && error.limit === 16
+      && error.retryAt === "2026-07-21T16:00:00.000Z"
+  );
+  db.close();
+}
+
 function configuredDetailBudgetsSmoke() {
   assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.pane_detail_read, {
     "10m": 45,
     "1h": 240,
-    "24h": 280
+    "24h": 360
   });
   assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.pane_detail_read, {
     "10m": 20,
@@ -111,12 +148,14 @@ function configuredDetailBudgetsSmoke() {
   });
   assert.strictEqual(PRODUCT_POLICY.dailyScan.maxDetailTotal, 240);
   assert.deepStrictEqual(PRODUCT_POLICY.dailyScan.detailLimits, { A: 45, B: 30 });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.list_navigation, { "24h": 16 });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.list_scroll, { "24h": 120 });
 }
 
 async function paneDetailDailyStopSmoke() {
   const db = openDb(":memory:");
   const now = Date.parse("2026-07-21T12:00:00+08:00");
-  for (let index = 0; index < 280; index += 1) {
+  for (let index = 0; index < 360; index += 1) {
     recordSiteAccessEvent(db, {
       site: "boss",
       action: "pane_detail_read",
@@ -128,7 +167,7 @@ async function paneDetailDailyStopSmoke() {
     () => controller.reserve("pane_detail_read"),
     (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
       && error.window === "24h"
-      && error.limit === 280
+      && error.limit === 360
       && error.message.includes("右栏详情")
   );
   db.close();
@@ -324,6 +363,24 @@ async function communicationDailyBudgetSmoke() {
   db.close();
 }
 
+async function communicationReservationIsIdempotentSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  const details = { batchId: 7, itemId: 99, jobId: 12 };
+  const first = await controller.reserve("communication_visit", details);
+  const second = await controller.reserve("communication_visit", details);
+  assert.strictEqual(first.reused, false);
+  assert.strictEqual(second.reused, true);
+  assert.strictEqual(second.usage["24h"], 1);
+  assert.strictEqual(listSiteAccessEvents(db, {
+    site: "boss",
+    action: "communication_visit",
+    since: new Date(now - 1000).toISOString()
+  }).length, 1);
+  db.close();
+}
+
 async function transactionBoundarySmoke() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-access-transaction-"));
   const dbPath = path.join(root, "jobs.sqlite");
@@ -444,6 +501,8 @@ Promise.resolve()
   .then(rollingWindowSmoke)
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
+  .then(naturalDayResetSmoke)
+  .then(naturalDayRetryAtSmoke)
   .then(configuredDetailBudgetsSmoke)
   .then(paneDetailDailyStopSmoke)
   .then(abortDuringWindowWaitSmoke)
@@ -452,6 +511,7 @@ Promise.resolve()
   .then(communicationWindowBoundarySmoke)
   .then(communicationUsesControllerPolicySmoke)
   .then(communicationDailyBudgetSmoke)
+  .then(communicationReservationIsIdempotentSmoke)
   .then(transactionBoundarySmoke)
   .then(filteredLedgerLimitSmoke)
   .then(() => console.log("site_access_budget_smoke ok"))

@@ -53,6 +53,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
       connectionTester: verified,
       input: { preset: "deepseek", model: "deepseek-v4-pro", apiKey: "deepseek-key-not-public" }
     });
+    assert.strictEqual(deepseek.settings.timeoutMs, 60000);
     const deepseekSecretId = secretIdForSettings(deepseek.settings);
     assert.notStrictEqual(deepseekSecretId, qwenSecretId);
     assert.strictEqual(loadSecret(root, deepseekSecretId), "deepseek-key-not-public");

@@ -8,6 +8,7 @@ const {
 } = require("./storage");
 const { isBossJobUrl } = require("./scoring");
 const { PRODUCT_POLICY } = require("./product_policy");
+const { chinaDayStartMs } = require("./site_access_budget");
 const { listWorkflowReviewCandidates, reconcileCommunicationOutcome } = require("./workflow_inventory");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
@@ -127,6 +128,12 @@ function createCommunicationBatch(db, input = {}) {
 function getCommunicationBatch(db, batchId) {
   const row = db.prepare("SELECT * FROM communication_batches WHERE id = ?").get(positiveInteger(batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required"));
   return row ? batchRow(row) : null;
+}
+
+function touchCommunicationBatch(db, batchId, now = new Date().toISOString()) {
+  const id = positiveInteger(batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required");
+  return Number(db.prepare(`UPDATE communication_batches SET updated_at = ?
+    WHERE id = ? AND status IN ('running', 'stopping')`).run(timestamp(now), id).changes);
 }
 
 function listCommunicationBatchItems(db, batchId) {
@@ -422,18 +429,28 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
 function communicationQuotaSnapshot(db, { now } = {}) {
   const at = timestamp(now);
   const endMs = Date.parse(at);
-  const startMs = endMs - 24 * 60 * 60 * 1000;
+  const startMs = chinaDayStartMs(endMs);
   const since = new Date(startMs).toISOString();
   const used = listSiteAccessEvents(db, { site: "boss", action: "communication_visit", since })
     .filter((event) => {
       const eventMs = Date.parse(event.createdAt);
-      return Number.isFinite(eventMs) && eventMs > startMs && eventMs <= endMs;
+      return Number.isFinite(eventMs) && eventMs >= startMs && eventMs <= endMs;
     }).length;
   const reserved = Number(db.prepare(`SELECT COUNT(*) AS count
     FROM communication_batch_items items
     JOIN communication_batches batches ON batches.id = items.batch_id
     WHERE batches.status IN ('confirmed', 'running', 'paused', 'stopping')
-      AND items.status IN ('pending', 'opening', 'verified', 'click_dispatched')`).get().count);
+      AND items.status IN ('pending', 'opening', 'verified', 'click_dispatched')
+      AND NOT EXISTS (
+        SELECT 1 FROM events access_events
+        WHERE access_events.event_type = 'site_access'
+          AND access_events.created_at >= ?
+          AND access_events.created_at <= ?
+          AND json_extract(access_events.payload_json, '$.site') = 'boss'
+          AND json_extract(access_events.payload_json, '$.action') = 'communication_visit'
+          AND json_extract(access_events.payload_json, '$.batchId') = batches.id
+          AND json_extract(access_events.payload_json, '$.itemId') = items.id
+      )`).get(since, at).count);
   const limit = Number(PRODUCT_POLICY.operations.bossCommunication.limits["24h"]);
   return { limit, used, reserved, remaining: Math.max(0, limit - used - reserved) };
 }
@@ -553,6 +570,7 @@ module.exports = {
   TERMINAL_ITEM_STATUSES,
   createCommunicationBatch,
   getCommunicationBatch,
+  touchCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
   resumeInterruptedCommunicationBatch,

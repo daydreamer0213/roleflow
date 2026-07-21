@@ -23,6 +23,7 @@ const {
   getPlatformFilterCatalog,
   getSiteRuntimeState,
   getSiteScanLease,
+  listSiteAccessEvents,
   createScanRun,
   createWorkflowRun,
   getWorkflowRun,
@@ -82,6 +83,7 @@ const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = 
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
+const { mapWithConcurrency } = require("../core/async_pool");
 const { chinaLocalDay, planWorkflowRun, consumedWorkflowBudget, recoverWorkflowRuns } = require("../core/workflow_run");
 const {
   workflowEligibility,
@@ -142,6 +144,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
@@ -198,42 +201,89 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
   }
 }
 
-async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId }) {
+async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false }) {
   let planId = 0;
   try {
     if (!modelReady) throw new Error("重试语义分析前，请先让当前模型通过连接测试。");
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId);
-    const jobId = Number(params.jobId);
     const plan = getSearchPlan(db, planId);
     if (!plan) throw new Error("Search Plan 不存在。");
     const profile = getCandidateProfile(db, plan.profileId);
     if (!profile) throw new Error("候选人画像不存在。");
-    const job = listDecisionPool(db, { planId }).find((item) => item.id === jobId);
-    if (!job) throw new Error("岗位不存在或不属于当前筛选方案。");
+    const pool = listDecisionPool(db, { planId });
+    const requestedJobId = Number(params.jobId);
+    const jobs = bulk
+      ? pool.filter((job) => job.decisionBucket === "analysis_pending" && isJobAwaitingAction(job))
+        .slice(0, PRODUCT_POLICY.operations.modelAnalysis.maxRetryJobs)
+      : pool.filter((job) => job.id === requestedJobId);
+    if (!jobs.length) throw new Error(bulk ? "当前没有待重试的语义分析岗位。" : "岗位不存在或不属于当前筛选方案。");
     const baseConfigs = loadConfigs(root);
     baseConfigs.model = modelConfig;
     const configs = profileToRuntimeConfigs(baseConfigs, profile.profile, plan.plan, listCandidateResumeVersions(db, profile.id));
-    const scored = scoreJob(job, configs);
-    if (decisionState(scored) !== "ready") throw new Error("岗位详情或活跃状态仍未补全，请先处理来源信息。");
     const analyze = createJobAnalysisRunner(configs, plan.plan.keywords || [], { db, logger });
-    const analysis = await analyze({ ...job, ...scored, greeting: job.greeting || "" });
-    const batchId = createBatch(db, job.source || "boss", "analysis-retry", `analysis-retry:plan:${planId}:job:${jobId}`, {
+    const batchId = createBatch(db, jobs[0].source || "boss", bulk ? "analysis-retry-bulk" : "analysis-retry", bulk
+      ? `analysis-retry-bulk:plan:${planId}:jobs:${jobs.length}`
+      : `analysis-retry:plan:${planId}:job:${jobs[0].id}`, {
       profileId: profile.id,
       searchPlanId: planId,
-      filterSnapshot: { mode: "analysis-retry", jobId }
+      filterSnapshot: { mode: bulk ? "analysis-retry-bulk" : "analysis-retry", jobIds: jobs.map((job) => job.id) }
     });
-    upsertJob(db, { ...job, ...scored, analysis, greeting: job.greeting || "" }, batchId);
-    logger.info("job_analysis_retried", { requestId, planId, jobId, batchId, semanticStatus: analysis.semanticStatus, provider: analysis.provider, model: analysis.model });
-    if (analysis.semanticStatus === "failed") {
+    const retryConcurrency = bulk ? PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency : 1;
+    const results = await mapWithConcurrency(jobs, retryConcurrency, async (job) => {
+      const scored = scoreJob(job, configs);
+      if (decisionState(scored) !== "ready") return { job, scored, sourcePending: true, analysis: job.analysis };
+      const analysis = await analyze({ ...job, ...scored, greeting: job.greeting || "" });
+      return { job, scored, sourcePending: false, analysis };
+    });
+    let completed = 0;
+    let failed = 0;
+    let sourcePending = 0;
+    for (const result of results) {
+      if (result.sourcePending) {
+        sourcePending += 1;
+        continue;
+      }
+      upsertJob(db, { ...result.job, ...result.scored, analysis: result.analysis, greeting: result.job.greeting || "" }, batchId);
+      if (result.analysis.semanticStatus === "failed") failed += 1;
+      else completed += 1;
+    }
+    reconcilePlanWorkflowInventory(db, planId);
+    logger.info(bulk ? "job_analysis_bulk_retried" : "job_analysis_retried", {
+      requestId,
+      planId,
+      jobIds: jobs.map((job) => job.id),
+      batchId,
+      requested: jobs.length,
+      completed,
+      failed,
+      sourcePending,
+      concurrency: retryConcurrency
+    });
+    if (!bulk && failed) {
+      const analysis = results[0].analysis;
       const error = new Error(analysis.error || "语义分析仍未完成，请稍后重试。");
       error.code = analysis.errorCode || "MODEL_ANALYSIS_FAILED";
       throw error;
     }
-    redirect(res, `/queue?planId=${planId}`);
+    redirect(res, `/queue?planId=${planId}${failed || sourcePending ? "&pool=analysis_pending" : ""}`);
   } catch (error) {
     respondUiError(res, error, planId ? `/queue?planId=${planId}&pool=analysis_pending` : "/", { logger, requestId, event: "job_analysis_retry_failed", fallbackCode: "JOB_ANALYSIS_RETRY_FAILED" });
   }
+}
+
+function reconcilePlanWorkflowInventory(db, planId) {
+  const inventoryCount = listWorkflowInventory(db, { planId }).length;
+  for (const workflow of listWorkflowRuns(db, {
+    planId,
+    localDay: chinaLocalDay(),
+    statuses: ["review_required", "interrupted"],
+    limit: 500
+  })) {
+    if (workflow.inventoryCount === inventoryCount) continue;
+    transitionWorkflowRun(db, { id: workflow.id, status: workflow.status, inventoryCount });
+  }
+  return inventoryCount;
 }
 
 function redirectHome(res, db) {
@@ -594,7 +644,8 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
   });
   const successfulToday = runs.reduce((sum, run) => sum + Number(run.successfulCount || 0), 0);
   const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
-  const usedBudget = consumedWorkflowBudget(runs);
+  const budgetRuns = workflowRunsWithAccessUsage(db, runs, localDay);
+  const usedBudget = consumedWorkflowBudget(budgetRuns);
   const usedKeywords = new Set(runs.flatMap((run) => run.keywords || []).map((item) => String(item.word || item)));
   const jobs = listDecisionPool(db, { planId: planRecord.id });
   const keywordStats = new Map();
@@ -619,6 +670,12 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
     };
   }).filter((item) => item.word);
   const policy = PRODUCT_POLICY.operations.workflow;
+  const lastScanStartedAt = budgetRuns
+    .filter((run) => run.scanNeeded && run.scanRunId)
+    .map((run) => run.startedAt || run.createdAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
   const nextPlan = activeRun ? null : planWorkflowRun({
     now,
     localDay,
@@ -626,10 +683,11 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
     completedRuns: runs.length,
     inventoryCount: inventory.length,
     dailyBudget: {
-      details: PRODUCT_POLICY.dailyScan.maxDetailTotal,
-      pages: PRODUCT_POLICY.dailyScan.browserPageBudget
+      details: policy.dailyDetailBudget,
+      pages: policy.dailyPageBudget
     },
     usedBudget,
+    lastScanStartedAt,
     keywords
   });
   return {
@@ -643,12 +701,30 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
     inventory,
     usedBudget,
     remainingBudget: {
-      details: Math.max(0, PRODUCT_POLICY.dailyScan.maxDetailTotal - usedBudget.details),
-      pages: Math.max(0, PRODUCT_POLICY.dailyScan.browserPageBudget - usedBudget.pages)
+      details: Math.max(0, policy.dailyDetailBudget - usedBudget.details),
+      pages: Math.max(0, policy.dailyPageBudget - usedBudget.pages)
     },
     nextPlan,
     keywords
   };
+}
+
+function workflowRunsWithAccessUsage(db, runs, localDay) {
+  const since = new Date(`${localDay}T00:00:00+08:00`).toISOString();
+  const usageByRun = new Map();
+  for (const event of listSiteAccessEvents(db, { site: "boss", since, limit: 10000 })) {
+    const runId = String(event.details?.runId || "").trim();
+    if (!runId || !["pane_detail_read", "list_navigation", "list_scroll"].includes(event.action)) continue;
+    const usage = usageByRun.get(runId) || { details: 0, pages: 0, scrolls: 0 };
+    if (event.action === "pane_detail_read") usage.details += 1;
+    if (event.action === "list_navigation") usage.pages += 1;
+    if (event.action === "list_scroll") usage.scrolls += 1;
+    usageByRun.set(runId, usage);
+  }
+  return runs.map((run) => {
+    const access = usageByRun.get(String(run.scanRunId || ""));
+    return access ? { ...run, metrics: { ...(run.metrics || {}), access } } : run;
+  });
 }
 
 async function handleWorkflowRunStart(req, res, {
@@ -672,7 +748,7 @@ async function handleWorkflowRunStart(req, res, {
     const state = buildWorkflowDashboardState(db, plan);
     if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
     if (state.nextPlan?.errorCode) {
-      throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode), { statusCode: 409 });
+      throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
     }
     if (state.nextPlan.scanNeeded && !modelReady) {
       throw appError("MODEL_CONFIGURATION_REQUIRED", "执行新一轮前，请先完成模型连接测试。", { statusCode: 409 });
@@ -827,10 +903,14 @@ function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
   });
 }
 
-function workflowBlockedMessage(code) {
+function workflowBlockedMessage(code, plan = {}) {
   return {
-    WORKFLOW_DAILY_RUN_LIMIT: "今天的两轮任务都已创建。",
-    WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。"
+    WORKFLOW_DAILY_RUN_LIMIT: "今天的三轮任务都已创建。",
+    WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。",
+    WORKFLOW_THIRD_SCAN_NOT_NEEDED: "当前候选库存已足够，不需要追加第三轮扫描。",
+    WORKFLOW_SCAN_INTERVAL: plan.nextRunAt
+      ? `两轮扫描至少间隔 2 小时，下次可在 ${new Date(plan.nextRunAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 开始。`
+      : "两轮扫描至少间隔 2 小时。"
   }[code] || "当前不能创建新一轮。";
 }
 
@@ -1705,7 +1785,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const presets = listModelPresets({ includeAdvanced: showAdvanced });
   const firstSetup = modelState.source === "legacy" && storedSettings.provider === "mock" && !modelState.keyConfigured;
   const settings = firstSetup
-    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 30000 }
+    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000 }
     : storedSettings;
   const selectedPreset = presets.find((item) => item.id === settings.preset) || presets.find((item) => item.id === "custom");
   const presetOptions = presets.map((preset) => {
@@ -1741,7 +1821,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     '      <label class="settings-field">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="' + (modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key") + '"><small>密钥状态：' + keyStatus + '。</small></label>',
     '      <div class="settings-field"><strong>连接状态</strong><small>' + escapeHtml(connectionStatus) + "</small></div>",
     "    </div>",
-    '    <details class="plan-advanced"><summary>高级设置</summary><div class="settings-grid" style="margin-top:14px"><label class="settings-field settings-field-wide">兼容接口基础地址<input id="model-base-url" name="baseUrl" type="url" value="' + escapeAttr(settings.baseUrl || "") + '" placeholder="https://..."' + (selectedPreset.id === "custom" ? "" : " readonly") + '><small>预设厂商自动填充；自定义兼容接口可编辑。</small></label><label class="settings-field">请求超时（毫秒）<input name="timeoutMs" type="number" min="3000" max="120000" value="' + escapeAttr(settings.timeoutMs || 30000) + '"></label><label class="checkbox settings-clear"><input name="clearApiKey" type="checkbox">删除当前厂商密钥</label></div></details>',
+    '    <details class="plan-advanced"><summary>高级设置</summary><div class="settings-grid" style="margin-top:14px"><label class="settings-field settings-field-wide">兼容接口基础地址<input id="model-base-url" name="baseUrl" type="url" value="' + escapeAttr(settings.baseUrl || "") + '" placeholder="https://..."' + (selectedPreset.id === "custom" ? "" : " readonly") + '><small>预设厂商自动填充；自定义兼容接口可编辑。</small></label><label class="settings-field">请求超时（毫秒）<input name="timeoutMs" type="number" min="3000" max="120000" value="' + escapeAttr(settings.timeoutMs || 60000) + '"></label><label class="checkbox settings-clear"><input name="clearApiKey" type="checkbox">删除当前厂商密钥</label></div></details>',
     '    <div class="settings-security"><strong>本机安全存储</strong><span>API Key 仅按当前 Windows 用户加密保存，不进入配置文件、日志、数据库或绿色发布包。</span></div>',
     '    <div class="settings-actions"><button>测试连接并保存</button></div>',
     "  </form>",
@@ -1877,12 +1957,12 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
     <p class="plan-note">岗位质量会自动优先保留招聘方近 ${escapeHtml(plan.bossActiveDays)} 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
     <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
-    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="${scanBounds.maxCards[0]}" max="${scanBounds.maxCards[1]}" name="maxCards" value="${escapeAttr(plan.scan.maxCards ?? scanDefaults.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="${scanBounds.maxDetailTotal[0]}" max="${scanBounds.maxDetailTotal[1]}" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal ?? scanDefaults.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="${scanBounds.browserPageBudget[0]}" max="${scanBounds.browserPageBudget[1]}" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget ?? scanDefaults.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词、首选薪资档、每个 A 词最多 ${dailyScan.maxCards} 张卡片和 ${dailyScan.maxDetailTotal} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
+    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="${scanBounds.maxCards[0]}" max="${scanBounds.maxCards[1]}" name="maxCards" value="${escapeAttr(plan.scan.maxCards ?? scanDefaults.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="${scanBounds.maxDetailTotal[0]}" max="${scanBounds.maxDetailTotal[1]}" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal ?? scanDefaults.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="${scanBounds.browserPageBudget[0]}" max="${scanBounds.browserPageBudget[1]}" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget ?? scanDefaults.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词，主薪资档覆盖全部关键词，补充薪资档只覆盖最高优先关键词；每个 A 词最多 ${dailyScan.maxCards} 张主档卡片，补充档最多 ${dailyScan.supplementalSalaryLaneCardLimit} 张卡片和 ${dailyScan.supplementalSalaryLaneDetailLimit} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
     <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
   </form></details>
   <details class="panel legacy-operations"><summary>高级扫描与维护</summary><section class="scan-panel">
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
-    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词、首选薪资档、A/B 每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
+    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词，主薪资档全部覆盖，补充薪资档仅覆盖前 ${dailyScan.supplementalSalaryLaneKeywordLimit} 个关键词；A/B 主档每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，补充档最多 ${dailyScan.supplementalSalaryLaneCardLimit} 张卡片和 ${dailyScan.supplementalSalaryLaneDetailLimit} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
     <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section></details>
@@ -1903,7 +1983,7 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
           <select name="browserMode" aria-label="浏览器"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select>
           <button class="workflow-primary" name="action" value="start"${disabled ? " disabled" : ""}>执行一轮</button>
         </form>`;
-  const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode) : "可以开始新一轮";
+  const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode, next) : "可以开始新一轮";
   return `<section class="workflow-launch" aria-labelledby="workflow-launch-title">
     <div class="workflow-launch-head"><div><p class="workflow-kicker">今日求职任务</p><h2 id="workflow-launch-title">${escapeHtml(status)}</h2></div>${action}</div>
     <div class="workflow-metrics">
@@ -1947,8 +2027,12 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
     logger.warn("workflow_page_reconciled", { workflowRunId, ...recovery });
   }
-  const workflow = getWorkflowRun(db, workflowRunId);
+  let workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) return renderErrorPage("本轮任务不存在。", "/plan", { code: "WORKFLOW_RUN_NOT_FOUND" });
+  if (["review_required", "interrupted"].includes(workflow.status)) {
+    reconcilePlanWorkflowInventory(db, workflow.planId);
+    workflow = getWorkflowRun(db, workflowRunId);
+  }
   const plan = getSearchPlan(db, workflow.planId);
   if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
   const daily = buildWorkflowDashboardState(db, plan);
@@ -2006,7 +2090,7 @@ function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
     return `<label class="workflow-job"><input type="checkbox" name="jobIds" value="${job.id}"${job.defaultChecked ? " checked" : ""}><span class="workflow-job-main"><strong><a href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a></strong><span class="workflow-job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.salary || "薪资待确认")} · ${escapeHtml(job.experience || "经验待确认")} · ${escapeHtml(compactScheduleLabel(job.analysis))}</span><span class="workflow-job-reason">${escapeHtml(fitReason)}</span></span><span class="workflow-tier ${escapeAttr(job.workflowTier)}">${escapeHtml(workflowTierLabel(job.workflowTier))}</span></label>`;
   }).join("") || `<p class="hint">本轮没有满足有效期、详情和匹配证据要求的候选。</p>`;
   const blocked = Boolean(runtimeBlock) || quota.remaining <= 0 || defaultCount === 0 || defaultCount > quota.remaining;
-  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；默认勾选 ${defaultCount} 个，包含补位项。高薪备选仅展示，不会默认勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="edge"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 24 小时剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
+  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；默认勾选 ${defaultCount} 个，包含补位项。高薪备选仅展示，不会默认勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="edge"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 今日剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
 }
 
 function renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock) {
@@ -2263,7 +2347,7 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge">当前 Edge</option><option value="portable">项目专用 Edge</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
 }
 
 function renderCommunicationReviewPage({ db, searchParams }) {
@@ -2283,7 +2367,7 @@ function renderCommunicationReviewPage({ db, searchParams }) {
   const discardControl = ["confirmed", "paused"].includes(batch.status)
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form>` : "";
   const calibrationNotice = calibration.executionEnabled ? "" : `<p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>`;
-  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>24 小时额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
 }
 
 function compactAwaitingAction(job) {
@@ -2299,10 +2383,13 @@ function queueScopeForJob(job, latestMainBatchId) {
 
 function renderCompactDashboard(data) {
   const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "" } = data;
+  const analysisRetry = queue?.pool === "analysis_pending" && Number(queue.counts.analysis_pending || 0) > 0
+    ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
+    : "";
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
 body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.talk{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.backup{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
 <nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
-${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}
+  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${analysisRetry}
 ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
 }
 

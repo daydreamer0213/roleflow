@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-20.4";
+const PRODUCT_POLICY_VERSION = "2026-07-21.4";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -28,13 +28,29 @@ const PRODUCT_POLICY = Object.freeze({
     maxDetailTotal: 240,
     browserPageBudget: 40,
     detailLimits: Object.freeze({ A: 45, B: 30 }),
-    salaryLaneLimit: 1
+    salaryLaneLimit: 2,
+    supplementalSalaryLaneKeywordLimit: 1,
+    supplementalSalaryLaneCardLimit: 20,
+    supplementalSalaryLaneDetailLimit: 10
   }),
   operations: Object.freeze({
+    modelAnalysis: Object.freeze({
+      scanConcurrency: 3,
+      retryConcurrency: 2,
+      maxRetryJobs: 50
+    }),
     workflow: Object.freeze({
       dailyTarget: 70,
-      maxRunsPerDay: 2,
+      maxRunsPerDay: 3,
+      primaryRunsPerDay: 2,
       maxRunTarget: 40,
+      maxRunDetailBudget: 120,
+      maxRunPageBudget: 20,
+      dailyDetailBudget: 360,
+      dailyPageBudget: 60,
+      minRunIntervalMinutes: 120,
+      thirdRunInventoryFloor: 30,
+      thirdRunMinCandidateGap: 8,
       replacementBuffer: 5,
       fallbackYield: 0.2,
       minimumYieldSample: 20,
@@ -42,6 +58,7 @@ const PRODUCT_POLICY = Object.freeze({
     }),
     detailCacheMaxAgeDays: 3,
     scanHeartbeatMs: 60_000,
+    communicationHeartbeatMs: 60_000,
     scanLeaseTtlMs: 10 * 60_000,
     scanLeaseMinTtlMs: 60_000,
     scanOrphanTimeoutMs: 120_000,
@@ -87,11 +104,11 @@ const PRODUCT_POLICY = Object.freeze({
           list_scroll: Object.freeze({ "24h": 60 })
         }),
         normal: Object.freeze({
-          pane_detail_read: Object.freeze({ "10m": 45, "1h": 240, "24h": 280 }),
+          pane_detail_read: Object.freeze({ "10m": 45, "1h": 240, "24h": 360 }),
           detail_open: Object.freeze({ "10m": 8, "1h": 25, "24h": 60 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
-          list_navigation: Object.freeze({ "24h": 10 }),
-          list_scroll: Object.freeze({ "24h": 80 })
+          list_navigation: Object.freeze({ "24h": 16 }),
+          list_scroll: Object.freeze({ "24h": 120 })
         })
       })
     }),

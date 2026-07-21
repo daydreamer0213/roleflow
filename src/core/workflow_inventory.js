@@ -57,6 +57,11 @@ function workflowEligibility(job = {}, context = {}) {
   if (!["complete", "partial"].includes(semanticStatus)) {
     return ineligible("WORKFLOW_ANALYSIS_INCOMPLETE");
   }
+  if (String(job.analysis?.fitLevel || "").toUpperCase() === "D"
+    || String(job.analysis?.recommendation || "").toLowerCase() === "skip"
+    || (job.analysis?.hardBlockers || []).length) {
+    return ineligible("WORKFLOW_ANALYSIS_REJECTED");
+  }
   const bucket = job.decisionBucket || decisionBucket(job);
   if (bucket === "primary" || bucket === "talk") {
     return { eligible: true, tier: bucket, reasonCode: "" };

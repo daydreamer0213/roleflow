@@ -5,6 +5,10 @@ data/*.sqlite-*
 data/backups/
 reports/*.html
 reports/*.md
+logs/
+portfolio-evidence/
+docs/data_baseline.md
+docs/session_checkpoint.md
 profiles/guo_mingfu.json
 profiles/resume_versions.json
 configs/profile.yaml

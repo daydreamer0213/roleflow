@@ -17,7 +17,8 @@ try {
     [
       { version: 1, name: "stable_scan_runtime", backup_path: null },
       { version: 2, name: "communication_batches_v1", backup_path: null },
-      { version: 3, name: "workflow_runs_v1", backup_path: null }
+      { version: 3, name: "workflow_runs_v1", backup_path: null },
+      { version: 4, name: "workflow_runs_three_slots", backup_path: null }
     ]
   );
   assert.strictEqual(
@@ -45,7 +46,7 @@ try {
     DROP TABLE communication_batch_items;
     DROP TABLE communication_batches;
     DROP TABLE workflow_runs;
-    DELETE FROM schema_migrations WHERE version IN (2, 3);
+    DELETE FROM schema_migrations WHERE version IN (2, 3, 4);
     PRAGMA user_version = 1;
   `);
   db.close();
@@ -57,7 +58,8 @@ try {
     [
       { version: 1, name: "stable_scan_runtime" },
       { version: 2, name: "communication_batches_v1" },
-      { version: 3, name: "workflow_runs_v1" }
+      { version: 3, name: "workflow_runs_v1" },
+      { version: 4, name: "workflow_runs_three_slots" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -219,12 +221,12 @@ try {
   };
   db.exec(`
     DROP TABLE workflow_runs;
-    DELETE FROM schema_migrations WHERE version = 3;
+    DELETE FROM schema_migrations WHERE version IN (3, 4);
     PRAGMA user_version = 2;
   `);
   db.close();
   db = openDb(productionV2Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 3);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM jobs").get().count, v2Counts.jobs);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM candidate_job_states").get().count, v2Counts.states);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
@@ -232,6 +234,47 @@ try {
     db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='index' AND name='idx_workflow_runs_active'").get().count,
     1
   );
+  db.close();
+
+  const productionV3Path = path.join(root, "production-v3.sqlite");
+  db = openDb(productionV3Path);
+  const v3ProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('V3 Candidate', '{}', NULL, ?, ?)`).run(v2Now, v2Now).lastInsertRowid);
+  const v3PlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'V3 Plan', '{}', NULL, 1, ?, ?)`).run(v3ProfileId, v2Now, v2Now).lastInsertRowid);
+  db.prepare(`INSERT INTO workflow_runs(
+    id, profile_id, plan_id, local_day, sequence, status, target_success_count,
+    created_at, updated_at
+  ) VALUES ('v3-preserved-workflow', ?, ?, '2026-07-20', 1, 'completed', 35, ?, ?)`)
+    .run(v3ProfileId, v3PlanId, v2Now, v2Now);
+  const workflowSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().sql;
+  db.exec(`
+    DROP INDEX idx_workflow_runs_active;
+    DROP INDEX idx_workflow_runs_daily;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_v4;
+    ${workflowSql.replace("BETWEEN 1 AND 3", "BETWEEN 1 AND 2")};
+    INSERT INTO workflow_runs SELECT * FROM workflow_runs_v4;
+    DROP TABLE workflow_runs_v4;
+    CREATE INDEX idx_workflow_runs_active ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
+    CREATE INDEX idx_workflow_runs_daily ON workflow_runs(profile_id, local_day, sequence);
+    DELETE FROM schema_migrations WHERE version = 4;
+    PRAGMA user_version = 3;
+  `);
+  db.close();
+  db = openDb(productionV3Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  assert.strictEqual(db.prepare("SELECT status FROM workflow_runs WHERE id = 'v3-preserved-workflow'").get().status, "completed");
+  assert.match(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().sql,
+    /sequence BETWEEN 1 AND 3/
+  );
+  db.prepare(`INSERT INTO workflow_runs(
+    id, profile_id, plan_id, local_day, sequence, status, target_success_count,
+    created_at, updated_at
+  ) VALUES ('v3-new-third-slot', ?, ?, '2026-07-21', 3, 'created', 10, ?, ?)`)
+    .run(v3ProfileId, v3PlanId, v2Now, v2Now);
   db.close();
 
   const historicalOutcomePath = path.join(root, "historical-outcome-v2.sqlite");
@@ -259,7 +302,7 @@ try {
     .run(historyBatchId, historyJobId, v2Now, v2Now);
   db.exec(`
     DROP TABLE workflow_runs;
-    DELETE FROM schema_migrations WHERE version = 3;
+    DELETE FROM schema_migrations WHERE version IN (3, 4);
     PRAGMA user_version = 2;
   `);
   db.close();

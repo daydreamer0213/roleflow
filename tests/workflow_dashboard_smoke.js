@@ -7,9 +7,12 @@ const {
   saveProfileAnalysis,
   listWorkflowRuns,
   getWorkflowRun,
+  getLatestScanRun,
+  attachWorkflowScan,
   transitionWorkflowRun,
   createBatch,
-  upsertJob
+  upsertJob,
+  recordSiteAccessEvent
 } = require("../src/core/storage");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { createDashboardServer } = require("../src/dashboard/server");
@@ -89,20 +92,24 @@ let server;
   assert.strictEqual(resumed.location, `/workflow?runId=${workflow.id}`);
   assert.strictEqual(spawns.length, 2);
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
+  const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
   const batchId = createBatch(db, "boss", "workflow-dashboard", "workflow dashboard", {
     profileId: saved.profileId,
     searchPlanId: saved.planId
   });
+  attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
   for (let index = 0; index < 6; index += 1) upsertJob(db, job(index + 1), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
-  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 6 });
+  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
 
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 6);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
+  assert.match(reviewPage.body, /有效候选\s*<strong>6/);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 6);
 
   const selectedIds = listWorkflowReviewCandidates(db, workflow.id)
     .filter((candidate) => candidate.defaultChecked)
@@ -123,6 +130,9 @@ let server;
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
   transitionWorkflowRun(db, { id: workflow.id, status: "completed", successfulCount: 30, shortfallCode: "WORKFLOW_SUPPLY_EXHAUSTED" });
+  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "pane_detail_read"]) {
+    recordSiteAccessEvent(db, { site: "boss", action, runId: resumedScan.id });
+  }
   const completedPage = await getText(baseUrl, confirmed.location);
   assert.match(completedPage.body, /本轮已完成/);
   assert.match(completedPage.body, /今日进度\s*<strong>30\s*\/\s*70/);
@@ -131,8 +141,9 @@ let server;
   const planAfter = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(planAfter.body, /今日进度<\/span><strong>30\s*\/\s*70/);
   assert.match(planAfter.body, /下一轮目标<\/span><strong>40/);
-  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 1);
-  assert.match(planAfter.body, /name="action" value="start" disabled/);
+  assert.match(planAfter.body, /剩余详情读取预算 356 · 剩余搜索页预算 58/);
+  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
+  assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
 
   const rejectedWhileScanExists = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,

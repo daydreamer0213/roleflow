@@ -70,6 +70,12 @@ try {
     workflowEligibility(job("pure-high", { qualityTags: ["salary_target_high", "experience_salary_overlap"] }), { now }).reasonCode,
     "WORKFLOW_BACKUP_NOT_LOW_RISK"
   );
+  assert.strictEqual(
+    workflowEligibility(job("model-rejected", {
+      analysis: { ...completeAnalysis(), recommendation: "skip", fitLevel: "D", hardBlockers: ["核心技术栈不匹配"] }
+    }), { now }).reasonCode,
+    "WORKFLOW_ANALYSIS_REJECTED"
+  );
 
   const outcomeJobIds = {
     succeeded: insert("outcome-succeeded", {}, batchId),

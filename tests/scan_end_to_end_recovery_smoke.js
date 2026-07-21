@@ -167,8 +167,10 @@ function installOfflineBoundaries() {
   const bossPath = require.resolve("../src/adapters/sites/boss");
   const reportsPath = require.resolve("../src/reports/render");
   const observabilityPath = require.resolve("../src/core/observability");
+  const modelSettingsPath = require.resolve("../src/core/model_settings");
   const boss = require(bossPath);
   const observability = require(observabilityPath);
+  const modelSettings = require(modelSettingsPath);
   const originalLoad = Module._load;
   const logger = { child: () => logger, debug() {}, info() {}, warn() {}, error() {} };
 
@@ -205,6 +207,12 @@ function installOfflineBoundaries() {
     if (resolved === bossPath) return { ...boss, BossSiteAdapter: OfflineBossSiteAdapter };
     if (resolved === reportsPath) return { renderReports: () => ({ mdPath: "offline.md", htmlPath: "offline.html" }) };
     if (resolved === observabilityPath) return { ...observability, createLogger: () => logger };
+    if (resolved === modelSettingsPath) return {
+      ...modelSettings,
+      resolveRuntimeModelConfig: () => ({
+        modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } }
+      })
+    };
     return originalLoad.call(this, request, parent, isMain);
   };
 }

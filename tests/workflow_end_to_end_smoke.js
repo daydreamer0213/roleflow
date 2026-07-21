@@ -79,6 +79,8 @@ let server;
   assert.strictEqual(firstCompleted.status, "completed");
   assert.strictEqual(firstCompleted.successfulCount, 30);
   assert.strictEqual(firstCompleted.shortfallCode, "WORKFLOW_SUPPLY_EXHAUSTED");
+  db.prepare("UPDATE workflow_runs SET started_at = ? WHERE id = ?")
+    .run(new Date(Date.now() - 3 * 60 * 60_000).toISOString(), first.id);
 
   const second = await startWorkflow(baseUrl, saved.planId);
   assert.strictEqual(second.sequence, 2);
@@ -116,7 +118,7 @@ let server;
     action: "start"
   });
   assert.strictEqual(third.status, 409);
-  assert.match(third.body, /WORKFLOW_DAILY_RUN_LIMIT/);
+  assert.match(third.body, /WORKFLOW_DAILY_TARGET_REACHED/);
   assert.strictEqual(listWorkflowRuns(db, { profileId: saved.profileId, localDay: first.localDay }).length, 2);
 
   console.log("workflow_end_to_end_smoke ok");

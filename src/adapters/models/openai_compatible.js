@@ -5,7 +5,7 @@ class OpenAICompatibleAdapter {
     this.apiKey = String(config.apiKey || "");
     this.apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
     this.model = config.model || "gpt-4.1-mini";
-    this.timeoutMs = Number(config.timeoutMs || 30000);
+    this.timeoutMs = Number(config.timeoutMs || 60000);
     this.maxRetries = Math.max(0, Math.min(3, Number(config.maxRetries ?? 1)));
     this.jsonMode = config.jsonMode !== false;
     this.logger = config.logger || null;
@@ -56,6 +56,7 @@ class OpenAICompatibleAdapter {
       "你是中文求职岗位匹配助手。请根据候选人画像、真实简历版本摘要、岗位事实和 JD 理解，输出 MatchDecision JSON。不要读取或猜测任何本地关键词分数。",
       "这是整体匹配，不是关键词计数。先看岗位的真实职责、核心技术栈、经验级别和工程要求，再看候选人的明确技能与项目边界。",
       "若 JD 核心要求是 C++/Go，且候选人没有相应明确经历，不能因为 JD 出现 RAG/Agent 就给 apply 或 A/B；核心栈确实无法满足时写入 hardBlockers 并给 skip。Java/Spring 主栈、重训练/算法、资深高并发/云原生也按同样原则判断。",
+      "准确区分并列硬要求和可选技术栈：Python/Java、Python 或 Java、A/B、任选其一、二选一等表述代表替代关系，候选人明确满足其中一项即可，缺少另一项不能写入 hardBlockers。熟悉、了解、优先、加分等表述只能进入 softGaps 或 nice-to-have，不能作为硬阻断。只有 JD 明确要求必须掌握某个单一核心栈，且候选人证据确实缺失时，才可判定核心栈 hard blocker。",
       "Python/RAG/Agent 仅在它们确实属于核心职责时才能作为强匹配依据；优先项不能当作硬要求，岗位信息缺失时 recommendation=review。",
       "若岗位真实主线是实施/售前/解决方案，而候选人的目标方向仅为开发，最多给 caution；只有候选人明确把实施、售前或解决方案列为目标方向时才可给 apply。",
       "工作年限、学历偏好、辅助技能、外包驻场和工作制默认属于 softGaps 或 questionsToVerify，不得仅凭这些给 skip。只有明确不符合核心语言/框架、算法训练经历、在校或届别等不可沟通资格时才属于 hardBlockers。",

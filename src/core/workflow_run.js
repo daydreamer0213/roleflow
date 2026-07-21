@@ -51,25 +51,39 @@ function planWorkflowRun(input = {}) {
     });
   }
 
+  const planningSlots = Math.max(1, nonNegativeInteger(policy.primaryRunsPerDay) - completedRuns);
   const targetSuccessCount = Math.min(
     policy.maxRunTarget,
-    Math.ceil(remainingDailyTarget / remainingRunSlots)
+    Math.ceil(remainingDailyTarget / planningSlots)
   );
   const inventoryCount = nonNegativeInteger(input.inventoryCount);
   const candidateGap = Math.max(0, targetSuccessCount - inventoryCount);
-  const budget = fairBudget(input, remainingRunSlots);
-  const scanNeeded = candidateGap > 0 && budget.maxDetailTotal > 0 && budget.browserPageBudget > 0;
+  const budget = fairBudget(input, planningSlots, policy);
+  const thirdScanAllowed = completedRuns < nonNegativeInteger(policy.primaryRunsPerDay)
+    || inventoryCount < nonNegativeInteger(policy.thirdRunInventoryFloor)
+    || candidateGap >= nonNegativeInteger(policy.thirdRunMinCandidateGap);
+  const wantsScan = candidateGap > 0 && thirdScanAllowed
+    && budget.maxDetailTotal > 0 && budget.browserPageBudget > 0;
+  const interval = scanInterval(input, policy);
+  const intervalBlocked = wantsScan && !interval.ready;
+  const scanNeeded = wantsScan && !intervalBlocked;
   const selectedKeywords = scanNeeded
-    ? selectKeywords(input.keywords, remainingRunSlots, policy, budget.maxDetailTotal)
+    ? selectKeywords(input.keywords, planningSlots, policy, budget.maxDetailTotal)
     : [];
   const projectedNewCandidates = projectedCandidates(selectedKeywords, policy);
+  const shortfall = intervalBlocked
+    ? "WORKFLOW_SCAN_INTERVAL"
+    : (!thirdScanAllowed && candidateGap > 0)
+      ? "WORKFLOW_THIRD_SCAN_NOT_NEEDED"
+      : shortfallReason({ candidateGap, scanNeeded, selectedKeywords, projectedNewCandidates, budget });
 
   return {
-    errorCode: null,
+    errorCode: intervalBlocked ? "WORKFLOW_SCAN_INTERVAL" : null,
     localDay: input.localDay || chinaLocalDay(input.now || new Date()),
     successfulToday,
     completedRuns,
     remainingRunSlots,
+    nextRunAt: interval.nextRunAt,
     remainingDailyTarget,
     targetSuccessCount,
     replacementBuffer: policy.replacementBuffer,
@@ -80,11 +94,11 @@ function planWorkflowRun(input = {}) {
     budget,
     projectedNewCandidates,
     projectedInventoryCount: inventoryCount + projectedNewCandidates,
-    shortfallReason: shortfallReason({ candidateGap, scanNeeded, selectedKeywords, projectedNewCandidates, budget })
+    shortfallReason: shortfall
   };
 }
 
-function fairBudget(input, remainingRunSlots) {
+function fairBudget(input, planningSlots, policy) {
   const daily = input.dailyBudget || {};
   const used = input.usedBudget || {};
   const remainingDetails = Math.max(0, nonNegativeInteger(daily.details ?? PRODUCT_POLICY.dailyScan.maxDetailTotal)
@@ -92,19 +106,40 @@ function fairBudget(input, remainingRunSlots) {
   const remainingPages = Math.max(0, nonNegativeInteger(daily.pages ?? PRODUCT_POLICY.dailyScan.browserPageBudget)
     - nonNegativeInteger(used.pages));
   return {
-    maxDetailTotal: Math.floor(remainingDetails / remainingRunSlots),
-    browserPageBudget: Math.floor(remainingPages / remainingRunSlots)
+    maxDetailTotal: Math.min(
+      nonNegativeInteger(policy.maxRunDetailBudget),
+      Math.floor(remainingDetails / planningSlots)
+    ),
+    browserPageBudget: Math.min(
+      nonNegativeInteger(policy.maxRunPageBudget),
+      Math.floor(remainingPages / planningSlots)
+    )
   };
 }
 
 function consumedWorkflowBudget(runs = []) {
   return (Array.isArray(runs) ? runs : []).reduce((sum, run) => {
     if (run?.scanNeeded === false) return sum;
+    const access = run?.metrics?.access;
+    const hasActualUsage = access && Object.hasOwn(access, "details") && Object.hasOwn(access, "pages");
+    const reservePlannedBudget = ["created", "scanning", "analyzing"].includes(run?.status)
+      || !hasActualUsage;
     return {
-      details: sum.details + nonNegativeInteger(run?.budget?.maxDetailTotal),
-      pages: sum.pages + nonNegativeInteger(run?.budget?.browserPageBudget)
+      details: sum.details + nonNegativeInteger(reservePlannedBudget ? run?.budget?.maxDetailTotal : access.details),
+      pages: sum.pages + nonNegativeInteger(reservePlannedBudget ? run?.budget?.browserPageBudget : access.pages)
     };
   }, { details: 0, pages: 0 });
+}
+
+function scanInterval(input, policy) {
+  const lastStartedMs = Date.parse(input.lastScanStartedAt || "");
+  if (!Number.isFinite(lastStartedMs)) return { ready: true, nextRunAt: null };
+  const nowMs = workflowDate(input.now || new Date()).getTime();
+  const nextRunMs = lastStartedMs + nonNegativeInteger(policy.minRunIntervalMinutes) * 60_000;
+  return {
+    ready: nowMs >= nextRunMs,
+    nextRunAt: new Date(nextRunMs).toISOString()
+  };
 }
 
 function selectKeywords(keywords = [], remainingRunSlots, policy, detailBudget) {
@@ -371,7 +406,8 @@ function recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs })
     if (batch.status === "interrupted") report.workflowRunsInterrupted += 1;
     return;
   }
-  if (["running", "stopping"].includes(batch.status) && isOlderThan(batch.updatedAt, now, orphanTimeoutMs)) {
+  const latestActivityAt = latestCommunicationActivityAt(db, batch);
+  if (["running", "stopping"].includes(batch.status) && isOlderThan(latestActivityAt, now, orphanTimeoutMs)) {
     const interruptedBatch = setCommunicationBatchStatus(db, {
       batchId: batch.id,
       status: "interrupted",
@@ -392,6 +428,16 @@ function recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs })
     return;
   }
   report.activeRunsPreserved += 1;
+}
+
+function latestCommunicationActivityAt(db, batch) {
+  const row = db.prepare("SELECT MAX(updated_at) AS updated_at FROM communication_batch_items WHERE batch_id = ?")
+    .get(batch.id);
+  const values = [batch.updatedAt, row?.updated_at]
+    .map((value) => ({ value, time: Date.parse(value || "") }))
+    .filter((item) => Number.isFinite(item.time))
+    .sort((left, right) => right.time - left.time);
+  return values[0]?.value || batch.updatedAt;
 }
 
 function communicationWorkflowMetrics(run, summary, batch) {

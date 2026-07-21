@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   profile_id INTEGER NOT NULL,
   plan_id INTEGER NOT NULL,
   local_day TEXT NOT NULL,
-  sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 2),
+  sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),
   status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','completed','interrupted','failed','stopped')),
   target_success_count INTEGER NOT NULL CHECK(target_success_count >= 0),
   successful_count INTEGER NOT NULL DEFAULT 0 CHECK(successful_count >= 0),
@@ -477,6 +477,13 @@ const MIGRATIONS = [
       db.exec(WORKFLOW_SCHEMA);
       backfillHistoricalCommunicationOutcomes(db);
     }
+  },
+  {
+    version: 4,
+    name: "workflow_runs_three_slots",
+    apply(db) {
+      migrateWorkflowRunSlots(db);
+    }
   }
 ];
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -557,6 +564,41 @@ function databaseMigrationError(code, message, cause) {
   error.code = code;
   if (cause) error.cause = cause;
   return error;
+}
+
+function migrateWorkflowRunSlots(db) {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_runs'").get();
+  if (!table) {
+    db.exec(WORKFLOW_SCHEMA);
+    return;
+  }
+  if (/sequence\s+BETWEEN\s+1\s+AND\s+3/i.test(String(table.sql || ""))) return;
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_workflow_runs_active;
+    DROP INDEX IF EXISTS idx_workflow_runs_daily;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_two_slots;
+  `);
+  db.exec(WORKFLOW_SCHEMA);
+  db.exec(`
+    INSERT INTO workflow_runs(
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    )
+    SELECT
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    FROM workflow_runs_two_slots;
+    DROP TABLE workflow_runs_two_slots;
+  `);
 }
 
 function recordSiteAccessEvent(db, {
@@ -783,8 +825,8 @@ function createWorkflowRun(db, input = {}) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(localDay)) {
     throw workflowRunError("WORKFLOW_LOCAL_DAY_INVALID", "workflow local day must use YYYY-MM-DD");
   }
-  if (![1, 2].includes(sequence)) {
-    throw workflowRunError("WORKFLOW_SEQUENCE_INVALID", "workflow run sequence must be 1 or 2");
+  if (![1, 2, 3].includes(sequence)) {
+    throw workflowRunError("WORKFLOW_SEQUENCE_INVALID", "workflow run sequence must be 1, 2, or 3");
   }
   const owner = db.prepare("SELECT profile_id FROM search_plans WHERE id = ?").get(planId);
   if (!owner || Number(owner.profile_id) !== profileId) {

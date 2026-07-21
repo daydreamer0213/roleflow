@@ -121,6 +121,26 @@ let server;
     assert.strictEqual(retriedJob.analysis.semanticStatus, "rule_only");
     assert.strictEqual(db.prepare("SELECT keyword FROM batches ORDER BY id DESC LIMIT 1").get().keyword, "analysis-retry");
     assert.strictEqual(getLatestMainScanBatchId(db, { planId: saved.planId }), failedBatchId, "analysis retry must not become the latest main scan");
+
+    const bulkJobIds = ["bulk-a", "bulk-b"].map((sourceId) => upsertJob(db, {
+      source: "boss", sourceId, keyword: "AI application", title: `AI Application Engineer ${sourceId}`,
+      company: "Bulk Retry Test", location: plan.cities[0], salary: "10-18K", experience: plan.experience[0], education: "本科",
+      bossActiveText: "今日活跃", bossActiveDays: 0, url: `https://www.zhipin.com/job_detail/${sourceId}.html`,
+      tags: ["Python", "RAG"], description: "Build Python RAG and Agent applications with FastAPI, vector search, retrieval evaluation, API integration, testing, and production diagnostics. ".repeat(3),
+      score: 20, level: "可投", matches: ["Python", "RAG"], risks: [], qualityTags: [],
+      analysis: { provider: "openai_compatible", model: "test-model", semanticStatus: "failed", decisionSource: "analysis_pending", recommendation: "review", fitLevel: "C", error: "timeout", errorCode: "MODEL_TIMEOUT", evidence: { jd: [], resume: [] } }
+    }, failedBatchId));
+    const bulkPendingHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=analysis_pending`)).text();
+    assert(bulkPendingHtml.includes("批量重试全部待分析岗位"));
+    const bulkResponse = await post(base, "/api/analyze-jobs", { planId: saved.planId });
+    const bulkBody = await bulkResponse.text();
+    assert.strictEqual(bulkResponse.status, 303, bulkBody);
+    const bulkJobs = listReportJobs(db, { planId: saved.planId, batch: "all", profileId: saved.profileId, limit: 100 })
+      .filter((job) => bulkJobIds.includes(job.id));
+    assert.strictEqual(bulkJobs.length, 2);
+    assert(bulkJobs.every((job) => job.analysis.semanticStatus === "rule_only"));
+    assert.strictEqual(db.prepare("SELECT keyword FROM batches ORDER BY id DESC LIMIT 1").get().keyword, "analysis-retry-bulk");
+    assert.strictEqual(getLatestMainScanBatchId(db, { planId: saved.planId }), failedBatchId, "bulk analysis retry must not become the latest main scan");
     console.log("communication_smoke ok");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
