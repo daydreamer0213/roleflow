@@ -11,12 +11,21 @@ const DEFAULT_MODEL_CONFIG = {
 function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null, logger = null } = {}) {
   const modelAdapter = adapter || createModelAdapter(modelConfig, { logger });
   return {
-    analyzeResume: async (input) => validateModelResult("analyzeResume", await modelAdapter.analyzeResume(input)),
-    recommendSearchPlan: async (input) => validateModelResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),
-    understandJob: async (input) => validateModelResult("understandJob", await modelAdapter.understandJob(input)),
-    matchJob: async (input) => validateModelResult("matchJob", await modelAdapter.matchJob(input)),
-    draftCommunication: async (input) => validateModelResult("draftCommunication", await modelAdapter.draftCommunication(input))
+    analyzeResume: async (input) => validateAdapterResult("analyzeResume", await modelAdapter.analyzeResume(input)),
+    recommendSearchPlan: async (input) => validateAdapterResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),
+    understandJob: async (input) => validateAdapterResult("understandJob", await modelAdapter.understandJob(input)),
+    matchJob: async (input) => validateAdapterResult("matchJob", await modelAdapter.matchJob(input)),
+    draftCommunication: async (input) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input))
   };
+}
+
+function validateAdapterResult(kind, value) {
+  try {
+    return validateModelResult(kind, value);
+  } catch (error) {
+    if (error?.code === "MODEL_CONTRACT_INVALID") error.invalidOutput = value;
+    throw error;
+  }
 }
 
 const defaultAnalyzer = createLlmAnalyzer();

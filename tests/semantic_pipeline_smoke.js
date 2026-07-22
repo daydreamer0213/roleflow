@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall } = require("../src/core/job_analysis");
+const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 const { validateModelResult, ModelContractError, effectiveHardBlockers } = require("../src/core/model_contract");
 const { runtimeAnalysisContext } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
@@ -105,14 +106,33 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
 }
 
 async function contractRepairAndFailureSmoke() {
+  const adapterDecision = { recommendation: "apply", fitLevel: "A", confidence: 0.9 };
+  const validatingAnalyzer = createLlmAnalyzer({ adapter: { matchJob: async () => adapterDecision } });
+  await assert.rejects(
+    validatingAnalyzer.matchJob({}),
+    (error) => error.code === "MODEL_CONTRACT_INVALID" && error.invalidOutput === adapterDecision
+  );
+
   let matchCalls = 0;
+  const invalidDecision = {
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.9,
+    fitReasons: [],
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["Build RAG knowledge bases"], resume: ["Improved a RAG retrieval pipeline"] }
+  };
   const repairing = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
     db,
     analyzer: {
       understandJob: async ({ job }) => understanding(job.sourceId),
       matchJob: async (input) => {
         matchCalls += 1;
-        if (!input.contractRepair) return { recommendation: "apply", fitLevel: "A", confidence: 0.9 };
+        if (!input.contractRepair) return invalidDecision;
+        assert.deepStrictEqual(input.contractRepair.invalidOutput, invalidDecision);
+        assert.match(input.contractRepair.reason, /apply\/caution/);
         return decision("apply", "A", "Python");
       }
     }
@@ -192,6 +212,39 @@ async function roleIntentGuardSmoke() {
 }
 
 function matchBoundaryContractSmoke() {
+  const normalizedObjectBlocker = validateModelResult("matchJob", {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.9,
+    fitReasons: ["The required core language does not match the candidate stack"],
+    hardBlockers: [{ reason: "Core C++ requirement is missing", evidence: "Must know C++" }],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["Must know C++"], resume: ["Candidate stack is Python/FastAPI"] }
+  });
+  assert.deepStrictEqual(normalizedObjectBlocker.hardBlockers, ["Core C++ requirement is missing"]);
+  assert.throws(() => validateModelResult("matchJob", {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.9,
+    fitReasons: [],
+    hardBlockers: [{ evidence: "Must know C++" }],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["Must know C++"], resume: ["Candidate stack is Python/FastAPI"] }
+  }), ModelContractError);
+
+  assert.throws(() => validateModelResult("matchJob", {
+    recommendation: "caution",
+    fitLevel: "B",
+    confidence: 0.78,
+    fitReasons: [],
+    hardBlockers: [],
+    softGaps: ["Experience should be confirmed"],
+    questionsToVerify: [],
+    evidence: { jd: ["Build RAG knowledge bases"], resume: ["Improved a RAG retrieval pipeline"] }
+  }), ModelContractError);
+
   const soft = validateModelResult("matchJob", {
     recommendation: "caution",
     fitLevel: "B",

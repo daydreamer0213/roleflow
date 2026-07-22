@@ -71,27 +71,29 @@ function validateMatchDecision(value) {
     ["softGaps", value.softGaps ?? value.missingPoints],
     ["questionsToVerify", value.questionsToVerify ?? value.riskQuestions]
   ]) {
-    if (list(raw).some((item) => typeof item !== "string")) throw new ModelContractError("matchJob", `${field} 必须是字符串数组`);
+    if (list(raw).some((item) => typeof item !== "string" && !contractListItem(item))) throw new ModelContractError("matchJob", `${field} 必须是字符串数组`);
   }
   const confidence = Number(value.confidence);
   if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
-  const legacyBlockingGaps = strings(value.blockingGaps, 8);
+  const legacyBlockingGaps = contractStrings(value.blockingGaps, 8);
   const explicitHardBlockers = Object.prototype.hasOwnProperty.call(value, "hardBlockers");
-  const blockerCandidates = explicitHardBlockers ? strings(value.hardBlockers, 8) : legacyBlockingGaps;
+  const blockerCandidates = explicitHardBlockers ? contractStrings(value.hardBlockers, 8) : legacyBlockingGaps;
   const hardBlockers = blockerCandidates.filter((item) => !isPolicySoftGap(item));
   const downgradedSoftGaps = blockerCandidates.filter(isPolicySoftGap);
   const softOnlySkip = value.recommendation === "skip" && !hardBlockers.length && downgradedSoftGaps.length;
   const recommendation = softOnlySkip ? "caution" : value.recommendation;
-  const softGaps = strings([
-    ...strings(value.softGaps ?? value.missingPoints, 8),
+  const softGaps = contractStrings([
+    ...contractStrings(value.softGaps ?? value.missingPoints, 8),
     ...downgradedSoftGaps
   ], 8);
-  const questionsToVerify = strings(value.questionsToVerify ?? value.riskQuestions, 8);
+  const questionsToVerify = contractStrings(value.questionsToVerify ?? value.riskQuestions, 8);
+  const evidence = normalizeEvidence(value.evidence);
+  const fitReasons = contractStrings(value.fitReasons ?? value.fit_reasons ?? value.matchReasons, 8);
   const result = {
     recommendation,
     fitLevel: softOnlySkip && value.fitLevel === "D" ? "C" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
-    fitReasons: strings(value.fitReasons, 8),
+    fitReasons,
     hardBlockers,
     softGaps,
     questionsToVerify,
@@ -101,7 +103,7 @@ function validateMatchDecision(value) {
     recommendedResumeVersion: text(value.recommendedResumeVersion),
     primaryProjects: strings(value.primaryProjects, 4),
     greetingAngle: text(value.greetingAngle),
-    evidence: normalizeEvidence(value.evidence),
+    evidence,
     hrPrep: object(value.hrPrep)
   };
   if (hardBlockers.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性阻断时 recommendation 必须为 skip");
@@ -124,8 +126,8 @@ function validateMatchDecision(value) {
 
 function effectiveHardBlockers(analysis = {}) {
   const blockers = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
-    ? strings(analysis.hardBlockers, 8)
-    : strings(analysis.blockingGaps, 8);
+    ? contractStrings(analysis.hardBlockers, 8)
+    : contractStrings(analysis.blockingGaps, 8);
   return blockers.filter((item) => !isPolicySoftGap(item));
 }
 
@@ -164,5 +166,11 @@ function object(value) { return value && typeof value === "object" && !Array.isA
 function list(value) { return Array.isArray(value) ? value : value ? [value] : []; }
 function text(value) { return String(value || "").trim().slice(0, 1000); }
 function strings(value, limit) { return [...new Set(list(value).map((item) => text(item)).filter(Boolean))].slice(0, limit); }
+function contractStrings(value, limit) { return [...new Set(list(value).map(contractListItem).filter(Boolean))].slice(0, limit); }
+function contractListItem(value) {
+  if (typeof value === "string") return text(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  return text(value.reason || value.gap || value.description || value.message || value.issue || value.value);
+}
 
 module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers };

@@ -41,6 +41,8 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(fallbackAdapter.timeoutMs, 60000);
     assert.deepStrictEqual(await fallbackAdapter.chatJson("return json", { test: true }, { kind: "understandJob" }), { ok: true });
     assert.strictEqual(requests, 2);
+    assert.strictEqual(payloads[1].temperature, 0.1);
+    assert.strictEqual(payloads[1].max_tokens, 4096);
 
     const retryAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", jsonMode: false, maxRetries: 1, logger });
     assert.deepStrictEqual(await retryAdapter.chatJson("return json", { test: true }, { kind: "matchJob" }), { retried: true });
@@ -58,6 +60,7 @@ server.listen(0, "127.0.0.1", async () => {
     await retryAdapter.matchJob({ candidateProfile: {}, jobUnderstanding: {}, jobEvidence: {} });
     const matchPrompt = payloads.at(-1).messages[0].content;
     assert(matchPrompt.includes("Python/Java"));
+    assert(matchPrompt.includes('"hardBlockers":[]'));
     assert(matchPrompt.includes("二选一"));
     assert(matchPrompt.includes("熟悉、了解、优先、加分"));
     console.log("model_adapter_smoke ok");

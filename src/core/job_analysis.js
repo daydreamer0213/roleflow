@@ -122,22 +122,49 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
   }
 
   let result;
+  let rawResult;
   try {
-    result = validateModelResult(kind, await run(input));
+    rawResult = await run(input);
+    result = validateModelResult(kind, rawResult);
   } catch (error) {
     if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
-    logger?.warn("model_contract_repair_requested", { kind, provider, model, pipelineVersion, errorMessage: error.message });
-    result = validateModelResult(kind, await run({
-      ...input,
-      contractRepair: {
-        reason: error.message,
-        instruction: "补齐缺失的具体理由和可核对证据；不要改变已有事实，也不要输出通用占位语。"
-      }
-    }));
+    const invalidOutput = error.invalidOutput ?? rawResult;
+    logger?.warn("model_contract_repair_requested", {
+      kind, provider, model, pipelineVersion, errorMessage: error.message,
+      outputShape: contractOutputShape(invalidOutput)
+    });
+    try {
+      const repaired = await run({
+        ...input,
+        contractRepair: {
+          reason: error.message,
+          invalidOutput,
+          instruction: "只修正错误字段并返回完整 JSON；保留原有事实和有效证据，不得编造或输出通用占位语。"
+        }
+      });
+      result = validateModelResult(kind, repaired);
+      logger?.info("model_contract_repair_completed", { kind, provider, model, pipelineVersion });
+    } catch (repairError) {
+      logger?.warn("model_contract_repair_failed", {
+        kind, provider, model, pipelineVersion,
+        initialErrorMessage: error.message,
+        errorMessage: repairError?.message || String(repairError),
+        outputShape: contractOutputShape(repairError?.invalidOutput)
+      });
+      throw repairError;
+    }
   }
   if (db) saveModelCache(db, { cacheKey, kind, provider, model, inputHash, result });
   logger?.info("model_cache_saved", { kind, provider, model, pipelineVersion });
   return result;
+}
+
+function contractOutputShape(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return typeof value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    Array.isArray(item) ? `array<${[...new Set(item.map((entry) => entry === null ? "null" : typeof entry))].join("|")}>` : item === null ? "null" : typeof item
+  ]));
 }
 
 function compactAnalysis(configs, parts) {
