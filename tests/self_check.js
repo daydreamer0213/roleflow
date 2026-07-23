@@ -35,6 +35,13 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
 const portableLauncher = fs.readFileSync(path.join(root, "ScanPortable.bat"), "utf8");
 assert(!portableLauncher.includes("DetailLimit"));
 assert(!portableLauncher.includes("MaxCards"));
+const normalizePowerShellParameterDiagnostic = (output) => String(output).replace(/\s+/g, "");
+const wrappedPowerShellDiagnostic = "Cannot bind parameter 'MaxDetail\r\n    Total' because the value is invalid.";
+assert.strictEqual(wrappedPowerShellDiagnostic.includes("MaxDetailTotal"), false);
+assert(
+  normalizePowerShellParameterDiagnostic(wrappedPowerShellDiagnostic).includes("MaxDetailTotal"),
+  "the synthetic wrapped diagnostic must still identify MaxDetailTotal"
+);
 const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
   for (const [parameter, value] of [["MaxCards", "9"], ["MaxDetailTotal", "0"]]) {
@@ -43,7 +50,10 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
       "-PlanId", "1", `-${parameter}`, value
     ], { encoding: "utf8" });
     assert.notStrictEqual(invalid.status, 0, `${script} must reject invalid ${parameter}`);
-    assert((invalid.stdout + invalid.stderr).includes(parameter), `${script} must identify invalid ${parameter}`);
+    assert(
+      normalizePowerShellParameterDiagnostic(invalid.stdout + invalid.stderr).includes(parameter),
+      `${script} must identify invalid ${parameter}`
+    );
   }
   const dailyOverride = spawnSync(powershell, [
     "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, script),
