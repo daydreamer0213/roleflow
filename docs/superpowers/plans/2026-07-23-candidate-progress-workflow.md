@@ -190,7 +190,7 @@ git commit -m "fix: distinguish communication from application"
 
 - [ ] **Step 1: Write failing reply-flow tests**
 
-In tests/communication_smoke.js, create a progress card and post RAG 项目实际上线了吗？. Assert the generated draft has messageCategory equal to project_fact, the progress event summary is 项目事实确认, and database queries across progress tables do not contain the input message string. Add an interview message assertion: it returns interview_invitation, creates no send action, and moves the card only to interview_invited.
+In tests/communication_smoke.js, create a progress card and post RAG 项目实际上线了吗？. Assert the generated draft has messageCategory equal to project_fact, the progress event summary is 项目事实确认, and database queries across progress tables do not contain the input message string. Add an interview message assertion: it returns interview_invitation with an empty messages array, creates no send action or suggested reply, and moves the card only to interview_invited.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -200,7 +200,7 @@ Expected: failure because the current draft result lacks category/progress metad
 
 - [ ] **Step 3: Extend the safe draft contract and handler**
 
-In validateCommunication, normalize messageCategory and validate a progressUpdate containing only a legal stage, short summary, and next action. Update the model prompt to classify the pasted message before drafting. It must return an empty messages array when identity is uncertain, an answer needs a missing fact, or the message is an interview invitation requiring a user decision.
+In validateCommunication, normalize messageCategory and validate a progressUpdate containing only a legal stage, short summary, and next action. Update the model prompt to classify the pasted message before drafting. It must return an empty messages array when identity is uncertain, an answer needs a missing fact, or the message is an interview invitation. An interview invitation may only create a notification and progress event; it must not output a defer/confirm/reschedule suggestion based on availability preferences.
 
 In handleCommunication, load the job progress card before model invocation. After a valid response, record only messageCategory, missingFact.key, stage, and sanitized summary through candidate_progress.js. Do not include hrMessage in logger fields, event metadata, redirects, error messages, or rendered hidden fields; retain it only in the current request when re-asking for one missing fact.
 
