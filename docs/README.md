@@ -4,6 +4,7 @@
 - [`superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md`](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md)：多平台只读找岗与每平台继承搜索模板的已确认设计。
 - [`superpowers/plans/2026-07-23-multi-platform-readonly-search.md`](superpowers/plans/2026-07-23-multi-platform-readonly-search.md)：可由隔离分支执行的多平台基础实施计划；不含真实智联 DOM 适配。
 - [`superpowers/plans/2026-07-23-cross-platform-common-filters.md`](superpowers/plans/2026-07-23-cross-platform-common-filters.md)：区域与公司规模的严格通用筛选实施计划；行业保持不限制。
+- [`superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md`](superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md)：跨计划的分支收敛、旧用户升级、模型验收与纠错门禁。
 
 本目录同时保存当前产品文档和历史整改记录。阅读时应先确认文档类型，避免把旧方案中的参数当成当前行为。
 

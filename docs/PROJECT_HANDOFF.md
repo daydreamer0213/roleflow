@@ -47,6 +47,7 @@ git log --oneline origin/codex/generic-evidence-matching-design..HEAD
 | 搜索意图组合 | [设计](superpowers/specs/2026-07-23-search-intent-portfolio-design.md) · [计划](superpowers/plans/2026-07-23-search-intent-portfolio.md) | 已确认，未实现 |
 | 求职进展与人工确认工作流 | [设计](superpowers/specs/2026-07-23-candidate-progress-workflow-design.md) · [计划](superpowers/plans/2026-07-23-candidate-progress-workflow.md) | 已确认，未实现 |
 | 多平台只读搜索与继承模板 | [设计](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md) · [计划](superpowers/plans/2026-07-23-multi-platform-readonly-search.md) | 已确认，未实现；真实智联适配器等待独立只读证据 |
+| 实施安全、升级兼容与验收门禁 | [设计](superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md) | 已确认；必须先修订受影响计划并收敛主项目基线，才可实施 |
 
 ## 已确认的产品决策
 
