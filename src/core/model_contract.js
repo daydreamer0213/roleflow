@@ -7,6 +7,8 @@ class ModelContractError extends Error {
   }
 }
 
+const { normalizeMatchingCard } = require("./matching_card");
+
 function validateModelResult(kind, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelContractError(kind, "必须返回 JSON 对象");
   if (kind === "analyzeResume") return validateResume(value);
@@ -14,7 +16,17 @@ function validateModelResult(kind, value) {
   if (kind === "understandJob") return validateJobUnderstanding(value);
   if (kind === "matchJob") return validateMatchDecision(value);
   if (kind === "draftCommunication") return validateCommunication(value);
+  if (kind === "buildCandidateMatchCard") return validateMatchingCardResult(value);
   throw new ModelContractError(kind, "未知分析类型");
+}
+
+function validateMatchingCardResult(value) {
+  try {
+    return normalizeMatchingCard(value, { source: "model" });
+  } catch (error) {
+    if (error && error.code === "MATCHING_CARD_INVALID") throw new ModelContractError("buildCandidateMatchCard", error.message);
+    throw error;
+  }
 }
 
 function validateResume(value) {

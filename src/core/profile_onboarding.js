@@ -55,4 +55,20 @@ async function recommendPlanForProfile({ modelConfig, profile, logger = null }) 
   return normalizeSearchPlan(rawPlan, profile);
 }
 
-module.exports = { analyzeResumeToPlan, analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel };
+async function buildCandidateMatchCard({ modelConfig, profile, logger = null, adapter = null }) {
+  const analyzer = createLlmAnalyzer({ modelConfig, logger, adapter });
+  return analyzer.buildCandidateMatchCard({
+    candidateProfile: profileForMatchingCard(profile)
+  });
+}
+
+function profileForMatchingCard(profile = {}) {
+  return {
+    candidate: profile.candidate || {}, education: profile.education || [],
+    experiences: profile.experiences || [], skills: profile.skills || [],
+    projects: profile.projects || [], credentials: profile.credentials || [],
+    strengths: profile.strengths || []
+  };
+}
+
+module.exports = { analyzeResumeToPlan, analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard, profileForMatchingCard };

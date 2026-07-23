@@ -4,7 +4,8 @@ const { profileToRuntimeConfigs, resolveScanPolicy, applyScanPolicyToFilters } =
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { validateSearchPlan, assertSearchPlanReady } = require("../src/core/plan_validation");
 const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
-const { prepareResumeTextForModel } = require("../src/core/profile_onboarding");
+const { prepareResumeTextForModel, buildCandidateMatchCard } = require("../src/core/profile_onboarding");
+const { validateModelResult, ModelContractError } = require("../src/core/model_contract");
 const { PRODUCT_POLICY_VERSION, PRODUCT_POLICY } = require("../src/core/product_policy");
 
 const preparedResume = prepareResumeTextForModel(`姓名：测试候选人
@@ -176,6 +177,50 @@ adapter.chatJson = async (prompt) => {
   assert(planPrompt.includes("bossActiveDays 固定输出 3"));
   assert(planPrompt.includes("bossCityCode 是系统内部字段"));
   assert(planPrompt.includes("没有明确地点时 cities 输出空数组"));
+
+  const ecommerceProfile = {
+    candidate: { name: "运营候选人", city: "广州", targetTitles: ["电商运营"] },
+    education: [],
+    experiences: [{ organization: "示例电商公司", role: "店铺运营", type: "全职", highlights: ["负责淘宝店铺活动和投放 ROI 复盘"] }],
+    skills: [{ name: "活动复盘", level: "resume" }],
+    projects: [],
+    credentials: [],
+    strengths: []
+  };
+  let cardInput = null;
+  const cardAdapter = {
+    async buildCandidateMatchCard(input) {
+      cardInput = input;
+      return {
+        targetDirections: ["电商运营"],
+        strongEvidence: [{ label: "店铺活动与 ROI 复盘", evidence: "简历：负责淘宝店铺活动和投放 ROI 复盘" }],
+        transferableCapabilities: [{ label: "平台运营数据分析", evidence: "简历：按周复盘店铺转化数据", limitation: "未证明抖音投流经验" }],
+        cautionTransitions: [{ direction: "直播操盘", reason: "简历未证明直播间统筹" }]
+      };
+    }
+  };
+  const card = await buildCandidateMatchCard({ modelConfig: { provider: "mock", providers: { mock: {} } }, profile: ecommerceProfile, adapter: cardAdapter });
+  assert(cardInput && cardInput.candidateProfile, "buildCandidateMatchCard 必须收到 candidateProfile");
+  assert.strictEqual(cardInput.resumeText, undefined, "buildCandidateMatchCard 不得收到原始简历正文");
+  assert.deepStrictEqual(card.targetDirections, ["电商运营"]);
+  assert.deepStrictEqual(card.strongEvidence, [{
+    label: "店铺活动与 ROI 复盘",
+    evidence: "简历：负责淘宝店铺活动和投放 ROI 复盘"
+  }]);
+  assert.strictEqual(card.transferableCapabilities[0].limitation, "未证明抖音投流经验");
+  assert.strictEqual(card.source, "model");
+  assert.throws(() => validateModelResult("buildCandidateMatchCard", {
+    targetDirections: ["电商运营"], strongEvidence: [{ label: "虚构", evidence: "" }]
+  }), ModelContractError);
+
+  const mockCard = await buildCandidateMatchCard({ modelConfig: { provider: "mock", providers: { mock: {} } }, profile: ecommerceProfile });
+  assert.deepStrictEqual(mockCard.targetDirections, ["电商运营"]);
+  assert(mockCard.strongEvidence.length >= 1, "mock 必须从候选人已有事实产生证据");
+  assert(JSON.stringify(mockCard).includes("淘宝"), "mock 证据必须来自候选人事实");
+  assert(!/Python|RAG|Agent|后端/.test(JSON.stringify(mockCard)), "mock 不得默认添加技术方向");
+  const emptyCard = await buildCandidateMatchCard({ modelConfig: { provider: "mock", providers: { mock: {} } }, profile: {} });
+  assert.deepStrictEqual(emptyCard.targetDirections, []);
+  assert.deepStrictEqual(emptyCard.strongEvidence, []);
   console.log("profile_quality_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);

@@ -30,6 +30,7 @@ const db = openDb(dbPath);
     await contractRepairAndFailureSmoke();
     await pipelineVersionCacheSmoke();
     await roleIntentGuardSmoke();
+    await matchingCardContractSmoke();
     matchBoundaryContractSmoke();
     genericPolicySmoke();
     staleAnalysisSmoke();
@@ -103,6 +104,31 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   assert.strictEqual(decisionBucket({ ...job, analysis: pythonResult, qualityTags: [], risks: [] }), "primary");
   assert.strictEqual(decisionBucket({ ...job, analysis: javaResult, qualityTags: [], risks: [] }), "talk");
+}
+
+async function matchingCardContractSmoke() {
+  const invalidCard = {
+    targetDirections: ["电商运营"],
+    strongEvidence: [{ label: "虚构经历", evidence: "" }]
+  };
+  const analyzer = createLlmAnalyzer({ adapter: { buildCandidateMatchCard: async () => invalidCard } });
+  await assert.rejects(
+    analyzer.buildCandidateMatchCard({
+      candidateProfile: {
+        candidate: { name: "脱敏候选人", city: "广州", targetTitles: ["电商运营"] },
+        experiences: [{ organization: "示例公司", role: "店铺运营", highlights: ["负责店铺活动复盘"] }]
+      }
+    }),
+    (error) => {
+      assert.strictEqual(error.code, "MODEL_CONTRACT_INVALID");
+      assert.strictEqual(error.invalidOutput, invalidCard);
+      const exposed = `${error.message}\n${error.stack || ""}`;
+      assert(!exposed.includes("13800138000"), "契约错误不得包含手机号");
+      assert(!exposed.includes("candidate@example.com"), "契约错误不得包含邮件地址");
+      assert(!exposed.includes("示例公司"), "契约错误不得在消息中复述候选人事实正文");
+      return true;
+    }
+  );
 }
 
 async function contractRepairAndFailureSmoke() {

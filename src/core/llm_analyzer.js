@@ -15,7 +15,8 @@ function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null,
     recommendSearchPlan: async (input) => validateAdapterResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),
     understandJob: async (input) => validateAdapterResult("understandJob", await modelAdapter.understandJob(input)),
     matchJob: async (input) => validateAdapterResult("matchJob", await modelAdapter.matchJob(input)),
-    draftCommunication: async (input) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input))
+    draftCommunication: async (input) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input)),
+    buildCandidateMatchCard: async (input) => validateAdapterResult("buildCandidateMatchCard", await modelAdapter.buildCandidateMatchCard(input))
   };
 }
 
@@ -50,11 +51,16 @@ function draftCommunication(input) {
   return defaultAnalyzer.draftCommunication(input);
 }
 
+function buildCandidateMatchCard(input) {
+  return defaultAnalyzer.buildCandidateMatchCard(input);
+}
+
 module.exports = {
   createLlmAnalyzer,
   analyzeResume,
   recommendSearchPlan,
   understandJob,
   matchJob,
-  draftCommunication
+  draftCommunication,
+  buildCandidateMatchCard
 };

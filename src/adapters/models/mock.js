@@ -109,6 +109,33 @@ class MockModelAdapter {
     };
   }
 
+  async buildCandidateMatchCard({ candidateProfile = {} } = {}) {
+    const candidate = candidateProfile.candidate || {};
+    const targetDirections = (candidate.targetTitles || []).map((title) => String(title || "").trim()).filter(Boolean).slice(0, 10);
+    const strongEvidence = [];
+    for (const experience of (candidateProfile.experiences || []).slice(0, 12)) {
+      const label = String(experience?.role || experience?.organization || "").trim();
+      const highlights = (experience?.highlights || []).map((item) => String(item || "").trim()).filter(Boolean);
+      if (label && highlights.length) strongEvidence.push({ label, evidence: `简历：${highlights.join("；")}` });
+    }
+    for (const project of (candidateProfile.projects || []).slice(0, 12)) {
+      const name = String(project?.name || "").trim();
+      if (!name) continue;
+      const facts = [...(project?.results || []), ...(project?.canSay || [])].map((item) => String(item || "").trim()).filter(Boolean);
+      strongEvidence.push({ label: name, evidence: facts.length ? `简历：${facts.join("；")}` : `简历项目：${name}` });
+    }
+    const skills = (candidateProfile.skills || []).map((skill) => String(skill?.name || skill || "").trim()).filter(Boolean);
+    if (skills.length) strongEvidence.push({ label: "已确认技能", evidence: `简历技能：${skills.join("、")}` });
+    // 只从候选人已有事实产生字段；没有可信事实时输出空数组，
+    // 不默认添加 Python、RAG、Agent 或后端方向。
+    return {
+      targetDirections,
+      strongEvidence: strongEvidence.slice(0, 12),
+      transferableCapabilities: [],
+      cautionTransitions: []
+    };
+  }
+
   async draftCommunication({ mode = "greeting", candidateProfile = {}, jobUnderstanding = {}, matchDecision = {}, hrMessage = "", userProvidedFacts = [] } = {}) {
     const kind = ["greeting", "hr_reply", "follow_up"].includes(mode) ? mode : "greeting";
     const jobEvidence = (matchDecision.evidence?.jd || jobUnderstanding.evidenceSnippets || []).slice(0, 2);
