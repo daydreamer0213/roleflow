@@ -119,7 +119,13 @@ async function runCommunicationBatch({
       const finalState = ["job_unavailable", "target_mismatch", "action_unavailable"].includes(state)
         ? state
         : "action_unavailable";
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: finalState });
+      transitionCommunicationItem(db, {
+        itemId: item.id,
+        batchId,
+        expectedStatus: "opening",
+        status: finalState,
+        evidence: communicationInspectionEvidence(inspection, finalState)
+      });
       reconcileCommunicationOutcome(db, {
         batch: getCommunicationBatch(db, batchId), item, status: finalState, note: `RoleFlow batch #${batchId}`
       });
@@ -130,6 +136,16 @@ async function runCommunicationBatch({
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
     if (pacing) return pacing;
   }
+}
+
+function communicationInspectionEvidence(inspection = {}, state = "") {
+  const statusLabel = String(inspection?.statusLabel || "").trim().slice(0, 100);
+  return {
+    inspection: {
+      state: String(state || inspection?.state || "").trim(),
+      ...(statusLabel ? { statusLabel } : {})
+    }
+  };
 }
 
 async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate }) {

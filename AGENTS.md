@@ -14,7 +14,7 @@
 - Use one logged-in Edge profile with exactly two operator-labeled fixed tabs: `BOSS-SEARCH` for scanning and read-only detail inspection, and `BOSS-COMMUNICATION` for future communication-page inspection. Never create a per-job tab, a second window, or a second BOSS session.
 - All work is serial: finish the current read-only operation and checkpoint its result before switching fixed tabs or starting the next job. The search tab locates the saved job URL; the communication tab inspects that one URL; return to search only after the item reaches a terminal state or is explicitly stopped.
 - Preserve random pacing, periodic cooldowns, checkpointing, and immediate stop on login/risk-control/page-loss signals.
-- No real communication or application click may occur without a separate, explicit user approval for that single click. A batch confirmation is not click approval.
+- The first real calibration click requires separate, explicit approval for that one click. After calibration, confirming a communication batch authorizes only the checked jobs in that immutable batch snapshot; execute them serially with per-job identity/result verification, and stop immediately on risk-control, page loss, target mismatch, or ambiguous outcome.
 - An inferred DOM selector, text guess, stale fixture, or tool-reported click success must never enable execution. A page-dependent conclusion requires redacted screenshots and DOM evidence from the actual logged-in page, followed by an immediate identity recheck before any click.
 - Never trade account safety for test speed. Prefer saved DOM fixtures and fake-browser tests after a minimal live sample establishes the real page structure.
 

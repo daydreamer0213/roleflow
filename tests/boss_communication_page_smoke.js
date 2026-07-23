@@ -16,6 +16,7 @@ const stayOnPageLabel = "\u7559\u5728\u6b64\u9875\u7ee7\u7eed\u6c9f\u901a";
 const readySnapshot = {
   url: jobUrl,
   jobId: "fake123",
+  documentReadyState: "complete",
   pageReady: true,
   risk: false,
   login: false,
@@ -67,6 +68,11 @@ assert.deepStrictEqual(
     actions: [{ ...readySnapshot.actions[0], label: continuingCommunicationLabel, isFriend: "true" }]
   }, expectedJob),
   { state: "already_communicated" }
+);
+assert.strictEqual(
+  classifyBossCommunicationSnapshot({ ...readySnapshot, jobStatus: "\u6700\u65b0" }, expectedJob).state,
+  "ready",
+  "BOSS uses .job-status for the 最新 freshness badge; it must not be treated as unavailable"
 );
 
 for (const [snapshot, expectedState] of [
@@ -194,6 +200,7 @@ function snapshotContext(url, fixtures, onActionClick = () => {}) {
   const document = {
     title: fixture.title || "",
     body: { innerText: fixture.bodyText || "Standalone detail fixture" },
+    readyState: fixture.documentReadyState || "complete",
     querySelector(selector) { return nodes[selector] || null; },
     querySelectorAll(selector) {
       const collections = {
@@ -257,6 +264,7 @@ function fakeBrowser({
   const calls = { listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [], guardedClick: [] };
   let currentTabs = tabs;
   const contexts = new Map();
+  const helperExpressions = new Map();
   const snapshots = [];
   return {
     calls,
@@ -282,6 +290,9 @@ function fakeBrowser({
     },
     async evalValue(tabId, expression) {
       calls.evalValue.push([tabId, expression]);
+      if (expression.includes("window.__bossCommunicationSnapshot = function()")) {
+        helperExpressions.set(tabId, expression);
+      }
       if (expression.includes("__bossGuardedCommunicationClick")) {
         calls.guardedClick.push([tabId, expression]);
         guardedClickStarted?.resolve();
@@ -299,6 +310,10 @@ function fakeBrowser({
           if (nextFixture) fixtures.set(contextUrl, nextFixture);
           contexts.delete(tabId);
         }));
+        const helperExpression = helperExpressions.get(tabId);
+        if (helperExpression && helperExpression !== expression) {
+          vm.runInContext(helperExpression, contexts.get(tabId));
+        }
       }
       const result = vm.runInContext(expression, contexts.get(tabId));
       if (expression === "(() => window.__bossCommunicationSnapshot())()") snapshots.push(result);
@@ -312,10 +327,7 @@ function fakeBrowser({
     setFixture(url, fixture) {
       fixtures.set(url, fixture);
       for (const tab of currentTabs.filter((candidate) => candidate.url === url)) {
-        const context = contexts.get(tab.id);
-        if (!context) continue;
-        context.document.title = fixture.title || "";
-        context.document.body.innerText = fixture.bodyText || "Standalone detail fixture";
+        contexts.delete(tab.id);
       }
     },
     removeTab(tabId) {
@@ -490,7 +502,7 @@ function assertNoPreparationAction(browser, before) {
   const snapshot = JSON.parse(JSON.stringify(inspectBrowser.snapshots[0]));
   assert.deepStrictEqual(snapshot, readySnapshot);
   assert.deepStrictEqual(Object.keys(snapshot).sort(), [
-    "actions", "bossActiveText", "company", "inlineChatSent", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
+    "actions", "bossActiveText", "company", "documentReadyState", "inlineChatSent", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
   ]);
 
   const alreadyCommunicatedBrowser = fakeBrowser({
@@ -582,6 +594,97 @@ function assertNoPreparationAction(browser, before) {
   const inlineChatSnapshot = JSON.parse(JSON.stringify(inlineChatBrowser.snapshots.at(-1)));
   assert.strictEqual(inlineChatSnapshot.successDialog.visible, false);
   assert.strictEqual(inlineChatSnapshot.inlineChatSent, true);
+
+  const latestStatusBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    fixtures: new Map([[jobUrl, { jobStatus: "\u6700\u65b0" }]]),
+    afterClickFixtures: new Map([[jobUrl, inlineChatSentFixture({ jobStatus: "\u6700\u65b0" })]])
+  });
+  const latestStatusAdapter = new BossSiteAdapter({ browser: latestStatusBrowser, sleepFn: async () => {} });
+  const latestStatusInspection = await latestStatusAdapter.inspectCommunicationJob(expectedJob);
+  assert.strictEqual(latestStatusInspection.state, "ready");
+  assert.deepStrictEqual(
+    await latestStatusAdapter.dispatchCommunication(latestStatusInspection),
+    { state: "dispatched", jobId: "fake123" }
+  );
+  assert.deepStrictEqual(
+    await latestStatusAdapter.verifyCommunicationResult(expectedJob),
+    { state: "succeeded", jobId: "fake123" }
+  );
+
+  assert.deepStrictEqual(
+    classifyBossCommunicationSnapshot({ ...readySnapshot, documentReadyState: "loading" }, expectedJob),
+    { state: "loading" },
+    "a partially loaded detail page must not become clickable"
+  );
+
+  const slowReadyBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    fixtures: new Map([[jobUrl, { documentReadyState: "loading" }]])
+  });
+  let slowReadySleeps = 0;
+  const slowReadyAdapter = new BossSiteAdapter({
+    browser: slowReadyBrowser,
+    sleepFn: async () => {
+      slowReadySleeps += 1;
+      if (slowReadySleeps === 3) slowReadyBrowser.setFixture(jobUrl, { documentReadyState: "complete" });
+    }
+  });
+  assert.strictEqual((await slowReadyAdapter.inspectCommunicationJob(expectedJob)).state, "ready");
+  assert(
+    slowReadySleeps >= 3,
+    "inspection must keep waiting until the standalone detail page finishes loading"
+  );
+
+  const settledWithoutActionBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    fixtures: new Map([[jobUrl, { actions: [] }]])
+  });
+  let settledWithoutActionSleeps = 0;
+  const settledWithoutActionAdapter = new BossSiteAdapter({
+    browser: settledWithoutActionBrowser,
+    sleepFn: async () => { settledWithoutActionSleeps += 1; }
+  });
+  assert.strictEqual(
+    (await settledWithoutActionAdapter.inspectCommunicationJob(expectedJob)).state,
+    "action_unavailable"
+  );
+  assert(
+    settledWithoutActionSleeps <= 5,
+    "a fully loaded page with no communication action must not consume the long loading-page wait window"
+  );
+
+  const loadingBeforeClickBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }]
+  });
+  const loadingBeforeClickAdapter = new BossSiteAdapter({ browser: loadingBeforeClickBrowser, sleepFn: async () => {} });
+  const loadingBeforeClickInspection = await loadingBeforeClickAdapter.inspectCommunicationJob(expectedJob);
+  loadingBeforeClickBrowser.setFixture(jobUrl, { documentReadyState: "loading" });
+  await assert.rejects(
+    () => loadingBeforeClickAdapter.dispatchCommunication(loadingBeforeClickInspection),
+    (error) => error?.code === "BOSS_COMMUNICATION_TARGET_CHANGED"
+  );
+
+  const delayedSuccessBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }]
+  });
+  let delayedSuccessSleeps = 0;
+  const delayedSuccessAdapter = new BossSiteAdapter({
+    browser: delayedSuccessBrowser,
+    sleepFn: async () => {
+      if (delayedSuccessBrowser.calls.guardedClick.length === 0) return;
+      delayedSuccessSleeps += 1;
+      if (delayedSuccessSleeps === 5) delayedSuccessBrowser.setFixture(jobUrl, inlineChatSentFixture());
+    }
+  });
+  const delayedSuccessInspection = await delayedSuccessAdapter.inspectCommunicationJob(expectedJob);
+  await delayedSuccessAdapter.dispatchCommunication(delayedSuccessInspection);
+  assert.deepStrictEqual(
+    await delayedSuccessAdapter.verifyCommunicationResult(expectedJob),
+    { state: "succeeded", jobId: "fake123" },
+    "verification must tolerate a success state that appears after the legacy four-poll window"
+  );
+  assert(delayedSuccessSleeps >= 5);
 
   for (const [description, action] of [
     ["friend state is not confirmed", actionNode(continuingCommunicationLabel, { isFriend: "false" })],
@@ -696,7 +799,7 @@ function assertNoPreparationAction(browser, before) {
     await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob),
     { state: "ambiguous" }
   );
-  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 6);
+  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 43);
   await assert.rejects(
     () => new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} }).verifyCommunicationResult(expectedJob),
     (error) => error.code === "BOSS_COMMUNICATION_VERIFICATION_UNAVAILABLE"

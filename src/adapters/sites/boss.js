@@ -286,6 +286,7 @@ const PAGE_HELPERS = String.raw`
     return {
       url: location.href,
       jobId: (path.match(/^\/job_detail\/([^/?#]+)\.html$/i) || [])[1] || "",
+      documentReadyState: document.readyState,
       risk,
       login,
       pageReady: Boolean(isDetailPath && header),
@@ -1225,12 +1226,27 @@ class BossSiteAdapter {
       await this.browser.evalValue(tabId, PAGE_HELPERS);
 
       let inspection = { state: "action_unavailable" };
-      for (let attempt = 0; attempt < 4; attempt += 1) {
+      let readySnapshots = 0;
+      let settledUnavailableSnapshots = 0;
+      for (let attempt = 0; attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS; attempt += 1) {
         throwIfAborted(signal);
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
-        if (["ready", "already_communicated", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
-        if (attempt < 3) await this.waitWithPacing("retry");
+        if (inspection.state === "ready") {
+          settledUnavailableSnapshots = 0;
+          readySnapshots += 1;
+          if (readySnapshots >= COMMUNICATION_READY_SNAPSHOTS) return inspection;
+        } else {
+          readySnapshots = 0;
+          if (["already_communicated", "target_mismatch", "job_unavailable"].includes(inspection.state)) return inspection;
+          if (inspection.state === "action_unavailable") {
+            settledUnavailableSnapshots += 1;
+            if (settledUnavailableSnapshots >= COMMUNICATION_SETTLED_UNAVAILABLE_SNAPSHOTS) return inspection;
+          } else {
+            settledUnavailableSnapshots = 0;
+          }
+        }
+        if (attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS - 1) await this.waitWithPacing("retry");
       }
       return inspection;
     } finally {
@@ -1298,12 +1314,12 @@ class BossSiteAdapter {
       }
       await this.waitWithPacing("detail");
       await this.browser.evalValue(tabId, PAGE_HELPERS);
-      for (let attempt = 0; attempt < 4; attempt += 1) {
+      for (let attempt = 0; attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS; attempt += 1) {
         throwIfAborted(signal);
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         const result = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
         if (["succeeded", "target_mismatch", "job_unavailable"].includes(result.state)) return result;
-        if (attempt < 3) await this.waitWithPacing("retry");
+        if (attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS - 1) await this.waitWithPacing("retry");
       }
       return { state: "ambiguous" };
     } finally {
@@ -1746,6 +1762,24 @@ function normalizeCommunicationText(value) {
     .replace(/[\s\u00b7._()\[\]{}<>\-_/\\,;:!?\u3000-\u303f\uff00-\uff65]/g, "");
 }
 
+const EXPLICITLY_UNAVAILABLE_BOSS_JOB_STATUSES = Object.freeze([
+  "\u505c\u6b62\u62db\u8058",
+  "\u5df2\u505c\u6b62\u62db\u8058",
+  "\u804c\u4f4d\u5df2\u5173\u95ed",
+  "\u804c\u4f4d\u5df2\u4e0b\u67b6",
+  "\u5df2\u4e0b\u67b6"
+]);
+const NORMALIZED_UNAVAILABLE_BOSS_JOB_STATUSES = new Set(
+  EXPLICITLY_UNAVAILABLE_BOSS_JOB_STATUSES.map(normalizeCommunicationText)
+);
+const COMMUNICATION_SNAPSHOT_ATTEMPTS = 40;
+const COMMUNICATION_READY_SNAPSHOTS = 2;
+const COMMUNICATION_SETTLED_UNAVAILABLE_SNAPSHOTS = 4;
+
+function isExplicitlyUnavailableBossJobStatus(value) {
+  return NORMALIZED_UNAVAILABLE_BOSS_JOB_STATUSES.has(normalizeCommunicationText(value));
+}
+
 function communicationJobId(url) {
   const value = String(url || "").trim();
   if (!value) return "";
@@ -1837,12 +1871,16 @@ function guardedBossCommunicationClickExpression(expectedJob) {
         && (snapshotCompany.includes(expectedCompany) || expectedCompany.includes(snapshotCompany)));
     const actions = Array.isArray(snapshot.actions) ? snapshot.actions : [];
     const action = actions.length === 1 ? actions[0] : null;
+    const jobStatus = String(snapshot.jobStatus || "").trim();
+    const unavailableStatuses = new Set(${JSON.stringify(EXPLICITLY_UNAVAILABLE_BOSS_JOB_STATUSES)}.map(normalize));
     const snapshotReady = snapshot.pageReady === true
+      && snapshot.documentReadyState === "complete"
       && snapshot.jobId === expected.jobId
       && pathJobId === expected.jobId
       && normalize(snapshot.title) === normalize(expected.title)
       && sameCompany
-      && String(snapshot.jobStatus || "").trim() === "\u62db\u8058\u4e2d"
+      && jobStatus
+      && !unavailableStatuses.has(normalize(jobStatus))
       && action
       && action.label === "\u7acb\u5373\u6c9f\u901a"
       && action.isFriend === "false"
@@ -1901,6 +1939,9 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
   if (snapshot?.login) {
     throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication inspection has stopped.");
   }
+  if (snapshot?.documentReadyState && snapshot.documentReadyState !== "complete") {
+    return { state: "loading" };
+  }
   if (!snapshot?.pageReady) return { state: "action_unavailable" };
   if (!sameBossCommunicationJob(snapshot, expectedJob)
     || !sameBossCommunicationTitle(snapshot, expectedJob)
@@ -1909,8 +1950,8 @@ function classifyBossCommunicationSnapshot(snapshot = {}, expectedJob = {}) {
   }
   const jobStatus = String(snapshot?.jobStatus || "").trim();
   if (!jobStatus) return { state: "action_unavailable" };
-  if (normalizeCommunicationText(jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
-    return { state: "job_unavailable" };
+  if (isExplicitlyUnavailableBossJobStatus(jobStatus)) {
+    return { state: "job_unavailable", statusLabel: jobStatus };
   }
   const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
   if (actions.length !== 1) return { state: "action_unavailable" };
@@ -1947,6 +1988,9 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
   if (snapshot?.login) {
     throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication verification has stopped.");
   }
+  if (snapshot?.documentReadyState && snapshot.documentReadyState !== "complete") {
+    return { state: "ambiguous" };
+  }
   if (!snapshot?.pageReady) return { state: "ambiguous" };
   if (!sameBossCommunicationJob(snapshot, expectedJob)
     || !sameBossCommunicationTitle(snapshot, expectedJob)
@@ -1955,8 +1999,8 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
   }
   const jobStatus = String(snapshot?.jobStatus || "").trim();
   if (!jobStatus) return { state: "ambiguous" };
-  if (normalizeCommunicationText(jobStatus) !== normalizeCommunicationText("\u62db\u8058\u4e2d")) {
-    return { state: "job_unavailable" };
+  if (isExplicitlyUnavailableBossJobStatus(jobStatus)) {
+    return { state: "job_unavailable", statusLabel: jobStatus };
   }
   const actions = Array.isArray(snapshot?.actions) ? snapshot.actions : [];
   const action = actions.length === 1 ? actions[0] : null;

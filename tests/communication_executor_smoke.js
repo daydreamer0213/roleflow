@@ -73,21 +73,29 @@ async function alreadyCommunicatedSmoke() {
 
 async function unavailableAndMismatchContinueSmoke() {
   const fixture = createFixture(3);
-  const states = ["job_unavailable", "target_mismatch", "ready"];
+  const inspections = [
+    { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" },
+    { state: "target_mismatch" },
+    { state: "ready" }
+  ];
   let inspected = 0;
   await runPermittedBatch({
     db: fixture.db,
     batchId: fixture.batch.id,
     accessController: { async reserve() {} },
     adapter: {
-      async inspectCommunicationJob() { return { state: states[inspected++] }; },
+      async inspectCommunicationJob() { return inspections[inspected++]; },
       async dispatchCommunication() {},
       async verifyCommunicationResult() { return { state: "succeeded" }; }
     },
     randomFn: () => 0,
     sleepFn: async () => {}
   });
-  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status), ["job_unavailable", "target_mismatch", "succeeded"]);
+  const items = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  assert.deepStrictEqual(items.map((item) => item.status), ["job_unavailable", "target_mismatch", "succeeded"]);
+  assert.deepStrictEqual(items[0].evidence, {
+    inspection: { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" }
+  });
   assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", "applied"]);
   fixture.close();
 }
