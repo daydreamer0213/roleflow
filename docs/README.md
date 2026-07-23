@@ -1,6 +1,8 @@
 # RoleFlow 文档导航
 
 - [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：跨会话、跨编辑器和跨代理的项目交接入口；开始开发前先读。
+- [`superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md`](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md)：多平台只读找岗与每平台继承搜索模板的已确认设计。
+- [`superpowers/plans/2026-07-23-multi-platform-readonly-search.md`](superpowers/plans/2026-07-23-multi-platform-readonly-search.md)：可由隔离分支执行的多平台基础实施计划；不含真实智联 DOM 适配。
 
 本目录同时保存当前产品文档和历史整改记录。阅读时应先确认文档类型，避免把旧方案中的参数当成当前行为。
 

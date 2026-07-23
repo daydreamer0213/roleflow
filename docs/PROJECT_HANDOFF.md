@@ -46,6 +46,7 @@ git status --short
 | 通用证据岗位匹配与匹配偏好卡 | [设计](superpowers/specs/2026-07-23-generic-evidence-matching-design.md) · [计划](superpowers/plans/2026-07-23-generic-evidence-matching.md) | 已确认，未实现 |
 | 搜索意图组合 | [设计](superpowers/specs/2026-07-23-search-intent-portfolio-design.md) · [计划](superpowers/plans/2026-07-23-search-intent-portfolio.md) | 已确认，未实现 |
 | 求职进展与人工确认工作流 | [设计](superpowers/specs/2026-07-23-candidate-progress-workflow-design.md) · [计划](superpowers/plans/2026-07-23-candidate-progress-workflow.md) | 已确认，未实现 |
+| 多平台只读搜索与继承模板 | [设计](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md) · [计划](superpowers/plans/2026-07-23-multi-platform-readonly-search.md) | 已确认，未实现；真实智联适配器等待独立只读证据 |
 
 ## 已确认的产品决策
 
@@ -74,7 +75,9 @@ git status --short
 2. 搜索意图组合；
 3. 跨平台通用筛选；
 4. 求职进展与人工确认工作流；
-5. 在上述基础稳定后，再讨论多平台适配器和只读消息发现。
+5. 多平台只读搜索与继承模板基础；
+6. 在上述基础稳定且获得独立只读证据后，再接入首个真实平台；
+7. 最后才讨论只读消息发现。
 
 排序不是授权自动实施；每一项开始前仍由当前用户确认范围和优先级。
 
