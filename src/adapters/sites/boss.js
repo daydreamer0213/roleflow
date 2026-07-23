@@ -281,6 +281,8 @@ const PAGE_HELPERS = String.raw`
       title: text(".dialog-title", successDialogRoot),
       footer: text(".dialog-footer", successDialogRoot)
     };
+    const inlineChatSent = Array.from(document.querySelectorAll(".dialog-wrap.startchat-dialog .message-list .message-item .status.success"))
+      .some((node) => isVisible(node) && decode(node.innerText || node.textContent || "") === "\u5df2\u53d1\u9001");
     return {
       url: location.href,
       jobId: (path.match(/^\/job_detail\/([^/?#]+)\.html$/i) || [])[1] || "",
@@ -293,7 +295,8 @@ const PAGE_HELPERS = String.raw`
       company: text(".sider-company .company-info"),
       bossActiveText: text(".job-boss-info .boss-active-time"),
       actions,
-      successDialog
+      successDialog,
+      inlineChatSent
     };
   };
   return true;
@@ -1959,14 +1962,16 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
   const action = actions.length === 1 ? actions[0] : null;
   const dialog = snapshot?.successDialog || {};
   const expectedJobId = communicationJobId(expectedJob?.url);
-  const succeeded = hasSafeCommunicationAction(action)
+  const hasTrustedContinuedCommunication = hasSafeCommunicationAction(action)
     && action.label === "\u7ee7\u7eed\u6c9f\u901a"
     && action.isFriend === "true"
     && action.redirectJobId === expectedJobId
-    && action.hasChatIdentity === true
-    && dialog.visible === true
+    && action.hasChatIdentity === true;
+  const hasLegacySuccessDialog = dialog.visible === true
     && dialog.title === "\u5df2\u5411BOSS\u53d1\u9001\u6d88\u606f"
     && dialog.footer === "\u7559\u5728\u6b64\u9875\u7ee7\u7eed\u6c9f\u901a";
+  const succeeded = hasTrustedContinuedCommunication
+    && (hasLegacySuccessDialog || snapshot?.inlineChatSent === true);
   return succeeded ? { state: "succeeded", jobId: expectedJobId } : { state: "ambiguous" };
 }
 
