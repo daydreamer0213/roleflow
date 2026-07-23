@@ -22,27 +22,27 @@
 ## 当前协作分支
 
 - 分支：codex/generic-evidence-matching-design
-- 已归档的设计包提交：19e3d4b docs: record search and progress designs
-- 远端分支：origin/codex/generic-evidence-matching-design
+- 本地分支包含已确认的设计与实施计划；以 `git log --oneline` 和工作区状态为准。
+- 远端分支：origin/codex/generic-evidence-matching-design。远端可能暂时落后于本地；网络恢复后正常推送，绝不以重置本地分支来“同步”。
 - 本文件的更新时间：2026-07-23
 
-开始工作前先同步该分支；不要根据旧聊天摘要猜测分支状态。建议使用：
+开始工作前先检查该分支；不要根据旧聊天摘要猜测分支状态。建议使用：
 
 ~~~
 git fetch origin
 git switch codex/generic-evidence-matching-design
-git pull --ff-only
-git status --short
+git status -sb
+git log --oneline origin/codex/generic-evidence-matching-design..HEAD
 ~~~
 
-如果 VSCode 当前打开的是主项目目录，应先创建或切换到隔离 worktree，再让 Kimi、Claude Code 或其他代理工作。
+如果输出显示本地领先远端，保留本地提交并稍后重试普通 `git push`；不要执行 reset、force-push 或丢弃本地提交。如果 VSCode 当前打开的是主项目目录，应先从这个本地分支创建或切换到隔离 worktree，再让 Kimi、Claude Code 或其他代理工作。
 
 ## 已完成且已提交的内容
 
 | 内容 | 提交/文档 | 状态 |
 |---|---|---|
 | BOSS 内嵌聊天“已发送”成功验证 | 6629500 | 已实现并有离线回归；不采集消息正文 |
-| 跨平台通用筛选（区域、公司规模）设计 | [设计](superpowers/specs/2026-07-23-cross-platform-common-filters-design.md) | 已确认，未实现；行业本期保持不限制 |
+| 跨平台通用筛选（区域、公司规模）设计 | [设计](superpowers/specs/2026-07-23-cross-platform-common-filters-design.md) · [计划](superpowers/plans/2026-07-23-cross-platform-common-filters.md) | 已确认，未实现；行业本期保持不限制 |
 | 通用证据岗位匹配与匹配偏好卡 | [设计](superpowers/specs/2026-07-23-generic-evidence-matching-design.md) · [计划](superpowers/plans/2026-07-23-generic-evidence-matching.md) | 已确认，未实现 |
 | 搜索意图组合 | [设计](superpowers/specs/2026-07-23-search-intent-portfolio-design.md) · [计划](superpowers/plans/2026-07-23-search-intent-portfolio.md) | 已确认，未实现 |
 | 求职进展与人工确认工作流 | [设计](superpowers/specs/2026-07-23-candidate-progress-workflow-design.md) · [计划](superpowers/plans/2026-07-23-candidate-progress-workflow.md) | 已确认，未实现 |
