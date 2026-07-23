@@ -8,6 +8,7 @@ const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
 const { effectiveHardBlockers } = require("./model_contract");
+const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 
 const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
@@ -454,6 +455,29 @@ ${COMMUNICATION_SCHEMA}
 ${WORKFLOW_SCHEMA}
 `;
 
+const MATCHING_CARD_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_matching_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  profile_version_id INTEGER NOT NULL,
+  resume_document_id INTEGER,
+  resume_content_hash TEXT NOT NULL,
+  card_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'superseded')),
+  source TEXT NOT NULL CHECK(source IN ('model', 'user', 'migration')),
+  confirmed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(profile_version_id) REFERENCES profile_versions(id),
+  FOREIGN KEY(resume_document_id) REFERENCES resume_documents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_matching_cards_active
+  ON candidate_matching_cards(profile_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_matching_cards_resume_hash
+  ON candidate_matching_cards(profile_id, resume_content_hash, status);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -483,6 +507,14 @@ const MIGRATIONS = [
     name: "workflow_runs_three_slots",
     apply(db) {
       migrateWorkflowRunSlots(db);
+    }
+  },
+  {
+    version: 5,
+    name: "candidate_matching_cards_v1",
+    apply(db) {
+      db.exec(MATCHING_CARD_SCHEMA);
+      backfillMigrationMatchingCards(db);
     }
   }
 ];
@@ -599,6 +631,40 @@ function migrateWorkflowRunSlots(db) {
     FROM workflow_runs_two_slots;
     DROP TABLE workflow_runs_two_slots;
   `);
+}
+
+// 旧数据补卡：不调用模型、网络或真实平台，只为尚无任何 draft/confirmed 卡的候选人，
+// 从其最新画像版本与关联简历文档生成 source="migration" 的草稿卡。
+function backfillMigrationMatchingCards(db) {
+  const candidates = db.prepare("SELECT id, source_hash FROM candidate_profiles").all();
+  const existingCard = db.prepare(`SELECT id FROM candidate_matching_cards
+    WHERE profile_id = ? AND status IN ('draft', 'confirmed') LIMIT 1`);
+  const latestVersion = db.prepare(`SELECT pv.id AS profile_version_id, pv.profile_json, pv.resume_document_id,
+      rd.content_hash AS resume_content_hash
+    FROM profile_versions pv
+    LEFT JOIN resume_documents rd ON rd.id = pv.resume_document_id
+    WHERE pv.profile_id = ?
+    ORDER BY pv.created_at DESC, pv.id DESC LIMIT 1`);
+  const insert = db.prepare(`INSERT INTO candidate_matching_cards(
+    profile_id, profile_version_id, resume_document_id, resume_content_hash,
+    card_json, status, source, confirmed_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, 'draft', 'migration', NULL, ?, ?)`);
+  for (const candidate of candidates) {
+    if (existingCard.get(Number(candidate.id))) continue;
+    const version = latestVersion.get(Number(candidate.id));
+    if (!version) continue;
+    const card = normalizeMatchingCard(matchingCardFromProfile(parseJson(version.profile_json, {})), { source: "migration" });
+    const now = nowIso();
+    insert.run(
+      Number(candidate.id),
+      Number(version.profile_version_id),
+      version.resume_document_id || null,
+      String(version.resume_content_hash || candidate.source_hash || ""),
+      JSON.stringify(card),
+      now,
+      now
+    );
+  }
 }
 
 function recordSiteAccessEvent(db, {
@@ -2204,12 +2270,145 @@ function getLatestProfileVersionId(db, profileId) {
 
 function getSearchPlanDependency(db, planId) {
   const plan = getSearchPlan(db, planId);
-  if (!plan) return { stale: false, planProfileVersionId: null, currentProfileVersionId: null };
+  if (!plan) return { stale: false, planProfileVersionId: null, currentProfileVersionId: null, matchingCardRequired: false, activeProfileVersionId: null };
   const currentProfileVersionId = getLatestProfileVersionId(db, plan.profileId);
+  const activeCard = getActiveMatchingCard(db, plan.profileId);
+  if (!activeCard) {
+    return {
+      stale: Boolean(currentProfileVersionId && plan.profileVersionId !== currentProfileVersionId),
+      planProfileVersionId: plan.profileVersionId || null,
+      currentProfileVersionId,
+      matchingCardRequired: true,
+      activeProfileVersionId: null
+    };
+  }
   return {
-    stale: Boolean(currentProfileVersionId && plan.profileVersionId !== currentProfileVersionId),
+    stale: plan.profileVersionId !== activeCard.profileVersionId,
     planProfileVersionId: plan.profileVersionId || null,
-    currentProfileVersionId
+    currentProfileVersionId,
+    matchingCardRequired: false,
+    activeProfileVersionId: activeCard.profileVersionId,
+    matchingCardId: activeCard.id
+  };
+}
+
+function matchingCardRow(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    profileId: Number(row.profile_id),
+    profileVersionId: Number(row.profile_version_id),
+    resumeDocumentId: row.resume_document_id == null ? null : Number(row.resume_document_id),
+    resumeContentHash: row.resume_content_hash || "",
+    card: parseJson(row.card_json, {}),
+    status: row.status,
+    source: row.source,
+    confirmedAt: row.confirmed_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function getMatchingCard(db, cardId) {
+  return matchingCardRow(db.prepare("SELECT * FROM candidate_matching_cards WHERE id = ?").get(Number(cardId)));
+}
+
+function getActiveMatchingCard(db, profileId) {
+  return matchingCardRow(db.prepare(`SELECT * FROM candidate_matching_cards
+    WHERE profile_id = ? AND status = 'confirmed'
+    ORDER BY confirmed_at DESC, id DESC LIMIT 1`).get(Number(profileId)));
+}
+
+function listMatchingCards(db, profileId) {
+  return db.prepare(`SELECT * FROM candidate_matching_cards
+    WHERE profile_id = ? ORDER BY created_at DESC, id DESC`).all(Number(profileId)).map(matchingCardRow);
+}
+
+function createMatchingCardDraft(db, { profileId, profileVersionId, resumeDocumentId = null, resumeContentHash, card, source = "model" }) {
+  const profile = Number(profileId);
+  const version = Number(profileVersionId);
+  const hash = String(resumeContentHash || "").trim();
+  if (!profile || !version || !hash) throw new Error("匹配卡草稿必须包含 profileId、profileVersionId 与 resumeContentHash。");
+  const existing = db.prepare(`SELECT * FROM candidate_matching_cards
+    WHERE profile_id = ? AND resume_content_hash = ? AND status IN ('draft', 'confirmed')
+    ORDER BY status = 'confirmed' DESC, id DESC LIMIT 1`).get(profile, hash);
+  if (existing) return matchingCardRow(existing);
+  const normalized = normalizeMatchingCard(card, { source });
+  const now = nowIso();
+  const result = db.prepare(`INSERT INTO candidate_matching_cards(
+    profile_id, profile_version_id, resume_document_id, resume_content_hash,
+    card_json, status, source, confirmed_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, ?)`)
+    .run(profile, version, resumeDocumentId == null ? null : Number(resumeDocumentId), hash, JSON.stringify(normalized), normalized.source, now, now);
+  return getMatchingCard(db, Number(result.lastInsertRowid));
+}
+
+function confirmMatchingCard(db, { profileId, cardId }) {
+  const profile = Number(profileId);
+  const target = Number(cardId);
+  const now = nowIso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const row = db.prepare("SELECT id FROM candidate_matching_cards WHERE id = ? AND profile_id = ?").get(target, profile);
+    if (!row) throw new Error("matching card not found");
+    db.prepare("UPDATE candidate_matching_cards SET status = 'superseded', updated_at = ? WHERE profile_id = ? AND status = 'confirmed'").run(now, profile);
+    db.prepare("UPDATE candidate_matching_cards SET status = 'confirmed', confirmed_at = ?, updated_at = ? WHERE id = ?").run(now, now, target);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return getMatchingCard(db, target);
+}
+
+function saveMatchingCardDraftEdit(db, { profileId, cardId, card }) {
+  const existing = getMatchingCard(db, cardId);
+  if (!existing || existing.profileId !== Number(profileId)) throw new Error("matching card not found");
+  if (existing.status !== "draft") throw new Error("只有草稿卡可以直接编辑；已确认卡请使用修订。");
+  const normalized = normalizeMatchingCard(card, { source: "user", editedByUser: true });
+  db.prepare("UPDATE candidate_matching_cards SET card_json = ?, source = 'user', updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(normalized), nowIso(), existing.id);
+  return getMatchingCard(db, existing.id);
+}
+
+function saveConfirmedMatchingCardRevision(db, { profileId, cardId, card }) {
+  const profile = Number(profileId);
+  const target = Number(cardId);
+  const normalized = normalizeMatchingCard(card, { source: "user", editedByUser: true });
+  const now = nowIso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = db.prepare("SELECT * FROM candidate_matching_cards WHERE id = ? AND profile_id = ?").get(target, profile);
+    if (!existing) throw new Error("matching card not found");
+    if (existing.status !== "confirmed") throw new Error("只有已确认卡可以产生确认修订。");
+    db.prepare("UPDATE candidate_matching_cards SET status = 'superseded', updated_at = ? WHERE profile_id = ? AND status = 'confirmed'").run(now, profile);
+    const result = db.prepare(`INSERT INTO candidate_matching_cards(
+      profile_id, profile_version_id, resume_document_id, resume_content_hash,
+      card_json, status, source, confirmed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'confirmed', 'user', ?, ?, ?)`)
+      .run(profile, Number(existing.profile_version_id), existing.resume_document_id || null,
+        existing.resume_content_hash, JSON.stringify(normalized), now, now, now);
+    db.exec("COMMIT");
+    return getMatchingCard(db, Number(result.lastInsertRowid));
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function getCandidateMatchingContext(db, profileId) {
+  const activeCard = getActiveMatchingCard(db, profileId);
+  if (!activeCard) return null;
+  const version = db.prepare("SELECT id, profile_json FROM profile_versions WHERE id = ?").get(activeCard.profileVersionId);
+  if (!version) return null;
+  return {
+    matchingCard: activeCard.card,
+    matchingCardId: activeCard.id,
+    matchingCardRevision: matchingCardRevision(activeCard.card),
+    matchingCardConfirmedAt: activeCard.confirmedAt,
+    profileVersionId: activeCard.profileVersionId,
+    candidateProfile: parseJson(version.profile_json, {}),
+    resumeDocumentId: activeCard.resumeDocumentId
   };
 }
 
@@ -3294,6 +3493,14 @@ module.exports = {
   WORKFLOW_RUN_STATUSES,
   openDb,
   backfillHistoricalCommunicationOutcomes,
+  createMatchingCardDraft,
+  getMatchingCard,
+  getActiveMatchingCard,
+  listMatchingCards,
+  saveMatchingCardDraftEdit,
+  confirmMatchingCard,
+  saveConfirmedMatchingCardRevision,
+  getCandidateMatchingContext,
   createWorkflowRun,
   getWorkflowRun,
   getWorkflowRunByCommunicationBatch,

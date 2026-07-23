@@ -12,15 +12,19 @@ try {
   const freshPath = path.join(root, "fresh.sqlite");
   db = openDb(freshPath);
   assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  const freshMigrations = db.prepare("SELECT version, name, backup_path FROM schema_migrations").all().map((row) => ({ ...row }));
   assert.deepStrictEqual(
-    db.prepare("SELECT version, name, backup_path FROM schema_migrations").all().map((row) => ({ ...row })),
+    freshMigrations,
     [
       { version: 1, name: "stable_scan_runtime", backup_path: null },
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
-      { version: 4, name: "workflow_runs_three_slots", backup_path: null }
+      { version: 4, name: "workflow_runs_three_slots", backup_path: null },
+      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1", backup_path: null }
     ]
   );
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_matching_cards_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
     1
@@ -31,6 +35,10 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
     1
   );
   assert(SCHEMA_VERSION >= 3);
@@ -59,7 +67,8 @@ try {
       { version: 1, name: "stable_scan_runtime" },
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
-      { version: 4, name: "workflow_runs_three_slots" }
+      { version: 4, name: "workflow_runs_three_slots" },
+      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -73,6 +82,10 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
     1
   );
   db.close();
@@ -312,6 +325,82 @@ try {
       .get(historyProfileId, historyJobId).status,
     "invalid"
   );
+  db.close();
+
+  const v4LegacyPath = path.join(root, "production-v4-legacy.sqlite");
+  db = openDb(v4LegacyPath);
+  const v4Now = "2026-07-21T00:00:00.000Z";
+  const v4Profile = {
+    candidate: { name: "V4 Candidate", targetTitles: ["电商运营"] },
+    skills: ["活动复盘", "ROI 分析"],
+    projects: [{ name: "店铺活动复盘", tags: ["ROI"], pitch: "负责店铺活动复盘和投放 ROI 优化" }]
+  };
+  const v4ProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('V4 Candidate', ?, 'v4-resume-hash', ?, ?)`).run(JSON.stringify(v4Profile), v4Now, v4Now).lastInsertRowid);
+  const v4DocumentId = Number(db.prepare(`INSERT INTO resume_documents(
+    profile_id, original_file_name, format, content_hash, resume_text, text_truncated, diagnostics_json, created_at
+  ) VALUES (?, 'resume.txt', 'text', 'v4-resume-hash', '脱敏简历文本', 0, '{}', ?)`).run(v4ProfileId, v4Now).lastInsertRowid);
+  const v4VersionId = Number(db.prepare(`INSERT INTO profile_versions(
+    profile_id, resume_document_id, profile_json, created_at
+  ) VALUES (?, ?, ?, ?)`).run(v4ProfileId, v4DocumentId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
+  db.exec(`
+    DROP TABLE candidate_matching_cards;
+    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
+    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+  `);
+  db.close();
+  db = openDb(v4LegacyPath);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM profile_versions").get().n, 1);
+  const migrationCards = db.prepare("SELECT * FROM candidate_matching_cards WHERE profile_id = ?").all(v4ProfileId);
+  assert.strictEqual(migrationCards.length, 1, "无卡候选人升级后必须补出一张迁移草稿卡");
+  assert.strictEqual(migrationCards[0].status, "draft");
+  assert.strictEqual(migrationCards[0].source, "migration");
+  assert.strictEqual(migrationCards[0].resume_content_hash, "v4-resume-hash");
+  assert.strictEqual(Number(migrationCards[0].profile_version_id), v4VersionId);
+  assert.strictEqual(Number(migrationCards[0].resume_document_id), v4DocumentId);
+  const migrationCard = JSON.parse(migrationCards[0].card_json);
+  assert.deepStrictEqual(migrationCard.targetDirections, ["电商运营"]);
+  assert(migrationCard.strongEvidence.length >= 1, "迁移卡必须摘录既有画像证据，不得为空卡");
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+
+  const v4MixedPath = path.join(root, "production-v4-mixed.sqlite");
+  db = openDb(v4MixedPath);
+  const noCardProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('No Card', ?, 'hash-no-card', ?, ?)`).run(JSON.stringify(v4Profile), v4Now, v4Now).lastInsertRowid);
+  db.prepare(`INSERT INTO profile_versions(profile_id, resume_document_id, profile_json, created_at)
+    VALUES (?, NULL, ?, ?)`).run(noCardProfileId, JSON.stringify(v4Profile), v4Now);
+  const hasCardProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Has Card', ?, 'hash-has-card', ?, ?)`).run(JSON.stringify(v4Profile), v4Now, v4Now).lastInsertRowid);
+  const hasCardVersionId = Number(db.prepare(`INSERT INTO profile_versions(
+    profile_id, resume_document_id, profile_json, created_at
+  ) VALUES (?, NULL, ?, ?)`).run(hasCardProfileId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
+  db.prepare(`INSERT INTO candidate_matching_cards(
+    profile_id, profile_version_id, resume_document_id, resume_content_hash,
+    card_json, status, source, confirmed_at, created_at, updated_at
+  ) VALUES (?, ?, NULL, 'hash-has-card', ?, 'draft', 'model', NULL, ?, ?)`)
+    .run(hasCardProfileId, hasCardVersionId, JSON.stringify({ targetDirections: ["用户运营"], strongEvidence: [], transferableCapabilities: [], cautionTransitions: [], userNotes: [], source: "model" }), v4Now, v4Now);
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
+    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+  `);
+  db.close();
+  db = openDb(v4MixedPath);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  const backfilled = db.prepare("SELECT * FROM candidate_matching_cards WHERE profile_id = ?").all(noCardProfileId);
+  assert.strictEqual(backfilled.length, 1);
+  assert.strictEqual(backfilled[0].source, "migration");
+  assert.strictEqual(backfilled[0].resume_content_hash, "hash-no-card");
+  const kept = db.prepare("SELECT * FROM candidate_matching_cards WHERE profile_id = ?").all(hasCardProfileId);
+  assert.strictEqual(kept.length, 1, "已有卡的候选人不得重复补卡");
+  assert.strictEqual(kept[0].source, "model");
+  assert.deepStrictEqual(JSON.parse(kept[0].card_json).targetDirections, ["用户运营"]);
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
 
   const futurePath = path.join(root, "future.sqlite");
