@@ -34,7 +34,8 @@ const readySnapshot = {
     redirectJobId: "fake123",
     hasChatIdentity: true
   }],
-  successDialog: { visible: false, title: "", footer: "" }
+  successDialog: { visible: false, title: "", footer: "" },
+  inlineChatSent: false
 };
 const expectedJob = {
   url: jobUrl,
@@ -139,6 +140,15 @@ function sentFixture(overrides = {}) {
   };
 }
 
+function inlineChatSentFixture(overrides = {}) {
+  return {
+    actions: [actionNode(continuingCommunicationLabel, { isFriend: "true" })],
+    successDialog: null,
+    inlineChatSent: true,
+    ...overrides
+  };
+}
+
 function fixtureForUrl(url, fixtures) {
   const job = url === secondJobUrl ? secondJob : expectedJob;
   const jobId = (new URL(url).pathname.match(/^\/job_detail\/([^/?#]+)\.html$/i) || [])[1] || "";
@@ -174,13 +184,24 @@ function snapshotContext(url, fixtures, onActionClick = () => {}) {
       }
     });
   }
+  if (fixture.inlineChatSent) {
+    nodes[".dialog-wrap.startchat-dialog .message-list .message-item .status.success"] = testNode({
+      text: "\u5df2\u53d1\u9001",
+      rect: { x: 220, y: 180, width: 42, height: 18 }
+    });
+  }
   if (fixture.jobStatus !== undefined) nodes[".job-status"] = testNode({ text: fixture.jobStatus });
   const document = {
     title: fixture.title || "",
     body: { innerText: fixture.bodyText || "Standalone detail fixture" },
     querySelector(selector) { return nodes[selector] || null; },
     querySelectorAll(selector) {
-      const collections = { ".sign-form, .login-register, [class*='login-form']": [] };
+      const collections = {
+        ".sign-form, .login-register, [class*='login-form']": [],
+        ".dialog-wrap.startchat-dialog .message-list .message-item .status.success": nodes[".dialog-wrap.startchat-dialog .message-list .message-item .status.success"]
+          ? [nodes[".dialog-wrap.startchat-dialog .message-list .message-item .status.success"]]
+          : []
+      };
       return collections[selector] || [];
     }
   };
@@ -469,7 +490,7 @@ function assertNoPreparationAction(browser, before) {
   const snapshot = JSON.parse(JSON.stringify(inspectBrowser.snapshots[0]));
   assert.deepStrictEqual(snapshot, readySnapshot);
   assert.deepStrictEqual(Object.keys(snapshot).sort(), [
-    "actions", "bossActiveText", "company", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
+    "actions", "bossActiveText", "company", "inlineChatSent", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
   ]);
 
   const alreadyCommunicatedBrowser = fakeBrowser({
@@ -546,6 +567,40 @@ function assertNoPreparationAction(browser, before) {
   );
   assert.strictEqual(executionBrowser.calls.clickAt.length, 0);
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
+
+  const inlineChatBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, inlineChatSentFixture()]])
+  });
+  const inlineChatAdapter = new BossSiteAdapter({ browser: inlineChatBrowser, sleepFn: async () => {} });
+  const inlineChatInspection = await inlineChatAdapter.inspectCommunicationJob(expectedJob);
+  await inlineChatAdapter.dispatchCommunication(inlineChatInspection);
+  assert.deepStrictEqual(
+    await inlineChatAdapter.verifyCommunicationResult(expectedJob),
+    { state: "succeeded", jobId: "fake123" }
+  );
+  const inlineChatSnapshot = JSON.parse(JSON.stringify(inlineChatBrowser.snapshots.at(-1)));
+  assert.strictEqual(inlineChatSnapshot.successDialog.visible, false);
+  assert.strictEqual(inlineChatSnapshot.inlineChatSent, true);
+
+  for (const [description, action] of [
+    ["friend state is not confirmed", actionNode(continuingCommunicationLabel, { isFriend: "false" })],
+    ["redirect target changed", actionNode(continuingCommunicationLabel, { isFriend: "true", redirectJobId: "other" })],
+    ["chat identity is absent", actionNode(continuingCommunicationLabel, { isFriend: "true", hasChatIdentity: false })]
+  ]) {
+    const untrustedInlineChatBrowser = fakeBrowser({
+      tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+      afterClickFixtures: new Map([[jobUrl, inlineChatSentFixture({ actions: [action] })]])
+    });
+    const untrustedInlineChatAdapter = new BossSiteAdapter({ browser: untrustedInlineChatBrowser, sleepFn: async () => {} });
+    const untrustedInlineChatInspection = await untrustedInlineChatAdapter.inspectCommunicationJob(expectedJob);
+    await untrustedInlineChatAdapter.dispatchCommunication(untrustedInlineChatInspection);
+    assert.deepStrictEqual(
+      await untrustedInlineChatAdapter.verifyCommunicationResult(expectedJob),
+      { state: "ambiguous" },
+      description
+    );
+  }
   assert.strictEqual(executionBrowser.calls.guardedClick[0][0], "communication-created");
   assert.match(executionBrowser.calls.guardedClick[0][1], /__bossGuardedCommunicationClick/);
   assert.match(executionBrowser.calls.guardedClick[0][1], /fake123/);
@@ -630,20 +685,20 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(driftBrowser.calls.clickAt.length, 0);
   assert.strictEqual(driftBrowser.calls.guardedClick.length, 0);
 
-  const ambiguousBrowser = fakeBrowser({
+  const continuedWithoutSuccessEvidenceBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
     afterClickFixtures: new Map([[jobUrl, sentFixture({ successDialog: null })]])
   });
-  const ambiguousAdapter = new BossSiteAdapter({ browser: ambiguousBrowser, sleepFn: async () => {} });
-  const ambiguousInspection = await ambiguousAdapter.inspectCommunicationJob(expectedJob);
-  await ambiguousAdapter.dispatchCommunication(ambiguousInspection);
+  const continuedWithoutSuccessEvidenceAdapter = new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} });
+  const ambiguousInspection = await continuedWithoutSuccessEvidenceAdapter.inspectCommunicationJob(expectedJob);
+  await continuedWithoutSuccessEvidenceAdapter.dispatchCommunication(ambiguousInspection);
   assert.deepStrictEqual(
-    await ambiguousAdapter.verifyCommunicationResult(expectedJob),
+    await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob),
     { state: "ambiguous" }
   );
-  assert.strictEqual(ambiguousBrowser.snapshots.length, 6);
+  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 6);
   await assert.rejects(
-    () => new BossSiteAdapter({ browser: ambiguousBrowser, sleepFn: async () => {} }).verifyCommunicationResult(expectedJob),
+    () => new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} }).verifyCommunicationResult(expectedJob),
     (error) => error.code === "BOSS_COMMUNICATION_VERIFICATION_UNAVAILABLE"
   );
 
