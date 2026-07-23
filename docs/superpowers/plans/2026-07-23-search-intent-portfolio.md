@@ -12,10 +12,19 @@
 
 - Work only in the isolated worktree and temporary/test SQLite databases.
 - Do not access real BOSS, D:\Guo\ZhiPing\data\jobs.sqlite, or port 8787.
+- Mainline baseline gate: implementation starts only from an isolation branch created at the user-supplied committed baseline hash (MAIN_BASELINE_COMMIT); never read, copy, or merge uncommitted main-project content; do not run in parallel with other tasks that modify src/core/storage.js; on integration conflicts stop and report the conflicting files instead of picking a side.
 - No career template library, market-driven direction guessing, or silent reduction of confirmed coverage.
 - target_role, related_role, scenario, and exploratory are semantic categories; A/B/C remain scan frequency only.
 - Preserve existing city, salary lane, dedupe, scan-budget, browser pacing, and inherited-URL behavior.
 - The model may propose only evidence-backed items; the user remains the final confirmer.
+
+### C-priority items in the three-run workflow
+
+- Standalone daily scan uses enabled A/B items only; broad scan may use enabled A/B/C items.
+- Workflow runs 1 and 2 use enabled A/B items only; C items never enter them by default.
+- Run 3 may additionally use enabled C items only when the existing candidate-inventory-shortage trigger conditions for a third run are met.
+- A C item may enter runs 1-2 only after the user manually promotes it to priority B.
+- Scan snapshots and tests must record why each C item was selected for run 3 (e.g. `third_run_inventory_shortage`).
 
 ---
 
@@ -106,7 +115,7 @@ git commit -m "feat: normalize search query portfolio"
 - Modify: src/core/model_contract.js
 - Modify: src/adapters/models/openai_compatible.js
 - Modify: src/adapters/models/mock.js
-- Modify: tests/model_contract_smoke.js
+- Modify: tests/semantic_pipeline_smoke.js
 - Modify: tests/profile_quality_smoke.js
 
 **Interfaces:**
@@ -117,7 +126,7 @@ git commit -m "feat: normalize search query portfolio"
 
 - [ ] **Step 1: Write failing model-contract tests**
 
-Add this case to tests/model_contract_smoke.js:
+Add this case to tests/semantic_pipeline_smoke.js:
 
 ~~~
 const result = validateModelResult("recommendSearchPlan", {
@@ -134,7 +143,7 @@ Also assert a portfolio with only exploratory entries is rejected, and a nontech
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: node tests/model_contract_smoke.js
+Run: node tests/semantic_pipeline_smoke.js
 
 Expected: failure because the current contract ignores queryPortfolio and accepts the flat-only shape.
 
@@ -152,14 +161,14 @@ The prompt must state that target direction comes from confirmed titles, technic
 
 - [ ] **Step 4: Run model regressions**
 
-Run: node tests/model_contract_smoke.js && node tests/profile_quality_smoke.js && node tests/search_plan_portfolio_smoke.js
+Run: node tests/semantic_pipeline_smoke.js && node tests/profile_quality_smoke.js && node tests/search_plan_portfolio_smoke.js
 
 Expected: all exit 0; AI fixtures remain valid and nontechnical fixtures do not receive a technical-only fallback.
 
 - [ ] **Step 5: Commit the model slice**
 
 ~~~
-git add src/core/model_contract.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js tests/model_contract_smoke.js tests/profile_quality_smoke.js tests/search_plan_portfolio_smoke.js
+git add src/core/model_contract.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js tests/semantic_pipeline_smoke.js tests/profile_quality_smoke.js tests/search_plan_portfolio_smoke.js
 git commit -m "feat: recommend evidence-backed search intents"
 ~~~
 
@@ -170,40 +179,45 @@ git commit -m "feat: recommend evidence-backed search intents"
 - Modify: src/cli.js
 - Modify: src/core/search_plan.js
 - Modify: src/core/analysis_revision.js
+- Modify: src/core/workflow_run.js
 - Modify: tests/scan_execution_smoke.js
 - Modify: tests/workflow_planner_smoke.js
-- Modify: tests/job_analysis_cache_smoke.js
+- Modify: tests/scan_snapshot_smoke.js
 
 **Interfaces:**
 
 - resolveScanPolicy(...).keywordPlan contains { phrase, category, priority, ... }.
 - Site adapters continue to receive only a phrase string.
 - Analysis revision and scan snapshots include category and priority.
+- src/core/workflow_run.js owns the three-run C rules, because run keyword selection is actually controlled by planWorkflowRun / selectKeywords there: planWorkflowRun computes allowC from completedRuns, candidateGap and the existing third-run inventory-shortage conditions; allowC is true only when completedRuns === 2 and those shortage conditions hold.
+- selectKeywords accepts allowC and keeps priority === "C" items only when allowC is true; A/B items keep their existing priority and measured-yield ordering.
+- Each C item selected for run 3 is stamped selectionReason: "third_run_inventory_shortage" in selectedKeywords and in the run snapshot.
+- A C item the user promotes to B naturally becomes eligible for runs 1-2 through the normal priority path.
 
 - [ ] **Step 1: Write failing policy and cache assertions**
 
-Add assertions that daily returns the target/related categories while broad additionally returns scenario, and that changing a phrase from C to B changes the analysis/scan revision snapshot.
+Add assertions that daily returns the target/related categories while broad additionally returns scenario, and that changing a phrase from C to B changes the analysis/scan revision snapshot. In tests/workflow_planner_smoke.js, assert planWorkflowRun derives allowC only when completedRuns === 2 and the inventory-shortage trigger fires; selectKeywords drops enabled C items unless allowC is true; a C item entering run 3 carries selectionReason: "third_run_inventory_shortage" in selectedKeywords and the run snapshot; A/B items keep their existing ordering; promoting an item from C to B lets it enter runs 1-2.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: node tests/search_plan_portfolio_smoke.js && node tests/job_analysis_cache_smoke.js
+Run: node tests/search_plan_portfolio_smoke.js && node tests/scan_snapshot_smoke.js && node tests/workflow_planner_smoke.js
 
-Expected: failure because current snapshots reduce each item to word and priority.
+Expected: failure because current snapshots reduce each item to word and priority, and planWorkflowRun / selectKeywords have no allowC concept.
 
 - [ ] **Step 3: Carry metadata to the platform boundary without changing URL syntax**
 
-Replace direct plan.keywords reads in src/cli.js with planQueryItems(plan). Include phrase, category, priority, and source in scanPolicy.snapshot and analysis-revision input. Only map item.phrase to a string where a site adapter forms a URL. Preserve all existing city, salary-lane, browser and dedupe logic.
+Replace direct plan.keywords reads in src/cli.js with planQueryItems(plan). Include phrase, category, priority, and source in scanPolicy.snapshot and analysis-revision input. Only map item.phrase to a string where a site adapter forms a URL. In src/core/workflow_run.js, compute allowC in planWorkflowRun (completedRuns === 2 plus the existing inventory-shortage conditions, including the candidate gap) and pass it into selectKeywords, which keeps priority === "C" items only when allowC is true; stamp each C item selected for run 3 with selectionReason: "third_run_inventory_shortage" in selectedKeywords and the run snapshot. Preserve all existing city, salary-lane, browser and dedupe logic.
 
 - [ ] **Step 4: Run scan and workflow regressions**
 
-Run: node tests/scan_execution_smoke.js && node tests/workflow_planner_smoke.js && node tests/job_analysis_cache_smoke.js && node tests/search_plan_portfolio_smoke.js
+Run: node tests/scan_execution_smoke.js && node tests/workflow_planner_smoke.js && node tests/scan_snapshot_smoke.js && node tests/search_plan_portfolio_smoke.js
 
 Expected: all exit 0; no test opens a browser.
 
 - [ ] **Step 5: Commit the runtime slice**
 
 ~~~
-git add src/cli.js src/core/search_plan.js src/core/analysis_revision.js tests/scan_execution_smoke.js tests/workflow_planner_smoke.js tests/job_analysis_cache_smoke.js tests/search_plan_portfolio_smoke.js
+git add src/cli.js src/core/search_plan.js src/core/analysis_revision.js src/core/workflow_run.js tests/scan_execution_smoke.js tests/workflow_planner_smoke.js tests/scan_snapshot_smoke.js tests/search_plan_portfolio_smoke.js
 git commit -m "feat: preserve query intent in scan snapshots"
 ~~~
 
@@ -239,7 +253,7 @@ In handlePlanSave, parse indexed fields into queryPortfolio; do not infer catego
 
 - [ ] **Step 4: Run the complete relevant regression set**
 
-Run: node tests/search_plan_portfolio_smoke.js; node tests/model_contract_smoke.js; node tests/profile_quality_smoke.js; node tests/data_visibility_smoke.js; node tests/scan_execution_smoke.js; node tests/workflow_planner_smoke.js; node tests/job_analysis_cache_smoke.js; git diff --check
+Run: node tests/search_plan_portfolio_smoke.js; node tests/semantic_pipeline_smoke.js; node tests/profile_quality_smoke.js; node tests/data_visibility_smoke.js; node tests/scan_execution_smoke.js; node tests/workflow_planner_smoke.js; node tests/scan_snapshot_smoke.js; git diff --check
 
 Expected: every Node command exits 0 and git diff --check is silent.
 
@@ -252,6 +266,7 @@ git commit -m "feat: edit search query portfolio"
 
 ## Self-review
 
-- Spec coverage: Tasks 1-2 cover data, compatibility, model evidence and generic categories; Task 3 covers snapshots without an adapter rewrite; Task 4 covers user confirmation, visibility, docs and regressions.
+- Spec coverage: Tasks 1-2 cover data, compatibility, model evidence and generic categories; Task 3 covers snapshots and the three-run C-priority rules without an adapter rewrite; Task 4 covers user confirmation, visibility, docs and regressions.
 - Placeholder scan: no task contains an unresolved placeholder or unspecified error handling.
 - Type consistency: all tasks use QueryItem, normalizeQueryPortfolio, planQueryItems, and queryPortfolio consistently.
+- Test-file consistency: every "Modify" target above exists in the current baseline (model-contract assertions live in tests/semantic_pipeline_smoke.js; snapshot/cache assertions live in tests/scan_snapshot_smoke.js); only tests/search_plan_portfolio_smoke.js is a Create.

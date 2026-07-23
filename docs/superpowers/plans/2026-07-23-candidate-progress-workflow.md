@@ -12,10 +12,13 @@
 
 - Use only isolated-worktree temporary databases, fake models, and fake browsers for development and tests.
 - Do not access real BOSS, D:\Guo\ZhiPing\data\jobs.sqlite, port 8787, external inboxes, calendars, or real communication controls.
+- Mainline baseline gate: implementation starts only from an isolation branch created at the user-supplied committed baseline hash (MAIN_BASELINE_COMMIT); never read, copy, or merge uncommitted main-project content; do not run in parallel with other tasks that modify src/core/storage.js; on integration conflicts stop and report the conflicting files instead of picking a side.
+- Task 2 modifies src/core/communication_executor.js only after the mainline baseline gate passes. If the committed baseline already contains main-project executor changes (e.g. failure-path evidence recording), implement on top of them and never overwrite them.
 - Do not weaken the existing BOSS calibration gate, single-tab/serial behavior, identity checks, interruption behavior, or per-click approval boundary.
 - Never persist or log HR message bodies, generated reply bodies, browser credentials, or chat screenshots.
 - No automatic send, automatic reply, automatic interview acceptance, or automatic calendar write is part of this plan.
 - Preserve historical job records; migrate only the minimum sanitized metadata needed to render their actual communication meaning.
+- Corrections never delete a card, never create a second card for the same profile+job, never read or store chat bodies, and never trigger platform actions.
 
 ---
 
@@ -34,6 +37,7 @@
 - Produces ensureProgressCard(db, { profileId, planId, jobId, source, now }) -> ProgressCard.
 - Produces recordProgressEvent(db, { cardId, type, actor, summary, metadata, occurredAt }) -> ProgressEvent.
 - Produces transitionProgressCard(db, { cardId, expectedStage, stage, nextAction, scheduledAt }) -> ProgressCard.
+- Produces correctProgressStage(db, { cardId, expectedStage, toStage, reason, now }) -> ProgressCard, recording a manual_correction event whose metadata carries fromStage/toStage; from closed the only legal toStage is needs_user_action (reopen).
 - Produces getProgressCardForJob(db, { profileId, jobId }) and listProgressCards(db, { planId, stages }).
 
 - [ ] **Step 1: Write the failing storage and privacy tests**
@@ -52,6 +56,8 @@ assert(!JSON.stringify(listProgressEvents(db, card.id)).includes("HR 原话正�
 ~~~
 
 Assert a second ensureProgressCard returns the same card, illegal contact_started -> interview_scheduled throws PROGRESS_STAGE_TRANSITION_INVALID, and the migration backfills one historical row whose reason code is communication_succeeded without changing its historical application_status.
+
+Assert the correction path: correctProgressStage requires a nonempty reason, keeps all prior events, and appends exactly one manual_correction event whose metadata records fromStage and toStage; a closed card can only be corrected to needs_user_action; correction never deletes the card and never creates a second card for the same profile+job.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -104,6 +110,8 @@ const PROGRESS_STAGES = new Set([
 
 Reject metadata keys named message, body, text, html, draft, or screenshot; retain only scalar identifiers, categories, fact keys, scheduled timestamps, and user-confirmed short summaries. Backfill historical application_reason_code values communication_succeeded and already_communicated into waiting_reply cards with a sanitized event and leave application_status untouched.
 
+transitionProgressCard enforces the legal transition table for normal flows. correctProgressStage is the user-only escape hatch: it requires a nonempty reason, writes one manual_correction event whose metadata carries fromStage and toStage, then applies the transition; from closed the only legal toStage is needs_user_action (reopen). Both paths keep the full event history, preserve the UNIQUE(profile_id, job_id) invariant, and never read, store, or trigger anything on the platform.
+
 - [ ] **Step 4: Run persistence regressions**
 
 Run: node tests/candidate_progress_storage_smoke.js && node tests/storage_migration_smoke.js && node tests/communication_batch_storage_smoke.js
@@ -118,6 +126,8 @@ git commit -m "feat: persist candidate progress cards"
 ~~~
 
 ### Task 2: Reconcile verified communication without mislabeling it as an application
+
+**Gate:** This task modifies src/core/communication_executor.js and may start only after the mainline baseline gate passes (see Global Constraints and docs/PROJECT_HANDOFF.md). If the committed baseline already contains main-project executor changes (e.g. failure-path evidence recording), implement on top of them and never overwrite them.
 
 **Files:**
 
@@ -206,14 +216,14 @@ In handleCommunication, load the job progress card before model invocation. Afte
 
 - [ ] **Step 4: Run privacy and communication regressions**
 
-Run: node tests/communication_smoke.js && node tests/model_contract_smoke.js && node tests/candidate_progress_storage_smoke.js
+Run: node tests/communication_smoke.js && node tests/semantic_pipeline_smoke.js && node tests/candidate_progress_storage_smoke.js
 
 Expected: all exit 0; no persisted row contains either the HR input or generated reply text.
 
 - [ ] **Step 5: Commit the manual-reply slice**
 
 ~~~
-git add src/core/model_contract.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js src/dashboard/server.js tests/communication_smoke.js tests/model_contract_smoke.js tests/candidate_progress_storage_smoke.js
+git add src/core/model_contract.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js src/dashboard/server.js tests/communication_smoke.js tests/semantic_pipeline_smoke.js tests/candidate_progress_storage_smoke.js
 git commit -m "feat: track manual communication progress"
 ~~~
 
@@ -236,6 +246,8 @@ git commit -m "feat: track manual communication progress"
 
 Render a job with a waiting_reply card and assert HTML contains 已发起沟通, 等待招聘方回复, and the new queue pool. Post reply_confirmed_sent, assert the card changes to waiting_reply and no platform send function is called. Post mark_interview_scheduled with an ISO datetime, assert the stage becomes interview_scheduled and the page displays the supplied time.
 
+Add correction assertions: post correct_stage with a target stage and a nonempty reason; assert the card moves to the target stage, all prior events remain, and exactly one manual_correction event is appended with fromStage/toStage and the user summary. Post correct_stage without a reason and assert rejection. Close a card, then post reopen_opportunity; assert the stage becomes needs_user_action with an opportunity_reopened event, no second card is created, and no platform function is called.
+
 - [ ] **Step 2: Run the UI tests to verify they fail**
 
 Run: node tests/data_visibility_smoke.js && node tests/workflow_dashboard_smoke.js && node tests/communication_smoke.js
@@ -253,11 +265,13 @@ const ACTIONS = {
   mark_interview_invited: { stage: "interview_invited", event: "interview_invited" },
   mark_interview_scheduled: { stage: "interview_scheduled", event: "interview_scheduled" },
   mark_resume_submitted: { stage: "resume_submitted", event: "resume_submitted" },
-  close_opportunity: { stage: "closed", event: "closed_by_user" }
+  close_opportunity: { stage: "closed", event: "closed_by_user" },
+  correct_stage: { stage: null, event: "manual_correction" },
+  reopen_opportunity: { stage: "needs_user_action", event: "opportunity_reopened" }
 };
 ~~~
 
-Require a nonempty user-entered summary for manual interview scheduling; validate the ISO timestamp when supplied. Keep existing batch review, calibration display, and ambiguous-resolution controls unchanged.
+Require a nonempty user-entered summary for manual interview scheduling; validate the ISO timestamp when supplied. correct_stage requires a targetStage that is legal in PROGRESS_STAGES plus a nonempty reason, and delegates to correctProgressStage so the manual_correction event records fromStage/toStage and the reason. reopen_opportunity is accepted only when the current stage is closed and lands on needs_user_action. Both correction paths keep the full event history, never delete or duplicate the card, and never call any platform function. Keep existing batch review, calibration display, and ambiguous-resolution controls unchanged.
 
 - [ ] **Step 4: Run workflow and UI regressions**
 
@@ -301,6 +315,7 @@ git commit -m "docs: describe manual progress workflow"
 
 ## Self-review
 
-- Spec coverage: Task 1 provides cards/events/privacy and history; Task 2 separates contact from submission without relaxing browser safeguards; Task 3 handles pasted replies and missing facts; Task 4 exposes user-confirmed actions; Task 5 documents the manual-first boundary.
+- Spec coverage: Task 1 provides cards/events/privacy/history and the correction service; Task 2 separates contact from submission behind the mainline baseline gate without relaxing browser safeguards; Task 3 handles pasted replies and missing facts; Task 4 exposes user-confirmed actions including stage correction and reopen; Task 5 documents the manual-first boundary.
 - Placeholder scan: no task contains an unresolved placeholder or delegates unspecified error handling.
 - Type consistency: all tasks use ProgressCard, ProgressEvent, candidate_progress.js, legal stage names, and the same action names.
+- Test-file consistency: contract assertions live in the existing tests/semantic_pipeline_smoke.js (there is no tests/model_contract_smoke.js); only tests/candidate_progress_storage_smoke.js is a Create.

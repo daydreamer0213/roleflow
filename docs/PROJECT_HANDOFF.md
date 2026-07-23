@@ -19,6 +19,17 @@
 - 默认不访问真实 BOSS；任何真实沟通、投递或点击仍需要单独、明确授权。开发和回归使用临时数据库、假模型、DOM fixture 和假浏览器。
 - 不得把聊天正文、浏览器凭据、cookie、账号信息或真实简历敏感内容写入交接文档、提交信息或测试 fixture。
 
+## 主线基线门禁（任何实现任务的前置条件）
+
+依据 [实施安全、升级兼容与验收门禁设计](superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md)，所有实现任务共同遵守：
+
+- 主项目（D:\Guo\ZhiPing）中的真实流程改动，必须先由主项目操作者在其工作树完成测试并提交为明确 Git 哈希；任何代理不得读取、复制或合并主项目的未提交内容。
+- 每个实现任务必须从用户提供的已提交基线哈希（MAIN_BASELINE_COMMIT）新建的隔离 worktree/分支开始，并在开工报告中记录实际使用的基线哈希。
+- 所有修改 `src/core/storage.js` 的任务不得并行实施。
+- 数据库迁移版本号使用 `vNext`，即目标基线中下一个连续版本号；迁移测试以 `SCHEMA_VERSION` 与迁移名称校验。计划中的“v5”只描述当前 v4 基线上的预期，不是可跨分支硬编码的恒定事实。
+- 集成主线提交出现冲突时，停止并报告冲突文件、两侧改动意图与最小建议，不得擅自选择一边覆盖另一边。
+- 真实模型基准（`npm run test:live-model`）只在用户对该次调用明确授权后运行；未获授权不得声称已通过真实模型验收，也不得声称可合并到主项目。
+
 ## 当前协作分支
 
 - 分支：codex/generic-evidence-matching-design
@@ -47,7 +58,7 @@ git log --oneline origin/codex/generic-evidence-matching-design..HEAD
 | 搜索意图组合 | [设计](superpowers/specs/2026-07-23-search-intent-portfolio-design.md) · [计划](superpowers/plans/2026-07-23-search-intent-portfolio.md) | 已确认，未实现 |
 | 求职进展与人工确认工作流 | [设计](superpowers/specs/2026-07-23-candidate-progress-workflow-design.md) · [计划](superpowers/plans/2026-07-23-candidate-progress-workflow.md) | 已确认，未实现 |
 | 多平台只读搜索与继承模板 | [设计](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md) · [计划](superpowers/plans/2026-07-23-multi-platform-readonly-search.md) | 已确认，未实现；真实智联适配器等待独立只读证据 |
-| 实施安全、升级兼容与验收门禁 | [设计](superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md) | 已确认；必须先修订受影响计划并收敛主项目基线，才可实施 |
+| 实施安全、升级兼容与验收门禁 | [设计](superpowers/specs/2026-07-23-execution-safety-and-compatibility-design.md) | 已确认；受影响计划的文档修订已审查；实施前仍须先通过主线基线门禁 |
 
 ## 已确认的产品决策
 
