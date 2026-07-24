@@ -347,12 +347,12 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
     parseRecorded = true;
     logger.info("resume_profile_created", { requestId, profileId: saved.profileId, profileVersionId: saved.profileVersionId, modelProvider: modelConfig?.provider || "mock" });
     const cardId = await createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId });
-    // 已有已确认匹配卡和可用方案时，新简历只生成草稿卡：旧卡与旧方案继续作为扫描依据，
-    // 直到用户确认新卡后再手动重存方案；不在这里停用或替换当前方案。
+    // 只要已有已确认匹配卡和 active 方案（无论方案当前是否 stale），新简历只生成草稿卡：
+    // 旧卡与旧方案继续作为扫描依据，绝不自动停用、替换或重绑；确认新卡后由用户明确保存方案。
+    // 只有首次上传、没有 confirmed 卡，或确实不存在任何 active 方案时才自动生成初始方案。
     const activeCard = getActiveMatchingCard(db, saved.profileId);
     const activePlan = getActiveSearchPlan(db, saved.profileId);
-    const activePlanUsable = Boolean(activeCard && activePlan && !getSearchPlanDependency(db, activePlan.id).stale);
-    if (activePlanUsable) {
+    if (activeCard && activePlan) {
       logger.info("search_plan_recommend_skipped", { requestId, profileId: saved.profileId, planId: activePlan.id, reason: "pending_matching_card_draft" });
     } else {
       try {
