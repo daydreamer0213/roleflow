@@ -41,6 +41,7 @@ const db = openDb(dbPath);
     runtimeResumeVersionEntrySmoke();
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
+    await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -1160,6 +1161,31 @@ function completeJob(sourceId, overrides = {}) {
     risks: [],
     ...overrides
   };
+}
+
+async function understandingContractRepairSmoke() {
+  // 真实模型回归（live-v2-20260725-01）：DeepSeek 常把 eligibilityConstraints 输出为对象数组。
+  // 契约保持严格（不静默接受对象），但修复请求必须携带可执行的形状说明，让一次修复可以收敛。
+  const invalidUnderstanding = { ...understanding("understanding-repair"), eligibilityConstraints: [{ type: "学历", value: "本科" }] };
+  let calls = 0;
+  const runner = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
+    db,
+    analyzer: {
+      understandJob: async (input) => {
+        calls += 1;
+        if (!input.contractRepair) return invalidUnderstanding;
+        assert.match(input.contractRepair.reason, /eligibilityConstraints/, "修复原因必须指出违规字段");
+        assert.match(input.contractRepair.reason, /字符串数组/, "修复原因必须说明目标形状是字符串数组");
+        assert.match(input.contractRepair.reason, /空数组/, "修复原因必须说明无内容时的合法输出");
+        assert.deepStrictEqual(input.contractRepair.invalidOutput, invalidUnderstanding);
+        return understanding("understanding-repair");
+      },
+      matchJob: async () => decision("apply", "A", "Python")
+    }
+  });
+  const result = await runner(completeJob("understanding-repair"));
+  assert.strictEqual(calls, 2, "对象形式的资格约束只允许一次契约修复");
+  assert.strictEqual(result.semanticStatus, "complete");
 }
 
 function understanding(jobId) {

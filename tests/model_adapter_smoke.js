@@ -76,6 +76,10 @@ server.listen(0, "127.0.0.1", async () => {
     assert(understandPrompt.includes("coreRequirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求结构化核心要求对象");
     assert(understandPrompt.includes("jobQuality.level 只能是 normal、caution 或 risk"), "understandJob prompt 必须限定岗位质量枚举");
     assert(understandPrompt.includes("responsibility_sprawl"));
+    // 真实模型回归（live-v2-20260725-01）：DeepSeek 倾向把 eligibilityConstraints 输出为对象数组，
+    // prompt 必须显式声明字符串数组形状，否则严格契约与一次修复都无法收敛。
+    assert(understandPrompt.includes("eligibilityConstraints[非空字符串]"), "understandJob prompt 必须声明资格约束的字符串数组形状");
+    assert(understandPrompt.includes("不要输出对象"), "understandJob prompt 必须禁止对象形式的资格约束");
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     console.log("model_adapter_smoke ok");
   } catch (error) {

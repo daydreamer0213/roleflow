@@ -410,7 +410,7 @@ function optionalContractString(value, kind, field) {
 function contractStringArray(value, kind, field, limit) {
   const values = list(value);
   if (values.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new ModelContractError(kind, `${field} 必须是非空字符串数组`);
+    throw new ModelContractError(kind, `${field} 必须是非空字符串数组（每项一句原文短句；没有内容时输出空数组 []，不要输出对象或 null）`);
   }
   return [...new Set(values.map((item) => text(item)))].slice(0, limit);
 }
