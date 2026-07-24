@@ -458,6 +458,29 @@ function pickCompareMetrics(result) {
   return Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, result[field]]));
 }
 
+// 验收门禁：结构可比较只代表两份结果能对齐，是否通过验收由以下硬性条件决定。
+// 任一不满足都不得宣称候选行为达标；regressions/improvements 仅作诊断信息保留。
+function acceptanceFailures(baseline, candidate) {
+  const failures = [];
+  for (const field of ["failed", "stale", "pending", "primaryWithoutEvidence"]) {
+    if (candidate[field] !== 0) failures.push(`候选 ${field}=${candidate[field]}，验收要求为 0`);
+  }
+  const partialPrimary = candidate.rows.filter((row) => row && row.semanticStatus === "partial" && row.actualBucket === "primary");
+  if (partialPrimary.length) {
+    failures.push(`候选存在 ${partialPrimary.length} 条 semanticStatus=partial 却进入 primary 的样本：${partialPrimary.map((row) => row.id).join("、")}`);
+  }
+  if (candidate.recommendationAccuracy < baseline.recommendationAccuracy) {
+    failures.push(`recommendationAccuracy 回退：${baseline.recommendationAccuracy} -> ${candidate.recommendationAccuracy}`);
+  }
+  if (candidate.bucketAccuracy < baseline.bucketAccuracy) {
+    failures.push(`bucketAccuracy 回退：${baseline.bucketAccuracy} -> ${candidate.bucketAccuracy}`);
+  }
+  if (candidate.hardFalsePlacement > baseline.hardFalsePlacement) {
+    failures.push(`hardFalsePlacement 增加：${baseline.hardFalsePlacement} -> ${candidate.hardFalsePlacement}`);
+  }
+  return failures;
+}
+
 function compareBenchmarkResults(baseline, candidate) {
   for (const [label, value] of [["基线", baseline], ["候选", candidate]]) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -506,6 +529,7 @@ function compareBenchmarkResults(baseline, candidate) {
     if (before.pass === true && row.pass !== true) regressions.push(row.id);
     if (before.pass !== true && row.pass === true) improvements.push(row.id);
   }
+  const failureReasons = acceptanceFailures(baseline, candidate);
   return {
     ok: true,
     report: {
@@ -513,6 +537,8 @@ function compareBenchmarkResults(baseline, candidate) {
       benchmarkHarnessVersion: baseline.benchmarkHarnessVersion,
       baselineBehaviorCommit: baselineCommit,
       evaluatedCommit: candidateCommit,
+      accepted: failureReasons.length === 0,
+      failureReasons,
       baseline: pickCompareMetrics(baseline),
       candidate: pickCompareMetrics(candidate),
       deltas: Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, candidate[field] - baseline[field]])),
@@ -567,10 +593,17 @@ function runCompareCli() {
     if (!result.ok) {
       throw Object.assign(new Error(result.message), { code: result.code });
     }
+    // 结构可比较后即写出诊断报告（含 accepted:false 的失败情形），再决定是否宣告验收通过。
     if (options.reportPath) {
       fs.mkdirSync(path.dirname(path.resolve(options.reportPath)), { recursive: true });
       fs.writeFileSync(options.reportPath, JSON.stringify(result.report, null, 2) + "\n", "utf8");
       fs.writeFileSync(options.reportPath.replace(/\.json$/i, "") + ".md", renderComparisonMarkdown(result.report), "utf8");
+    }
+    if (!result.report.accepted) {
+      throw Object.assign(
+        new Error(`候选结果未通过验收门禁：${result.report.failureReasons.join("；")}`),
+        { code: "BENCHMARK_COMPARE_ACCEPTANCE_FAILED" }
+      );
     }
     const { baseline: base, candidate: cand, deltas } = result.report;
     console.log(`benchmark compare ok: ${result.report.baselineBehaviorCommit} -> ${result.report.evaluatedCommit} (harness ${result.report.benchmarkHarnessVersion})`);
@@ -592,6 +625,7 @@ function renderComparisonMarkdown(report) {
     `- Harness 版本：${report.benchmarkHarnessVersion}`,
     `- 基线行为评估点 baselineBehaviorCommit：${report.baselineBehaviorCommit}`,
     `- 候选提交 evaluatedCommit：${report.evaluatedCommit}`,
+    `- 验收结论：${report.accepted ? "通过" : `未通过：${report.failureReasons.join("；")}`}`,
     "",
     "| 指标 | 基线 | 候选 | 差值 |",
     "|---|---|---|---|",

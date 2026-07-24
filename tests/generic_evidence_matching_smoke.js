@@ -205,6 +205,26 @@ function comparatorSmoke() {
     assert.strictEqual(result.code, testCase.code, `${testCase.name}：错误码不符`);
     assert(typeof result.message === "string" && result.message.length > 0, `${testCase.name}：失败原因必须可定位`);
   }
+
+  // 结构可比较 ≠ 验收通过：门禁失败必须给出 accepted=false 与可定位原因，诊断字段保留。
+  assert.strictEqual(ok.report.accepted, true, "无回退的比较必须验收通过");
+  assert.deepStrictEqual(ok.report.failureReasons, []);
+  const acceptanceFailures = [
+    { name: "候选 failed 非零", mutate: (c) => ({ ...c, failed: 1 }), reason: /failed=1/ },
+    { name: "候选 stale 非零", mutate: (c) => ({ ...c, stale: 1 }), reason: /stale=1/ },
+    { name: "候选 pending 非零", mutate: (c) => ({ ...c, pending: 2 }), reason: /pending=2/ },
+    { name: "候选 primaryWithoutEvidence 非零", mutate: (c) => ({ ...c, primaryWithoutEvidence: 1 }), reason: /primaryWithoutEvidence=1/ },
+    { name: "候选 partial 进入 primary", mutate: (c) => ({ ...c, rows: c.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, semanticStatus: "partial", actualBucket: "primary" } : row) }), reason: /partial/ },
+    { name: "recommendationAccuracy 回退", mutate: (c) => ({ ...c, accuracy: 0.5, recommendationAccuracy: 0.5, bucketAccuracy: 0.5 }), reason: /recommendationAccuracy 回退/ },
+    { name: "bucketAccuracy 回退", mutate: (c) => ({ ...c, bucketAccuracy: 0.5 }), reason: /bucketAccuracy 回退/ },
+    { name: "hardFalsePlacement 增加", mutate: (c) => ({ ...c, hardFalsePlacement: 1 }), reason: /hardFalsePlacement 增加/ }
+  ];
+  for (const testCase of acceptanceFailures) {
+    const result = compareBenchmarkResults(baseline, testCase.mutate(candidate));
+    assert(result.ok === true, `${testCase.name}：结构仍可比较，不得伪装成结构失败`);
+    assert.strictEqual(result.report.accepted, false, `${testCase.name}：验收必须失败`);
+    assert(result.report.failureReasons.some((reason) => testCase.reason.test(reason)), `${testCase.name}：失败原因必须可定位：${result.report.failureReasons.join("；")}`);
+  }
 }
 
 function compareCliSmoke() {
@@ -226,7 +246,22 @@ function compareCliSmoke() {
     assert.strictEqual(report.baselineBehaviorCommit, BASELINE_COMMIT);
     assert.strictEqual(report.evaluatedCommit, CANDIDATE_COMMIT);
     assert.strictEqual(report.benchmarkHarnessVersion, BENCHMARK_HARNESS_VERSION);
+    assert.strictEqual(report.accepted, true, "有效比较的报告必须记录 accepted:true");
+    assert.deepStrictEqual(report.failureReasons, []);
     assert(fs.existsSync(reportPath.replace(/\.json$/i, "") + ".md"), "比较交付报告（markdown）必须同时产出");
+
+    // 验收失败：仍写出 accepted:false 诊断报告，但非零退出、携带稳定错误码，且不得打印成功摘要。
+    const rejectedCandidatePath = path.join(tmpDir, "rejected-candidate.json");
+    const rejectedReportPath = path.join(tmpDir, "rejected-report.json");
+    fs.writeFileSync(rejectedCandidatePath, JSON.stringify({ ...candidate, failed: 1, hardFalsePlacement: 1 }), "utf8");
+    const rejectedRun = spawnSync(process.execPath, [benchmarkScript, "--compare", "--baseline", baselinePath, "--candidate", rejectedCandidatePath, "--report", rejectedReportPath], { cwd: root, encoding: "utf8", env });
+    assert.notStrictEqual(rejectedRun.status, 0, "验收未通过的比较必须非零退出");
+    assert(`${rejectedRun.stdout}\n${rejectedRun.stderr}`.includes("BENCHMARK_COMPARE_ACCEPTANCE_FAILED"), "验收失败输出必须携带稳定错误码");
+    assert(!String(rejectedRun.stdout).includes("benchmark compare ok"), "验收失败不得打印成功摘要");
+    const rejectedReport = JSON.parse(fs.readFileSync(rejectedReportPath, "utf8"));
+    assert.strictEqual(rejectedReport.accepted, false, "诊断报告必须记录 accepted:false");
+    assert(rejectedReport.failureReasons.length >= 2, "诊断报告必须保留全部失败原因");
+    assert(fs.existsSync(rejectedReportPath.replace(/\.json$/i, "") + ".md"), "验收失败的诊断 markdown 报告必须同时产出");
 
     const badCandidatePath = path.join(tmpDir, "bad-candidate.json");
     const badReportPath = path.join(tmpDir, "bad-report.json");
