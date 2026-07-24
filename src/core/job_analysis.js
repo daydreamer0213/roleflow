@@ -56,7 +56,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         run: analyzer.matchJob
       });
       const analysis = compactAnalysis(configs, { job, jobUnderstanding, matchDecision, revision });
-      return applyRuleGuard(applyRoleIntentGuard(analysis, configs), job);
+      return applyRuleGuard(analysis, job);
     } catch (error) {
       logger?.warn("job_analysis_failed", {
         jobId: job.sourceId || job.url || "",
@@ -265,6 +265,15 @@ function applyRuleGuard(analysis, job) {
   if (analysis.recommendation === "skip") {
     return addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
   }
+  if (["apply", "caution"].includes(analysis.recommendation) && missingEitherSideEvidence(analysis)) {
+    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型结论缺少可核对的双侧证据，需要人工复核 JD 与简历。", analysis.semanticStatus, "model_evidence_gap");
+  }
+  if (analysis.recommendation === "apply" && (hasTransferableCore(analysis) || analysis.jobQuality?.level === "caution")) {
+    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "核心要求仅有可迁移证据或岗位质量需关注，建议先沟通确认再投递。", analysis.semanticStatus, "evidence_quality_guard");
+  }
+  if (analysis.jobQuality?.level === "risk") {
+    return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
+  }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
   if (analysis.recommendation === "apply" && materialRisk) {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
@@ -279,17 +288,13 @@ function applyRuleGuard(analysis, job) {
   return analysis;
 }
 
-function applyRoleIntentGuard(analysis, configs) {
-  if (analysis.recommendation !== "apply" || analysis.realRoleType !== "implementation_presales") return analysis;
-  const candidate = configs.candidateProfile?.candidate || {};
-  const targets = [
-    candidate.targetTitle,
-    ...(candidate.targetTitles || []),
-    ...(candidate.directions || []),
-    ...(configs.searchPlan?.directions || [])
-  ].filter(Boolean).join(" ");
-  if (/解决方案|实施|售前/.test(targets)) return analysis;
-  return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位以实施、方案或客户交付为主，与当前纯开发目标存在职责偏移。", analysis.semanticStatus, "candidate_direction_guard");
+function missingEitherSideEvidence(analysis) {
+  const evidence = analysis.evidence || {};
+  return !(evidence.jd || []).length || !(evidence.resume || []).length;
+}
+
+function hasTransferableCore(analysis) {
+  return (analysis.requirementMatches || []).some((item) => item?.state === "transferable" && item?.indispensable);
 }
 
 function addGuard(analysis, recommendation, fitLevel, reason, semanticStatus = analysis.semanticStatus, decisionSource = analysis.decisionSource) {

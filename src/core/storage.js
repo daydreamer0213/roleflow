@@ -3283,11 +3283,13 @@ function decisionBucket(job) {
   if (semanticStatus === "refresh") return "refresh";
   if (semanticStatus === "partial") return "talk";
   if (semanticStatus === "complete") {
+    if (analysis.jobQuality?.level === "risk") return "not_recommended";
     if (tags.has("experience_salary_overlap")) return "backup";
     if (recommendation === "skip") return "talk";
     if (recommendation === "apply") {
       const evidence = analysis.evidence || {};
-      const needsConversation = analysis.realRoleType === "implementation_presales"
+      const qualityLevel = analysis.jobQuality?.level || "normal";
+      const needsConversation = qualityLevel !== "normal"
         || tags.has("salary_target_stretch")
         || tags.has("experience_stretch")
         || tags.has("experience_overrange")
@@ -3299,12 +3301,11 @@ function decisionBucket(job) {
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
   if ((job.risks || []).some((risk) => /薪资低于期望下限/.test(String(risk)))) return "backup";
-  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_above_target") || tags.has("experience_salary_overlap") || tags.has("core_stack_mismatch") || tags.has("java_backend_heavy") || tags.has("senior_engineering_heavy")) return "backup";
+  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_above_target") || tags.has("experience_salary_overlap")) return "backup";
   if (tags.has("salary_unverified") || tags.has("experience_unverified")) return "talk";
-  const requiresConversation = tags.has("algorithm_hybrid")
-    || tags.has("salary_target_stretch")
+  const requiresConversation = tags.has("salary_target_stretch")
     || tags.has("experience_stretch")
-    || (job.risks || []).some((risk) => /偏训练|算法框架|Java占比|Spring占比|全栈|顾问|实施|应届|学历|经验门槛/.test(String(risk)));
+    || (job.risks || []).some((risk) => /应届|学历|经验门槛/.test(String(risk)));
   if (["优先", "可投"].includes(job.level || "") && !requiresConversation && !(job.risks || []).length) return "talk";
   if (["优先", "可投", "可冲"].includes(job.level || "")) return "talk";
   return "backup";

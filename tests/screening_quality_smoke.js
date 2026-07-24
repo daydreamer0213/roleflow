@@ -352,8 +352,12 @@ const offCityInJd = scoreJob(job({
 assert(offCityInJd.qualityTags.includes("location_mismatch"));
 assert.strictEqual(decisionState(offCityInJd), "blocked");
 
-const wrongRole = scoreJob(job({ title: "AI 培训讲师", bossActiveText: "今日活跃" }), configs);
-assert.strictEqual(decisionState(wrongRole), "blocked");
+// 跨职业保护：运营、产品、设计等标题不再被本地规则默认拦截，交由语义证据契约判断。
+for (const title of ["电商运营专员", "产品经理", "UI设计师", "AI 培训讲师"]) {
+  const scoredRole = scoreJob(job({ title, bossActiveText: "今日活跃" }), configs);
+  assert(!scoredRole.qualityTags.includes("role_mismatch"), `${title} 不应再产生 role_mismatch`);
+  assert.strictEqual(decisionState(scoredRole), "ready", `${title} 应进入语义分析`);
+}
 const knowledgeTrainer = scoreJob(job({
   title: "AI知识库训练师",
   bossActiveText: "今日活跃",
@@ -365,28 +369,30 @@ const internshipRole = scoreJob(job({ title: "大模型应用开发实习生", b
 assert(internshipRole.qualityTags.includes("internship_role"));
 assert.strictEqual(decisionState(internshipRole), "blocked");
 const algorithmRole = scoreJob(job({ title: "RAG 算法工程师", bossActiveText: "今日活跃" }), configs);
-assert(algorithmRole.qualityTags.includes("algorithm_role"));
-assert.strictEqual(decisionState(algorithmRole), "blocked");
+assert(!algorithmRole.qualityTags.includes("algorithm_role"));
+assert.strictEqual(decisionState(algorithmRole), "ready");
 const hybridRole = scoreJob(job({ title: "AI Agent 开发工程师", bossActiveText: "今日活跃", description: "负责 Agent 应用开发和 RAG，参与模型训练、算法研究。" }), configs);
-assert(hybridRole.qualityTags.includes("algorithm_hybrid"));
+assert(!hybridRole.qualityTags.includes("algorithm_hybrid"));
 assert.strictEqual(decisionState(hybridRole), "ready");
 const cppGoCore = scoreJob(job({
   title: "RAG 平台工程师", bossActiveText: "今日活跃",
   description: "负责 RAG 服务开发。任职要求：熟练掌握 C++ 或 Golang，具备服务端开发经验；了解 RAG 者优先。"
 }), configs);
-assert(cppGoCore.qualityTags.includes("core_stack_mismatch"));
-assert.strictEqual(decisionBucket({ ...cppGoCore, analysis: {} }), "backup");
+assert(!cppGoCore.qualityTags.includes("core_stack_mismatch"));
+assert.strictEqual(decisionState(cppGoCore), "ready");
+assert.strictEqual(decisionBucket({ ...cppGoCore, analysis: {} }), "talk");
 const javaCore = scoreJob(job({
   title: "AI 后端工程师", bossActiveText: "今日活跃",
   description: "岗位职责：负责 AI 平台。任职要求：熟练掌握 Java 和 Spring Boot，具备微服务开发经验。"
 }), configs);
-assert(javaCore.qualityTags.includes("java_backend_heavy"));
-assert.strictEqual(decisionBucket({ ...javaCore, analysis: {} }), "backup");
+assert(!javaCore.qualityTags.includes("java_backend_heavy"));
+assert.strictEqual(decisionState(javaCore), "ready");
+assert.strictEqual(decisionBucket({ ...javaCore, analysis: {} }), "talk");
 const pythonCore = scoreJob(job({
   title: "AI 应用开发工程师", bossActiveText: "今日活跃",
   description: "岗位职责：负责 RAG 知识库。任职要求：熟练掌握 Python 和 FastAPI，具备 RAG 项目经验。"
 }), configs);
-assert.strictEqual(pythonCore.technicalFit.kind, "aligned");
+assert.strictEqual(decisionState(pythonCore), "ready");
 assert(!cleanDetailText("职位描述 负责 Python 开发。公司介绍 这部分不是 JD").includes("公司介绍"));
 assert.strictEqual(normalizeSearchPlan({}, { candidate: { city: "广州" } }).workSchedulePreference, "prefer_double_weekend");
 

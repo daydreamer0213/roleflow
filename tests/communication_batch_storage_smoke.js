@@ -48,7 +48,7 @@ try {
   const notRecommendedId = upsertJob(db, job("not-recommended", {
     title: "Not recommended role",
     level: "不建议",
-    qualityTags: ["role_mismatch"]
+    qualityTags: ["hard_exclude"]
   }), scanBatchId);
   const alreadyCommunicatedId = upsertJob(db, job("already-communicated", {
     title: "Already communicated role"

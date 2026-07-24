@@ -29,7 +29,8 @@ const db = openDb(dbPath);
     await stableUnderstandingAndCandidateMatchSmoke();
     await contractRepairAndFailureSmoke();
     await pipelineVersionCacheSmoke();
-    await roleIntentGuardSmoke();
+    await ruleGuardSmoke();
+    await localEvidenceGuardSmoke();
     await matchingCardContractSmoke();
     await genericEvidenceContractSmoke();
     matchGenericContractSmoke();
@@ -447,27 +448,7 @@ async function pipelineVersionCacheSmoke() {
   assert.strictEqual(runs, 2, "pipelineVersion 变化必须使旧缓存失效");
 }
 
-async function roleIntentGuardSmoke() {
-  const analyzer = {
-    understandJob: async ({ job }) => ({
-      ...understanding(job.sourceId),
-      realRoleType: "implementation_presales",
-      businessScenario: "企业 AI 方案交付"
-    }),
-    matchJob: async () => decision("apply", "A", "Python/RAG 项目")
-  };
-  const job = completeJob("solution-role");
-  const developerResult = await createJobAnalysisRunner(configFor(["Python", "RAG"]), [], { db, analyzer })(job);
-  assert.strictEqual(developerResult.recommendation, "caution");
-  assert.strictEqual(developerResult.decisionSource, "candidate_direction_guard");
-
-  const solutionConfigs = configFor(["Python", "RAG"]);
-  solutionConfigs.candidateProfile = profile(["Python", "RAG"], ["AI解决方案工程师"]);
-  solutionConfigs.searchPlan = plan(["AI解决方案工程师"]);
-  solutionConfigs.analysisContext = runtimeAnalysisContext(solutionConfigs.candidateProfile, solutionConfigs.searchPlan);
-  const solutionResult = await createJobAnalysisRunner(solutionConfigs, [], { db, analyzer })(job);
-  assert.strictEqual(solutionResult.recommendation, "apply");
-
+async function ruleGuardSmoke() {
   const stretchAnalyzer = {
     understandJob: async ({ job: sourceJob }) => understanding(sourceJob.sourceId),
     matchJob: async () => decision("apply", "A", "Python/RAG 项目")
@@ -489,6 +470,95 @@ async function roleIntentGuardSmoke() {
   const riskResult = await createJobAnalysisRunner(configFor(["Python", "RAG"]), [], { db, analyzer: riskAnalyzer })(completeJob("outsourcing-risk"));
   assert.strictEqual(riskResult.recommendation, "caution");
   assert.strictEqual(riskResult.decisionSource, "semantic_risk_guard");
+}
+
+async function localEvidenceGuardSmoke() {
+  const dualEvidence = { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: ["简历：负责淘宝店铺投放 ROI 复盘"] };
+  const samples = [
+    {
+      sourceId: "guard-transferable-core",
+      title: "抖音店铺运营",
+      matchState: "transferable",
+      jobQuality: { level: "normal", concerns: [] },
+      confidence: 0.82,
+      expected: "caution"
+    },
+    {
+      sourceId: "guard-caution-quality",
+      title: "全能电商运营",
+      matchState: "matched",
+      jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl", evidence: "JD 同时要求直播、拍摄、剪辑" }] },
+      confidence: 0.86,
+      expected: "caution"
+    },
+    {
+      sourceId: "guard-primary-apply",
+      title: "电商运营专员",
+      matchState: "matched",
+      jobQuality: { level: "normal", concerns: [] },
+      confidence: 0.9,
+      expected: "apply",
+      expectedBucket: "primary"
+    }
+  ];
+  for (const sample of samples) {
+    const modelDecision = {
+      recommendation: "apply",
+      fitLevel: "A",
+      confidence: sample.confidence,
+      fitReasons: ["核心要求与店铺运营证据对应"],
+      requirementMatches: [{
+        requirement: "投放与 ROI 分析",
+        state: sample.matchState,
+        indispensable: true,
+        jdEvidence: dualEvidence.jd[0],
+        resumeEvidence: dualEvidence.resume[0]
+      }],
+      jobQuality: sample.jobQuality,
+      hardBlockers: [],
+      softGaps: [],
+      questionsToVerify: [],
+      evidence: dualEvidence
+    };
+    const analyzer = {
+      understandJob: async ({ job }) => ({
+        jobId: job.sourceId,
+        roleSummary: sample.title,
+        coreResponsibilities: [{ label: "店铺投放复盘", evidence: dualEvidence.jd[0] }],
+        coreRequirements: [{ label: "投放与 ROI 分析", indispensable: true, evidence: dualEvidence.jd[0] }],
+        preferredRequirements: [],
+        outcomeExpectations: [],
+        jobQuality: sample.jobQuality,
+        hiddenRisks: [],
+        evidenceSnippets: dualEvidence.jd
+      }),
+      matchJob: async () => modelDecision
+    };
+    const configs = configFor(["店铺运营", "投放复盘"]);
+    configs.candidateProfile = {
+      candidate: { name: "电商候选人", city: "广州", targetTitles: ["电商运营"] },
+      experiences: [{ organization: "示例店铺", role: "店铺运营", highlights: ["负责淘宝店铺投放 ROI 复盘"] }],
+      skills: [{ name: "店铺运营", level: "resume", evidence: ["示例店铺"] }],
+      projects: []
+    };
+    configs.analysisContext = runtimeAnalysisContext(configs.candidateProfile, configs.searchPlan);
+    const runner = createJobAnalysisRunner(configs, [], { db, analyzer });
+    const sourceJob = completeJob(sample.sourceId, {
+      title: sample.title,
+      tags: ["电商运营"],
+      description: `${dualEvidence.jd[0]}，负责店铺日常经营与活动复盘。`.repeat(4)
+    });
+    const result = await runner(sourceJob);
+    assert.strictEqual(result.semanticStatus, "complete", `${sample.sourceId} 应保持完整语义状态`);
+    assert.strictEqual(result.recommendation, sample.expected, `${sample.sourceId} 本地守卫结论错误`);
+    if (sample.expectedBucket) {
+      assert.strictEqual(
+        decisionBucket({ ...sourceJob, analysis: result, qualityTags: [], risks: [] }),
+        sample.expectedBucket,
+        `${sample.sourceId} 分桶结果错误`
+      );
+    }
+  }
 }
 
 function matchBoundaryContractSmoke() {

@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadConfigs } = require("../src/config");
-const { scoreJob } = require("../src/core/scoring");
+const { scoreJob, decisionState } = require("../src/core/scoring");
 const { createGreeting } = require("../src/core/llm");
 const { buildKeywordPlan, resolvePlannedKeywords } = require("../src/core/keyword_planner");
 const { explainJobMatch } = require("../src/core/match_explainer");
@@ -112,8 +112,8 @@ const trainer = scoreJob({
   title: "AI Agent 课程讲师",
   description: `${sample[0].description} 负责课程设计和培训交付。`
 }, runtimeConfigs);
-assert.strictEqual(trainer.level, "不建议");
-assert(trainer.score < good.score);
+assert(!trainer.qualityTags.includes("role_mismatch"), "培训类标题不再由本地规则默认拦截，交由语义证据契约判断");
+assert.strictEqual(decisionState(trainer), "ready");
 
 const selfCheckDbPath = path.join(selfCheckDir, `self-check-${Date.now()}.sqlite`);
 const db = openDb(selfCheckDbPath);

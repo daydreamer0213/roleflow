@@ -181,7 +181,7 @@ function seed(database) {
   const primaryId = upsertJob(database, job("primary", { title: "Primary role", qualityTags: ["salary_target_core"], analysis: completeAnalysis() }), scanBatchId);
   const talkId = upsertJob(database, job("talk", { title: "Talk role", analysis: { semanticStatus: "partial", recommendation: "review" } }), scanBatchId);
   const backupId = upsertJob(database, job("backup", { title: "Backup role", qualityTags: ["experience_overrange"] }), scanBatchId);
-  const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", qualityTags: ["role_mismatch"] }), scanBatchId);
+  const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", qualityTags: ["hard_exclude"] }), scanBatchId);
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
