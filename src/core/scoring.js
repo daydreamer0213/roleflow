@@ -136,10 +136,11 @@ function scoreJob(job, configs) {
   const salaryMin = Number(scoring.salary?.expected_min_k || 0);
   const salaryMax = Number(scoring.salary?.expected_max_k || 0);
   if (salaryMode === "strict") {
-    if (salary.min !== null && salary.max !== null && ((salaryMin > 0 && salary.max < salaryMin) || (salaryMax > 0 && salary.min > salaryMax))) {
+    // 严格模式只把“低于期望下限”当硬边界；薪资高于目标上限交给 salary_target_high 等软标记，不做硬排除。
+    if (salary.min !== null && salary.max !== null && salaryMin > 0 && salary.max < salaryMin) {
       score -= 50;
       qualityTags.push("salary_out_of_range");
-      risks.push("薪资不在严格范围内");
+      risks.push("薪资低于期望下限，不在严格范围内");
     }
   }
   if (salary.max !== null && salary.max > (scoring.salary?.hard_max_k || 35)) {

@@ -273,8 +273,15 @@ assert.notStrictEqual(stretchWithoutTechnicalEvidence.level, "可冲");
 const overRange = scoreJob(job({ experience: "5-10年", salary: "10-12K" }), scopedConfigs);
 assert(overRange.qualityTags.includes("experience_overrange"));
 assert.strictEqual(decisionBucket({ ...overRange, analysis: {} }), "backup");
-const strictSalary = scoreJob(job({ experience: "0-3年", salary: "15-20K" }), scopedConfigs);
-assert.strictEqual(decisionState(strictSalary), "blocked");
+// 严格模式下，岗位薪资高于目标上限只走软标记（备选），不做硬排除；低于期望下限仍然是硬边界。
+const strictHighSalary = scoreJob(job({ experience: "0-3年", salary: "15-20K" }), scopedConfigs);
+assert.notStrictEqual(decisionState(strictHighSalary), "blocked", "薪资高于目标上限不得在 strict 模式硬排除");
+assert(!strictHighSalary.qualityTags.includes("salary_out_of_range"));
+assert(strictHighSalary.qualityTags.includes("salary_target_high"), "高于目标上限只保留 salary_target_high 软标记");
+assert.strictEqual(decisionBucket({ ...strictHighSalary, analysis: {} }), "backup", "高薪资岗位只能进备选，不得 not_recommended");
+const strictLowSalary = scoreJob(job({ experience: "0-3年", salary: "6-8K" }), scopedConfigs);
+assert.strictEqual(decisionState(strictLowSalary), "blocked", "低于期望下限仍是严格硬边界");
+assert(strictLowSalary.qualityTags.includes("salary_out_of_range"));
 
 const finalSalaryConfigs = {
   ...scopedConfigs,
