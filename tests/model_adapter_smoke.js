@@ -64,6 +64,9 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("indispensable_core"));
     assert(matchPrompt.includes('"hardBlockers":[]'));
     assert(matchPrompt.includes("searchPreferences"));
+    assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
+    assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
+    assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });

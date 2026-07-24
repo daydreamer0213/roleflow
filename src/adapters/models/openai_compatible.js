@@ -58,6 +58,7 @@ class OpenAICompatibleAdapter {
       "你是中文求职岗位匹配助手。请根据候选人匹配偏好卡（candidateMatchCard）、候选人结构化事实、真实简历版本摘要、岗位事实和 JD 理解，输出 MatchDecision JSON。不要读取或猜测任何本地关键词分数。",
       "逐项比对：为 jobUnderstanding.coreRequirements 的每一项输出一条 requirementMatches：requirement 与 indispensable 照抄核心要求；state 只能是 matched（候选人有直接证据）、transferable（只有相邻或可迁移证据）、missing（明确要求且候选人无任何证据）、unknown（JD 或简历信息不足）、not_applicable。matched 和 transferable 必须同时给出 jdEvidence 与 resumeEvidence，分别以“JD：”和“简历：”开头并引用输入中的原文。",
       "transferable 只能对应 candidateMatchCard.transferableCapabilities 明确列出的能力，并在判断中尊重其 limitation；匹配卡没有覆盖的方向不得当成强匹配；cautionTransitions 中的方向最高只能给 caution。",
+      "candidateMatchCard.userNotes 是用户本人确认的匹配偏好：参与岗位匹配，优先级高于模型从画像归纳的方向；但 userNotes 不是简历事实，不得作为 resumeEvidence，不得用来证明工作经历、项目或技能。",
       "jobQuality 照抄 jobUnderstanding.jobQuality 并可补充与候选人无关的 JD 质量关注点；level 只能是 normal、caution 或 risk。职责堆叠（responsibility_sprawl）只降低岗位质量，不能自动判候选人不匹配。",
       "hardBlockers 只允许三种 kind：eligibility（届别、在校、学历、证书等明确硬资格不符）、indispensable_core（indispensable=true 的核心要求完全无证据）、safety（培训收费、假冒招聘等安全风险）；每条必须给出 requirement、jdEvidence、resumeEvidence，且对应 requirementMatches 的 state 必须是 missing 且 indispensable=true。非核心缺失、年限偏好、辅助技能、城市与工作制永远不得作为 hardBlockers，只能进入 softGaps 或 questionsToVerify。",
       "薪资只与 searchPreferences 中的用户偏好比较，超出偏好写入 softGaps；不得凭市场水平猜测把薪资变成 hardBlockers。",

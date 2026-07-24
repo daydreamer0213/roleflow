@@ -455,7 +455,7 @@ function renderMatchCardPage({ db, searchParams }) {
     <label>强证据（每行：名称 | 简历事实）<textarea name="strongEvidence">${escapeHtml((card.card.strongEvidence || []).map((item) => `${item.label} | ${item.evidence}`).join("\n"))}</textarea></label>
     <label>可迁移能力（每行：名称 | 简历事实 | 尚未证明的部分）<textarea name="transferableCapabilities">${escapeHtml((card.card.transferableCapabilities || []).map((item) => [item.label, item.evidence, item.limitation].filter(Boolean).join(" | ")).join("\n"))}</textarea></label>
     <label>需谨慎转向（每行：方向 | 原因）<textarea name="cautionTransitions">${escapeHtml((card.card.cautionTransitions || []).map((item) => `${item.direction} | ${item.reason}`).join("\n"))}</textarea></label>
-    <label>用户备注（每行一条，只给自己看）<textarea name="userNotes">${escapeHtml((card.card.userNotes || []).join("\n"))}</textarea></label>
+    <label>用户补充偏好（每行一条；会用于岗位匹配，不会直接发送给招聘方；不能代替简历证据）<textarea name="userNotes">${escapeHtml((card.card.userNotes || []).join("\n"))}</textarea></label>
     <div><button type="submit">保存草稿</button></div>
   </form>
   <form class="inline-form" method="post" action="/api/match-card/confirm">

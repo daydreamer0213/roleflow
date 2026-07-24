@@ -320,6 +320,9 @@ const generatedReports = [];
   assert.strictEqual(changedCardPage.status, 200);
   assert(changedCardHtml.includes("新简历待确认，不会自动替换当前匹配依据"));
   assert(changedCardHtml.includes("当前扫描使用"));
+  assert(changedCardHtml.includes("会用于岗位匹配"), "用户补充偏好说明必须与模型语义一致");
+  assert(changedCardHtml.includes("不能代替简历证据"), "用户补充偏好不得被描述成简历证据");
+  assert(!changedCardHtml.includes("只给自己看"), "不得再把参与匹配的 userNotes 描述成只给自己看");
 
   const oldContextScan = runCliScan(planId);
   assert.strictEqual(oldContextScan.status, 0, oldContextScan.stderr || oldContextScan.stdout);
