@@ -40,12 +40,20 @@ const {
   updateCandidateProfile,
   saveCandidateResumeVersion,
   listCandidateResumeVersions,
+  listProfileVersions,
   recordResumeParseAttempt,
   listResumeParseAttempts,
   saveSearchPlan,
   rescorePlanObservations,
   compareProfileVersions,
   getSearchPlanDependency,
+  getActiveMatchingCard,
+  getMatchingCard,
+  listMatchingCards,
+  createMatchingCardDraft,
+  saveMatchingCardDraftEdit,
+  confirmMatchingCard,
+  getCandidateMatchingContext,
   listDecisionPool,
   listDecisionQueue,
   recordCandidateJobEvent,
@@ -67,7 +75,8 @@ const {
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
-const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
+const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
+const { matchingCardFromProfile } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
@@ -126,6 +135,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
+      if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
@@ -147,6 +157,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
@@ -209,8 +221,13 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     planId = Number(params.planId);
     const plan = getSearchPlan(db, planId);
     if (!plan) throw new Error("Search Plan 不存在。");
-    const profile = getCandidateProfile(db, plan.profileId);
-    if (!profile) throw new Error("候选人画像不存在。");
+    const matchingContext = getCandidateMatchingContext(db, plan.profileId);
+    if (!matchingContext) {
+      throw appError("MATCHING_CARD_CONFIRMATION_REQUIRED", "重试语义分析前，请先在工作台确认匹配偏好卡。", {
+        statusCode: 409,
+        details: { profileId: plan.profileId, cardId: getSearchPlanDependency(db, plan.id).draftCardId }
+      });
+    }
     const pool = listDecisionPool(db, { planId });
     const requestedJobId = Number(params.jobId);
     const jobs = bulk
@@ -220,12 +237,12 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     if (!jobs.length) throw new Error(bulk ? "当前没有待重试的语义分析岗位。" : "岗位不存在或不属于当前筛选方案。");
     const baseConfigs = loadConfigs(root);
     baseConfigs.model = modelConfig;
-    const configs = profileToRuntimeConfigs(baseConfigs, profile.profile, plan.plan, listCandidateResumeVersions(db, profile.id));
+    const configs = profileToRuntimeConfigs(baseConfigs, matchingContext.candidateProfile, plan.plan, listCandidateResumeVersions(db, plan.profileId), matchingContext.matchingCard);
     const analyze = createJobAnalysisRunner(configs, plan.plan.keywords || [], { db, logger });
     const batchId = createBatch(db, jobs[0].source || "boss", bulk ? "analysis-retry-bulk" : "analysis-retry", bulk
       ? `analysis-retry-bulk:plan:${planId}:jobs:${jobs.length}`
       : `analysis-retry:plan:${planId}:job:${jobs[0].id}`, {
-      profileId: profile.id,
+      profileId: plan.profileId,
       searchPlanId: planId,
       filterSnapshot: { mode: bulk ? "analysis-retry-bulk" : "analysis-retry", jobIds: jobs.map((job) => job.id) }
     });
@@ -314,21 +331,29 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
       throw error;
     }
     logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", fileName: resume.originalFileName, format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
+    const requestedProfileId = Number(form.fields.profileId || 0) || null;
+    const existing = requestedProfileId ? getCandidateProfile(db, requestedProfileId) : null;
+    if (existing && existing.sourceHash && existing.sourceHash === resume.contentHash) {
+      recordResumeParseAttempt(db, { profileId: existing.id, document: resume });
+      parseRecorded = true;
+      logger.info("resume_reupload_same_content", { requestId, profileId: existing.id, contentHash: resume.contentHash });
+      return redirect(res, matchingCardEntryLocation(db, existing.id, resume.contentHash));
+    }
     const profile = await analyzeResumeProfile({ modelConfig, resume, logger });
     const saved = saveProfileAnalysis(db, { profileId: form.fields.profileId, profile, document: resume, searchPlan: null });
     persistResumeSourceFile({ db, root, documentId: saved.resumeDocumentId, file, logger, requestId });
     recordResumeParseAttempt(db, { profileId: saved.profileId, document: resume });
     parseRecorded = true;
     logger.info("resume_profile_created", { requestId, profileId: saved.profileId, profileVersionId: saved.profileVersionId, modelProvider: modelConfig?.provider || "mock" });
+    const cardId = await createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId });
     try {
       const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
       const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
       logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
-      return redirect(res, `/plan?profileId=${saved.profileId}&planId=${planId}&created=1`);
-    } catch (error) {
-      error.message = `候选人画像和简历版本已保存，但搜索建议生成失败：${error.message}`;
-      return respondUiError(res, error, `/profile?profileId=${saved.profileId}`, { logger, requestId, event: "search_plan_recommend_failed", fallbackCode: "SEARCH_PLAN_RECOMMEND_FAILED" });
+    } catch (planError) {
+      logger.warn("search_plan_recommend_failed", { requestId, profileId: saved.profileId, error: errorMeta(planError) });
     }
+    return redirect(res, `/match-card?profileId=${saved.profileId}&cardId=${cardId}`);
   } catch (error) {
     const failedFile = form.files?.resume;
     try {
@@ -343,6 +368,159 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
       logger.warn("resume_parse_attempt_record_failed", { requestId, error: errorMeta(recordError) });
     }
     respondUiError(res, error, "/onboarding", { logger, requestId, event: "resume_upload_failed", fallbackCode: "RESUME_UPLOAD_FAILED" });
+  }
+}
+
+// 相同内容重新上传：不新增画像版本、不调用模型，只按 profileId + resumeContentHash 决定去向。
+function matchingCardEntryLocation(db, profileId, resumeContentHash) {
+  const cards = listMatchingCards(db, profileId).filter((card) => card.resumeContentHash === resumeContentHash);
+  const confirmed = cards.find((card) => card.status === "confirmed");
+  if (confirmed) {
+    const activePlan = getActiveSearchPlan(db, profileId);
+    return `/plan?profileId=${profileId}&planId=${activePlan?.id || ""}`;
+  }
+  const draft = cards.find((card) => card.status === "draft");
+  if (draft) return `/match-card?profileId=${profileId}&cardId=${draft.id}`;
+  const latestVersion = listProfileVersions(db, profileId, 1)[0];
+  if (!latestVersion) throw new Error("候选人画像没有已保存的简历版本，无法生成匹配偏好卡。");
+  const created = createMatchingCardDraft(db, {
+    profileId,
+    profileVersionId: latestVersion.id,
+    resumeDocumentId: latestVersion.resumeDocumentId,
+    resumeContentHash,
+    card: matchingCardFromProfile(latestVersion.profile),
+    source: "migration"
+  });
+  return `/match-card?profileId=${profileId}&cardId=${created.id}`;
+}
+
+async function createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId }) {
+  let card;
+  try {
+    card = await buildCandidateMatchCard({ modelConfig, profile, logger });
+  } catch (error) {
+    logger.warn("matching_card_draft_fallback", { requestId, profileId: saved.profileId, error: errorMeta(error) });
+    card = matchingCardFromProfile(profile);
+  }
+  const draft = createMatchingCardDraft(db, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: resume.contentHash,
+    card,
+    source: "model"
+  });
+  logger.info("matching_card_draft_created", { requestId, profileId: saved.profileId, cardId: draft.id, source: draft.source });
+  return draft.id;
+}
+
+function renderMatchCardPage({ db, searchParams }) {
+  const profileId = Number(searchParams.get("profileId") || 0);
+  const profile = getCandidateProfile(db, profileId);
+  if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
+  const activeCard = getActiveMatchingCard(db, profileId);
+  const requested = getMatchingCard(db, searchParams.get("cardId"));
+  const card = requested?.profileId === profile.id ? requested : null;
+  const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
+  const activeDocument = activeCard?.resumeDocumentId ? getResumeDocument(db, activeCard.resumeDocumentId) : null;
+  const activeLabel = activeCard
+    ? `${activeDocument?.originalFileName || "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
+    : "尚无已确认的匹配偏好卡";
+  const draftLinks = drafts
+    .filter((item) => item.id !== card?.id)
+    .map((item) => `<a class="button-link" href="/match-card?profileId=${profile.id}&cardId=${item.id}">打开草稿卡 #${item.id}</a>`)
+    .join(" ");
+  const notices = [];
+  if (searchParams.get("saved")) notices.push(`<p class="notice">草稿已保存；确认之前不会改变扫描依据。</p>`);
+  if (!activeCard) notices.push(`<p class="setup-warning">尚无已确认的匹配偏好卡。无需重新上传简历，打开现有草稿卡确认后即可扫描。 ${draftLinks}</p>`);
+  if (card?.status === "draft" && activeCard) notices.push(`<p class="setup-warning">新简历待确认，不会自动替换当前匹配依据。</p>`);
+  const body = !card
+    ? `<section class="panel"><h2>选择要确认的草稿卡</h2><p class="hint">匹配偏好卡来自你已上传的简历；选择一张草稿卡检查并确认。</p><p>${draftLinks || "当前没有草稿卡。"}</p></section>`
+    : card.status !== "draft"
+      ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
+      : `<section class="panel"><h2>匹配偏好卡 #${card.id}（草稿）</h2>
+  <p class="hint">逐项核对模型从简历事实归纳的匹配依据；只有确认后，扫描和岗位匹配才会使用它。</p>
+  <form class="form-stack" method="post" action="/api/match-card">
+    <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
+    <input type="hidden" name="cardId" value="${escapeAttr(card.id)}">
+    <label>目标方向（每行一个）<textarea name="targetDirections">${escapeHtml((card.card.targetDirections || []).join("\n"))}</textarea></label>
+    <label>强证据（每行：名称 | 简历事实）<textarea name="strongEvidence">${escapeHtml((card.card.strongEvidence || []).map((item) => `${item.label} | ${item.evidence}`).join("\n"))}</textarea></label>
+    <label>可迁移能力（每行：名称 | 简历事实 | 尚未证明的部分）<textarea name="transferableCapabilities">${escapeHtml((card.card.transferableCapabilities || []).map((item) => [item.label, item.evidence, item.limitation].filter(Boolean).join(" | ")).join("\n"))}</textarea></label>
+    <label>需谨慎转向（每行：方向 | 原因）<textarea name="cautionTransitions">${escapeHtml((card.card.cautionTransitions || []).map((item) => `${item.direction} | ${item.reason}`).join("\n"))}</textarea></label>
+    <label>用户备注（每行一条，只给自己看）<textarea name="userNotes">${escapeHtml((card.card.userNotes || []).join("\n"))}</textarea></label>
+    <div><button type="submit">保存草稿</button></div>
+  </form>
+  <form class="inline-form" method="post" action="/api/match-card/confirm">
+    <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
+    <input type="hidden" name="cardId" value="${escapeAttr(card.id)}">
+    <button type="submit">确认匹配偏好卡</button>
+  </form>
+  <p class="hint">确认后，旧的已确认卡会被替换；基于旧卡的筛选方案需要重新保存一次。</p>
+</section>`;
+  return renderPage("匹配偏好卡", `<main>
+  <nav>${navLinks(`/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`)}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
+  <h1>匹配偏好卡</h1>
+  <p class="hint">当前扫描使用：${escapeHtml(activeLabel)}</p>
+  ${notices.join("\n")}
+  ${body}
+</main>`);
+}
+
+function renderMatchingCardSummary(card = {}) {
+  const items = (list, render) => (list || []).length ? `<ul>${list.map(render).join("")}</ul>` : "<p class=\"hint\">（空）</p>";
+  return `<dl>
+  <dt>目标方向</dt><dd>${escapeHtml((card.targetDirections || []).join("、") || "（空）")}</dd>
+  <dt>强证据</dt><dd>${items(card.strongEvidence, (item) => `<li>${escapeHtml(item.label)}：${escapeHtml(item.evidence)}</li>`)}</dd>
+  <dt>可迁移能力</dt><dd>${items(card.transferableCapabilities, (item) => `<li>${escapeHtml(item.label)}：${escapeHtml(item.evidence)}${item.limitation ? `（未证明：${escapeHtml(item.limitation)}）` : ""}</li>`)}</dd>
+  <dt>需谨慎转向</dt><dd>${items(card.cautionTransitions, (item) => `<li>${escapeHtml(item.direction)}：${escapeHtml(item.reason)}</li>`)}</dd>
+</dl>`;
+}
+
+function matchingCardFromForm(params = {}) {
+  const lines = (value) => String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const segments = (line) => line.split("|").map((item) => item.trim());
+  return {
+    targetDirections: lines(params.targetDirections),
+    strongEvidence: lines(params.strongEvidence).map((line) => {
+      const [label, ...rest] = segments(line);
+      return { label, evidence: rest.join(" | ") };
+    }),
+    transferableCapabilities: lines(params.transferableCapabilities).map((line) => {
+      const [label, evidence, ...rest] = segments(line);
+      return { label, evidence, limitation: rest.join(" | ") };
+    }),
+    cautionTransitions: lines(params.cautionTransitions).map((line) => {
+      const [direction, ...rest] = segments(line);
+      return { direction, reason: rest.join(" | ") };
+    }),
+    userNotes: lines(params.userNotes)
+  };
+}
+
+async function handleMatchCardSave(req, res, { db, logger, requestId }) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const profileId = Number(params.profileId);
+    const cardId = Number(params.cardId);
+    const saved = saveMatchingCardDraftEdit(db, { profileId, cardId, card: matchingCardFromForm(params) });
+    logger.info("matching_card_draft_saved", { requestId, profileId, cardId: saved.id });
+    redirect(res, `/match-card?profileId=${profileId}&cardId=${saved.id}&saved=1`);
+  } catch (error) {
+    respondUiError(res, error, "/match-card", { logger, requestId, event: "matching_card_save_failed", fallbackCode: "MATCHING_CARD_SAVE_FAILED" });
+  }
+}
+
+async function handleMatchCardConfirm(req, res, { db, logger, requestId }) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const profileId = Number(params.profileId);
+    const cardId = Number(params.cardId);
+    confirmMatchingCard(db, { profileId, cardId });
+    logger.info("matching_card_confirmed", { requestId, profileId, cardId });
+    const activePlan = getActiveSearchPlan(db, profileId);
+    redirect(res, `/plan?profileId=${profileId}&planId=${activePlan?.id || ""}&matchCardConfirmed=1`);
+  } catch (error) {
+    respondUiError(res, error, "/match-card", { logger, requestId, event: "matching_card_confirm_failed", fallbackCode: "MATCHING_CARD_CONFIRM_FAILED" });
   }
 }
 
@@ -567,12 +745,14 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
     }, profile.profile);
     const validation = validateSearchPlan(plan, profile.profile);
     if (!validation.valid) throw new Error(validation.errors.join("；"));
-    const planId = saveSearchPlan(db, { id: params.planId, profileId, plan });
+    const matchingContext = getCandidateMatchingContext(db, profileId);
+    const planId = saveSearchPlan(db, { id: params.planId, profileId, profileVersionId: matchingContext?.profileVersionId || null, plan });
     const runtimeConfigs = profileToRuntimeConfigs(
       loadConfigs(root),
-      profile.profile,
+      matchingContext?.candidateProfile || profile.profile,
       plan,
-      listCandidateResumeVersions(db, profileId)
+      listCandidateResumeVersions(db, profileId),
+      matchingContext?.matchingCard || null
     );
     const rescore = rescorePlanObservations(db, { planId, configs: runtimeConfigs });
     logger.info("search_plan_saved", {
@@ -593,9 +773,9 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
-    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
-    if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
-    assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
+    const matchingContext = plan ? getCandidateMatchingContext(db, plan.profileId) : null;
+    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
     assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
@@ -742,9 +922,9 @@ async function handleWorkflowRunStart(req, res, {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId || 0);
     const plan = getSearchPlan(db, planId);
-    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
-    if (!profile) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
-    assertSearchPlanReady(plan, profile.profile, getSearchPlanDependency(db, plan.id));
+    if (!plan || !getCandidateProfile(db, plan.profileId)) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
+    const matchingContext = getCandidateMatchingContext(db, plan.profileId);
+    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, plan.id));
     const state = buildWorkflowDashboardState(db, plan);
     if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
     if (state.nextPlan?.errorCode) {
@@ -1629,7 +1809,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
   <nav>${navLinks(`/resumes?profileId=${profile.id}`)}<a href="/profile?profileId=${profile.id}">画像确认</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
   <h1>简历版本</h1>
   ${saved}
-  <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。</p>
+  <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。投递版简历只用于岗位沟通与版本管理：新增、编辑或停用版本不会改变基础候选人画像，也不会替换当前匹配偏好卡。</p>
   <form class="panel form-stack" method="post" action="/api/resume-version" enctype="multipart/form-data">
     <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
     <h2>新增版本</h2>
@@ -1908,8 +2088,8 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
   const bossRuntimeBlock = communicationRuntimeBlock(db);
   const workflowState = buildWorkflowDashboardState(db, planRecord);
-  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock);
-  const workflowStartDisabled = !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock)
+  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock);
+  const workflowStartDisabled = !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
     || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
@@ -1919,8 +2099,11 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
-  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
   const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
+  const matchingCardNotice = planDependency.matchingCardRequired
+    ? `<section class="panel validation validation-error"><strong>尚未确认匹配偏好卡</strong><p>扫描和岗位匹配只依据已确认的匹配偏好卡。请到<a href="/match-card?profileId=${profile.id}${planDependency.draftCardId ? `&cardId=${planDependency.draftCardId}` : ""}">匹配偏好卡</a>检查并确认现有草稿；无需重新上传简历。</p></section>`
+    : "";
   const riskControlNotice = bossRuntimeBlock
     ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
     : "";
@@ -1931,6 +2114,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   ${renderWorkflowLaunchPanel({ planRecord, workflowState, disabled: workflowStartDisabled })}
   ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
   ${dependencyNotice}
+  ${matchingCardNotice}
   ${riskControlNotice}
   ${renderPlanValidation(validation)}
   <section class="panel profile-summary">

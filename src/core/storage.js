@@ -2270,16 +2270,21 @@ function getLatestProfileVersionId(db, profileId) {
 
 function getSearchPlanDependency(db, planId) {
   const plan = getSearchPlan(db, planId);
-  if (!plan) return { stale: false, planProfileVersionId: null, currentProfileVersionId: null, matchingCardRequired: false, activeProfileVersionId: null };
+  if (!plan) return { stale: false, planProfileVersionId: null, currentProfileVersionId: null, matchingCardRequired: false, activeProfileVersionId: null, profileId: null, draftCardId: null };
   const currentProfileVersionId = getLatestProfileVersionId(db, plan.profileId);
   const activeCard = getActiveMatchingCard(db, plan.profileId);
   if (!activeCard) {
+    const draftCardId = Number(db.prepare(`SELECT id FROM candidate_matching_cards
+      WHERE profile_id = ? AND status = 'draft'
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(Number(plan.profileId))?.id || 0) || null;
     return {
       stale: Boolean(currentProfileVersionId && plan.profileVersionId !== currentProfileVersionId),
       planProfileVersionId: plan.profileVersionId || null,
       currentProfileVersionId,
       matchingCardRequired: true,
-      activeProfileVersionId: null
+      activeProfileVersionId: null,
+      profileId: plan.profileId,
+      draftCardId
     };
   }
   return {
@@ -2288,7 +2293,9 @@ function getSearchPlanDependency(db, planId) {
     currentProfileVersionId,
     matchingCardRequired: false,
     activeProfileVersionId: activeCard.profileVersionId,
-    matchingCardId: activeCard.id
+    matchingCardId: activeCard.id,
+    profileId: plan.profileId,
+    draftCardId: null
   };
 }
 

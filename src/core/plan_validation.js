@@ -1,5 +1,6 @@
 const { cityToBossCode } = require("./search_plan");
 const { PRODUCT_POLICY } = require("./product_policy");
+const { appError } = require("./observability");
 
 function validateSearchPlan(plan = {}, candidateProfile = {}) {
   const errors = [];
@@ -31,6 +32,12 @@ function assertSearchPlanReady(planRecord, candidateProfile = {}, dependency = {
   if (!planRecord?.plan) throw new Error("Search Plan 不存在，请重新确认筛选条件。");
   const validation = validateSearchPlan(planRecord.plan, candidateProfile);
   if (!validation.valid) throw new Error(validation.errors.join("；"));
+  if (dependency.matchingCardRequired) {
+    throw appError("MATCHING_CARD_CONFIRMATION_REQUIRED", "扫描前需要先在工作台确认匹配偏好卡。", {
+      statusCode: 409,
+      details: { profileId: dependency.profileId ?? null, cardId: dependency.draftCardId ?? null }
+    });
+  }
   if (dependency.stale) throw new Error("候选人画像已更新，当前筛选方案仍基于旧画像。请先检查并保存方案，再开始扫描。");
   return validation;
 }

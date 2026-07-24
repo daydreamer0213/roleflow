@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { matchingCardRevision } = require("./matching_card");
 
 const PIPELINE_VERSIONS = Object.freeze({
   understandJob: "job-understanding-v3",
@@ -19,10 +20,11 @@ function modelSearchPlanContext(searchPlan = {}) {
   };
 }
 
-function runtimeAnalysisContext(candidateProfile, searchPlan) {
+function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = null) {
   return {
     profileVersion: stableHash(candidateProfile || {}),
-    searchPlanVersion: stableHash(modelSearchPlanContext(searchPlan))
+    searchPlanVersion: stableHash(modelSearchPlanContext(searchPlan)),
+    matchingCardVersion: matchingCard ? matchingCardRevision(matchingCard) : null
   };
 }
 

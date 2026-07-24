@@ -52,6 +52,7 @@ const {
   listReportJobs,
   markApplication,
   getCandidateProfile,
+  getCandidateMatchingContext,
   getSearchPlan,
   getSearchPlanDependency,
   getLatestBatchId,
@@ -92,7 +93,14 @@ const logger = createLogger({ root: ROOT, component: "cli" });
 if (require.main === module) {
   main().catch((err) => {
     logger.error("cli_command_failed", { command: process.argv[2] || "help", error: errorMeta(err) });
-    console.error(err.stack || err.message);
+    if (err?.code === "MATCHING_CARD_CONFIRMATION_REQUIRED") {
+      const profileId = err.details?.profileId ?? "";
+      const cardId = err.details?.cardId ?? "";
+      console.error(`[MATCHING_CARD_CONFIRMATION_REQUIRED] ${err.message}`);
+      console.error(`请在工作台确认现有匹配偏好卡：profileId=${profileId}${cardId ? `，可用草稿卡 cardId=${cardId}` : ""}。确认后即可重新运行当前命令。`);
+    } else {
+      console.error(err.stack || err.message);
+    }
     process.exit(1);
   });
 }
@@ -358,8 +366,10 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     if (!planRecord) throw new Error(`未找到 Search Plan #${args.plan}`);
     const profileRecord = getCandidateProfile(db, planRecord.profileId);
     if (!profileRecord) throw new Error(`Search Plan #${args.plan} 对应的候选人画像不存在。`);
-    assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
-    configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+    const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
+    assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+    if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
+    configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listCandidateResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   }
   const workflowRun = resolveWorkflowScanContext(db, args, planRecord);
   const planned = workflowRun
@@ -776,7 +786,9 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
-  assertSearchPlanReady(planRecord, profileRecord.profile, getSearchPlanDependency(db, planRecord.id));
+  const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
+  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
   const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
@@ -786,7 +798,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
 
   let configs = loadConfigs(ROOT);
   configs.model = resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
-  configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+  configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listCandidateResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);

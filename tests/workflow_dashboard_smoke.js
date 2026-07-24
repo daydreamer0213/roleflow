@@ -5,6 +5,8 @@ const { EventEmitter } = require("node:events");
 const {
   openDb,
   saveProfileAnalysis,
+  createMatchingCardDraft,
+  confirmMatchingCard,
   listWorkflowRuns,
   getWorkflowRun,
   getLatestScanRun,
@@ -14,6 +16,7 @@ const {
   upsertJob,
   recordSiteAccessEvent
 } = require("../src/core/storage");
+const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { createDashboardServer } = require("../src/dashboard/server");
 
@@ -166,16 +169,17 @@ let server;
 });
 
 function seedProfile(database) {
-  return saveProfileAnalysis(database, {
-    profile: {
-      candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
-      education: [{ school: "Test University", degree: "本科", major: "电子信息工程" }],
-      experiences: [],
-      skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
-      projects: [{ name: "KnowledgeFlow", roleBoundary: "独立项目", canSay: ["LangGraph workflow"] }],
-      credentials: [],
-      strengths: []
-    },
+  const profile = {
+    candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
+    education: [{ school: "Test University", degree: "本科", major: "电子信息工程" }],
+    experiences: [],
+    skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
+    projects: [{ name: "KnowledgeFlow", roleBoundary: "独立项目", canSay: ["LangGraph workflow"] }],
+    credentials: [],
+    strengths: []
+  };
+  const saved = saveProfileAnalysis(database, {
+    profile,
     document: {
       originalFileName: "workflow-resume.txt",
       format: "text",
@@ -201,6 +205,17 @@ function seedProfile(database) {
       platform: { site: "boss" }
     }
   });
+  // 工作流启动以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认。
+  const draft = createMatchingCardDraft(database, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: "workflow-dashboard-resume",
+    card: matchingCardFromProfile(profile),
+    source: "migration"
+  });
+  confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
+  return saved;
 }
 
 function job(index) {

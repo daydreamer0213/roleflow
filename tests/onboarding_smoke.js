@@ -3,7 +3,18 @@ const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
-const { openDb, getSearchPlan, getCandidateProfile, getSearchPlanDependency, listCandidateResumeVersions, listResumeParseAttempts, listReportJobs } = require("../src/core/storage");
+const {
+  openDb,
+  getSearchPlan,
+  getActiveSearchPlan,
+  getCandidateProfile,
+  getSearchPlanDependency,
+  getCandidateMatchingContext,
+  listMatchingCards,
+  listCandidateResumeVersions,
+  listResumeParseAttempts,
+  listReportJobs
+} = require("../src/core/storage");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -49,21 +60,35 @@ const generatedReports = [];
   assert(settingsHtml.includes("通义千问"));
   assert(settingsHtml.includes('name="apiKey"'));
 
+  const sampleResumeText = fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8");
   const upload = await uploadResume(baseUrl, "sample-resume.txt", fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain");
   assert.strictEqual(upload.status, 303);
-  const planLocation = upload.headers.get("location");
-  assert(planLocation?.startsWith("/plan?profileId="), "resume upload did not open a search plan");
+  const matchCardLocation = upload.headers.get("location");
+  assert(matchCardLocation?.startsWith("/match-card?profileId="), `resume upload must open the matching card page, got ${matchCardLocation}`);
+  const matchCardQuery = new URL(`${baseUrl}${matchCardLocation}`).searchParams;
+  const profileId = Number(matchCardQuery.get("profileId"));
+  const cardId = Number(matchCardQuery.get("cardId"));
+  assert(profileId > 0 && cardId > 0, "match-card redirect must carry profileId and cardId");
 
   const docxPath = path.join(smokeDir, `onboarding-${Date.now()}.docx`);
   const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8" });
   assert.strictEqual(docxFixture.status, 0, docxFixture.stderr || docxFixture.stdout);
+  let pastedProfileId = 0;
+  let pastedCardId = 0;
   try {
     const docxUpload = await uploadResume(baseUrl, "sample-resume.docx", fs.readFileSync(docxPath), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     assert.strictEqual(docxUpload.status, 303, await docxUpload.text());
+    assert(docxUpload.headers.get("location")?.startsWith("/match-card?profileId="), "docx upload must also open a matching card draft");
     const pdfUpload = await uploadResume(baseUrl, "sample-resume.pdf", makePdfFixture("Test Candidate Python FastAPI RAG Agent project experience for upload endpoint verification."), "application/pdf");
     assert.strictEqual(pdfUpload.status, 303, await pdfUpload.text());
-    const pastedUpload = await uploadResumeText(baseUrl, fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8"));
+    const pastedUpload = await uploadResumeText(baseUrl, sampleResumeText);
     assert.strictEqual(pastedUpload.status, 303, await pastedUpload.text());
+    const pastedLocation = pastedUpload.headers.get("location");
+    assert(pastedLocation?.startsWith("/match-card?profileId="), "pasted upload must open a matching card draft");
+    const pastedQuery = new URL(`${baseUrl}${pastedLocation}`).searchParams;
+    pastedProfileId = Number(pastedQuery.get("profileId"));
+    pastedCardId = Number(pastedQuery.get("cardId"));
+    assert(pastedProfileId > 0 && pastedCardId > 0 && pastedProfileId !== profileId);
     const shortText = await uploadResumeText(baseUrl, "too short");
     const shortTextBody = await shortText.text();
     assert.strictEqual(shortText.status, 400, shortTextBody);
@@ -78,7 +103,45 @@ const generatedReports = [];
     fs.rmSync(docxPath, { force: true });
   }
 
-  const planPage = await fetch(`${baseUrl}${planLocation}`);
+  const db = openDb(dbPath);
+  const planId = getActiveSearchPlan(db, profileId)?.id;
+  assert(planId, "upload must still recommend a search plan, but it is not user confirmation");
+
+  const unconfirmedScan = runCliScan(planId);
+  assert.notStrictEqual(unconfirmedScan.status, 0, "scan must refuse to run before the matching card is confirmed");
+  const unconfirmedOutput = `${unconfirmedScan.stderr}\n${unconfirmedScan.stdout}`;
+  assert(unconfirmedOutput.includes("MATCHING_CARD_CONFIRMATION_REQUIRED"), unconfirmedOutput);
+  assert(unconfirmedOutput.includes("请在工作台确认现有匹配偏好卡"), unconfirmedOutput);
+  assert(unconfirmedOutput.includes(`profileId=${profileId}`), unconfirmedOutput);
+  assert(unconfirmedOutput.includes(`cardId=${cardId}`), unconfirmedOutput);
+  assert(!unconfirmedOutput.includes("重新上传"), "recovery guidance must not ask for a resume re-upload");
+
+  const matchCardPage = await fetch(`${baseUrl}/match-card?profileId=${profileId}&cardId=${cardId}`);
+  const matchCardHtml = await matchCardPage.text();
+  assert.strictEqual(matchCardPage.status, 200);
+  assert(matchCardHtml.includes("目标方向"));
+  assert(matchCardHtml.includes("强证据"));
+  assert(matchCardHtml.includes("可迁移能力"));
+  assert(matchCardHtml.includes("需谨慎转向"));
+  assert(matchCardHtml.includes("保存草稿"));
+  assert(matchCardHtml.includes("确认匹配偏好卡"));
+  assert(matchCardHtml.includes("当前扫描使用"));
+  assert(matchCardHtml.includes("尚无已确认的匹配偏好卡"), "page must offer existing drafts when nothing is confirmed");
+
+  const confirmed = await fetch(`${baseUrl}/api/match-card/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ profileId: String(profileId), cardId: String(cardId) }),
+    redirect: "manual"
+  });
+  assert.strictEqual(confirmed.status, 303);
+  const confirmedLocation = confirmed.headers.get("location");
+  assert(confirmedLocation.startsWith(`/plan?profileId=${profileId}`), confirmedLocation);
+  assert(confirmedLocation.includes("matchCardConfirmed=1"), confirmedLocation);
+  const confirmedQuery = new URL(`${baseUrl}${confirmedLocation}`).searchParams;
+  assert.strictEqual(Number(confirmedQuery.get("planId")), planId);
+
+  const planPage = await fetch(`${baseUrl}${confirmedLocation}`);
   const planHtml = await planPage.text();
   assert.strictEqual(planPage.status, 200);
   assert(planHtml.includes("可直接开始扫描"));
@@ -94,10 +157,6 @@ const generatedReports = [];
   assert(planHtml.includes("更新过期活跃状态"));
   assert(planHtml.includes("单标签串行、随机等待和风控即停"));
 
-  const query = new URL(`${baseUrl}${planLocation}`).searchParams;
-  const planId = Number(query.get("planId"));
-  const profileId = Number(query.get("profileId"));
-  const db = openDb(dbPath);
   const plan = getSearchPlan(db, planId);
   assert(plan?.plan?.keywords?.length, "generated search plan had no keywords");
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, false);
@@ -128,7 +187,7 @@ const generatedReports = [];
   });
   assert.strictEqual(profileSaved.status, 303);
   assert.strictEqual(getCandidateProfile(db, profileId).profile.education[0].degree, "本科");
-  assert.strictEqual(getSearchPlanDependency(db, planId).stale, true, "画像更新后旧方案必须标记为待确认");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "画像编辑不产生新匹配卡时，已确认卡仍是方案依据");
 
   const versionForm = new FormData();
   versionForm.set("profileId", String(profileId));
@@ -146,6 +205,8 @@ const generatedReports = [];
   assert.strictEqual(versionsPage.status, 200);
   assert(versionsHtml.includes("AI Resume Variant"));
   assert(versionsHtml.includes("打开原文件"));
+  assert(versionsHtml.includes("不会改变基础候选人画像"), "resume versions page must state it never rewrites the base profile");
+  assert(versionsHtml.includes("不会替换当前匹配偏好卡"), "resume versions page must state it never replaces the active matching card");
   const savedVersion = listCandidateResumeVersions(db, profileId).find((version) => version.name === "AI Resume Variant");
   assert(savedVersion?.resumeTextExcerpt.includes("测试候选人"));
   assert(savedVersion?.storedFilePath.includes(path.join(".runtime", "resumes")));
@@ -154,43 +215,42 @@ const generatedReports = [];
   assert(Buffer.from(await sourceFile.arrayBuffer()).toString("utf8").includes("测试候选人"));
   assert(savedVersion?.analysis?.candidate, "新增简历版本必须独立分析并保存结构化事实");
 
+  const planFormBody = {
+    profileId: String(profileId),
+    planId: String(planId),
+    name: "广州 AI 筛选计划",
+    cities: "广州",
+    bossCityCode: "101280100",
+    salaryMinK: "9",
+    salaryMaxK: "14",
+    experience: "经验不限,0-3年,1-3年",
+    allowExperienceStretch: "on",
+    bossActiveDays: "3",
+    directions: "AI应用开发,RAG,Python后端",
+    keywords: plan.plan.keywords.map((item) => `${item.word}|${item.priority}|${item.reason}`).join("\n"),
+    excludeWords: "销售,培训,讲师",
+    hardExcludes: "培训贷",
+    maxCards: "40",
+    maxDetailTotal: "80"
+  };
   const saved = await fetch(`${baseUrl}/api/plan`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      profileId: String(profileId),
-      planId: String(planId),
-      name: "广州 AI 筛选计划",
-      cities: "广州",
-      bossCityCode: "101280100",
-      salaryMinK: "9",
-      salaryMaxK: "14",
-      experience: "经验不限,0-3年,1-3年",
-      allowExperienceStretch: "on",
-      bossActiveDays: "3",
-      directions: "AI应用开发,RAG,Python后端",
-      keywords: plan.plan.keywords.map((item) => `${item.word}|${item.priority}|${item.reason}`).join("\n"),
-      excludeWords: "销售,培训,讲师",
-      hardExcludes: "培训贷",
-      maxCards: "40",
-      maxDetailTotal: "80"
-    }),
+    body: new URLSearchParams(planFormBody),
     redirect: "manual"
   });
   assert.strictEqual(saved.status, 303);
   assert.strictEqual(getSearchPlan(db, planId).plan.source, "user-confirmed");
-  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应绑定当前画像版本");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应绑定当前匹配卡版本");
   assert.strictEqual(getSearchPlan(db, planId).plan.allowExperienceStretch, true);
-  db.close();
 
-  const scan = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", "scan", "--db", dbPath, "--plan", String(planId), "--input", path.join("data", "sample_jobs.json"), "--force-mock"], { cwd: root, encoding: "utf8" });
+  const scan = runCliScan(planId);
   assert.strictEqual(scan.status, 0, scan.stderr || scan.stdout);
   collectGeneratedReports(scan.stdout);
 
   const jobs = await fetch(`${baseUrl}/jobs?planId=${planId}&batch=latest&status=pending`);
   const jobsHtml = await jobs.text();
-  const verifyDb = openDb(dbPath);
-  const scanned = listReportJobs(verifyDb, { planId, batch: "latest" });
+  const scanned = listReportJobs(db, { planId, batch: "latest" });
   assert(scanned.length, "scan did not save jobs");
   const outcome = await fetch(`${baseUrl}/api/mark`, {
     method: "POST",
@@ -203,10 +263,89 @@ const generatedReports = [];
   const interviewHtml = await interviewJobs.text();
   assert.strictEqual(interviewJobs.status, 200);
   assert(interviewHtml.includes("smoke interview"));
-  verifyDb.close();
   assert.strictEqual(jobs.status, 200);
   assert(jobsHtml.includes("投递操作台"));
   assert(jobsHtml.includes("岗位"));
+
+  // 相同内容重新上传的三种情形：不新增画像版本、不调用模型解析。
+  const cardsBeforeReupload = listMatchingCards(db, profileId).length;
+  const reuploadConfirmed = await uploadResume(baseUrl, "sample-resume.txt", fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain", profileId);
+  assert.strictEqual(reuploadConfirmed.status, 303);
+  const reuploadConfirmedLocation = reuploadConfirmed.headers.get("location");
+  assert(reuploadConfirmedLocation?.startsWith(`/plan?profileId=${profileId}`), `confirmed card must short-circuit to the plan, got ${reuploadConfirmedLocation}`);
+  assert.strictEqual(listMatchingCards(db, profileId).length, cardsBeforeReupload, "same content with a confirmed card must not create cards");
+
+  const reuploadDraft = await uploadResumeText(baseUrl, sampleResumeText, pastedProfileId);
+  assert.strictEqual(reuploadDraft.status, 303);
+  const reuploadDraftLocation = reuploadDraft.headers.get("location");
+  assert(reuploadDraftLocation?.startsWith(`/match-card?profileId=${pastedProfileId}`), `draft card must reopen, got ${reuploadDraftLocation}`);
+  assert.strictEqual(Number(new URL(`${baseUrl}${reuploadDraftLocation}`).searchParams.get("cardId")), pastedCardId, "same content must reopen the existing draft card");
+
+  db.prepare("DELETE FROM candidate_matching_cards WHERE profile_id = ?").run(pastedProfileId);
+  const legacyUpload = await uploadResumeText(baseUrl, sampleResumeText, pastedProfileId);
+  assert.strictEqual(legacyUpload.status, 303);
+  const legacyLocation = legacyUpload.headers.get("location");
+  assert(legacyLocation?.startsWith(`/match-card?profileId=${pastedProfileId}`), `legacy profile must get a deterministic draft, got ${legacyLocation}`);
+  const legacyCardId = Number(new URL(`${baseUrl}${legacyLocation}`).searchParams.get("cardId"));
+  const legacyCards = listMatchingCards(db, pastedProfileId);
+  assert.strictEqual(legacyCards.length, 1, "legacy profile must get exactly one deterministic draft card");
+  assert.strictEqual(legacyCards[0].id, legacyCardId);
+  assert.strictEqual(legacyCards[0].status, "draft");
+  assert.strictEqual(legacyCards[0].source, "migration");
+  assert(legacyCards[0].card.targetDirections.length > 0, "deterministic card must reuse the saved profile facts");
+  const legacyReupload = await uploadResumeText(baseUrl, sampleResumeText, pastedProfileId);
+  assert.strictEqual(legacyReupload.status, 303);
+  assert.strictEqual(Number(new URL(`${baseUrl}${legacyReupload.headers.get("location")}`).searchParams.get("cardId")), legacyCardId, "deterministic draft must be created only once");
+
+  // 上传不同内容：新卡为草稿，旧确认卡继续作为扫描依据，直到用户确认新卡。
+  const changedUpload = await uploadResumeText(baseUrl, `${sampleResumeText}\n补充：负责企业知识库二期，引入重排与评测。`, profileId);
+  assert.strictEqual(changedUpload.status, 303);
+  const changedLocation = changedUpload.headers.get("location");
+  assert(changedLocation?.startsWith(`/match-card?profileId=${profileId}`), `new content must open a new draft card, got ${changedLocation}`);
+  const changedCardId = Number(new URL(`${baseUrl}${changedLocation}`).searchParams.get("cardId"));
+  assert(changedCardId && changedCardId !== cardId, "new content must produce a new draft card");
+  const changedCard = listMatchingCards(db, profileId).find((card) => card.id === changedCardId);
+  assert.strictEqual(changedCard?.status, "draft");
+  assert.strictEqual(getCandidateMatchingContext(db, profileId)?.matchingCardId, cardId, "old confirmed card must stay the active matching context");
+
+  const changedCardPage = await fetch(`${baseUrl}${changedLocation}`);
+  const changedCardHtml = await changedCardPage.text();
+  assert.strictEqual(changedCardPage.status, 200);
+  assert(changedCardHtml.includes("新简历待确认，不会自动替换当前匹配依据"));
+  assert(changedCardHtml.includes("当前扫描使用"));
+
+  const oldContextScan = runCliScan(planId);
+  assert.strictEqual(oldContextScan.status, 0, oldContextScan.stderr || oldContextScan.stdout);
+  collectGeneratedReports(oldContextScan.stdout);
+
+  const confirmChanged = await fetch(`${baseUrl}/api/match-card/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ profileId: String(profileId), cardId: String(changedCardId) }),
+    redirect: "manual"
+  });
+  assert.strictEqual(confirmChanged.status, 303);
+  assert.strictEqual(getCandidateMatchingContext(db, profileId)?.matchingCardId, changedCardId);
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, true, "确认新卡后旧方案必须标记为待确认");
+
+  const staleScan = runCliScan(planId);
+  assert.notStrictEqual(staleScan.status, 0, "stale plan must refuse to scan until saved again");
+  assert(`${staleScan.stderr}\n${staleScan.stdout}`.includes("画像已更新"));
+
+  const resaved = await fetch(`${baseUrl}/api/plan`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(planFormBody),
+    redirect: "manual"
+  });
+  assert.strictEqual(resaved.status, 303);
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应重新绑定新确认卡的画像版本");
+
+  const finalScan = runCliScan(planId);
+  assert.strictEqual(finalScan.status, 0, finalScan.stderr || finalScan.stdout);
+  collectGeneratedReports(finalScan.stdout);
+
+  db.close();
 
   success = true;
   console.log("onboarding_smoke ok");
@@ -221,14 +360,20 @@ const generatedReports = [];
   if (success) cleanup();
 });
 
-async function uploadResume(baseUrl, fileName, fileData, type) {
+function runCliScan(planId) {
+  return spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", "scan", "--db", dbPath, "--plan", String(planId), "--input", path.join("data", "sample_jobs.json"), "--force-mock"], { cwd: root, encoding: "utf8" });
+}
+
+async function uploadResume(baseUrl, fileName, fileData, type, profileId = 0) {
   const form = new FormData();
+  if (profileId) form.set("profileId", String(profileId));
   form.set("resume", new Blob([fileData], { type }), fileName);
   return fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" });
 }
 
-async function uploadResumeText(baseUrl, resumeText) {
+async function uploadResumeText(baseUrl, resumeText, profileId = 0) {
   const form = new FormData();
+  if (profileId) form.set("profileId", String(profileId));
   form.set("resumeText", resumeText);
   return fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" });
 }
