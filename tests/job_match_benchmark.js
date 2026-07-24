@@ -27,17 +27,6 @@ const LIVE_SOURCE_URL = /^https?:\/\//i;
 const LIVE_SOURCE_HOST = /(zhipin\.com|zhaopin\.com|liepin\.com|lagou\.com|51job\.com|linkedin\.com)/i;
 
 validateFixtures();
-if (!process.argv.includes("--live")) {
-  assertGateContractOffline();
-  if (process.env[LIVE_BENCHMARK_CHILD_ENV] !== "1") assertLiveFailureBranchesOffline();
-  console.log(`job_match_benchmark fixtures ok (${fixtures.length})`);
-} else {
-  runLive().catch((error) => {
-    const prefix = error && error.code ? `[${error.code}] ` : "";
-    console.error(prefix + (error.stack || error.message));
-    process.exitCode = 1;
-  });
-}
 
 function assertGateContractOffline() {
   assert.strictEqual(
@@ -118,6 +107,7 @@ function validateFixtures() {
   assert.strictEqual(new Set(fixtures.map((item) => item.id)).size, fixtures.length);
   for (const item of fixtures) {
     assert(item.title && item.description.length >= 80, `${item.id} 缺少可分析 JD`);
+    assert(item.category, `${item.id} 缺少人工分类 category`);
     assert(["apply", "caution", "review", "skip"].includes(item.expectedRecommendation), `${item.id} recommendation 无效`);
     assert(["primary", "talk", "backup", "not_recommended"].includes(item.expectedBucket), `${item.id} bucket 无效`);
     assert(item.rationale, `${item.id} 缺少人工标注理由`);
@@ -244,11 +234,6 @@ function validateLiveBenchmarkRequest(options, env, provider) {
       evaluatedCommit: commitCheck.resolved
     }
   };
-}
-
-function commitId(value) {
-  const normalized = String(value || "").trim();
-  return /^[0-9a-f]{7,40}$/i.test(normalized) ? normalized.toLowerCase() : "";
 }
 
 function checkLiveEvaluatedCommit(requestedCommit, actualCommit) {
@@ -501,3 +486,237 @@ function renderMarkdown(summary) {
   for (const row of summary.rows) lines.push(`| ${row.id} | ${row.category} | ${row.expectedRecommendation}/${row.expectedBucket} | ${row.actualRecommendation}/${row.actualBucket} | ${row.pass ? "PASS" : "FAIL"} |`);
   return lines.join("\n") + "\n";
 }
+
+// ---------------------------------------------------------------------------
+// 离线双结果比较器：只读取两份已生成的 live JSON，不调用模型、不访问网络，
+// 也不要求再次设置 ALLOW_LIVE_MODEL_BENCHMARK；任一校验失败即比较失败。
+// ---------------------------------------------------------------------------
+
+const COMPARE_METRIC_FIELDS = [
+  "total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy",
+  "failed", "stale", "pending", "partial", "hardFalsePlacement", "primaryWithoutEvidence"
+];
+
+function failCompare(code, message) {
+  return { ok: false, code, message };
+}
+
+function commitId(value) {
+  const text = String(value || "").trim();
+  return /^[0-9a-f]{7,40}$/i.test(text) ? text.toLowerCase() : "";
+}
+
+function pickCompareMetrics(result) {
+  return Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, result[field]]));
+}
+
+// 验收门禁：结构可比较只代表两份结果能对齐，是否通过验收由以下硬性条件决定。
+// 任一不满足都不得宣称候选行为达标；regressions/improvements 仅作诊断信息保留。
+function acceptanceFailures(baseline, candidate) {
+  const failures = [];
+  for (const field of ["failed", "stale", "pending", "primaryWithoutEvidence"]) {
+    if (candidate[field] !== 0) failures.push(`候选 ${field}=${candidate[field]}，验收要求为 0`);
+  }
+  const partialPrimary = candidate.rows.filter((row) => row && row.semanticStatus === "partial" && row.actualBucket === "primary");
+  if (partialPrimary.length) {
+    failures.push(`候选存在 ${partialPrimary.length} 条 semanticStatus=partial 却进入 primary 的样本：${partialPrimary.map((row) => row.id).join("、")}`);
+  }
+  if (candidate.recommendationAccuracy < baseline.recommendationAccuracy) {
+    failures.push(`recommendationAccuracy 回退：${baseline.recommendationAccuracy} -> ${candidate.recommendationAccuracy}`);
+  }
+  if (candidate.bucketAccuracy < baseline.bucketAccuracy) {
+    failures.push(`bucketAccuracy 回退：${baseline.bucketAccuracy} -> ${candidate.bucketAccuracy}`);
+  }
+  if (candidate.hardFalsePlacement > baseline.hardFalsePlacement) {
+    failures.push(`hardFalsePlacement 增加：${baseline.hardFalsePlacement} -> ${candidate.hardFalsePlacement}`);
+  }
+  return failures;
+}
+
+function compareBenchmarkResults(baseline, candidate) {
+  for (const [label, value] of [["基线", baseline], ["候选", candidate]]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return failCompare("BENCHMARK_COMPARE_RESULT_MISSING", `缺少可比较的${label}结果 JSON。`);
+    }
+  }
+  if (baseline.runMode !== "live" || candidate.runMode !== "live") {
+    return failCompare("BENCHMARK_COMPARE_RUN_MODE", "比较只接受 runMode 均为 live 的两份真实模型结果。");
+  }
+  if (baseline.authorizationGatePassed !== true || candidate.authorizationGatePassed !== true) {
+    return failCompare("BENCHMARK_COMPARE_GATE", "比较只接受授权门禁已通过（authorizationGatePassed=true）的结果。");
+  }
+  if (!baseline.benchmarkHarnessVersion || baseline.benchmarkHarnessVersion !== candidate.benchmarkHarnessVersion) {
+    return failCompare("BENCHMARK_COMPARE_HARNESS_VERSION", "两份结果的 benchmarkHarnessVersion 必须一致。基线与候选必须在同一 harness 版本下产生。");
+  }
+  // 双跑身份门禁：两次真实运行必须对应不同提交、且使用同一份脱敏画像，否则比较没有意义。
+  const baselineFixtureProfileId = String(baseline.fixtureProfileId || "").trim();
+  const candidateFixtureProfileId = String(candidate.fixtureProfileId || "").trim();
+  if (!baselineFixtureProfileId || !candidateFixtureProfileId) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", "baseline 与 candidate 都必须记录非空 fixtureProfileId，缺失说明不是完整的真实运行。");
+  }
+  if (baselineFixtureProfileId !== candidateFixtureProfileId) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", `baseline 与 candidate 的 fixtureProfileId 必须相同（${baselineFixtureProfileId} ≠ ${candidateFixtureProfileId}）：双跑必须使用同一份脱敏画像。`);
+  }
+  const baselineCommit = commitId(baseline.evaluatedCommit);
+  const candidateCommit = commitId(candidate.evaluatedCommit);
+  const mappedBaselineCommit = commitId(candidate.baselineBehaviorCommit);
+  if (!baselineCommit || !candidateCommit || !mappedBaselineCommit) {
+    return failCompare("BENCHMARK_COMPARE_COMMIT", "两份结果必须完整记录 evaluatedCommit 与 baselineBehaviorCommit（hex 提交标识）。");
+  }
+  if (baselineCommit.startsWith(candidateCommit) || candidateCommit.startsWith(baselineCommit)) {
+    return failCompare("BENCHMARK_COMPARE_EVALUATED_COMMIT", "baseline 与 candidate 的 evaluatedCommit 必须明确对应两个不同提交；同一提交的长短哈希不算不同。");
+  }
+  if (baselineCommit !== mappedBaselineCommit) {
+    return failCompare("BENCHMARK_COMPARE_COMMIT", `基线/候选对应关系错位：候选声明的 baselineBehaviorCommit=${mappedBaselineCommit}，但基线结果的 evaluatedCommit=${baselineCommit}。`);
+  }
+  for (const [label, value] of [["基线", baseline], ["候选", candidate]]) {
+    for (const field of COMPARE_METRIC_FIELDS) {
+      if (!Number.isFinite(value[field])) {
+        return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少数值指标字段 ${field}，不得凭部分指标宣称比较有效。`);
+      }
+    }
+    if (!Array.isArray(value.rows)) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少逐条 rows，无法核对 fixture 集合。`);
+    }
+  }
+  const baselineIds = baseline.rows.map((row) => row && row.id).filter(Boolean).sort();
+  const candidateIds = candidate.rows.map((row) => row && row.id).filter(Boolean).sort();
+  if (!baselineIds.length || baselineIds.join("\n") !== candidateIds.join("\n")) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_SET", "两份结果的 fixture 集合不一致，不能比较：必须使用同一套脱敏 fixture。");
+  }
+  const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
+  const regressions = [];
+  const improvements = [];
+  for (const row of candidate.rows) {
+    const before = baselineById.get(row.id);
+    if (!before) continue;
+    if (before.pass === true && row.pass !== true) regressions.push(row.id);
+    if (before.pass !== true && row.pass === true) improvements.push(row.id);
+  }
+  const failureReasons = acceptanceFailures(baseline, candidate);
+  return {
+    ok: true,
+    report: {
+      runMode: "offline-compare",
+      benchmarkHarnessVersion: baseline.benchmarkHarnessVersion,
+      baselineBehaviorCommit: baselineCommit,
+      evaluatedCommit: candidateCommit,
+      fixtureProfileId: candidateFixtureProfileId,
+      accepted: failureReasons.length === 0,
+      failureReasons,
+      baseline: pickCompareMetrics(baseline),
+      candidate: pickCompareMetrics(candidate),
+      deltas: Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, candidate[field] - baseline[field]])),
+      regressions,
+      improvements
+    }
+  };
+}
+
+function parseCompareArgs(argv) {
+  const options = { baselinePath: "", candidatePath: "", reportPath: "" };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--compare") continue;
+    if (["--baseline", "--candidate", "--report"].includes(arg)) {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) throw Object.assign(new Error(`${arg} 缺少取值`), { code: "BENCHMARK_COMPARE_ARGS" });
+      if (arg === "--baseline") options.baselinePath = value;
+      if (arg === "--candidate") options.candidatePath = value;
+      if (arg === "--report") options.reportPath = value;
+      index += 1;
+      continue;
+    }
+    throw Object.assign(new Error(`未知比较参数：${arg}`), { code: "BENCHMARK_COMPARE_ARGS" });
+  }
+  if (!options.baselinePath || !options.candidatePath) {
+    throw Object.assign(new Error("离线比较必须同时提供 --baseline 与 --candidate 两份结果 JSON。"), { code: "BENCHMARK_COMPARE_ARGS" });
+  }
+  return options;
+}
+
+function readCompareJson(filePath, label) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch {
+    throw Object.assign(new Error(`无法读取${label}结果文件：${filePath}`), { code: "BENCHMARK_COMPARE_RESULT_MISSING" });
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw Object.assign(new Error(`${label}结果文件不是有效 JSON：${filePath}`), { code: "BENCHMARK_COMPARE_RESULT_MISSING" });
+  }
+}
+
+function runCompareCli() {
+  try {
+    const options = parseCompareArgs(process.argv.slice(2));
+    const baseline = readCompareJson(options.baselinePath, "基线");
+    const candidate = readCompareJson(options.candidatePath, "候选");
+    const result = compareBenchmarkResults(baseline, candidate);
+    if (!result.ok) {
+      throw Object.assign(new Error(result.message), { code: result.code });
+    }
+    // 结构可比较后即写出诊断报告（含 accepted:false 的失败情形），再决定是否宣告验收通过。
+    if (options.reportPath) {
+      fs.mkdirSync(path.dirname(path.resolve(options.reportPath)), { recursive: true });
+      fs.writeFileSync(options.reportPath, JSON.stringify(result.report, null, 2) + "\n", "utf8");
+      fs.writeFileSync(options.reportPath.replace(/\.json$/i, "") + ".md", renderComparisonMarkdown(result.report), "utf8");
+    }
+    if (!result.report.accepted) {
+      throw Object.assign(
+        new Error(`候选结果未通过验收门禁：${result.report.failureReasons.join("；")}`),
+        { code: "BENCHMARK_COMPARE_ACCEPTANCE_FAILED" }
+      );
+    }
+    const { baseline: base, candidate: cand, deltas } = result.report;
+    console.log(`benchmark compare ok: ${result.report.baselineBehaviorCommit} -> ${result.report.evaluatedCommit} (harness ${result.report.benchmarkHarnessVersion})`);
+    console.log(`accuracy ${base.accuracy} -> ${cand.accuracy} (delta ${deltas.accuracy}); hardFalsePlacement ${base.hardFalsePlacement} -> ${cand.hardFalsePlacement}; primaryWithoutEvidence ${base.primaryWithoutEvidence} -> ${cand.primaryWithoutEvidence}`);
+    console.log(`regressions: ${result.report.regressions.length ? result.report.regressions.join(", ") : "none"}; improvements: ${result.report.improvements.length ? result.report.improvements.join(", ") : "none"}`);
+  } catch (error) {
+    const prefix = error && error.code ? `[${error.code}] ` : "";
+    console.error(prefix + (error.stack || error.message));
+    process.exitCode = 1;
+  }
+}
+
+function renderComparisonMarkdown(report) {
+  const metricRows = COMPARE_METRIC_FIELDS.map((field) => `| ${field} | ${report.baseline[field]} | ${report.candidate[field]} | ${report.deltas[field]} |`);
+  return [
+    "# Job Match Benchmark 双结果比较",
+    "",
+    `- 模式：${report.runMode}（离线比较，不调用模型）`,
+    `- Harness 版本：${report.benchmarkHarnessVersion}`,
+    `- 基线行为评估点 baselineBehaviorCommit：${report.baselineBehaviorCommit}`,
+    `- 候选提交 evaluatedCommit：${report.evaluatedCommit}`,
+    `- 脱敏画像 fixtureProfileId：${report.fixtureProfileId}`,
+    `- 验收结论：${report.accepted ? "通过" : `未通过：${report.failureReasons.join("；")}`}`,
+    "",
+    "| 指标 | 基线 | 候选 | 差值 |",
+    "|---|---|---|---|",
+    ...metricRows,
+    "",
+    `- 回退样本：${report.regressions.length ? report.regressions.join("、") : "无"}`,
+    `- 改善样本：${report.improvements.length ? report.improvements.join("、") : "无"}`,
+    ""
+  ].join("\n");
+}
+
+if (require.main === module) {
+  if (process.argv.includes("--compare")) {
+    runCompareCli();
+  } else if (!process.argv.includes("--live")) {
+    assertGateContractOffline();
+    if (process.env[LIVE_BENCHMARK_CHILD_ENV] !== "1") assertLiveFailureBranchesOffline();
+    console.log(`job_match_benchmark fixtures ok (${fixtures.length})`);
+  } else {
+    runLive().catch((error) => {
+      const prefix = error && error.code ? `[${error.code}] ` : "";
+      console.error(prefix + (error.stack || error.message));
+      process.exitCode = 1;
+    });
+  }
+}
+
+module.exports = { BENCHMARK_HARNESS_VERSION, compareBenchmarkResults };
