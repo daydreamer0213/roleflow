@@ -887,6 +887,30 @@ function matchBoundaryContractSmoke() {
     "合法结构化 blocker 仍然阻断"
   );
 
+  // 决策 blocker 必须结构完整：合法 kind + 非空 requirement + 双侧证据，缺一不可；
+  // 不完整对象只能展示或忽略，不得参与 skip 与分桶。
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety" }] }), [], "只有 kind 的不完整对象不得参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "  " }] }), [], "空 requirement 不得参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费" }] }), [], "缺候选人证据不得参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", resumeEvidence: "简历：无相关约定" }] }), [], "缺 JD 证据不得参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "unknown_kind", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无相关约定" }] }), [], "字段齐全的非法 kind 也不得参与决策");
+  const incompleteBlockerAnalysis = {
+    semanticStatus: "complete",
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.4,
+    fitReasons: [],
+    requirementMatches: [],
+    hardBlockers: [{ kind: "safety" }],
+    jobQuality: { level: "normal", concerns: [] },
+    evidence: { jd: [], resume: [] }
+  };
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("incomplete-blocker"), analysis: incompleteBlockerAnalysis, qualityTags: [], risks: [] }),
+    "talk",
+    "不完整 blocker 不得造成 not_recommended"
+  );
+
   const legacyStringAnalysis = {
     semanticStatus: "complete",
     recommendation: "apply",

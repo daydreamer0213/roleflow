@@ -308,10 +308,18 @@ function validateMatchDecision(value, context = {}) {
   return result;
 }
 
-// 决策路径只接受结构化三类 blocker。历史分析里的字符串 blocker（旧 hardBlockers 或 blockingGaps）
-// 仅供页面展示，绝不进入 skip、分桶或任何硬排除判断。
+// 决策路径只接受结构完整的三类 blocker：合法 kind、非空 requirement、JD 与候选人双侧证据齐全。
+// 历史分析里的字符串 blocker、缺字段对象或非法 kind 仅供页面展示或忽略，绝不进入 skip、分桶或任何硬排除判断。
+function isDecisionHardBlocker(item) {
+  return Boolean(item) && typeof item === "object" && !Array.isArray(item)
+    && HARD_BLOCKER_KINDS.includes(item.kind)
+    && Boolean(text(item.requirement))
+    && Boolean(text(item.jdEvidence))
+    && Boolean(text(item.resumeEvidence));
+}
+
 function decisionHardBlockers(analysis = {}) {
-  return list(analysis.hardBlockers).filter((item) => item && typeof item === "object" && !Array.isArray(item) && HARD_BLOCKER_KINDS.includes(item.kind));
+  return list(analysis.hardBlockers).filter(isDecisionHardBlocker);
 }
 
 // 展示兼容：读取历史分析中的硬缺口条目（含旧式字符串），只用于页面呈现，禁止用于新决策。
