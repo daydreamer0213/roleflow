@@ -496,6 +496,20 @@ function compareBenchmarkResults(baseline, candidate) {
   if (!baseline.benchmarkHarnessVersion || baseline.benchmarkHarnessVersion !== candidate.benchmarkHarnessVersion) {
     return failCompare("BENCHMARK_COMPARE_HARNESS_VERSION", "两份结果的 benchmarkHarnessVersion 必须一致。基线与候选必须在同一 harness 版本下产生。");
   }
+  // 双跑身份门禁：两次真实运行必须对应不同提交、且使用同一份脱敏画像，否则比较没有意义。
+  const baselineEvaluated = String(baseline.evaluatedCommit || "").trim().toLowerCase();
+  const candidateEvaluated = String(candidate.evaluatedCommit || "").trim().toLowerCase();
+  if (baselineEvaluated && candidateEvaluated && baselineEvaluated === candidateEvaluated) {
+    return failCompare("BENCHMARK_COMPARE_EVALUATED_COMMIT", "baseline 与 candidate 的 evaluatedCommit 必须不同：真实双跑必须对应两个不同提交。");
+  }
+  const baselineFixtureProfileId = String(baseline.fixtureProfileId || "").trim();
+  const candidateFixtureProfileId = String(candidate.fixtureProfileId || "").trim();
+  if (!baselineFixtureProfileId || !candidateFixtureProfileId) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", "baseline 与 candidate 都必须记录非空 fixtureProfileId，缺失说明不是完整的真实运行。");
+  }
+  if (baselineFixtureProfileId !== candidateFixtureProfileId) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", `baseline 与 candidate 的 fixtureProfileId 必须相同（${baselineFixtureProfileId} ≠ ${candidateFixtureProfileId}）：双跑必须使用同一份脱敏画像。`);
+  }
   const baselineCommit = commitId(baseline.evaluatedCommit);
   const candidateCommit = commitId(candidate.evaluatedCommit);
   const mappedBaselineCommit = commitId(candidate.baselineBehaviorCommit);
@@ -537,6 +551,7 @@ function compareBenchmarkResults(baseline, candidate) {
       benchmarkHarnessVersion: baseline.benchmarkHarnessVersion,
       baselineBehaviorCommit: baselineCommit,
       evaluatedCommit: candidateCommit,
+      fixtureProfileId: candidateFixtureProfileId,
       accepted: failureReasons.length === 0,
       failureReasons,
       baseline: pickCompareMetrics(baseline),
@@ -625,6 +640,7 @@ function renderComparisonMarkdown(report) {
     `- Harness 版本：${report.benchmarkHarnessVersion}`,
     `- 基线行为评估点 baselineBehaviorCommit：${report.baselineBehaviorCommit}`,
     `- 候选提交 evaluatedCommit：${report.evaluatedCommit}`,
+    `- 脱敏画像 fixtureProfileId：${report.fixtureProfileId}`,
     `- 验收结论：${report.accepted ? "通过" : `未通过：${report.failureReasons.join("；")}`}`,
     "",
     "| 指标 | 基线 | 候选 | 差值 |",

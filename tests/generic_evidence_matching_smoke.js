@@ -129,6 +129,7 @@ function liveResult(commit, overrides = {}) {
     benchmarkHarnessVersion: BENCHMARK_HARNESS_VERSION,
     evaluatedCommit: commit,
     baselineBehaviorCommit: null,
+    fixtureProfileId: "fixture-profile-a",
     total: 6,
     passed: 5,
     accuracy: 5 / 6,
@@ -178,6 +179,7 @@ function comparatorSmoke() {
   assert.strictEqual(ok.report.baselineBehaviorCommit, BASELINE_COMMIT);
   assert.strictEqual(ok.report.evaluatedCommit, CANDIDATE_COMMIT);
   assert.strictEqual(ok.report.benchmarkHarnessVersion, BENCHMARK_HARNESS_VERSION);
+  assert.strictEqual(ok.report.fixtureProfileId, "fixture-profile-a", "报告必须记录双跑共用的脱敏画像标识");
   assert.deepStrictEqual(ok.report.improvements, ["java-core-missing"]);
   assert.deepStrictEqual(ok.report.regressions, []);
   for (const field of ["total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy", "hardFalsePlacement", "primaryWithoutEvidence"]) {
@@ -192,6 +194,10 @@ function comparatorSmoke() {
     { name: "基线未过授权门禁", baseline: { ...baseline, authorizationGatePassed: false }, candidate, code: "BENCHMARK_COMPARE_GATE" },
     { name: "候选未过授权门禁", baseline, candidate: { ...candidate, authorizationGatePassed: false }, code: "BENCHMARK_COMPARE_GATE" },
     { name: "harness 版本不一致", baseline, candidate: { ...candidate, benchmarkHarnessVersion: "sanitized-live-harness.v2" }, code: "BENCHMARK_COMPARE_HARNESS_VERSION" },
+    { name: "两侧提交相同", baseline, candidate: { ...candidate, evaluatedCommit: BASELINE_COMMIT }, code: "BENCHMARK_COMPARE_EVALUATED_COMMIT" },
+    { name: "缺基线 fixtureProfileId", baseline: { ...baseline, fixtureProfileId: "" }, candidate, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
+    { name: "缺候选 fixtureProfileId", baseline, candidate: { ...candidate, fixtureProfileId: null }, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
+    { name: "fixtureProfileId 不一致", baseline, candidate: { ...candidate, fixtureProfileId: "fixture-profile-b" }, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
     { name: "缺候选提交标识", baseline, candidate: { ...candidate, evaluatedCommit: "" }, code: "BENCHMARK_COMPARE_COMMIT" },
     { name: "缺基线映射标识", baseline, candidate: { ...candidate, baselineBehaviorCommit: null }, code: "BENCHMARK_COMPARE_COMMIT" },
     { name: "基线/候选错位", baseline, candidate: { ...candidate, baselineBehaviorCommit: CANDIDATE_COMMIT }, code: "BENCHMARK_COMPARE_COMMIT" },
@@ -246,9 +252,11 @@ function compareCliSmoke() {
     assert.strictEqual(report.baselineBehaviorCommit, BASELINE_COMMIT);
     assert.strictEqual(report.evaluatedCommit, CANDIDATE_COMMIT);
     assert.strictEqual(report.benchmarkHarnessVersion, BENCHMARK_HARNESS_VERSION);
+    assert.strictEqual(report.fixtureProfileId, "fixture-profile-a", "JSON 报告必须记录 fixtureProfileId");
     assert.strictEqual(report.accepted, true, "有效比较的报告必须记录 accepted:true");
     assert.deepStrictEqual(report.failureReasons, []);
-    assert(fs.existsSync(reportPath.replace(/\.json$/i, "") + ".md"), "比较交付报告（markdown）必须同时产出");
+    const reportMarkdown = fs.readFileSync(reportPath.replace(/\.json$/i, "") + ".md", "utf8");
+    assert(reportMarkdown.includes("fixture-profile-a"), "Markdown 报告必须记录 fixtureProfileId");
 
     // 验收失败：仍写出 accepted:false 诊断报告，但非零退出、携带稳定错误码，且不得打印成功摘要。
     const rejectedCandidatePath = path.join(tmpDir, "rejected-candidate.json");
@@ -270,6 +278,23 @@ function compareCliSmoke() {
     assert.notStrictEqual(badRun.status, 0, "runMode 非 live 的比较必须非零退出");
     assert(`${badRun.stdout}\n${badRun.stderr}`.includes("BENCHMARK_COMPARE_RUN_MODE"), "失败输出必须携带可定位错误码");
     assert(!fs.existsSync(badReportPath), "比较失败不得写出任何报告文件");
+
+    // 双跑身份不符：稳定非零退出，不生成任何 accepted 报告。
+    const sameCommitPath = path.join(tmpDir, "same-commit-candidate.json");
+    const sameCommitReportPath = path.join(tmpDir, "same-commit-report.json");
+    fs.writeFileSync(sameCommitPath, JSON.stringify({ ...candidate, evaluatedCommit: BASELINE_COMMIT }), "utf8");
+    const sameCommitRun = spawnSync(process.execPath, [benchmarkScript, "--compare", "--baseline", baselinePath, "--candidate", sameCommitPath, "--report", sameCommitReportPath], { cwd: root, encoding: "utf8", env });
+    assert.notStrictEqual(sameCommitRun.status, 0, "两侧 evaluatedCommit 相同必须非零退出");
+    assert(`${sameCommitRun.stdout}\n${sameCommitRun.stderr}`.includes("BENCHMARK_COMPARE_EVALUATED_COMMIT"), "同提交失败输出必须携带可定位错误码");
+    assert(!fs.existsSync(sameCommitReportPath), "身份不符不得生成 accepted 报告");
+
+    const wrongProfilePath = path.join(tmpDir, "wrong-profile-candidate.json");
+    const wrongProfileReportPath = path.join(tmpDir, "wrong-profile-report.json");
+    fs.writeFileSync(wrongProfilePath, JSON.stringify({ ...candidate, fixtureProfileId: "fixture-profile-b" }), "utf8");
+    const wrongProfileRun = spawnSync(process.execPath, [benchmarkScript, "--compare", "--baseline", baselinePath, "--candidate", wrongProfilePath, "--report", wrongProfileReportPath], { cwd: root, encoding: "utf8", env });
+    assert.notStrictEqual(wrongProfileRun.status, 0, "fixtureProfileId 不一致必须非零退出");
+    assert(`${wrongProfileRun.stdout}\n${wrongProfileRun.stderr}`.includes("BENCHMARK_COMPARE_FIXTURE_PROFILE"), "画像不一致失败输出必须携带可定位错误码");
+    assert(!fs.existsSync(wrongProfileReportPath), "画像不一致不得生成 accepted 报告");
 
     const offlineRun = spawnSync(process.execPath, [benchmarkScript], { cwd: root, encoding: "utf8", env });
     assert.strictEqual(offlineRun.status, 0, "无 --live 的离线命令必须保持 exit 0");
