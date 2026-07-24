@@ -32,18 +32,19 @@
 
 ## 当前协作分支
 
-- 分支：codex/generic-evidence-matching-design
-- 本地分支包含已确认的设计与实施计划；以 `git log --oneline` 和工作区状态为准。
-- 远端分支：origin/codex/generic-evidence-matching-design。远端可能暂时落后于本地；网络恢复后正常推送，绝不以重置本地分支来“同步”。
-- 本文件的更新时间：2026-07-23
+- 通用证据匹配实现分支：`codex/claude-generic-evidence-matching-impl`。
+- v2 真实模型对照基准分支：`codex/generic-evidence-matching-benchmark-v2-baseline`；基准提交为 `e9689627540d1cbc419a7a06853ffea986115ff0`，从原始行为基线 `fb0168afce265cf351f03e80f66d9e0f24015887` 建立。
+- 候选分支与基准分支的 `tests/job_match_benchmark.js` 必须保持同一 Git blob（当前为 `b9d6d3814036dcc8eb4c57150aadf987e04dd355`）和 `sanitized-live-harness.v2`。任一侧修改该文件后，旧的双跑结果全部失效。
+- 候选代码已完成集中修复和 43 项离线检查；真实模型双跑尚未执行，因此当前只可审查和在线测试隔离副本，不得声称已通过合并门禁。
+- 本文件的更新时间：2026-07-24
 
-开始工作前先检查该分支；不要根据旧聊天摘要猜测分支状态。建议使用：
+开始工作前先检查对应分支；不要根据旧聊天摘要猜测分支状态。实现审查建议使用：
 
 ~~~
 git fetch origin
-git switch codex/generic-evidence-matching-design
+git switch codex/claude-generic-evidence-matching-impl
 git status -sb
-git log --oneline origin/codex/generic-evidence-matching-design..HEAD
+git log --oneline origin/codex/claude-generic-evidence-matching-impl..HEAD
 ~~~
 
 如果输出显示本地领先远端，保留本地提交并稍后重试普通 `git push`；不要执行 reset、force-push 或丢弃本地提交。如果 VSCode 当前打开的是主项目目录，应先从这个本地分支创建或切换到隔离 worktree，再让 Kimi、Claude Code 或其他代理工作。
@@ -54,7 +55,7 @@ git log --oneline origin/codex/generic-evidence-matching-design..HEAD
 |---|---|---|
 | BOSS 内嵌聊天“已发送”成功验证 | 6629500 | 已实现并有离线回归；不采集消息正文 |
 | 跨平台通用筛选（区域、公司规模）设计 | [设计](superpowers/specs/2026-07-23-cross-platform-common-filters-design.md) · [计划](superpowers/plans/2026-07-23-cross-platform-common-filters.md) | 已确认，未实现；行业本期保持不限制 |
-| 通用证据岗位匹配与匹配偏好卡 | [设计](superpowers/specs/2026-07-23-generic-evidence-matching-design.md) · [计划](superpowers/plans/2026-07-23-generic-evidence-matching.md) | 已确认，未实现 |
+| 通用证据岗位匹配与匹配偏好卡 | [设计](superpowers/specs/2026-07-23-generic-evidence-matching-design.md) · [计划](superpowers/plans/2026-07-23-generic-evidence-matching.md) | 隔离分支已实现并通过 43 项离线检查；待 v2 真实模型双跑，尚未合并主项目 |
 | 搜索意图组合 | [设计](superpowers/specs/2026-07-23-search-intent-portfolio-design.md) · [计划](superpowers/plans/2026-07-23-search-intent-portfolio.md) | 已确认，未实现 |
 | 求职进展与人工确认工作流 | [设计](superpowers/specs/2026-07-23-candidate-progress-workflow-design.md) · [计划](superpowers/plans/2026-07-23-candidate-progress-workflow.md) | 已确认，未实现 |
 | 多平台只读搜索与继承模板 | [设计](superpowers/specs/2026-07-23-multi-platform-readonly-search-design.md) · [计划](superpowers/plans/2026-07-23-multi-platform-readonly-search.md) | 已确认，未实现；真实智联适配器等待独立只读证据 |

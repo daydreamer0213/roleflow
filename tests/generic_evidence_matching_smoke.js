@@ -119,7 +119,7 @@ async function runGenericFixture(db, fixture) {
 // 离线双结果比较器：合成 JSON 断言全部失败模式安全失败，成功路径产出完整报告。
 // ---------------------------------------------------------------------------
 
-const BASELINE_COMMIT = "fb0168afce265cf351f03e80f66d9e0f24015887";
+const BASELINE_COMMIT = "e9689627540d1cbc419a7a06853ffea986115ff0";
 const CANDIDATE_COMMIT = "d90adee6c16b1e6cb4a2b9a0f6b5b4b3b2b1b0c9";
 
 function liveResult(commit, overrides = {}) {
