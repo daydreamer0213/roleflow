@@ -95,8 +95,13 @@ function labeledEvidenceList(value, limit) {
   }).filter((item) => item.label).slice(0, limit);
 }
 
-function normalizeJobQuality(value) {
+function normalizeJobQuality(value, kind = null) {
   const quality = object(value);
+  // matchJob 的岗位质量直接影响投递决策：缺失或非法 level 必须触发契约修复，不得静默按 normal 放行。
+  // understandJob 的岗位质量只是 matchJob 的参考输入，保持缺省 normal。
+  if (kind && !JOB_QUALITY_LEVELS.includes(quality.level)) {
+    throw new ModelContractError(kind, `jobQuality.level 必须是 ${JOB_QUALITY_LEVELS.join("/")} 之一`);
+  }
   const level = JOB_QUALITY_LEVELS.includes(quality.level) ? quality.level : "normal";
   const concerns = list(quality.concerns).map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
@@ -110,9 +115,12 @@ function normalizeRequirementMatches(value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ModelContractError("matchJob", "requirementMatches 必须是对象数组（requirement/state/indispensable/jdEvidence/resumeEvidence）");
     }
+    if (!REQUIREMENT_MATCH_STATES.includes(item.state)) {
+      throw new ModelContractError("matchJob", `requirementMatches.state 只接受 ${REQUIREMENT_MATCH_STATES.join("/")}，收到「${text(item.state) || "空值"}」`);
+    }
     return {
       requirement: text(item.requirement),
-      state: REQUIREMENT_MATCH_STATES.includes(item.state) ? item.state : "unknown",
+      state: item.state,
       indispensable: Boolean(item.indispensable),
       jdEvidence: text(item.jdEvidence),
       resumeEvidence: text(item.resumeEvidence)
@@ -149,9 +157,11 @@ function validateMatchDecision(value) {
     if (list(raw).some((item) => typeof item !== "string" && !contractListItem(item))) throw new ModelContractError("matchJob", `${field} 必须是字符串数组`);
   }
   const confidence = Number(value.confidence);
-  if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
+  if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
+  }
   const requirementMatches = normalizeRequirementMatches(value.requirementMatches);
-  const jobQuality = normalizeJobQuality(value.jobQuality);
+  const jobQuality = normalizeJobQuality(value.jobQuality, "matchJob");
   const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
   for (const blocker of hardBlockers) {
     const match = requirementMatches.find((item) => item.requirement === blocker.requirement);
@@ -159,10 +169,16 @@ function validateMatchDecision(value) {
       throw new ModelContractError("matchJob", `要求「${blocker.requirement}」缺失但并非核心必备，不能作为硬性阻断`);
     }
   }
-  const missingIndispensable = requirementMatches.some((item) => item.state === "missing" && item.indispensable);
   const transferableCore = requirementMatches.some((item) => item.state === "transferable" && item.indispensable);
-  if (value.recommendation === "apply" && (missingIndispensable || jobQuality.level === "risk")) {
-    throw new ModelContractError("matchJob", "存在核心必备要求缺失或岗位质量风险时 recommendation 不能为 apply");
+  if (value.recommendation === "apply") {
+    // apply 要求每一条核心必备项都有直接证据；仅可迁移证据自动降 caution，其余未决状态一律触发契约修复。
+    const unresolvedCore = requirementMatches.find((item) => item.indispensable && !["matched", "transferable"].includes(item.state));
+    if (unresolvedCore) {
+      throw new ModelContractError("matchJob", `核心必备要求「${unresolvedCore.requirement}」状态为 ${unresolvedCore.state}，recommendation 不能为 apply`);
+    }
+    if (jobQuality.level === "risk") {
+      throw new ModelContractError("matchJob", "岗位质量存在风险时 recommendation 不能为 apply");
+    }
   }
   const demoteApply = value.recommendation === "apply" && (transferableCore || jobQuality.level === "caution");
   const recommendation = demoteApply ? "caution" : value.recommendation;
@@ -173,7 +189,7 @@ function validateMatchDecision(value) {
   const result = {
     recommendation,
     fitLevel: demoteApply && value.fitLevel === "A" ? "B" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
-    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+    confidence,
     fitReasons,
     requirementMatches,
     jobQuality,

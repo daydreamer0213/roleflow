@@ -235,6 +235,38 @@ function matchGenericContractSmoke() {
     jobQuality: { level: "risk", concerns: [{ type: "fee_fraud", evidence: "JD 要求先交培训费" }] }
   }), ModelContractError);
 
+  // 契约收紧：非法 state、非法或缺失的 jobQuality.level、越界 confidence 一律抛 ModelContractError 走契约修复，不再静默修正。
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], state: "partially_matched" }]
+  }), (error) => error instanceof ModelContractError && /state/.test(error.message), "非法 requirementMatches.state 不得静默改成 unknown");
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    jobQuality: { level: "cautionn", concerns: [] }
+  }), (error) => error instanceof ModelContractError && /jobQuality\.level/.test(error.message), "拼错的 jobQuality.level 不得默认 normal");
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    jobQuality: { concerns: [] }
+  }), (error) => error instanceof ModelContractError && /jobQuality\.level/.test(error.message), "缺失 jobQuality.level 不得默认 normal");
+
+  for (const outOfRange of [-0.1, 1.1]) {
+    assert.throws(() => validateModelResult("matchJob", { ...validApply, confidence: outOfRange }),
+      (error) => error instanceof ModelContractError && /confidence/.test(error.message), `confidence=${outOfRange} 越界必须抛错，不得 clamp`);
+  }
+
+  // apply 的每一条核心必备项都必须是 matched：unknown/not_applicable 不得保持 apply，transferable 仍自动降为 caution。
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], state: "unknown" }]
+  }), (error) => error instanceof ModelContractError && /apply/.test(error.message), "核心必备项 unknown 不得保持 apply");
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], state: "not_applicable" }]
+  }), (error) => error instanceof ModelContractError && /apply/.test(error.message), "核心必备项 not_applicable 不得保持 apply");
+
   const demoted = validateModelResult("matchJob", {
     ...validApply,
     requirementMatches: [{ ...validApply.requirementMatches[0], state: "transferable" }]
@@ -400,6 +432,7 @@ async function contractRepairAndFailureSmoke() {
     fitLevel: "A",
     confidence: 0.9,
     fitReasons: [],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: [],
     questionsToVerify: [],
@@ -567,6 +600,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: ["The required core language does not match the candidate stack"],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [{ reason: "Core C++ requirement is missing", evidence: "Must know C++" }],
     softGaps: [],
     questionsToVerify: [],
@@ -578,6 +612,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: [],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [{ kind: "indispensable_core", requirement: "", jdEvidence: "Must know C++", resumeEvidence: "Candidate stack is Python" }],
     softGaps: [],
     questionsToVerify: [],
@@ -589,6 +624,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "B",
     confidence: 0.78,
     fitReasons: [],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: ["Experience should be confirmed"],
     questionsToVerify: [],
@@ -600,6 +636,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "B",
     confidence: 0.8,
     fitReasons: ["核心职责与 Python/RAG 项目匹配"],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: ["岗位写 3-5 年，候选人企业经历年限较短"],
     questionsToVerify: ["确认年限要求是否可放宽"],
@@ -613,6 +650,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.7,
     fitReasons: ["经验年限存在差距"],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: ["未达到 3-5 年"],
     evidence: { jd: ["要求 3-5 年"], resume: ["企业经历较短"] }
@@ -622,6 +660,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: ["岗位核心语言与候选人主栈不一致"],
+    jobQuality: { level: "normal", concerns: [] },
     requirementMatches: [{
       requirement: "C++ 核心开发",
       state: "missing",
@@ -647,6 +686,7 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: ["岗位限定 2024 届在校，候选人不符合"],
+    jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [{
       kind: "eligibility",
       requirement: "2024 届在校学生",
@@ -818,6 +858,7 @@ function decision(recommendation, fitLevel, resumeEvidence) {
     fitLevel,
     confidence: 0.88,
     fitReasons: ["岗位核心职责与候选人的 Python/RAG 项目经验对应"],
+    jobQuality: { level: "normal", concerns: [] },
     missingPoints: [],
     riskQuestions: [],
     recommendedResumeVersion: "main",
