@@ -237,6 +237,11 @@ function matchGenericContractSmoke() {
     ...validApply,
     evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: [] }
   }), ModelContractError);
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    evidence: { jd: [{}], resume: [{}] }
+  }), (error) => error instanceof ModelContractError && /evidence/.test(error.message),
+  "对象不得被转成 [object Object] 伪装成双侧证据");
 
   assert.throws(() => validateModelResult("matchJob", {
     ...validApply,
@@ -319,6 +324,11 @@ function matchGenericContractSmoke() {
   const skipValidated = validateModelResult("matchJob", validSkip);
   assert.strictEqual(skipValidated.recommendation, "skip");
   assert.strictEqual(skipValidated.hardBlockers[0].kind, "indispensable_core");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    hardBlockers: [{ ...validSkip.hardBlockers[0], requirement: {}, jdEvidence: 1, resumeEvidence: {} }]
+  }), (error) => error instanceof ModelContractError && /hardBlockers/.test(error.message),
+  "对象和数字不得被字符串化后伪装成完整 hardBlocker");
 
   // indispensable_core 阻断必须精确对应同名 missing + indispensable 核心项。
   assert.throws(() => validateModelResult("matchJob", {
@@ -556,6 +566,14 @@ function understandingContractSmoke() {
 
   assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreRequirements: ["Java"] }),
     (error) => error instanceof ModelContractError && /coreRequirements/.test(error.message), "字符串型 coreRequirements 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", {
+    ...validUnderstanding,
+    coreRequirements: [
+      validUnderstanding.coreRequirements[0],
+      { ...validUnderstanding.coreRequirements[0], evidence: "JD：重复描述同一项要求" }
+    ]
+  }), (error) => error instanceof ModelContractError && /coreRequirements|重复/.test(error.message),
+  "JobUnderstanding 不得用重复 label 把同一条匹配记录伪装成逐项覆盖");
   assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreResponsibilities: ["负责店铺运营"] }),
     (error) => error instanceof ModelContractError && /coreResponsibilities/.test(error.message), "字符串数组不得静默升级为对象");
   assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreRequirements: [{ label: "投放 ROI 复盘", indispensable: true }] }),
@@ -580,7 +598,8 @@ function matchUnderstandingAlignmentSmoke() {
     coreRequirements: [
       { label: "投放 ROI 复盘", indispensable: true, evidence: "JD：必须独立完成投放 ROI 复盘" },
       { label: "店铺活动运营", indispensable: false, evidence: "JD：负责店铺活动运营" }
-    ]
+    ],
+    jobQuality: { level: "normal", concerns: [] }
   };
   const baseDecision = {
     recommendation: "caution",
@@ -607,8 +626,28 @@ function matchUnderstandingAlignmentSmoke() {
     requirementMatches: [{ ...baseDecision.requirementMatches[0], indispensable: false }, baseDecision.requirementMatches[1]]
   }, { jobUnderstanding }),
     (error) => error instanceof ModelContractError && /indispensable/.test(error.message), "模型不得修改 indispensable");
+  for (const invalidIndispensable of ["false", 0, null]) {
+    assert.throws(() => validateModelResult("matchJob", {
+      ...baseDecision,
+      requirementMatches: [{ ...baseDecision.requirementMatches[0], indispensable: invalidIndispensable }, baseDecision.requirementMatches[1]]
+    }, { jobUnderstanding }),
+      (error) => error instanceof ModelContractError && /indispensable/.test(error.message),
+      `indispensable=${String(invalidIndispensable)} 必须因类型错误被拒绝，不得 Boolean 强转`);
+  }
   assert.throws(() => validateModelResult("matchJob", { ...baseDecision, requirementMatches: [...baseDecision.requirementMatches, baseDecision.requirementMatches[0]] }, { jobUnderstanding }),
     (error) => error instanceof ModelContractError && /requirementMatches|重复/.test(error.message), "重复核心项必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    requirementMatches: [baseDecision.requirementMatches[0]]
+  }, {
+    jobUnderstanding: {
+      coreRequirements: [
+        jobUnderstanding.coreRequirements[0],
+        { ...jobUnderstanding.coreRequirements[0], evidence: "JD：重复描述同一项要求" }
+      ]
+    }
+  }), (error) => error instanceof ModelContractError && /coreRequirements|重复/.test(error.message),
+  "防御性校验不得让一条 match 同时覆盖两个同名核心要求");
   assert.throws(() => validateModelResult("matchJob", {
     ...baseDecision,
     requirementMatches: [...baseDecision.requirementMatches, { requirement: "虚构核心要求", state: "matched", indispensable: false, jdEvidence: "JD：虚构", resumeEvidence: "简历：虚构" }]
@@ -619,6 +658,45 @@ function matchUnderstandingAlignmentSmoke() {
     requirementMatches: [baseDecision.requirementMatches[0], { requirement: "  ", state: "matched", indispensable: false, jdEvidence: "JD：占位", resumeEvidence: "简历：占位" }]
   }, { jobUnderstanding }),
     (error) => error instanceof ModelContractError && /requirement/.test(error.message), "空 requirement 必须抛错，不得过滤消失");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    requirementMatches: [{ ...baseDecision.requirementMatches[0], requirement: {} }, baseDecision.requirementMatches[1]]
+  }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /requirement/.test(error.message),
+    "对象 requirement 不得被字符串化后参与一一核对");
+
+  const cautionUnderstanding = {
+    ...jobUnderstanding,
+    jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl", evidence: "JD：同时要求投放、直播与拍摄" }] }
+  };
+  assert.throws(() => validateModelResult("matchJob", baseDecision, { jobUnderstanding: cautionUnderstanding }),
+    (error) => error instanceof ModelContractError && /jobQuality/.test(error.message),
+    "matchJob 不得把 understandJob 的 caution 降成 normal");
+  const cautionAligned = validateModelResult("matchJob", {
+    ...baseDecision,
+    jobQuality: {
+      level: "caution",
+      concerns: [
+        ...cautionUnderstanding.jobQuality.concerns,
+        { type: "unclear_scope", evidence: "JD：汇报关系未说明" }
+      ]
+    }
+  }, { jobUnderstanding: cautionUnderstanding });
+  assert.strictEqual(cautionAligned.jobQuality.concerns.length, 2, "允许保留既有 concern 后补充新的 JD 质量关注点");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    jobQuality: { level: "caution", concerns: [] }
+  }, { jobUnderstanding: cautionUnderstanding }),
+    (error) => error instanceof ModelContractError && /jobQuality/.test(error.message),
+    "matchJob 不得删除 understandJob 已识别的 concern");
+
+  const riskUnderstanding = {
+    ...jobUnderstanding,
+    jobQuality: { level: "risk", concerns: [{ type: "fee_fraud", evidence: "JD：入职前需支付培训费" }] }
+  };
+  assert.throws(() => validateModelResult("matchJob", baseDecision, { jobUnderstanding: riskUnderstanding }),
+    (error) => error instanceof ModelContractError && /jobQuality/.test(error.message),
+    "matchJob 不得把 understandJob 的 risk 降成 normal");
 
   // JD 没有可核对的核心要求时不得 apply，只能 review。
   assert.throws(() => validateModelResult("matchJob", {
@@ -894,6 +972,7 @@ function matchBoundaryContractSmoke() {
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费" }] }), [], "缺候选人证据不得参与决策");
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", resumeEvidence: "简历：无相关约定" }] }), [], "缺 JD 证据不得参与决策");
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "unknown_kind", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无相关约定" }] }), [], "字段齐全的非法 kind 也不得参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: {}, jdEvidence: 1, resumeEvidence: {} }] }), [], "对象和数字字段不得被字符串化后参与决策");
   const incompleteBlockerAnalysis = {
     semanticStatus: "complete",
     recommendation: "review",
@@ -970,6 +1049,18 @@ function genericPolicySmoke() {
 }
 
 function staleAnalysisSmoke() {
+  const oldPipelineRevision = {
+    profileVersion: "profile",
+    searchPlanVersion: "plan",
+    matchingCardVersion: "card",
+    sourceContentHash: "source",
+    pipelineVersions: { understandJob: "job-understanding-v4", matchJob: "match-decision-v11" }
+  };
+  const currentPipelineRevision = { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS };
+  const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
+  assert(contractUpgradeReasons.includes("job_understanding_pipeline_changed"), "理解契约收紧后必须使 v4 持久化分析 stale");
+  assert(contractUpgradeReasons.includes("match_pipeline_changed"), "匹配契约收紧后必须使 v11 持久化分析 stale");
+
   const candidate = profile(["Python", "RAG"], ["AI应用开发"]);
   const initialPlan = plan(["AI应用开发"]);
   const { profileId, planId } = saveProfileAnalysis(db, {

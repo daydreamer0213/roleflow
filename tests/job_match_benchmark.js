@@ -14,7 +14,7 @@ const { mapWithConcurrency } = require("../src/core/async_pool");
 const root = path.resolve(__dirname, "..");
 const fixtures = require("./fixtures/job_match_benchmark.json");
 
-const BENCHMARK_HARNESS_VERSION = "sanitized-live-harness.v1";
+const BENCHMARK_HARNESS_VERSION = "sanitized-live-harness.v2";
 const LIVE_BENCHMARK_ENV = "ALLOW_LIVE_MODEL_BENCHMARK";
 const LIVE_BENCHMARK_OUTPUT_ENV = "BENCHMARK_LIVE_OUTPUT_DIR";
 const LIVE_BENCHMARK_EVALUATED_COMMIT_ENV = "BENCHMARK_EVALUATED_COMMIT";
@@ -35,12 +35,16 @@ function assertGateContractOffline() {
     "实时基准门禁契约未实现：validateLiveBenchmarkRequest(options, env, provider) 必须是可注入 provider 的纯函数"
   );
   const externalOutput = path.join("D:\\DevData", "RoleFlow-benchmark", `gate-${process.pid}`);
+  const actualCommit = "1111111111111111111111111111111111111111";
+  const otherCommit = "2222222222222222222222222222222222222222";
   const realProvider = () => ({ provider: "openai_compatible" });
   const baseOptions = {
     live: true,
     profilePath: LIVE_PROFILE_FIXTURE,
     resumeVersionsPath: LIVE_RESUME_VERSIONS_FIXTURE,
-    outputDir: externalOutput
+    outputDir: externalOutput,
+    actualCommit,
+    worktreeClean: true
   };
   const authorizedEnv = { [LIVE_BENCHMARK_ENV]: "YES" };
   const cases = [
@@ -58,6 +62,10 @@ function assertGateContractOffline() {
     { name: "输出目录在默认用户目录", options: { ...baseOptions, outputDir: path.join(os.homedir(), "benchmark") }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
     { name: "输出目录在系统临时目录（含 8.3 短路径形式）", options: { ...baseOptions, outputDir: path.join(os.tmpdir(), "roleflow-live-benchmark") }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
     { name: "输出目录为系统临时目录本身", options: { ...baseOptions, outputDir: os.tmpdir() }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
+    { name: "无法读取当前实际 HEAD", options: { ...baseOptions, actualCommit: "" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_GIT_HEAD_REQUIRED" },
+    { name: "命令行伪造评估提交", options: { ...baseOptions, evaluatedCommit: otherCommit }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_COMMIT_MISMATCH" },
+    { name: "环境变量伪造评估提交", options: baseOptions, env: { ...authorizedEnv, [LIVE_BENCHMARK_EVALUATED_COMMIT_ENV]: otherCommit }, provider: realProvider, code: "LIVE_BENCHMARK_COMMIT_MISMATCH" },
+    { name: "工作树包含未提交改动", options: { ...baseOptions, worktreeClean: false }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_WORKTREE_DIRTY" },
     { name: "provider 为 mock", options: baseOptions, env: authorizedEnv, provider: () => ({ provider: "mock" }), code: "LIVE_BENCHMARK_REAL_MODEL_REQUIRED" },
     { name: "provider 未以纯函数注入", options: baseOptions, env: authorizedEnv, provider: { provider: "openai_compatible" }, code: "LIVE_BENCHMARK_PROVIDER_REQUIRED" }
   ];
@@ -78,6 +86,10 @@ function assertGateContractOffline() {
   assert.strictEqual(providerCalls, 0, "危险路径时门禁不得解析 provider");
   validateLiveBenchmarkRequest({ ...baseOptions, outputDir: "" }, authorizedEnv, countingProvider);
   assert.strictEqual(providerCalls, 0, "缺输出目录时门禁不得解析 provider");
+  validateLiveBenchmarkRequest({ ...baseOptions, evaluatedCommit: otherCommit }, authorizedEnv, countingProvider);
+  assert.strictEqual(providerCalls, 0, "评估提交与实际 HEAD 不一致时门禁不得解析 provider");
+  validateLiveBenchmarkRequest({ ...baseOptions, worktreeClean: false }, authorizedEnv, countingProvider);
+  assert.strictEqual(providerCalls, 0, "工作树有未提交改动时门禁不得解析 provider");
   const granted = validateLiveBenchmarkRequest(baseOptions, authorizedEnv, countingProvider);
   assert.strictEqual(providerCalls, 1, "全部条件满足时门禁恰好解析一次 provider");
   assert(granted.ok === true && granted.code === "OK", "全部条件满足时门禁必须放行");
@@ -87,6 +99,7 @@ function assertGateContractOffline() {
   assert.strictEqual(granted.request.profilePath, resolveAgainstRoot(LIVE_PROFILE_FIXTURE));
   assert.strictEqual(granted.request.resumeVersionsPath, resolveAgainstRoot(LIVE_RESUME_VERSIONS_FIXTURE));
   assert.strictEqual(granted.request.outputDir, canonicalizeExisting(externalOutput));
+  assert.strictEqual(granted.request.evaluatedCommit, actualCommit, "实时结果必须记录当前 checkout 的完整实际 HEAD");
 }
 
 function validateFixtures() {
@@ -193,6 +206,14 @@ function validateLiveBenchmarkRequest(options, env, provider) {
   if (!fixtureCheck.ok) return fixtureCheck;
   const outputCheck = checkLiveOutputDir(opts.outputDir || environ[LIVE_BENCHMARK_OUTPUT_ENV]);
   if (!outputCheck.ok) return outputCheck;
+  const commitCheck = checkLiveEvaluatedCommit(
+    opts.evaluatedCommit || environ[LIVE_BENCHMARK_EVALUATED_COMMIT_ENV],
+    opts.actualCommit
+  );
+  if (!commitCheck.ok) return commitCheck;
+  if (opts.worktreeClean !== true) {
+    return failLiveBenchmark("LIVE_BENCHMARK_WORKTREE_DIRTY", "实时基准只允许在无未提交改动的干净 worktree 运行，避免结果冒充某个 HEAD。");
+  }
   if (typeof provider !== "function") {
     return failLiveBenchmark("LIVE_BENCHMARK_PROVIDER_REQUIRED", "实时基准要求 provider 以纯函数注入。");
   }
@@ -209,9 +230,22 @@ function validateLiveBenchmarkRequest(options, env, provider) {
       benchmarkHarnessVersion: BENCHMARK_HARNESS_VERSION,
       profilePath: fixtureCheck.resolved.profilePath,
       resumeVersionsPath: fixtureCheck.resolved.resumeVersionsPath,
-      outputDir: outputCheck.resolved
+      outputDir: outputCheck.resolved,
+      evaluatedCommit: commitCheck.resolved
     }
   };
+}
+
+function checkLiveEvaluatedCommit(requestedCommit, actualCommit) {
+  const actual = commitId(actualCommit);
+  if (!actual || actual.length !== 40) {
+    return failLiveBenchmark("LIVE_BENCHMARK_GIT_HEAD_REQUIRED", "实时基准必须先读取当前 checkout 的完整 git HEAD，无法确认实际提交时禁止运行。");
+  }
+  const requested = String(requestedCommit || "").trim();
+  if (requested && commitId(requested) !== actual) {
+    return failLiveBenchmark("LIVE_BENCHMARK_COMMIT_MISMATCH", `声明的 evaluatedCommit 与当前实际 HEAD 不一致（actual=${actual}）。`);
+  }
+  return { ok: true, resolved: actual };
 }
 
 function parseLiveArgs(argv) {
@@ -238,9 +272,18 @@ function tryGitHead() {
     const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
     if (result.status === 0) return String(result.stdout).trim();
   } catch (error) {
-    // 提交标识只影响结果记录，缺失时留空，不影响门禁。
+    // 无法确认当前提交时由 live 身份门禁安全拒绝。
   }
   return "";
+}
+
+function isGitWorktreeClean() {
+  try {
+    const result = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+    return result.status === 0 && !String(result.stdout || "").trim();
+  } catch (error) {
+    return false;
+  }
 }
 
 function assertLiveFailureBranchesOffline() {
@@ -275,9 +318,18 @@ function assertLiveFailureBranchesOffline() {
 
 async function runLive() {
   const cliOptions = parseLiveArgs(process.argv.slice(2));
+  const actualCommit = tryGitHead();
   let resolvedModelConfig = null;
   const requestGate = validateLiveBenchmarkRequest(
-    { live: true, profilePath: LIVE_PROFILE_FIXTURE, resumeVersionsPath: LIVE_RESUME_VERSIONS_FIXTURE, outputDir: cliOptions.outputDir },
+    {
+      live: true,
+      profilePath: LIVE_PROFILE_FIXTURE,
+      resumeVersionsPath: LIVE_RESUME_VERSIONS_FIXTURE,
+      outputDir: cliOptions.outputDir,
+      evaluatedCommit: cliOptions.evaluatedCommit,
+      actualCommit,
+      worktreeClean: isGitWorktreeClean()
+    },
     process.env,
     () => {
       if (!resolvedModelConfig) {
@@ -351,7 +403,7 @@ async function runLive() {
     runMode: "live",
     authorizationGatePassed: true,
     benchmarkHarnessVersion: BENCHMARK_HARNESS_VERSION,
-    evaluatedCommit: cliOptions.evaluatedCommit || process.env[LIVE_BENCHMARK_EVALUATED_COMMIT_ENV] || tryGitHead() || null,
+    evaluatedCommit: requestGate.request.evaluatedCommit,
     baselineBehaviorCommit: cliOptions.baselineBehaviorCommit || process.env[LIVE_BENCHMARK_BASELINE_COMMIT_ENV] || null,
     fixtureProfileId: candidateProfile.id,
     evaluatedAt: new Date().toISOString(),
@@ -497,11 +549,6 @@ function compareBenchmarkResults(baseline, candidate) {
     return failCompare("BENCHMARK_COMPARE_HARNESS_VERSION", "两份结果的 benchmarkHarnessVersion 必须一致。基线与候选必须在同一 harness 版本下产生。");
   }
   // 双跑身份门禁：两次真实运行必须对应不同提交、且使用同一份脱敏画像，否则比较没有意义。
-  const baselineEvaluated = String(baseline.evaluatedCommit || "").trim().toLowerCase();
-  const candidateEvaluated = String(candidate.evaluatedCommit || "").trim().toLowerCase();
-  if (baselineEvaluated && candidateEvaluated && baselineEvaluated === candidateEvaluated) {
-    return failCompare("BENCHMARK_COMPARE_EVALUATED_COMMIT", "baseline 与 candidate 的 evaluatedCommit 必须不同：真实双跑必须对应两个不同提交。");
-  }
   const baselineFixtureProfileId = String(baseline.fixtureProfileId || "").trim();
   const candidateFixtureProfileId = String(candidate.fixtureProfileId || "").trim();
   if (!baselineFixtureProfileId || !candidateFixtureProfileId) {
@@ -515,6 +562,9 @@ function compareBenchmarkResults(baseline, candidate) {
   const mappedBaselineCommit = commitId(candidate.baselineBehaviorCommit);
   if (!baselineCommit || !candidateCommit || !mappedBaselineCommit) {
     return failCompare("BENCHMARK_COMPARE_COMMIT", "两份结果必须完整记录 evaluatedCommit 与 baselineBehaviorCommit（hex 提交标识）。");
+  }
+  if (baselineCommit.startsWith(candidateCommit) || candidateCommit.startsWith(baselineCommit)) {
+    return failCompare("BENCHMARK_COMPARE_EVALUATED_COMMIT", "baseline 与 candidate 的 evaluatedCommit 必须明确对应两个不同提交；同一提交的长短哈希不算不同。");
   }
   if (baselineCommit !== mappedBaselineCommit) {
     return failCompare("BENCHMARK_COMPARE_COMMIT", `基线/候选对应关系错位：候选声明的 baselineBehaviorCommit=${mappedBaselineCommit}，但基线结果的 evaluatedCommit=${baselineCommit}。`);

@@ -334,7 +334,9 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
     logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", fileName: resume.originalFileName, format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
     const requestedProfileId = Number(form.fields.profileId || 0) || null;
     const existing = requestedProfileId ? getCandidateProfile(db, requestedProfileId) : null;
-    if (existing && existing.sourceHash && existing.sourceHash === resume.contentHash) {
+    const reusableCard = existing && listMatchingCards(db, existing.id)
+      .some((card) => card.resumeContentHash === resume.contentHash && ["draft", "confirmed"].includes(card.status));
+    if (existing && ((existing.sourceHash && existing.sourceHash === resume.contentHash) || reusableCard)) {
       recordResumeParseAttempt(db, { profileId: existing.id, document: resume });
       parseRecorded = true;
       logger.info("resume_reupload_same_content", { requestId, profileId: existing.id, contentHash: resume.contentHash });

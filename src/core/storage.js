@@ -2111,7 +2111,7 @@ function getCandidateProfile(db, profileId) {
 
 function listCandidateProfiles(db) {
   return db.prepare(`SELECT candidate_profiles.*, (
-    SELECT id FROM search_plans WHERE profile_id = candidate_profiles.id ORDER BY is_active DESC, updated_at DESC, id DESC LIMIT 1
+    SELECT id FROM search_plans WHERE profile_id = candidate_profiles.id AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1
   ) AS active_plan_id FROM candidate_profiles ORDER BY updated_at DESC, id DESC`).all().map((row) => ({ ...profileRow(row), activePlanId: row.active_plan_id || null }));
 }
 
@@ -2182,12 +2182,22 @@ function listCandidateResumeVersions(db, profileId) {
 // 只使用 resumeDocumentId 与卡状态等结构化关联，不读取或比较简历正文。
 function listMatchingResumeVersions(db, profileId) {
   const versions = listCandidateResumeVersions(db, profileId);
-  const draftDocumentIds = new Set(db.prepare(`
-    SELECT DISTINCT resume_document_id FROM candidate_matching_cards
+  const excludedDocumentIds = new Set(db.prepare(`
+    SELECT resume_document_id
+    FROM candidate_matching_cards
     WHERE profile_id = ? AND status = 'draft' AND resume_document_id IS NOT NULL
-  `).all(Number(profileId)).map((row) => Number(row.resume_document_id)));
-  if (!draftDocumentIds.size) return versions;
-  return versions.filter((version) => !version.resumeDocumentId || !draftDocumentIds.has(Number(version.resumeDocumentId)));
+    UNION
+    SELECT profile_versions.resume_document_id
+    FROM profile_versions
+    JOIN resume_documents ON resume_documents.id = profile_versions.resume_document_id
+    JOIN candidate_matching_cards
+      ON candidate_matching_cards.profile_id = profile_versions.profile_id
+      AND candidate_matching_cards.status = 'draft'
+      AND candidate_matching_cards.resume_content_hash = resume_documents.content_hash
+    WHERE profile_versions.profile_id = ? AND profile_versions.resume_document_id IS NOT NULL
+  `).all(Number(profileId), Number(profileId)).map((row) => Number(row.resume_document_id)));
+  if (!excludedDocumentIds.size) return versions;
+  return versions.filter((version) => !version.resumeDocumentId || !excludedDocumentIds.has(Number(version.resumeDocumentId)));
 }
 
 function recordResumeParseAttempt(db, { profileId = null, document = null, fileName = "resume", format = "", inputBytes = 0, error = null }) {
@@ -2250,7 +2260,7 @@ function getSearchPlan(db, planId) {
 }
 
 function getActiveSearchPlan(db, profileId) {
-  const row = db.prepare("SELECT * FROM search_plans WHERE profile_id = ? ORDER BY is_active DESC, updated_at DESC, id DESC LIMIT 1").get(Number(profileId));
+  const row = db.prepare("SELECT * FROM search_plans WHERE profile_id = ? AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1").get(Number(profileId));
   return row ? planRow(row) : null;
 }
 

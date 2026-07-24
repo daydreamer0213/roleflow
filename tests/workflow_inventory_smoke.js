@@ -67,14 +67,41 @@ try {
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
   assert.strictEqual(
+    workflowEligibility(job("legacy-string-blocker", {
+      analysis: { ...completeAnalysis(), recommendation: "skip", fitLevel: "D", hardBlockers: ["Java 核心栈不匹配"] }
+    }), { now }).eligible,
+    true,
+    "历史字符串 blocker 及其旧 skip/D 结论只供兼容展示，不得拒绝工作流候选"
+  );
+  assert.strictEqual(
+    workflowEligibility(job("incomplete-object-blocker", {
+      analysis: { ...completeAnalysis(), hardBlockers: [{ kind: "safety" }] }
+    }), { now }).eligible,
+    true,
+    "结构不完整的 blocker 不得拒绝工作流候选"
+  );
+  assert.strictEqual(
+    workflowEligibility(job("valid-structured-blocker", {
+      analysis: {
+        ...completeAnalysis(),
+        recommendation: "skip",
+        fitLevel: "D",
+        hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：入职前收费", resumeEvidence: "简历：没有相关安排" }]
+      }
+    }), { now }).reasonCode,
+    "WORKFLOW_DECISION_INELIGIBLE",
+    "结构完整的 blocker 仍须通过 decisionBucket 拒绝"
+  );
+  assert.strictEqual(
     workflowEligibility(job("pure-high", { qualityTags: ["salary_target_high", "experience_salary_overlap"] }), { now }).reasonCode,
     "WORKFLOW_BACKUP_NOT_LOW_RISK"
   );
   assert.strictEqual(
     workflowEligibility(job("model-rejected", {
       analysis: { ...completeAnalysis(), recommendation: "skip", fitLevel: "D", hardBlockers: ["核心技术栈不匹配"] }
-    }), { now }).reasonCode,
-    "WORKFLOW_ANALYSIS_REJECTED"
+    }), { now }).eligible,
+    true,
+    "旧模型仅凭字符串 blocker 给出的 skip/D 不得继续拒绝工作流"
   );
 
   const outcomeJobIds = {

@@ -8,6 +8,7 @@ const {
   getSearchPlan,
   getActiveSearchPlan,
   getCandidateProfile,
+  listCandidateProfiles,
   getSearchPlanDependency,
   getCandidateMatchingContext,
   getActiveMatchingCard,
@@ -15,6 +16,7 @@ const {
   listCandidateResumeVersions,
   listMatchingResumeVersions,
   saveCandidateResumeVersion,
+  saveProfileAnalysis,
   listResumeParseAttempts,
   listReportJobs
 } = require("../src/core/storage");
@@ -112,6 +114,10 @@ const generatedReports = [];
   const db = openDb(dbPath);
   const planId = getActiveSearchPlan(db, profileId)?.id;
   assert(planId, "upload must still recommend a search plan, but it is not user confirmation");
+  db.prepare("UPDATE search_plans SET is_active = 0 WHERE id = ?").run(planId);
+  assert.strictEqual(getActiveSearchPlan(db, profileId), null, "没有 is_active=1 的方案时不得把历史 inactive 方案冒充活动方案");
+  assert.strictEqual(listCandidateProfiles(db).find((item) => item.id === profileId)?.activePlanId, null, "候选人列表同样不得把 inactive 方案标为活动方案");
+  db.prepare("UPDATE search_plans SET is_active = 1 WHERE id = ?").run(planId);
 
   const unconfirmedScan = runCliScan(planId);
   assert.notStrictEqual(unconfirmedScan.status, 0, "scan must refuse to run before the matching card is confirmed");
@@ -304,7 +310,8 @@ const generatedReports = [];
   assert.strictEqual(Number(new URL(`${baseUrl}${legacyReupload.headers.get("location")}`).searchParams.get("cardId")), legacyCardId, "deterministic draft must be created only once");
 
   // 上传不同内容：新卡为草稿，旧确认卡继续作为扫描依据，直到用户确认新卡。
-  const changedUpload = await uploadResumeText(baseUrl, `${sampleResumeText}\n补充：负责企业知识库二期，引入重排与评测，掌握 SecretNewSkill 技能。`, profileId);
+  const changedResumeText = `${sampleResumeText}\n补充：负责企业知识库二期，引入重排与评测，掌握 SecretNewSkill 技能。`;
+  const changedUpload = await uploadResumeText(baseUrl, changedResumeText, profileId);
   assert.strictEqual(changedUpload.status, 303);
   const changedLocation = changedUpload.headers.get("location");
   assert(changedLocation?.startsWith(`/match-card?profileId=${profileId}`), `new content must open a new draft card, got ${changedLocation}`);
@@ -333,6 +340,38 @@ const generatedReports = [];
   // 未确认的新简历版本不得进入模型输入：草稿卡绑定的版本被安全入口排除，确认后才恢复参与。
   const changedDocumentId = changedCard?.resumeDocumentId;
   assert(changedDocumentId, "新草稿卡必须绑定新简历文档");
+  const alternateUpload = await uploadResumeText(baseUrl, `${sampleResumeText}\n另一草稿：负责会员增长分析，掌握 SecretAlternateSkill。`, profileId);
+  assert.strictEqual(alternateUpload.status, 303);
+  const documentsBeforeRepeat = db.prepare("SELECT COUNT(*) AS count FROM resume_documents WHERE profile_id = ?").get(profileId).count;
+  const repeatedChangedUpload = await uploadResumeText(baseUrl, changedResumeText, profileId);
+  assert.strictEqual(repeatedChangedUpload.status, 303);
+  assert.strictEqual(
+    Number(new URL(`${baseUrl}${repeatedChangedUpload.headers.get("location")}`).searchParams.get("cardId")),
+    changedCardId,
+    "B→C→B 交替上传必须重开历史 B 草稿"
+  );
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM resume_documents WHERE profile_id = ?").get(profileId).count,
+    documentsBeforeRepeat,
+    "已有 draft/confirmed 哈希的重复上传必须在模型分析和保存新文档前短路"
+  );
+  const activeProfileSnapshot = getCandidateProfile(db, profileId).profile;
+  const duplicateAutomatic = saveProfileAnalysis(db, {
+    profileId,
+    profile: activeProfileSnapshot,
+    document: {
+      originalFileName: "duplicate-automatic.txt",
+      format: "text",
+      contentHash: changedCard.resumeContentHash,
+      text: changedResumeText,
+      diagnostics: {}
+    },
+    searchPlan: null
+  });
+  assert(
+    !listMatchingResumeVersions(db, profileId).some((version) => Number(version.resumeDocumentId) === Number(duplicateAutomatic.resumeDocumentId)),
+    "共享安全入口必须按 draft 内容哈希排除历史异常或并发产生的重复自动版本"
+  );
   const allVersions = listCandidateResumeVersions(db, profileId);
   assert(allVersions.some((version) => Number(version.resumeDocumentId) === Number(changedDocumentId)), "管理视图仍保留全部活动简历版本");
   const matchingVersions = listMatchingResumeVersions(db, profileId);
@@ -347,10 +386,10 @@ const generatedReports = [];
   // 用户主动管理、未绑定待确认卡的活动投递版简历始终可以进入输入。
   saveCandidateResumeVersion(db, {
     profileId,
-    document: { originalFileName: "user-managed.txt", format: "text", contentHash: "user-managed-v1", text: "用户主动维护的投递版简历，聚焦店铺复盘。" },
+    document: { originalFileName: "user-managed.txt", format: "text", contentHash: changedCard.resumeContentHash, text: changedResumeText },
     version: { name: "投递版-店铺运营", targetRoles: ["电商运营"], keywords: ["店铺运营"], primaryProjects: ["店铺投放复盘"], summary: "用户主动管理" }
   });
-  assert(listMatchingResumeVersions(db, profileId).some((version) => version.name === "投递版-店铺运营"), "用户主动管理的活动版本不得被误排除");
+  assert(listMatchingResumeVersions(db, profileId).some((version) => version.name === "投递版-店铺运营"), "用户主动管理的活动版本即使与 draft 内容相同也不得被误排除");
 
   const oldContextScan = runCliScan(planId);
   assert.strictEqual(oldContextScan.status, 0, oldContextScan.stderr || oldContextScan.stdout);

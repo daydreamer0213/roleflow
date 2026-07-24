@@ -63,7 +63,7 @@ const HARD_BLOCKER_KINDS = ["eligibility", "indispensable_core", "safety"];
 const JOB_QUALITY_LEVELS = ["normal", "caution", "risk"];
 
 function validateJobUnderstanding(value) {
-  const evidenceSnippets = strings(value.evidenceSnippets, 8);
+  const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
   return {
     jobId: text(value.jobId),
     roleSummary: text(value.roleSummary),
@@ -73,10 +73,10 @@ function validateJobUnderstanding(value) {
     coreRequirements: understandingCoreRequirements(value.coreRequirements),
     preferredRequirements: understandingEvidenceList(value.preferredRequirements, "preferredRequirements", 16),
     outcomeExpectations: understandingEvidenceList(value.outcomeExpectations, "outcomeExpectations", 8),
-    coreStack: strings(value.coreStack, 10),
-    niceToHave: strings(value.niceToHave, 16),
+    coreStack: contractStringArray(value.coreStack, "understandJob", "coreStack", 10),
+    niceToHave: contractStringArray(value.niceToHave, "understandJob", "niceToHave", 16),
     senioritySignal: text(value.senioritySignal || "unknown"),
-    eligibilityConstraints: strings(value.eligibilityConstraints, 8),
+    eligibilityConstraints: contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8),
     hiddenRisks: understandingHiddenRisks(value.hiddenRisks),
     jobQuality: normalizeJobQuality(value.jobQuality, "understandJob"),
     isFakeAI: Boolean(value.isFakeAI),
@@ -91,28 +91,26 @@ function understandingEvidenceList(value, field, limit) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ModelContractError("understandJob", `${field} 必须是 {label,evidence} 对象数组，不接受字符串`);
     }
-    const label = text(item.label);
-    if (!label) throw new ModelContractError("understandJob", `${field} 每项必须有非空 label`);
-    const evidence = text(item.evidence);
-    if (!evidence) throw new ModelContractError("understandJob", `${field}「${label}」必须给出 JD evidence`);
+    const label = requiredContractString(item.label, "understandJob", `${field}.label`);
+    const evidence = requiredContractString(item.evidence, "understandJob", `${field}.evidence`);
     return { label, evidence };
   }).slice(0, limit);
 }
 
 function understandingCoreRequirements(value) {
-  return list(value).map((item) => {
+  const requirements = list(value).map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ModelContractError("understandJob", "coreRequirements 必须是 {label,indispensable,evidence} 对象数组，不接受字符串");
     }
-    const label = text(item.label);
-    if (!label) throw new ModelContractError("understandJob", "coreRequirements 每项必须有非空 label");
-    const evidence = text(item.evidence);
-    if (!evidence) throw new ModelContractError("understandJob", `coreRequirements「${label}」必须给出 JD evidence`);
+    const label = requiredContractString(item.label, "understandJob", "coreRequirements.label");
+    const evidence = requiredContractString(item.evidence, "understandJob", "coreRequirements.evidence");
     if (typeof item.indispensable !== "boolean") {
       throw new ModelContractError("understandJob", `coreRequirements「${label}」的 indispensable 必须是 boolean`);
     }
     return { label, indispensable: item.indispensable, evidence };
   }).slice(0, 16);
+  assertUniqueCoreRequirements(requirements, "understandJob");
+  return requirements;
 }
 
 function understandingHiddenRisks(value) {
@@ -120,9 +118,8 @@ function understandingHiddenRisks(value) {
     if (!risk || typeof risk !== "object" || Array.isArray(risk)) {
       throw new ModelContractError("understandJob", "hiddenRisks 必须是 {type,severity,evidence} 对象数组");
     }
-    const type = text(risk.type);
-    const evidence = text(risk.evidence);
-    if (!type || !evidence) throw new ModelContractError("understandJob", "hiddenRisks 每项必须有非空 type 和 evidence");
+    const type = requiredContractString(risk.type, "understandJob", "hiddenRisks.type");
+    const evidence = requiredContractString(risk.evidence, "understandJob", "hiddenRisks.evidence");
     if (!["low", "medium", "high"].includes(risk.severity)) {
       throw new ModelContractError("understandJob", `hiddenRisks「${type}」的 severity 必须是 low/medium/high`);
     }
@@ -140,9 +137,8 @@ function normalizeJobQuality(value, kind) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ModelContractError(kind, "jobQuality.concerns 必须是 {type,evidence} 对象数组");
     }
-    const type = text(item.type);
-    const evidence = text(item.evidence);
-    if (!type || !evidence) throw new ModelContractError(kind, "jobQuality.concerns 每项必须有非空 type 和 evidence");
+    const type = requiredContractString(item.type, kind, "jobQuality.concerns.type");
+    const evidence = requiredContractString(item.evidence, kind, "jobQuality.concerns.evidence");
     return { type, evidence };
   }).slice(0, 8);
   return { level: quality.level, concerns };
@@ -156,14 +152,16 @@ function normalizeRequirementMatches(value) {
     if (!REQUIREMENT_MATCH_STATES.includes(item.state)) {
       throw new ModelContractError("matchJob", `requirementMatches.state 只接受 ${REQUIREMENT_MATCH_STATES.join("/")}，收到「${text(item.state) || "空值"}」`);
     }
-    const requirement = text(item.requirement);
-    if (!requirement) throw new ModelContractError("matchJob", "requirementMatches 必须给出非空 requirement，不得留空后消失");
+    const requirement = requiredContractString(item.requirement, "matchJob", "requirementMatches.requirement");
+    if (typeof item.indispensable !== "boolean") {
+      throw new ModelContractError("matchJob", "requirementMatches.indispensable 必须是 boolean，不得强制转换");
+    }
     return {
       requirement,
       state: item.state,
-      indispensable: Boolean(item.indispensable),
-      jdEvidence: text(item.jdEvidence),
-      resumeEvidence: text(item.resumeEvidence)
+      indispensable: item.indispensable,
+      jdEvidence: optionalContractString(item.jdEvidence, "matchJob", "requirementMatches.jdEvidence"),
+      resumeEvidence: optionalContractString(item.resumeEvidence, "matchJob", "requirementMatches.resumeEvidence")
     };
   }).slice(0, 16);
 }
@@ -178,12 +176,10 @@ function normalizeStructuredHardBlockers(value) {
     }
     const blocker = {
       kind: item.kind,
-      requirement: text(item.requirement),
-      jdEvidence: text(item.jdEvidence),
-      resumeEvidence: text(item.resumeEvidence)
+      requirement: requiredContractString(item.requirement, "matchJob", "hardBlockers.requirement"),
+      jdEvidence: requiredContractString(item.jdEvidence, "matchJob", "hardBlockers.jdEvidence"),
+      resumeEvidence: requiredContractString(item.resumeEvidence, "matchJob", "hardBlockers.resumeEvidence")
     };
-    if (!blocker.requirement) throw new ModelContractError("matchJob", "hardBlockers 必须给出可核对的要求名称");
-    if (!blocker.jdEvidence || !blocker.resumeEvidence) throw new ModelContractError("matchJob", "hardBlockers 必须同时提供 JD 与候选人证据");
     return blocker;
   }).slice(0, 8);
 }
@@ -191,6 +187,7 @@ function normalizeStructuredHardBlockers(value) {
 // MatchDecision 必须与本次 JobUnderstanding 一一核对：核心要求恰好覆盖一次，
 // 不得漏项、重复、虚构，indispensable 必须与理解一致（模型无权修改）。
 function assertRequirementCoverage(coreRequirements, requirementMatches) {
+  assertUniqueCoreRequirements(coreRequirements, "matchJob");
   const counts = new Map();
   for (const match of requirementMatches) {
     counts.set(match.requirement, (counts.get(match.requirement) || 0) + 1);
@@ -216,6 +213,31 @@ function assertRequirementCoverage(coreRequirements, requirementMatches) {
   }
 }
 
+function assertUniqueCoreRequirements(coreRequirements, kind) {
+  const seen = new Set();
+  for (const requirement of coreRequirements) {
+    const label = text(requirement?.label);
+    if (seen.has(label)) {
+      throw new ModelContractError(kind, `coreRequirements 中的「${label}」重复，无法逐项一一核对`);
+    }
+    seen.add(label);
+  }
+}
+
+function assertJobQualityAlignment(jobUnderstanding, jobQuality) {
+  const sourceQuality = jobUnderstanding?.jobQuality;
+  if (!sourceQuality || !JOB_QUALITY_LEVELS.includes(sourceQuality.level)) return;
+  if (jobQuality.level !== sourceQuality.level) {
+    throw new ModelContractError("matchJob", `jobQuality.level 必须照抄 JobUnderstanding 的 ${sourceQuality.level}，不得降级或改写`);
+  }
+  for (const concern of sourceQuality.concerns || []) {
+    const preserved = jobQuality.concerns.some((item) => item.type === concern.type && item.evidence === concern.evidence);
+    if (!preserved) {
+      throw new ModelContractError("matchJob", `jobQuality.concerns 必须保留 JobUnderstanding 已识别的「${concern.type}」及原始证据`);
+    }
+  }
+}
+
 function validateMatchDecision(value, context = {}) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
   for (const [field, raw] of [
@@ -235,6 +257,7 @@ function validateMatchDecision(value, context = {}) {
   if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
     assertRequirementCoverage(jobUnderstanding.coreRequirements, requirementMatches);
   }
+  assertJobQualityAlignment(jobUnderstanding, jobQuality);
   // indispensable_core 阻断必须精确对应同名、state=missing 且 indispensable=true 的核心项。
   for (const blocker of hardBlockers) {
     if (blocker.kind !== "indispensable_core") continue;
@@ -264,7 +287,7 @@ function validateMatchDecision(value, context = {}) {
   const recommendation = demoteApply ? "caution" : value.recommendation;
   const softGaps = contractStrings(value.softGaps ?? value.missingPoints, 8);
   const questionsToVerify = contractStrings(value.questionsToVerify ?? value.riskQuestions, 8);
-  const evidence = normalizeEvidence(value.evidence);
+  const evidence = normalizeEvidence(value.evidence, "matchJob");
   const fitReasons = contractStrings(value.fitReasons ?? value.fit_reasons ?? value.matchReasons, 8);
   const result = {
     recommendation,
@@ -313,9 +336,9 @@ function validateMatchDecision(value, context = {}) {
 function isDecisionHardBlocker(item) {
   return Boolean(item) && typeof item === "object" && !Array.isArray(item)
     && HARD_BLOCKER_KINDS.includes(item.kind)
-    && Boolean(text(item.requirement))
-    && Boolean(text(item.jdEvidence))
-    && Boolean(text(item.resumeEvidence));
+    && typeof item.requirement === "string" && Boolean(item.requirement.trim())
+    && typeof item.jdEvidence === "string" && Boolean(item.jdEvidence.trim())
+    && typeof item.resumeEvidence === "string" && Boolean(item.resumeEvidence.trim());
 }
 
 function decisionHardBlockers(analysis = {}) {
@@ -351,7 +374,7 @@ function validateCommunication(value) {
   const missingFact = rawMissingFact.key || rawMissingFact.question
     ? { key: text(rawMissingFact.key).slice(0, 80), question: text(rawMissingFact.question) }
     : null;
-  const evidence = normalizeEvidence(value.evidence);
+  const evidence = normalizeEvidence(value.evidence, "draftCommunication");
   if (missingFact) {
     if (!missingFact.key || !missingFact.question) throw new ModelContractError("draftCommunication", "missingFact 必须同时包含 key 和 question");
     if (messages.length) throw new ModelContractError("draftCommunication", "缺少关键事实时不能同时生成可发送回复");
@@ -364,9 +387,32 @@ function validateCommunication(value) {
   return { kind, jobId: text(value.jobId), messages, missingFact, evidence, tone: text(value.tone) };
 }
 
-function normalizeEvidence(value) {
+function normalizeEvidence(value, kind) {
   const evidence = object(value);
-  return { jd: strings(evidence.jd || evidence.job, 6), resume: strings(evidence.resume || evidence.candidate, 6) };
+  return {
+    jd: contractStringArray(evidence.jd || evidence.job, kind, "evidence.jd", 6),
+    resume: contractStringArray(evidence.resume || evidence.candidate, kind, "evidence.resume", 6)
+  };
+}
+
+function requiredContractString(value, kind, field) {
+  const description = /evidence/i.test(field) ? `${field} 证据字段` : field;
+  if (typeof value !== "string" || !value.trim()) throw new ModelContractError(kind, `${description}必须是非空字符串`);
+  return text(value);
+}
+
+function optionalContractString(value, kind, field) {
+  const description = /evidence/i.test(field) ? `${field} 证据字段` : field;
+  if (typeof value !== "string") throw new ModelContractError(kind, `${description}必须是字符串`);
+  return text(value);
+}
+
+function contractStringArray(value, kind, field, limit) {
+  const values = list(value);
+  if (values.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new ModelContractError(kind, `${field} 必须是非空字符串数组`);
+  }
+  return [...new Set(values.map((item) => text(item)))].slice(0, limit);
 }
 
 function object(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
