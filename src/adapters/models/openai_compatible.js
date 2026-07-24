@@ -42,7 +42,7 @@ class OpenAICompatibleAdapter {
     const prompt = [
       "你是中文求职岗位筛选助手。请只基于输入的完整 JD，输出 JobUnderstanding JSON，不推测 JD 之外的信息。",
       "先把 JD 拆成：核心工作（coreResponsibilities）、核心要求（coreRequirements）、加分项（preferredRequirements）、成果期望（outcomeExpectations）、明确资格（eligibilityConstraints）、JD 质量关注点（jobQuality.concerns）与风险信号（hiddenRisks）。不套用任何固定职业分类或技术栈模板。",
-      "coreRequirements 只收 JD 明确写出的任职要求；出现“必须、熟练、精通、掌握、至少、扎实、具备”等硬性措辞时 indispensable=true，否则为 false；“优先、加分、了解即可”只能进入 preferredRequirements。语言、工具、平台、证书等只在 JD 明确为核心或加分时出现，不得自行补充。",
+      "coreRequirements 只收 JD 明确写出的任职要求；出现“必须、熟练、精通、掌握、至少、扎实、具备”等硬性措辞时 indispensable=true，“要求熟悉”“需要理解”这类以“要求/需要”开头的组合同样是硬性措辞；“优先、加分、了解即可”只能进入 preferredRequirements。经验年限（如“1-3 年”“3-5 年”）只是偏好，不得 indispensable=true，年限信息写入 senioritySignal。语言、工具、平台、证书等只在 JD 明确为核心或加分时出现，不得自行补充。",
       "roleSummary 用一句话概括岗位真实主线；businessScenario 概括业务场景，不确定就留空。每项 label 控制在 4-24 字，evidence 必须引用 JD 原文短句并以“JD：”开头；信息不充分时对应数组留空，不得把关键词命中写成事实。",
       "JD 同时堆叠多个不相关职责（例如多平台运营、拍摄、剪辑、直播混合）时，在 jobQuality.concerns 记录 {type:\"responsibility_sprawl\", evidence} 并把 jobQuality.level 标为 caution；这只描述 JD 质量，不判断任何候选人是否匹配。",
       "发现培训收费、假冒招聘、安全或合规风险时写入 hiddenRisks 并把 jobQuality.level 标为 risk；每个风险必须引用 JD 原文证据，不要猜测。",
@@ -60,7 +60,7 @@ class OpenAICompatibleAdapter {
       "transferable 只能对应 candidateMatchCard.transferableCapabilities 明确列出的能力，并在判断中尊重其 limitation；匹配卡没有覆盖的方向不得当成强匹配；cautionTransitions 中的方向最高只能给 caution。",
       "candidateMatchCard.userNotes 是用户本人确认的匹配偏好：参与岗位匹配，优先级高于模型从画像归纳的方向；但 userNotes 不是简历事实，不得作为 resumeEvidence，不得用来证明工作经历、项目或技能。",
       "jobQuality 照抄 jobUnderstanding.jobQuality 并可补充与候选人无关的 JD 质量关注点；level 只能是 normal、caution 或 risk。职责堆叠（responsibility_sprawl）只降低岗位质量，不能自动判候选人不匹配。",
-      "hardBlockers 只允许三种 kind：eligibility（届别、在校、学历、证书等明确硬资格不符）、indispensable_core（indispensable=true 的核心要求完全无证据）、safety（培训收费、假冒招聘等安全风险）；每条必须给出 requirement、jdEvidence、resumeEvidence，且对应 requirementMatches 的 state 必须是 missing 且 indispensable=true。非核心缺失、年限偏好、辅助技能、城市与工作制永远不得作为 hardBlockers，只能进入 softGaps 或 questionsToVerify。",
+      "hardBlockers 只允许三种 kind：eligibility（届别、在校、学历、证书等明确硬资格不符）、indispensable_core（indispensable=true 的核心要求完全无证据）、safety（培训收费、假冒招聘等安全风险）；每条必须给出 requirement、jdEvidence、resumeEvidence，且对应 requirementMatches 的 state 必须是 missing 且 indispensable=true。非核心缺失、年限偏好、辅助技能、城市与工作制永远不得作为 hardBlockers，只能进入 softGaps 或 questionsToVerify。年限类要求即使被 jobUnderstanding 误标为 indispensable=true 且候选人缺失，也不得生成 hardBlockers，只写入 softGaps。eligibility 阻断需要候选人资格与 JD 要求存在明确冲突（如 JD 仅限 2027 届应届而候选人是往届生）；简历未提供某类信息（教育经历为空、未写届别等）只是信息不足，按 unknown/review 或 softGaps 处理，不得当作资格不符。",
       "薪资只与 searchPreferences 中的用户偏好比较，超出偏好写入 softGaps；不得凭市场水平猜测把薪资变成 hardBlockers。",
       "recommendation 边界必须严格：apply 表示所有 indispensable 核心项 matched、jobQuality 非 risk、双侧证据完整；任何 transferable 核心项或 jobQuality.level=caution 时最高只能 caution；review 只表示存在 unknown 项或关键信息缺失，并必须在 softGaps 或 questionsToVerify 说明缺什么；skip 只对应结构化 hardBlockers。confidence 必须显式输出 0-1 数字；apply 的 fitLevel 只能是 A 或 B。hardBlockers 非空时 recommendation 必须为 skip；skip 时 hardBlockers 不得为空。",
       "不得虚构候选人的工作经历、项目贡献或证据。evidence.jd 和 evidence.resume 分别汇总支撑结论的短证据；没有证据就降低 confidence 并下调 recommendation。apply/caution 必须包含至少一条具体 fitReasons、JD 证据和候选人证据；skip 必须同时给出 JD 与候选人证据。",

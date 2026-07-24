@@ -68,6 +68,11 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
     assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
+    // 真实模型回归（live-v2-20260725-01）：即使 understandJob 误标 indispensable，年限类要求也不得生成 hardBlockers。
+    assert(matchPrompt.includes("年限类要求") && matchPrompt.includes("不得生成 hardBlockers"), "matchJob prompt 必须禁止为年限类要求生成 hardBlockers");
+    // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
+    assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility 阻断具备明确冲突证据");
+    assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
@@ -76,10 +81,13 @@ server.listen(0, "127.0.0.1", async () => {
     assert(understandPrompt.includes("coreRequirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求结构化核心要求对象");
     assert(understandPrompt.includes("jobQuality.level 只能是 normal、caution 或 risk"), "understandJob prompt 必须限定岗位质量枚举");
     assert(understandPrompt.includes("responsibility_sprawl"));
-    // 真实模型回归（live-v2-20260725-01）：DeepSeek 倾向把 eligibilityConstraints 输出为对象数组，
-    // prompt 必须显式声明字符串数组形状，否则严格契约与一次修复都无法收敛。
+    // 真实模型回归：DeepSeek 倾向把 eligibilityConstraints 输出为对象数组，prompt 必须显式声明字符串数组形状。
     assert(understandPrompt.includes("eligibilityConstraints[非空字符串]"), "understandJob prompt 必须声明资格约束的字符串数组形状");
     assert(understandPrompt.includes("不要输出对象"), "understandJob prompt 必须禁止对象形式的资格约束");
+    // 真实模型回归：经验年限被标 indispensable=true 后成为年限 hardBlockers；产品语义中年限只是偏好。
+    assert(/年限[^\n]*不得[^\n]*indispensable=true|indispensable=true[^\n]*不得用于[^\n]*年限/.test(understandPrompt), "understandJob prompt 必须禁止把经验年限标为 indispensable=true");
+    // 真实模型回归：“要求熟悉机器学习”未被识别为硬性措辞，导致核心栈错位岗位只进 review。
+    assert(understandPrompt.includes("要求熟悉") || understandPrompt.includes("要求/需要"), "understandJob prompt 必须把“要求/需要 + 熟悉/理解”识别为硬性措辞");
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     console.log("model_adapter_smoke ok");
   } catch (error) {
