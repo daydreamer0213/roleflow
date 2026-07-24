@@ -7,7 +7,7 @@ const { parseBossActivityText } = require("./activity_status");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
-const { effectiveHardBlockers } = require("./model_contract");
+const { decisionHardBlockers } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 
@@ -3286,7 +3286,7 @@ function decisionBucket(job) {
   const analysis = job.analysis || {};
   const semanticStatus = analysis.semanticStatus || "";
   const recommendation = analysis.recommendation || "";
-  if (effectiveHardBlockers(analysis).length) return "not_recommended";
+  if (decisionHardBlockers(analysis).length) return "not_recommended";
   if (tags.has("salary_target_high")) return "backup";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";

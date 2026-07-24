@@ -2,9 +2,9 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { loadConfigs } = require("../src/config");
-const { createJobAnalysisRunner, cachedModelCall } = require("../src/core/job_analysis");
+const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
-const { validateModelResult, ModelContractError, effectiveHardBlockers } = require("../src/core/model_contract");
+const { validateModelResult, ModelContractError, effectiveHardBlockers, decisionHardBlockers } = require("../src/core/model_contract");
 const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
@@ -700,13 +700,53 @@ function matchBoundaryContractSmoke() {
   assert.strictEqual(eligibility.recommendation, "skip");
   assert.strictEqual(eligibility.hardBlockers[0].kind, "eligibility");
 
-  // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持兼容读取。
+  // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持展示兼容读取，但绝不参与新决策。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["3-5年经验不足", "学历偏好为 985", "未提供 RPA 经验"] }), []);
-  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"]);
+  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"], "展示兼容仍保留历史硬缺口字符串");
   assert.deepStrictEqual(
     effectiveHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }] }).map((item) => item.requirement || item),
     ["收费培训"]
+  );
+
+  // 决策路径只认结构化三类 kind：字符串、blockingGaps、非法 kind 一律不得形成硬阻断。
+  assert.deepStrictEqual(decisionHardBlockers({ blockingGaps: ["Java核心栈不匹配"] }), [], "blockingGaps 字符串不得进入决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: ["完全缺少岗位核心 Java/Spring 经历"] }), [], "旧式字符串 hardBlockers 不得进入决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "core_stack", requirement: "Java 核心栈", jdEvidence: "JD：必须 Java", resumeEvidence: "简历：无" }] }), [], "非法 kind 的结构化对象不得硬阻断");
+  assert.strictEqual(
+    decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }] }).length,
+    1,
+    "合法结构化 blocker 仍然阻断"
+  );
+
+  const legacyStringAnalysis = {
+    semanticStatus: "complete",
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.9,
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: ["Java核心栈不匹配"],
+    blockingGaps: ["Java核心栈不匹配"],
+    evidence: { jd: ["JD：负责店铺运营与投放复盘"], resume: ["简历：负责店铺运营与投放复盘"] }
+  };
+  const legacyGuarded = applyRuleGuard(legacyStringAnalysis, completeJob("legacy-string-blocker"));
+  assert.notStrictEqual(legacyGuarded.recommendation, "skip", "历史字符串 blocker 不得触发自动 skip");
+  assert.notStrictEqual(
+    decisionBucket({ ...completeJob("legacy-string-blocker"), analysis: legacyStringAnalysis, qualityTags: [], risks: [] }),
+    "not_recommended",
+    "历史字符串 blocker 不得触发 not_recommended"
+  );
+
+  const structuredBlockerAnalysis = {
+    ...legacyStringAnalysis,
+    hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }],
+    blockingGaps: ["收费培训"]
+  };
+  assert.strictEqual(applyRuleGuard(structuredBlockerAnalysis, completeJob("structured-blocker")).recommendation, "skip", "合法结构化 blocker 仍触发 skip");
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("structured-blocker"), analysis: structuredBlockerAnalysis, qualityTags: [], risks: [] }),
+    "not_recommended",
+    "合法结构化 blocker 仍触发 not_recommended"
   );
 }
 

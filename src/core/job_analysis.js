@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, effectiveHardBlockers, hardBlockerText } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -258,7 +258,7 @@ function applyRuleGuard(analysis, job) {
   if (analysis.semanticStatus === "partial") {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "当前只有卡片级信息，完整 JD 补齐前不进入主投。", "partial", "model_partial");
   }
-  const hardBlockers = effectiveHardBlockers(analysis);
+  const hardBlockers = decisionHardBlockers(analysis);
   if (hardBlockers.length) {
     return addGuard({ ...analysis, hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`, analysis.semanticStatus, "hard_blocker_guard");
   }
@@ -383,5 +383,6 @@ module.exports = {
   compactAnalysis,
   createRuleOnlyAnalysis,
   cachedModelCall,
+  applyRuleGuard,
   jobFacts
 };

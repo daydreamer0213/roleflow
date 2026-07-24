@@ -228,6 +228,13 @@ function validateMatchDecision(value) {
   return result;
 }
 
+// 决策路径只接受结构化三类 blocker。历史分析里的字符串 blocker（旧 hardBlockers 或 blockingGaps）
+// 仅供页面展示，绝不进入 skip、分桶或任何硬排除判断。
+function decisionHardBlockers(analysis = {}) {
+  return list(analysis.hardBlockers).filter((item) => item && typeof item === "object" && !Array.isArray(item) && HARD_BLOCKER_KINDS.includes(item.kind));
+}
+
+// 展示兼容：读取历史分析中的硬缺口条目（含旧式字符串），只用于页面呈现，禁止用于新决策。
 function effectiveHardBlockers(analysis = {}) {
   const raw = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
     ? analysis.hardBlockers
@@ -285,4 +292,4 @@ function contractListItem(value) {
   return text(value.reason || value.gap || value.description || value.message || value.issue || value.value);
 }
 
-module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers, hardBlockerText };
+module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers, decisionHardBlockers, hardBlockerText };
