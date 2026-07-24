@@ -5,7 +5,7 @@ const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 const { validateModelResult, ModelContractError, effectiveHardBlockers } = require("../src/core/model_contract");
-const { runtimeAnalysisContext } = require("../src/core/analysis_revision");
+const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
 const {
@@ -31,9 +31,12 @@ const db = openDb(dbPath);
     await pipelineVersionCacheSmoke();
     await roleIntentGuardSmoke();
     await matchingCardContractSmoke();
+    await genericEvidenceContractSmoke();
+    matchGenericContractSmoke();
     matchBoundaryContractSmoke();
     genericPolicySmoke();
     staleAnalysisSmoke();
+    matchingCardStaleSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -104,6 +107,257 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   assert.strictEqual(decisionBucket({ ...job, analysis: pythonResult, qualityTags: [], risks: [] }), "primary");
   assert.strictEqual(decisionBucket({ ...job, analysis: javaResult, qualityTags: [], risks: [] }), "talk");
+}
+
+async function genericEvidenceContractSmoke() {
+  let seenMatchInput = null;
+  const analyzer = {
+    understandJob: async (input) => {
+      assert(input.job, "understandJob 输入仍应只有 JD facts");
+      assert.strictEqual(input.candidateProfile, undefined);
+      assert.strictEqual(input.candidateMatchCard, undefined);
+      return {
+        jobId: input.job.sourceId,
+        roleSummary: "负责抖音店铺经营、活动与投放复盘",
+        coreResponsibilities: [{ label: "店铺活动运营", evidence: "JD：负责抖音店铺活动与投放复盘" }],
+        coreRequirements: [{ label: "投放与 ROI 分析", indispensable: true, evidence: "JD：必须独立完成投放 ROI 复盘" }],
+        preferredRequirements: [{ label: "抖音店铺经验", evidence: "JD：有抖音店铺经验优先" }],
+        outcomeExpectations: [],
+        jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl", evidence: "JD 同时要求直播、拍摄、剪辑" }] },
+        hiddenRisks: [],
+        evidenceSnippets: ["JD：负责抖音店铺投放与复盘"]
+      };
+    },
+    matchJob: async (input) => {
+      seenMatchInput = input;
+      assert(input.candidateMatchCard, "matchJob 输入必须携带已确认匹配卡");
+      assert.strictEqual(input.candidateMatchCard.targetDirections[0], "电商运营");
+      return {
+        recommendation: "apply",
+        fitLevel: "A",
+        confidence: 0.84,
+        fitReasons: ["投放 ROI 复盘经验可从淘宝店铺迁移到抖音店铺"],
+        requirementMatches: [{
+          requirement: "投放与 ROI 分析",
+          state: "transferable",
+          indispensable: true,
+          jdEvidence: "JD：负责抖音店铺投放与复盘",
+          resumeEvidence: "简历：负责淘宝店铺投放 ROI 复盘"
+        }],
+        jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl", evidence: "JD 同时要求直播、拍摄、剪辑" }] },
+        hardBlockers: [],
+        softGaps: [],
+        questionsToVerify: [],
+        recommendedResumeVersion: "main",
+        primaryProjects: ["店铺投放复盘"],
+        greetingAngle: "",
+        evidence: {
+          jd: ["JD：负责抖音店铺投放与复盘"],
+          resume: ["简历：负责淘宝店铺投放 ROI 复盘"]
+        }
+      };
+    }
+  };
+  const configs = configFor(["店铺运营", "投放复盘"]);
+  configs.candidateProfile = {
+    candidate: { name: "电商候选人", city: "广州", targetTitles: ["电商运营"] },
+    experiences: [{ organization: "示例店铺", role: "店铺运营", highlights: ["负责淘宝店铺投放 ROI 复盘"] }],
+    skills: [{ name: "店铺运营", level: "resume", evidence: ["示例店铺"] }],
+    projects: []
+  };
+  configs.matchingCard = {
+    targetDirections: ["电商运营"],
+    strongEvidence: [{ label: "店铺投放复盘", evidence: "简历：负责淘宝店铺投放 ROI 复盘" }],
+    transferableCapabilities: [{ label: "跨平台投放", evidence: "简历：负责淘宝店铺投放 ROI 复盘", limitation: "未证明抖音投流经验" }],
+    cautionTransitions: [],
+    userNotes: [],
+    source: "user"
+  };
+  configs.analysisContext = runtimeAnalysisContext(configs.candidateProfile, configs.searchPlan, configs.matchingCard);
+  const runner = createJobAnalysisRunner(configs, [], { db, analyzer });
+  const result = await runner(completeJob("douyin-shop", {
+    title: "抖音店铺运营",
+    tags: ["电商运营"],
+    description: "负责抖音店铺投放与复盘，同时要求直播、拍摄、剪辑。".repeat(4)
+  }));
+  assert(seenMatchInput, "matchJob 未被调用");
+  assert.strictEqual(result.requirementMatches[0].state, "transferable");
+  assert.strictEqual(result.jobQuality.level, "caution");
+  assert.strictEqual(result.recommendation, "caution", "transferable 核心项与 caution 岗位质量必须把 apply 降为 caution");
+  assert.deepStrictEqual(result.evidence, {
+    jd: ["JD：负责抖音店铺投放与复盘"],
+    resume: ["简历：负责淘宝店铺投放 ROI 复盘"]
+  });
+  assert.strictEqual(result.semanticStatus, "complete");
+}
+
+function matchGenericContractSmoke() {
+  const validApply = {
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.86,
+    fitReasons: ["核心要求与简历证据对应"],
+    requirementMatches: [{
+      requirement: "投放与 ROI 分析",
+      state: "matched",
+      indispensable: true,
+      jdEvidence: "JD：必须独立完成投放 ROI 复盘",
+      resumeEvidence: "简历：负责淘宝店铺投放 ROI 复盘"
+    }],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: ["简历：负责淘宝店铺投放 ROI 复盘"] }
+  };
+  const applyValidated = validateModelResult("matchJob", validApply);
+  assert.strictEqual(applyValidated.recommendation, "apply");
+  assert.strictEqual(applyValidated.requirementMatches[0].state, "matched");
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], jdEvidence: "" }]
+  }), (error) => error instanceof ModelContractError && /候选人证据|JD 与候选人证据|双侧证据|逐项匹配/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: [] }
+  }), ModelContractError);
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], state: "missing" }]
+  }), (error) => error instanceof ModelContractError && /apply/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validApply,
+    jobQuality: { level: "risk", concerns: [{ type: "fee_fraud", evidence: "JD 要求先交培训费" }] }
+  }), ModelContractError);
+
+  const demoted = validateModelResult("matchJob", {
+    ...validApply,
+    requirementMatches: [{ ...validApply.requirementMatches[0], state: "transferable" }]
+  });
+  assert.strictEqual(demoted.recommendation, "caution", "transferable 核心项必须把 apply 降为 caution");
+  assert.strictEqual(demoted.fitLevel, "B");
+
+  const demotedByQuality = validateModelResult("matchJob", {
+    ...validApply,
+    jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl", evidence: "JD 同时要求直播、拍摄、剪辑" }] }
+  });
+  assert.strictEqual(demotedByQuality.recommendation, "caution", "caution 岗位质量必须把 apply 降为 caution");
+
+  const validSkip = {
+    recommendation: "skip",
+    fitLevel: "D",
+    confidence: 0.9,
+    fitReasons: ["核心必备要求完全无证据"],
+    requirementMatches: [{
+      requirement: "JAVA 核心开发",
+      state: "missing",
+      indispensable: true,
+      jdEvidence: "JD：必须精通 Java 与 Spring Boot",
+      resumeEvidence: "简历：候选人为 Python 项目经历"
+    }],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [{
+      kind: "indispensable_core",
+      requirement: "JAVA 核心开发",
+      jdEvidence: "JD：必须精通 Java 与 Spring Boot",
+      resumeEvidence: "简历：候选人为 Python 项目经历"
+    }],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：必须精通 Java 与 Spring Boot"], resume: ["简历：候选人为 Python 项目经历"] }
+  };
+  const skipValidated = validateModelResult("matchJob", validSkip);
+  assert.strictEqual(skipValidated.recommendation, "skip");
+  assert.strictEqual(skipValidated.hardBlockers[0].kind, "indispensable_core");
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    requirementMatches: [{ ...validSkip.requirementMatches[0], indispensable: false }]
+  }), (error) => error instanceof ModelContractError && /非核心|硬性阻断/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    hardBlockers: [{ ...validSkip.hardBlockers[0], kind: "salary_mismatch" }]
+  }), (error) => error instanceof ModelContractError && /kind/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    hardBlockers: [{ ...validSkip.hardBlockers[0], resumeEvidence: "" }]
+  }), (error) => error instanceof ModelContractError && /证据/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    hardBlockers: ["岗位要求 Java，候选人无 Java 项目证据"]
+  }), (error) => error instanceof ModelContractError && /结构化|对象/.test(error.message));
+
+  assert.throws(() => validateModelResult("matchJob", {
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.5,
+    fitReasons: [],
+    requirementMatches: [{
+      requirement: "投放与 ROI 分析",
+      state: "matched",
+      indispensable: true,
+      jdEvidence: "JD：必须独立完成投放 ROI 复盘",
+      resumeEvidence: "简历：负责淘宝店铺投放 ROI 复盘"
+    }],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: ["简历：负责淘宝店铺投放 ROI 复盘"] }
+  }), (error) => error instanceof ModelContractError && /review/.test(error.message));
+
+  const reviewValidated = validateModelResult("matchJob", {
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.5,
+    fitReasons: [],
+    requirementMatches: [{
+      requirement: "投放与 ROI 分析",
+      state: "unknown",
+      indispensable: true,
+      jdEvidence: "JD：必须独立完成投放 ROI 复盘",
+      resumeEvidence: ""
+    }],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: ["JD 未说明投放平台与考核口径"],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: [] }
+  });
+  assert.strictEqual(reviewValidated.recommendation, "review");
+}
+
+function matchingCardStaleSmoke() {
+  const candidate = profile(["Python", "RAG"], ["AI应用开发"]);
+  const searchPlan = plan(["AI应用开发"]);
+  const cardV1 = {
+    targetDirections: ["电商运营"],
+    strongEvidence: [{ label: "店铺复盘", evidence: "简历：负责淘宝店铺复盘" }],
+    transferableCapabilities: [],
+    cautionTransitions: [],
+    userNotes: [],
+    source: "user"
+  };
+  const cardV2 = { ...cardV1, targetDirections: ["内容运营"] };
+  const ctxV1 = runtimeAnalysisContext(candidate, searchPlan, cardV1);
+  const ctxV2 = runtimeAnalysisContext(candidate, searchPlan, cardV2);
+  assert(ctxV1.matchingCardVersion, "带卡上下文必须产出 matchingCardVersion");
+  assert.notStrictEqual(ctxV1.matchingCardVersion, ctxV2.matchingCardVersion);
+  const reasons = analysisStaleReasons({
+    revision: { ...ctxV1, sourceContentHash: "hash-x", pipelineVersions: PIPELINE_VERSIONS }
+  }, { ...ctxV2, sourceContentHash: "hash-x", pipelineVersions: PIPELINE_VERSIONS });
+  assert.deepStrictEqual(reasons, ["matching_card_changed"], "卡修订变化只能使 matchJob 分析陈旧");
+  const legacyReasons = analysisStaleReasons({
+    revision: { profileVersion: ctxV1.profileVersion, searchPlanVersion: ctxV1.searchPlanVersion, sourceContentHash: "hash-x", pipelineVersions: PIPELINE_VERSIONS }
+  }, { ...ctxV1, sourceContentHash: "hash-x", pipelineVersions: PIPELINE_VERSIONS });
+  assert(!legacyReasons.includes("matching_card_changed"), "历史无卡修订记录不得被误判为卡变化");
 }
 
 async function matchingCardContractSmoke() {
@@ -238,7 +492,7 @@ async function roleIntentGuardSmoke() {
 }
 
 function matchBoundaryContractSmoke() {
-  const normalizedObjectBlocker = validateModelResult("matchJob", {
+  assert.throws(() => validateModelResult("matchJob", {
     recommendation: "skip",
     fitLevel: "D",
     confidence: 0.9,
@@ -247,14 +501,14 @@ function matchBoundaryContractSmoke() {
     softGaps: [],
     questionsToVerify: [],
     evidence: { jd: ["Must know C++"], resume: ["Candidate stack is Python/FastAPI"] }
-  });
-  assert.deepStrictEqual(normalizedObjectBlocker.hardBlockers, ["Core C++ requirement is missing"]);
+  }), (error) => error instanceof ModelContractError && /kind/.test(error.message), "新的模型输出不得产生旧式对象 blocker");
+
   assert.throws(() => validateModelResult("matchJob", {
     recommendation: "skip",
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: [],
-    hardBlockers: [{ evidence: "Must know C++" }],
+    hardBlockers: [{ kind: "indispensable_core", requirement: "", jdEvidence: "Must know C++", resumeEvidence: "Candidate stack is Python" }],
     softGaps: [],
     questionsToVerify: [],
     evidence: { jd: ["Must know C++"], resume: ["Candidate stack is Python/FastAPI"] }
@@ -298,29 +552,52 @@ function matchBoundaryContractSmoke() {
     fitLevel: "D",
     confidence: 0.9,
     fitReasons: ["岗位核心语言与候选人主栈不一致"],
-    hardBlockers: ["岗位核心要求 C++，候选人无 C++ 项目证据"],
+    requirementMatches: [{
+      requirement: "C++ 核心开发",
+      state: "missing",
+      indispensable: true,
+      jdEvidence: "JD：必须熟练掌握 C++",
+      resumeEvidence: "简历：候选人主栈为 Python/FastAPI"
+    }],
+    hardBlockers: [{
+      kind: "indispensable_core",
+      requirement: "C++ 核心开发",
+      jdEvidence: "JD：必须熟练掌握 C++",
+      resumeEvidence: "简历：候选人主栈为 Python/FastAPI"
+    }],
     softGaps: [],
     questionsToVerify: [],
     evidence: { jd: ["必须熟练掌握 C++"], resume: ["候选人主栈为 Python/FastAPI"] }
   });
   assert.strictEqual(hard.hardBlockers.length, 1);
-  const downgraded = validateModelResult("matchJob", {
+  assert.strictEqual(hard.hardBlockers[0].kind, "indispensable_core");
+  assert.deepStrictEqual(hard.blockingGaps, ["C++ 核心开发"], "旧渲染仍读取字符串化的阻断摘要");
+  const eligibility = validateModelResult("matchJob", {
     recommendation: "skip",
     fitLevel: "D",
-    confidence: 0.8,
-    fitReasons: ["岗位年限要求高于候选人当前企业经历"],
-    hardBlockers: ["岗位要求 3-5 年经验，候选人当前企业经验年限不足"],
+    confidence: 0.9,
+    fitReasons: ["岗位限定 2024 届在校，候选人不符合"],
+    hardBlockers: [{
+      kind: "eligibility",
+      requirement: "2024 届在校学生",
+      jdEvidence: "JD：仅面向 2024 届在校生",
+      resumeEvidence: "简历：候选人 2020 年已毕业"
+    }],
     softGaps: [],
-    questionsToVerify: ["确认年限要求是否可放宽"],
-    evidence: { jd: ["要求 3-5 年经验"], resume: ["候选人具备相关实习与独立项目经验"] }
+    questionsToVerify: [],
+    evidence: { jd: ["仅面向 2024 届在校生"], resume: ["候选人 2020 年已毕业"] }
   });
-  assert.strictEqual(downgraded.recommendation, "caution");
-  assert.strictEqual(downgraded.fitLevel, "C");
-  assert.deepStrictEqual(downgraded.hardBlockers, []);
-  assert.strictEqual(downgraded.softGaps.length, 1);
+  assert.strictEqual(eligibility.recommendation, "skip");
+  assert.strictEqual(eligibility.hardBlockers[0].kind, "eligibility");
+
+  // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持兼容读取。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["3-5年经验不足", "学历偏好为 985", "未提供 RPA 经验"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"]);
+  assert.deepStrictEqual(
+    effectiveHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }] }).map((item) => item.requirement || item),
+    ["收费培训"]
+  );
 }
 
 function genericPolicySmoke() {

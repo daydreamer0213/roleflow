@@ -58,28 +58,91 @@ function validateSearchPlan(value) {
   return { ...value, keywords, cities: strings(value.cities || value.city, 5), directions: strings(value.directions, 12) };
 }
 
+const REQUIREMENT_MATCH_STATES = ["matched", "transferable", "missing", "unknown", "not_applicable"];
+const HARD_BLOCKER_KINDS = ["eligibility", "indispensable_core", "safety"];
+const JOB_QUALITY_LEVELS = ["normal", "caution", "risk"];
+
 function validateJobUnderstanding(value) {
   const evidenceSnippets = strings(value.evidenceSnippets, 8);
   return {
     jobId: text(value.jobId),
+    roleSummary: text(value.roleSummary),
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
-    coreRequirements: strings(value.coreRequirements, 16),
+    coreResponsibilities: labeledEvidenceList(value.coreResponsibilities, 12),
+    coreRequirements: list(value.coreRequirements).map((item) => {
+      if (typeof item === "string") return { label: text(item), indispensable: false, evidence: "" };
+      return { label: text(item?.label), indispensable: Boolean(item?.indispensable), evidence: text(item?.evidence) };
+    }).filter((item) => item.label).slice(0, 16),
+    preferredRequirements: labeledEvidenceList(value.preferredRequirements, 16),
+    outcomeExpectations: labeledEvidenceList(value.outcomeExpectations, 8),
     coreStack: strings(value.coreStack, 10),
     niceToHave: strings(value.niceToHave, 16),
     senioritySignal: text(value.senioritySignal || "unknown"),
     eligibilityConstraints: strings(value.eligibilityConstraints, 8),
     hiddenRisks: list(value.hiddenRisks).map((risk) => ({ type: text(risk?.type), severity: ["low", "medium", "high"].includes(risk?.severity) ? risk.severity : "medium", evidence: text(risk?.evidence) })).filter((risk) => risk.type || risk.evidence),
+    jobQuality: normalizeJobQuality(value.jobQuality),
     isFakeAI: Boolean(value.isFakeAI),
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
     evidenceSnippets
   };
 }
 
+function labeledEvidenceList(value, limit) {
+  return list(value).map((item) => {
+    if (typeof item === "string") return { label: text(item), evidence: "" };
+    return { label: text(item?.label), evidence: text(item?.evidence) };
+  }).filter((item) => item.label).slice(0, limit);
+}
+
+function normalizeJobQuality(value) {
+  const quality = object(value);
+  const level = JOB_QUALITY_LEVELS.includes(quality.level) ? quality.level : "normal";
+  const concerns = list(quality.concerns).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    return { type: text(item.type), evidence: text(item.evidence) };
+  }).filter((item) => item && (item.type || item.evidence)).slice(0, 8);
+  return { level, concerns };
+}
+
+function normalizeRequirementMatches(value) {
+  return list(value).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError("matchJob", "requirementMatches 必须是对象数组（requirement/state/indispensable/jdEvidence/resumeEvidence）");
+    }
+    return {
+      requirement: text(item.requirement),
+      state: REQUIREMENT_MATCH_STATES.includes(item.state) ? item.state : "unknown",
+      indispensable: Boolean(item.indispensable),
+      jdEvidence: text(item.jdEvidence),
+      resumeEvidence: text(item.resumeEvidence)
+    };
+  }).filter((item) => item.requirement).slice(0, 16);
+}
+
+function normalizeStructuredHardBlockers(value) {
+  return list(value).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError("matchJob", "hardBlockers 必须是结构化对象数组（kind/requirement/jdEvidence/resumeEvidence），不接受字符串或旧式对象");
+    }
+    if (!HARD_BLOCKER_KINDS.includes(item.kind)) {
+      throw new ModelContractError("matchJob", `hardBlockers.kind 只接受 ${HARD_BLOCKER_KINDS.join("/")}`);
+    }
+    const blocker = {
+      kind: item.kind,
+      requirement: text(item.requirement),
+      jdEvidence: text(item.jdEvidence),
+      resumeEvidence: text(item.resumeEvidence)
+    };
+    if (!blocker.requirement) throw new ModelContractError("matchJob", "hardBlockers 必须给出可核对的要求名称");
+    if (!blocker.jdEvidence || !blocker.resumeEvidence) throw new ModelContractError("matchJob", "hardBlockers 必须同时提供 JD 与候选人证据");
+    return blocker;
+  }).slice(0, 8);
+}
+
 function validateMatchDecision(value) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
   for (const [field, raw] of [
-    ["hardBlockers", value.hardBlockers ?? value.blockingGaps],
     ["softGaps", value.softGaps ?? value.missingPoints],
     ["questionsToVerify", value.questionsToVerify ?? value.riskQuestions]
   ]) {
@@ -87,30 +150,38 @@ function validateMatchDecision(value) {
   }
   const confidence = Number(value.confidence);
   if (value.confidence === null || value.confidence === "" || !Number.isFinite(confidence)) throw new ModelContractError("matchJob", "confidence 必须是 0-1 的数字");
-  const legacyBlockingGaps = contractStrings(value.blockingGaps, 8);
-  const explicitHardBlockers = Object.prototype.hasOwnProperty.call(value, "hardBlockers");
-  const blockerCandidates = explicitHardBlockers ? contractStrings(value.hardBlockers, 8) : legacyBlockingGaps;
-  const hardBlockers = blockerCandidates.filter((item) => !isPolicySoftGap(item));
-  const downgradedSoftGaps = blockerCandidates.filter(isPolicySoftGap);
-  const softOnlySkip = value.recommendation === "skip" && !hardBlockers.length && downgradedSoftGaps.length;
-  const recommendation = softOnlySkip ? "caution" : value.recommendation;
-  const softGaps = contractStrings([
-    ...contractStrings(value.softGaps ?? value.missingPoints, 8),
-    ...downgradedSoftGaps
-  ], 8);
+  const requirementMatches = normalizeRequirementMatches(value.requirementMatches);
+  const jobQuality = normalizeJobQuality(value.jobQuality);
+  const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
+  for (const blocker of hardBlockers) {
+    const match = requirementMatches.find((item) => item.requirement === blocker.requirement);
+    if (match && match.state === "missing" && !match.indispensable) {
+      throw new ModelContractError("matchJob", `要求「${blocker.requirement}」缺失但并非核心必备，不能作为硬性阻断`);
+    }
+  }
+  const missingIndispensable = requirementMatches.some((item) => item.state === "missing" && item.indispensable);
+  const transferableCore = requirementMatches.some((item) => item.state === "transferable" && item.indispensable);
+  if (value.recommendation === "apply" && (missingIndispensable || jobQuality.level === "risk")) {
+    throw new ModelContractError("matchJob", "存在核心必备要求缺失或岗位质量风险时 recommendation 不能为 apply");
+  }
+  const demoteApply = value.recommendation === "apply" && (transferableCore || jobQuality.level === "caution");
+  const recommendation = demoteApply ? "caution" : value.recommendation;
+  const softGaps = contractStrings(value.softGaps ?? value.missingPoints, 8);
   const questionsToVerify = contractStrings(value.questionsToVerify ?? value.riskQuestions, 8);
   const evidence = normalizeEvidence(value.evidence);
   const fitReasons = contractStrings(value.fitReasons ?? value.fit_reasons ?? value.matchReasons, 8);
   const result = {
     recommendation,
-    fitLevel: softOnlySkip && value.fitLevel === "D" ? "C" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
+    fitLevel: demoteApply && value.fitLevel === "A" ? "B" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
     fitReasons,
+    requirementMatches,
+    jobQuality,
     hardBlockers,
     softGaps,
     questionsToVerify,
     missingPoints: softGaps,
-    blockingGaps: hardBlockers,
+    blockingGaps: hardBlockers.map((item) => item.requirement),
     riskQuestions: questionsToVerify,
     recommendedResumeVersion: text(value.recommendedResumeVersion),
     primaryProjects: strings(value.primaryProjects, 4),
@@ -119,8 +190,12 @@ function validateMatchDecision(value) {
     hrPrep: object(value.hrPrep)
   };
   if (hardBlockers.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性阻断时 recommendation 必须为 skip");
-  if (recommendation === "skip" && !hardBlockers.length) throw new ModelContractError("matchJob", "skip 必须包含至少一条可核对的 hardBlockers");
+  if (recommendation === "skip" && !hardBlockers.length) throw new ModelContractError("matchJob", "skip 必须包含至少一条可核对的结构化 hardBlockers");
   if (recommendation === "apply" && !["A", "B"].includes(result.fitLevel)) throw new ModelContractError("matchJob", "apply 的 fitLevel 必须为 A 或 B");
+  if (recommendation === "apply") {
+    const lackingEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state) && (!item.jdEvidence || !item.resumeEvidence));
+    if (lackingEvidence) throw new ModelContractError("matchJob", "apply 的逐项匹配必须同时具备 JD 与候选人证据");
+  }
   if (["apply", "caution"].includes(recommendation)) {
     if (!result.fitReasons.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条具体匹配理由");
     if (!result.evidence.jd.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条 JD 证据");
@@ -128,19 +203,28 @@ function validateMatchDecision(value) {
   } else if (recommendation === "skip") {
     if (!result.evidence.jd.length || !result.evidence.resume.length) throw new ModelContractError("matchJob", "skip 的硬阻断必须同时提供 JD 与候选人证据");
   } else {
+    const hasUnknownRequirement = requirementMatches.some((item) => item.state === "unknown" || item.state === "missing");
     const hasReason = result.fitReasons.length || softGaps.length || questionsToVerify.length;
     const statesInsufficientInfo = [...softGaps, ...questionsToVerify].some((item) => /信息|未提供|缺少|无法确认|待确认/.test(item));
-    if (!hasReason) throw new ModelContractError("matchJob", "review 必须说明待确认信息");
-    if (!result.evidence.jd.length && !statesInsufficientInfo) throw new ModelContractError("matchJob", "review 至少需要 JD 证据或明确的待确认信息");
+    if (!hasReason && !hasUnknownRequirement) throw new ModelContractError("matchJob", "review 必须包含 unknown 项、待确认问题或缺失信息");
+    if (!result.evidence.jd.length && !statesInsufficientInfo && !hasUnknownRequirement) throw new ModelContractError("matchJob", "review 至少需要 JD 证据或明确的待确认信息");
   }
   return result;
 }
 
 function effectiveHardBlockers(analysis = {}) {
-  const blockers = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
-    ? contractStrings(analysis.hardBlockers, 8)
-    : contractStrings(analysis.blockingGaps, 8);
-  return blockers.filter((item) => !isPolicySoftGap(item));
+  const raw = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
+    ? analysis.hardBlockers
+    : analysis.blockingGaps;
+  return list(raw).filter((item) => {
+    if (item && typeof item === "object" && !Array.isArray(item)) return HARD_BLOCKER_KINDS.includes(item.kind);
+    return !isPolicySoftGap(contractListItem(item));
+  });
+}
+
+function hardBlockerText(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return text(value.requirement || value.reason || value.kind);
+  return text(value);
 }
 
 function isPolicySoftGap(value) {
@@ -185,4 +269,4 @@ function contractListItem(value) {
   return text(value.reason || value.gap || value.description || value.message || value.issue || value.value);
 }
 
-module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers };
+module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers, hardBlockerText };

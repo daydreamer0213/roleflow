@@ -57,12 +57,20 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(metrics[1].data.kind, "matchJob");
     assert.strictEqual(metrics[1].data.attempts, 2);
     assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");
-    await retryAdapter.matchJob({ candidateProfile: {}, jobUnderstanding: {}, jobEvidence: {} });
+    await retryAdapter.matchJob({ candidateProfile: {}, candidateMatchCard: { targetDirections: ["电商运营"] }, jobUnderstanding: {}, jobEvidence: {} });
     const matchPrompt = payloads.at(-1).messages[0].content;
-    assert(matchPrompt.includes("Python/Java"));
+    assert(matchPrompt.includes("requirementMatches"));
+    assert(matchPrompt.includes("candidateMatchCard"));
+    assert(matchPrompt.includes("indispensable_core"));
     assert(matchPrompt.includes('"hardBlockers":[]'));
-    assert(matchPrompt.includes("二选一"));
-    assert(matchPrompt.includes("熟悉、了解、优先、加分"));
+    assert(matchPrompt.includes("searchPreferences"));
+    assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
+    assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
+    await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
+    const understandPrompt = payloads.at(-1).messages[0].content;
+    assert(understandPrompt.includes("coreResponsibilities"));
+    assert(understandPrompt.includes("responsibility_sprawl"));
+    assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);

@@ -2,8 +2,8 @@ const crypto = require("crypto");
 const { matchingCardRevision } = require("./matching_card");
 
 const PIPELINE_VERSIONS = Object.freeze({
-  understandJob: "job-understanding-v3",
-  matchJob: "match-decision-v10",
+  understandJob: "job-understanding-v4",
+  matchJob: "match-decision-v11",
   communication: "communication-v2"
 });
 
@@ -32,6 +32,7 @@ function buildAnalysisRevision(configs, sourceContentHash) {
   return {
     profileVersion: configs.analysisContext?.profileVersion || stableHash(configs.candidateProfile || {}),
     searchPlanVersion: configs.analysisContext?.searchPlanVersion || stableHash(modelSearchPlanContext(configs.searchPlan)),
+    matchingCardVersion: configs.analysisContext?.matchingCardVersion ?? null,
     sourceContentHash: String(sourceContentHash || ""),
     pipelineVersions: PIPELINE_VERSIONS
   };
@@ -43,6 +44,10 @@ function analysisStaleReasons(analysis, currentRevision) {
   const reasons = [];
   if (revision.profileVersion !== currentRevision.profileVersion) reasons.push("profile_changed");
   if (revision.searchPlanVersion !== currentRevision.searchPlanVersion) reasons.push("search_plan_changed");
+  const previousCardVersion = revision.matchingCardVersion ?? null;
+  const currentCardVersion = currentRevision.matchingCardVersion ?? null;
+  // 历史修订没有记录卡版本时不补判卡变化，避免升级后把存量分析全部误判为陈旧。
+  if (previousCardVersion && currentCardVersion && previousCardVersion !== currentCardVersion) reasons.push("matching_card_changed");
   if (revision.sourceContentHash !== currentRevision.sourceContentHash) reasons.push("job_source_changed");
   if (revision.pipelineVersions?.understandJob !== PIPELINE_VERSIONS.understandJob) reasons.push("job_understanding_pipeline_changed");
   if (revision.pipelineVersions?.matchJob !== PIPELINE_VERSIONS.matchJob) reasons.push("match_pipeline_changed");

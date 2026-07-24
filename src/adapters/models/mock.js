@@ -61,50 +61,101 @@ class MockModelAdapter {
 
   async understandJob({ job = {} } = {}) {
     const text = jobText(job);
-    const coreRequirements = pickTerms(text, ["Python", "FastAPI", "RAG", "Agent", "LangChain", "LangGraph", "知识库", "向量数据库"]);
+    const sentences = splitSentences(text);
+    const dutyGroups = [
+      { pattern: /直播/, label: "直播" },
+      { pattern: /拍摄|剪辑|短视频制作/, label: "拍摄剪辑" },
+      { pattern: /投放|投流/, label: "投放" },
+      { pattern: /客服|售后/, label: "客服" },
+      { pattern: /销售|地推|电销/, label: "销售" },
+      { pattern: /开发|接口|系统|平台搭建/, label: "开发" }
+    ].filter((group) => group.pattern.test(text));
+    const concerns = [];
+    if (dutyGroups.length >= 3) {
+      concerns.push({ type: "responsibility_sprawl", evidence: `JD 同时堆叠不相关职责：${dutyGroups.map((group) => group.label).join("、")}` });
+    }
     const hiddenRisks = [];
     if (hasAny(text, ["外包", "驻场"])) hiddenRisks.push({ type: "outsourcing", severity: "medium", evidence: "JD 疑似出现外包/驻场表述" });
-    if (hasAny(text, ["培训", "讲师", "课程", "销售"])) hiddenRisks.push({ type: "training_or_sales", severity: "high", evidence: "JD 疑似出现培训/讲师/销售表述" });
-
+    if (hasAny(text, ["培训费", "收费培训", "培训贷", "先交费"])) hiddenRisks.push({ type: "training_fee", severity: "high", evidence: "JD 疑似出现收费培训表述" });
+    const coreRequirements = sentences
+      .filter((sentence) => /必须|熟练|精通|掌握|至少|扎实|具备|要求|负责/.test(sentence))
+      .slice(0, 8)
+      .map((sentence) => ({
+        label: clip(sentence, 24),
+        indispensable: /必须|熟练|精通|至少|扎实/.test(sentence),
+        evidence: `JD：${clip(sentence, 80)}`
+      }));
     return {
       jobId: job.sourceId || job.url || "",
-      realRoleType: inferRoleType(text),
-      businessScenario: inferScenario(text),
+      roleSummary: clip(sentences.find((sentence) => /负责/.test(sentence)) || sentences[0] || job.title || "", 60),
+      realRoleType: "unknown",
+      businessScenario: "",
+      coreResponsibilities: sentences
+        .filter((sentence) => /负责|职责|主要工作/.test(sentence))
+        .slice(0, 6)
+        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
       coreRequirements,
-      niceToHave: pickTerms(text, ["Milvus", "ChromaDB", "BM25", "RRF", "Rerank", "Docker"]),
+      preferredRequirements: sentences
+        .filter((sentence) => /优先|加分|了解/.test(sentence))
+        .slice(0, 6)
+        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
+      outcomeExpectations: sentences
+        .filter((sentence) => /目标|考核|指标|GMV|转化|产出/.test(sentence))
+        .slice(0, 4)
+        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
       senioritySignal: inferSeniority(text),
+      eligibilityConstraints: [],
       hiddenRisks,
+      jobQuality: concerns.length ? { level: "caution", concerns } : { level: "normal", concerns: [] },
       isFakeAI: false,
-      isTrainingOrSales: hiddenRisks.some((risk) => risk.type === "training_or_sales"),
-      evidenceSnippets: [job.title, job.description].filter(Boolean).map((x) => String(x).slice(0, 120))
+      isTrainingOrSales: false,
+      evidenceSnippets: [job.title, ...sentences.slice(0, 3)].filter(Boolean).map((item) => clip(item, 120))
     };
   }
 
-  async matchJob({ candidateProfile = {}, resumeVersions = {}, jobUnderstanding = {} } = {}) {
+  async matchJob({ candidateProfile = {}, resumeVersions = {}, jobUnderstanding = {}, candidateMatchCard = null } = {}) {
     const versions = resumeVersions.versions || resumeVersions || [];
     const version = chooseVersion(versions, jobUnderstanding);
-    const highRisk = jobUnderstanding.isTrainingOrSales || (jobUnderstanding.hiddenRisks || []).some((risk) => risk.severity === "high");
-    const hardBlockers = highRisk
-      ? (jobUnderstanding.hiddenRisks || []).filter((risk) => risk.severity === "high").map((risk) => risk.evidence || risk.type).filter(Boolean)
-      : [];
-    if (highRisk && !hardBlockers.length) hardBlockers.push("岗位属于培训、销售或其他明确非目标职责");
+    const resumeFacts = collectResumeFacts(candidateProfile, candidateMatchCard);
+    const requirementMatches = (jobUnderstanding.coreRequirements || []).map((requirement) => {
+      const label = typeof requirement === "string" ? requirement : requirement.label;
+      const hit = findSupportingFact(label, resumeFacts);
+      return {
+        requirement: label,
+        state: hit ? "matched" : "unknown",
+        indispensable: Boolean(requirement.indispensable),
+        jdEvidence: String(requirement.evidence || ""),
+        resumeEvidence: hit || ""
+      };
+    });
+    const matched = requirementMatches.filter((item) => item.state === "matched");
+    const unresolvedCore = requirementMatches.filter((item) => item.state !== "matched" && item.indispensable);
+    const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
+    const questions = [
+      ...(jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence).filter(Boolean),
+      ...unresolvedCore.map((item) => `核心要求「${item.requirement}」缺少候选人直接证据，待确认`)
+    ];
+    const sufficient = matched.length > 0 && unresolvedCore.length === 0 && requirementMatches.length > 0;
     return {
-      recommendation: highRisk ? "skip" : "apply",
-      fitLevel: highRisk ? "D" : "B",
-      confidence: highRisk ? 0.45 : 0.72,
-      fitReasons: [
-        `${jobUnderstanding.realRoleType || "unknown"} 与候选方向可做初步匹配`,
-        `核心要求：${(jobUnderstanding.coreRequirements || []).join("、") || "待确认"}`
-      ],
-      hardBlockers,
-      softGaps: ["mock 仅做结构稳定，真实语义缺口等待模型 adapter 判断"],
-      questionsToVerify: (jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence),
+      recommendation: sufficient ? "apply" : "review",
+      fitLevel: sufficient ? "B" : "C",
+      confidence: sufficient ? 0.72 : 0.4,
+      fitReasons: sufficient
+        ? [`核心要求与候选人直接证据对应：${matched.map((item) => item.requirement).slice(0, 3).join("、")}`]
+        : [],
+      requirementMatches,
+      jobQuality,
+      hardBlockers: [],
+      softGaps: sufficient ? [] : ["JD 或简历缺少可逐条比对的信息，真实语义缺口等待模型 adapter 判断"],
+      questionsToVerify: questions,
       recommendedResumeVersion: version?.id || "",
       primaryProjects: version?.primaryProjects || pickProjectNames(candidateProfile.projects || []),
       greetingAngle: version ? `围绕${version.name}切入，先确认岗位真实职责。` : "先确认岗位真实职责，再介绍相关项目。",
       evidence: {
-        jd: (jobUnderstanding.evidenceSnippets || []).slice(0, 3),
-        resume: (candidateProfile.skills || []).slice(0, 4).map((skill) => typeof skill === "string" ? skill : skill.name).filter(Boolean)
+        jd: matched.map((item) => item.jdEvidence).filter(Boolean).slice(0, 3).length
+          ? matched.map((item) => item.jdEvidence).filter(Boolean).slice(0, 3)
+          : (jobUnderstanding.evidenceSnippets || []).slice(0, 3),
+        resume: matched.map((item) => item.resumeEvidence).filter(Boolean).slice(0, 4)
       }
     };
   }
@@ -220,7 +271,7 @@ function toSkillEvidence(skills, projects) {
 }
 
 function chooseVersion(versions, jobUnderstanding) {
-  const text = `${jobUnderstanding.realRoleType || ""} ${jobUnderstanding.businessScenario || ""} ${(jobUnderstanding.coreRequirements || []).join(" ")}`;
+  const text = `${jobUnderstanding.roleSummary || ""} ${jobUnderstanding.businessScenario || ""} ${(jobUnderstanding.coreRequirements || []).map((item) => item.label || item).join(" ")}`;
   return versions.find((version) => [...(version.keywords || []), ...(version.scenarios || [])].some((word) => sameText(text, word))) || versions[0] || null;
 }
 
@@ -232,8 +283,59 @@ function jobText(job) {
   return `${job.title || ""} ${(job.tags || []).join(" ")} ${job.description || ""}`;
 }
 
-function pickTerms(text, terms) {
-  return terms.filter((term) => sameText(text, term));
+function splitSentences(text) {
+  return String(text || "").split(/[。；;！？!?\n]/).map((sentence) => sentence.trim()).filter((sentence) => sentence.length >= 4).slice(0, 24);
+}
+
+function clip(value, limit) {
+  const text = String(value || "").trim();
+  return text.length > limit ? text.slice(0, limit) : text;
+}
+
+function collectResumeFacts(candidateProfile = {}, matchingCard = null) {
+  const facts = [];
+  const push = (value) => {
+    const text = String(value || "").trim();
+    if (text) facts.push(text);
+  };
+  for (const skill of candidateProfile.skills || []) {
+    const name = typeof skill === "string" ? skill : skill.name;
+    push(name && `简历技能：${name}`);
+  }
+  for (const project of candidateProfile.projects || []) {
+    push(project.name && `简历项目：${project.name}`);
+    for (const item of project.canSay || []) push(`简历：${item}`);
+    for (const item of project.results || []) push(`简历：${item}`);
+  }
+  for (const experience of candidateProfile.experiences || []) {
+    for (const item of experience.highlights || []) push(`简历：${item}`);
+  }
+  for (const item of candidateProfile.strengths || []) push(`简历：${item}`);
+  if (matchingCard) {
+    for (const item of matchingCard.strongEvidence || []) push(item.evidence || item.label);
+    for (const item of matchingCard.transferableCapabilities || []) push(item.evidence || item.label);
+    for (const item of matchingCard.targetDirections || []) push(item);
+  }
+  return facts;
+}
+
+function findSupportingFact(requirement, facts) {
+  const latin = (value) => String(value || "").toLowerCase().match(/[a-z][a-z0-9+#.]{1,}/g) || [];
+  const bigrams = (value) => {
+    const cjk = String(value || "").replace(/[^一-鿿]/g, "");
+    const grams = [];
+    for (let index = 0; index + 2 <= cjk.length; index += 1) grams.push(cjk.slice(index, index + 2));
+    return grams;
+  };
+  const requirementLatin = latin(requirement);
+  const requirementBigrams = bigrams(requirement);
+  if (!requirementLatin.length && !requirementBigrams.length) return "";
+  for (const fact of facts) {
+    const latinHit = requirementLatin.some((token) => latin(fact).includes(token));
+    const bigramHit = requirementBigrams.some((gram) => bigrams(fact).includes(gram));
+    if (latinHit || bigramHit) return fact;
+  }
+  return "";
 }
 
 function hasAny(text, terms) {
@@ -242,18 +344,6 @@ function hasAny(text, terms) {
 
 function sameText(text, term) {
   return String(text || "").toLowerCase().includes(String(term || "").toLowerCase());
-}
-
-function inferRoleType(text) {
-  if (hasAny(text, ["RAG", "知识库", "智能问答"])) return "ai_application";
-  if (hasAny(text, ["Python", "FastAPI"])) return "python_backend_ai";
-  return "unknown";
-}
-
-function inferScenario(text) {
-  if (hasAny(text, ["知识库", "智能问答"])) return "企业知识库/智能问答";
-  if (hasAny(text, ["Agent", "工具调用"])) return "Agent 工具调用";
-  return "待模型进一步判断";
 }
 
 function inferSeniority(text) {

@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, effectiveHardBlockers } = require("./model_contract");
+const { validateModelResult, effectiveHardBlockers, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -40,6 +40,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         pipelineVersion: PIPELINE_VERSIONS.matchJob,
         input: {
           candidateProfile: candidateProfileForJobMatch(candidateProfile),
+          candidateMatchCard: configs.matchingCard || null,
           resumeVersions: resumeVersionsForJobMatch(configs.resumeVersions),
           jobUnderstanding,
           jobEvidence: {
@@ -183,12 +184,16 @@ function compactAnalysis(configs, parts) {
     error: "",
     errorCode: "",
     realRoleType: understanding.realRoleType || "unknown",
+    roleSummary: understanding.roleSummary || "",
     businessScenario: understanding.businessScenario || "",
-    coreRequirements: understanding.coreRequirements || [],
+    coreResponsibilities: understanding.coreResponsibilities || [],
+    coreRequirements: (understanding.coreRequirements || []).map((item) => typeof item === "string" ? item : item.label).filter(Boolean),
     coreStack: understanding.coreStack || [],
     eligibilityConstraints: understanding.eligibilityConstraints || [],
     hiddenRisks: understanding.hiddenRisks || [],
     senioritySignal: understanding.senioritySignal || "unknown",
+    requirementMatches: decision.requirementMatches || [],
+    jobQuality: decision.jobQuality || understanding.jobQuality || { level: "normal", concerns: [] },
     recommendation: decision.recommendation,
     fitLevel: decision.fitLevel,
     confidence: decision.confidence,
@@ -196,11 +201,11 @@ function compactAnalysis(configs, parts) {
     recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
     primaryProjects: decision.primaryProjects || [],
     fitReasons: decision.fitReasons || [],
-    hardBlockers: decision.hardBlockers || decision.blockingGaps || [],
+    hardBlockers: decision.hardBlockers || [],
     softGaps: decision.softGaps || decision.missingPoints || [],
     questionsToVerify: decision.questionsToVerify || decision.riskQuestions || [],
     missingPoints: decision.softGaps || decision.missingPoints || [],
-    blockingGaps: decision.hardBlockers || decision.blockingGaps || [],
+    blockingGaps: decision.blockingGaps || (decision.hardBlockers || []).map((item) => hardBlockerText(item)).filter(Boolean),
     riskQuestions: decision.questionsToVerify || decision.riskQuestions || [],
     evidence: decision.evidence || { jd: [], resume: [] },
     greetingAngle: decision.greetingAngle || "",
@@ -255,7 +260,7 @@ function applyRuleGuard(analysis, job) {
   }
   const hardBlockers = effectiveHardBlockers(analysis);
   if (hardBlockers.length) {
-    return addGuard({ ...analysis, hardBlockers, blockingGaps: hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockers[0]}`, analysis.semanticStatus, "hard_blocker_guard");
+    return addGuard({ ...analysis, hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`, analysis.semanticStatus, "hard_blocker_guard");
   }
   if (analysis.recommendation === "skip") {
     return addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
