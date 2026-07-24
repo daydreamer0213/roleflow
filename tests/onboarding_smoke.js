@@ -10,11 +10,13 @@ const {
   getCandidateProfile,
   getSearchPlanDependency,
   getCandidateMatchingContext,
+  getActiveMatchingCard,
   listMatchingCards,
   listCandidateResumeVersions,
   listResumeParseAttempts,
   listReportJobs
 } = require("../src/core/storage");
+const { matchingCardRevision } = require("../src/core/matching_card");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -328,6 +330,20 @@ const generatedReports = [];
   assert.strictEqual(oldContextScan.status, 0, oldContextScan.stderr || oldContextScan.stdout);
   collectGeneratedReports(oldContextScan.stdout);
 
+  // 重评/重算与扫描共用同一套已确认匹配上下文：新简历未确认时仍使用旧确认卡，不得碰未确认的新画像。
+  const reassess = runCliCommand(["reassess-batch", "--plan", String(planId)]);
+  assert.strictEqual(reassess.status, 0, reassess.stderr || reassess.stdout);
+  const reassessedJobs = listReportJobs(db, { planId, batch: "latest" });
+  assert(reassessedJobs.length > 0, "重评后必须有可检查的岗位分析");
+  const confirmedCardRevision = matchingCardRevision(getActiveMatchingCard(db, profileId).card);
+  const revisionedJobs = reassessedJobs.filter((job) => job.analysis?.revision);
+  assert(revisionedJobs.length > 0, "重评后必须有带修订指纹的分析可检查");
+  for (const job of revisionedJobs) {
+    assert.strictEqual(job.analysis.revision.matchingCardVersion, confirmedCardRevision, "重评必须使用已确认匹配卡的版本指纹，不得使用未确认的新画像");
+  }
+  const rescore = runCliCommand(["rescore-plan", "--plan", String(planId)]);
+  assert.strictEqual(rescore.status, 0, rescore.stderr || rescore.stdout);
+
   const confirmChanged = await fetch(`${baseUrl}/api/match-card/confirm`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -357,6 +373,13 @@ const generatedReports = [];
   const staleScan = runCliScan(planId);
   assert.notStrictEqual(staleScan.status, 0, "stale plan must refuse to scan until saved again");
   assert(`${staleScan.stderr}\n${staleScan.stdout}`.includes("画像已更新"));
+
+  const staleReassess = runCliCommand(["reassess-batch", "--plan", String(planId)]);
+  assert.notStrictEqual(staleReassess.status, 0, "stale 方案必须拒绝重评");
+  assert(`${staleReassess.stderr}\n${staleReassess.stdout}`.includes("画像已更新"), "stale 重评的失败原因必须与扫描一致");
+  const staleRescore = runCliCommand(["rescore-plan", "--plan", String(planId)]);
+  assert.notStrictEqual(staleRescore.status, 0, "stale 方案必须拒绝重算");
+  assert(`${staleRescore.stderr}\n${staleRescore.stdout}`.includes("画像已更新"), "stale 重算的失败原因必须与扫描一致");
 
   const resaved = await fetch(`${baseUrl}/api/plan`, {
     method: "POST",
@@ -388,6 +411,10 @@ const generatedReports = [];
 
 function runCliScan(planId) {
   return spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", "scan", "--db", dbPath, "--plan", String(planId), "--input", path.join("data", "sample_jobs.json"), "--force-mock"], { cwd: root, encoding: "utf8" });
+}
+
+function runCliCommand(cliArgs) {
+  return spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", ...cliArgs, "--db", dbPath], { cwd: root, encoding: "utf8" });
 }
 
 async function uploadResume(baseUrl, fileName, fileData, type, profileId = 0) {

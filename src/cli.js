@@ -1278,12 +1278,16 @@ async function reassessBatch(db, args) {
   if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
+  // 重评与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重评结果。
+  const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
+  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
 
   let configs = loadConfigs(ROOT);
   configs.model = args["use-model"] === true
     ? resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig
     : offlineMockModelConfig();
-  configs = profileToRuntimeConfigs(configs, profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+  configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listCandidateResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger });
   const result = await reassessBatchObservations(db, {
@@ -1326,7 +1330,11 @@ function rescorePlan(db, args) {
   if (!planRecord) throw new Error(`未找到 Search Plan #${planId}`);
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在`);
-  const configs = profileToRuntimeConfigs(loadConfigs(ROOT), profileRecord.profile, planRecord.plan, listCandidateResumeVersions(db, profileRecord.id));
+  // 重算与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重算结果。
+  const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
+  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
+  const configs = profileToRuntimeConfigs(loadConfigs(ROOT), matchingContext.candidateProfile, planRecord.plan, listCandidateResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const result = rescorePlanObservations(db, { planId, configs });
   logger.info("plan_rescored", result);
   console.log(`Search Plan #${planId} 已按最新规则重算 ${result.rescored} 条岗位。`);
