@@ -346,12 +346,21 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
     parseRecorded = true;
     logger.info("resume_profile_created", { requestId, profileId: saved.profileId, profileVersionId: saved.profileVersionId, modelProvider: modelConfig?.provider || "mock" });
     const cardId = await createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId });
-    try {
-      const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
-      const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
-      logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
-    } catch (planError) {
-      logger.warn("search_plan_recommend_failed", { requestId, profileId: saved.profileId, error: errorMeta(planError) });
+    // 已有已确认匹配卡和可用方案时，新简历只生成草稿卡：旧卡与旧方案继续作为扫描依据，
+    // 直到用户确认新卡后再手动重存方案；不在这里停用或替换当前方案。
+    const activeCard = getActiveMatchingCard(db, saved.profileId);
+    const activePlan = getActiveSearchPlan(db, saved.profileId);
+    const activePlanUsable = Boolean(activeCard && activePlan && !getSearchPlanDependency(db, activePlan.id).stale);
+    if (activePlanUsable) {
+      logger.info("search_plan_recommend_skipped", { requestId, profileId: saved.profileId, planId: activePlan.id, reason: "pending_matching_card_draft" });
+    } else {
+      try {
+        const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
+        const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
+        logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
+      } catch (planError) {
+        logger.warn("search_plan_recommend_failed", { requestId, profileId: saved.profileId, error: errorMeta(planError) });
+      }
     }
     return redirect(res, `/match-card?profileId=${saved.profileId}&cardId=${cardId}`);
   } catch (error) {

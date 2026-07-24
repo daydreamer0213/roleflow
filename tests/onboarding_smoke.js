@@ -307,6 +307,13 @@ const generatedReports = [];
   const changedCard = listMatchingCards(db, profileId).find((card) => card.id === changedCardId);
   assert.strictEqual(changedCard?.status, "draft");
   assert.strictEqual(getCandidateMatchingContext(db, profileId)?.matchingCardId, cardId, "old confirmed card must stay the active matching context");
+  assert.strictEqual(getActiveSearchPlan(db, profileId)?.id, planId, "上传不同内容只生成草稿卡，不得停用或替换当前有效方案");
+  assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "新卡确认前，当前方案必须保持可用");
+  const activePlanPage = await fetch(`${baseUrl}/plan?profileId=${profileId}`);
+  const activePlanHtml = await activePlanPage.text();
+  assert.strictEqual(activePlanPage.status, 200);
+  assert(!activePlanHtml.includes("方案需要重新确认"), "仅有待确认草稿时，方案页不得要求重新确认");
+  assert(activePlanHtml.includes('value="daily">日常扫描</button>'), "仅有待确认草稿时，方案页扫描按钮不得被禁用");
 
   const changedCardPage = await fetch(`${baseUrl}${changedLocation}`);
   const changedCardHtml = await changedCardPage.text();
