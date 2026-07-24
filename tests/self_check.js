@@ -399,8 +399,8 @@ async function checkMockAnalyzer() {
   const calls = { analyzeResume: 0, understandJob: 0, matchJob: 0, draftCommunication: 0 };
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
-    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: [job.title] }; },
-    matchJob: async ({ jobEvidence }) => { calls.matchJob += 1; assert.strictEqual(jobEvidence.title, "Cache test"); return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }; },
+    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
+    matchJob: async ({ jobEvidence }) => { calls.matchJob += 1; assert.strictEqual(jobEvidence.title, "Cache test"); return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }; },
     draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
   const cachedRunner = createJobAnalysisRunner(configs, keywordPlan, { db, analyzer: fakeAnalyzer });
@@ -413,8 +413,8 @@ async function checkMockAnalyzer() {
     db,
     analyzer: {
       analyzeResume: async () => ({ candidate: { name: "Fallback Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }),
-      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: ["Python"] }),
-      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }),
+      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: ["Python"] }),
+      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }),
       draftCommunication: async () => { throw new Error("communication contract failed"); }
     }
   });

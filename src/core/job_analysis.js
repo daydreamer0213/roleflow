@@ -107,11 +107,14 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
   const model = configs.model?.providers?.[provider]?.model || "";
   const inputHash = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
   const cacheKey = crypto.createHash("sha256").update(`${provider}|${model}|${kind}|${pipelineVersion}|${inputHash}`).digest("hex");
+  // matchJob 的跨字段核对需要本次 JobUnderstanding 作为最小上下文，
+  // 让缓存读取、首次校验和契约修复使用同一份判定依据。
+  const validationContext = kind === "matchJob" ? { jobUnderstanding: input?.jobUnderstanding } : undefined;
   if (db) {
     const cached = getModelCache(db, cacheKey);
     if (cached) {
       try {
-        const result = validateModelResult(kind, cached.result);
+        const result = validateModelResult(kind, cached.result, validationContext);
         logger?.info("model_cache_hit", { kind, provider, model, pipelineVersion });
         logger?.info("model_call_completed", { kind, provider, model, cacheHit: true, latencyMs: 0, attempts: 0, httpStatus: null, usage: null, jsonModeFallback: false });
         return result;
@@ -126,7 +129,7 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
   let rawResult;
   try {
     rawResult = await run(input);
-    result = validateModelResult(kind, rawResult);
+    result = validateModelResult(kind, rawResult, validationContext);
   } catch (error) {
     if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
     const invalidOutput = error.invalidOutput ?? rawResult;
@@ -143,7 +146,7 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
           instruction: "只修正错误字段并返回完整 JSON；保留原有事实和有效证据，不得编造或输出通用占位语。"
         }
       });
-      result = validateModelResult(kind, repaired);
+      result = validateModelResult(kind, repaired, validationContext);
       logger?.info("model_contract_repair_completed", { kind, provider, model, pipelineVersion });
     } catch (repairError) {
       logger?.warn("model_contract_repair_failed", {

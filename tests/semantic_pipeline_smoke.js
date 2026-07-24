@@ -39,6 +39,8 @@ const db = openDb(dbPath);
     staleAnalysisSmoke();
     matchingCardStaleSmoke();
     runtimeResumeVersionEntrySmoke();
+    understandingContractSmoke();
+    matchUnderstandingAlignmentSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -318,6 +320,20 @@ function matchGenericContractSmoke() {
   assert.strictEqual(skipValidated.recommendation, "skip");
   assert.strictEqual(skipValidated.hardBlockers[0].kind, "indispensable_core");
 
+  // indispensable_core 阻断必须精确对应同名 missing + indispensable 核心项。
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    hardBlockers: [{ ...validSkip.hardBlockers[0], requirement: "不存在的核心要求" }]
+  }), (error) => error instanceof ModelContractError && /硬性阻断/.test(error.message), "无对应核心项的 indispensable_core 必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    requirementMatches: [{ ...validSkip.requirementMatches[0], state: "matched" }]
+  }), (error) => error instanceof ModelContractError && /硬性阻断/.test(error.message), "对应项为 matched 时 indispensable_core 必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...validSkip,
+    requirementMatches: [{ ...validSkip.requirementMatches[0], state: "unknown" }]
+  }), (error) => error instanceof ModelContractError && /硬性阻断/.test(error.message), "对应项为 unknown 时 indispensable_core 必须拒绝");
+
   assert.throws(() => validateModelResult("matchJob", {
     ...validSkip,
     requirementMatches: [{ ...validSkip.requirementMatches[0], indispensable: false }]
@@ -443,6 +459,10 @@ async function contractRepairAndFailureSmoke() {
     fitLevel: "A",
     confidence: 0.9,
     fitReasons: [],
+    requirementMatches: [
+      { requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：德勤 AI 实习使用 Python" },
+      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：负责 RAG 知识库建设", resumeEvidence: "简历：负责企业知识库项目" }
+    ],
     jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: [],
@@ -465,6 +485,26 @@ async function contractRepairAndFailureSmoke() {
   const repaired = await repairing(completeJob("contract-repair"));
   assert.strictEqual(matchCalls, 2, "证据契约不完整时只允许一次修复请求");
   assert.strictEqual(repaired.semanticStatus, "complete");
+
+  // 与 JobUnderstanding 跨字段不一致同样进入一次契约修复，而不是在最终 compact 后被静默接受。
+  const fullDecision = decision("apply", "A", "Python");
+  const missingRequirementDecision = { ...fullDecision, requirementMatches: fullDecision.requirementMatches.slice(0, 1) };
+  let alignmentCalls = 0;
+  const aligning = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
+    db,
+    analyzer: {
+      understandJob: async ({ job }) => understanding(job.sourceId),
+      matchJob: async (input) => {
+        alignmentCalls += 1;
+        if (!input.contractRepair) return missingRequirementDecision;
+        assert.match(input.contractRepair.reason, /requirementMatches/, "漏掉核心要求时修复原因必须指向 requirementMatches");
+        return decision("apply", "A", "Python");
+      }
+    }
+  });
+  const alignedResult = await aligning(completeJob("contract-alignment-repair"));
+  assert.strictEqual(alignmentCalls, 2, "跨字段不一致只允许一次修复请求");
+  assert.strictEqual(alignedResult.semanticStatus, "complete");
 
   const failing = createJobAnalysisRunner(configFor(["Python"]), [], {
     db,
@@ -490,6 +530,123 @@ async function pipelineVersionCacheSmoke() {
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v1", input, run });
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v2", input, run });
   assert.strictEqual(runs, 2, "pipelineVersion 变化必须使旧缓存失效");
+}
+
+function understandingContractSmoke() {
+  // JobUnderstanding 契约收紧：字符串、缺失 evidence、非法枚举一律抛 ModelContractError 进入契约修复，不静默升级。
+  const validUnderstanding = {
+    jobId: "u-1",
+    roleSummary: "负责店铺运营",
+    coreResponsibilities: [{ label: "店铺活动运营", evidence: "JD：负责店铺活动运营" }],
+    coreRequirements: [{ label: "投放 ROI 复盘", indispensable: true, evidence: "JD：必须独立完成投放 ROI 复盘" }],
+    preferredRequirements: [{ label: "熟悉直通车", evidence: "JD：熟悉直通车优先" }],
+    outcomeExpectations: [],
+    hiddenRisks: [],
+    jobQuality: { level: "normal", concerns: [] },
+    evidenceSnippets: ["JD：负责店铺活动运营"]
+  };
+  const understood = validateModelResult("understandJob", validUnderstanding);
+  assert.strictEqual(understood.coreRequirements[0].indispensable, true, "合法对象结构必须保留");
+
+  const sparse = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    coreResponsibilities: [], coreRequirements: [], preferredRequirements: [], outcomeExpectations: [], hiddenRisks: []
+  });
+  assert.deepStrictEqual(sparse.coreRequirements, [], "空数组本身合法");
+
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreRequirements: ["Java"] }),
+    (error) => error instanceof ModelContractError && /coreRequirements/.test(error.message), "字符串型 coreRequirements 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreResponsibilities: ["负责店铺运营"] }),
+    (error) => error instanceof ModelContractError && /coreResponsibilities/.test(error.message), "字符串数组不得静默升级为对象");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreRequirements: [{ label: "投放 ROI 复盘", indispensable: true }] }),
+    (error) => error instanceof ModelContractError && /evidence/.test(error.message), "缺失 JD evidence 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, coreRequirements: [{ label: "投放 ROI 复盘", indispensable: "false", evidence: "JD：必须独立完成复盘" }] }),
+    (error) => error instanceof ModelContractError && /indispensable/.test(error.message), "indispensable 必须是 boolean，不得强制转换");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, jobQuality: { level: "nromal", concerns: [] } }),
+    (error) => error instanceof ModelContractError && /jobQuality\.level/.test(error.message), "非法 jobQuality.level 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, jobQuality: { concerns: [] } }),
+    (error) => error instanceof ModelContractError && /jobQuality\.level/.test(error.message), "缺失 jobQuality.level 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, jobQuality: { level: "caution", concerns: [{ type: "responsibility_sprawl" }] } }),
+    (error) => error instanceof ModelContractError && /concerns|evidence/.test(error.message), "concern 缺 evidence 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, hiddenRisks: [{ type: "outsourcing", severity: "critical", evidence: "JD：疑似外包驻场" }] }),
+    (error) => error instanceof ModelContractError && /severity/.test(error.message), "非法 severity 必须拒绝");
+  assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, hiddenRisks: [{ type: "outsourcing", severity: "medium" }] }),
+    (error) => error instanceof ModelContractError && /evidence/.test(error.message), "hiddenRisks 缺 evidence 必须拒绝");
+}
+
+function matchUnderstandingAlignmentSmoke() {
+  // MatchDecision 必须与本次 JobUnderstanding 一一核对：漏项、重复、虚构、改 indispensable 全部进入契约修复。
+  const jobUnderstanding = {
+    coreRequirements: [
+      { label: "投放 ROI 复盘", indispensable: true, evidence: "JD：必须独立完成投放 ROI 复盘" },
+      { label: "店铺活动运营", indispensable: false, evidence: "JD：负责店铺活动运营" }
+    ]
+  };
+  const baseDecision = {
+    recommendation: "caution",
+    fitLevel: "B",
+    confidence: 0.8,
+    fitReasons: ["核心要求有证据支撑，活动运营待确认"],
+    requirementMatches: [
+      { requirement: "投放 ROI 复盘", state: "matched", indispensable: true, jdEvidence: "JD：必须独立完成投放 ROI 复盘", resumeEvidence: "简历：负责淘宝店铺投放 ROI 复盘" },
+      { requirement: "店铺活动运营", state: "unknown", indispensable: false, jdEvidence: "JD：负责店铺活动运营", resumeEvidence: "" }
+    ],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: ["店铺活动运营经验待确认"],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：必须独立完成投放 ROI 复盘"], resume: ["简历：负责淘宝店铺投放 ROI 复盘"] }
+  };
+  const aligned = validateModelResult("matchJob", baseDecision, { jobUnderstanding });
+  assert.strictEqual(aligned.requirementMatches.length, 2, "与理解一致的核心项必须全部保留");
+
+  assert.throws(() => validateModelResult("matchJob", { ...baseDecision, requirementMatches: [baseDecision.requirementMatches[0]] }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /requirementMatches/.test(error.message), "漏掉核心要求必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    requirementMatches: [{ ...baseDecision.requirementMatches[0], indispensable: false }, baseDecision.requirementMatches[1]]
+  }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /indispensable/.test(error.message), "模型不得修改 indispensable");
+  assert.throws(() => validateModelResult("matchJob", { ...baseDecision, requirementMatches: [...baseDecision.requirementMatches, baseDecision.requirementMatches[0]] }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /requirementMatches|重复/.test(error.message), "重复核心项必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    requirementMatches: [...baseDecision.requirementMatches, { requirement: "虚构核心要求", state: "matched", indispensable: false, jdEvidence: "JD：虚构", resumeEvidence: "简历：虚构" }]
+  }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /requirementMatches|虚构/.test(error.message), "虚构核心项必须拒绝");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...baseDecision,
+    requirementMatches: [baseDecision.requirementMatches[0], { requirement: "  ", state: "matched", indispensable: false, jdEvidence: "JD：占位", resumeEvidence: "简历：占位" }]
+  }, { jobUnderstanding }),
+    (error) => error instanceof ModelContractError && /requirement/.test(error.message), "空 requirement 必须抛错，不得过滤消失");
+
+  // JD 没有可核对的核心要求时不得 apply，只能 review。
+  assert.throws(() => validateModelResult("matchJob", {
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.9,
+    fitReasons: ["有理由"],
+    requirementMatches: [],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：岗位职责面议"], resume: ["简历：店铺运营经历"] }
+  }, { jobUnderstanding: { coreRequirements: [] } }),
+    (error) => error instanceof ModelContractError && /apply/.test(error.message), "没有可核对核心要求时 recommendation 不能为 apply");
+  const reviewNoCore = validateModelResult("matchJob", {
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.4,
+    fitReasons: [],
+    requirementMatches: [],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: ["JD 未提供可核对的核心要求"],
+    questionsToVerify: [],
+    evidence: { jd: [], resume: [] }
+  }, { jobUnderstanding: { coreRequirements: [] } });
+  assert.strictEqual(reviewNoCore.recommendation, "review", "没有核心要求时 review 是合法结论");
 }
 
 async function ruleGuardSmoke() {
@@ -895,10 +1052,17 @@ function understanding(jobId) {
     jobId,
     realRoleType: "ai_application",
     businessScenario: "企业知识库",
-    coreRequirements: ["Python", "RAG"],
+    coreResponsibilities: [{ label: "企业知识库应用开发", evidence: "JD：负责 RAG 知识库和 Agent 应用开发" }],
+    coreRequirements: [
+      { label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" },
+      { label: "RAG", indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
+    ],
+    preferredRequirements: [],
+    outcomeExpectations: [],
     niceToHave: ["Agent"],
     senioritySignal: "junior",
     hiddenRisks: [],
+    jobQuality: { level: "normal", concerns: [] },
     evidenceSnippets: ["熟练使用 Python，负责 RAG 知识库和 Agent 应用开发"]
   };
 }
@@ -909,6 +1073,10 @@ function decision(recommendation, fitLevel, resumeEvidence) {
     fitLevel,
     confidence: 0.88,
     fitReasons: ["岗位核心职责与候选人的 Python/RAG 项目经验对应"],
+    requirementMatches: [
+      { requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: `简历：${resumeEvidence}` },
+      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：负责 RAG 知识库建设", resumeEvidence: `简历：${resumeEvidence}` }
+    ],
     jobQuality: { level: "normal", concerns: [] },
     missingPoints: [],
     riskQuestions: [],

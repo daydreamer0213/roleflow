@@ -9,12 +9,12 @@ class ModelContractError extends Error {
 
 const { normalizeMatchingCard } = require("./matching_card");
 
-function validateModelResult(kind, value) {
+function validateModelResult(kind, value, context = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelContractError(kind, "必须返回 JSON 对象");
   if (kind === "analyzeResume") return validateResume(value);
   if (kind === "recommendSearchPlan") return validateSearchPlan(value);
   if (kind === "understandJob") return validateJobUnderstanding(value);
-  if (kind === "matchJob") return validateMatchDecision(value);
+  if (kind === "matchJob") return validateMatchDecision(value, context);
   if (kind === "draftCommunication") return validateCommunication(value);
   if (kind === "buildCandidateMatchCard") return validateMatchingCardResult(value);
   throw new ModelContractError(kind, "未知分析类型");
@@ -69,45 +69,83 @@ function validateJobUnderstanding(value) {
     roleSummary: text(value.roleSummary),
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
-    coreResponsibilities: labeledEvidenceList(value.coreResponsibilities, 12),
-    coreRequirements: list(value.coreRequirements).map((item) => {
-      if (typeof item === "string") return { label: text(item), indispensable: false, evidence: "" };
-      return { label: text(item?.label), indispensable: Boolean(item?.indispensable), evidence: text(item?.evidence) };
-    }).filter((item) => item.label).slice(0, 16),
-    preferredRequirements: labeledEvidenceList(value.preferredRequirements, 16),
-    outcomeExpectations: labeledEvidenceList(value.outcomeExpectations, 8),
+    coreResponsibilities: understandingEvidenceList(value.coreResponsibilities, "coreResponsibilities", 12),
+    coreRequirements: understandingCoreRequirements(value.coreRequirements),
+    preferredRequirements: understandingEvidenceList(value.preferredRequirements, "preferredRequirements", 16),
+    outcomeExpectations: understandingEvidenceList(value.outcomeExpectations, "outcomeExpectations", 8),
     coreStack: strings(value.coreStack, 10),
     niceToHave: strings(value.niceToHave, 16),
     senioritySignal: text(value.senioritySignal || "unknown"),
     eligibilityConstraints: strings(value.eligibilityConstraints, 8),
-    hiddenRisks: list(value.hiddenRisks).map((risk) => ({ type: text(risk?.type), severity: ["low", "medium", "high"].includes(risk?.severity) ? risk.severity : "medium", evidence: text(risk?.evidence) })).filter((risk) => risk.type || risk.evidence),
-    jobQuality: normalizeJobQuality(value.jobQuality),
+    hiddenRisks: understandingHiddenRisks(value.hiddenRisks),
+    jobQuality: normalizeJobQuality(value.jobQuality, "understandJob"),
     isFakeAI: Boolean(value.isFakeAI),
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
     evidenceSnippets
   };
 }
 
-function labeledEvidenceList(value, limit) {
+// 旧字符串或缺 evidence 的条目一律抛契约错误进入修复，绝不静默升级为对象结构。
+function understandingEvidenceList(value, field, limit) {
   return list(value).map((item) => {
-    if (typeof item === "string") return { label: text(item), evidence: "" };
-    return { label: text(item?.label), evidence: text(item?.evidence) };
-  }).filter((item) => item.label).slice(0, limit);
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError("understandJob", `${field} 必须是 {label,evidence} 对象数组，不接受字符串`);
+    }
+    const label = text(item.label);
+    if (!label) throw new ModelContractError("understandJob", `${field} 每项必须有非空 label`);
+    const evidence = text(item.evidence);
+    if (!evidence) throw new ModelContractError("understandJob", `${field}「${label}」必须给出 JD evidence`);
+    return { label, evidence };
+  }).slice(0, limit);
 }
 
-function normalizeJobQuality(value, kind = null) {
+function understandingCoreRequirements(value) {
+  return list(value).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError("understandJob", "coreRequirements 必须是 {label,indispensable,evidence} 对象数组，不接受字符串");
+    }
+    const label = text(item.label);
+    if (!label) throw new ModelContractError("understandJob", "coreRequirements 每项必须有非空 label");
+    const evidence = text(item.evidence);
+    if (!evidence) throw new ModelContractError("understandJob", `coreRequirements「${label}」必须给出 JD evidence`);
+    if (typeof item.indispensable !== "boolean") {
+      throw new ModelContractError("understandJob", `coreRequirements「${label}」的 indispensable 必须是 boolean`);
+    }
+    return { label, indispensable: item.indispensable, evidence };
+  }).slice(0, 16);
+}
+
+function understandingHiddenRisks(value) {
+  return list(value).map((risk) => {
+    if (!risk || typeof risk !== "object" || Array.isArray(risk)) {
+      throw new ModelContractError("understandJob", "hiddenRisks 必须是 {type,severity,evidence} 对象数组");
+    }
+    const type = text(risk.type);
+    const evidence = text(risk.evidence);
+    if (!type || !evidence) throw new ModelContractError("understandJob", "hiddenRisks 每项必须有非空 type 和 evidence");
+    if (!["low", "medium", "high"].includes(risk.severity)) {
+      throw new ModelContractError("understandJob", `hiddenRisks「${type}」的 severity 必须是 low/medium/high`);
+    }
+    return { type, severity: risk.severity, evidence };
+  }).slice(0, 8);
+}
+
+function normalizeJobQuality(value, kind) {
   const quality = object(value);
-  // matchJob 的岗位质量直接影响投递决策：缺失或非法 level 必须触发契约修复，不得静默按 normal 放行。
-  // understandJob 的岗位质量只是 matchJob 的参考输入，保持缺省 normal。
-  if (kind && !JOB_QUALITY_LEVELS.includes(quality.level)) {
+  // 岗位质量影响投递决策：缺失或非法 level 必须触发契约修复，不得静默按 normal 放行。
+  if (!JOB_QUALITY_LEVELS.includes(quality.level)) {
     throw new ModelContractError(kind, `jobQuality.level 必须是 ${JOB_QUALITY_LEVELS.join("/")} 之一`);
   }
-  const level = JOB_QUALITY_LEVELS.includes(quality.level) ? quality.level : "normal";
   const concerns = list(quality.concerns).map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-    return { type: text(item.type), evidence: text(item.evidence) };
-  }).filter((item) => item && (item.type || item.evidence)).slice(0, 8);
-  return { level, concerns };
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError(kind, "jobQuality.concerns 必须是 {type,evidence} 对象数组");
+    }
+    const type = text(item.type);
+    const evidence = text(item.evidence);
+    if (!type || !evidence) throw new ModelContractError(kind, "jobQuality.concerns 每项必须有非空 type 和 evidence");
+    return { type, evidence };
+  }).slice(0, 8);
+  return { level: quality.level, concerns };
 }
 
 function normalizeRequirementMatches(value) {
@@ -118,14 +156,16 @@ function normalizeRequirementMatches(value) {
     if (!REQUIREMENT_MATCH_STATES.includes(item.state)) {
       throw new ModelContractError("matchJob", `requirementMatches.state 只接受 ${REQUIREMENT_MATCH_STATES.join("/")}，收到「${text(item.state) || "空值"}」`);
     }
+    const requirement = text(item.requirement);
+    if (!requirement) throw new ModelContractError("matchJob", "requirementMatches 必须给出非空 requirement，不得留空后消失");
     return {
-      requirement: text(item.requirement),
+      requirement,
       state: item.state,
       indispensable: Boolean(item.indispensable),
       jdEvidence: text(item.jdEvidence),
       resumeEvidence: text(item.resumeEvidence)
     };
-  }).filter((item) => item.requirement).slice(0, 16);
+  }).slice(0, 16);
 }
 
 function normalizeStructuredHardBlockers(value) {
@@ -148,7 +188,35 @@ function normalizeStructuredHardBlockers(value) {
   }).slice(0, 8);
 }
 
-function validateMatchDecision(value) {
+// MatchDecision 必须与本次 JobUnderstanding 一一核对：核心要求恰好覆盖一次，
+// 不得漏项、重复、虚构，indispensable 必须与理解一致（模型无权修改）。
+function assertRequirementCoverage(coreRequirements, requirementMatches) {
+  const counts = new Map();
+  for (const match of requirementMatches) {
+    counts.set(match.requirement, (counts.get(match.requirement) || 0) + 1);
+  }
+  for (const [name, count] of counts) {
+    if (count > 1) throw new ModelContractError("matchJob", `requirementMatches 中「${name}」重复出现，每条核心要求必须恰好匹配一次`);
+  }
+  const expectedNames = new Set(coreRequirements.map((item) => text(item.label)));
+  for (const match of requirementMatches) {
+    if (!expectedNames.has(match.requirement)) {
+      throw new ModelContractError("matchJob", `requirementMatches 包含 JobUnderstanding 中不存在的核心要求「${match.requirement}」，不得虚构`);
+    }
+  }
+  for (const requirement of coreRequirements) {
+    const label = text(requirement.label);
+    const match = requirementMatches.find((item) => item.requirement === label);
+    if (!match) {
+      throw new ModelContractError("matchJob", `requirementMatches 漏掉核心要求「${label}」，必须逐项覆盖 JobUnderstanding.coreRequirements`);
+    }
+    if (match.indispensable !== requirement.indispensable) {
+      throw new ModelContractError("matchJob", `requirementMatches「${label}」的 indispensable 必须与 JobUnderstanding 一致，模型不得修改`);
+    }
+  }
+}
+
+function validateMatchDecision(value, context = {}) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
   for (const [field, raw] of [
     ["softGaps", value.softGaps ?? value.missingPoints],
@@ -163,15 +231,27 @@ function validateMatchDecision(value) {
   const requirementMatches = normalizeRequirementMatches(value.requirementMatches);
   const jobQuality = normalizeJobQuality(value.jobQuality, "matchJob");
   const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
+  const jobUnderstanding = context?.jobUnderstanding;
+  if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
+    assertRequirementCoverage(jobUnderstanding.coreRequirements, requirementMatches);
+  }
+  // indispensable_core 阻断必须精确对应同名、state=missing 且 indispensable=true 的核心项。
   for (const blocker of hardBlockers) {
+    if (blocker.kind !== "indispensable_core") continue;
     const match = requirementMatches.find((item) => item.requirement === blocker.requirement);
-    if (match && match.state === "missing" && !match.indispensable) {
-      throw new ModelContractError("matchJob", `要求「${blocker.requirement}」缺失但并非核心必备，不能作为硬性阻断`);
+    if (!match) {
+      throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」必须对应同名核心要求`);
+    }
+    if (match.state !== "missing" || !match.indispensable) {
+      throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」只能对应 state=missing 且 indispensable=true 的核心要求`);
     }
   }
   const transferableCore = requirementMatches.some((item) => item.state === "transferable" && item.indispensable);
   if (value.recommendation === "apply") {
     // apply 要求每一条核心必备项都有直接证据；仅可迁移证据自动降 caution，其余未决状态一律触发契约修复。
+    if (!requirementMatches.length) {
+      throw new ModelContractError("matchJob", "没有可核对的核心要求时 recommendation 不能为 apply，应使用 review");
+    }
     const unresolvedCore = requirementMatches.find((item) => item.indispensable && !["matched", "transferable"].includes(item.state));
     if (unresolvedCore) {
       throw new ModelContractError("matchJob", `核心必备要求「${unresolvedCore.requirement}」状态为 ${unresolvedCore.state}，recommendation 不能为 apply`);

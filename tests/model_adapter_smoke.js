@@ -60,6 +60,7 @@ server.listen(0, "127.0.0.1", async () => {
     await retryAdapter.matchJob({ candidateProfile: {}, candidateMatchCard: { targetDirections: ["电商运营"] }, jobUnderstanding: {}, jobEvidence: {} });
     const matchPrompt = payloads.at(-1).messages[0].content;
     assert(matchPrompt.includes("requirementMatches"));
+    assert(matchPrompt.includes("为 jobUnderstanding.coreRequirements 的每一项输出一条 requirementMatches"), "matchJob prompt 必须要求逐项覆盖核心要求");
     assert(matchPrompt.includes("candidateMatchCard"));
     assert(matchPrompt.includes("indispensable_core"));
     assert(matchPrompt.includes('"hardBlockers":[]'));
@@ -72,6 +73,8 @@ server.listen(0, "127.0.0.1", async () => {
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
     assert(understandPrompt.includes("coreResponsibilities"));
+    assert(understandPrompt.includes("coreRequirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求结构化核心要求对象");
+    assert(understandPrompt.includes("jobQuality.level 只能是 normal、caution 或 risk"), "understandJob prompt 必须限定岗位质量枚举");
     assert(understandPrompt.includes("responsibility_sprawl"));
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     console.log("model_adapter_smoke ok");
