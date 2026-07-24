@@ -1,4 +1,6 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 const { openDb, saveProfileAnalysis } = require("../src/core/storage");
 const {
   createMatchingCardDraft,
@@ -126,7 +128,19 @@ try {
     "不同卡内容必须产生不同修订指纹"
   );
 
+  assertDocumentationCoversMatchingCardWorkflow();
+
   console.log("matching_card_smoke ok");
 } finally {
   db.close();
+}
+
+function assertDocumentationCoversMatchingCardWorkflow() {
+  const root = path.resolve(__dirname, "..");
+  const productSpec = fs.readFileSync(path.join(root, "docs", "product_spec.md"), "utf8");
+  const dailyWorkflow = fs.readFileSync(path.join(root, "docs", "daily_workflow.md"), "utf8");
+  const combined = `${productSpec}\n${dailyWorkflow}`;
+  for (const phrase of ["匹配偏好卡", "谨慎投递", "岗位质量", "不访问真实 BOSS"]) {
+    assert(combined.includes(phrase), `产品文档必须包含「${phrase}」说明，避免文档与功能脱节`);
+  }
 }
