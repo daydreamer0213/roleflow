@@ -2356,8 +2356,18 @@ function confirmMatchingCard(db, { profileId, cardId }) {
   const now = nowIso();
   db.exec("BEGIN IMMEDIATE");
   try {
-    const row = db.prepare("SELECT id FROM candidate_matching_cards WHERE id = ? AND profile_id = ?").get(target, profile);
+    const row = db.prepare("SELECT id, status FROM candidate_matching_cards WHERE id = ? AND profile_id = ?").get(target, profile);
     if (!row) throw new Error("matching card not found");
+    if (row.status === "confirmed") {
+      // 目标已是当前活动确认卡：幂等 no-op，不产生任何写入。
+      db.exec("COMMIT");
+      return getMatchingCard(db, target);
+    }
+    if (row.status !== "draft") {
+      const error = new Error("只有草稿卡可以确认；已被替换的历史卡不能重新激活。");
+      error.code = "MATCHING_CARD_NOT_CONFIRMABLE";
+      throw error;
+    }
     db.prepare("UPDATE candidate_matching_cards SET status = 'superseded', updated_at = ? WHERE profile_id = ? AND status = 'confirmed'").run(now, profile);
     db.prepare("UPDATE candidate_matching_cards SET status = 'confirmed', confirmed_at = ?, updated_at = ? WHERE id = ?").run(now, now, target);
     db.exec("COMMIT");

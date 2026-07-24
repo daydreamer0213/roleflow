@@ -335,6 +335,22 @@ const generatedReports = [];
   assert.strictEqual(getCandidateMatchingContext(db, profileId)?.matchingCardId, changedCardId);
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, true, "确认新卡后旧方案必须标记为待确认");
 
+  // 已被替换的历史卡：不得重新确认，页面必须标明历史状态而不是冒充当前依据。
+  const reconfirmOld = await fetch(`${baseUrl}/api/match-card/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ profileId: String(profileId), cardId: String(cardId) }),
+    redirect: "manual"
+  });
+  assert.notStrictEqual(reconfirmOld.status, 303, "已被替换的历史卡不得重新确认成功");
+  assert.strictEqual(getCandidateMatchingContext(db, profileId)?.matchingCardId, changedCardId, "拒绝重新激活历史卡后活动卡不得变化");
+  assert.strictEqual(listMatchingCards(db, profileId).filter((item) => item.status === "confirmed").length, 1, "任何时刻只能有一张已确认卡");
+  const supersededCardPage = await fetch(`${baseUrl}/match-card?profileId=${profileId}&cardId=${cardId}`);
+  const supersededCardHtml = await supersededCardPage.text();
+  assert.strictEqual(supersededCardPage.status, 200);
+  assert(supersededCardHtml.includes("已被替换"), "历史卡页面必须标明已被替换");
+  assert(!supersededCardHtml.includes("（已确认）"), "历史卡页面不得显示为已确认或当前匹配依据");
+
   const staleScan = runCliScan(planId);
   assert.notStrictEqual(staleScan.status, 0, "stale plan must refuse to scan until saved again");
   assert(`${staleScan.stderr}\n${staleScan.stdout}`.includes("画像已更新"));

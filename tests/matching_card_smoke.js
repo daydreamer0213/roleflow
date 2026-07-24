@@ -104,6 +104,25 @@ try {
   assert.deepStrictEqual(getCandidateMatchingContext(db, profileId).matchingCard.userNotes, ["排除纯销售方向"]);
   assert.strictEqual(listMatchingCards(db, profileId).length, 3, "历史卡版本必须全部保留");
 
+  // 已被替换的历史卡不得重新激活；重复确认当前活动卡必须是幂等 no-op。
+  assert.throws(
+    () => confirmMatchingCard(db, { profileId, cardId: first.id }),
+    (error) => error.code === "MATCHING_CARD_NOT_CONFIRMABLE",
+    "superseded 卡重新确认必须被明确拒绝"
+  );
+  assert.strictEqual(getActiveMatchingCard(db, profileId).id, revision.id, "拒绝重新激活历史卡后活动卡不得变化");
+  assert.strictEqual(getMatchingCard(db, first.id).status, "superseded", "被拒绝的历史卡状态不得变化");
+  assert.strictEqual(
+    listMatchingCards(db, profileId).filter((item) => item.status === "confirmed").length,
+    1,
+    "任何时刻只能有一张已确认卡"
+  );
+  const idempotent = confirmMatchingCard(db, { profileId, cardId: revision.id });
+  assert.strictEqual(idempotent.id, revision.id);
+  assert.strictEqual(idempotent.status, "confirmed");
+  assert.strictEqual(getActiveMatchingCard(db, profileId).id, revision.id, "重复确认当前活动卡必须是幂等 no-op");
+  assert.strictEqual(listMatchingCards(db, profileId).length, 3, "幂等确认不得新增记录");
+
   assert.throws(
     () => normalizeMatchingCard({ targetDirections: ["电商运营"], strongEvidence: [{ label: "虚构", evidence: "" }] }),
     (error) => error.code === "MATCHING_CARD_INVALID"

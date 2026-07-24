@@ -445,9 +445,8 @@ function renderMatchCardPage({ db, searchParams }) {
   if (card?.status === "draft" && activeCard) notices.push(`<p class="setup-warning">新简历待确认，不会自动替换当前匹配依据。</p>`);
   const body = !card
     ? `<section class="panel"><h2>选择要确认的草稿卡</h2><p class="hint">匹配偏好卡来自你已上传的简历；选择一张草稿卡检查并确认。</p><p>${draftLinks || "当前没有草稿卡。"}</p></section>`
-    : card.status !== "draft"
-      ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
-      : `<section class="panel"><h2>匹配偏好卡 #${card.id}（草稿）</h2>
+    : card.status === "draft"
+      ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（草稿）</h2>
   <p class="hint">逐项核对模型从简历事实归纳的匹配依据；只有确认后，扫描和岗位匹配才会使用它。</p>
   <form class="form-stack" method="post" action="/api/match-card">
     <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
@@ -465,7 +464,10 @@ function renderMatchCardPage({ db, searchParams }) {
     <button type="submit">确认匹配偏好卡</button>
   </form>
   <p class="hint">确认后，旧的已确认卡会被替换；基于旧卡的筛选方案需要重新保存一次。</p>
-</section>`;
+</section>`
+      : card.status === "confirmed"
+        ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
+        : `<section class="panel"><h2>匹配偏好卡 #${card.id}（历史版本 · 已被替换）</h2><p class="hint">这张卡已被更新的确认卡替换，仅作历史留档，不能重新确认；当前扫描与岗位匹配不使用它。</p>${renderMatchingCardSummary(card.card)}</section>`;
   return renderPage("匹配偏好卡", `<main>
   <nav>${navLinks(`/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`)}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
   <h1>匹配偏好卡</h1>
