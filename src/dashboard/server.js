@@ -40,6 +40,7 @@ const {
   updateCandidateProfile,
   saveCandidateResumeVersion,
   listCandidateResumeVersions,
+  listMatchingResumeVersions,
   listProfileVersions,
   recordResumeParseAttempt,
   listResumeParseAttempts,
@@ -237,7 +238,7 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     if (!jobs.length) throw new Error(bulk ? "当前没有待重试的语义分析岗位。" : "岗位不存在或不属于当前筛选方案。");
     const baseConfigs = loadConfigs(root);
     baseConfigs.model = modelConfig;
-    const configs = profileToRuntimeConfigs(baseConfigs, matchingContext.candidateProfile, plan.plan, listCandidateResumeVersions(db, plan.profileId), matchingContext.matchingCard);
+    const configs = profileToRuntimeConfigs(baseConfigs, matchingContext.candidateProfile, plan.plan, listMatchingResumeVersions(db, plan.profileId), matchingContext.matchingCard);
     const analyze = createJobAnalysisRunner(configs, plan.plan.keywords || [], { db, logger });
     const batchId = createBatch(db, jobs[0].source || "boss", bulk ? "analysis-retry-bulk" : "analysis-retry", bulk
       ? `analysis-retry-bulk:plan:${planId}:jobs:${jobs.length}`
@@ -762,7 +763,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       loadConfigs(root),
       matchingContext?.candidateProfile || profile.profile,
       plan,
-      listCandidateResumeVersions(db, profileId),
+      listMatchingResumeVersions(db, profileId),
       matchingContext?.matchingCard || null
     );
     const rescore = rescorePlanObservations(db, { planId, configs: runtimeConfigs });

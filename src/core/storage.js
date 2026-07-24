@@ -2177,6 +2177,19 @@ function listCandidateResumeVersions(db, profileId) {
   }));
 }
 
+// 运行时匹配专用的安全简历版本入口：绑定到待确认（draft）匹配卡的简历版本不得进入模型输入，
+// 新卡确认后自然恢复参与；用户主动管理、未绑定待确认卡的活动版本始终保留。
+// 只使用 resumeDocumentId 与卡状态等结构化关联，不读取或比较简历正文。
+function listMatchingResumeVersions(db, profileId) {
+  const versions = listCandidateResumeVersions(db, profileId);
+  const draftDocumentIds = new Set(db.prepare(`
+    SELECT DISTINCT resume_document_id FROM candidate_matching_cards
+    WHERE profile_id = ? AND status = 'draft' AND resume_document_id IS NOT NULL
+  `).all(Number(profileId)).map((row) => Number(row.resume_document_id)));
+  if (!draftDocumentIds.size) return versions;
+  return versions.filter((version) => !version.resumeDocumentId || !draftDocumentIds.has(Number(version.resumeDocumentId)));
+}
+
 function recordResumeParseAttempt(db, { profileId = null, document = null, fileName = "resume", format = "", inputBytes = 0, error = null }) {
   const diagnostics = document?.diagnostics || error?.details?.diagnostics || {};
   db.prepare(`INSERT INTO resume_parse_attempts(
@@ -3584,6 +3597,7 @@ module.exports = {
   updateCandidateProfile,
   saveCandidateResumeVersion,
   listCandidateResumeVersions,
+  listMatchingResumeVersions,
   recordResumeParseAttempt,
   listResumeParseAttempts,
   saveSearchPlan,

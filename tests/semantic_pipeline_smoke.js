@@ -38,6 +38,7 @@ const db = openDb(dbPath);
     genericPolicySmoke();
     staleAnalysisSmoke();
     matchingCardStaleSmoke();
+    runtimeResumeVersionEntrySmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -50,6 +51,16 @@ const db = openDb(dbPath);
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+function runtimeResumeVersionEntrySmoke() {
+  // 源码级约束：扫描、补读、工作流、分析重试、reassess、rescore 必须共用安全简历版本入口；
+  // 未过滤的完整列表只允许出现在沟通草稿与简历版本管理界面。
+  for (const relative of ["src/cli.js", "src/dashboard/server.js"]) {
+    const source = fs.readFileSync(path.join(root, relative), "utf8");
+    assert(source.includes("listMatchingResumeVersions"), `${relative} 必须使用安全简历版本入口`);
+    assert(!/profileToRuntimeConfigs\([^;]*listCandidateResumeVersions/.test(source), `${relative} 的运行时 configs 不得直接使用未过滤的简历版本列表`);
+  }
+}
 
 async function stableUnderstandingAndCandidateMatchSmoke() {
   const calls = { understandJob: 0, matchJob: 0, analyzeResume: 0, draftCommunication: 0 };

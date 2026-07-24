@@ -13,10 +13,14 @@ const {
   getActiveMatchingCard,
   listMatchingCards,
   listCandidateResumeVersions,
+  listMatchingResumeVersions,
+  saveCandidateResumeVersion,
   listResumeParseAttempts,
   listReportJobs
 } = require("../src/core/storage");
 const { matchingCardRevision } = require("../src/core/matching_card");
+const { loadConfigs } = require("../src/config");
+const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -300,7 +304,7 @@ const generatedReports = [];
   assert.strictEqual(Number(new URL(`${baseUrl}${legacyReupload.headers.get("location")}`).searchParams.get("cardId")), legacyCardId, "deterministic draft must be created only once");
 
   // 上传不同内容：新卡为草稿，旧确认卡继续作为扫描依据，直到用户确认新卡。
-  const changedUpload = await uploadResumeText(baseUrl, `${sampleResumeText}\n补充：负责企业知识库二期，引入重排与评测。`, profileId);
+  const changedUpload = await uploadResumeText(baseUrl, `${sampleResumeText}\n补充：负责企业知识库二期，引入重排与评测，掌握 SecretNewSkill 技能。`, profileId);
   assert.strictEqual(changedUpload.status, 303);
   const changedLocation = changedUpload.headers.get("location");
   assert(changedLocation?.startsWith(`/match-card?profileId=${profileId}`), `new content must open a new draft card, got ${changedLocation}`);
@@ -325,6 +329,28 @@ const generatedReports = [];
   assert(changedCardHtml.includes("会用于岗位匹配"), "用户补充偏好说明必须与模型语义一致");
   assert(changedCardHtml.includes("不能代替简历证据"), "用户补充偏好不得被描述成简历证据");
   assert(!changedCardHtml.includes("只给自己看"), "不得再把参与匹配的 userNotes 描述成只给自己看");
+
+  // 未确认的新简历版本不得进入模型输入：草稿卡绑定的版本被安全入口排除，确认后才恢复参与。
+  const changedDocumentId = changedCard?.resumeDocumentId;
+  assert(changedDocumentId, "新草稿卡必须绑定新简历文档");
+  const allVersions = listCandidateResumeVersions(db, profileId);
+  assert(allVersions.some((version) => Number(version.resumeDocumentId) === Number(changedDocumentId)), "管理视图仍保留全部活动简历版本");
+  const matchingVersions = listMatchingResumeVersions(db, profileId);
+  assert(!matchingVersions.some((version) => Number(version.resumeDocumentId) === Number(changedDocumentId)), "草稿卡绑定的简历版本不得进入匹配输入");
+  assert(!matchingVersions.some((version) => (version.resumeTextExcerpt || "").includes("SecretNewSkill")), "未确认简历正文不得进入匹配输入");
+  const oldMatchingContext = getCandidateMatchingContext(db, profileId);
+  const runtimeConfigs = profileToRuntimeConfigs(loadConfigs(root), oldMatchingContext.candidateProfile, getSearchPlan(db, planId).plan, matchingVersions, oldMatchingContext.matchingCard);
+  assert(!JSON.stringify(runtimeConfigs.resumeVersions || {}).includes("SecretNewSkill"), "运行时简历版本输入不得包含未确认内容");
+  assert(!JSON.stringify(runtimeConfigs.candidateProfile || {}).includes("SecretNewSkill"), "运行时候选人画像必须是旧确认卡对应版本");
+  assert(!JSON.stringify(runtimeConfigs.matchingCard || {}).includes("SecretNewSkill"), "运行时匹配卡必须仍是旧确认卡");
+
+  // 用户主动管理、未绑定待确认卡的活动投递版简历始终可以进入输入。
+  saveCandidateResumeVersion(db, {
+    profileId,
+    document: { originalFileName: "user-managed.txt", format: "text", contentHash: "user-managed-v1", text: "用户主动维护的投递版简历，聚焦店铺复盘。" },
+    version: { name: "投递版-店铺运营", targetRoles: ["电商运营"], keywords: ["店铺运营"], primaryProjects: ["店铺投放复盘"], summary: "用户主动管理" }
+  });
+  assert(listMatchingResumeVersions(db, profileId).some((version) => version.name === "投递版-店铺运营"), "用户主动管理的活动版本不得被误排除");
 
   const oldContextScan = runCliScan(planId);
   assert.strictEqual(oldContextScan.status, 0, oldContextScan.stderr || oldContextScan.stdout);
@@ -389,6 +415,11 @@ const generatedReports = [];
   });
   assert.strictEqual(resaved.status, 303);
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应重新绑定新确认卡的画像版本");
+
+  // 确认新卡并保存方案后，新简历版本恢复参与匹配输入。
+  const confirmedVersions = listMatchingResumeVersions(db, profileId);
+  assert(confirmedVersions.some((version) => Number(version.resumeDocumentId) === Number(changedDocumentId)), "确认新卡后对应简历版本必须恢复参与");
+  assert(confirmedVersions.some((version) => (version.resumeTextExcerpt || "").includes("SecretNewSkill")), "确认后新简历内容可以进入匹配输入");
 
   const finalScan = runCliScan(planId);
   assert.strictEqual(finalScan.status, 0, finalScan.stderr || finalScan.stdout);
