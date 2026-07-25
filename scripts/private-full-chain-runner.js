@@ -13,6 +13,13 @@ const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v1";
 const SAFE_SEMANTIC_STATUSES = new Set(["complete", "partial", "pending", "failed", "stale", "blocked", "refresh", "rule_only"]);
 const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending", "hard_boundary", "source_refresh"]);
 const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
+const PRIVATE_JOB_KEYS = [
+  "id", "sourceId", "keyword", "title", "company", "location", "salary",
+  "url", "description", "sourceContentHash", "capturedAt"
+];
+const PRIVATE_LABEL_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
+const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
+const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
 const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
@@ -570,6 +577,7 @@ function loadProductionModules(mode) {
   }
   const { profileToRuntimeConfigs } = require("../src/core/search_plan");
   const { createJobAnalysisRunner } = require("../src/core/job_analysis");
+  const { decisionHardBlockers } = require("../src/core/model_contract");
   const { scoreJob, decisionState } = require("../src/core/scoring");
   const { openDb, decisionBucket } = require("../src/core/storage");
   const { mapWithConcurrency } = require("../src/core/async_pool");
@@ -580,6 +588,7 @@ function loadProductionModules(mode) {
     createJobAnalysisRunner,
     scoreJob,
     decisionState,
+    decisionHardBlockers,
     openDb,
     decisionBucket,
     mapWithConcurrency
@@ -616,43 +625,115 @@ function privateSearchPlan(profile) {
   };
 }
 
-function confirmedProfileInput(value) {
-  const profile = value?.profile;
-  if (value?.status !== "confirmed" || value?.userConfirmed !== true || !profile || typeof profile !== "object") {
+function confirmedProfileInput(value, context) {
+  if (value?.status !== "confirmed" || value?.userConfirmed !== true || !String(value?.id || "").trim()
+    || !Number.isFinite(Date.parse(value?.confirmedAt))) {
     throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "Match live requires a user-confirmed canonical profile envelope.");
   }
-  const profileSha256 = valueSha256(profile);
-  if (value.profileSha256 !== profileSha256) {
-    throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile hash does not match its canonical profile.");
+  try {
+    return { envelope: value, ...validateProfileResultProvenance(value, context) };
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile provenance does not match this run.");
   }
-  return { envelope: value, profile, profileSha256 };
 }
 
-function confirmedCardInput(value, profileSha256) {
+function cardDraftPayload(value) {
+  const payload = { ...value };
+  delete payload.draftSha256;
+  return payload;
+}
+
+function confirmedCardInput(value, profileInput, context) {
   const card = value?.card;
+  const draft = value?.draft;
+  const currentFields = [
+    "runMode", "authorizationGatePassed", "benchmarkHarnessVersion", "runManifestSha256", "side",
+    "evaluatedCommit", "worktreeClean", "modelIdentitySha256", "resumeContentSha256",
+    "identityManifestSha256", "profileResultSha256", "profileSha256"
+  ];
+  const expectedDraftRunMode = context.injected ? "offline-test" : "live-card-draft";
+  const expectedDraftAuthorized = !context.injected;
+  let cardSha256;
+  try { cardSha256 = valueSha256(card); } catch { cardSha256 = ""; }
   if (value?.status !== "confirmed" || value?.userConfirmed !== true || !String(value?.id || "").trim()
-    || !card || typeof card !== "object" || value.profileSha256 !== profileSha256) {
+    || !Number.isFinite(Date.parse(value?.confirmedAt))
+    || !card || typeof card !== "object" || value.cardSha256 !== cardSha256
+    || currentFields.some((field) => value[field] !== profileInput.envelope[field])
+    || !hasBoundModelIdentity(value)
+    || !draft || typeof draft !== "object" || Array.isArray(draft)
+    || value.draftSha256 !== draft.draftSha256
+    || draft.draftSha256 !== valueSha256(cardDraftPayload(draft))
+    || draft.runMode !== expectedDraftRunMode
+    || draft.authorizationGatePassed !== expectedDraftAuthorized
+    || draft.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
+    || draft.runManifestSha256 !== context.runManifestSha256
+    || draft.side !== "candidate"
+    || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateCommit || "").toLowerCase()
+    || draft.worktreeClean !== true
+    || !hasBoundModelIdentity(draft)
+    || draft.modelIdentitySha256 !== value.modelIdentitySha256
+    || draft.resumeContentSha256 !== value.resumeContentSha256
+    || draft.identityManifestSha256 !== value.identityManifestSha256
+    || draft.cardSha256 !== valueSha256(draft.card)) {
     throw runnerError("PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED", "Match live requires a confirmed card whose profile hash matches the canonical profile.");
   }
-  return { envelope: value, card, cardSha256: valueSha256(card) };
+  return { envelope: value, card, cardSha256 };
+}
+
+function sameKeys(value, expected) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+}
+
+function frozenJobSourceContentHash(job) {
+  return sha256(JSON.stringify({
+    title: job.title || "",
+    company: job.company || "",
+    location: job.location || "",
+    salary: job.salary || "",
+    experience: "",
+    education: "",
+    tags: [],
+    description: job.description || ""
+  }));
 }
 
 function privateJobsAndLabels(jobsValue, labelsValue) {
   const jobs = Array.isArray(jobsValue) ? jobsValue : jobsValue?.rows;
   const labels = labelsValue?.rows;
-  if (!Array.isArray(jobs) || !jobs.length || !Array.isArray(labels) || labelsValue?.userConfirmed !== true) {
+  const labelEnvelopeKeys = ["labelsVersion", "userConfirmed", "confirmedAt", "jobsSha256", "rows"];
+  if (!Array.isArray(jobs) || !jobs.length || !Array.isArray(labels)
+    || !sameKeys(labelsValue, labelEnvelopeKeys)
+    || labelsValue.labelsVersion !== "private-real-jd-labels.v1"
+    || labelsValue.userConfirmed !== true
+    || !String(labelsValue.confirmedAt || "").trim()
+    || !Number.isFinite(Date.parse(labelsValue.confirmedAt))) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Match live requires non-empty jobs and user-confirmed labels.");
+  }
+  for (const job of jobs) {
+    if (!sameKeys(job, PRIVATE_JOB_KEYS)
+      || PRIVATE_JOB_KEYS.filter((field) => field !== "sourceContentHash").some((field) => !String(job[field] ?? "").trim())
+      || String(job.description).trim().length < 120
+      || !/^[0-9a-f]{64}$/.test(String(job.sourceContentHash || ""))
+      || job.sourceContentHash !== frozenJobSourceContentHash(job)
+      || !Number.isFinite(Date.parse(job.capturedAt))) {
+      throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Every frozen job must match the canonical JD schema, analysis length, and source content hash.");
+    }
   }
   const jobIds = jobs.map((job) => String(job?.id || "").trim());
   const labelIds = labels.map((label) => String(label?.id || "").trim());
   if (jobIds.some((id) => !id) || labelIds.some((id) => !id)
     || new Set(jobIds).size !== jobIds.length || new Set(labelIds).size !== labelIds.length
     || JSON.stringify([...jobIds].sort()) !== JSON.stringify([...labelIds].sort())
-    || labels.some((label) => !String(label?.rationale || "").trim())) {
+    || labels.some((label) => !sameKeys(label, PRIVATE_LABEL_KEYS)
+      || !String(label.rationale || "").trim()
+      || !PRIVATE_RECOMMENDATIONS.has(label.expectedRecommendation)
+      || !PRIVATE_BUCKETS.has(label.expectedBucket))) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Job and label IDs must be unique, complete, and exactly equal.");
   }
   const jobsSha256 = valueSha256(jobs);
-  if (labelsValue.jobsSha256 && labelsValue.jobsSha256 !== jobsSha256) {
+  if (!/^[0-9a-f]{64}$/.test(String(labelsValue.jobsSha256 || ""))
+    || labelsValue.jobsSha256 !== jobsSha256) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "The frozen label set does not match the frozen job set.");
   }
   return {
@@ -686,14 +767,43 @@ function readProfileLiveInputs(request, assertResumeIdentityRedacted) {
   return { redactedText, identityRaw, identity };
 }
 
-function readCardLiveInput(request) {
-  const profileResult = readJsonFile(request.profile);
-  const profile = profileResult.profile;
-  const profileSha256 = valueSha256(profile);
-  if (!profile || profileResult.profileSha256 !== profileSha256) {
-    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private profile file is incomplete or hash-mismatched.");
+function profileResultPayload(value) {
+  const payload = { ...value };
+  for (const field of ["id", "status", "userConfirmed", "confirmedAt", "profileResultSha256"]) delete payload[field];
+  return payload;
+}
+
+function validateProfileResultProvenance(value, context) {
+  const expectedRunMode = context.injected ? "offline-test" : "live-profile";
+  const expectedAuthorized = !context.injected;
+  const expectedCommit = String(context.side === "baseline"
+    ? context.manifest?.baselineCommit
+    : context.manifest?.candidateCommit || "").toLowerCase();
+  let profileSha256;
+  try { profileSha256 = valueSha256(value?.profile); } catch { profileSha256 = ""; }
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.runMode !== expectedRunMode
+    || value.authorizationGatePassed !== expectedAuthorized
+    || value.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
+    || value.runManifestSha256 !== context.runManifestSha256
+    || value.side !== context.side
+    || String(value.evaluatedCommit || "").toLowerCase() !== String(context.evaluatedCommit || "").toLowerCase()
+    || String(value.evaluatedCommit || "").toLowerCase() !== expectedCommit
+    || value.worktreeClean !== true
+    || value.profileReviewStatus !== "pending"
+    || value.profileSha256 !== profileSha256
+    || !/^[0-9a-f]{64}$/.test(String(value.resumeContentSha256 || ""))
+    || !/^[0-9a-f]{64}$/.test(String(value.identityManifestSha256 || ""))
+    || !hasBoundModelIdentity(value)
+    || value.profileResultSha256 !== valueSha256(profileResultPayload(value))) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private profile result provenance is incomplete or mismatched.");
   }
-  return { profileResult, profile, profileSha256 };
+  return { profileResult: value, profile: value.profile, profileSha256 };
+}
+
+function readCardLiveInput(request, context) {
+  const profileResult = readJsonFile(request.profile);
+  return validateProfileResultProvenance(profileResult, context);
 }
 
 function readMatchResumeAndIdentity(privateRoot, assertResumeIdentityRedacted) {
@@ -777,20 +887,39 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     : inspectLiveWorktree(request.side);
   if (!proof.commit) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Live mode requires a clean, commit-bound worktree.");
   const manifest = liveManifest(request.privateRoot, request.side, proof.commit);
+  const runManifestSha256 = valueSha256(manifest);
   const privacyValidator = request.mode === "card-live" ? null : preflightPrivacyValidator(testSeam);
   const preflight = request.mode === "profile-live"
     ? readProfileLiveInputs(request, privacyValidator)
     : request.mode === "card-live"
-      ? readCardLiveInput(request)
+      ? readCardLiveInput(request, {
+        injected: Boolean(testSeam),
+        manifest,
+        runManifestSha256,
+        side: request.side,
+        evaluatedCommit: proof.commit
+      })
       : {
-        profileInput: confirmedProfileInput(readJsonFile(request.profile)),
+        profileValue: readJsonFile(request.profile),
         cardValue: readJsonFile(request.matchingCard),
         jobsValue: readJsonFile(request.jobs),
         labelsValue: readJsonFile(request.labels),
         resume: readMatchResumeAndIdentity(request.privateRoot, privacyValidator)
       };
   if (request.mode === "match-live") {
-    preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput.profileSha256);
+    const provenanceContext = {
+      injected: Boolean(testSeam),
+      manifest,
+      runManifestSha256,
+      side: request.side,
+      evaluatedCommit: proof.commit
+    };
+    preflight.profileInput = confirmedProfileInput(preflight.profileValue, provenanceContext);
+    preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput, provenanceContext);
+    if (preflight.profileInput.envelope.resumeContentSha256 !== sha256(preflight.resume.resumeText)
+      || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
+    }
     preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue);
   }
   if (request.mode === "card-live" && request.side !== "candidate") {
@@ -809,6 +938,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }).modelConfig;
   const modelIdentity = sanitizedModelIdentity(modelConfig);
   const modelIdentitySha256 = valueSha256(modelIdentity);
+  if (request.mode === "card-live" && preflight.profileResult.modelIdentitySha256 !== modelIdentitySha256) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Card live model identity must match the bound profile result.");
+  }
+  if (request.mode === "match-live" && preflight.profileInput.envelope.modelIdentitySha256 !== modelIdentitySha256) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "Match live model identity must match the confirmed provenance chain.");
+  }
 
   if (request.mode === "profile-live") {
     const resume = {
@@ -822,6 +957,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     const result = {
       ...runAuthorizationMetadata(testSeam, "live-profile"),
       benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
+      runManifestSha256,
       side: request.side,
       evaluatedCommit: proof.commit,
       worktreeClean: true,
@@ -833,6 +969,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       profileReviewStatus: "pending",
       profile
     };
+    result.profileResultSha256 = valueSha256(result);
     writeJsonFile(path.join(request.output, "profile.json"), result);
     return result;
   }
@@ -843,6 +980,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     const result = {
       ...runAuthorizationMetadata(testSeam, "live-card-draft"),
       benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
+      runManifestSha256,
       side: request.side,
       evaluatedCommit: proof.commit,
       worktreeClean: true,
@@ -851,10 +989,13 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       resumeContentSha256: preflight.profileResult.resumeContentSha256,
       identityManifestSha256: preflight.profileResult.identityManifestSha256,
       profileSha256: preflight.profileSha256,
+      profileResultSha256: preflight.profileResult.profileResultSha256,
       status: "draft",
       userConfirmed: false,
+      cardSha256: valueSha256(normalized),
       card: normalized
     };
+    result.draftSha256 = valueSha256(result);
     writeJsonFile(path.join(request.output, "matching-card-draft.json"), result);
     return result;
   }
@@ -906,7 +1047,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
             ? (analysis.missingPoints || analysis.softGaps).length
             : 0
         },
-        hardBlocked: Boolean((analysis.hardBlockers || []).length),
+        hardBlocked: state === "blocked" || modules.decisionHardBlockers(analysis).length > 0,
         decisionState: safeEnum(state, SAFE_DECISION_STATES, "unknown"),
         errorCode: safeErrorCode(analysis.errorCode),
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
@@ -920,6 +1061,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const result = {
     ...runAuthorizationMetadata(testSeam, "live"),
     benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
+    runManifestSha256,
     side: request.side,
     evaluatedCommit: proof.commit,
     baselineBehaviorCommit: request.side === "candidate" ? manifest.baselineCommit : null,
@@ -928,10 +1070,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     identityManifestSha256: sha256(identityRaw),
     fixtureProfileId: String(profileInput.envelope.id || "confirmed-private-profile"),
     fixtureProfileSha256: profileInput.profileSha256,
+    fixtureProfileResultSha256: profileInput.envelope.profileResultSha256,
     fixtureResumeVersionsSha256: valueSha256(profileInput.profile.resumeVersions || []),
     profileReviewStatus: "confirmed",
     fixtureMatchingCardId: String(cardInput.envelope.id),
     fixtureMatchingCardSha256: cardInput.cardSha256,
+    fixtureMatchingCardDraftSha256: cardInput.envelope.draftSha256,
     matchingCardProvided: true,
     matchingCardConsumed,
     cardReviewStatus: "confirmed",
@@ -972,6 +1116,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
       || value.cardReviewStatus !== "confirmed"
       || value.matchingCardProvided !== true
       || typeof value.matchingCardConsumed !== "boolean"
+      || !/^[0-9a-f]{64}$/.test(String(value.fixtureProfileResultSha256 || ""))
       || !hasBoundModelIdentity(value)) {
       return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires strict live authorization, confirmation, side, worktree, and card-state fields.");
     }
@@ -981,8 +1126,10 @@ function comparePrivateFullChainResults(baseline, candidate) {
     "identityManifestSha256",
     "fixtureProfileSha256",
     "fixtureMatchingCardSha256",
+    "fixtureMatchingCardDraftSha256",
     "fixtureJobSetSha256",
     "fixtureLabelsSha256",
+    "runManifestSha256",
     "modelIdentitySha256"
   ]) {
     if (!samePrivateSha(baseline, candidate, field)) {
@@ -991,6 +1138,10 @@ function comparePrivateFullChainResults(baseline, candidate) {
   }
   if (baseline?.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || candidate?.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
+    || !/^[0-9a-f]{7,40}$/.test(String(baseline?.evaluatedCommit || ""))
+    || !/^[0-9a-f]{7,40}$/.test(String(candidate?.evaluatedCommit || ""))
+    || baseline.evaluatedCommit === candidate.evaluatedCommit
+    || candidate.baselineBehaviorCommit !== baseline.evaluatedCommit
   ) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires clean, confirmed, harness-bound live results.");
   }
@@ -1098,6 +1249,7 @@ module.exports = {
   preparePrivateResume,
   verifyPrivateBundle,
   initializePrivateManifest,
+  validateProfileResultProvenance,
   runPrivateFullChain,
   comparePrivateFullChainResults
 };
