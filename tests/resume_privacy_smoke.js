@@ -113,6 +113,41 @@ for (const fact of ["星河项目", "示例科技", "Python", "RAG", "2024.03-20
   assert(ordinaryFacts.text.includes(fact), `普通简历事实不得被遮盖：${fact}`);
 }
 
+const unicodeIdentity = {
+  names: ["\uFF21\uFF4C\uFF49\uFF43\uFF45\u00A0Smith"],
+  phones: ["+86 (138) 0013-8000"],
+  emails: ["Alice.Smith@Example.COM"]
+};
+const unicodePrepared = prepareResumeTextForModel([
+  "alice smith",
+  "Phone: (+86) 138 0013 8000",
+  "Email: alice.smith@example.com",
+  "\u8EAB\u4EFD\u8BC1\uFF1A11010519491231002X",
+  "\u5730\u5740\uFF1A\u4E0A\u6D77\u5E02\u6D66\u4E1C\u65B0\u533A\u793A\u4F8B\u8DEF 1 \u53F7",
+  "Company: Example Labs",
+  "Project: Example Project",
+  "Skills: Python, RAG"
+].join("\n"), { identity: unicodeIdentity, strict: true });
+for (const secret of ["alice smith", "138 0013 8000", "alice.smith@example.com", "11010519491231002X", "\u4E0A\u6D77\u5E02\u6D66\u4E1C\u65B0\u533A\u793A\u4F8B\u8DEF 1 \u53F7"]) {
+  assert(!unicodePrepared.text.includes(secret), `Unicode/PII variant must be redacted: ${secret}`);
+}
+for (const fact of ["Example Labs", "Example Project", "Python, RAG"]) {
+  assert(unicodePrepared.text.includes(fact), `non-identity resume fact must remain: ${fact}`);
+}
+for (const leakedValue of [
+  "\uFF21\uFF4C\uFF49\uFF43\uFF45\u00A0Smith",
+  "Alice Smith",
+  "(+86) 138 0013 8000",
+  "ALICE.SMITH@example.com",
+  "11010519491231002X",
+  "\u5730\u5740\uFF1A\u4E0A\u6D77\u5E02\u6D66\u4E1C\u65B0\u533A\u793A\u4F8B\u8DEF 1 \u53F7"
+]) {
+  assert.throws(
+    () => assertResumeIdentityRedacted(leakedValue, unicodeIdentity),
+    (error) => error.code === "RESUME_PRIVACY_REDACTION_FAILED"
+  );
+}
+
 (async () => {
   let analyzerFactoryCalls = 0;
   await assert.rejects(

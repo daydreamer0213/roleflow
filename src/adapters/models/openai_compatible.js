@@ -176,7 +176,7 @@ class OpenAICompatibleAdapter {
         || "";
       if (!res.ok) {
         const detail = (await res.text()).slice(0, 800);
-        const error = new Error(`模型请求失败：HTTP ${res.status} ${detail}`);
+        const error = new Error(`Model request failed (HTTP ${res.status}).`);
         error.status = res.status;
         error.providerRequestId = providerRequestId;
         error.retryable = res.status === 408 || res.status === 429 || res.status >= 500;

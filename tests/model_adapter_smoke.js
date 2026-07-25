@@ -22,6 +22,11 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: "temporary upstream error" } }));
     return;
   }
+  if (payload.model === "error-message-test") {
+    res.statusCode = 401;
+    res.end(JSON.stringify({ error: { message: "upstream body must never reach errors or observer logs" } }));
+    return;
+  }
   const content = requests === 2 ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }] : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
@@ -112,6 +117,26 @@ server.listen(0, "127.0.0.1", async () => {
       "平台愿望项不得自动升级为硬阻断"
     );
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
+    const failureAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "error-message-test",
+      maxRetries: 0,
+      logger
+    });
+    await assert.rejects(
+      () => failureAdapter.chatJson("return json", { test: true }, { kind: "failurePrivacy" }),
+      (error) => error.status === 401
+        && error.providerRequestId.startsWith("provider-request-")
+        && error.message === "Model request failed (HTTP 401)."
+        && !error.message.includes("upstream body")
+    );
+    const failureMetric = metrics.at(-1);
+    assert.strictEqual(failureMetric.event, "model_call_failed");
+    assert.strictEqual(failureMetric.data.httpStatus, 401);
+    assert(failureMetric.data.providerRequestId.startsWith("provider-request-"));
+    assert.strictEqual(failureMetric.data.errorMessage, "Model request failed (HTTP 401).");
+    assert(!JSON.stringify(failureMetric).includes("upstream body"));
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);
