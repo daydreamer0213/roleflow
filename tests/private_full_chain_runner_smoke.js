@@ -347,6 +347,10 @@ async function injectedLiveFlowSmoke(identityPath) {
     resumeText: resumePath,
     identity: identityPath
   }), authorizedEnv(), seamFor("candidate"));
+  for (const result of [profileBaseline, profileCandidate]) {
+    assert.strictEqual(result.runMode, "offline-test", "injected profile runs must never claim live authorization");
+    assert.strictEqual(result.authorizationGatePassed, false);
+  }
   assert.strictEqual(captured.resumeInputs.length, 2);
   assert.strictEqual(captured.resumeInputs[0].resume.text.includes("测试候选人"), false);
   assert.strictEqual(captured.resumeInputs[0].strictPrivacy, true);
@@ -403,6 +407,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   const draft = await runner.runPrivateFullChain(liveOptions("card-live", "candidate", {
     profile: privatePath("runs", "candidate", "profile.json")
   }), authorizedEnv(), seamFor("candidate"));
+  assert.strictEqual(draft.runMode, "offline-test", "injected card runs must never claim live authorization");
+  assert.strictEqual(draft.authorizationGatePassed, false);
   assert.strictEqual(draft.status, "draft");
   assert.strictEqual(draft.userConfirmed, false);
   assert.strictEqual(draft.profileSha256, profileCandidate.profileSha256);
@@ -457,12 +463,50 @@ async function injectedLiveFlowSmoke(identityPath) {
   );
   assert.strictEqual(captured.dbPaths.length, 0, "unconfirmed card must fail before SQLite creation");
 
-  const baseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
+  const preflightProbe = createMatchProbeBundle("preflight-before-formal-dependencies");
+  fs.writeFileSync(preflightProbe.profile, "not-json", "utf8");
+  const preflightCounts = { loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0 };
+  const preflightSeam = seamFor("candidate");
+  delete preflightSeam.baseConfigs;
+  delete preflightSeam.modelConfig;
+  preflightSeam.modules = {
+    ...preflightSeam.modules,
+    loadConfigs: () => { preflightCounts.loadConfigs += 1; return baseConfigs; },
+    resolveRuntimeModelConfig: () => {
+      preflightCounts.resolveRuntimeModelConfig += 1;
+      return { modelConfig: fakeModelConfig };
+    },
+    createJobAnalysisRunner: () => { preflightCounts.provider += 1; throw new Error("provider must not initialize"); },
+    openDb: () => { preflightCounts.openDb += 1; throw new Error("SQLite must not open"); }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: preflightProbe.root,
+      output: preflightProbe.output,
+      profile: preflightProbe.profile,
+      matchingCard: preflightProbe.card,
+      jobs: preflightProbe.jobs,
+      labels: preflightProbe.labels
+    }), authorizedEnv(), preflightSeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_INPUT_IDENTITY"
+  );
+  assert.deepStrictEqual(preflightCounts, {
+    loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0
+  }, "invalid private inputs must stop before formal config, provider, or SQLite access");
+
+  const offlineBaseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("baseline"));
-  const candidate = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+  const offlineCandidate = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("candidate"));
+  for (const result of [offlineBaseline, offlineCandidate]) {
+    assert.strictEqual(result.runMode, "offline-test", "injected match runs must never claim live authorization");
+    assert.strictEqual(result.authorizationGatePassed, false);
+  }
+  assert.strictEqual(runner.comparePrivateFullChainResults(offlineBaseline, offlineCandidate).code, "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY");
+  const baseline = { ...offlineBaseline, runMode: "live", authorizationGatePassed: true };
+  const candidate = { ...offlineCandidate, runMode: "live", authorizationGatePassed: true };
   assert.deepStrictEqual(captured.fifthCardBySide.baseline, confirmedCard);
   assert.deepStrictEqual(captured.fifthCardBySide.candidate, confirmedCard);
   assert.strictEqual(baseline.matchingCardProvided, true);
@@ -711,6 +755,23 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(!fs.existsSync(escapingMarkdownReport), "an escaping Markdown alias must not create JSON");
   assert.strictEqual(fs.readFileSync(externalMarkdownSentinel, "utf8"), "escaping markdown sentinel");
 
+  const opaqueFailureBundle = privatePath("cli-opaque-failure");
+  const opaqueBaseline = path.join(opaqueFailureBundle, "runs", "baseline", "match-result.json");
+  const opaqueCandidate = path.join(opaqueFailureBundle, "runs", "candidate", "match-result.json");
+  const opaqueReport = path.join(opaqueFailureBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(opaqueBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(opaqueCandidate), { recursive: true });
+  fs.writeFileSync(opaqueBaseline, "upstream private body: do-not-disclose", "utf8");
+  fs.writeFileSync(opaqueCandidate, "upstream private body: do-not-disclose", "utf8");
+  const opaqueCli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", opaqueBaseline, "--candidate", opaqueCandidate, "--report", opaqueReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
+  const opaqueOutput = `${opaqueCli.stdout}\n${opaqueCli.stderr}`;
+  assert.notStrictEqual(opaqueCli.status, 0);
+  assert.match(opaqueOutput, /\[PRIVATE_FULL_CHAIN_FAILURE\] The private full-chain runner failed safely\./);
+  assert(!opaqueOutput.includes("upstream private body"), "CLI must not disclose unknown upstream errors");
+
   const rejectedCandidate = structuredClone(candidate);
   Object.assign(rejectedCandidate.rows[0], {
     actualRecommendation: "caution",
@@ -849,10 +910,6 @@ async function main() {
     await withoutRepositoryModelSettings(() => injectedLiveFlowSmoke(identityPath));
 
     if (!candidateWorktreeIsClean()) {
-      await assert.rejects(
-        () => runner.preparePrivateResume(gateOptions({ pdf: pdfPath, identity: identityPath, output: privatePath("identity-from-file"), identityValue: { names: [], phones: [], emails: [] } }), authorizedEnv()),
-        (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY"
-      );
       console.log("private_full_chain_runner_smoke offline gates ok (public prepare deferred until clean worktree)");
       return;
     }

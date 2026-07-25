@@ -28,7 +28,7 @@ const PARSE_REPORT_KEYS = [
 
 function fail(code, message) { return { ok: false, code, message }; }
 function runnerError(code, message, statusCode = 400) {
-  const error = Object.assign(new Error(message), { code, statusCode });
+  const error = Object.assign(new Error(message), { code, statusCode, privateFullChainSafeError: true });
   return error;
 }
 function sha256(value) { return crypto.createHash("sha256").update(value).digest("hex"); }
@@ -664,6 +664,80 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
   };
 }
 
+function readProfileLiveInputs(request, assertResumeIdentityRedacted) {
+  let redactedText;
+  let identityRaw;
+  let identity;
+  try {
+    redactedText = fs.readFileSync(request.resumeText, "utf8");
+    identityRaw = fs.readFileSync(request.identity, "utf8");
+    identity = JSON.parse(identityRaw);
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The redacted resume or private identity manifest is invalid.");
+  }
+  if (!checkIdentityManifestShape(identity)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private identity manifest has an invalid schema.");
+  }
+  try {
+    assertResumeIdentityRedacted(redactedText, identity);
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Profile live requires identity-redacted resume text.");
+  }
+  return { redactedText, identityRaw, identity };
+}
+
+function readCardLiveInput(request) {
+  const profileResult = readJsonFile(request.profile);
+  const profile = profileResult.profile;
+  const profileSha256 = valueSha256(profile);
+  if (!profile || profileResult.profileSha256 !== profileSha256) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private profile file is incomplete or hash-mismatched.");
+  }
+  return { profileResult, profile, profileSha256 };
+}
+
+function readMatchResumeAndIdentity(privateRoot, assertResumeIdentityRedacted) {
+  let resumeText;
+  let identityRaw;
+  try {
+    resumeText = fs.readFileSync(path.join(privateRoot, "input", "resume.redacted.txt"), "utf8");
+    identityRaw = fs.readFileSync(path.join(privateRoot, "identity.private.json"), "utf8");
+  } catch {
+    try {
+      identityRaw = fs.readFileSync(path.join(privateRoot, "input", "identity.private.json"), "utf8");
+      resumeText = fs.readFileSync(path.join(privateRoot, "input", "resume.redacted.txt"), "utf8");
+    } catch {
+      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Match live cannot verify the redacted resume and identity hashes.");
+    }
+  }
+  let identity;
+  try { identity = JSON.parse(identityRaw); } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Match live cannot verify the redacted resume and identity hashes.");
+  }
+  if (!checkIdentityManifestShape(identity)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Match live cannot verify the redacted resume and identity hashes.");
+  }
+  try {
+    assertResumeIdentityRedacted(resumeText, identity);
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Match live cannot verify the redacted resume and identity hashes.");
+  }
+  return { resumeText, identityRaw };
+}
+
+function preflightPrivacyValidator(testSeam) {
+  if (typeof testSeam?.modules?.assertResumeIdentityRedacted === "function") {
+    return testSeam.modules.assertResumeIdentityRedacted;
+  }
+  return require("../src/core/resume_privacy").assertResumeIdentityRedacted;
+}
+
+function runAuthorizationMetadata(testSeam, liveRunMode) {
+  return testSeam
+    ? { runMode: "offline-test", authorizationGatePassed: false }
+    : { runMode: liveRunMode, authorizationGatePassed: true };
+}
+
 function ruleBlockedAnalysis() {
   return {
     provider: "rule-gate",
@@ -702,6 +776,23 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     ? { clean: true, commit: request.evaluatedCommit }
     : inspectLiveWorktree(request.side);
   if (!proof.commit) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Live mode requires a clean, commit-bound worktree.");
+  const manifest = liveManifest(request.privateRoot, request.side, proof.commit);
+  const privacyValidator = request.mode === "card-live" ? null : preflightPrivacyValidator(testSeam);
+  const preflight = request.mode === "profile-live"
+    ? readProfileLiveInputs(request, privacyValidator)
+    : request.mode === "card-live"
+      ? readCardLiveInput(request)
+      : {
+        profileInput: confirmedProfileInput(readJsonFile(request.profile)),
+        cardValue: readJsonFile(request.matchingCard),
+        jobsValue: readJsonFile(request.jobs),
+        labelsValue: readJsonFile(request.labels),
+        resume: readMatchResumeAndIdentity(request.privateRoot, privacyValidator)
+      };
+  if (request.mode === "match-live") {
+    preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput.profileSha256);
+    preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue);
+  }
   if (request.mode === "card-live" && request.side !== "candidate") {
     throw runnerError("PRIVATE_FULL_CHAIN_CARD_UNSUPPORTED", "The baseline product does not support matching-card generation.");
   }
@@ -718,38 +809,18 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }).modelConfig;
   const modelIdentity = sanitizedModelIdentity(modelConfig);
   const modelIdentitySha256 = valueSha256(modelIdentity);
-  const manifest = liveManifest(request.privateRoot, request.side, proof.commit);
 
   if (request.mode === "profile-live") {
-    let redactedText;
-    let identityRaw;
-    let identity;
-    try {
-      redactedText = fs.readFileSync(request.resumeText, "utf8");
-      identityRaw = fs.readFileSync(request.identity, "utf8");
-      identity = JSON.parse(identityRaw);
-    } catch {
-      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The redacted resume or private identity manifest is invalid.");
-    }
-    if (!checkIdentityManifestShape(identity)) {
-      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private identity manifest has an invalid schema.");
-    }
-    try {
-      modules.assertResumeIdentityRedacted(redactedText, identity);
-    } catch {
-      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Profile live requires identity-redacted resume text.");
-    }
     const resume = {
       originalFileName: "private-resume.redacted.txt",
       format: "text",
-      text: redactedText,
-      contentHash: sha256(redactedText),
+      text: preflight.redactedText,
+      contentHash: sha256(preflight.redactedText),
       diagnostics: { extractionMethod: "private_redacted_text" }
     };
-    const profile = await modules.analyzeResumeProfile({ modelConfig, resume, identity, strictPrivacy: true });
+    const profile = await modules.analyzeResumeProfile({ modelConfig, resume, identity: preflight.identity, strictPrivacy: true });
     const result = {
-      runMode: "live-profile",
-      authorizationGatePassed: true,
+      ...runAuthorizationMetadata(testSeam, "live-profile"),
       benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
       side: request.side,
       evaluatedCommit: proof.commit,
@@ -757,7 +828,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       modelIdentity,
       modelIdentitySha256,
       resumeContentSha256: resume.contentHash,
-      identityManifestSha256: sha256(identityRaw),
+      identityManifestSha256: sha256(preflight.identityRaw),
       profileSha256: valueSha256(profile),
       profileReviewStatus: "pending",
       profile
@@ -767,26 +838,19 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }
 
   if (request.mode === "card-live") {
-    const profileResult = readJsonFile(request.profile);
-    const profile = profileResult.profile;
-    const profileSha256 = valueSha256(profile);
-    if (!profile || profileResult.profileSha256 !== profileSha256) {
-      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private profile file is incomplete or hash-mismatched.");
-    }
-    const card = await modules.buildCandidateMatchCard({ modelConfig, profile });
+    const card = await modules.buildCandidateMatchCard({ modelConfig, profile: preflight.profile });
     const normalized = modules.normalizeMatchingCard(card, { source: "model" });
     const result = {
-      runMode: "live-card-draft",
-      authorizationGatePassed: true,
+      ...runAuthorizationMetadata(testSeam, "live-card-draft"),
       benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
       side: request.side,
       evaluatedCommit: proof.commit,
       worktreeClean: true,
       modelIdentity,
       modelIdentitySha256,
-      resumeContentSha256: profileResult.resumeContentSha256,
-      identityManifestSha256: profileResult.identityManifestSha256,
-      profileSha256,
+      resumeContentSha256: preflight.profileResult.resumeContentSha256,
+      identityManifestSha256: preflight.profileResult.identityManifestSha256,
+      profileSha256: preflight.profileSha256,
       status: "draft",
       userConfirmed: false,
       card: normalized
@@ -795,22 +859,8 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     return result;
   }
 
-  const profileInput = confirmedProfileInput(readJsonFile(request.profile));
-  const cardInput = confirmedCardInput(readJsonFile(request.matchingCard), profileInput.profileSha256);
-  const fixture = privateJobsAndLabels(readJsonFile(request.jobs), readJsonFile(request.labels));
-  let resumeText;
-  let identityRaw;
-  try {
-    resumeText = fs.readFileSync(path.join(request.privateRoot, "input", "resume.redacted.txt"), "utf8");
-    identityRaw = fs.readFileSync(path.join(request.privateRoot, "identity.private.json"), "utf8");
-  } catch {
-    try {
-      identityRaw = fs.readFileSync(path.join(request.privateRoot, "input", "identity.private.json"), "utf8");
-      resumeText = fs.readFileSync(path.join(request.privateRoot, "input", "resume.redacted.txt"), "utf8");
-    } catch {
-      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Match live cannot verify the redacted resume and identity hashes.");
-    }
-  }
+  const { profileInput, cardInput, fixture } = preflight;
+  const { resumeText, identityRaw } = preflight.resume;
   const searchPlan = privateSearchPlan(profileInput.profile);
   const runtimeBase = { ...base, model: modelConfig, candidateProfile: profileInput.profile };
   const configs = modules.profileToRuntimeConfigs(
@@ -868,8 +918,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const derived = deriveBenchmarkMetrics(rows);
   if (!derived.ok) throw runnerError(derived.code, derived.message);
   const result = {
-    runMode: "live",
-    authorizationGatePassed: true,
+    ...runAuthorizationMetadata(testSeam, "live"),
     benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
     side: request.side,
     evaluatedCommit: proof.commit,
@@ -1034,7 +1083,15 @@ async function main() {
   return runPrivateFullChain(options, process.env);
 }
 
-if (require.main === module) main().catch((error) => { console.error(`[${error.code || "PRIVATE_FULL_CHAIN_FAILURE"}] ${error.message}`); process.exitCode = 1; });
+function safeCliFailure(error) {
+  if (error?.privateFullChainSafeError === true && typeof error.code === "string") {
+    return `[${error.code}] ${error.message}`;
+  }
+  const code = SAFE_ERROR_CODES.has(String(error?.code || "")) ? error.code : "PRIVATE_FULL_CHAIN_FAILURE";
+  return `[${code}] The private full-chain runner failed safely.`;
+}
+
+if (require.main === module) main().catch((error) => { console.error(safeCliFailure(error)); process.exitCode = 1; });
 
 module.exports = {
   validatePrivateFullChainRequest,
