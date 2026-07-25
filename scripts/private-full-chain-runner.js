@@ -292,7 +292,6 @@ function orderedSections(text, assessResumeText) {
 
 async function preparePrivateResume(options, env) {
   const opts = { ...(options || {}) };
-  delete opts.identityValue;
   delete opts.worktreeClean;
   delete opts.evaluatedCommit;
   delete opts.gitProof;
