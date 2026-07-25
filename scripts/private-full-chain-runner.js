@@ -203,7 +203,8 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
     const candidate = isLocalAbsolutePath(opts.candidateWorktree) ? path.resolve(String(opts.candidateWorktree)) : null;
     const output = checkPrivateArtifact(opts.output, root.resolved, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
     if (!baseline.ok) return baseline;
-    if (!candidate || !samePath(candidate, path.resolve(FIXED_CANDIDATE_WORKTREE)) || samePath(baseline.resolved, candidate)) {
+    if (!candidate || !samePath(candidate, path.resolve(FIXED_CANDIDATE_WORKTREE))
+      || samePath(baseline.resolved, root.resolved) || samePath(baseline.resolved, candidate)) {
       return fail("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "Manifest baseline must be a distinct private worktree and candidate must be the fixed candidate worktree.");
     }
     if (!output.ok) return output;

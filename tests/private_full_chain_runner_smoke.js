@@ -158,6 +158,10 @@ async function main() {
       mode: "init-manifest", privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
       candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
     }, {});
+    expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", {
+      mode: "init-manifest", privateRoot: testRoot, baselineWorktree: testRoot,
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
+    }, {});
 
     fs.mkdirSync(testRoot, { recursive: true });
     const danglingAlias = privatePath("dangling-junction");
