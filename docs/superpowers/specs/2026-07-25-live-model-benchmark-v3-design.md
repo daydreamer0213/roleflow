@@ -262,7 +262,7 @@ D:\DevData\RoleFlow-benchmark\live-v3-<run-id>\
 3. 每侧都保存 JSON、Markdown、非敏感运行元数据和独立模型缓存；
 4. 最后只用离线比较器生成比较报告。
 
-正式模型配置只在获准运行时只读使用；DPAPI 解密后的密钥只保留在进程内存中，不写入 worktree、结果目录、日志或 Git。为运行生成的非敏感临时配置在结束后删除。
+正式模型配置只在获准运行时只读使用。harness 通过显式 `--model-settings-root` 指向获准的正式项目根目录，由现有 `resolveRuntimeModelConfig` 原地读取设置与 DPAPI 密钥；不得把设置文件、加密密钥文件或明文密钥复制进两个 benchmark worktree。该路径不写入结果和日志，只记录去密钥后的模型身份。DPAPI 解密后的密钥只保留在进程内存中，不写入 worktree、结果目录、日志或 Git。
 
 ### 必须全部满足的验收条件
 
