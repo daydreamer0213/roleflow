@@ -1374,6 +1374,7 @@ async function main() {
 
     createSyntheticBaselineCheckout(siblingBaselineRoot);
     const manifestPath = privatePath("run-manifest.json");
+    fs.rmSync(manifestPath);
     const manifest = runner.initializePrivateManifest({
       privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
       candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: manifestPath
