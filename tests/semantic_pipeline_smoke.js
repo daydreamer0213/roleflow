@@ -533,6 +533,8 @@ async function contractRepairAndFailureSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v6");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v13");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1055,12 +1057,12 @@ function staleAnalysisSmoke() {
     searchPlanVersion: "plan",
     matchingCardVersion: "card",
     sourceContentHash: "source",
-    pipelineVersions: { understandJob: "job-understanding-v4", matchJob: "match-decision-v11" }
+    pipelineVersions: { understandJob: "job-understanding-v5", matchJob: "match-decision-v12" }
   };
   const currentPipelineRevision = { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS };
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
-  assert(contractUpgradeReasons.includes("job_understanding_pipeline_changed"), "理解契约收紧后必须使 v4 持久化分析 stale");
-  assert(contractUpgradeReasons.includes("match_pipeline_changed"), "匹配契约收紧后必须使 v11 持久化分析 stale");
+  assert(contractUpgradeReasons.includes("job_understanding_pipeline_changed"), "理解提示词升级后必须使 v5 持久化分析 stale");
+  assert(contractUpgradeReasons.includes("match_pipeline_changed"), "匹配语义升级后必须使 v12 持久化分析 stale");
 
   const candidate = profile(["Python", "RAG"], ["AI应用开发"]);
   const initialPlan = plan(["AI应用开发"]);
@@ -1186,6 +1188,31 @@ async function understandingContractRepairSmoke() {
   const result = await runner(completeJob("understanding-repair"));
   assert.strictEqual(calls, 2, "对象形式的资格约束只允许一次契约修复");
   assert.strictEqual(result.semanticStatus, "complete");
+
+  // 修复后仍非法：最多再尝试一次修复，随后进入现有失败路径，不得无限重试。
+  const stillInvalid = {
+    ...understanding("understanding-repair-fails"),
+    eligibilityConstraints: [{ type: "学历", value: "本科" }]
+  };
+  let failedRepairCalls = 0;
+  const failingRunner = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
+    db,
+    analyzer: {
+      understandJob: async (input) => {
+        failedRepairCalls += 1;
+        assert(failedRepairCalls <= 2, "understandJob 契约修复最多调用两次");
+        if (failedRepairCalls === 2) assert(input.contractRepair, "第二次调用必须携带 contractRepair");
+        return stillInvalid;
+      },
+      matchJob: async () => {
+        throw new Error("understandJob 未通过时不得调用 matchJob");
+      }
+    }
+  });
+  const failedRepair = await failingRunner(completeJob("understanding-repair-fails"));
+  assert.strictEqual(failedRepairCalls, 2, "首次非法输出后只允许一次修复");
+  assert.strictEqual(failedRepair.semanticStatus, "failed");
+  assert.strictEqual(failedRepair.recommendation, "review");
 }
 
 function understanding(jobId) {

@@ -86,8 +86,31 @@ server.listen(0, "127.0.0.1", async () => {
     assert(understandPrompt.includes("不要输出对象"), "understandJob prompt 必须禁止对象形式的资格约束");
     // 真实模型回归：经验年限被标 indispensable=true 后成为年限 hardBlockers；产品语义中年限只是偏好。
     assert(/年限[^\n]*不得[^\n]*indispensable=true|indispensable=true[^\n]*不得用于[^\n]*年限/.test(understandPrompt), "understandJob prompt 必须禁止把经验年限标为 indispensable=true");
-    // 真实模型回归：“要求熟悉机器学习”未被识别为硬性措辞，导致核心栈错位岗位只进 review。
-    assert(understandPrompt.includes("要求熟悉") || understandPrompt.includes("要求/需要"), "understandJob prompt 必须把“要求/需要 + 熟悉/理解”识别为硬性措辞");
+    // v3 设计：措辞只是重要性信号，不能单独决定 indispensable；understandJob 必须有明确的单次契约修复指令。
+    assert(
+      understandPrompt.includes("若输入含 contractRepair")
+        && understandPrompt.includes("contractRepair.invalidOutput")
+        && understandPrompt.includes("contractRepair.reason")
+        && understandPrompt.includes("返回修正后的完整 JSON"),
+      "understandJob prompt 必须给出可执行的单次契约修复指令"
+    );
+    assert(
+      understandPrompt.includes("措辞只是重要性信号")
+        && understandPrompt.includes("岗位持续承担的核心工作")
+        && understandPrompt.includes("不可替代"),
+      "understandJob prompt 不得仅凭“要求/需要”措辞判 indispensable"
+    );
+    assert(
+      understandPrompt.includes("需要理解业务")
+        && understandPrompt.includes("不得仅凭该短语"),
+      "普通业务理解要求不得自动升级为硬阻断"
+    );
+    assert(
+      understandPrompt.includes("要求熟悉某平台")
+        && understandPrompt.includes("优先")
+        && understandPrompt.includes("不得自动"),
+      "平台愿望项不得自动升级为硬阻断"
+    );
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     console.log("model_adapter_smoke ok");
   } catch (error) {
