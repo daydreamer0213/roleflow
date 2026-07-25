@@ -545,21 +545,16 @@ async function runLive() {
   } finally {
     db.close();
   }
-  const passed = rows.filter((row) => row.pass).length;
-  const recommendationMatches = rows.filter((row) => row.actualRecommendation === row.expectedRecommendation).length;
-  const bucketMatches = rows.filter((row) => row.actualBucket === row.expectedBucket).length;
-  // 两类硬排除错误分开统计：本该 not_recommended 却被放过（漏拦）、本不该却被误杀（错误硬排除）。
-  const hardFalsePlacementIds = rows
-    .filter((row) => row.expectedBucket === "not_recommended" && row.actualBucket !== "not_recommended")
-    .map((row) => row.id)
-    .sort();
-  const falseHardExclusionIds = rows
-    .filter((row) => row.expectedBucket !== "not_recommended" && row.actualBucket === "not_recommended")
-    .map((row) => row.id)
-    .sort();
-  const hardFalsePlacement = hardFalsePlacementIds.length;
-  const falseHardExclusion = falseHardExclusionIds.length;
-  const primaryWithoutEvidence = rows.filter((row) => row.actualBucket === "primary" && !row.evidenceComplete).length;
+  // 汇总指标与比较器共用同一逐行派生实现，生成端与核对端不会漂移。
+  const derivedMetrics = deriveBenchmarkMetrics(rows);
+  if (!derivedMetrics.ok) {
+    const error = new Error(derivedMetrics.message);
+    error.code = derivedMetrics.code;
+    throw error;
+  }
+  const passed = derivedMetrics.metrics.passed;
+  const hardFalsePlacement = derivedMetrics.metrics.hardFalsePlacement;
+  const primaryWithoutEvidence = derivedMetrics.metrics.primaryWithoutEvidence;
   const summary = {
     runMode: "live",
     authorizationGatePassed: true,
@@ -569,20 +564,7 @@ async function runLive() {
     ...inputIdentity,
     modelIdentity,
     evaluatedAt: new Date().toISOString(),
-    total: rows.length,
-    passed,
-    accuracy: passed / rows.length,
-    recommendationAccuracy: recommendationMatches / rows.length,
-    bucketAccuracy: bucketMatches / rows.length,
-    failed: rows.filter((row) => row.semanticStatus === "failed").length,
-    stale: rows.filter((row) => row.semanticStatus === "stale").length,
-    pending: rows.filter((row) => row.semanticStatus === "pending").length,
-    partial: rows.filter((row) => row.semanticStatus === "partial").length,
-    hardFalsePlacement,
-    hardFalsePlacementIds,
-    falseHardExclusion,
-    falseHardExclusionIds,
-    primaryWithoutEvidence,
+    ...derivedMetrics.metrics,
     rows
   };
   fs.writeFileSync(path.join(outputDir, "latest.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
@@ -683,6 +665,13 @@ function pickCompareMetrics(result) {
   return Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, result[field]]));
 }
 
+// 比较器逐行核对的全部汇总字段：任何一项与 rows 复算不一致都视为结构伪造。
+const DERIVED_SUMMARY_FIELDS = [
+  "total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy",
+  "failed", "stale", "pending", "partial", "primaryWithoutEvidence",
+  "hardFalsePlacement", "falseHardExclusion"
+];
+
 function sameNonEmptyIdentity(baseline, candidate, field) {
   const left = String(baseline[field] || "").trim();
   const right = String(candidate[field] || "").trim();
@@ -695,17 +684,56 @@ function sameSha256(baseline, candidate, field) {
   return /^[0-9a-f]{64}$/.test(left) && left === right;
 }
 
-// 两类硬排除错误只能从逐行 rows 复算，汇总字段只是必须一致的声明，防止伪造计数。
-function hardPlacementIdentity(result) {
-  const hardFalsePlacementIds = result.rows
+// 逐行指标派生：不信任任何汇总字段。rows 必须非空、row.id 非空且唯一、
+// row.pass 必须与 expected/actual recommendation+bucket 复算一致；
+// total/passed/双准确率/语义状态计数/双证据与两类硬排除全部从这里统一产生，
+// 生成端（runLive）与核对端（compare）共用同一实现，避免漂移。
+function deriveBenchmarkMetrics(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return failCompare("BENCHMARK_COMPARE_METRICS", "结果必须包含非空 rows 数组。");
+  }
+  const ids = new Set();
+  for (const row of rows) {
+    const id = String(row?.id || "").trim();
+    if (!id) return failCompare("BENCHMARK_COMPARE_METRICS", "每条 row 必须有非空 id。");
+    if (ids.has(id)) return failCompare("BENCHMARK_COMPARE_METRICS", `row.id 重复：${id}，fixture 集合不得被重复 ID 冒充。`);
+    ids.add(id);
+    const derivedPass = row.actualRecommendation === row.expectedRecommendation && row.actualBucket === row.expectedBucket;
+    if (row.pass !== derivedPass) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass=${row.pass} 与 recommendation/bucket 复算结果 ${derivedPass} 不一致。`);
+    }
+  }
+  const hardFalsePlacementIds = rows
     .filter((row) => row.expectedBucket === "not_recommended" && row.actualBucket !== "not_recommended")
     .map((row) => row.id)
     .sort();
-  const falseHardExclusionIds = result.rows
+  const falseHardExclusionIds = rows
     .filter((row) => row.expectedBucket !== "not_recommended" && row.actualBucket === "not_recommended")
     .map((row) => row.id)
     .sort();
-  return { hardFalsePlacementIds, falseHardExclusionIds };
+  const total = rows.length;
+  const passed = rows.filter((row) => row.pass === true).length;
+  const recommendationMatches = rows.filter((row) => row.actualRecommendation === row.expectedRecommendation).length;
+  const bucketMatches = rows.filter((row) => row.actualBucket === row.expectedBucket).length;
+  return {
+    ok: true,
+    metrics: {
+      total,
+      passed,
+      accuracy: passed / total,
+      recommendationAccuracy: recommendationMatches / total,
+      bucketAccuracy: bucketMatches / total,
+      failed: rows.filter((row) => row.semanticStatus === "failed").length,
+      stale: rows.filter((row) => row.semanticStatus === "stale").length,
+      pending: rows.filter((row) => row.semanticStatus === "pending").length,
+      partial: rows.filter((row) => row.semanticStatus === "partial").length,
+      primaryWithoutEvidence: rows.filter((row) => row.actualBucket === "primary" && !row.evidenceComplete).length,
+      hardFalsePlacement: hardFalsePlacementIds.length,
+      hardFalsePlacementIds,
+      falseHardExclusion: falseHardExclusionIds.length,
+      falseHardExclusionIds
+    }
+  };
 }
 
 function sameIds(left, right) {
@@ -812,19 +840,23 @@ function compareBenchmarkResults(baseline, candidate) {
         return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少数值指标字段 ${field}，不得凭部分指标宣称比较有效。`);
       }
     }
-    if (!Array.isArray(value.rows)) {
-      return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少逐条 rows，无法核对 fixture 集合。`);
+    // 汇总指标必须与 rows 复算完全一致。准确率为 JSON 双精度往返（精确表示），
+    // 同一派生函数两端复算，使用严格相等比较，不会误伤合法结果。
+    const derived = deriveBenchmarkMetrics(value.rows);
+    if (!derived.ok) return derived;
+    for (const field of DERIVED_SUMMARY_FIELDS) {
+      if (value[field] !== derived.metrics[field]) {
+        return failCompare(
+          "BENCHMARK_COMPARE_METRICS",
+          `${label}汇总字段 ${field}=${value[field]} 与 rows 复算值 ${derived.metrics[field]} 不一致。`
+        );
+      }
     }
-    const derived = hardPlacementIdentity(value);
-    if (!Array.isArray(value.hardFalsePlacementIds)
-      || !Array.isArray(value.falseHardExclusionIds)
-      || value.hardFalsePlacement !== derived.hardFalsePlacementIds.length
-      || !sameIds(value.hardFalsePlacementIds, derived.hardFalsePlacementIds)
-      || value.falseHardExclusion !== derived.falseHardExclusionIds.length
-      || !sameIds(value.falseHardExclusionIds, derived.falseHardExclusionIds)) {
+    if (!sameIds(value.hardFalsePlacementIds, derived.metrics.hardFalsePlacementIds)
+      || !sameIds(value.falseHardExclusionIds, derived.metrics.falseHardExclusionIds)) {
       return failCompare(
         "BENCHMARK_COMPARE_METRICS",
-        `${label}两类硬排除计数/ID 与 rows 复算结果不一致。`
+        `${label}两类硬排除 ID 与 rows 复算结果不一致。`
       );
     }
   }

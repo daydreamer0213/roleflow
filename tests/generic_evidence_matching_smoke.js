@@ -156,12 +156,12 @@ function liveResult(commit, overrides = {}) {
     falseHardExclusionIds: [],
     primaryWithoutEvidence: 0,
     rows: [
-      { id: "ecommerce-core-match", pass: true, expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete" },
-      { id: "ecommerce-wishlist-sprawl", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "content-to-user-transfer", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "user-ops-vs-pure-sales", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" },
-      { id: "insufficient-evidence", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "java-core-missing", pass: false, expectedBucket: "not_recommended", actualBucket: "talk", semanticStatus: "complete" }
+      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
+      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
+      { id: "insufficient-evidence", pass: true, expectedRecommendation: "review", actualRecommendation: "review", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false },
+      { id: "java-core-missing", pass: false, expectedRecommendation: "skip", actualRecommendation: "review", expectedBucket: "not_recommended", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false }
     ],
     ...overrides
   };
@@ -178,12 +178,12 @@ function validResultPair() {
     hardFalsePlacement: 0,
     hardFalsePlacementIds: [],
     rows: [
-      { id: "ecommerce-core-match", pass: true, expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete" },
-      { id: "ecommerce-wishlist-sprawl", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "content-to-user-transfer", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "user-ops-vs-pure-sales", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" },
-      { id: "insufficient-evidence", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
-      { id: "java-core-missing", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" }
+      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
+      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
+      { id: "insufficient-evidence", pass: true, expectedRecommendation: "review", actualRecommendation: "review", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false },
+      { id: "java-core-missing", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true }
     ]
   });
   return { baseline, candidate };
@@ -236,6 +236,58 @@ function comparatorSmoke() {
     { name: "候选指标字段缺失", baseline, candidate: { ...candidate, accuracy: undefined }, code: "BENCHMARK_COMPARE_METRICS" },
     { name: "候选缺逐条 rows", baseline, candidate: { ...candidate, rows: undefined }, code: "BENCHMARK_COMPARE_METRICS" },
     { name: "汇总数与 rows 复算不一致", baseline, candidate: { ...candidate, hardFalsePlacement: 1 }, code: "BENCHMARK_COMPARE_METRICS" },
+    {
+      name: "汇总声称满分但 rows 含失败样本",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing"
+          ? { ...row, actualRecommendation: "review", pass: false }
+          : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "failed 汇总与 rows 不一致",
+      baseline,
+      candidate: { ...candidate, failed: 1 },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "primaryWithoutEvidence 汇总与 rows 不一致",
+      baseline,
+      candidate: { ...candidate, primaryWithoutEvidence: 1 },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "row.pass 与 recommendation 复算不一致",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing"
+          ? { ...row, actualRecommendation: "review", pass: true }
+          : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "空 row.id 不得冒充 fixture",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, id: "" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "重复 row.id 不得冒充 fixture 集合",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, id: "insufficient-evidence" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
     { name: "fixture 集合不一致", baseline, candidate: { ...candidate, rows: candidate.rows.slice(1) }, code: "BENCHMARK_COMPARE_FIXTURE_SET" }
   ];
   for (const testCase of failures) {
@@ -249,13 +301,78 @@ function comparatorSmoke() {
   assert.strictEqual(ok.report.accepted, true, "无回退的比较必须验收通过");
   assert.deepStrictEqual(ok.report.failureReasons, []);
   const acceptanceFailures = [
-    { name: "候选 failed 非零", mutate: (c) => ({ ...c, failed: 1 }), reason: /failed=1/ },
-    { name: "候选 stale 非零", mutate: (c) => ({ ...c, stale: 1 }), reason: /stale=1/ },
-    { name: "候选 pending 非零", mutate: (c) => ({ ...c, pending: 2 }), reason: /pending=2/ },
-    { name: "候选 primaryWithoutEvidence 非零", mutate: (c) => ({ ...c, primaryWithoutEvidence: 1 }), reason: /primaryWithoutEvidence=1/ },
-    { name: "候选 partial 进入 primary", mutate: (c) => ({ ...c, rows: c.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, semanticStatus: "partial", actualBucket: "primary" } : row) }), reason: /partial/ },
-    { name: "recommendationAccuracy 回退", mutate: (c) => ({ ...c, accuracy: 0.5, recommendationAccuracy: 0.5, bucketAccuracy: 0.5 }), reason: /recommendationAccuracy 回退/ },
-    { name: "bucketAccuracy 回退", mutate: (c) => ({ ...c, bucketAccuracy: 0.5 }), reason: /bucketAccuracy 回退/ },
+    {
+      name: "候选 failed 非零",
+      mutate: (c) => ({
+        ...c,
+        failed: 1,
+        rows: c.rows.map((row) => row.id === "insufficient-evidence" ? { ...row, semanticStatus: "failed" } : row)
+      }),
+      reason: /failed=1/
+    },
+    {
+      name: "候选 stale 非零",
+      mutate: (c) => ({
+        ...c,
+        stale: 1,
+        rows: c.rows.map((row) => row.id === "insufficient-evidence" ? { ...row, semanticStatus: "stale" } : row)
+      }),
+      reason: /stale=1/
+    },
+    {
+      name: "候选 pending 非零",
+      mutate: (c) => ({
+        ...c,
+        pending: 2,
+        rows: c.rows.map((row) => ["insufficient-evidence", "content-to-user-transfer"].includes(row.id) ? { ...row, semanticStatus: "pending" } : row)
+      }),
+      reason: /pending=2/
+    },
+    {
+      name: "候选 primaryWithoutEvidence 非零",
+      mutate: (c) => ({
+        ...c,
+        primaryWithoutEvidence: 1,
+        rows: c.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, evidenceComplete: false } : row)
+      }),
+      reason: /primaryWithoutEvidence=1/
+    },
+    {
+      name: "候选 partial 进入 primary",
+      mutate: (c) => ({
+        ...c,
+        partial: 1,
+        rows: c.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, semanticStatus: "partial" } : row)
+      }),
+      reason: /partial/
+    },
+    {
+      name: "recommendationAccuracy 回退",
+      mutate: (c) => ({
+        ...c,
+        passed: 3,
+        accuracy: 3 / 6,
+        recommendationAccuracy: 3 / 6,
+        bucketAccuracy: 3 / 6,
+        rows: c.rows.map((row, index) => index < 3
+          ? { ...row, actualRecommendation: "review", actualBucket: "backup", pass: false }
+          : row)
+      }),
+      reason: /recommendationAccuracy 回退/
+    },
+    {
+      name: "bucketAccuracy 回退",
+      mutate: (c) => ({
+        ...c,
+        passed: 3,
+        accuracy: 3 / 6,
+        bucketAccuracy: 3 / 6,
+        rows: c.rows.map((row, index) => index < 3
+          ? { ...row, actualBucket: "backup", pass: false }
+          : row)
+      }),
+      reason: /bucketAccuracy 回退/
+    },
     {
       name: "hardFalsePlacement 数量增加",
       mutate: (c) => ({
@@ -292,11 +409,12 @@ function comparatorSmoke() {
         ...c,
         passed: 5,
         accuracy: 5 / 6,
+        recommendationAccuracy: 5 / 6,
         bucketAccuracy: 5 / 6,
         falseHardExclusion: 1,
         falseHardExclusionIds: ["ecommerce-core-match"],
         rows: c.rows.map((row) => row.id === "ecommerce-core-match"
-          ? { ...row, actualBucket: "not_recommended", pass: false }
+          ? { ...row, actualRecommendation: "review", actualBucket: "not_recommended", pass: false }
           : row)
       }),
       reason: /新增错误硬排除/
@@ -338,7 +456,16 @@ function compareCliSmoke() {
     // 验收失败：仍写出 accepted:false 诊断报告，但非零退出、携带稳定错误码，且不得打印成功摘要。
     const rejectedCandidatePath = path.join(tmpDir, "rejected-candidate.json");
     const rejectedReportPath = path.join(tmpDir, "rejected-report.json");
-    fs.writeFileSync(rejectedCandidatePath, JSON.stringify({ ...candidate, failed: 1, primaryWithoutEvidence: 1 }), "utf8");
+    fs.writeFileSync(rejectedCandidatePath, JSON.stringify({
+      ...candidate,
+      failed: 1,
+      primaryWithoutEvidence: 1,
+      rows: candidate.rows.map((row) => {
+        if (row.id === "insufficient-evidence") return { ...row, semanticStatus: "failed" };
+        if (row.id === "ecommerce-core-match") return { ...row, evidenceComplete: false };
+        return row;
+      })
+    }), "utf8");
     const rejectedRun = spawnSync(process.execPath, [benchmarkScript, "--compare", "--baseline", baselinePath, "--candidate", rejectedCandidatePath, "--report", rejectedReportPath], { cwd: root, encoding: "utf8", env });
     assert.notStrictEqual(rejectedRun.status, 0, "验收未通过的比较必须非零退出");
     assert(`${rejectedRun.stdout}\n${rejectedRun.stderr}`.includes("BENCHMARK_COMPARE_ACCEPTANCE_FAILED"), "验收失败输出必须携带稳定错误码");
