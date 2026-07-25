@@ -49,25 +49,20 @@ try { npm.cmd test } finally { Pop-Location }
 
 Expected: 工作树干净，全部 46 项离线检查通过，HEAD 已推送到 `origin/codex/claude-generic-evidence-matching-live-fix`。
 
-- [ ] **Step 2: 读取实施报告中的共享提交**
+- [ ] **Step 2: 固定最终 runner tooling**
 
-记录以下三个普通提交的完整 SHA：
+从干净 candidate 的最终提交取得 `TOOLING_HEAD`；共享文件仅为：
 
-```text
-metricsCommit    = tooling Task 3
-prepareRunnerCommit = tooling Task 4
-liveRunnerCommit = tooling Task 5
+```powershell
+$TOOLING_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$sharedFiles=@('scripts/private-full-chain-runner.js','scripts/lib/benchmark_metrics.js')
 ```
 
-不得使用尚未提交的工作树内容，也不得把 Task 1/2 的 PDF 或隐私业务修改作为 baseline 产品行为。
+不要把 `resume_parser`、`pdf_text`、`resume_privacy` 或 candidate-only 产品 wiring 当作共享文件。若最终 tooling 与产品改动混在同一提交，必须从产品基线创建一个专用、可审计的 baseline-tooling 提交：仅从 `$TOOLING_HEAD` 复制上述 `$sharedFiles` 并提交；或 cherry-pick 一个只包含这些文件的最终 tooling 提交。不得使用未提交工作树内容，也不得把 Task 1/2 的 PDF 或隐私业务改动合入 baseline 产品行为。
 
 - [ ] **Step 3: 创建隔离 baseline worktree**
 
-执行时必须先使用 `using-git-worktrees` skill 验证目标不存在或为空，再从已审查的 v3 baseline r4：
-
-```text
-d4ae9385a996ed8fbcef3826d2747afd308572e1
-```
+执行时先确定当前批准的产品基线提交 `$PRODUCT_BASELINE_HEAD`，并验证目标不存在或为空；不得硬编码历史提交链。
 
 创建：
 
@@ -76,7 +71,7 @@ branch: codex/generic-evidence-matching-private-full-chain-baseline-v1
 path:   D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1
 ```
 
-只依次 cherry-pick `metricsCommit`、`prepareRunnerCommit`、`liveRunnerCommit`。任何冲突立即停止并报告，不自行取整文件一侧。
+从 `$PRODUCT_BASELINE_HEAD` 建立 worktree，然后只应用 Step 2 的最终 shared tooling（cherry-pick 专用 tooling 提交，或只复制 `$sharedFiles` 后创建专用提交）。任何冲突立即停止并报告，不自行取整文件一侧。
 
 - [ ] **Step 4: 验证共享代码逐字节一致**
 
@@ -84,10 +79,8 @@ path:   D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1
 
 ```powershell
 $sharedFiles=@(
-  'scripts/lib/benchmark_metrics.js',
   'scripts/private-full-chain-runner.js',
-  'tests/private_full_chain_runner_smoke.js',
-  'tests/job_match_benchmark.js'
+  'scripts/lib/benchmark_metrics.js'
 )
 foreach($file in $sharedFiles) {
   $candidateBlob=(git -C $candidate rev-parse "HEAD:$file").Trim()
@@ -97,6 +90,8 @@ foreach($file in $sharedFiles) {
 ```
 
 baseline 不运行 `--prepare` 或 `--card-live`，runner 对 candidate-only 模块必须使用按 mode 的惰性加载。baseline 缺少匹配卡消费能力是产品行为差异，不能通过 cherry-pick Task 1/2 或候选匹配逻辑偷偷补齐。
+
+结果继续记录并核验 `runManifestSha256`，使 baseline/candidate comparison 绑定同一 manifest。私有目录的本机管理员恶意修改不属于该流程的威胁模型；不增加同目录 HMAC。
 
 - [ ] **Step 5: 运行 baseline 离线验证**
 
@@ -126,7 +121,7 @@ node scripts/private-full-chain-runner.js --init-manifest `
   --output "$env:ROLEFLOW_PRIVATE_ROOT\run-manifest.json"
 ```
 
-Expected: runner 自行写入 `private-full-chain-harness.v1`、实际 baseline/candidate HEAD、`baselineProductCommit=e9689627540d1cbc419a7a06853ffea986115ff0`、共享 blob 和 `status=inputs_pending`。不接受操作者传入提交值。
+Expected: runner 自行写入 `harnessVersion`、实际 `baselineProductCommit` / `candidateProductCommit`、以及 shared blob 清单；不接受操作者传入提交值，且目标 manifest 必须是新文件。
 
 ---
 

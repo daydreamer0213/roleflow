@@ -27,7 +27,7 @@ const SAFE_ERROR_CODES = new Set([
   "MODEL_REQUEST_FAILED",
   "MODEL_TIMEOUT"
 ]);
-const SHARED_MANIFEST_FILES = ["src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js", "scripts/lib/benchmark_metrics.js"];
+const SHARED_MANIFEST_FILES = ["scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"];
 const PARSE_REPORT_KEYS = [
   "runMode", "authorizationGatePassed", "extractionMethod", "charCount", "detectedSections",
   "missingSections", "textTruncated", "redactions", "resumeContentSha256", "identityManifestSha256", "evaluatedCommit"
@@ -89,11 +89,33 @@ function forbiddenArtifactLocation(candidate) {
   const roots = [
     canonicalRuntimeWorktree,
     canonicalizePath(path.join(canonicalRuntimeWorktree, "data")),
-    canonicalizePath(path.join(canonicalRuntimeWorktree, ".runtime")),
-    canonicalizePath(os.homedir()),
-    canonicalizePath(os.tmpdir())
+    canonicalizePath(path.join(canonicalRuntimeWorktree, ".runtime"))
   ];
   return roots.some((root) => !root || isWithinDirectory(candidate, root)) || /\.sqlite$/i.test(candidate);
+}
+
+function hasReparsePoint(value) {
+  const absolute = path.resolve(String(value));
+  const parsed = path.parse(absolute);
+  let current = parsed.root;
+  for (const part of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) return true;
+    } catch { return true; }
+  }
+  return false;
+}
+
+function isInsideGitRepository(value) {
+  let current = path.dirname(value);
+  while (current && !isDriveRoot(current)) {
+    if (fs.existsSync(path.join(current, ".git"))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return false;
 }
 
 function checkPrivateRoot(value) {
@@ -113,6 +135,40 @@ function checkPrivateArtifact(value, privateRoot, requiredCode, forbiddenCode = 
     return fail(forbiddenCode, "Private artifacts must use a canonical local path inside the selected private bundle.");
   }
   return { ok: true, resolved };
+}
+
+function newPrivateOutputTarget(privateRoot, file) {
+  const root = canonicalizePath(privateRoot, { allowMissingLeaf: false });
+  const target = canonicalizePath(file);
+  if (!root || !target || !canonicalPrivateParent || !isWithinDirectory(root, canonicalPrivateParent)
+    || !isWithinDirectory(target, root) || fs.existsSync(target)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Private output targets must be new files inside the selected private bundle.");
+  }
+  return target;
+}
+
+function exclusivePrivateWrite(privateRoot, file, content) {
+  const target = newPrivateOutputTarget(privateRoot, file);
+  const directory = path.dirname(target);
+  fs.mkdirSync(directory, { recursive: true });
+  const root = canonicalizePath(privateRoot, { allowMissingLeaf: false });
+  const parent = canonicalizePath(directory, { allowMissingLeaf: false });
+  if (!root || !parent || hasReparsePoint(directory) || !isWithinDirectory(parent, root)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Private output directories must remain canonical paths inside the selected private bundle.");
+  }
+  try {
+    fs.writeFileSync(target, content, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") throw runnerError("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Private output targets must not overwrite existing artifacts.");
+    throw error;
+  }
+  const written = canonicalizePath(target, { allowMissingLeaf: false });
+  const finalRoot = canonicalizePath(privateRoot, { allowMissingLeaf: false });
+  const finalParent = canonicalizePath(directory, { allowMissingLeaf: false });
+  if (!written || !finalRoot || !finalParent || hasReparsePoint(directory)
+    || !isWithinDirectory(finalParent, finalRoot) || !isWithinDirectory(written, finalRoot)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Private output paths changed during creation.");
+  }
 }
 
 // Baseline source code is a worktree, not a private run artifact: it is a sibling of the run root.
@@ -141,8 +197,16 @@ function checkApprovedPrivateArtifact(value, requiredCode) {
 
 function checkExternalPdf(value, privateRoot) {
   if (!String(value || "").trim()) return fail("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", "Prepare requires an explicit local PDF path.");
-  const resolved = canonicalizePath(value);
-  if (!resolved || path.extname(resolved).toLowerCase() !== ".pdf" || isWithinDirectory(resolved, privateRoot) || forbiddenArtifactLocation(resolved)) {
+  const resolved = canonicalizePath(value, { allowMissingLeaf: false });
+  const mainProjectData = canonicalizePath("D:\\Guo\\ZhiPing\\data");
+  const tempRoot = canonicalizePath(os.tmpdir());
+  let regularFile = false;
+  try { regularFile = Boolean(resolved && fs.statSync(resolved).isFile()); } catch {}
+  if (!resolved || path.extname(resolved).toLowerCase() !== ".pdf" || hasReparsePoint(value)
+    || !regularFile || isWithinDirectory(resolved, privateRoot)
+    || (canonicalPrivateParent && isWithinDirectory(resolved, canonicalPrivateParent))
+    || (mainProjectData && isWithinDirectory(resolved, mainProjectData))
+    || (tempRoot && isWithinDirectory(resolved, tempRoot)) || isInsideGitRepository(resolved)) {
     return fail("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", "The source PDF must be a canonical local PDF path outside the private bundle.");
   }
   return { ok: true, resolved };
@@ -369,6 +433,10 @@ async function preparePrivateResume(options, env) {
   if (!gate.ok) throw runnerError(gate.code, gate.message);
   const proof = inspectFixedCandidateWorktree();
   const request = { ...gate.request, evaluatedCommit: proof.commit };
+  const resumeOutput = path.join(request.output, "resume.redacted.txt");
+  const reportOutput = path.join(request.output, "parse-report.json");
+  newPrivateOutputTarget(request.privateRoot, resumeOutput);
+  newPrivateOutputTarget(request.privateRoot, reportOutput);
   const { raw: identityRaw, identity } = readIdentityFile(request.identity);
   let pdf;
   try { pdf = fs.readFileSync(request.pdf); } catch { throw runnerError("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", "The explicit source PDF could not be read."); }
@@ -389,9 +457,8 @@ async function preparePrivateResume(options, env) {
       textTruncated: Boolean(parsed.textTruncated), redactions: prepared.redactions,
       resumeContentSha256: sha256(storedText), identityManifestSha256: sha256(identityRaw), evaluatedCommit: request.evaluatedCommit
     };
-    fs.mkdirSync(request.output, { recursive: true });
-    fs.writeFileSync(path.join(request.output, "resume.redacted.txt"), storedText, "utf8");
-    fs.writeFileSync(path.join(request.output, "parse-report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
+    exclusivePrivateWrite(request.privateRoot, resumeOutput, storedText);
+    exclusivePrivateWrite(request.privateRoot, reportOutput, JSON.stringify(report, null, 2) + "\n");
     return report;
   } catch (error) {
     if (error?.code === "RESUME_PRIVACY_REDACTION_FAILED") throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Identity redaction verification failed.");
@@ -477,9 +544,14 @@ function initializePrivateManifest(options) {
   if (samePath(baseline.head, candidate.head) || SHARED_MANIFEST_FILES.some((file) => baseline.blobs[file] !== candidate.blobs[file])) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Baseline and candidate worktrees must be distinct commits with identical shared runner files.");
   }
-  const manifest = { runMode: "private-init-manifest", baselineCommit: baseline.head, candidateCommit: candidate.head, sharedFileBlobs: baseline.blobs };
-  fs.mkdirSync(path.dirname(gate.request.output), { recursive: true });
-  fs.writeFileSync(gate.request.output, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  const manifest = {
+    runMode: "private-init-manifest",
+    harnessVersion: PRIVATE_HARNESS_VERSION,
+    baselineProductCommit: baseline.head,
+    candidateProductCommit: candidate.head,
+    sharedFileBlobs: baseline.blobs
+  };
+  exclusivePrivateWrite(gate.request.privateRoot, gate.request.output, JSON.stringify(manifest, null, 2) + "\n");
   return manifest;
 }
 
@@ -516,9 +588,8 @@ function readJsonFile(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
   }
 }
 
-function writeJsonFile(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
+function writeJsonFile(privateRoot, file, value) {
+  exclusivePrivateWrite(privateRoot, file, JSON.stringify(value, null, 2) + "\n");
 }
 
 function privacySafeRequestSettings(value) {
@@ -597,7 +668,7 @@ function loadProductionModules(mode) {
 
 function liveManifest(privateRoot, side, evaluatedCommit) {
   const manifest = readJsonFile(path.join(privateRoot, "run-manifest.json"));
-  const expected = String(side === "baseline" ? manifest.baselineCommit : manifest.candidateCommit || "").toLowerCase();
+  const expected = String(side === "baseline" ? manifest.baselineProductCommit : manifest.candidateProductCommit || "").toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(expected) || expected !== String(evaluatedCommit || "").toLowerCase()) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The live worktree commit does not match the private run manifest.");
   }
@@ -668,7 +739,7 @@ function confirmedCardInput(value, profileInput, context) {
     || draft.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || draft.runManifestSha256 !== context.runManifestSha256
     || draft.side !== "candidate"
-    || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateCommit || "").toLowerCase()
+    || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateProductCommit || "").toLowerCase()
     || draft.worktreeClean !== true
     || !hasBoundModelIdentity(draft)
     || draft.modelIdentitySha256 !== value.modelIdentitySha256
@@ -781,8 +852,8 @@ function validateProfileResultProvenance(value, context) {
   const expectedRunMode = context.injected ? "offline-test" : "live-profile";
   const expectedAuthorized = !context.injected;
   const expectedCommit = String(context.side === "baseline"
-    ? context.manifest?.baselineCommit
-    : context.manifest?.candidateCommit || "").toLowerCase();
+    ? context.manifest?.baselineProductCommit
+    : context.manifest?.candidateProductCommit || "").toLowerCase();
   let profileSha256;
   try { profileSha256 = valueSha256(value?.profile); } catch { profileSha256 = ""; }
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -886,6 +957,10 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const gate = validatePrivateFullChainRequest(gateOptions, env, null);
   if (!gate.ok) throw runnerError(gate.code, gate.message);
   const request = gate.request;
+  const resultFile = request.mode === "profile-live" ? path.join(request.output, "profile.json")
+    : request.mode === "card-live" ? path.join(request.output, "matching-card-draft.json")
+      : path.join(request.output, "match-result.json");
+  if (request.mode !== "match-live") newPrivateOutputTarget(request.privateRoot, resultFile);
   const proof = testSeam
     ? { clean: true, commit: request.evaluatedCommit }
     : inspectLiveWorktree(request.side);
@@ -974,7 +1049,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       profile
     };
     result.profileResultSha256 = valueSha256(result);
-    writeJsonFile(path.join(request.output, "profile.json"), result);
+    writeJsonFile(request.privateRoot, resultFile, result);
     return result;
   }
 
@@ -1000,7 +1075,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       card: normalized
     };
     result.draftSha256 = valueSha256(result);
-    writeJsonFile(path.join(request.output, "matching-card-draft.json"), result);
+    writeJsonFile(request.privateRoot, resultFile, result);
     return result;
   }
 
@@ -1021,6 +1096,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   if (fs.existsSync(cachePath)) {
     throw runnerError("PRIVATE_FULL_CHAIN_CACHE_EXISTS", "Match live requires a fresh per-side SQLite cache.");
   }
+  newPrivateOutputTarget(request.privateRoot, resultFile);
   fs.mkdirSync(request.output, { recursive: true });
   const db = modules.openDb(cachePath);
   let rows;
@@ -1068,7 +1144,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     runManifestSha256,
     side: request.side,
     evaluatedCommit: proof.commit,
-    baselineBehaviorCommit: request.side === "candidate" ? manifest.baselineCommit : null,
+    baselineBehaviorCommit: request.side === "candidate" ? manifest.baselineProductCommit : null,
     worktreeClean: true,
     resumeContentSha256: sha256(resumeText),
     identityManifestSha256: sha256(identityRaw),
@@ -1090,7 +1166,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     ...derived.metrics,
     rows
   };
-  writeJsonFile(path.join(request.output, "match-result.json"), result);
+  writeJsonFile(request.privateRoot, resultFile, result);
   return result;
 }
 
@@ -1229,9 +1305,8 @@ async function main() {
   if (options.mode === "compare") {
     const result = comparePrivateFullChainResults(JSON.parse(fs.readFileSync(pureGate.request.baseline, "utf8")), JSON.parse(fs.readFileSync(pureGate.request.candidate, "utf8")));
     if (!result.ok) throw runnerError(result.code, result.message);
-    fs.mkdirSync(path.dirname(pureGate.request.report), { recursive: true });
-    fs.writeFileSync(pureGate.request.report, JSON.stringify(result.report, null, 2) + "\n", "utf8");
-    fs.writeFileSync(pureGate.request.markdownReport, renderPrivateCompareMarkdown(result.report), "utf8");
+    exclusivePrivateWrite(pureGate.request.privateRoot, pureGate.request.report, JSON.stringify(result.report, null, 2) + "\n");
+    exclusivePrivateWrite(pureGate.request.privateRoot, pureGate.request.markdownReport, renderPrivateCompareMarkdown(result.report));
     if (!result.report.accepted) process.exitCode = 1;
     return;
   }
@@ -1250,6 +1325,7 @@ if (require.main === module) main().catch((error) => { console.error(safeCliFail
 
 module.exports = {
   validatePrivateFullChainRequest,
+  exclusivePrivateWrite,
   preparePrivateResume,
   verifyPrivateBundle,
   initializePrivateManifest,

@@ -1,6 +1,7 @@
 const assert = require("node:assert");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const runner = require("../scripts/private-full-chain-runner");
@@ -20,6 +21,7 @@ const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-
 const siblingBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-baseline-${process.pid}`);
 const externalRoot = path.join("D:\\DevData\\RoleFlow-private-runner-fixtures", `synthetic-private-full-chain-runner-${process.pid}`);
 const externalPdf = path.join(externalRoot, "synthetic-resume.pdf");
+const downloadsRoot = path.join(os.homedir(), "Downloads", `roleflow-private-runner-${process.pid}`);
 
 function privatePath(...parts) {
   return path.join(testRoot, ...parts);
@@ -242,8 +244,9 @@ async function injectedLiveFlowSmoke(identityPath) {
   const cardPath = privatePath("input", "confirmed-card.private.json");
   const manifest = {
     runMode: "private-init-manifest",
-    baselineCommit: "1".repeat(40),
-    candidateCommit: "2".repeat(40),
+    harnessVersion: "private-full-chain-harness.v1",
+    baselineProductCommit: "1".repeat(40),
+    candidateProductCommit: "2".repeat(40),
     sharedFileBlobs: {}
   };
   const runManifestSha256 = valueSha256(manifest);
@@ -416,6 +419,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.deepStrictEqual(profileCandidate.profile, confirmedProfile);
   const changedRequestConfig = structuredClone(fakeModelConfig);
   changedRequestConfig.providers["synthetic-provider"].temperature = 0.9;
+  fs.rmSync(privatePath("runs", "candidate", "profile.json"));
   const changedRequestProfile = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
     resumeText: resumePath,
     identity: identityPath
@@ -427,6 +431,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   );
   const changedSecretConfig = structuredClone(fakeModelConfig);
   changedSecretConfig.providers["synthetic-provider"].apiKey = "synthetic-secret-beta";
+  fs.rmSync(privatePath("runs", "candidate", "profile.json"));
   const changedSecretProfile = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
     resumeText: resumePath,
     identity: identityPath
@@ -441,6 +446,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     ...optionalProfileSeam.modules,
     analyzeResumeProfile: async () => ({ ...confirmedProfile, optionalUndefined: undefined })
   };
+  fs.rmSync(privatePath("runs", "candidate", "profile.json"));
   const optionalProfileResult = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
     resumeText: resumePath,
     identity: identityPath
@@ -1137,7 +1143,10 @@ async function main() {
   fs.rmSync(testRoot, { recursive: true, force: true });
   fs.rmSync(siblingBaselineRoot, { recursive: true, force: true });
   fs.rmSync(externalRoot, { recursive: true, force: true });
+  fs.rmSync(downloadsRoot, { recursive: true, force: true });
   try {
+    fs.mkdirSync(externalRoot, { recursive: true });
+    fs.writeFileSync(externalPdf, makeSyntheticPdf());
     expectGate("PRIVATE_FULL_CHAIN_MODE_REQUIRED", gateOptions({ mode: "" }));
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_REQUIRED", gateOptions({ privateRoot: "" }));
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({ privateRoot: "D:\\unsafe-private-root" }));
@@ -1198,6 +1207,39 @@ async function main() {
     }, {});
 
     fs.mkdirSync(testRoot, { recursive: true });
+    fs.mkdirSync(downloadsRoot, { recursive: true });
+    const downloadsPdf = path.join(downloadsRoot, "explicit-source.pdf");
+    fs.writeFileSync(downloadsPdf, makeSyntheticPdf());
+    expectGateOk(gateOptions({ pdf: downloadsPdf }));
+    expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: "relative-source.pdf" }));
+    expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: "https://example.invalid/source.pdf" }));
+    const repositoryPdf = path.join(path.resolve(__dirname, ".."), "private-source.pdf");
+    const projectDataPdf = path.join(path.resolve(__dirname, ".."), "data", "private-source.pdf");
+    const tempPdf = path.join(os.tmpdir(), `roleflow-private-source-${process.pid}.pdf`);
+    fs.mkdirSync(path.dirname(projectDataPdf), { recursive: true });
+    for (const unsafePdf of [repositoryPdf, projectDataPdf, privatePath("input", "private-source.pdf"), tempPdf]) {
+      fs.mkdirSync(path.dirname(unsafePdf), { recursive: true });
+      fs.writeFileSync(unsafePdf, makeSyntheticPdf());
+      expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: unsafePdf }));
+    }
+    const exclusiveTarget = privatePath("exclusive", "artifact.json");
+    runner.exclusivePrivateWrite(testRoot, exclusiveTarget, "first");
+    assert.throws(
+      () => runner.exclusivePrivateWrite(testRoot, exclusiveTarget, "second"),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED"
+    );
+    assert.strictEqual(fs.readFileSync(exclusiveTarget, "utf8"), "first", "existing output sentinel must remain unchanged");
+    const outputEscape = privatePath("output-escape");
+    fs.symlinkSync(externalRoot, outputEscape, "junction");
+    const escapedTarget = path.join(outputEscape, "artifact.json");
+    assert.throws(
+      () => runner.exclusivePrivateWrite(testRoot, escapedTarget, "escape"),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED"
+    );
+    assert(!fs.existsSync(path.join(externalRoot, "artifact.json")), "junction escape must not create an external artifact");
+    const linkedSource = privatePath("linked-source");
+    fs.symlinkSync(downloadsRoot, linkedSource, "junction");
+    expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: path.join(linkedSource, "explicit-source.pdf") }));
     const danglingAlias = privatePath("dangling-junction");
     fs.symlinkSync(path.join(externalRoot, "missing-junction-target"), danglingAlias, "junction");
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({
@@ -1328,18 +1370,18 @@ async function main() {
     assert(!fs.existsSync(privatePath("parse-failure")), "sanitized parser failure must not create output directories");
 
     createSyntheticBaselineCheckout(siblingBaselineRoot);
-    const baselineRunner = require(path.join(siblingBaselineRoot, "scripts", "private-full-chain-runner.js"));
     const manifestPath = privatePath("run-manifest.json");
-    const manifest = baselineRunner.initializePrivateManifest({
+    const manifest = runner.initializePrivateManifest({
       privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
       candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: manifestPath
     });
     const { execFileSync } = require("node:child_process");
     const head = (cwd) => execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", windowsHide: true }).trim();
-    assert.strictEqual(manifest.baselineCommit, head(siblingBaselineRoot));
-    assert.strictEqual(manifest.candidateCommit, head(path.resolve(__dirname, "..")));
-    assert.notStrictEqual(manifest.baselineCommit, manifest.candidateCommit);
-    for (const file of ["src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js", "scripts/lib/benchmark_metrics.js"]) {
+    assert.strictEqual(manifest.harnessVersion, "private-full-chain-harness.v1");
+    assert.strictEqual(manifest.baselineProductCommit, head(siblingBaselineRoot));
+    assert.strictEqual(manifest.candidateProductCommit, head("D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix"));
+    assert.notStrictEqual(manifest.baselineProductCommit, manifest.candidateProductCommit);
+    for (const file of ["scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"]) {
       assert.strictEqual(manifest.sharedFileBlobs[file], execFileSync("git", ["rev-parse", `HEAD:${file}`], { cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true }).trim());
     }
     assert(fs.existsSync(manifestPath));
@@ -1348,15 +1390,18 @@ async function main() {
     fs.rmSync(testRoot, { recursive: true, force: true });
     fs.rmSync(siblingBaselineRoot, { recursive: true, force: true });
     fs.rmSync(externalRoot, { recursive: true, force: true });
+    fs.rmSync(downloadsRoot, { recursive: true, force: true });
+    fs.rmSync(path.join(path.resolve(__dirname, ".."), "private-source.pdf"), { force: true });
+    fs.rmSync(path.join(path.resolve(__dirname, ".."), "data", "private-source.pdf"), { force: true });
+    fs.rmSync(path.join(os.tmpdir(), `roleflow-private-source-${process.pid}.pdf`), { force: true });
   }
 }
 
 function createSyntheticBaselineCheckout(root) {
   const { execFileSync } = require("node:child_process");
-  const candidateRoot = path.resolve(__dirname, "..");
+  const candidateRoot = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
   const files = [
-    "scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js",
-    "src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js"
+    "scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"
   ];
   fs.mkdirSync(root, { recursive: true });
   for (const file of files) {
