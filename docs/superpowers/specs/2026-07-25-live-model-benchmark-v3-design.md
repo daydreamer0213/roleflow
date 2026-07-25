@@ -26,7 +26,7 @@ v2 双跑本身真实执行并正确拒绝了候选结果，但它没有为新�
 
 在同一模型、同一 JD 样本、同一完整脱敏候选人画像、同一静态匹配偏好卡和同一 harness 下：
 
-> 新的通用证据匹配实现，是否至少保持旧基线的推荐准确率和分桶准确率，同时不增加硬性误杀，并满足新契约的完整性要求？
+> 新的通用证据匹配实现，是否至少保持旧基线的推荐准确率和分桶准确率，同时既不增加“本该硬排除却被放过”，也不增加“本不该硬排除却被误杀”，并满足新契约的完整性要求？
 
 v3 不同时测试“模型能否从简历生成一张好卡”。卡片生成与岗位匹配是两种不同能力：
 
@@ -183,6 +183,8 @@ profileToRuntimeConfigs(
 - `evaluatedCommit`；
 - `baselineBehaviorCommit`；
 - `fixtureProfileId`；
+- `fixtureProfileSha256`；
+- `fixtureResumeVersionsSha256`；
 - `fixtureMatchingCardId`；
 - `fixtureMatchingCardSha256`；
 - JD fixture 集合的稳定摘要；
@@ -199,7 +201,7 @@ profileToRuntimeConfigs(
 - harness 版本不同；
 - `evaluatedCommit` 相同；
 - candidate 没有正确引用 baseline 的行为提交；
-- profile ID 不同；
+- profile ID、profile SHA-256 或 resume versions SHA-256 不同；
 - matching card ID 或 SHA-256 不同；
 - JD fixture 集合不同；
 - 任一关键指标缺失；
@@ -271,8 +273,9 @@ D:\DevData\RoleFlow-benchmark\live-v3-<run-id>\
 - `primaryWithoutEvidence === 0`
 - recommendation accuracy 不低于 v3 baseline
 - bucket accuracy 不低于 v3 baseline
-- `hardFalsePlacement` 不高于 v3 baseline
-- candidate 不得新增 baseline 中不存在的 hard-false-placement 样本 ID；不能用“修好一个、误杀另一个”维持相同计数
+- `hardFalsePlacement` 不高于 v3 baseline；该兼容字段专指 expectedBucket 为 `not_recommended`、实际却被放入其他桶的“硬排除漏拦”
+- candidate 不得新增 baseline 中不存在的 hard-false-placement 样本 ID；不能用“修好一个、漏放另一个”维持相同计数
+- 新增 `falseHardExclusion` 指标，专指 expectedBucket 不是 `not_recommended`、实际却进入 `not_recommended` 的“错误硬排除”；其计数不得高于 baseline，也不得新增 baseline 中不存在的样本 ID
 - 比较器的身份门禁全部通过
 
 聚合指标通过不等于可以忽略单个严重回归。报告还必须列出逐样本变化，尤其是新增 `skip/not_recommended`、从正确变错误的样本和任何硬阻断变化，供最终人工复核。
