@@ -7,6 +7,7 @@ const { createJobAnalysisRunner } = require("../src/core/job_analysis");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { openDb, decisionBucket } = require("../src/core/storage");
 const { compareBenchmarkResults, BENCHMARK_HARNESS_VERSION } = require("./job_match_benchmark");
+const sharedBenchmarkMetrics = require("../scripts/lib/benchmark_metrics");
 
 const root = path.resolve(__dirname, "..");
 const benchmarkScript = path.join(root, "tests", "job_match_benchmark.js");
@@ -20,6 +21,7 @@ validateGenericFixtures();
     for (const fixture of fixtures) {
       await runGenericFixture(db, fixture);
     }
+    sharedBenchmarkMetricsSmoke();
     comparatorSmoke();
     compareCliSmoke();
     console.log(`generic_evidence_matching_smoke ok (${fixtures.length} samples)`);
@@ -567,6 +569,30 @@ function comparatorSmoke() {
     assert.strictEqual(result.report.accepted, false, `${testCase.name}：验收必须失败`);
     assert(result.report.failureReasons.some((reason) => testCase.reason.test(reason)), `${testCase.name}：失败原因必须可定位：${result.report.failureReasons.join("；")}`);
   }
+}
+
+function sharedBenchmarkMetricsSmoke() {
+  const { baseline, candidate } = validResultPair();
+  const result = sharedBenchmarkMetrics.compareBenchmarkResults(baseline, candidate);
+  const expectedReportKeys = [
+    "accepted", "baseline", "baselineBehaviorCommit", "benchmarkHarnessVersion", "candidate", "deltas",
+    "evaluatedCommit", "failureReasons", "falseHardExclusionIds", "fixtureJobSetSha256",
+    "fixtureMatchingCardId", "fixtureMatchingCardSha256", "fixtureProfileId",
+    "fixtureProfileSha256", "fixtureResumeVersionsSha256", "hardFalsePlacementIds",
+    "improvements", "modelIdentity", "regressions", "runMode"
+  ];
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(Object.keys(result.report).sort(), expectedReportKeys.sort());
+  assert.deepStrictEqual(result, compareBenchmarkResults(baseline, candidate));
+
+  const rejected = sharedBenchmarkMetrics.compareBenchmarkResults(baseline, {
+    ...candidate,
+    primaryWithoutEvidence: 1,
+    rows: candidate.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, evidenceComplete: false } : row)
+  });
+  assert.strictEqual(rejected.ok, true);
+  assert.strictEqual(rejected.report.accepted, false);
+  assert.deepStrictEqual(rejected.report.failureReasons, ["候选 primaryWithoutEvidence=1，验收要求为 0"]);
 }
 
 function compareCliSmoke() {
