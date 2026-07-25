@@ -10,6 +10,16 @@ const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generi
 const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "profile-live", "card-live", "match-live", "compare"]);
 const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
 const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v1";
+const SAFE_SEMANTIC_STATUSES = new Set(["complete", "partial", "pending", "failed", "stale", "blocked", "refresh", "rule_only"]);
+const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending", "hard_boundary", "source_refresh"]);
+const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
+const SAFE_ERROR_CODES = new Set([
+  "CANDIDATE_PROFILE_REQUIRED",
+  "MODEL_ANALYSIS_FAILED",
+  "MODEL_CONTRACT_INVALID",
+  "MODEL_REQUEST_FAILED",
+  "MODEL_TIMEOUT"
+]);
 const SHARED_MANIFEST_FILES = ["src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js", "scripts/lib/benchmark_metrics.js"];
 const PARSE_REPORT_KEYS = [
   "runMode", "authorizationGatePassed", "extractionMethod", "charCount", "detectedSections",
@@ -447,12 +457,23 @@ function initializePrivateManifest(options) {
   return manifest;
 }
 
-function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function stableJson(value) {
+  let serialized;
+  try { serialized = JSON.stringify(value); } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Private hash inputs must be JSON serializable.");
+  }
+  if (serialized === undefined) {
+    throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Private hash inputs must be JSON serializable.");
+  }
+  return canonicalJson(JSON.parse(serialized));
 }
 
 function valueSha256(value) {
@@ -474,6 +495,14 @@ function writeJsonFile(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
 }
 
+function privacySafeRequestSettings(value) {
+  if (Array.isArray(value)) return value.map(privacySafeRequestSettings);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !/(?:api.?key|token|password|authorization|cookie|secret|credential)/i.test(key))
+    .map(([key, item]) => [key, privacySafeRequestSettings(item)]));
+}
+
 function sanitizedModelIdentity(modelConfig) {
   const provider = String(modelConfig?.provider || "");
   const selected = modelConfig?.providers?.[provider] || {};
@@ -482,7 +511,8 @@ function sanitizedModelIdentity(modelConfig) {
     provider,
     model: String(selected.model || ""),
     timeoutMs: Number(selected.timeoutMs || 0),
-    endpointSha256: endpoint ? sha256(endpoint) : ""
+    endpointSha256: endpoint ? sha256(endpoint) : "",
+    requestSettingsSha256: valueSha256(privacySafeRequestSettings(selected))
   };
   if (!provider || provider === "mock" || !identity.model || !Number.isFinite(identity.timeoutMs)
     || !/^[0-9a-f]{64}$/.test(identity.endpointSha256)) {
@@ -631,6 +661,18 @@ function ruleBlockedAnalysis() {
   };
 }
 
+function safeEnum(value, allowed, fallback) {
+  const text = String(value || "");
+  return allowed.has(text) ? text : fallback;
+}
+
+function safeErrorCode(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (SAFE_ERROR_CODES.has(text) || /^HTTP_[1-5][0-9]{2}$/.test(text)) return text;
+  return "MODEL_ANALYSIS_FAILED";
+}
+
 async function runPrivateFullChain(options, env, testSeam = null) {
   const opts = { ...(options || {}) };
   const gateOptions = testSeam ? opts : { ...opts, modelDescriptor: { provider: "post-gate-runtime-resolution" } };
@@ -767,12 +809,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }
   fs.mkdirSync(request.output, { recursive: true });
   const db = modules.openDb(cachePath);
-  const analyze = modules.createJobAnalysisRunner(configs, searchPlan.keywords, {
-    db,
-    ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
-  });
   let rows;
   try {
+    const analyze = modules.createJobAnalysisRunner(configs, searchPlan.keywords, {
+      db,
+      ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
+    });
     rows = await modules.mapWithConcurrency(fixture.jobs, 3, async (job) => {
       const scored = modules.scoreJob(job, configs);
       const state = modules.decisionState(scored);
@@ -786,18 +828,18 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         actualRecommendation,
         expectedBucket: label.expectedBucket,
         actualBucket,
-        semanticStatus: String(analysis.semanticStatus || "failed"),
+        semanticStatus: safeEnum(analysis.semanticStatus, SAFE_SEMANTIC_STATUSES, "failed"),
         evidenceComplete: Boolean(analysis.evidence?.jd?.length && analysis.evidence?.resume?.length),
         explanation: {
-          decisionSource: String(analysis.decisionSource || ""),
+          decisionSource: safeEnum(analysis.decisionSource, SAFE_DECISION_SOURCES, "unknown"),
           fitReasonCount: Array.isArray(analysis.fitReasons) ? analysis.fitReasons.length : 0,
           missingPointCount: Array.isArray(analysis.missingPoints || analysis.softGaps)
             ? (analysis.missingPoints || analysis.softGaps).length
             : 0
         },
         hardBlocked: Boolean((analysis.hardBlockers || []).length),
-        decisionState: state,
-        errorCode: String(analysis.errorCode || ""),
+        decisionState: safeEnum(state, SAFE_DECISION_STATES, "unknown"),
+        errorCode: safeErrorCode(analysis.errorCode),
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
       };
     });
@@ -842,7 +884,30 @@ function samePrivateSha(baseline, candidate, field) {
   return /^[0-9a-f]{64}$/.test(left) && left === right;
 }
 
+function hasBoundModelIdentity(value) {
+  try {
+    return /^[0-9a-f]{64}$/.test(String(value?.modelIdentity?.requestSettingsSha256 || ""))
+      && valueSha256(value.modelIdentity) === value.modelIdentitySha256;
+  } catch {
+    return false;
+  }
+}
+
 function comparePrivateFullChainResults(baseline, candidate) {
+  for (const [value, side] of [[baseline, "baseline"], [candidate, "candidate"]]) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || value.runMode !== "live"
+      || value.authorizationGatePassed !== true
+      || value.worktreeClean !== true
+      || value.side !== side
+      || value.profileReviewStatus !== "confirmed"
+      || value.cardReviewStatus !== "confirmed"
+      || value.matchingCardProvided !== true
+      || typeof value.matchingCardConsumed !== "boolean"
+      || !hasBoundModelIdentity(value)) {
+      return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires strict live authorization, confirmation, side, worktree, and card-state fields.");
+    }
+  }
   for (const field of [
     "resumeContentSha256",
     "identityManifestSha256",
@@ -858,10 +923,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
   }
   if (baseline?.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || candidate?.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
-    || baseline?.worktreeClean !== true || candidate?.worktreeClean !== true
-    || baseline?.profileReviewStatus !== "confirmed" || candidate?.profileReviewStatus !== "confirmed"
-    || baseline?.cardReviewStatus !== "confirmed" || candidate?.cardReviewStatus !== "confirmed"
-    || baseline?.matchingCardProvided !== true || candidate?.matchingCardProvided !== true) {
+  ) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires clean, confirmed, harness-bound live results.");
   }
   for (const value of [baseline, candidate]) {

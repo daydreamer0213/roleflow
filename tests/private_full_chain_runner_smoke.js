@@ -109,12 +109,18 @@ function makeSyntheticPdf() {
   return Buffer.from(output, "ascii");
 }
 
-function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function stableJson(value) {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError("value is not JSON serializable");
+  return canonicalJson(JSON.parse(serialized));
 }
 
 function valueSha256(value) {
@@ -208,7 +214,10 @@ async function injectedLiveFlowSmoke(identityPath) {
       "synthetic-provider": {
         model: "offline-synthetic-model",
         baseUrl: "https://example.invalid/v1",
-        timeoutMs: 4321
+        timeoutMs: 4321,
+        temperature: 0.1,
+        maxTokens: 4096,
+        apiKey: "synthetic-secret-alpha"
       }
     }
   };
@@ -264,8 +273,8 @@ async function injectedLiveFlowSmoke(identityPath) {
       throw new Error("formal provider resolution must remain unused in injected tests");
     }
   };
-  const seamFor = (side) => ({
-    modelConfig: fakeModelConfig,
+  const seamFor = (side, selectedModelConfig = fakeModelConfig) => ({
+    modelConfig: selectedModelConfig,
     baseConfigs: loadConfigs(path.resolve(__dirname, "..")),
     adapter,
     modules: {
@@ -305,6 +314,45 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(profileBaseline.profileSha256, profileCandidate.profileSha256);
   assert.deepStrictEqual(profileBaseline.profile, confirmedProfile);
   assert.deepStrictEqual(profileCandidate.profile, confirmedProfile);
+  const changedRequestConfig = structuredClone(fakeModelConfig);
+  changedRequestConfig.providers["synthetic-provider"].temperature = 0.9;
+  const changedRequestProfile = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
+    resumeText: resumePath,
+    identity: identityPath
+  }), authorizedEnv(), seamFor("candidate", changedRequestConfig));
+  assert.notStrictEqual(
+    changedRequestProfile.modelIdentitySha256,
+    profileCandidate.modelIdentitySha256,
+    "request-affecting temperature must change private model identity"
+  );
+  const changedSecretConfig = structuredClone(fakeModelConfig);
+  changedSecretConfig.providers["synthetic-provider"].apiKey = "synthetic-secret-beta";
+  const changedSecretProfile = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
+    resumeText: resumePath,
+    identity: identityPath
+  }), authorizedEnv(), seamFor("candidate", changedSecretConfig));
+  assert.strictEqual(
+    changedSecretProfile.modelIdentitySha256,
+    profileCandidate.modelIdentitySha256,
+    "secret values must not enter private model identity"
+  );
+  const optionalProfileSeam = seamFor("candidate");
+  optionalProfileSeam.modules = {
+    ...optionalProfileSeam.modules,
+    analyzeResumeProfile: async () => ({ ...confirmedProfile, optionalUndefined: undefined })
+  };
+  const optionalProfileResult = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
+    resumeText: resumePath,
+    identity: identityPath
+  }), authorizedEnv(), optionalProfileSeam);
+  const persistedOptionalProfile = JSON.parse(fs.readFileSync(privatePath("runs", "candidate", "profile.json"), "utf8"));
+  assert.strictEqual(
+    optionalProfileResult.profileSha256,
+    valueSha256(persistedOptionalProfile.profile),
+    "profile hash must survive JSON write/read when optional fields are undefined"
+  );
+  assert.strictEqual(Object.hasOwn(persistedOptionalProfile.profile, "optionalUndefined"), false);
+  fs.writeFileSync(privatePath("runs", "candidate", "profile.json"), JSON.stringify(profileCandidate, null, 2), "utf8");
 
   await assert.rejects(
     () => runner.runPrivateFullChain(liveOptions("card-live", "baseline", {
@@ -337,6 +385,28 @@ async function injectedLiveFlowSmoke(identityPath) {
   };
   fs.writeFileSync(profilePath, JSON.stringify(profileEnvelope, null, 2), "utf8");
   fs.writeFileSync(cardPath, JSON.stringify(cardEnvelope, null, 2), "utf8");
+  const createMatchProbeBundle = (name) => {
+    const root = privatePath(name);
+    const input = path.join(root, "input");
+    const labelRoot = path.join(root, "labels");
+    fs.mkdirSync(input, { recursive: true });
+    fs.mkdirSync(labelRoot, { recursive: true });
+    fs.copyFileSync(resumePath, path.join(input, "resume.redacted.txt"));
+    fs.copyFileSync(identityPath, path.join(input, "identity.private.json"));
+    fs.copyFileSync(profilePath, path.join(input, "confirmed-profile.private.json"));
+    fs.copyFileSync(cardPath, path.join(input, "confirmed-card.private.json"));
+    fs.copyFileSync(jobsPath, path.join(input, "jobs.private.json"));
+    fs.copyFileSync(labelsPath, path.join(labelRoot, "jobs.reviewed.json"));
+    fs.writeFileSync(path.join(root, "run-manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    return {
+      root,
+      profile: path.join(input, "confirmed-profile.private.json"),
+      card: path.join(input, "confirmed-card.private.json"),
+      jobs: path.join(input, "jobs.private.json"),
+      labels: path.join(labelRoot, "jobs.reviewed.json"),
+      output: path.join(root, "runs", "candidate")
+    };
+  };
   const draftCardPath = privatePath("input", "draft-card.private.json");
   fs.writeFileSync(draftCardPath, JSON.stringify({ ...cardEnvelope, status: "draft", userConfirmed: false }), "utf8");
   await assert.rejects(
@@ -384,6 +454,81 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(!serializedRows.includes(jobs[0].description.slice(0, 48)), "match rows must not copy partial JD excerpts");
   assert.strictEqual(captured.formalProviderResolutions, 0);
 
+  const stringProbe = createMatchProbeBundle("unsafe-row-string-probe");
+  const unsafeText = `Synthetic Candidate ${jobs[0].description.slice(0, 48)}`;
+  const unsafeSeam = seamFor("candidate");
+  unsafeSeam.modules = {
+    ...unsafeSeam.modules,
+    createJobAnalysisRunner: () => async () => ({
+      provider: "synthetic-provider",
+      semanticStatus: unsafeText,
+      decisionSource: unsafeText,
+      recommendation: "review",
+      evidence: { jd: [], resume: [] },
+      fitReasons: [],
+      missingPoints: [],
+      hardBlockers: [],
+      errorCode: unsafeText
+    }),
+    decisionState: () => "ready",
+    decisionBucket: () => "talk"
+  };
+  const safeRowsResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: stringProbe.root,
+    output: stringProbe.output,
+    profile: stringProbe.profile,
+    matchingCard: stringProbe.card,
+    jobs: stringProbe.jobs,
+    labels: stringProbe.labels
+  }), authorizedEnv(), unsafeSeam);
+  for (const row of safeRowsResult.rows) {
+    assert.strictEqual(row.semanticStatus, "failed");
+    assert.strictEqual(row.decisionState, "ready");
+    assert.strictEqual(row.explanation.decisionSource, "unknown");
+    assert.strictEqual(row.errorCode, "MODEL_ANALYSIS_FAILED");
+  }
+  assert(!JSON.stringify(safeRowsResult.rows).includes(unsafeText), "unknown runtime/model strings must not survive row projection");
+  const stateProbe = createMatchProbeBundle("unsafe-decision-state-probe");
+  const unsafeStateSeam = seamFor("candidate");
+  unsafeStateSeam.modules = {
+    ...unsafeStateSeam.modules,
+    decisionState: () => unsafeText,
+    decisionBucket: () => "talk"
+  };
+  const safeStateResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: stateProbe.root,
+    output: stateProbe.output,
+    profile: stateProbe.profile,
+    matchingCard: stateProbe.card,
+    jobs: stateProbe.jobs,
+    labels: stateProbe.labels
+  }), authorizedEnv(), unsafeStateSeam);
+  assert(safeStateResult.rows.every((row) => row.decisionState === "unknown"));
+  assert(!JSON.stringify(safeStateResult.rows).includes(unsafeText), "unknown decision state must not survive row projection");
+  const lifecycleProbe = createMatchProbeBundle("throwing-runner-constructor-probe");
+  let closeCount = 0;
+  const lifecycleSeam = seamFor("candidate");
+  lifecycleSeam.modules = {
+    ...lifecycleSeam.modules,
+    openDb: () => ({ close: () => { closeCount += 1; } }),
+    createJobAnalysisRunner: () => {
+      throw Object.assign(new Error("synthetic constructor failure"), { code: "SYNTHETIC_CONSTRUCTOR_FAILURE" });
+    }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: lifecycleProbe.root,
+      output: lifecycleProbe.output,
+      profile: lifecycleProbe.profile,
+      matchingCard: lifecycleProbe.card,
+      jobs: lifecycleProbe.jobs,
+      labels: lifecycleProbe.labels
+    }), authorizedEnv(), lifecycleSeam),
+    /synthetic constructor failure/
+  );
+  assert.strictEqual(closeCount, 1, "opened SQLite handle must close when runner construction throws");
+  assert(!fs.existsSync(path.join(lifecycleProbe.output, "match-result.json")), "constructor failure must not write a match result");
+
   const compared = runner.comparePrivateFullChainResults(baseline, candidate);
   assert.strictEqual(compared.ok, true);
   assert.strictEqual(compared.report.accepted, true);
@@ -398,6 +543,28 @@ async function injectedLiveFlowSmoke(identityPath) {
   for (const field of ["enteredNotRecommended", "exitedNotRecommended", "enteredPrimary", "hardBlockerChanges"]) {
     assert(Array.isArray(compared.report[field]), `${field} must be reported`);
   }
+  const privateStructuralForgeries = [
+    { ...baseline, runMode: "offline" },
+    { ...baseline, authorizationGatePassed: "true" },
+    { ...baseline, worktreeClean: 1 },
+    { ...baseline, matchingCardProvided: "true" },
+    { ...baseline, matchingCardConsumed: "false" },
+    { ...candidate, matchingCardConsumed: undefined }
+  ];
+  for (const forged of privateStructuralForgeries) {
+    const result = forged.side === "candidate"
+      ? runner.comparePrivateFullChainResults(baseline, forged)
+      : runner.comparePrivateFullChainResults(forged, candidate);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.code, "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY");
+  }
+  const forgedModelFingerprint = structuredClone(candidate);
+  forgedModelFingerprint.modelIdentity.requestSettingsSha256 = "f".repeat(64);
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(baseline, forgedModelFingerprint).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "modelIdentitySha256 must bind the complete sanitized model identity"
+  );
 
   const forgedSummary = { ...candidate, total: candidate.total + 1 };
   assert.strictEqual(runner.comparePrivateFullChainResults(baseline, forgedSummary).code, "BENCHMARK_COMPARE_METRICS");
@@ -432,6 +599,22 @@ async function injectedLiveFlowSmoke(identityPath) {
   ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
   assert.notStrictEqual(invalidCli.status, 0);
   assert(!fs.existsSync(invalidReport), "identity mismatch must not generate an accepted report");
+  assert(!fs.existsSync(invalidReport.replace(/\.json$/i, ".md")), "identity mismatch must not generate Markdown");
+  const structuralBundle = privatePath("cli-invalid-private-structure");
+  const structuralBaseline = path.join(structuralBundle, "runs", "baseline", "match-result.json");
+  const structuralCandidate = path.join(structuralBundle, "runs", "candidate", "match-result.json");
+  const structuralReport = path.join(structuralBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(structuralBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(structuralCandidate), { recursive: true });
+  fs.writeFileSync(structuralBaseline, JSON.stringify(baseline), "utf8");
+  fs.writeFileSync(structuralCandidate, JSON.stringify({ ...candidate, matchingCardConsumed: "true" }), "utf8");
+  const structuralCli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", structuralBaseline, "--candidate", structuralCandidate, "--report", structuralReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(structuralCli.status, 0);
+  assert(!fs.existsSync(structuralReport), "private structural forgery must not generate JSON");
+  assert(!fs.existsSync(structuralReport.replace(/\.json$/i, ".md")), "private structural forgery must not generate Markdown");
 
   const rejectedCandidate = structuredClone(candidate);
   Object.assign(rejectedCandidate.rows[0], {
