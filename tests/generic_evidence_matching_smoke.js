@@ -288,6 +288,98 @@ function comparatorSmoke() {
       },
       code: "BENCHMARK_COMPARE_METRICS"
     },
+    {
+      name: "row 缺 expectedRecommendation",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, expectedRecommendation: undefined, pass: true } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "row 缺 actualRecommendation",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, actualRecommendation: undefined, expectedRecommendation: undefined, pass: true } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "row 缺 expectedBucket",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, expectedBucket: undefined, pass: false } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "row 缺 actualBucket",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, actualBucket: undefined, pass: false } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "recommendation 非法枚举",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, actualRecommendation: "maybe" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "bucket 非法枚举",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, actualBucket: "side" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "pass 必须是 boolean",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, pass: "true" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "semanticStatus 必须是非空字符串",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, semanticStatus: "" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "evidenceComplete 必须是 boolean",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, evidenceComplete: "yes" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "candidate 不得改写人工预期标签制造满分",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing"
+          ? { ...row, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", pass: true, evidenceComplete: true }
+          : row)
+      },
+      code: "BENCHMARK_COMPARE_FIXTURE_SET"
+    },
     { name: "fixture 集合不一致", baseline, candidate: { ...candidate, rows: candidate.rows.slice(1) }, code: "BENCHMARK_COMPARE_FIXTURE_SET" }
   ];
   for (const testCase of failures) {

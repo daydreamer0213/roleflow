@@ -684,7 +684,11 @@ function sameSha256(baseline, candidate, field) {
   return /^[0-9a-f]{64}$/.test(left) && left === right;
 }
 
+const VALID_ROW_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
+const VALID_ROW_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
+
 // 逐行指标派生：不信任任何汇总字段。rows 必须非空、row.id 非空且唯一、
+// 关键字段必须是合法枚举/类型（缺失字段的 undefined===undefined 不得冒充通过）、
 // row.pass 必须与 expected/actual recommendation+bucket 复算一致；
 // total/passed/双准确率/语义状态计数/双证据与两类硬排除全部从这里统一产生，
 // 生成端（runLive）与核对端（compare）共用同一实现，避免漂移。
@@ -698,6 +702,22 @@ function deriveBenchmarkMetrics(rows) {
     if (!id) return failCompare("BENCHMARK_COMPARE_METRICS", "每条 row 必须有非空 id。");
     if (ids.has(id)) return failCompare("BENCHMARK_COMPARE_METRICS", `row.id 重复：${id}，fixture 集合不得被重复 ID 冒充。`);
     ids.add(id);
+    if (!VALID_ROW_RECOMMENDATIONS.has(row.expectedRecommendation)
+      || !VALID_ROW_RECOMMENDATIONS.has(row.actualRecommendation)) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 recommendation 必须是 ${[...VALID_ROW_RECOMMENDATIONS].join("/")} 之一。`);
+    }
+    if (!VALID_ROW_BUCKETS.has(row.expectedBucket) || !VALID_ROW_BUCKETS.has(row.actualBucket)) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 bucket 必须是 ${[...VALID_ROW_BUCKETS].join("/")} 之一。`);
+    }
+    if (typeof row.pass !== "boolean") {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass 必须是 boolean。`);
+    }
+    if (typeof row.semanticStatus !== "string" || !row.semanticStatus.trim()) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 semanticStatus 必须是非空字符串。`);
+    }
+    if (typeof row.evidenceComplete !== "boolean") {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 evidenceComplete 必须是 boolean。`);
+    }
     const derivedPass = row.actualRecommendation === row.expectedRecommendation && row.actualBucket === row.expectedBucket;
     if (row.pass !== derivedPass) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass=${row.pass} 与 recommendation/bucket 复算结果 ${derivedPass} 不一致。`);
@@ -851,6 +871,19 @@ function compareBenchmarkResults(baseline, candidate) {
   if (!baselineIds.length || baselineIds.join("\n") !== candidateIds.join("\n")) {
     return failCompare("BENCHMARK_COMPARE_FIXTURE_SET", "两份结果的 fixture 集合不一致，不能比较：必须使用同一套脱敏 fixture。");
   }
+  // 人工预期标签是 fixture 身份的一部分：candidate 不得通过改写 expected 制造满分。
+  const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
+  for (const row of candidate.rows) {
+    const expected = baselineById.get(row.id);
+    if (!expected) continue;
+    if (row.expectedRecommendation !== expected.expectedRecommendation
+      || row.expectedBucket !== expected.expectedBucket) {
+      return failCompare(
+        "BENCHMARK_COMPARE_FIXTURE_SET",
+        `样本 ${row.id} 的人工预期标签在两侧不一致：candidate 不得改写 expectedRecommendation/expectedBucket。`
+      );
+    }
+  }
   for (const [label, side] of derivedBySide) {
     // 汇总指标必须与 rows 复算完全一致。准确率为 JSON 双精度往返（精确表示），
     // 同一派生函数两端复算，使用严格相等比较，不会误伤合法结果。
@@ -870,7 +903,6 @@ function compareBenchmarkResults(baseline, candidate) {
       );
     }
   }
-  const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
   const regressions = [];
   const improvements = [];
   for (const row of candidate.rows) {
