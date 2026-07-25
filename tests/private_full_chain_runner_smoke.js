@@ -4,6 +4,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const runner = require("../scripts/private-full-chain-runner");
+const { loadConfigs } = require("../src/config");
+const { createJobAnalysisRunner } = require("../src/core/job_analysis");
+const { normalizeMatchingCard } = require("../src/core/matching_card");
+const { profileToRuntimeConfigs } = require("../src/core/search_plan");
+const { scoreJob, decisionState } = require("../src/core/scoring");
+const { openDb, decisionBucket } = require("../src/core/storage");
+const { mapWithConcurrency } = require("../src/core/async_pool");
+const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
+const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
 const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-${process.pid}`);
@@ -97,6 +106,329 @@ function makeSyntheticPdf() {
   output += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
   output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(output, "ascii");
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function valueSha256(value) {
+  return crypto.createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function liveOptions(mode, side, overrides = {}) {
+  const options = {
+    mode,
+    side,
+    privateRoot: testRoot,
+    output: privatePath("runs", side),
+    modelSettingsRoot: "D:\\Guo\\ZhiPing",
+    modelDescriptor: { provider: "synthetic-provider" },
+    gitProof: { clean: true, commit: side === "baseline" ? "1".repeat(40) : "2".repeat(40) },
+    ...overrides
+  };
+  return options;
+}
+
+function applyDerivedMetrics(result) {
+  const derived = deriveBenchmarkMetrics(result.rows);
+  assert.strictEqual(derived.ok, true);
+  return { ...result, ...derived.metrics };
+}
+
+async function injectedLiveFlowSmoke(identityPath) {
+  const selected = [genericFixtures[0], genericFixtures[1], genericFixtures[3], genericFixtures[4]];
+  const confirmedProfile = {
+    ...selected[0].candidateProfile,
+    education: [],
+    credentials: [],
+    strengths: []
+  };
+  const confirmedCard = normalizeMatchingCard(selected[0].matchingCard, { source: "user", editedByUser: true });
+  const redactedText = [
+    "候选人：[姓名已遮盖]",
+    "经历：某淘宝旗舰店，负责店铺经营与投放复盘。",
+    "技能：店铺运营、投放复盘。"
+  ].join("\n");
+  const resumePath = privatePath("input", "resume.redacted.txt");
+  const jobsPath = privatePath("input", "jobs.private.json");
+  const labelsPath = privatePath("labels", "jobs.reviewed.json");
+  const profilePath = privatePath("input", "confirmed-profile.private.json");
+  const cardPath = privatePath("input", "confirmed-card.private.json");
+  const manifest = {
+    runMode: "private-init-manifest",
+    baselineCommit: "1".repeat(40),
+    candidateCommit: "2".repeat(40),
+    sharedFileBlobs: {}
+  };
+  const jobs = selected.map((fixture) => ({
+    id: fixture.id,
+    source: "boss",
+    sourceId: fixture.id,
+    keyword: "合成关键词",
+    title: fixture.job.title,
+    company: "Synthetic Corp",
+    location: "广州",
+    salary: fixture.job.salary,
+    experience: fixture.job.experience,
+    education: "本科",
+    bossActiveText: "今日活跃",
+    url: `https://www.zhipin.com/job_detail/synthetic-${fixture.id}.html`,
+    tags: fixture.job.tags,
+    description: fixture.job.description,
+    capturedAt: "2026-07-25T00:00:00.000Z"
+  }));
+  const labels = {
+    labelsVersion: "private-real-jd-labels.v1",
+    userConfirmed: true,
+    confirmedAt: "2026-07-25T00:00:00.000Z",
+    jobsSha256: valueSha256(jobs),
+    rows: selected.map((fixture) => ({
+      id: fixture.id,
+      expectedRecommendation: fixture.expected.recommendation,
+      expectedBucket: fixture.expected.bucket,
+      rationale: `人工冻结标签：${fixture.scenario}`
+    }))
+  };
+  fs.mkdirSync(path.dirname(resumePath), { recursive: true });
+  fs.mkdirSync(path.dirname(labelsPath), { recursive: true });
+  fs.writeFileSync(resumePath, redactedText, "utf8");
+  fs.writeFileSync(jobsPath, JSON.stringify(jobs, null, 2), "utf8");
+  fs.writeFileSync(labelsPath, JSON.stringify(labels, null, 2), "utf8");
+  fs.writeFileSync(privatePath("run-manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+
+  const fakeModelConfig = {
+    provider: "synthetic-provider",
+    providers: {
+      "synthetic-provider": {
+        model: "offline-synthetic-model",
+        baseUrl: "https://example.invalid/v1",
+        timeoutMs: 4321
+      }
+    }
+  };
+  const captured = {
+    resumeInputs: [],
+    cardProfile: null,
+    matchInputs: [],
+    fifthCardBySide: {},
+    dbPaths: [],
+    formalProviderResolutions: 0
+  };
+  const byId = new Map(selected.map((fixture) => [fixture.id, fixture]));
+  const adapter = {
+    understandJob: async (input) => {
+      const fixture = byId.get(input.job.sourceId);
+      assert(fixture, `missing synthetic fixture ${input.job.sourceId}`);
+      return { jobId: input.job.sourceId, ...fixture.jobUnderstanding };
+    },
+    matchJob: async (input) => {
+      captured.matchInputs.push(input);
+      return byId.get(input.jobUnderstanding.jobId).matchDecision;
+    }
+  };
+  const commonModules = {
+    analyzeResumeProfile: async (input) => {
+      captured.resumeInputs.push(input);
+      return confirmedProfile;
+    },
+    buildCandidateMatchCard: async ({ profile }) => {
+      captured.cardProfile = profile;
+      return selected[0].matchingCard;
+    },
+    normalizeMatchingCard,
+    createJobAnalysisRunner,
+    scoreJob,
+    decisionState,
+    decisionBucket,
+    openDb: (dbPath) => {
+      captured.dbPaths.push(dbPath);
+      return openDb(dbPath);
+    },
+    mapWithConcurrency,
+    resolveRuntimeModelConfig: () => {
+      captured.formalProviderResolutions += 1;
+      throw new Error("formal provider resolution must remain unused in injected tests");
+    }
+  };
+  const seamFor = (side) => ({
+    modelConfig: fakeModelConfig,
+    baseConfigs: loadConfigs(path.resolve(__dirname, "..")),
+    adapter,
+    modules: {
+      ...commonModules,
+      profileToRuntimeConfigs: (...args) => {
+        captured.fifthCardBySide[side] = args[4];
+        return side === "baseline"
+          ? profileToRuntimeConfigs(args[0], args[1], args[2], args[3])
+          : profileToRuntimeConfigs(...args);
+      }
+    }
+  });
+
+  const profileBaseline = await runner.runPrivateFullChain(liveOptions("profile-live", "baseline", {
+    resumeText: resumePath,
+    identity: identityPath
+  }), authorizedEnv(), seamFor("baseline"));
+  const profileCandidate = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
+    resumeText: resumePath,
+    identity: identityPath
+  }), authorizedEnv(), seamFor("candidate"));
+  assert.strictEqual(captured.resumeInputs.length, 2);
+  assert.strictEqual(captured.resumeInputs[0].resume.text.includes("测试候选人"), false);
+  assert.strictEqual(captured.resumeInputs[0].strictPrivacy, true);
+  assert.strictEqual(profileBaseline.resumeContentSha256, profileCandidate.resumeContentSha256);
+  assert.strictEqual(profileBaseline.profileSha256, profileCandidate.profileSha256);
+  assert.deepStrictEqual(profileBaseline.profile, confirmedProfile);
+  assert.deepStrictEqual(profileCandidate.profile, confirmedProfile);
+
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("card-live", "baseline", {
+      profile: privatePath("runs", "baseline", "profile.json")
+    }), authorizedEnv(), { ...seamFor("baseline"), modules: { ...commonModules, buildCandidateMatchCard: undefined } }),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNSUPPORTED"
+  );
+  const draft = await runner.runPrivateFullChain(liveOptions("card-live", "candidate", {
+    profile: privatePath("runs", "candidate", "profile.json")
+  }), authorizedEnv(), seamFor("candidate"));
+  assert.strictEqual(draft.status, "draft");
+  assert.strictEqual(draft.userConfirmed, false);
+  assert.strictEqual(draft.profileSha256, profileCandidate.profileSha256);
+  assert.deepStrictEqual(captured.cardProfile, confirmedProfile);
+
+  const profileEnvelope = {
+    status: "confirmed",
+    userConfirmed: true,
+    confirmedAt: "2026-07-25T00:00:00.000Z",
+    profileSha256: valueSha256(confirmedProfile),
+    profile: confirmedProfile
+  };
+  const cardEnvelope = {
+    id: "private-confirmed-card-v1",
+    status: "confirmed",
+    userConfirmed: true,
+    confirmedAt: "2026-07-25T00:00:00.000Z",
+    profileSha256: profileEnvelope.profileSha256,
+    card: confirmedCard
+  };
+  fs.writeFileSync(profilePath, JSON.stringify(profileEnvelope, null, 2), "utf8");
+  fs.writeFileSync(cardPath, JSON.stringify(cardEnvelope, null, 2), "utf8");
+  const draftCardPath = privatePath("input", "draft-card.private.json");
+  fs.writeFileSync(draftCardPath, JSON.stringify({ ...cardEnvelope, status: "draft", userConfirmed: false }), "utf8");
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      profile: profilePath, matchingCard: draftCardPath, jobs: jobsPath, labels: labelsPath
+    }), authorizedEnv(), seamFor("candidate")),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED"
+  );
+  assert.strictEqual(captured.dbPaths.length, 0, "unconfirmed card must fail before SQLite creation");
+
+  const baseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
+    profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
+  }), authorizedEnv(), seamFor("baseline"));
+  const candidate = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
+  }), authorizedEnv(), seamFor("candidate"));
+  assert.deepStrictEqual(captured.fifthCardBySide.baseline, confirmedCard);
+  assert.deepStrictEqual(captured.fifthCardBySide.candidate, confirmedCard);
+  assert.strictEqual(baseline.matchingCardProvided, true);
+  assert.strictEqual(baseline.matchingCardConsumed, false);
+  assert.strictEqual(candidate.matchingCardProvided, true);
+  assert.strictEqual(candidate.matchingCardConsumed, true);
+  assert.strictEqual(captured.dbPaths.length, 2);
+  assert.notStrictEqual(captured.dbPaths[0], captured.dbPaths[1]);
+  assert.deepStrictEqual(new Set(candidate.rows.map((row) => row.id)), new Set(labels.rows.map((row) => row.id)));
+  const capturedMatch = captured.matchInputs.find((input) => input.candidateMatchCard);
+  assert.deepStrictEqual(capturedMatch.candidateProfile, confirmedProfile);
+  assert.deepStrictEqual(capturedMatch.candidateMatchCard, confirmedCard);
+  for (const field of [
+    "resumeContentSha256", "identityManifestSha256", "fixtureProfileSha256",
+    "fixtureMatchingCardSha256", "fixtureJobSetSha256", "fixtureLabelsSha256", "modelIdentitySha256"
+  ]) {
+    assert.strictEqual(baseline[field], candidate[field], `${field} must match across sides`);
+  }
+  const serializedRows = JSON.stringify(candidate.rows);
+  for (const job of jobs) assert(!serializedRows.includes(job.description), "match rows must not copy full JD text");
+  assert.strictEqual(captured.formalProviderResolutions, 0);
+
+  const compared = runner.comparePrivateFullChainResults(baseline, candidate);
+  assert.strictEqual(compared.ok, true);
+  assert.strictEqual(compared.report.accepted, true);
+  assert.deepStrictEqual(compared.report.profile, {
+    baselineSha256: baseline.fixtureProfileSha256,
+    candidateSha256: candidate.fixtureProfileSha256,
+    baselineReviewStatus: "confirmed",
+    candidateReviewStatus: "confirmed"
+  });
+  assert.strictEqual(compared.report.card.baselineConsumed, false);
+  assert.strictEqual(compared.report.card.candidateConsumed, true);
+  for (const field of ["enteredNotRecommended", "exitedNotRecommended", "enteredPrimary", "hardBlockerChanges"]) {
+    assert(Array.isArray(compared.report[field]), `${field} must be reported`);
+  }
+
+  const forgedSummary = { ...candidate, total: candidate.total + 1 };
+  assert.strictEqual(runner.comparePrivateFullChainResults(baseline, forgedSummary).code, "BENCHMARK_COMPARE_METRICS");
+  const duplicateId = { ...candidate, rows: [...candidate.rows, { ...candidate.rows[0] }] };
+  assert.strictEqual(runner.comparePrivateFullChainResults(baseline, duplicateId).code, "BENCHMARK_COMPARE_METRICS");
+  const tamperedLabels = structuredClone(candidate);
+  tamperedLabels.rows[0].expectedRecommendation = "caution";
+  tamperedLabels.rows[0].actualRecommendation = "caution";
+  tamperedLabels.rows[0].expectedBucket = "talk";
+  tamperedLabels.rows[0].actualBucket = "talk";
+  tamperedLabels.rows[0].pass = true;
+  Object.assign(tamperedLabels, deriveBenchmarkMetrics(tamperedLabels.rows).metrics);
+  assert.strictEqual(runner.comparePrivateFullChainResults(baseline, tamperedLabels).code, "BENCHMARK_COMPARE_FIXTURE_SET");
+  const truncated = structuredClone(candidate);
+  truncated.rows.pop();
+  Object.assign(truncated, deriveBenchmarkMetrics(truncated.rows).metrics);
+  assert.strictEqual(runner.comparePrivateFullChainResults(baseline, truncated).code, "BENCHMARK_COMPARE_FIXTURE_SET");
+  const mismatchedIdentity = { ...candidate, resumeContentSha256: "f".repeat(64) };
+  assert.strictEqual(runner.comparePrivateFullChainResults(baseline, mismatchedIdentity).ok, false);
+  const invalidBundle = privatePath("cli-invalid-identity");
+  const invalidBaseline = path.join(invalidBundle, "runs", "baseline", "match-result.json");
+  const invalidCandidate = path.join(invalidBundle, "runs", "candidate", "match-result.json");
+  const invalidReport = path.join(invalidBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(invalidBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(invalidCandidate), { recursive: true });
+  fs.writeFileSync(invalidBaseline, JSON.stringify(baseline), "utf8");
+  fs.writeFileSync(invalidCandidate, JSON.stringify(mismatchedIdentity), "utf8");
+  const { spawnSync } = require("node:child_process");
+  const invalidCli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", invalidBaseline, "--candidate", invalidCandidate, "--report", invalidReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(invalidCli.status, 0);
+  assert(!fs.existsSync(invalidReport), "identity mismatch must not generate an accepted report");
+
+  const rejectedCandidate = structuredClone(candidate);
+  Object.assign(rejectedCandidate.rows[0], {
+    actualRecommendation: "caution",
+    actualBucket: "talk",
+    pass: false
+  });
+  const rejected = runner.comparePrivateFullChainResults(baseline, applyDerivedMetrics(rejectedCandidate));
+  assert.strictEqual(rejected.ok, true);
+  assert.strictEqual(rejected.report.accepted, false);
+
+  const cliBundle = privatePath("cli-rejected");
+  const cliBaseline = path.join(cliBundle, "runs", "baseline", "match-result.json");
+  const cliCandidate = path.join(cliBundle, "runs", "candidate", "match-result.json");
+  const cliReport = path.join(cliBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(cliBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(cliCandidate), { recursive: true });
+  fs.writeFileSync(cliBaseline, JSON.stringify(baseline), "utf8");
+  fs.writeFileSync(cliCandidate, JSON.stringify(applyDerivedMetrics(rejectedCandidate)), "utf8");
+  const cli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", cliBaseline, "--candidate", cliCandidate, "--report", cliReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", env: { ...process.env, ALLOW_LIVE_MODEL_BENCHMARK: "" } });
+  assert.notStrictEqual(cli.status, 0, "business rejection must exit non-zero");
+  assert.strictEqual(JSON.parse(fs.readFileSync(cliReport, "utf8")).accepted, false);
+  assert(fs.existsSync(cliReport.replace(/\.json$/i, ".md")));
 }
 
 async function main() {
@@ -199,6 +531,8 @@ async function main() {
       phones: ["13800138000"],
       emails: ["candidate@example.com"]
     }, null, 2));
+
+    await injectedLiveFlowSmoke(identityPath);
 
     if (!candidateWorktreeIsClean()) {
       await assert.rejects(
