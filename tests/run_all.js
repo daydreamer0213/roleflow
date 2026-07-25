@@ -29,6 +29,9 @@ const tests = [
   "dashboard_scan_lifecycle_smoke.js",
   "model_adapter_smoke.js",
   "model_parser_resilience_smoke.js",
+  "resume_parser_pdf_order_smoke.js",
+  "resume_privacy_smoke.js",
+  "analyzer_initialization_smoke.js",
   "model_settings_smoke.js",
   "model_settings_ui_smoke.js",
   "observability_smoke.js",
@@ -44,7 +47,8 @@ const tests = [
   "onboarding_smoke.js",
   "communication_smoke.js",
   "flow_smoke.js",
-  "job_match_benchmark.js"
+  "job_match_benchmark.js",
+  "private_full_chain_runner_smoke.js"
 ];
 
 for (const file of tests) {

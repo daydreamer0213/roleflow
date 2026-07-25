@@ -101,4 +101,12 @@ BOSS 访问控制还有独立硬上限和短窗口冷却。正常模式下右栏
 
 ## 开发验证说明
 
-开发与回归验证始终使用保存的 DOM fixture、注入式假模型和临时测试库，不访问真实 BOSS 页面，也不需要启动工作台。真实模型基准是单独授权的验收门禁：只有在用户逐次书面授权（`ALLOW_LIVE_MODEL_BENCHMARK=YES`）后，才用脱敏画像与人工标注 JD fixture 各跑一次基线与候选，再用离线比较器核对两份结果；详见实施计划 `docs/superpowers/plans/2026-07-23-generic-evidence-matching.md` 末节。
+### Offline acceptance boundaries
+
+- Text-based PDF resumes preserve visual reading order; scanned files require pasted text.
+- Local redaction removes names and contact details before a model is used.
+- Users must confirm a matching card before it is used for scanning or matching.
+- The private full-chain benchmark is a merge gate, not part of daily scanning.
+- Real inputs and outputs are never committed to Git.
+
+开发与回归验证使用保存的页面 fixture、注入式假模型和临时测试库，不访问真实 BOSS 页面，也不需要启动工作台。私有完整链路基准仅作为合并验收门禁；日常扫描始终使用离线检查。

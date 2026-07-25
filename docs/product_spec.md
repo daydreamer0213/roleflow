@@ -127,7 +127,15 @@ RoleFlow 是面向普通求职者的本地岗位筛选和投递决策助手。�
 
 ## 发布验收
 
-- `npm.cmd test` 完整离线回归通过；当前测试清单为 43 项。
+### Resume privacy and acceptance boundaries
+
+- Text-based PDF resumes are extracted in visual reading order. For scanned files, paste the text before analysis.
+- Names and contact details are redacted locally before any model call.
+- A matching card takes effect only after the user confirms it.
+- The private full-chain benchmark is a merge gate, not a daily scanning command.
+- Real inputs and outputs never belong in Git.
+
+- `npm.cmd test` 完整离线回归通过；当前测试清单为 47 项。
 - 31 条真实模型人工标注集通过，硬排除误放为 0，主投缺双证据为 0。
 - 主数据库备份后迁移，`PRAGMA quick_check` 为 `ok`，岗位和人工决策数量不下降。
 - 绿色包在干净目录可启动，不包含 Key、数据库、简历、日志或浏览器 profile。
