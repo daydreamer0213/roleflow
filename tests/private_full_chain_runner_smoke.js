@@ -1222,6 +1222,9 @@ async function main() {
       fs.writeFileSync(unsafePdf, makeSyntheticPdf());
       expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: unsafePdf }));
     }
+    fs.rmSync(repositoryPdf, { force: true });
+    fs.rmSync(projectDataPdf, { force: true });
+    fs.rmSync(tempPdf, { force: true });
     const exclusiveTarget = privatePath("exclusive", "artifact.json");
     runner.exclusivePrivateWrite(testRoot, exclusiveTarget, "first");
     assert.throws(
