@@ -666,7 +666,8 @@ function renderMarkdown(summary) {
 
 const COMPARE_METRIC_FIELDS = [
   "total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy",
-  "failed", "stale", "pending", "partial", "hardFalsePlacement", "primaryWithoutEvidence"
+  "failed", "stale", "pending", "partial", "hardFalsePlacement",
+  "falseHardExclusion", "primaryWithoutEvidence"
 ];
 
 function failCompare(code, message) {
@@ -680,6 +681,35 @@ function commitId(value) {
 
 function pickCompareMetrics(result) {
   return Object.fromEntries(COMPARE_METRIC_FIELDS.map((field) => [field, result[field]]));
+}
+
+function sameNonEmptyIdentity(baseline, candidate, field) {
+  const left = String(baseline[field] || "").trim();
+  const right = String(candidate[field] || "").trim();
+  return Boolean(left && right && left === right);
+}
+
+function sameSha256(baseline, candidate, field) {
+  const left = String(baseline[field] || "").trim().toLowerCase();
+  const right = String(candidate[field] || "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(left) && left === right;
+}
+
+// 两类硬排除错误只能从逐行 rows 复算，汇总字段只是必须一致的声明，防止伪造计数。
+function hardPlacementIdentity(result) {
+  const hardFalsePlacementIds = result.rows
+    .filter((row) => row.expectedBucket === "not_recommended" && row.actualBucket !== "not_recommended")
+    .map((row) => row.id)
+    .sort();
+  const falseHardExclusionIds = result.rows
+    .filter((row) => row.expectedBucket !== "not_recommended" && row.actualBucket === "not_recommended")
+    .map((row) => row.id)
+    .sort();
+  return { hardFalsePlacementIds, falseHardExclusionIds };
+}
+
+function sameIds(left, right) {
+  return JSON.stringify([...(left || [])].sort()) === JSON.stringify([...(right || [])].sort());
 }
 
 // 验收门禁：结构可比较只代表两份结果能对齐，是否通过验收由以下硬性条件决定。
@@ -701,6 +731,19 @@ function acceptanceFailures(baseline, candidate) {
   }
   if (candidate.hardFalsePlacement > baseline.hardFalsePlacement) {
     failures.push(`hardFalsePlacement 增加：${baseline.hardFalsePlacement} -> ${candidate.hardFalsePlacement}`);
+  }
+  if (candidate.falseHardExclusion > baseline.falseHardExclusion) {
+    failures.push(`falseHardExclusion 增加：${baseline.falseHardExclusion} -> ${candidate.falseHardExclusion}`);
+  }
+  const newHardFalsePlacementIds = candidate.hardFalsePlacementIds
+    .filter((id) => !baseline.hardFalsePlacementIds.includes(id));
+  if (newHardFalsePlacementIds.length) {
+    failures.push(`新增硬排除漏拦：${newHardFalsePlacementIds.join("、")}`);
+  }
+  const newFalseHardExclusionIds = candidate.falseHardExclusionIds
+    .filter((id) => !baseline.falseHardExclusionIds.includes(id));
+  if (newFalseHardExclusionIds.length) {
+    failures.push(`新增错误硬排除：${newFalseHardExclusionIds.join("、")}`);
   }
   return failures;
 }
@@ -729,6 +772,28 @@ function compareBenchmarkResults(baseline, candidate) {
   if (baselineFixtureProfileId !== candidateFixtureProfileId) {
     return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", `baseline 与 candidate 的 fixtureProfileId 必须相同（${baselineFixtureProfileId} ≠ ${candidateFixtureProfileId}）：双跑必须使用同一份脱敏画像。`);
   }
+  if (!sameSha256(baseline, candidate, "fixtureProfileSha256")) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_PROFILE", "两侧必须使用相同且非空的 profile SHA-256。");
+  }
+  if (!sameSha256(baseline, candidate, "fixtureResumeVersionsSha256")) {
+    return failCompare("BENCHMARK_COMPARE_RESUME_VERSIONS", "两侧必须使用相同且非空的 resume versions SHA-256。");
+  }
+  if (!sameNonEmptyIdentity(baseline, candidate, "fixtureMatchingCardId")
+    || !sameSha256(baseline, candidate, "fixtureMatchingCardSha256")) {
+    return failCompare("BENCHMARK_COMPARE_MATCHING_CARD", "两侧必须使用相同且非空的匹配卡 ID 与 SHA-256。");
+  }
+  if (!sameSha256(baseline, candidate, "fixtureJobSetSha256")) {
+    return failCompare("BENCHMARK_COMPARE_FIXTURE_SET", "两侧必须使用相同且非空的 JD fixture SHA-256。");
+  }
+  const modelFields = ["provider", "model", "timeoutMs", "endpointSha256"];
+  if (!baseline.modelIdentity || !candidate.modelIdentity
+    || !String(baseline.modelIdentity.provider || "")
+    || !String(baseline.modelIdentity.model || "")
+    || !Number.isFinite(baseline.modelIdentity.timeoutMs)
+    || !/^[0-9a-f]{64}$/.test(String(baseline.modelIdentity.endpointSha256 || ""))
+    || modelFields.some((field) => baseline.modelIdentity[field] !== candidate.modelIdentity[field])) {
+    return failCompare("BENCHMARK_COMPARE_MODEL_IDENTITY", "两侧必须使用相同的去密钥模型身份与参数。");
+  }
   const baselineCommit = commitId(baseline.evaluatedCommit);
   const candidateCommit = commitId(candidate.evaluatedCommit);
   const mappedBaselineCommit = commitId(candidate.baselineBehaviorCommit);
@@ -749,6 +814,18 @@ function compareBenchmarkResults(baseline, candidate) {
     }
     if (!Array.isArray(value.rows)) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少逐条 rows，无法核对 fixture 集合。`);
+    }
+    const derived = hardPlacementIdentity(value);
+    if (!Array.isArray(value.hardFalsePlacementIds)
+      || !Array.isArray(value.falseHardExclusionIds)
+      || value.hardFalsePlacement !== derived.hardFalsePlacementIds.length
+      || !sameIds(value.hardFalsePlacementIds, derived.hardFalsePlacementIds)
+      || value.falseHardExclusion !== derived.falseHardExclusionIds.length
+      || !sameIds(value.falseHardExclusionIds, derived.falseHardExclusionIds)) {
+      return failCompare(
+        "BENCHMARK_COMPARE_METRICS",
+        `${label}两类硬排除计数/ID 与 rows 复算结果不一致。`
+      );
     }
   }
   const baselineIds = baseline.rows.map((row) => row && row.id).filter(Boolean).sort();
@@ -774,6 +851,14 @@ function compareBenchmarkResults(baseline, candidate) {
       baselineBehaviorCommit: baselineCommit,
       evaluatedCommit: candidateCommit,
       fixtureProfileId: candidateFixtureProfileId,
+      fixtureProfileSha256: candidate.fixtureProfileSha256,
+      fixtureResumeVersionsSha256: candidate.fixtureResumeVersionsSha256,
+      fixtureMatchingCardId: candidate.fixtureMatchingCardId,
+      fixtureMatchingCardSha256: candidate.fixtureMatchingCardSha256,
+      fixtureJobSetSha256: candidate.fixtureJobSetSha256,
+      modelIdentity: candidate.modelIdentity,
+      hardFalsePlacementIds: [...candidate.hardFalsePlacementIds],
+      falseHardExclusionIds: [...candidate.falseHardExclusionIds],
       accepted: failureReasons.length === 0,
       failureReasons,
       baseline: pickCompareMetrics(baseline),
@@ -863,6 +948,14 @@ function renderComparisonMarkdown(report) {
     `- 基线行为评估点 baselineBehaviorCommit：${report.baselineBehaviorCommit}`,
     `- 候选提交 evaluatedCommit：${report.evaluatedCommit}`,
     `- 脱敏画像 fixtureProfileId：${report.fixtureProfileId}`,
+    `- 脱敏画像 SHA-256：${report.fixtureProfileSha256}`,
+    `- 简历版本 SHA-256：${report.fixtureResumeVersionsSha256}`,
+    `- 匹配卡：${report.fixtureMatchingCardId}`,
+    `- 匹配卡 SHA-256：${report.fixtureMatchingCardSha256}`,
+    `- JD fixture SHA-256：${report.fixtureJobSetSha256}`,
+    `- 模型身份：${report.modelIdentity.provider}/${report.modelIdentity.model}`,
+    `- 候选硬排除漏拦 ID：${report.hardFalsePlacementIds.join("、") || "无"}`,
+    `- 候选错误硬排除 ID：${report.falseHardExclusionIds.join("、") || "无"}`,
     `- 验收结论：${report.accepted ? "通过" : `未通过：${report.failureReasons.join("；")}`}`,
     "",
     "| 指标 | 基线 | 候选 | 差值 |",

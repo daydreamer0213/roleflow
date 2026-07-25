@@ -130,24 +130,38 @@ function liveResult(commit, overrides = {}) {
     evaluatedCommit: commit,
     baselineBehaviorCommit: null,
     fixtureProfileId: "fixture-profile-a",
+    fixtureProfileSha256: "a".repeat(64),
+    fixtureResumeVersionsSha256: "b".repeat(64),
+    fixtureMatchingCardId: "fixture-card-a",
+    fixtureMatchingCardSha256: "c".repeat(64),
+    fixtureJobSetSha256: "d".repeat(64),
+    modelIdentity: {
+      provider: "openai_compatible",
+      model: "benchmark-model",
+      timeoutMs: 60000,
+      endpointSha256: "e".repeat(64)
+    },
     total: 6,
     passed: 5,
     accuracy: 5 / 6,
     recommendationAccuracy: 5 / 6,
-    bucketAccuracy: 1,
+    bucketAccuracy: 5 / 6,
     failed: 0,
     stale: 0,
     pending: 0,
     partial: 0,
-    hardFalsePlacement: 0,
+    hardFalsePlacement: 1,
+    hardFalsePlacementIds: ["java-core-missing"],
+    falseHardExclusion: 0,
+    falseHardExclusionIds: [],
     primaryWithoutEvidence: 0,
     rows: [
-      { id: "ecommerce-core-match", pass: true },
-      { id: "ecommerce-wishlist-sprawl", pass: true },
-      { id: "content-to-user-transfer", pass: true },
-      { id: "user-ops-vs-pure-sales", pass: true },
-      { id: "insufficient-evidence", pass: true },
-      { id: "java-core-missing", pass: false }
+      { id: "ecommerce-core-match", pass: true, expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete" },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "content-to-user-transfer", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" },
+      { id: "insufficient-evidence", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "java-core-missing", pass: false, expectedBucket: "not_recommended", actualBucket: "talk", semanticStatus: "complete" }
     ],
     ...overrides
   };
@@ -160,13 +174,16 @@ function validResultPair() {
     passed: 6,
     accuracy: 1,
     recommendationAccuracy: 1,
+    bucketAccuracy: 1,
+    hardFalsePlacement: 0,
+    hardFalsePlacementIds: [],
     rows: [
-      { id: "ecommerce-core-match", pass: true },
-      { id: "ecommerce-wishlist-sprawl", pass: true },
-      { id: "content-to-user-transfer", pass: true },
-      { id: "user-ops-vs-pure-sales", pass: true },
-      { id: "insufficient-evidence", pass: true },
-      { id: "java-core-missing", pass: true }
+      { id: "ecommerce-core-match", pass: true, expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete" },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "content-to-user-transfer", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" },
+      { id: "insufficient-evidence", pass: true, expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete" },
+      { id: "java-core-missing", pass: true, expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete" }
     ]
   });
   return { baseline, candidate };
@@ -180,9 +197,17 @@ function comparatorSmoke() {
   assert.strictEqual(ok.report.evaluatedCommit, CANDIDATE_COMMIT);
   assert.strictEqual(ok.report.benchmarkHarnessVersion, BENCHMARK_HARNESS_VERSION);
   assert.strictEqual(ok.report.fixtureProfileId, "fixture-profile-a", "报告必须记录双跑共用的脱敏画像标识");
+  assert.strictEqual(ok.report.fixtureMatchingCardId, "fixture-card-a");
+  assert.strictEqual(ok.report.fixtureMatchingCardSha256, "c".repeat(64));
+  assert.strictEqual(ok.report.fixtureProfileSha256, "a".repeat(64));
+  assert.strictEqual(ok.report.fixtureResumeVersionsSha256, "b".repeat(64));
+  assert.strictEqual(ok.report.fixtureJobSetSha256, "d".repeat(64));
+  assert.deepStrictEqual(ok.report.modelIdentity, candidate.modelIdentity);
+  assert.strictEqual(ok.report.baseline.falseHardExclusion, 0);
+  assert.strictEqual(ok.report.candidate.falseHardExclusion, 0);
   assert.deepStrictEqual(ok.report.improvements, ["java-core-missing"]);
   assert.deepStrictEqual(ok.report.regressions, []);
-  for (const field of ["total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy", "hardFalsePlacement", "primaryWithoutEvidence"]) {
+  for (const field of ["total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy", "hardFalsePlacement", "falseHardExclusion", "primaryWithoutEvidence"]) {
     assert(Number.isFinite(ok.report.baseline[field]) && Number.isFinite(ok.report.candidate[field]), `报告必须记录全部指标：${field}`);
   }
 
@@ -199,11 +224,18 @@ function comparatorSmoke() {
     { name: "缺基线 fixtureProfileId", baseline: { ...baseline, fixtureProfileId: "" }, candidate, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
     { name: "缺候选 fixtureProfileId", baseline, candidate: { ...candidate, fixtureProfileId: null }, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
     { name: "fixtureProfileId 不一致", baseline, candidate: { ...candidate, fixtureProfileId: "fixture-profile-b" }, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
+    { name: "画像内容哈希不一致", baseline, candidate: { ...candidate, fixtureProfileSha256: "f".repeat(64) }, code: "BENCHMARK_COMPARE_FIXTURE_PROFILE" },
+    { name: "简历版本哈希不一致", baseline, candidate: { ...candidate, fixtureResumeVersionsSha256: "f".repeat(64) }, code: "BENCHMARK_COMPARE_RESUME_VERSIONS" },
+    { name: "匹配卡 ID 不一致", baseline, candidate: { ...candidate, fixtureMatchingCardId: "fixture-card-b" }, code: "BENCHMARK_COMPARE_MATCHING_CARD" },
+    { name: "匹配卡哈希不一致", baseline, candidate: { ...candidate, fixtureMatchingCardSha256: "f".repeat(64) }, code: "BENCHMARK_COMPARE_MATCHING_CARD" },
+    { name: "JD fixture 哈希不一致", baseline, candidate: { ...candidate, fixtureJobSetSha256: "f".repeat(64) }, code: "BENCHMARK_COMPARE_FIXTURE_SET" },
+    { name: "模型身份不一致", baseline, candidate: { ...candidate, modelIdentity: { ...candidate.modelIdentity, model: "other-model" } }, code: "BENCHMARK_COMPARE_MODEL_IDENTITY" },
     { name: "缺候选提交标识", baseline, candidate: { ...candidate, evaluatedCommit: "" }, code: "BENCHMARK_COMPARE_COMMIT" },
     { name: "缺基线映射标识", baseline, candidate: { ...candidate, baselineBehaviorCommit: null }, code: "BENCHMARK_COMPARE_COMMIT" },
     { name: "基线/候选错位", baseline, candidate: { ...candidate, baselineBehaviorCommit: CANDIDATE_COMMIT }, code: "BENCHMARK_COMPARE_COMMIT" },
     { name: "候选指标字段缺失", baseline, candidate: { ...candidate, accuracy: undefined }, code: "BENCHMARK_COMPARE_METRICS" },
     { name: "候选缺逐条 rows", baseline, candidate: { ...candidate, rows: undefined }, code: "BENCHMARK_COMPARE_METRICS" },
+    { name: "汇总数与 rows 复算不一致", baseline, candidate: { ...candidate, hardFalsePlacement: 1 }, code: "BENCHMARK_COMPARE_METRICS" },
     { name: "fixture 集合不一致", baseline, candidate: { ...candidate, rows: candidate.rows.slice(1) }, code: "BENCHMARK_COMPARE_FIXTURE_SET" }
   ];
   for (const testCase of failures) {
@@ -224,7 +256,51 @@ function comparatorSmoke() {
     { name: "候选 partial 进入 primary", mutate: (c) => ({ ...c, rows: c.rows.map((row) => row.id === "ecommerce-core-match" ? { ...row, semanticStatus: "partial", actualBucket: "primary" } : row) }), reason: /partial/ },
     { name: "recommendationAccuracy 回退", mutate: (c) => ({ ...c, accuracy: 0.5, recommendationAccuracy: 0.5, bucketAccuracy: 0.5 }), reason: /recommendationAccuracy 回退/ },
     { name: "bucketAccuracy 回退", mutate: (c) => ({ ...c, bucketAccuracy: 0.5 }), reason: /bucketAccuracy 回退/ },
-    { name: "hardFalsePlacement 增加", mutate: (c) => ({ ...c, hardFalsePlacement: 1 }), reason: /hardFalsePlacement 增加/ }
+    {
+      name: "hardFalsePlacement 数量增加",
+      mutate: (c) => ({
+        ...c,
+        passed: 4,
+        accuracy: 4 / 6,
+        bucketAccuracy: 4 / 6,
+        hardFalsePlacement: 2,
+        hardFalsePlacementIds: ["java-core-missing", "user-ops-vs-pure-sales"],
+        rows: c.rows.map((row) => ["java-core-missing", "user-ops-vs-pure-sales"].includes(row.id)
+          ? { ...row, actualBucket: "talk", pass: false }
+          : row)
+      }),
+      reason: /hardFalsePlacement 增加/
+    },
+    {
+      name: "相同数量但替换成新的硬排除漏拦 ID",
+      mutate: (c) => ({
+        ...c,
+        passed: 5,
+        accuracy: 5 / 6,
+        bucketAccuracy: 5 / 6,
+        hardFalsePlacement: 1,
+        hardFalsePlacementIds: ["user-ops-vs-pure-sales"],
+        rows: c.rows.map((row) => row.id === "user-ops-vs-pure-sales"
+          ? { ...row, actualBucket: "talk", pass: false }
+          : row)
+      }),
+      reason: /新增硬排除漏拦/
+    },
+    {
+      name: "新增错误硬排除 ID",
+      mutate: (c) => ({
+        ...c,
+        passed: 5,
+        accuracy: 5 / 6,
+        bucketAccuracy: 5 / 6,
+        falseHardExclusion: 1,
+        falseHardExclusionIds: ["ecommerce-core-match"],
+        rows: c.rows.map((row) => row.id === "ecommerce-core-match"
+          ? { ...row, actualBucket: "not_recommended", pass: false }
+          : row)
+      }),
+      reason: /新增错误硬排除/
+    }
   ];
   for (const testCase of acceptanceFailures) {
     const result = compareBenchmarkResults(baseline, testCase.mutate(candidate));
@@ -262,7 +338,7 @@ function compareCliSmoke() {
     // 验收失败：仍写出 accepted:false 诊断报告，但非零退出、携带稳定错误码，且不得打印成功摘要。
     const rejectedCandidatePath = path.join(tmpDir, "rejected-candidate.json");
     const rejectedReportPath = path.join(tmpDir, "rejected-report.json");
-    fs.writeFileSync(rejectedCandidatePath, JSON.stringify({ ...candidate, failed: 1, hardFalsePlacement: 1 }), "utf8");
+    fs.writeFileSync(rejectedCandidatePath, JSON.stringify({ ...candidate, failed: 1, primaryWithoutEvidence: 1 }), "utf8");
     const rejectedRun = spawnSync(process.execPath, [benchmarkScript, "--compare", "--baseline", baselinePath, "--candidate", rejectedCandidatePath, "--report", rejectedReportPath], { cwd: root, encoding: "utf8", env });
     assert.notStrictEqual(rejectedRun.status, 0, "验收未通过的比较必须非零退出");
     assert(`${rejectedRun.stdout}\n${rejectedRun.stderr}`.includes("BENCHMARK_COMPARE_ACCEPTANCE_FAILED"), "验收失败输出必须携带稳定错误码");
