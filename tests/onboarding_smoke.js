@@ -86,8 +86,16 @@ const generatedReports = [];
   assert(settingsHtml.includes('name="apiKey"'));
 
   const sampleResumeText = fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8");
-  const upload = await uploadResume(baseUrl, "sample-resume.txt", fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain");
+  const identityFileName = "测试候选人-AI应用开发.txt";
+  const upload = await uploadResume(baseUrl, identityFileName, fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain");
   assert.strictEqual(upload.status, 303);
+  const parsedLog = latestLogEvent(root, "resume_parsed");
+  assert(parsedLog, "successful resume parsing must emit a diagnostic event");
+  assert.strictEqual(parsedLog.source, "file");
+  assert.strictEqual(parsedLog.format, "txt");
+  assert(!Object.hasOwn(parsedLog, "fileName"), "resume parsing logs must not retain an uploaded filename field");
+  assert(!JSON.stringify(parsedLog).includes(identityFileName));
+  assert(!JSON.stringify(parsedLog).includes("测试候选人"));
   const matchCardLocation = upload.headers.get("location");
   assert(matchCardLocation?.startsWith("/match-card?profileId="), `resume upload must open the matching card page, got ${matchCardLocation}`);
   const matchCardQuery = new URL(`${baseUrl}${matchCardLocation}`).searchParams;
@@ -114,6 +122,28 @@ const generatedReports = [];
     pastedProfileId = Number(pastedQuery.get("profileId"));
     pastedCardId = Number(pastedQuery.get("cardId"));
     assert(pastedProfileId > 0 && pastedCardId > 0 && pastedProfileId !== profileId);
+    const rejectedIdentityValues = ["测试候选人", "13800138000", "candidate@example.com"];
+    const rejectedFileName = "测试候选人-AI应用开发.txt";
+    const rejectedText = [
+      "姓名：测试候选人",
+      "手机：13800138000",
+      "邮箱：candidate@example.com"
+    ].join("\n");
+    const rejectedUpload = await uploadResume(baseUrl, rejectedFileName, Buffer.from(rejectedText, "utf8"), "text/plain");
+    const rejectedBody = await rejectedUpload.text();
+    assert.strictEqual(rejectedUpload.status, 400, rejectedBody);
+    assert(rejectedBody.includes("简历文件解析失败"));
+    assert(rejectedBody.includes("未能读到足够的简历文字"));
+    assert(rejectedBody.includes("RESUME_TEXT_TOO_SHORT"));
+    for (const secret of [rejectedFileName, ...rejectedIdentityValues]) {
+      assert(!rejectedBody.includes(secret), `上传错误页面不得泄露身份值：${secret}`);
+    }
+    const failedLog = latestLogEvent(root, "resume_upload_failed");
+    assert(failedLog, "failed resume parsing must emit a diagnostic event");
+    assert.strictEqual(failedLog.error?.details?.diagnostics?.preview, "[REDACTED]");
+    for (const secret of [rejectedFileName, ...rejectedIdentityValues]) {
+      assert(!JSON.stringify(failedLog).includes(secret), `上传错误日志不得泄露身份值：${secret}`);
+    }
     const shortText = await uploadResumeText(baseUrl, "too short");
     const shortTextBody = await shortText.text();
     assert.strictEqual(shortText.status, 400, shortTextBody);
@@ -546,6 +576,24 @@ function collectGeneratedReports(stdout) {
     const match = line.match(/^(Markdown|HTML):\s*(.+)$/);
     if (match) generatedReports.push(match[2].trim());
   }
+}
+
+function latestLogEvent(projectRoot, event) {
+  const logDir = path.join(projectRoot, ".runtime", "logs");
+  if (!fs.existsSync(logDir)) return null;
+  const entries = [];
+  for (const file of fs.readdirSync(logDir).filter((name) => name.endsWith(".jsonl")).sort()) {
+    for (const line of fs.readFileSync(path.join(logDir, file), "utf8").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.event === event) entries.push(entry);
+      } catch {
+        // Ignore an incomplete log line.
+      }
+    }
+  }
+  return entries.sort((left, right) => String(left.time).localeCompare(String(right.time))).at(-1) || null;
 }
 
 function cleanup() {

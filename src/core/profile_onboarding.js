@@ -21,8 +21,10 @@ async function analyzeResumeProfile({
     identity,
     strict: strictPrivacy
   });
+  const { preview: _rawPreview, ...safeDiagnostics } = resume.diagnostics || {};
   resume.diagnostics = {
-    ...(resume.diagnostics || {}),
+    ...safeDiagnostics,
+    preview: modelInput.preview,
     modelInput: {
       charCount: modelInput.text.length,
       preview: modelInput.preview,

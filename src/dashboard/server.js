@@ -329,11 +329,11 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
         ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
         : parseResumeText({ text: pastedText });
     } catch (error) {
-      const source = file ? `文件“${file.fileName}”` : "粘贴的简历文本";
+      const source = file ? "简历文件" : "粘贴的简历文本";
       error.message = `${source}解析失败：${error.message}`;
       throw error;
     }
-    logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", fileName: resume.originalFileName, format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
+    logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
     const requestedProfileId = Number(form.fields.profileId || 0) || null;
     const existing = requestedProfileId ? getCandidateProfile(db, requestedProfileId) : null;
     const reusableCard = existing && listMatchingCards(db, existing.id)

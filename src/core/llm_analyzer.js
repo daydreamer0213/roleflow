@@ -29,30 +29,35 @@ function validateAdapterResult(kind, value) {
   }
 }
 
-const defaultAnalyzer = createLlmAnalyzer();
+let defaultAnalyzer = null;
+
+function getDefaultAnalyzer() {
+  if (!defaultAnalyzer) defaultAnalyzer = createLlmAnalyzer();
+  return defaultAnalyzer;
+}
 
 function analyzeResume(input) {
-  return defaultAnalyzer.analyzeResume(input);
+  return getDefaultAnalyzer().analyzeResume(input);
 }
 
 function understandJob(input) {
-  return defaultAnalyzer.understandJob(input);
+  return getDefaultAnalyzer().understandJob(input);
 }
 
 function recommendSearchPlan(input) {
-  return defaultAnalyzer.recommendSearchPlan(input);
+  return getDefaultAnalyzer().recommendSearchPlan(input);
 }
 
 function matchJob(input) {
-  return defaultAnalyzer.matchJob(input);
+  return getDefaultAnalyzer().matchJob(input);
 }
 
 function draftCommunication(input) {
-  return defaultAnalyzer.draftCommunication(input);
+  return getDefaultAnalyzer().draftCommunication(input);
 }
 
 function buildCandidateMatchCard(input) {
-  return defaultAnalyzer.buildCandidateMatchCard(input);
+  return getDefaultAnalyzer().buildCandidateMatchCard(input);
 }
 
 module.exports = {

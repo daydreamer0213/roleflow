@@ -4,6 +4,8 @@ const {
   assertResumeIdentityRedacted
 } = require("../src/core/resume_privacy");
 const { analyzeResumeProfile } = require("../src/core/profile_onboarding");
+const { parseResumeText } = require("../src/core/resume_parser");
+const { errorMeta } = require("../src/core/observability");
 
 const input = [
   "测试候选人",
@@ -129,14 +131,21 @@ for (const fact of ["星河项目", "示例科技", "Python", "RAG", "2024.03-20
   assert.strictEqual(analyzerFactoryCalls, 0);
 
   let modelResumeText = "";
-  const resume = {
-    text: input,
-    originalFileName: "测试候选人-AI应用开发.pdf",
-    diagnostics: {}
+  const downstreamLogs = [];
+  const logger = {
+    info(event, fields) {
+      downstreamLogs.push({ event, ...fields });
+    }
   };
-  await analyzeResumeProfile({
+  const resume = parseResumeText({
+    text: input,
+    fileName: "测试候选人-AI应用开发.txt"
+  });
+  assert(resume.diagnostics.preview.includes("测试候选人"), "production parser fixture must start with an identity-bearing preview");
+  const profile = await analyzeResumeProfile({
     modelConfig: { provider: "mock" },
     resume,
+    logger,
     identity,
     strictPrivacy: true,
     analyzerFactory() {
@@ -144,16 +153,26 @@ for (const fact of ["星河项目", "示例科技", "Python", "RAG", "2024.03-20
       return {
         async analyzeResume({ resumeText }) {
           modelResumeText = resumeText;
-          return {};
+          logger.info("model_resume_received", { resumeText });
+          return { candidate: { name: "候选人" } };
         }
       };
     }
   });
   assert.strictEqual(analyzerFactoryCalls, 1);
+  const safeError = errorMeta(Object.assign(new Error("模型边界处理失败。"), {
+    code: "MODEL_BOUNDARY_FAILED",
+    details: { modelResumeText }
+  }));
   for (const secret of ["测试候选人", "13800138000", "candidate@example.com"]) {
     assert(!modelResumeText.includes(secret));
     assert(!JSON.stringify(resume.diagnostics).includes(secret));
+    assert(!JSON.stringify(profile).includes(secret));
+    assert(!JSON.stringify(downstreamLogs).includes(secret));
+    assert(!JSON.stringify(safeError).includes(secret));
   }
+  assert(resume.diagnostics.preview.includes("[姓名已隐藏]"));
+  assert.strictEqual(resume.diagnostics.modelInput.preview, resume.diagnostics.preview);
 
   console.log("resume_privacy_smoke ok");
 })().catch((error) => {

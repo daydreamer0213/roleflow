@@ -196,7 +196,9 @@ async function checkMockAnalyzer() {
   assert.strictEqual(onboarding.profile.source.inputMethod, "text_utf8");
   assert(planKeywords(onboarding.plan).length > 0);
   const savedProfile = saveProfileAnalysis(db, { profile: onboarding.profile, document: resume, searchPlan: onboarding.plan });
-  assert.strictEqual(getCandidateProfile(db, savedProfile.profileId).profile.candidate.name, "测试候选人");
+  const savedCandidateName = getCandidateProfile(db, savedProfile.profileId).profile.candidate.name;
+  assert(savedCandidateName);
+  assert(!savedCandidateName.includes("测试候选人"), "post-onboarding profile surfaces must not restore the original identity");
   assert.strictEqual(getSearchPlan(db, savedProfile.planId).profileId, savedProfile.profileId);
   assert(listCandidateResumeVersions(db, savedProfile.profileId).length >= 1);
   const initialVersions = listCandidateResumeVersions(db, savedProfile.profileId);
