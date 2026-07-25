@@ -1,4 +1,5 @@
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -14,21 +15,26 @@ const { mapWithConcurrency } = require("../src/core/async_pool");
 const root = path.resolve(__dirname, "..");
 const fixtures = require("./fixtures/job_match_benchmark.json");
 
-const BENCHMARK_HARNESS_VERSION = "sanitized-live-harness.v2";
+const BENCHMARK_HARNESS_VERSION = "sanitized-live-harness.v3";
 const LIVE_BENCHMARK_ENV = "ALLOW_LIVE_MODEL_BENCHMARK";
 const LIVE_BENCHMARK_OUTPUT_ENV = "BENCHMARK_LIVE_OUTPUT_DIR";
 const LIVE_BENCHMARK_EVALUATED_COMMIT_ENV = "BENCHMARK_EVALUATED_COMMIT";
 const LIVE_BENCHMARK_BASELINE_COMMIT_ENV = "BENCHMARK_BASELINE_BEHAVIOR_COMMIT";
+const LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV = "BENCHMARK_MODEL_SETTINGS_ROOT";
 const LIVE_BENCHMARK_CHILD_ENV = "ROLEFLOW_BENCHMARK_OFFLINE_CHILD";
 const LIVE_PROFILE_FIXTURE = path.join("tests", "fixtures", "live_benchmark_profile.json");
 const LIVE_RESUME_VERSIONS_FIXTURE = path.join("tests", "fixtures", "live_benchmark_resume_versions.json");
+const LIVE_MATCHING_CARD_FIXTURE = path.join("tests", "fixtures", "live_benchmark_matching_card.json");
+const LIVE_JOB_FIXTURE = path.join("tests", "fixtures", "job_match_benchmark.json");
 const LIVE_FIXTURE_PROFILE_ID = "live_benchmark_sanitized_profile";
+const LIVE_FIXTURE_MATCHING_CARD_ID = "live_benchmark_sanitized_matching_card";
 const LIVE_SOURCE_URL = /^https?:\/\//i;
 const LIVE_SOURCE_HOST = /(zhipin\.com|zhaopin\.com|liepin\.com|lagou\.com|51job\.com|linkedin\.com)/i;
 
 validateFixtures();
 
 function assertGateContractOffline() {
+  assert.strictEqual(BENCHMARK_HARNESS_VERSION, "sanitized-live-harness.v3");
   assert.strictEqual(
     typeof validateLiveBenchmarkRequest,
     "function",
@@ -42,6 +48,8 @@ function assertGateContractOffline() {
     live: true,
     profilePath: LIVE_PROFILE_FIXTURE,
     resumeVersionsPath: LIVE_RESUME_VERSIONS_FIXTURE,
+    matchingCardPath: LIVE_MATCHING_CARD_FIXTURE,
+    modelSettingsRoot: "D:\\Guo\\ZhiPing",
     outputDir: externalOutput,
     actualCommit,
     worktreeClean: true
@@ -56,6 +64,10 @@ function assertGateContractOffline() {
     { name: "fixture 指向主项目数据库", options: { ...baseOptions, profilePath: "data/jobs.sqlite" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_UNSANITIZED_INPUT" },
     { name: "fixture 指向招聘网站", options: { ...baseOptions, profilePath: "https://www.zhipin.com/job_detail/x.html" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_FORBIDDEN_SOURCE" },
     { name: "fixture 路径不在白名单", options: { ...baseOptions, profilePath: "tests/fixtures/job_match_benchmark.json" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_FIXTURE_MISMATCH" },
+    { name: "匹配卡指向真实画像目录", options: { ...baseOptions, matchingCardPath: "profiles/matching_card.json" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_UNSANITIZED_INPUT" },
+    { name: "匹配卡不在白名单", options: { ...baseOptions, matchingCardPath: "tests/fixtures/generic_evidence_matching.json" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_FIXTURE_MISMATCH" },
+    { name: "缺模型设置根目录", options: { ...baseOptions, modelSettingsRoot: "" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_REQUIRED" },
+    { name: "模型设置根目录指向当前 worktree", options: { ...baseOptions, modelSettingsRoot: root }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_FORBIDDEN" },
     { name: "缺输出目录", options: { ...baseOptions, outputDir: "" }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_REQUIRED" },
     { name: "输出目录在主项目 data", options: { ...baseOptions, outputDir: path.join(root, "data", "benchmark") }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
     { name: "输出目录在仓库 .runtime", options: { ...baseOptions, outputDir: path.join(root, ".runtime", "benchmark") }, env: authorizedEnv, provider: realProvider, code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
@@ -90,6 +102,8 @@ function assertGateContractOffline() {
   assert.strictEqual(providerCalls, 0, "评估提交与实际 HEAD 不一致时门禁不得解析 provider");
   validateLiveBenchmarkRequest({ ...baseOptions, worktreeClean: false }, authorizedEnv, countingProvider);
   assert.strictEqual(providerCalls, 0, "工作树有未提交改动时门禁不得解析 provider");
+  validateLiveBenchmarkRequest({ ...baseOptions, modelSettingsRoot: "" }, authorizedEnv, countingProvider);
+  assert.strictEqual(providerCalls, 0, "缺模型设置根目录时不得解析 provider");
   const granted = validateLiveBenchmarkRequest(baseOptions, authorizedEnv, countingProvider);
   assert.strictEqual(providerCalls, 1, "全部条件满足时门禁恰好解析一次 provider");
   assert(granted.ok === true && granted.code === "OK", "全部条件满足时门禁必须放行");
@@ -98,8 +112,29 @@ function assertGateContractOffline() {
   assert.strictEqual(granted.request.benchmarkHarnessVersion, BENCHMARK_HARNESS_VERSION);
   assert.strictEqual(granted.request.profilePath, resolveAgainstRoot(LIVE_PROFILE_FIXTURE));
   assert.strictEqual(granted.request.resumeVersionsPath, resolveAgainstRoot(LIVE_RESUME_VERSIONS_FIXTURE));
+  assert.strictEqual(granted.request.matchingCardPath, resolveAgainstRoot(LIVE_MATCHING_CARD_FIXTURE));
+  assert.strictEqual(granted.request.modelSettingsRoot, canonicalizeExisting("D:\\Guo\\ZhiPing"));
   assert.strictEqual(granted.request.outputDir, canonicalizeExisting(externalOutput));
   assert.strictEqual(granted.request.evaluatedCommit, actualCommit, "实时结果必须记录当前 checkout 的完整实际 HEAD");
+
+  const profile = JSON.parse(fs.readFileSync(resolveAgainstRoot(LIVE_PROFILE_FIXTURE), "utf8"));
+  const resumeVersions = JSON.parse(fs.readFileSync(resolveAgainstRoot(LIVE_RESUME_VERSIONS_FIXTURE), "utf8"));
+  const envelope = JSON.parse(fs.readFileSync(resolveAgainstRoot(LIVE_MATCHING_CARD_FIXTURE), "utf8"));
+  const bundle = validateLiveFixtureBundle(profile, resumeVersions, envelope);
+  assert.strictEqual(bundle.ok, true);
+  assert.strictEqual(bundle.matchingCard, envelope.card);
+
+  for (const invalid of [
+    { profile, resumeVersions, envelope: { ...envelope, id: "" } },
+    { profile, resumeVersions, envelope: { ...envelope, profileId: "wrong-profile" } },
+    { profile, resumeVersions, envelope: { ...envelope, resumeVersionIds: ["wrong-version"] } },
+    { profile: { ...profile, education: [] }, resumeVersions, envelope },
+    { profile: { ...profile, experiences: [] }, resumeVersions, envelope }
+  ]) {
+    const result = validateLiveFixtureBundle(invalid.profile, invalid.resumeVersions, invalid.envelope);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.code, "LIVE_BENCHMARK_FIXTURE_IDENTITY");
+  }
 }
 
 function validateFixtures() {
@@ -131,7 +166,8 @@ function checkLiveFixturePaths(paths) {
   }
   const resolved = {
     profilePath: resolveAgainstRoot(paths.profilePath),
-    resumeVersionsPath: resolveAgainstRoot(paths.resumeVersionsPath)
+    resumeVersionsPath: resolveAgainstRoot(paths.resumeVersionsPath),
+    matchingCardPath: resolveAgainstRoot(paths.matchingCardPath)
   };
   for (const key of Object.keys(resolved)) {
     const segments = resolved[key].split(path.sep);
@@ -140,8 +176,9 @@ function checkLiveFixturePaths(paths) {
     }
   }
   if (resolved.profilePath !== resolveAgainstRoot(LIVE_PROFILE_FIXTURE)
-    || resolved.resumeVersionsPath !== resolveAgainstRoot(LIVE_RESUME_VERSIONS_FIXTURE)) {
-    return failLiveBenchmark("LIVE_BENCHMARK_FIXTURE_MISMATCH", "实时基准只能读取 tests/fixtures 下两份脱敏 fixture。");
+    || resolved.resumeVersionsPath !== resolveAgainstRoot(LIVE_RESUME_VERSIONS_FIXTURE)
+    || resolved.matchingCardPath !== resolveAgainstRoot(LIVE_MATCHING_CARD_FIXTURE)) {
+    return failLiveBenchmark("LIVE_BENCHMARK_FIXTURE_MISMATCH", "实时基准只能读取 tests/fixtures 下固定的画像、简历版本和匹配卡 fixture。");
   }
   return { ok: true, resolved };
 }
@@ -190,6 +227,33 @@ function checkLiveOutputDir(rawOutputDir) {
   return { ok: true, resolved };
 }
 
+function checkLiveModelSettingsRoot(rawRoot) {
+  const raw = String(rawRoot || "").trim();
+  if (!raw) {
+    return failLiveBenchmark(
+      "LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_REQUIRED",
+      `实时基准需要显式 --model-settings-root 或 ${LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV}。`
+    );
+  }
+  if (LIVE_SOURCE_URL.test(raw)) {
+    return failLiveBenchmark("LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_FORBIDDEN", "模型设置根目录必须是本机绝对路径。");
+  }
+  const resolved = canonicalizeExisting(raw);
+  const benchmarkRoot = canonicalizeExisting(root);
+  const homeRoot = canonicalizeExisting(os.homedir());
+  const tempRoot = canonicalizeExisting(os.tmpdir());
+  if (!path.isAbsolute(resolved)
+    || isWithinDirectory(resolved, benchmarkRoot)
+    || isWithinDirectory(resolved, homeRoot)
+    || isWithinDirectory(resolved, tempRoot)) {
+    return failLiveBenchmark(
+      "LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_FORBIDDEN",
+      "模型设置根目录必须是当前 benchmark worktree 之外、用户目录和临时目录之外的显式本机路径。"
+    );
+  }
+  return { ok: true, resolved };
+}
+
 function validateLiveBenchmarkRequest(options, env, provider) {
   const opts = options || {};
   const environ = env || {};
@@ -201,7 +265,8 @@ function validateLiveBenchmarkRequest(options, env, provider) {
   }
   const fixtureCheck = checkLiveFixturePaths({
     profilePath: opts.profilePath || LIVE_PROFILE_FIXTURE,
-    resumeVersionsPath: opts.resumeVersionsPath || LIVE_RESUME_VERSIONS_FIXTURE
+    resumeVersionsPath: opts.resumeVersionsPath || LIVE_RESUME_VERSIONS_FIXTURE,
+    matchingCardPath: opts.matchingCardPath || LIVE_MATCHING_CARD_FIXTURE
   });
   if (!fixtureCheck.ok) return fixtureCheck;
   const outputCheck = checkLiveOutputDir(opts.outputDir || environ[LIVE_BENCHMARK_OUTPUT_ENV]);
@@ -214,6 +279,10 @@ function validateLiveBenchmarkRequest(options, env, provider) {
   if (opts.worktreeClean !== true) {
     return failLiveBenchmark("LIVE_BENCHMARK_WORKTREE_DIRTY", "实时基准只允许在无未提交改动的干净 worktree 运行，避免结果冒充某个 HEAD。");
   }
+  const modelSettingsRootCheck = checkLiveModelSettingsRoot(
+    opts.modelSettingsRoot || environ[LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV]
+  );
+  if (!modelSettingsRootCheck.ok) return modelSettingsRootCheck;
   if (typeof provider !== "function") {
     return failLiveBenchmark("LIVE_BENCHMARK_PROVIDER_REQUIRED", "实时基准要求 provider 以纯函数注入。");
   }
@@ -230,6 +299,8 @@ function validateLiveBenchmarkRequest(options, env, provider) {
       benchmarkHarnessVersion: BENCHMARK_HARNESS_VERSION,
       profilePath: fixtureCheck.resolved.profilePath,
       resumeVersionsPath: fixtureCheck.resolved.resumeVersionsPath,
+      matchingCardPath: fixtureCheck.resolved.matchingCardPath,
+      modelSettingsRoot: modelSettingsRootCheck.resolved,
       outputDir: outputCheck.resolved,
       evaluatedCommit: commitCheck.resolved
     }
@@ -249,16 +320,17 @@ function checkLiveEvaluatedCommit(requestedCommit, actualCommit) {
 }
 
 function parseLiveArgs(argv) {
-  const options = { outputDir: "", evaluatedCommit: "", baselineBehaviorCommit: "" };
+  const options = { outputDir: "", evaluatedCommit: "", baselineBehaviorCommit: "", modelSettingsRoot: "" };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--live") continue;
-    if (arg === "--output-dir" || arg === "--evaluated-commit" || arg === "--baseline-commit") {
+    if (["--output-dir", "--evaluated-commit", "--baseline-commit", "--model-settings-root"].includes(arg)) {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) throw new Error(`${arg} 缺少取值`);
       if (arg === "--output-dir") options.outputDir = value;
       if (arg === "--evaluated-commit") options.evaluatedCommit = value;
       if (arg === "--baseline-commit") options.baselineBehaviorCommit = value;
+      if (arg === "--model-settings-root") options.modelSettingsRoot = value;
       index += 1;
       continue;
     }
@@ -291,6 +363,7 @@ function assertLiveFailureBranchesOffline() {
   const branchEnv = (extra) => {
     const env = { ...process.env, [LIVE_BENCHMARK_CHILD_ENV]: "1", ...extra };
     delete env[LIVE_BENCHMARK_OUTPUT_ENV];
+    delete env[LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV];
     if (!extra || !extra[LIVE_BENCHMARK_ENV]) delete env[LIVE_BENCHMARK_ENV];
     return env;
   };
@@ -301,7 +374,8 @@ function assertLiveFailureBranchesOffline() {
   const branches = [
     { name: "缺授权", args: ["--live", "--output-dir", externalOutput], env: branchEnv(), code: "LIVE_BENCHMARK_NOT_AUTHORIZED" },
     { name: "缺输出目录", args: ["--live"], env: branchEnv(authorized), code: "LIVE_BENCHMARK_OUTPUT_DIR_REQUIRED" },
-    { name: "危险输出目录", args: ["--live", "--output-dir", path.join(root, "data", "benchmark")], env: branchEnv(authorized), code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" }
+    { name: "危险输出目录", args: ["--live", "--output-dir", path.join(root, "data", "benchmark")], env: branchEnv(authorized), code: "LIVE_BENCHMARK_OUTPUT_DIR_FORBIDDEN" },
+    { name: "缺模型设置根目录", args: ["--live", "--output-dir", externalOutput], env: branchEnv(authorized), code: "LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_REQUIRED" }
   ];
   for (const branch of branches) {
     const result = spawnSync(process.execPath, [__filename, ...branch.args], { encoding: "utf8", cwd: root, env: branch.env });
@@ -316,6 +390,62 @@ function assertLiveFailureBranchesOffline() {
   assert(String(offline.stdout || "").includes("fixtures ok"), "离线自检必须保持原有通过输出");
 }
 
+function validateLiveFixtureBundle(profile, resumeVersions, envelope) {
+  const versionIds = Array.isArray(resumeVersions?.versions)
+    ? resumeVersions.versions.map((item) => String(item?.id || "").trim()).filter(Boolean)
+    : [];
+  const card = envelope?.card;
+  const cardLists = ["targetDirections", "strongEvidence", "transferableCapabilities", "cautionTransitions", "userNotes"];
+  const valid = profile?.id === LIVE_FIXTURE_PROFILE_ID
+    && Array.isArray(profile.education) && profile.education.length > 0
+    && Array.isArray(profile.experiences) && profile.experiences.length > 0
+    && versionIds.length > 0
+    && envelope?.id === LIVE_FIXTURE_MATCHING_CARD_ID
+    && envelope?.profileId === profile.id
+    && JSON.stringify(envelope?.resumeVersionIds) === JSON.stringify(versionIds)
+    && card && typeof card === "object"
+    && card.source === "user"
+    && cardLists.every((field) => Array.isArray(card[field]));
+  if (!valid) {
+    return failLiveBenchmark(
+      "LIVE_BENCHMARK_FIXTURE_IDENTITY",
+      "v3 脱敏画像、简历版本与匹配卡的结构或关联标识不一致。"
+    );
+  }
+  return { ok: true, profile, resumeVersions, envelope, matchingCard: card };
+}
+
+function readJsonFixture(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function sha256File(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function fixtureIdentity(request, envelope) {
+  return {
+    fixtureProfileId: LIVE_FIXTURE_PROFILE_ID,
+    fixtureProfileSha256: sha256File(request.profilePath),
+    fixtureResumeVersionsSha256: sha256File(request.resumeVersionsPath),
+    fixtureMatchingCardId: envelope.id,
+    fixtureMatchingCardSha256: sha256File(request.matchingCardPath),
+    fixtureJobSetSha256: sha256File(resolveAgainstRoot(LIVE_JOB_FIXTURE))
+  };
+}
+
+function sanitizedModelIdentity(modelConfig) {
+  const provider = String(modelConfig?.provider || "");
+  const selected = modelConfig?.providers?.[provider] || {};
+  const endpoint = String(selected.baseUrl || "");
+  return {
+    provider,
+    model: String(selected.model || ""),
+    timeoutMs: Number(selected.timeoutMs || 0),
+    endpointSha256: endpoint ? crypto.createHash("sha256").update(endpoint).digest("hex") : ""
+  };
+}
+
 async function runLive() {
   const cliOptions = parseLiveArgs(process.argv.slice(2));
   const actualCommit = tryGitHead();
@@ -325,6 +455,8 @@ async function runLive() {
       live: true,
       profilePath: LIVE_PROFILE_FIXTURE,
       resumeVersionsPath: LIVE_RESUME_VERSIONS_FIXTURE,
+      matchingCardPath: LIVE_MATCHING_CARD_FIXTURE,
+      modelSettingsRoot: cliOptions.modelSettingsRoot,
       outputDir: cliOptions.outputDir,
       evaluatedCommit: cliOptions.evaluatedCommit,
       actualCommit,
@@ -333,7 +465,12 @@ async function runLive() {
     process.env,
     () => {
       if (!resolvedModelConfig) {
-        resolvedModelConfig = resolveRuntimeModelConfig({ root, fallbackModelConfig: loadConfigs(root).model }).modelConfig;
+        resolvedModelConfig = resolveRuntimeModelConfig({
+          root: canonicalizeExisting(
+            cliOptions.modelSettingsRoot || process.env[LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV]
+          ),
+          fallbackModelConfig: loadConfigs(root).model
+        }).modelConfig;
       }
       return { provider: resolvedModelConfig && resolvedModelConfig.provider };
     }
@@ -343,16 +480,31 @@ async function runLive() {
     error.code = requestGate.code;
     throw error;
   }
-  const base = loadConfigs(root, { profile: LIVE_PROFILE_FIXTURE, resumeVersions: LIVE_RESUME_VERSIONS_FIXTURE });
-  if (!base.candidateProfile || base.candidateProfile.id !== LIVE_FIXTURE_PROFILE_ID) {
-    const error = new Error("实时基准画像 fixture 缺失或缺少脱敏标识。");
-    error.code = "LIVE_BENCHMARK_FIXTURE_MISMATCH";
+  const profile = readJsonFixture(requestGate.request.profilePath);
+  const resumeVersions = readJsonFixture(requestGate.request.resumeVersionsPath);
+  const envelope = readJsonFixture(requestGate.request.matchingCardPath);
+  const bundle = validateLiveFixtureBundle(profile, resumeVersions, envelope);
+  if (!bundle.ok) {
+    const error = new Error(bundle.message);
+    error.code = bundle.code;
     throw error;
   }
+
+  const base = loadConfigs(root);
+  base.candidateProfile = bundle.profile;
+  base.resumeVersions = bundle.resumeVersions;
   base.model = resolvedModelConfig;
-  const candidateProfile = base.candidateProfile;
+  const candidateProfile = bundle.profile;
   const searchPlan = benchmarkPlan(candidateProfile);
-  const configs = profileToRuntimeConfigs(base, candidateProfile, searchPlan);
+  const configs = profileToRuntimeConfigs(
+    base,
+    candidateProfile,
+    searchPlan,
+    null,
+    bundle.matchingCard
+  );
+  const inputIdentity = fixtureIdentity(requestGate.request, bundle.envelope);
+  const modelIdentity = sanitizedModelIdentity(resolvedModelConfig);
   const outputDir = requestGate.request.outputDir;
   fs.mkdirSync(outputDir, { recursive: true });
   const db = openDb(path.join(outputDir, "model-cache.sqlite"));
@@ -396,8 +548,17 @@ async function runLive() {
   const passed = rows.filter((row) => row.pass).length;
   const recommendationMatches = rows.filter((row) => row.actualRecommendation === row.expectedRecommendation).length;
   const bucketMatches = rows.filter((row) => row.actualBucket === row.expectedBucket).length;
-  const hardExpected = rows.filter((row) => row.expectedBucket === "not_recommended");
-  const hardFalsePlacement = hardExpected.filter((row) => row.actualBucket !== "not_recommended").length;
+  // 两类硬排除错误分开统计：本该 not_recommended 却被放过（漏拦）、本不该却被误杀（错误硬排除）。
+  const hardFalsePlacementIds = rows
+    .filter((row) => row.expectedBucket === "not_recommended" && row.actualBucket !== "not_recommended")
+    .map((row) => row.id)
+    .sort();
+  const falseHardExclusionIds = rows
+    .filter((row) => row.expectedBucket !== "not_recommended" && row.actualBucket === "not_recommended")
+    .map((row) => row.id)
+    .sort();
+  const hardFalsePlacement = hardFalsePlacementIds.length;
+  const falseHardExclusion = falseHardExclusionIds.length;
   const primaryWithoutEvidence = rows.filter((row) => row.actualBucket === "primary" && !row.evidenceComplete).length;
   const summary = {
     runMode: "live",
@@ -405,7 +566,8 @@ async function runLive() {
     benchmarkHarnessVersion: BENCHMARK_HARNESS_VERSION,
     evaluatedCommit: requestGate.request.evaluatedCommit,
     baselineBehaviorCommit: cliOptions.baselineBehaviorCommit || process.env[LIVE_BENCHMARK_BASELINE_COMMIT_ENV] || null,
-    fixtureProfileId: candidateProfile.id,
+    ...inputIdentity,
+    modelIdentity,
     evaluatedAt: new Date().toISOString(),
     total: rows.length,
     passed,
@@ -417,6 +579,9 @@ async function runLive() {
     pending: rows.filter((row) => row.semanticStatus === "pending").length,
     partial: rows.filter((row) => row.semanticStatus === "partial").length,
     hardFalsePlacement,
+    hardFalsePlacementIds,
+    falseHardExclusion,
+    falseHardExclusionIds,
     primaryWithoutEvidence,
     rows
   };
@@ -474,10 +639,17 @@ function renderMarkdown(summary) {
     `- 评估提交：${summary.evaluatedCommit || "未记录"}`,
     `- 基线行为评估点：${summary.baselineBehaviorCommit || "未提供"}`,
     `- 画像 fixture：${summary.fixtureProfileId}`,
+    `- 画像 SHA-256：${summary.fixtureProfileSha256}`,
+    `- 简历版本 SHA-256：${summary.fixtureResumeVersionsSha256}`,
+    `- 匹配卡：${summary.fixtureMatchingCardId}`,
+    `- 匹配卡 SHA-256：${summary.fixtureMatchingCardSha256}`,
+    `- JD fixture SHA-256：${summary.fixtureJobSetSha256}`,
+    `- 模型身份：${summary.modelIdentity.provider}/${summary.modelIdentity.model}`,
     `- 通过：${summary.passed}/${summary.total}`,
     `- recommendation/bucket 准确率：${summary.recommendationAccuracy}/${summary.bucketAccuracy}`,
     `- 失败/过期/待分析/部分：${summary.failed}/${summary.stale}/${summary.pending}/${summary.partial}`,
-    `- 硬排除误放：${summary.hardFalsePlacement}`,
+    `- 硬排除漏拦：${summary.hardFalsePlacement}（${summary.hardFalsePlacementIds.join("、") || "无"}）`,
+    `- 错误硬排除：${summary.falseHardExclusion}（${summary.falseHardExclusionIds.join("、") || "无"}）`,
     `- 主投缺少双证据：${summary.primaryWithoutEvidence}`,
     "",
     "| ID | 分类 | 期望 | 实际 | 状态 |",
