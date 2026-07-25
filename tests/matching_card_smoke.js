@@ -147,11 +147,40 @@ try {
     "不同卡内容必须产生不同修订指纹"
   );
 
+  assertLiveBenchmarkFixtures();
   assertDocumentationCoversMatchingCardWorkflow();
 
   console.log("matching_card_smoke ok");
 } finally {
   db.close();
+}
+
+function assertLiveBenchmarkFixtures() {
+  const root = path.resolve(__dirname, "..");
+  const profile = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "live_benchmark_profile.json"), "utf8"));
+  const resumeVersions = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "live_benchmark_resume_versions.json"), "utf8"));
+  const envelope = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "live_benchmark_matching_card.json"), "utf8"));
+
+  assert.strictEqual(profile.id, "live_benchmark_sanitized_profile");
+  assert(Array.isArray(profile.education) && profile.education.length > 0, "live profile 必须包含结构化教育经历");
+  assert(Array.isArray(profile.experiences) && profile.experiences.length > 0, "live profile 必须包含结构化经历");
+  assert(profile.skills.every((item) => item && typeof item === "object" && item.name && Array.isArray(item.evidence)));
+  assert(profile.projects.every((item) => item.roleBoundary && Array.isArray(item.canSay) && Array.isArray(item.avoidSaying)));
+
+  const versionIds = resumeVersions.versions.map((item) => item.id);
+  assert.deepStrictEqual(versionIds, ["ai_rag_agent", "python_backend_ai"]);
+  assert.strictEqual(envelope.id, "live_benchmark_sanitized_matching_card");
+  assert.strictEqual(envelope.profileId, profile.id);
+  assert.deepStrictEqual(envelope.resumeVersionIds, versionIds);
+  assert.strictEqual(envelope.card.source, "user");
+
+  const normalized = normalizeMatchingCard(envelope.card, { source: "user", editedByUser: true });
+  assert.deepStrictEqual(normalized, envelope.card, "静态匹配卡必须已经符合现有规范化契约");
+  assert(normalized.transferableCapabilities.every((item) => item.limitation), "每条可迁移能力必须写明限制");
+  const serialized = JSON.stringify({ profile, resumeVersions, envelope });
+  for (const forbidden of ["13800138000", "candidate@example.com", "D:\\Guo\\ZhiPing", "guo_mingfu"]) {
+    assert(!serialized.includes(forbidden), `脱敏 fixture 不得包含 ${forbidden}`);
+  }
 }
 
 function assertDocumentationCoversMatchingCardWorkflow() {
