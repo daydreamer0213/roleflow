@@ -157,6 +157,15 @@ async function main() {
     const pdfPath = externalPdf;
     const identityPath = privatePath("identity.private.json");
     fs.mkdirSync(externalRoot, { recursive: true });
+    const gitProbe = path.join(externalRoot, "git-was-called.txt");
+    fs.writeFileSync(path.join(externalRoot, "git.cmd"), `@echo off\necho called > "${gitProbe}"\nexit /b 1\n`, "utf8");
+    const { spawnSync } = require("node:child_process");
+    const cliFailure = spawnSync(process.execPath, [path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"), "--prepare", "--private-root", "D:\\unsafe-private-root"], {
+      encoding: "utf8", cwd: path.resolve(__dirname, ".."), env: { ...authorizedEnv(), PATH: `${externalRoot};${process.env.PATH}` }
+    });
+    assert.notStrictEqual(cliFailure.status, 0);
+    assert(`${cliFailure.stdout}${cliFailure.stderr}`.includes("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN"));
+    assert(!fs.existsSync(gitProbe), "CLI must finish pure path/authorization validation before spawning git");
     fs.writeFileSync(pdfPath, makeSyntheticPdf());
     fs.writeFileSync(identityPath, JSON.stringify({
       names: ["Synthetic Candidate"],
