@@ -834,36 +834,41 @@ function compareBenchmarkResults(baseline, candidate) {
   if (baselineCommit !== mappedBaselineCommit) {
     return failCompare("BENCHMARK_COMPARE_COMMIT", `基线/候选对应关系错位：候选声明的 baselineBehaviorCommit=${mappedBaselineCommit}，但基线结果的 evaluatedCommit=${baselineCommit}。`);
   }
+  const derivedBySide = new Map();
   for (const [label, value] of [["基线", baseline], ["候选", candidate]]) {
     for (const field of COMPARE_METRIC_FIELDS) {
       if (!Number.isFinite(value[field])) {
         return failCompare("BENCHMARK_COMPARE_METRICS", `${label}结果缺少数值指标字段 ${field}，不得凭部分指标宣称比较有效。`);
       }
     }
-    // 汇总指标必须与 rows 复算完全一致。准确率为 JSON 双精度往返（精确表示），
-    // 同一派生函数两端复算，使用严格相等比较，不会误伤合法结果。
+    // 行级结构（非空、id 非空且唯一、pass 与复算一致）先于集合比较校验。
     const derived = deriveBenchmarkMetrics(value.rows);
     if (!derived.ok) return derived;
-    for (const field of DERIVED_SUMMARY_FIELDS) {
-      if (value[field] !== derived.metrics[field]) {
-        return failCompare(
-          "BENCHMARK_COMPARE_METRICS",
-          `${label}汇总字段 ${field}=${value[field]} 与 rows 复算值 ${derived.metrics[field]} 不一致。`
-        );
-      }
-    }
-    if (!sameIds(value.hardFalsePlacementIds, derived.metrics.hardFalsePlacementIds)
-      || !sameIds(value.falseHardExclusionIds, derived.metrics.falseHardExclusionIds)) {
-      return failCompare(
-        "BENCHMARK_COMPARE_METRICS",
-        `${label}两类硬排除 ID 与 rows 复算结果不一致。`
-      );
-    }
+    derivedBySide.set(label, { value, metrics: derived.metrics });
   }
   const baselineIds = baseline.rows.map((row) => row && row.id).filter(Boolean).sort();
   const candidateIds = candidate.rows.map((row) => row && row.id).filter(Boolean).sort();
   if (!baselineIds.length || baselineIds.join("\n") !== candidateIds.join("\n")) {
     return failCompare("BENCHMARK_COMPARE_FIXTURE_SET", "两份结果的 fixture 集合不一致，不能比较：必须使用同一套脱敏 fixture。");
+  }
+  for (const [label, side] of derivedBySide) {
+    // 汇总指标必须与 rows 复算完全一致。准确率为 JSON 双精度往返（精确表示），
+    // 同一派生函数两端复算，使用严格相等比较，不会误伤合法结果。
+    for (const field of DERIVED_SUMMARY_FIELDS) {
+      if (side.value[field] !== side.metrics[field]) {
+        return failCompare(
+          "BENCHMARK_COMPARE_METRICS",
+          `${label}汇总字段 ${field}=${side.value[field]} 与 rows 复算值 ${side.metrics[field]} 不一致。`
+        );
+      }
+    }
+    if (!sameIds(side.value.hardFalsePlacementIds, side.metrics.hardFalsePlacementIds)
+      || !sameIds(side.value.falseHardExclusionIds, side.metrics.falseHardExclusionIds)) {
+      return failCompare(
+        "BENCHMARK_COMPARE_METRICS",
+        `${label}两类硬排除 ID 与 rows 复算结果不一致。`
+      );
+    }
   }
   const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
   const regressions = [];
