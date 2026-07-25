@@ -4,7 +4,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const runner = require("../scripts/private-full-chain-runner");
-const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner } = require("../src/core/job_analysis");
 const { normalizeMatchingCard } = require("../src/core/matching_card");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
@@ -67,6 +66,30 @@ function expectGateOk(options, env = authorizedEnv()) {
 function candidateWorktreeIsClean() {
   const { execFileSync } = require("node:child_process");
   return !execFileSync("git", ["status", "--porcelain"], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", windowsHide: true }).trim();
+}
+
+async function withoutRepositoryModelSettings(flow) {
+  const repositoryModelSettings = path.resolve(__dirname, "..", "configs", "model.json");
+  const originalExistsSync = fs.existsSync;
+  const originalReadFileSync = fs.readFileSync;
+  let reads = 0;
+  fs.existsSync = (target) => path.resolve(String(target)) === repositoryModelSettings
+    ? true
+    : originalExistsSync(target);
+  fs.readFileSync = (target, ...args) => {
+    if (path.resolve(String(target)) === repositoryModelSettings) {
+      reads += 1;
+      throw new Error("injected private runner flow must not read repository model settings");
+    }
+    return originalReadFileSync(target, ...args);
+  };
+  try {
+    await flow();
+  } finally {
+    fs.existsSync = originalExistsSync;
+    fs.readFileSync = originalReadFileSync;
+  }
+  assert.strictEqual(reads, 0, "injected private runner flow must not access configs/model.json");
 }
 
 function textAt(text, x, y) {
@@ -221,6 +244,23 @@ async function injectedLiveFlowSmoke(identityPath) {
       }
     }
   };
+  const baseConfigs = {
+    profile: {
+      candidate: { name: "Synthetic Candidate", city: "", target_roles: [], strengths: [] },
+      location: { target_cities: [], default_city: "", boss_city_code: "" },
+      safety: { read_only: true, manual_confirmation_required: true }
+    },
+    keywords: { keywords: [] },
+    scoring: {
+      boss_activity: { max_active_days: 3, unknown_penalty: 3, inactive_penalty: 10 },
+      work_schedule: { preference: "prefer_double_weekend", double_weekend_bonus: 4, alternating_weekend_penalty: 3, single_weekend_penalty: 6 },
+      salary: { preferred_max_k: 24, hard_max_k: 35, experience_flex_max_k: 18 },
+      positive_keywords: [], risk_rules: [], exclude_words: []
+    },
+    model: { provider: "mock", providers: { mock: {} } },
+    candidateProfile: null,
+    resumeVersions: { versions: [] }
+  };
   const captured = {
     resumeInputs: [],
     cardProfile: null,
@@ -275,7 +315,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   };
   const seamFor = (side, selectedModelConfig = fakeModelConfig) => ({
     modelConfig: selectedModelConfig,
-    baseConfigs: loadConfigs(path.resolve(__dirname, "..")),
+    baseConfigs,
     adapter,
     modules: {
       ...commonModules,
@@ -806,7 +846,7 @@ async function main() {
       emails: ["candidate@example.com"]
     }, null, 2));
 
-    await injectedLiveFlowSmoke(identityPath);
+    await withoutRepositoryModelSettings(() => injectedLiveFlowSmoke(identityPath));
 
     if (!candidateWorktreeIsClean()) {
       await assert.rejects(
