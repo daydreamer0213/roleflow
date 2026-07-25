@@ -194,6 +194,7 @@ function confirmedCardEnvelope(profileEnvelope, draft, card, id) {
     profileResultSha256: profileEnvelope.profileResultSha256,
     profileSha256: profileEnvelope.profileSha256,
     cardSha256: valueSha256(card),
+    draftProfileResultSha256: draft.profileResultSha256,
     draftSha256: draft.draftSha256,
     draft,
     card
@@ -622,6 +623,28 @@ async function injectedLiveFlowSmoke(identityPath) {
       matchingCard: cardForgeryProbe.card,
       jobs: cardForgeryProbe.jobs,
       labels: cardForgeryProbe.labels
+    }), authorizedEnv(), preflightSeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED"
+  );
+  const crossProfileDraftProbe = createMatchProbeBundle("card-cross-profile-draft-forgery");
+  const crossProfileDraft = JSON.parse(fs.readFileSync(crossProfileDraftProbe.card, "utf8"));
+  crossProfileDraft.draft.profileSha256 = "e".repeat(64);
+  crossProfileDraft.draft.profileResultSha256 = "d".repeat(64);
+  crossProfileDraft.draft.draftSha256 = valueSha256({
+    ...crossProfileDraft.draft,
+    draftSha256: undefined
+  });
+  crossProfileDraft.draftProfileResultSha256 = crossProfileDraft.draft.profileResultSha256;
+  crossProfileDraft.draftSha256 = crossProfileDraft.draft.draftSha256;
+  fs.writeFileSync(crossProfileDraftProbe.card, JSON.stringify(crossProfileDraft), "utf8");
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: crossProfileDraftProbe.root,
+      output: crossProfileDraftProbe.output,
+      profile: crossProfileDraftProbe.profile,
+      matchingCard: crossProfileDraftProbe.card,
+      jobs: crossProfileDraftProbe.jobs,
+      labels: crossProfileDraftProbe.labels
     }), authorizedEnv(), preflightSeam),
     (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED"
   );

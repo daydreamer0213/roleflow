@@ -674,6 +674,10 @@ function confirmedCardInput(value, profileInput, context) {
     || draft.modelIdentitySha256 !== value.modelIdentitySha256
     || draft.resumeContentSha256 !== value.resumeContentSha256
     || draft.identityManifestSha256 !== value.identityManifestSha256
+    || draft.profileSha256 !== value.profileSha256
+    || !/^[0-9a-f]{64}$/.test(String(value.draftProfileResultSha256 || ""))
+    || draft.profileResultSha256 !== value.draftProfileResultSha256
+    || (context.side === "candidate" && draft.profileResultSha256 !== value.profileResultSha256)
     || draft.cardSha256 !== valueSha256(draft.card)) {
     throw runnerError("PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED", "Match live requires a confirmed card whose profile hash matches the canonical profile.");
   }
