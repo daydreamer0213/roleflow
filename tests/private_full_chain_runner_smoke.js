@@ -393,15 +393,11 @@ async function injectedLiveFlowSmoke(identityPath) {
   );
   assert.strictEqual(captured.resumeInputs.length, 0, "identity redaction failure must precede the profile analyzer");
 
-  const profileBaseline = await runner.runPrivateFullChain(liveOptions("profile-live", "baseline", {
-    resumeText: resumePath,
-    identity: identityPath
-  }), authorizedEnv(), seamFor("baseline"));
   const profileCandidate = await runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
     resumeText: resumePath,
     identity: identityPath
   }), authorizedEnv(), seamFor("candidate"));
-  for (const result of [profileBaseline, profileCandidate]) {
+  for (const result of [profileCandidate]) {
     assert.strictEqual(result.runMode, "offline-test", "injected profile runs must never claim live authorization");
     assert.strictEqual(result.authorizationGatePassed, false);
     assert.strictEqual(result.runManifestSha256, runManifestSha256);
@@ -410,12 +406,9 @@ async function injectedLiveFlowSmoke(identityPath) {
       profileResultSha256: undefined
     }));
   }
-  assert.strictEqual(captured.resumeInputs.length, 2);
+  assert.strictEqual(captured.resumeInputs.length, 1);
   assert.strictEqual(captured.resumeInputs[0].resume.text.includes("测试候选人"), false);
   assert.strictEqual(captured.resumeInputs[0].strictPrivacy, true);
-  assert.strictEqual(profileBaseline.resumeContentSha256, profileCandidate.resumeContentSha256);
-  assert.strictEqual(profileBaseline.profileSha256, profileCandidate.profileSha256);
-  assert.deepStrictEqual(profileBaseline.profile, confirmedProfile);
   assert.deepStrictEqual(profileCandidate.profile, confirmedProfile);
   const changedRequestConfig = structuredClone(fakeModelConfig);
   changedRequestConfig.providers["synthetic-provider"].temperature = 0.9;
@@ -471,6 +464,16 @@ async function injectedLiveFlowSmoke(identityPath) {
     (error) => error.code === "PRIVATE_FULL_CHAIN_INPUT_IDENTITY",
     "a formal card run must reject an offline-test profile result"
   );
+  assert.doesNotThrow(
+    () => runner.validateProfileResultProvenance(profileCandidate, {
+      injected: true,
+      manifest,
+      runManifestSha256,
+      side: "baseline",
+      evaluatedCommit: "1".repeat(40)
+    }),
+    "baseline matching must accept the one candidate-derived canonical profile"
+  );
   const tamperedProfilePath = privatePath("input", "tampered-profile-result.json");
   fs.writeFileSync(tamperedProfilePath, JSON.stringify({
     ...profileCandidate,
@@ -493,8 +496,16 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(cardPreflightConfigReads, 0, "profile provenance must fail before loadConfigs");
 
   await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("profile-live", "baseline", {
+      resumeText: resumePath,
+      identity: identityPath
+    }), authorizedEnv(), seamFor("baseline")),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PROFILE_UNSUPPORTED"
+  );
+
+  await assert.rejects(
     () => runner.runPrivateFullChain(liveOptions("card-live", "baseline", {
-      profile: privatePath("runs", "baseline", "profile.json")
+      profile: privatePath("runs", "candidate", "profile.json")
     }), authorizedEnv(), { ...seamFor("baseline"), modules: { ...commonModules, buildCandidateMatchCard: undefined } }),
     (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNSUPPORTED"
   );
@@ -511,28 +522,20 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(draft.draftSha256, valueSha256({ ...draft, draftSha256: undefined }));
   assert.deepStrictEqual(captured.cardProfile, confirmedProfile);
 
-  const baselineProfilePath = privatePath("input", "confirmed-profile-baseline.private.json");
-  const baselineCardPath = privatePath("input", "confirmed-card-baseline.private.json");
   const profileEnvelope = confirmedProfileEnvelope(profileCandidate, "private-confirmed-profile-v1");
-  const baselineProfileEnvelope = confirmedProfileEnvelope(profileBaseline, "private-confirmed-profile-v1");
   const cardEnvelope = confirmedCardEnvelope(profileEnvelope, draft, confirmedCard, "private-confirmed-card-v1");
-  const baselineCardEnvelope = confirmedCardEnvelope(baselineProfileEnvelope, draft, confirmedCard, "private-confirmed-card-v1");
   fs.writeFileSync(profilePath, JSON.stringify(profileEnvelope, null, 2), "utf8");
   fs.writeFileSync(cardPath, JSON.stringify(cardEnvelope, null, 2), "utf8");
-  fs.writeFileSync(baselineProfilePath, JSON.stringify(baselineProfileEnvelope, null, 2), "utf8");
-  fs.writeFileSync(baselineCardPath, JSON.stringify(baselineCardEnvelope, null, 2), "utf8");
   const createMatchProbeBundle = (name, side = "candidate") => {
     const root = privatePath(name);
     const input = path.join(root, "input");
     const labelRoot = path.join(root, "labels");
-    const selectedProfilePath = side === "baseline" ? baselineProfilePath : profilePath;
-    const selectedCardPath = side === "baseline" ? baselineCardPath : cardPath;
     fs.mkdirSync(input, { recursive: true });
     fs.mkdirSync(labelRoot, { recursive: true });
     fs.copyFileSync(resumePath, path.join(input, "resume.redacted.txt"));
     fs.copyFileSync(identityPath, path.join(input, "identity.private.json"));
-    fs.copyFileSync(selectedProfilePath, path.join(input, "confirmed-profile.private.json"));
-    fs.copyFileSync(selectedCardPath, path.join(input, "confirmed-card.private.json"));
+    fs.copyFileSync(profilePath, path.join(input, "confirmed-profile.private.json"));
+    fs.copyFileSync(cardPath, path.join(input, "confirmed-card.private.json"));
     fs.copyFileSync(jobsPath, path.join(input, "jobs.private.json"));
     fs.copyFileSync(labelsPath, path.join(labelRoot, "jobs.reviewed.json"));
     fs.writeFileSync(path.join(root, "run-manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
@@ -669,20 +672,6 @@ async function injectedLiveFlowSmoke(identityPath) {
     }), authorizedEnv(), preflightSeam),
     (error) => error.code === "PRIVATE_FULL_CHAIN_CARD_UNCONFIRMED"
   );
-  const wrongSideProbe = createMatchProbeBundle("baseline-current-provenance-forgery", "baseline");
-  fs.copyFileSync(profilePath, wrongSideProbe.profile);
-  fs.copyFileSync(cardPath, wrongSideProbe.card);
-  await assert.rejects(
-    () => runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
-      privateRoot: wrongSideProbe.root,
-      output: wrongSideProbe.output,
-      profile: wrongSideProbe.profile,
-      matchingCard: wrongSideProbe.card,
-      jobs: wrongSideProbe.jobs,
-      labels: wrongSideProbe.labels
-    }), authorizedEnv(), preflightSeam),
-    (error) => error.code === "PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED"
-  );
   assert.deepStrictEqual(preflightCounts, {
     loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0
   }, "profile/card provenance failures must stop before config, provider, or SQLite access");
@@ -719,6 +708,10 @@ async function injectedLiveFlowSmoke(identityPath) {
   await expectFixtureReject("labels-jobs-sha-required", (_probeJobs, probeLabels) => { delete probeLabels.jobsSha256; }, { refreshJobsSha: false });
   await expectFixtureReject("labels-recommendation-enum", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedRecommendation = "maybe"; });
   await expectFixtureReject("labels-bucket-enum", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedBucket = "analysis_pending"; });
+  await expectFixtureReject("labels-contradictory-pair", (_probeJobs, probeLabels) => {
+    probeLabels.rows[0].expectedRecommendation = "apply";
+    probeLabels.rows[0].expectedBucket = "talk";
+  });
   await expectFixtureReject("labels-rationale", (_probeJobs, probeLabels) => { probeLabels.rows[0].rationale = "  "; });
   await expectFixtureReject("labels-extra-field", (_probeJobs, probeLabels) => { probeLabels.rows[0].actualRecommendation = "apply"; });
   assert.deepStrictEqual(preflightCounts, {
@@ -726,7 +719,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   }, "JD and label integrity failures must stop before config, provider, or SQLite access");
 
   const offlineBaseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
-    profile: baselineProfilePath, matchingCard: baselineCardPath, jobs: jobsPath, labels: labelsPath
+    profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("baseline"));
   const offlineCandidate = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
@@ -766,6 +759,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   }
   assert.match(baseline.fixtureProfileResultSha256, /^[0-9a-f]{64}$/);
   assert.match(candidate.fixtureProfileResultSha256, /^[0-9a-f]{64}$/);
+  assert.strictEqual(baseline.fixtureProfileResultSha256, candidate.fixtureProfileResultSha256,
+    "both match results must bind the same candidate-derived profile result");
   const serializedRows = JSON.stringify(candidate.rows);
   for (const job of jobs) assert(!serializedRows.includes(job.description), "match rows must not copy full JD text");
   assert(!serializedRows.includes("Synthetic Candidate"), "match rows must not copy identity-bearing model text");
@@ -981,6 +976,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     runner.comparePrivateFullChainResults(baseline, forgedModelFingerprint).code,
     "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
     "modelIdentitySha256 must bind the complete sanitized model identity"
+  );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(baseline, { ...candidate, fixtureProfileResultSha256: "f".repeat(64) }).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "private compare must reject a mismatched canonical profile result hash"
   );
 
   const forgedSummary = { ...candidate, total: candidate.total + 1 };

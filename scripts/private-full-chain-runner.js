@@ -20,6 +20,7 @@ const PRIVATE_JOB_KEYS = [
 const PRIVATE_LABEL_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
 const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
 const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
+const PRIVATE_LABEL_PAIRS = new Set(["apply/primary", "caution/talk", "review/talk", "skip/not_recommended"]);
 const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
@@ -803,7 +804,8 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
     || labels.some((label) => !sameKeys(label, PRIVATE_LABEL_KEYS)
       || !String(label.rationale || "").trim()
       || !PRIVATE_RECOMMENDATIONS.has(label.expectedRecommendation)
-      || !PRIVATE_BUCKETS.has(label.expectedBucket))) {
+      || !PRIVATE_BUCKETS.has(label.expectedBucket)
+      || !PRIVATE_LABEL_PAIRS.has(`${label.expectedRecommendation}/${label.expectedBucket}`))) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Job and label IDs must be unique, complete, and exactly equal.");
   }
   const jobsSha256 = valueSha256(jobs);
@@ -851,9 +853,7 @@ function profileResultPayload(value) {
 function validateProfileResultProvenance(value, context) {
   const expectedRunMode = context.injected ? "offline-test" : "live-profile";
   const expectedAuthorized = !context.injected;
-  const expectedCommit = String(context.side === "baseline"
-    ? context.manifest?.baselineProductCommit
-    : context.manifest?.candidateProductCommit || "").toLowerCase();
+  const expectedCommit = String(context.manifest?.candidateProductCommit || "").toLowerCase();
   let profileSha256;
   try { profileSha256 = valueSha256(value?.profile); } catch { profileSha256 = ""; }
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -861,8 +861,7 @@ function validateProfileResultProvenance(value, context) {
     || value.authorizationGatePassed !== expectedAuthorized
     || value.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || value.runManifestSha256 !== context.runManifestSha256
-    || value.side !== context.side
-    || String(value.evaluatedCommit || "").toLowerCase() !== String(context.evaluatedCommit || "").toLowerCase()
+    || value.side !== "candidate"
     || String(value.evaluatedCommit || "").toLowerCase() !== expectedCommit
     || value.worktreeClean !== true
     || value.profileReviewStatus !== "pending"
@@ -957,6 +956,9 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const gate = validatePrivateFullChainRequest(gateOptions, env, null);
   if (!gate.ok) throw runnerError(gate.code, gate.message);
   const request = gate.request;
+  if (request.mode === "profile-live" && request.side !== "candidate") {
+    throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNSUPPORTED", "The baseline product does not generate the canonical candidate profile.");
+  }
   const resultFile = request.mode === "profile-live" ? path.join(request.output, "profile.json")
     : request.mode === "card-live" ? path.join(request.output, "matching-card-draft.json")
       : path.join(request.output, "match-result.json");
@@ -1204,6 +1206,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
   for (const field of [
     "resumeContentSha256",
     "identityManifestSha256",
+    "fixtureProfileResultSha256",
     "fixtureProfileSha256",
     "fixtureMatchingCardSha256",
     "fixtureMatchingCardDraftSha256",

@@ -206,7 +206,6 @@ Expected:
 ### Task 3: 生成并确认真实画像与匹配卡
 
 **Files:**
-- Private: `runs\baseline\profile.json`
 - Private: `runs\candidate\profile.json`
 - Private: `runs\candidate\matching-card-draft.json`
 - Private: `input\confirmed-profile.private.json`
@@ -230,27 +229,25 @@ ALLOW_LIVE_MODEL_BENCHMARK=YES
 - 通过 `--model-settings-root D:\Guo\ZhiPing` 只读加载；
 - 不打印设置路径、endpoint、密钥或原始简历。
 
-- [ ] **Step 2: 串行生成 baseline profile**
+- [ ] **Step 2: 仅从 candidate worktree 生成 canonical profile**
 
-Run from baseline worktree:
+Run from candidate worktree:
 
 ```powershell
 $env:ALLOW_PRIVATE_RESUME_BENCHMARK='YES'
 $env:ALLOW_LIVE_MODEL_BENCHMARK='YES'
 node scripts/private-full-chain-runner.js --profile-live `
-  --side baseline `
+  --side candidate `
   --private-root "$env:ROLEFLOW_PRIVATE_ROOT" `
   --resume-text "$env:ROLEFLOW_PRIVATE_ROOT\input\resume.redacted.txt" `
   --identity "$env:ROLEFLOW_PRIVATE_ROOT\input\identity.private.json" `
   --model-settings-root 'D:\Guo\ZhiPing' `
-  --output "$env:ROLEFLOW_PRIVATE_ROOT\runs\baseline"
+  --output "$env:ROLEFLOW_PRIVATE_ROOT\runs\candidate"
 ```
 
-等待完成并检查终态后才能运行 candidate。
+- [ ] **Step 3: 只复用该 candidate profile**
 
-- [ ] **Step 3: 串行生成 candidate profile**
-
-在 candidate worktree 运行相同命令，只将 `--side` 和输出改为 `candidate`。两侧不得并行调用模型。
+baseline 不生成 profile。两侧 match 都必须使用由该 candidate profile 生成并经用户确认的同一 `input\confirmed-profile.private.json` 和 `input\confirmed-card.private.json`；不得创建 baseline 专用确认文件。
 
 - [ ] **Step 4: 生成 candidate 匹配卡草稿**
 
@@ -276,7 +273,7 @@ Expected: `matching-card-draft.json` 的 `status=draft`、`userConfirmed=false`�
 - 公司/职位/项目/时间；
 - “参与”“独立”“了解”边界；
 - 强证据、可迁移能力、谨慎转向和排除偏好；
-- baseline/candidate profile 的重大差异。
+- candidate profile 的重大差异或疑点。
 
 - [ ] **Step 6: 用户确认并冻结 canonical 输入**
 
@@ -285,8 +282,10 @@ Expected: `matching-card-draft.json` 的 `status=draft`、`userConfirmed=false`�
 - 以 candidate profile 为基础保存 `confirmed-profile.private.json`；
 - 只应用用户明确提出的事实纠错；
 - 将 card envelope 改为 `status=confirmed`、`userConfirmed=true`；
-- 记录 profile/card SHA-256 和确认时间；
+- 记录并绑定 candidate profile result、card draft、manifest、resume/identity/model chain 的 profile/card SHA-256 和确认时间；
 - 不自动确认，也不把 baseline profile 作为生产画像。
+
+这些 hash 用于完整性检查和防止正常流程误用，不是对本机恶意管理员的密码学证明；不得声称 HMAC 安全。
 
 若存在虚构、项目串线、时间错误或重大遗漏，停止并回到离线修复；不得继续采集岗位掩盖问题。
 
