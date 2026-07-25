@@ -12,6 +12,8 @@ async function main() {
   await testModelRetryPolicy();
   await testResumeParserTimeouts();
   await testPdfExtractionLifecycle();
+  await testPdfGetPageDeadline();
+  await testPdfCumulativeDeadline();
   console.log("model_parser_resilience_smoke ok");
 }
 
@@ -181,6 +183,80 @@ async function testPdfExtractionLifecycle() {
   assert.deepStrictEqual(pageCalls, [1, 2]);
   assert.deepStrictEqual(cleanupCalls, [1, 2]);
   assert.strictEqual(destroyed, 1);
+}
+
+async function testPdfCumulativeDeadline() {
+  let destroyed = 0;
+  const cleanupCalls = [];
+  const fakeDocument = {
+    numPages: 2,
+    async getPage(pageNumber) {
+      return {
+        async getTextContent() {
+          await delay(100);
+          return {
+            items: [{ str: `Page ${pageNumber}`, transform: [1, 0, 0, 12, 72, 700], height: 12, width: 50 }]
+          };
+        },
+        cleanup() { cleanupCalls.push(pageNumber); }
+      };
+    }
+  };
+  const fakeLoadingTask = {
+    promise: Promise.resolve(fakeDocument),
+    async destroy() { destroyed += 1; }
+  };
+
+  await assert.rejects(
+    () => extractPdfTextInReadingOrder(Buffer.from("pdf"), {
+      loadDocument: async () => fakeLoadingTask,
+      timeoutMs: 150
+    }),
+    (error) => error.code === "RESUME_PDF_TIMEOUT"
+  );
+  assert.deepStrictEqual(cleanupCalls, [1, 2]);
+  assert.strictEqual(destroyed, 1);
+}
+
+async function testPdfGetPageDeadline() {
+  let destroyed = 0;
+  const fakeLoadingTask = {
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: async () => new Promise(() => {})
+    }),
+    async destroy() { destroyed += 1; }
+  };
+
+  await assert.rejects(
+    () => withTestDeadline(
+      extractPdfTextInReadingOrder(Buffer.from("pdf"), {
+        loadDocument: async () => fakeLoadingTask,
+        timeoutMs: 5
+      }),
+      75
+    ),
+    (error) => error.code === "RESUME_PDF_TIMEOUT"
+  );
+  assert.strictEqual(destroyed, 1);
+}
+
+function delay(timeoutMs) {
+  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+}
+
+async function withTestDeadline(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("getPage did not honor the PDF deadline")), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function makeAdapter(overrides = {}) {

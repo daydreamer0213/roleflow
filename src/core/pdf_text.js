@@ -6,13 +6,15 @@ function timeoutError(code, timeoutMs) {
   return error;
 }
 
-async function withTimeout(promise, timeoutMs, code) {
+async function withDeadline(promise, deadline, timeoutMs, code) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) throw timeoutError(code, timeoutMs);
   let timer;
   try {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(timeoutError(code, timeoutMs)), timeoutMs);
+        timer = setTimeout(() => reject(timeoutError(code, timeoutMs)), remainingMs);
       })
     ]);
   } finally {
@@ -79,15 +81,17 @@ async function extractPdfTextInReadingOrder(
   buffer,
   { loadDocument = defaultLoadDocument, timeoutMs = DEFAULT_TIMEOUT_MS } = {}
 ) {
-  const loadingTask = await loadDocument(buffer);
+  const deadline = Date.now() + timeoutMs;
+  let loadingTask;
   let document;
   try {
-    document = await withTimeout(loadingTask.promise, timeoutMs, "RESUME_PDF_TIMEOUT");
+    loadingTask = await withDeadline(Promise.resolve().then(() => loadDocument(buffer)), deadline, timeoutMs, "RESUME_PDF_TIMEOUT");
+    document = await withDeadline(loadingTask.promise, deadline, timeoutMs, "RESUME_PDF_TIMEOUT");
     const pages = [];
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      const page = await document.getPage(pageNumber);
+      const page = await withDeadline(document.getPage(pageNumber), deadline, timeoutMs, "RESUME_PDF_TIMEOUT");
       try {
-        const content = await withTimeout(page.getTextContent(), timeoutMs, "RESUME_PDF_TIMEOUT");
+        const content = await withDeadline(page.getTextContent(), deadline, timeoutMs, "RESUME_PDF_TIMEOUT");
         pages.push(orderPageTextItems(content.items));
       } finally {
         if (typeof page.cleanup === "function") page.cleanup();

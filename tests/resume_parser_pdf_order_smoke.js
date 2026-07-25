@@ -1,10 +1,13 @@
 const assert = require("node:assert");
 const path = require("node:path");
 const { parseResumeUpload } = require("../src/core/resume_parser");
+const { orderPageTextItems } = require("../src/core/pdf_text");
 
 const root = path.resolve(__dirname, "..");
 
 async function main() {
+  testPageItemOrdering();
+
   const expectedOrder = [
     "Sanitized Candidate",
     "Summary",
@@ -35,6 +38,33 @@ async function main() {
   assert.strictEqual(parsed.diagnostics.extractionMethod, "pdf_text_ordered");
   assert.strictEqual(parsed.textTruncated, false);
   console.log("resume_parser_pdf_order_smoke ok");
+}
+
+function testPageItemOrdering() {
+  assert.strictEqual(orderPageTextItems([
+    pageItem("Right", 160, 700, 12, 30),
+    pageItem("Left", 72, 700, 12, 20)
+  ]), "Left Right");
+
+  assert.strictEqual(orderPageTextItems([
+    pageItem("Second", 100, 698.5, 1, 35),
+    pageItem("First", 72, 700, 1, 20)
+  ]), "First Second");
+
+  assert.strictEqual(orderPageTextItems([
+    pageItem("Lower", 72, 691, 40, 30),
+    pageItem("Upper", 72, 700, 40, 30)
+  ]), "Upper\nLower");
+
+  assert.strictEqual(orderPageTextItems([
+    pageItem("Gamma", 150, 700, 12, 40),
+    pageItem("Beta", 102, 700, 12, 24),
+    pageItem("Alpha", 72, 700, 12, 30)
+  ]), "AlphaBeta Gamma");
+}
+
+function pageItem(str, x, y, height, width) {
+  return { str, transform: [1, 0, 0, height, x, y], height, width };
 }
 
 function makeTwoPageOutOfOrderPdf() {
