@@ -154,6 +154,13 @@ async function main() {
     }, {});
 
     fs.mkdirSync(testRoot, { recursive: true });
+    const danglingAlias = privatePath("dangling-junction");
+    fs.symlinkSync(path.join(externalRoot, "missing-junction-target"), danglingAlias, "junction");
+    expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({
+      privateRoot: path.join(danglingAlias, "bundle"),
+      identity: path.join(danglingAlias, "bundle", "identity.private.json"),
+      output: path.join(danglingAlias, "bundle", "output")
+    }));
     const pdfPath = externalPdf;
     const identityPath = privatePath("identity.private.json");
     fs.mkdirSync(externalRoot, { recursive: true });
@@ -166,6 +173,16 @@ async function main() {
     assert.notStrictEqual(cliFailure.status, 0);
     assert(`${cliFailure.stdout}${cliFailure.stderr}`.includes("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN"));
     assert(!fs.existsSync(gitProbe), "CLI must finish pure path/authorization validation before spawning git");
+    const copiedScripts = path.join(externalRoot, "baseline-runner-blob", "scripts");
+    fs.mkdirSync(path.join(copiedScripts, "lib"), { recursive: true });
+    fs.copyFileSync(path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"), path.join(copiedScripts, "private-full-chain-runner.js"));
+    fs.copyFileSync(path.resolve(__dirname, "..", "scripts", "lib", "benchmark_metrics.js"), path.join(copiedScripts, "lib", "benchmark_metrics.js"));
+    const copiedRunner = require(path.join(copiedScripts, "private-full-chain-runner.js"));
+    const copiedManifestGate = copiedRunner.validatePrivateFullChainRequest({
+      mode: "init-manifest", privateRoot: testRoot, baselineWorktree: privatePath("baseline-worktree"),
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
+    }, {}, null);
+    assert.strictEqual(copiedManifestGate.ok, true, "the same runner blob must recognize the literal candidate path outside its own checkout");
     fs.writeFileSync(pdfPath, makeSyntheticPdf());
     fs.writeFileSync(identityPath, JSON.stringify({
       names: ["Synthetic Candidate"],
@@ -233,6 +250,16 @@ async function main() {
     assert.deepStrictEqual(runner.verifyPrivateBundle({
       privateRoot: testRoot, resumeText: path.join(output, "resume.redacted.txt"), identity: identityPath, parseReport: path.join(output, "parse-report.json")
     }), { ok: true, runMode: "offline-verify-private-bundle" });
+
+    fs.writeFileSync(path.join(output, "parse-report.json"), JSON.stringify({ ...report, textTruncated: true }), "utf8");
+    assert.deepStrictEqual(runner.verifyPrivateBundle({
+      privateRoot: testRoot, resumeText: path.join(output, "resume.redacted.txt"), identity: identityPath, parseReport: path.join(output, "parse-report.json")
+    }), { ok: true, runMode: "offline-verify-private-bundle" }, "stored redacted text cannot disprove parser truncation provenance");
+    fs.writeFileSync(path.join(output, "parse-report.json"), JSON.stringify({ ...report, textTruncated: "true" }), "utf8");
+    assert.throws(
+      () => runner.verifyPrivateBundle({ privateRoot: testRoot, resumeText: path.join(output, "resume.redacted.txt"), identity: identityPath, parseReport: path.join(output, "parse-report.json") }),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_INPUT_IDENTITY"
+    );
 
     fs.writeFileSync(path.join(output, "parse-report.json"), JSON.stringify({ ...report, preview: "Synthetic Candidate" }), "utf8");
     assert.throws(

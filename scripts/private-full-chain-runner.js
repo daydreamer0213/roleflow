@@ -6,8 +6,7 @@ const { execFileSync } = require("node:child_process");
 const { compareBenchmarkResults } = require("./lib/benchmark_metrics");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
-const FIXED_CANDIDATE_WORKTREE = path.resolve(__dirname, "..");
-const MODEL_SETTINGS_ROOT = "D:\\Guo\\ZhiPing";
+const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
 const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "profile-live", "card-live", "match-live", "compare"]);
 const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
 const SHARED_MANIFEST_FILES = ["src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js", "scripts/lib/benchmark_metrics.js"];
@@ -41,6 +40,13 @@ function canonicalizePath(value, { allowMissingLeaf = true } = {}) {
   let existing = absolute;
   const missing = [];
   while (!fs.existsSync(existing)) {
+    try {
+      // existsSync is false for a dangling Windows junction/symlink. Do not climb through it.
+      fs.lstatSync(existing);
+      return null;
+    } catch (error) {
+      if (error?.code && error.code !== "ENOENT") return null;
+    }
     if (!allowMissingLeaf) return null;
     const parent = path.dirname(existing);
     if (parent === existing || isDriveRoot(existing)) return null;
@@ -54,15 +60,18 @@ function canonicalizePath(value, { allowMissingLeaf = true } = {}) {
 }
 
 const canonicalPrivateParent = canonicalizePath(PRIVATE_PARENT);
-const canonicalCandidateWorktree = canonicalizePath(FIXED_CANDIDATE_WORKTREE, { allowMissingLeaf: false });
-const canonicalModelSettingsRoot = canonicalizePath(MODEL_SETTINGS_ROOT);
+const canonicalRuntimeWorktree = canonicalizePath(path.resolve(__dirname, ".."), { allowMissingLeaf: false });
+
+function canonicalFixedCandidateWorktree() {
+  return canonicalizePath(FIXED_CANDIDATE_WORKTREE, { allowMissingLeaf: false });
+}
 
 function forbiddenArtifactLocation(candidate) {
-  if (!candidate || !canonicalCandidateWorktree) return true;
+  if (!candidate || !canonicalRuntimeWorktree) return true;
   const roots = [
-    canonicalCandidateWorktree,
-    canonicalizePath(path.join(canonicalCandidateWorktree, "data")),
-    canonicalizePath(path.join(canonicalCandidateWorktree, ".runtime")),
+    canonicalRuntimeWorktree,
+    canonicalizePath(path.join(canonicalRuntimeWorktree, "data")),
+    canonicalizePath(path.join(canonicalRuntimeWorktree, ".runtime")),
     canonicalizePath(os.homedir()),
     canonicalizePath(os.tmpdir())
   ];
@@ -176,11 +185,10 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
   if (!root.ok) return root;
   if (mode === "init-manifest") {
     const baseline = checkPrivateArtifact(opts.baselineWorktree, root.resolved, "PRIVATE_FULL_CHAIN_RESUME_REQUIRED");
-    const candidate = canonicalizePath(opts.candidateWorktree, { allowMissingLeaf: false });
+    const candidate = isLocalAbsolutePath(opts.candidateWorktree) ? path.resolve(String(opts.candidateWorktree)) : null;
     const output = checkPrivateArtifact(opts.output, root.resolved, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
     if (!baseline.ok) return baseline;
-    if (!candidate || !canonicalCandidateWorktree || !samePath(candidate, canonicalCandidateWorktree)
-      || samePath(baseline.resolved, candidate) || (canonicalModelSettingsRoot && isWithinDirectory(baseline.resolved, canonicalModelSettingsRoot))) {
+    if (!candidate || !samePath(candidate, path.resolve(FIXED_CANDIDATE_WORKTREE)) || samePath(baseline.resolved, candidate)) {
       return fail("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "Manifest baseline must be a distinct private worktree and candidate must be the fixed candidate worktree.");
     }
     if (!output.ok) return output;
@@ -236,8 +244,9 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
 }
 
 function inspectFixedCandidateWorktree() {
-  if (!canonicalCandidateWorktree) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The fixed candidate worktree cannot be canonicalized.");
-  const runGit = (args) => execFileSync("git", args, { cwd: canonicalCandidateWorktree, encoding: "utf8", windowsHide: true }).trim();
+  const candidate = canonicalFixedCandidateWorktree();
+  if (!candidate) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The fixed candidate worktree cannot be canonicalized.");
+  const runGit = (args) => execFileSync("git", args, { cwd: candidate, encoding: "utf8", windowsHide: true }).trim();
   try {
     const commit = runGit(["rev-parse", "HEAD"]);
     const dirty = runGit(["status", "--porcelain"]);
@@ -297,16 +306,18 @@ async function preparePrivateResume(options, env) {
   try {
     const { parseResumeUpload } = require("../src/core/resume_parser");
     const { prepareResumeTextForModel, assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
-    const parsed = await parseResumeUpload({ fileName: path.basename(request.pdf), buffer: pdf, root: canonicalCandidateWorktree });
+    const candidate = canonicalFixedCandidateWorktree();
+    if (!candidate) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The fixed candidate worktree cannot be canonicalized.");
+    const parsed = await parseResumeUpload({ fileName: path.basename(request.pdf), buffer: pdf, root: candidate });
     const prepared = prepareResumeTextForModel(parsed.text, { originalFileName: path.basename(request.pdf), identity, strict: true });
     assertResumeIdentityRedacted(prepared.text, identity);
-    const { assessResumeText, normalizeText } = require("../src/core/resume_parser");
+    const { assessResumeText } = require("../src/core/resume_parser");
     const storedText = prepared.text + "\n";
     const sections = orderedSections(prepared.text, assessResumeText);
     const report = {
       runMode: "private-prepare", authorizationGatePassed: true, extractionMethod: parsed.diagnostics.extractionMethod,
       charCount: prepared.text.length, detectedSections: sections.detectedSections, missingSections: sections.missingSections,
-      textTruncated: Boolean(parsed.textTruncated || normalizeText(prepared.text).truncated), redactions: prepared.redactions,
+      textTruncated: Boolean(parsed.textTruncated), redactions: prepared.redactions,
       resumeContentSha256: sha256(storedText), identityManifestSha256: sha256(identityRaw), evaluatedCommit: request.evaluatedCommit
     };
     fs.mkdirSync(request.output, { recursive: true });
@@ -321,6 +332,12 @@ async function preparePrivateResume(options, env) {
 
 function reportHasOnlySafeShape(report, identity) {
   if (!report || typeof report !== "object" || Array.isArray(report) || JSON.stringify(Object.keys(report).sort()) !== JSON.stringify([...PARSE_REPORT_KEYS].sort())) return false;
+  if (report.runMode !== "private-prepare" || report.authorizationGatePassed !== true || typeof report.extractionMethod !== "string"
+    || !Number.isInteger(report.charCount) || report.charCount < 0 || !Array.isArray(report.detectedSections)
+    || !Array.isArray(report.missingSections) || typeof report.textTruncated !== "boolean"
+    || !/^[0-9a-f]{64}$/i.test(String(report.resumeContentSha256 || ""))
+    || !/^[0-9a-f]{64}$/i.test(String(report.identityManifestSha256 || ""))
+    || !/^[0-9a-f]{7,40}$/i.test(String(report.evaluatedCommit || ""))) return false;
   if (!report.redactions || typeof report.redactions !== "object" || Array.isArray(report.redactions) || Object.values(report.redactions).some((value) => !Number.isInteger(value) || value < 0)) return false;
   const serialized = JSON.stringify(report);
   if (/"(?:preview|[^"\\]*path[^"\\]*|[^"\\]*filename[^"\\]*|[^"\\]*model[^"\\]*setting[^"\\]*)"\s*:/i.test(serialized)) return false;
@@ -357,7 +374,7 @@ function verifyPrivateBundle(options) {
   const sections = orderedSections(normalized.text, assessResumeText);
   if (report.runMode !== "private-prepare" || report.authorizationGatePassed !== true || report.resumeContentSha256 !== sha256(resumeText)
     || report.identityManifestSha256 !== sha256(identityRaw) || report.charCount !== normalized.text.length
-    || report.textTruncated !== Boolean(normalized.truncated) || JSON.stringify(report.detectedSections) !== JSON.stringify(sections.detectedSections)
+    || JSON.stringify(report.detectedSections) !== JSON.stringify(sections.detectedSections)
     || JSON.stringify(report.missingSections) !== JSON.stringify(sections.missingSections)) {
     throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private bundle report does not match the redacted resume text.");
   }
@@ -381,8 +398,13 @@ function inspectWorktree(worktree) {
 function initializePrivateManifest(options) {
   const gate = validatePrivateFullChainRequest({ ...(options || {}), mode: "init-manifest" }, {}, null);
   if (!gate.ok) throw runnerError(gate.code, gate.message);
+  const fixedCandidate = canonicalFixedCandidateWorktree();
+  const suppliedCandidate = canonicalizePath(gate.request.candidateWorktree, { allowMissingLeaf: false });
+  if (!fixedCandidate || !suppliedCandidate || !samePath(fixedCandidate, suppliedCandidate)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "The manifest candidate must canonicalize to the fixed candidate worktree.");
+  }
   const baseline = inspectWorktree(gate.request.baselineWorktree);
-  const candidate = inspectWorktree(gate.request.candidateWorktree);
+  const candidate = inspectWorktree(suppliedCandidate);
   if (samePath(baseline.head, candidate.head) || SHARED_MANIFEST_FILES.some((file) => baseline.blobs[file] !== candidate.blobs[file])) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Baseline and candidate worktrees must be distinct commits with identical shared runner files.");
   }
