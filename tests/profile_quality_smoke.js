@@ -18,8 +18,9 @@ assert(!preparedResume.text.includes("13800138000"));
 assert(!preparedResume.text.includes("candidate@example.com"));
 assert(!preparedResume.text.includes("44010119900101123X"));
 assert(!preparedResume.text.includes("某街道 18 号"));
+assert(!preparedResume.text.includes("测试候选人"));
 assert(preparedResume.text.includes("Python RAG 知识库开发"));
-assert.deepStrictEqual(preparedResume.redactions, { phone: 1, email: 1, idCard: 1, address: 1 });
+assert.deepStrictEqual(preparedResume.redactions, { phone: 1, email: 1, idCard: 1, address: 1, name: 1 });
 
 const profile = normalizeCandidateProfile({
   candidate: { name: "测试候选人", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "9-14K" },

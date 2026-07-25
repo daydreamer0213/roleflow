@@ -204,7 +204,9 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
     const resume = file
       ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
       : parseResumeText({ text: pastedText });
-    const prepared = prepareResumeTextForModel(resume.text);
+    const prepared = prepareResumeTextForModel(resume.text, {
+      originalFileName: resume.originalFileName
+    });
     logger.info("resume_model_input_previewed", { requestId, source: file ? "file" : "pasted_text", charCount: prepared.text.length, redactions: prepared.redactions });
     sendJson(res, 200, { text: prepared.text, charCount: prepared.text.length, redactions: prepared.redactions });
   } catch (error) {
@@ -1832,7 +1834,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
     <label>或粘贴简历文本<textarea name="resumeText" placeholder="文件无法解析时可用"></textarea></label>
     ${renderResumeVersionFields({ isActive: true })}
     ${renderResumePreviewControls()}
-    <p class="hint">原始文件留在本机；发送给模型前会自动遮蔽手机号、邮箱、身份证号和详细住址。</p>
+    <p class="hint">原始文件留在本机；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型。</p>
     <button>解析并新增版本</button>
   </form>
   ${versions.length ? versions.map((version) => renderResumeVersion(version, profile.id)).join("") : `<section class="panel">暂无可用版本。</section>`}
@@ -1958,7 +1960,7 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
     <div class="inline-form"><button type="button" data-template="${escapeAttr(JSON.stringify(resumeTextTemplate()))}" onclick="const target=document.getElementById(&quot;resume-text&quot;);if(!target.value.trim())target.value=JSON.parse(this.dataset.template);target.focus()">使用模板</button></div>
     ${renderResumePreviewControls()}
-    <p class="hint">提交后先在本地提取文本，并自动遮蔽手机号、邮箱、身份证号和详细住址，再发送给当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
+    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
     <button${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
   </form>
   ${profiles.length ? `<section class="panel"><h2>已有候选人</h2>${profiles.map((profile) => `<p><a href="/plan?profileId=${profile.id}&planId=${profile.activePlanId || ""}">${escapeHtml(profile.displayName)}</a> · 最近更新 ${escapeHtml(profile.updatedAt.slice(0, 16).replace("T", " "))}</p>`).join("")}</section>` : ""}
@@ -1970,7 +1972,7 @@ function renderResumePreviewControls() {
 }
 
 function resumePreviewScript() {
-  return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
+  return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
 function renderModelSettingsPage({ modelState, searchParams }) {

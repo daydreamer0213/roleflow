@@ -50,7 +50,7 @@ const generatedReports = [];
   assert(onboardingHtml.includes('id="resume-text"'));
   assert(onboardingHtml.includes("使用模板"));
   assert(onboardingHtml.includes("预览发送内容"));
-  assert(onboardingHtml.includes("自动遮蔽手机号"));
+  assert(onboardingHtml.includes("姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型"));
 
   const previewForm = new FormData();
   previewForm.set("resumeText", `${fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8")}\n手机：13800138000\n邮箱：candidate@example.com\n现住址：广州市天河区测试路 18 号`);
@@ -61,6 +61,23 @@ const generatedReports = [];
   assert(!preview.text.includes("candidate@example.com"));
   assert(!preview.text.includes("测试路 18 号"));
   assert(preview.text.includes("KnowledgeFlow"));
+  const filePreviewForm = new FormData();
+  filePreviewForm.set("resume", new Blob([[
+    "项目经历",
+    "测试候选人参与 Example Project",
+    "公司：示例科技",
+    "技能：Python、RAG",
+    "求职意向：AI应用开发",
+    "项目说明：使用 Python 和 RAG 构建 Example Project",
+    "时间：2024.03-2025.01"
+  ].join("\n")], { type: "text/plain" }), "测试候选人-AI应用开发 (1).txt");
+  const filePreviewResponse = await fetch(`${baseUrl}/api/resume/preview`, { method: "POST", body: filePreviewForm });
+  const filePreview = await filePreviewResponse.json();
+  assert.strictEqual(filePreviewResponse.status, 200);
+  assert(!filePreview.text.includes("测试候选人"));
+  assert.strictEqual(filePreview.redactions.name, 1);
+  assert(filePreview.text.includes("Example Project"));
+  assert(filePreview.text.includes("示例科技"));
   const settingsPage = await fetch(`${baseUrl}/settings`);
   const settingsHtml = await settingsPage.text();
   assert.strictEqual(settingsPage.status, 200);
