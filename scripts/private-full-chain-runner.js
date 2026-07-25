@@ -181,24 +181,43 @@ function checkSideAndOutput(options, privateRoot) {
 }
 
 function validateComparePaths(options) {
+  const reportValue = String(options.report || "").trim();
+  const markdownValue = isLocalAbsolutePath(reportValue)
+    ? path.join(path.dirname(path.resolve(reportValue)), "full-chain-compare.md")
+    : "";
   const baseline = checkApprovedPrivateArtifact(options.baseline, "PRIVATE_FULL_CHAIN_RESUME_REQUIRED");
   const candidate = checkApprovedPrivateArtifact(options.candidate, "PRIVATE_FULL_CHAIN_RESUME_REQUIRED");
-  const report = checkApprovedPrivateArtifact(options.report, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
-  const failed = [baseline, candidate, report].find((item) => !item.ok);
+  const report = checkApprovedPrivateArtifact(reportValue, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
+  const markdownReport = checkApprovedPrivateArtifact(markdownValue, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
+  const failed = [baseline, candidate, report, markdownReport].find((item) => !item.ok);
   if (failed) return failed;
   const baselineRun = path.dirname(baseline.resolved);
   const candidateRun = path.dirname(candidate.resolved);
   const bundle = path.dirname(path.dirname(baselineRun));
+  const reports = path.join(bundle, "reports");
   if (path.basename(baseline.resolved).toLowerCase() !== "match-result.json" || path.basename(candidate.resolved).toLowerCase() !== "match-result.json"
     || path.basename(baselineRun).toLowerCase() !== "baseline" || path.basename(candidateRun).toLowerCase() !== "candidate"
     || path.basename(path.dirname(baselineRun)).toLowerCase() !== "runs" || !samePath(path.dirname(path.dirname(candidateRun)), bundle)
-    || !isWithinDirectory(report.resolved, path.join(bundle, "reports"))
+    || !samePath(path.dirname(report.resolved), reports) || !samePath(path.dirname(markdownReport.resolved), reports)
     || path.basename(report.resolved).toLowerCase() !== "full-chain-compare.json"
-    || samePath(baseline.resolved, candidate.resolved) || samePath(baseline.resolved, report.resolved) || samePath(candidate.resolved, report.resolved)
-    || fs.existsSync(report.resolved)) {
-    return fail("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Compare requires baseline/candidate match-result files from one bundle and a new report below that bundle's reports directory.");
+    || path.basename(markdownReport.resolved).toLowerCase() !== "full-chain-compare.md"
+    || samePath(baseline.resolved, candidate.resolved)
+    || [baseline.resolved, candidate.resolved].some((input) => samePath(input, report.resolved) || samePath(input, markdownReport.resolved))
+    || samePath(report.resolved, markdownReport.resolved)
+    || fs.existsSync(report.resolved) || fs.existsSync(markdownReport.resolved)) {
+    return fail("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Compare requires baseline/candidate match-result files from one bundle and new JSON and Markdown targets in that bundle's reports directory.");
   }
-  return { ok: true, request: { mode: "compare", baseline: baseline.resolved, candidate: candidate.resolved, report: report.resolved, privateRoot: bundle } };
+  return {
+    ok: true,
+    request: {
+      mode: "compare",
+      baseline: baseline.resolved,
+      candidate: candidate.resolved,
+      report: report.resolved,
+      markdownReport: markdownReport.resolved,
+      privateRoot: bundle
+    }
+  };
 }
 
 function validatePrivateFullChainRequest(options, env, providerResolver) {
@@ -1008,7 +1027,7 @@ async function main() {
     if (!result.ok) throw runnerError(result.code, result.message);
     fs.mkdirSync(path.dirname(pureGate.request.report), { recursive: true });
     fs.writeFileSync(pureGate.request.report, JSON.stringify(result.report, null, 2) + "\n", "utf8");
-    fs.writeFileSync(pureGate.request.report.replace(/\.json$/i, ".md"), renderPrivateCompareMarkdown(result.report), "utf8");
+    fs.writeFileSync(pureGate.request.markdownReport, renderPrivateCompareMarkdown(result.report), "utf8");
     if (!result.report.accepted) process.exitCode = 1;
     return;
   }

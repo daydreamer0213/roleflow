@@ -616,6 +616,61 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(!fs.existsSync(structuralReport), "private structural forgery must not generate JSON");
   assert(!fs.existsSync(structuralReport.replace(/\.json$/i, ".md")), "private structural forgery must not generate Markdown");
 
+  const existingMarkdownBundle = privatePath("cli-existing-markdown-target");
+  const existingMarkdownBaseline = path.join(existingMarkdownBundle, "runs", "baseline", "match-result.json");
+  const existingMarkdownCandidate = path.join(existingMarkdownBundle, "runs", "candidate", "match-result.json");
+  const existingMarkdownReport = path.join(existingMarkdownBundle, "reports", "full-chain-compare.json");
+  const existingMarkdownTarget = path.join(existingMarkdownBundle, "reports", "full-chain-compare.md");
+  fs.mkdirSync(path.dirname(existingMarkdownBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(existingMarkdownCandidate), { recursive: true });
+  fs.mkdirSync(path.dirname(existingMarkdownReport), { recursive: true });
+  fs.writeFileSync(existingMarkdownBaseline, "not-json", "utf8");
+  fs.writeFileSync(existingMarkdownCandidate, "not-json", "utf8");
+  fs.writeFileSync(existingMarkdownTarget, "ordinary markdown sentinel", "utf8");
+  const existingMarkdownCli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", existingMarkdownBaseline, "--candidate", existingMarkdownCandidate, "--report", existingMarkdownReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(existingMarkdownCli.status, 0);
+  assert.match(`${existingMarkdownCli.stdout}\n${existingMarkdownCli.stderr}`, /PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED/,
+    "an existing Markdown target must fail at the path gate before compare inputs are read");
+  assert(!fs.existsSync(existingMarkdownReport), "an existing Markdown target must not create JSON");
+  assert.strictEqual(fs.readFileSync(existingMarkdownTarget, "utf8"), "ordinary markdown sentinel");
+
+  const escapingMarkdownBundle = privatePath("cli-escaping-markdown-target");
+  const escapingMarkdownBaseline = path.join(escapingMarkdownBundle, "runs", "baseline", "match-result.json");
+  const escapingMarkdownCandidate = path.join(escapingMarkdownBundle, "runs", "candidate", "match-result.json");
+  const escapingMarkdownReport = path.join(escapingMarkdownBundle, "reports", "full-chain-compare.json");
+  const escapingMarkdownTarget = path.join(escapingMarkdownBundle, "reports", "full-chain-compare.md");
+  const externalMarkdownTarget = path.join(externalRoot, "escaping-compare-target.md");
+  fs.mkdirSync(path.dirname(escapingMarkdownBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(escapingMarkdownCandidate), { recursive: true });
+  fs.mkdirSync(path.dirname(escapingMarkdownReport), { recursive: true });
+  fs.mkdirSync(path.dirname(externalMarkdownTarget), { recursive: true });
+  fs.writeFileSync(escapingMarkdownBaseline, "not-json", "utf8");
+  fs.writeFileSync(escapingMarkdownCandidate, "not-json", "utf8");
+  fs.writeFileSync(externalMarkdownTarget, "escaping markdown sentinel", "utf8");
+  let externalMarkdownSentinel = externalMarkdownTarget;
+  try {
+    fs.symlinkSync(externalMarkdownTarget, escapingMarkdownTarget, "file");
+  } catch (error) {
+    if (error?.code !== "EPERM") throw error;
+    fs.rmSync(externalMarkdownTarget);
+    fs.mkdirSync(externalMarkdownTarget);
+    externalMarkdownSentinel = path.join(externalMarkdownTarget, "sentinel.txt");
+    fs.writeFileSync(externalMarkdownSentinel, "escaping markdown sentinel", "utf8");
+    fs.symlinkSync(externalMarkdownTarget, escapingMarkdownTarget, "junction");
+  }
+  const escapingMarkdownCli = spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", escapingMarkdownBaseline, "--candidate", escapingMarkdownCandidate, "--report", escapingMarkdownReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(escapingMarkdownCli.status, 0);
+  assert.match(`${escapingMarkdownCli.stdout}\n${escapingMarkdownCli.stderr}`, /PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN/,
+    "an escaping Markdown alias must fail at the path gate before compare inputs are read");
+  assert(!fs.existsSync(escapingMarkdownReport), "an escaping Markdown alias must not create JSON");
+  assert.strictEqual(fs.readFileSync(externalMarkdownSentinel, "utf8"), "escaping markdown sentinel");
+
   const rejectedCandidate = structuredClone(candidate);
   Object.assign(rejectedCandidate.rows[0], {
     actualRecommendation: "caution",
@@ -634,6 +689,13 @@ async function injectedLiveFlowSmoke(identityPath) {
   fs.mkdirSync(path.dirname(cliCandidate), { recursive: true });
   fs.writeFileSync(cliBaseline, JSON.stringify(baseline), "utf8");
   fs.writeFileSync(cliCandidate, JSON.stringify(applyDerivedMetrics(rejectedCandidate)), "utf8");
+  const cliGate = expectGateOk({
+    mode: "compare",
+    baseline: cliBaseline,
+    candidate: cliCandidate,
+    report: cliReport
+  });
+  assert.strictEqual(cliGate.request.markdownReport, path.join(cliBundle, "reports", "full-chain-compare.md"));
   const cli = spawnSync(process.execPath, [
     path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
     "--compare", "--baseline", cliBaseline, "--candidate", cliCandidate, "--report", cliReport
