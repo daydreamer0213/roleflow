@@ -11,6 +11,7 @@ const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob, decisionState } = require("../src/core/scoring");
 const { openDb, decisionBucket } = require("../src/core/storage");
 const { mapWithConcurrency } = require("../src/core/async_pool");
+const { assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
 const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
@@ -228,7 +229,14 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     matchJob: async (input) => {
       captured.matchInputs.push(input);
-      return byId.get(input.jobUnderstanding.jobId).matchDecision;
+      const fixture = byId.get(input.jobUnderstanding.jobId);
+      return {
+        ...fixture.matchDecision,
+        fitReasons: [
+          ...(fixture.matchDecision.fitReasons || []),
+          `Synthetic Candidate ${fixture.job.description.slice(0, 48)}`
+        ]
+      };
     }
   };
   const commonModules = {
@@ -245,6 +253,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     scoreJob,
     decisionState,
     decisionBucket,
+    assertResumeIdentityRedacted,
     openDb: (dbPath) => {
       captured.dbPaths.push(dbPath);
       return openDb(dbPath);
@@ -269,6 +278,17 @@ async function injectedLiveFlowSmoke(identityPath) {
       }
     }
   });
+
+  const unredactedPath = privatePath("input", "resume.unredacted.txt");
+  fs.writeFileSync(unredactedPath, "Synthetic Candidate candidate@example.com 13800138000", "utf8");
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("profile-live", "candidate", {
+      resumeText: unredactedPath,
+      identity: identityPath
+    }), authorizedEnv(), seamFor("candidate")),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_INPUT_IDENTITY"
+  );
+  assert.strictEqual(captured.resumeInputs.length, 0, "identity redaction failure must precede the profile analyzer");
 
   const profileBaseline = await runner.runPrivateFullChain(liveOptions("profile-live", "baseline", {
     resumeText: resumePath,
@@ -341,6 +361,13 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(candidate.matchingCardConsumed, true);
   assert.strictEqual(captured.dbPaths.length, 2);
   assert.notStrictEqual(captured.dbPaths[0], captured.dbPaths[1]);
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
+    }), authorizedEnv(), seamFor("candidate")),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_CACHE_EXISTS"
+  );
+  assert.strictEqual(captured.dbPaths.length, 2, "same-side cache reuse must fail before opening SQLite");
   assert.deepStrictEqual(new Set(candidate.rows.map((row) => row.id)), new Set(labels.rows.map((row) => row.id)));
   const capturedMatch = captured.matchInputs.find((input) => input.candidateMatchCard);
   assert.deepStrictEqual(capturedMatch.candidateProfile, confirmedProfile);
@@ -353,6 +380,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   }
   const serializedRows = JSON.stringify(candidate.rows);
   for (const job of jobs) assert(!serializedRows.includes(job.description), "match rows must not copy full JD text");
+  assert(!serializedRows.includes("Synthetic Candidate"), "match rows must not copy identity-bearing model text");
+  assert(!serializedRows.includes(jobs[0].description.slice(0, 48)), "match rows must not copy partial JD excerpts");
   assert.strictEqual(captured.formalProviderResolutions, 0);
 
   const compared = runner.comparePrivateFullChainResults(baseline, candidate);

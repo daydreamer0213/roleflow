@@ -510,7 +510,8 @@ function loadProductionModules(mode) {
   const { resolveRuntimeModelConfig } = require("../src/core/model_settings");
   if (mode === "profile-live") {
     const { analyzeResumeProfile } = require("../src/core/profile_onboarding");
-    return { loadConfigs, resolveRuntimeModelConfig, analyzeResumeProfile };
+    const { assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
+    return { loadConfigs, resolveRuntimeModelConfig, analyzeResumeProfile, assertResumeIdentityRedacted };
   }
   if (mode === "card-live") {
     const onboarding = require("../src/core/profile_onboarding");
@@ -614,14 +615,6 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
   };
 }
 
-function safeExplanation(values) {
-  return (Array.isArray(values) ? values : [])
-    .map((value) => typeof value === "string" ? value : value?.reason || value?.requirement || "")
-    .map((value) => String(value || "").trim().slice(0, 240))
-    .filter(Boolean)
-    .slice(0, 6);
-}
-
 function ruleBlockedAnalysis() {
   return {
     provider: "rule-gate",
@@ -679,6 +672,11 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     }
     if (!checkIdentityManifestShape(identity)) {
       throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private identity manifest has an invalid schema.");
+    }
+    try {
+      modules.assertResumeIdentityRedacted(redactedText, identity);
+    } catch {
+      throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "Profile live requires identity-redacted resume text.");
     }
     const resume = {
       originalFileName: "private-resume.redacted.txt",
@@ -763,8 +761,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   );
   const matchingCardConsumed = configs?.matchingCard != null
     && valueSha256(configs.matchingCard) === cardInput.cardSha256;
+  const cachePath = path.join(request.output, "model-cache.sqlite");
+  if (fs.existsSync(cachePath)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_CACHE_EXISTS", "Match live requires a fresh per-side SQLite cache.");
+  }
   fs.mkdirSync(request.output, { recursive: true });
-  const db = modules.openDb(path.join(request.output, "model-cache.sqlite"));
+  const db = modules.openDb(cachePath);
   const analyze = modules.createJobAnalysisRunner(configs, searchPlan.keywords, {
     db,
     ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
@@ -786,8 +788,13 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         actualBucket,
         semanticStatus: String(analysis.semanticStatus || "failed"),
         evidenceComplete: Boolean(analysis.evidence?.jd?.length && analysis.evidence?.resume?.length),
-        fitReasons: safeExplanation(analysis.fitReasons),
-        missingPoints: safeExplanation(analysis.missingPoints || analysis.softGaps),
+        explanation: {
+          decisionSource: String(analysis.decisionSource || ""),
+          fitReasonCount: Array.isArray(analysis.fitReasons) ? analysis.fitReasons.length : 0,
+          missingPointCount: Array.isArray(analysis.missingPoints || analysis.softGaps)
+            ? (analysis.missingPoints || analysis.softGaps).length
+            : 0
+        },
         hardBlocked: Boolean((analysis.hardBlockers || []).length),
         decisionState: state,
         errorCode: String(analysis.errorCode || ""),
