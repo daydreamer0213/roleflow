@@ -97,6 +97,21 @@ function checkPrivateArtifact(value, privateRoot, requiredCode, forbiddenCode = 
   return { ok: true, resolved };
 }
 
+// Baseline source code is a worktree, not a private run artifact: it is a sibling of the run root.
+function checkBaselineWorktree(value) {
+  if (!String(value || "").trim()) return fail("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", "A baseline worktree is required.");
+  const resolved = canonicalizePath(value);
+  const forbiddenRoots = [canonicalizePath(os.homedir()), canonicalizePath(os.tmpdir())];
+  const modelRootLiteral = path.resolve("D:\\Guo\\ZhiPing");
+  if (!resolved || !canonicalPrivateParent || !isWithinDirectory(resolved, canonicalPrivateParent)
+    || forbiddenRoots.some((root) => !root || isWithinDirectory(resolved, root))
+    || isWithinDirectory(resolved, modelRootLiteral)
+    || samePath(resolved, path.resolve(FIXED_CANDIDATE_WORKTREE))) {
+    return fail("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "Baseline must be a distinct canonical worktree below the approved private parent.");
+  }
+  return { ok: true, resolved };
+}
+
 function checkApprovedPrivateArtifact(value, requiredCode) {
   if (!String(value || "").trim()) return fail(requiredCode, "A required private artifact path is missing.");
   const resolved = canonicalizePath(value);
@@ -184,7 +199,7 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
   const root = checkPrivateRoot(opts.privateRoot);
   if (!root.ok) return root;
   if (mode === "init-manifest") {
-    const baseline = checkPrivateArtifact(opts.baselineWorktree, root.resolved, "PRIVATE_FULL_CHAIN_RESUME_REQUIRED");
+    const baseline = checkBaselineWorktree(opts.baselineWorktree);
     const candidate = isLocalAbsolutePath(opts.candidateWorktree) ? path.resolve(String(opts.candidateWorktree)) : null;
     const output = checkPrivateArtifact(opts.output, root.resolved, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
     if (!baseline.ok) return baseline;

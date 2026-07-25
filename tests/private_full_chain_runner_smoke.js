@@ -7,6 +7,7 @@ const runner = require("../scripts/private-full-chain-runner");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
 const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-${process.pid}`);
+const siblingBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-baseline-${process.pid}`);
 const externalRoot = path.join("D:\\DevData\\RoleFlow-private-runner-fixtures", `synthetic-private-full-chain-runner-${process.pid}`);
 const externalPdf = path.join(externalRoot, "synthetic-resume.pdf");
 
@@ -100,6 +101,7 @@ function makeSyntheticPdf() {
 
 async function main() {
   fs.rmSync(testRoot, { recursive: true, force: true });
+  fs.rmSync(siblingBaselineRoot, { recursive: true, force: true });
   fs.rmSync(externalRoot, { recursive: true, force: true });
   try {
     expectGate("PRIVATE_FULL_CHAIN_MODE_REQUIRED", gateOptions({ mode: "" }));
@@ -151,6 +153,10 @@ async function main() {
     }, {});
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", {
       mode: "init-manifest", privateRoot: testRoot, baselineWorktree: privatePath("baseline"), candidateWorktree: "D:\\Guo\\ZhiPing", output: privatePath("run-manifest.json")
+    }, {});
+    expectGateOk({
+      mode: "init-manifest", privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
     }, {});
 
     fs.mkdirSync(testRoot, { recursive: true });
@@ -284,11 +290,50 @@ async function main() {
       }
     );
     assert(!fs.existsSync(privatePath("parse-failure")), "sanitized parser failure must not create output directories");
+
+    createSyntheticBaselineCheckout(siblingBaselineRoot);
+    const baselineRunner = require(path.join(siblingBaselineRoot, "scripts", "private-full-chain-runner.js"));
+    const manifestPath = privatePath("run-manifest.json");
+    const manifest = baselineRunner.initializePrivateManifest({
+      privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: manifestPath
+    });
+    const { execFileSync } = require("node:child_process");
+    const head = (cwd) => execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", windowsHide: true }).trim();
+    assert.strictEqual(manifest.baselineCommit, head(siblingBaselineRoot));
+    assert.strictEqual(manifest.candidateCommit, head(path.resolve(__dirname, "..")));
+    assert.notStrictEqual(manifest.baselineCommit, manifest.candidateCommit);
+    for (const file of ["src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js", "scripts/lib/benchmark_metrics.js"]) {
+      assert.strictEqual(manifest.sharedFileBlobs[file], execFileSync("git", ["rev-parse", `HEAD:${file}`], { cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true }).trim());
+    }
+    assert(fs.existsSync(manifestPath));
     console.log("private_full_chain_runner_smoke offline gates ok");
   } finally {
     fs.rmSync(testRoot, { recursive: true, force: true });
+    fs.rmSync(siblingBaselineRoot, { recursive: true, force: true });
     fs.rmSync(externalRoot, { recursive: true, force: true });
   }
+}
+
+function createSyntheticBaselineCheckout(root) {
+  const { execFileSync } = require("node:child_process");
+  const candidateRoot = path.resolve(__dirname, "..");
+  const files = [
+    "scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js",
+    "src/core/resume_parser.js", "src/core/pdf_text.js", "src/core/resume_privacy.js"
+  ];
+  fs.mkdirSync(root, { recursive: true });
+  for (const file of files) {
+    const destination = path.join(root, file);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(candidateRoot, file), destination);
+  }
+  const git = (args) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  git(["init", "-q"]);
+  git(["config", "user.email", "synthetic@example.invalid"]);
+  git(["config", "user.name", "Synthetic Baseline"]);
+  git(["add", "."]);
+  git(["commit", "-qm", "synthetic baseline"]);
 }
 
 function makeShortPdf() {
