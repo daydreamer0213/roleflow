@@ -11,7 +11,7 @@
     "test:live-model": "node tests/job_match_benchmark.js --live"
   },
   "dependencies": {
-    "pdf-parse": "2.4.5"
+    "pdfjs-dist": "5.4.296"
   },
   "engines": {
     "node": ">=22.5"
