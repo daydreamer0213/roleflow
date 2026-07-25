@@ -343,6 +343,24 @@ function comparatorSmoke() {
       code: "BENCHMARK_COMPARE_METRICS"
     },
     {
+      name: "expectedBucket 不得使用 analysis_pending（人工标签只允许四档）",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, expectedBucket: "analysis_pending" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
+      name: "expectedBucket 不得使用 refresh（人工标签只允许四档）",
+      baseline,
+      candidate: {
+        ...candidate,
+        rows: candidate.rows.map((row) => row.id === "java-core-missing" ? { ...row, expectedBucket: "refresh" } : row)
+      },
+      code: "BENCHMARK_COMPARE_METRICS"
+    },
+    {
       name: "pass 必须是 boolean",
       baseline,
       candidate: {
@@ -394,11 +412,17 @@ function comparatorSmoke() {
   assert.deepStrictEqual(ok.report.failureReasons, []);
   const acceptanceFailures = [
     {
+      // 真实运行形态：failed 分析由 decisionBucket() 归入 analysis_pending，pass/汇总同步。
       name: "候选 failed 非零",
       mutate: (c) => ({
         ...c,
+        passed: 5,
+        accuracy: 5 / 6,
+        bucketAccuracy: 5 / 6,
         failed: 1,
-        rows: c.rows.map((row) => row.id === "insufficient-evidence" ? { ...row, semanticStatus: "failed" } : row)
+        rows: c.rows.map((row) => row.id === "insufficient-evidence"
+          ? { ...row, semanticStatus: "failed", actualBucket: "analysis_pending", pass: false }
+          : row)
       }),
       reason: /failed=1/
     },
@@ -406,8 +430,13 @@ function comparatorSmoke() {
       name: "候选 stale 非零",
       mutate: (c) => ({
         ...c,
+        passed: 5,
+        accuracy: 5 / 6,
+        bucketAccuracy: 5 / 6,
         stale: 1,
-        rows: c.rows.map((row) => row.id === "insufficient-evidence" ? { ...row, semanticStatus: "stale" } : row)
+        rows: c.rows.map((row) => row.id === "insufficient-evidence"
+          ? { ...row, semanticStatus: "stale", actualBucket: "analysis_pending", pass: false }
+          : row)
       }),
       reason: /stale=1/
     },
@@ -415,10 +444,30 @@ function comparatorSmoke() {
       name: "候选 pending 非零",
       mutate: (c) => ({
         ...c,
+        passed: 4,
+        accuracy: 4 / 6,
+        bucketAccuracy: 4 / 6,
         pending: 2,
-        rows: c.rows.map((row) => ["insufficient-evidence", "content-to-user-transfer"].includes(row.id) ? { ...row, semanticStatus: "pending" } : row)
+        rows: c.rows.map((row) => ["insufficient-evidence", "content-to-user-transfer"].includes(row.id)
+          ? { ...row, semanticStatus: "pending", actualBucket: "analysis_pending", pass: false }
+          : row)
       }),
       reason: /pending=2/
+    },
+    {
+      // refresh 是合法运行时桶：结构必须有效；bucket 回退时按业务验收失败处理。
+      name: "候选 refresh 行结构有效且按准确率门禁判定",
+      mutate: (c) => ({
+        ...c,
+        passed: 4,
+        accuracy: 4 / 6,
+        recommendationAccuracy: 5 / 6,
+        bucketAccuracy: 4 / 6,
+        rows: c.rows.map((row) => ["content-to-user-transfer", "insufficient-evidence"].includes(row.id)
+          ? { ...row, semanticStatus: "refresh", actualRecommendation: "review", actualBucket: "refresh", pass: false }
+          : row)
+      }),
+      reason: /bucketAccuracy 回退/
     },
     {
       name: "候选 primaryWithoutEvidence 非零",
