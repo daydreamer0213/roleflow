@@ -642,6 +642,8 @@ CLI 约定：
   --private-root D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725
   --baseline-worktree D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1
   --candidate-worktree D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix
+  --baseline-product-commit <approved-baseline-product-commit>
+  --candidate-product-commit <recorded-candidate-product-commit>
   --output D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725\run-manifest.json
 
 --prepare
@@ -700,7 +702,7 @@ ALLOW_LIVE_MODEL_BENCHMARK=YES
 
 路径检查、Git HEAD、工作树状态和授权必须先于 `fs.readFileSync(identity)`、模型设置读取、SQLite 创建和 provider 初始化。门禁失败不得创建目录。
 
-runner 顶层不得 require Task 1/2 的 candidate-only 模块。`parseResumeUpload`、`resume_privacy` 和 `buildCandidateMatchCard` 必须在对应 mode 门禁通过后惰性加载，使同一 runner blob 可以在旧 baseline 上执行 `--init-manifest`、`--profile-live`、`--match-live` 和 `--compare`。
+runner 顶层不得 require Task 1/2 的 candidate-only 模块。共享 `scripts/lib/private_resume_privacy.js` 只负责 identity schema 与残留 PII 断言，并随 runner/metrics 复制到旧 baseline；`parseResumeUpload`、candidate 产品 `src/core/resume_privacy.js` 和 `buildCandidateMatchCard` 必须在对应 mode 门禁通过后惰性加载，使同一 runner blob 可以在旧 baseline 上执行 `--init-manifest`、`--profile-live`、`--match-live` 和 `--compare`。
 
 - [ ] **Step 4: 实现本地 prepare 模式**
 
@@ -735,7 +737,7 @@ runner 顶层不得 require Task 1/2 的 candidate-only 模块。`parseResumeUpl
 
 同一任务还实现两个无网络 mode：
 
-- `--init-manifest` 从两个实际 worktree 读取 HEAD、工作树状态和四个共享文件 blob，任何不一致均失败，不接受命令行传入提交值；
+- `--init-manifest` 从两个实际 worktree 读取 HEAD、工作树状态和共享文件 blob，并用 Git 分别验证显式 baseline/candidate 产品提交是各自 evaluated HEAD 的真实祖先；任何不一致均失败；
 - `--verify-private-bundle` 重新核对已遮盖正文、identity、parse report 的 hash、章节顺序和零敏感值残留，不读取模型配置。
 
 - [ ] **Step 5: 运行 prepare 离线测试**

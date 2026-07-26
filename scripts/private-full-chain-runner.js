@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { compareBenchmarkResults, deriveBenchmarkMetrics } = require("./lib/benchmark_metrics");
+const { checkIdentityManifestShape, assertResumeIdentityRedacted } = require("./lib/private_resume_privacy");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
 const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
@@ -28,7 +29,11 @@ const SAFE_ERROR_CODES = new Set([
   "MODEL_REQUEST_FAILED",
   "MODEL_TIMEOUT"
 ]);
-const SHARED_MANIFEST_FILES = ["scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"];
+const SHARED_MANIFEST_FILES = [
+  "scripts/private-full-chain-runner.js",
+  "scripts/lib/benchmark_metrics.js",
+  "scripts/lib/private_resume_privacy.js"
+];
 const PARSE_REPORT_KEYS = [
   "runMode", "authorizationGatePassed", "extractionMethod", "charCount", "detectedSections",
   "missingSections", "textTruncated", "redactions", "resumeContentSha256", "identityManifestSha256", "evaluatedCommit"
@@ -247,13 +252,6 @@ function normalizedMode(value) {
   return raw.startsWith("--") ? raw.slice(2) : raw;
 }
 
-function checkIdentityManifestShape(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const fields = ["names", "phones", "emails"];
-  return fields.every((field) => Array.isArray(value[field]) && value[field].every((item) => typeof item === "string"))
-    && fields.some((field) => value[field].some((item) => item.trim()));
-}
-
 function checkSyntheticGitProof(value) {
   if (value == null) return { ok: true, proof: null };
   if (value?.clean !== true || !/^[0-9a-f]{7,40}$/i.test(String(value.commit || ""))) {
@@ -331,12 +329,14 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
       return fail("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "Manifest baseline must be a distinct private worktree and candidate must be the fixed candidate worktree.");
     }
     if (!output.ok) return output;
-    if (!/^[0-9a-f]{7,40}$/i.test(String(opts.baselineProductCommit || ""))) {
-      return fail("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Manifest initialization requires a baseline product commit to verify from Git evidence.");
+    if (!/^[0-9a-f]{7,40}$/i.test(String(opts.baselineProductCommit || ""))
+      || !/^[0-9a-f]{7,40}$/i.test(String(opts.candidateProductCommit || ""))) {
+      return fail("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Manifest initialization requires baseline and candidate product commits to verify from Git evidence.");
     }
     return { ok: true, code: "OK", request: {
       mode, privateRoot: root.resolved, baselineWorktree: baseline.resolved, candidateWorktree: candidate,
-      baselineProductCommit: String(opts.baselineProductCommit).toLowerCase(), output: output.resolved
+      baselineProductCommit: String(opts.baselineProductCommit).toLowerCase(),
+      candidateProductCommit: String(opts.candidateProductCommit).toLowerCase(), output: output.resolved
     } };
   }
   if (mode === "prepare") {
@@ -511,10 +511,7 @@ function reportHasOnlySafeShape(report, identity) {
   };
   collectStrings(report);
   if (values.some((value) => /(?:[a-z]:[\\/]|[\\/]|\.pdf\b|preview|file\s*name|model\s*settings?)/i.test(value))) return false;
-  try {
-    const { assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
-    assertResumeIdentityRedacted(serialized, identity);
-  } catch { return false; }
+  try { assertResumeIdentityRedacted(serialized, identity); } catch { return false; }
   return true;
 }
 
@@ -531,8 +528,7 @@ function verifyPrivateBundle(options) {
   try { identity = JSON.parse(identityRaw); } catch { throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The identity manifest is invalid."); }
   if (!checkIdentityManifestShape(identity) || !reportHasOnlySafeShape(report, identity)) throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private parse report contains invalid or sensitive data.");
   const { assessResumeText, normalizeText } = require("../src/core/resume_parser");
-  const privacy = require("../src/core/resume_privacy");
-  try { privacy.assertResumeIdentityRedacted(resumeText, identity); } catch { throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private bundle contains unredacted identity data."); }
+  try { assertResumeIdentityRedacted(resumeText, identity); } catch { throw runnerError("PRIVATE_FULL_CHAIN_INPUT_IDENTITY", "The private bundle contains unredacted identity data."); }
   const normalized = normalizeText(resumeText);
   const sections = orderedSections(normalized.text, assessResumeText);
   if (report.runMode !== "private-prepare" || report.authorizationGatePassed !== true || report.resumeContentSha256 !== sha256(resumeText)
@@ -572,13 +568,14 @@ function initializePrivateManifest(options) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Baseline and candidate worktrees must be distinct commits with identical shared runner files.");
   }
   const baselineProductCommit = verifyProductCommit(gate.request.baselineWorktree, gate.request.baselineProductCommit, baseline.head);
-  assertDistinctManifestProducts(baselineProductCommit, candidate.head);
+  const candidateProductCommit = verifyProductCommit(suppliedCandidate, gate.request.candidateProductCommit, candidate.head);
+  assertDistinctManifestProducts(baselineProductCommit, candidateProductCommit);
   const manifest = {
     runMode: "private-init-manifest",
     harnessVersion: PRIVATE_HARNESS_VERSION,
     baselineProductCommit,
     baselineEvaluatedCommit: baseline.head,
-    candidateProductCommit: candidate.head,
+    candidateProductCommit,
     candidateEvaluatedCommit: candidate.head,
     sharedFileBlobs: baseline.blobs
   };
@@ -963,7 +960,7 @@ function preflightPrivacyValidator(testSeam) {
   if (typeof testSeam?.modules?.assertResumeIdentityRedacted === "function") {
     return testSeam.modules.assertResumeIdentityRedacted;
   }
-  return require("../src/core/resume_privacy").assertResumeIdentityRedacted;
+  return assertResumeIdentityRedacted;
 }
 
 function runAuthorizationMetadata(testSeam, liveRunMode) {
@@ -1339,7 +1336,7 @@ function parseCli(argv) {
   const valueOptions = new Set([
     "--private-root", "--baseline-worktree", "--candidate-worktree", "--output", "--pdf", "--identity",
     "--resume-text", "--parse-report", "--side", "--profile", "--matching-card", "--jobs", "--labels",
-    "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit"
+    "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit", "--candidate-product-commit"
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -1390,6 +1387,7 @@ module.exports = {
   exclusivePrivateWrite,
   preparePrivateResume,
   verifyPrivateBundle,
+  verifyProductCommit,
   initializePrivateManifest,
   validateProfileResultProvenance,
   runPrivateFullChain,

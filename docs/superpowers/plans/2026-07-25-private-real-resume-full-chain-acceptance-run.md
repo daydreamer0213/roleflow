@@ -33,7 +33,7 @@
 
 **Interfaces:**
 - Consumes: tooling 计划 Task 3–5 的共享 runner/metrics 提交。
-- Produces: `baselineEvaluatedCommit`、`candidateEvaluatedCommit`、`baselineProductCommit` 和共享 blob 清单。
+- Produces: `baselineEvaluatedCommit`、`candidateEvaluatedCommit`、`baselineProductCommit`、`candidateProductCommit` 和共享 blob 清单。
 
 - [ ] **Step 1: 验证候选检查点**
 
@@ -51,14 +51,28 @@ Expected: 工作树干净，全部 46 项离线检查通过，HEAD 已推送到 
 
 - [ ] **Step 2: 固定最终 runner tooling**
 
-从干净 candidate 的最终提交取得 `TOOLING_HEAD`；共享文件仅为：
+产品代码完成并通过 Step 1 后、应用任何 runner-only tooling 前，先记录 candidate 产品提交 P。runner-only tooling 提交完成后再记录实际执行提交 T；P 必须是 T 的真实祖先且二者不得相同：
 
 ```powershell
-$TOOLING_HEAD=(git -C $candidate rev-parse HEAD).Trim()
-$sharedFiles=@('scripts/private-full-chain-runner.js','scripts/lib/benchmark_metrics.js')
+$CANDIDATE_PRODUCT_COMMIT=(git -C $candidate rev-parse HEAD).Trim()
+$candidateProductProof='D:\DevData\RoleFlow-private-benchmark\candidate-product-commit.txt'
+[System.IO.File]::WriteAllText($candidateProductProof, $CANDIDATE_PRODUCT_COMMIT + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+# Apply and commit only the final runner tooling after recording P.
+$CANDIDATE_EVALUATED_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$null=git -C $candidate merge-base --is-ancestor $CANDIDATE_PRODUCT_COMMIT $CANDIDATE_EVALUATED_HEAD
+if ($LASTEXITCODE -ne 0) { throw 'CANDIDATE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
+if ($CANDIDATE_PRODUCT_COMMIT -eq $CANDIDATE_EVALUATED_HEAD) { throw 'CANDIDATE_TOOLING_COMMIT_REQUIRED' }
+$candidateEvaluatedProof='D:\DevData\RoleFlow-private-benchmark\candidate-evaluated-commit.txt'
+[System.IO.File]::WriteAllText($candidateEvaluatedProof, $CANDIDATE_EVALUATED_HEAD + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+$TOOLING_HEAD=$CANDIDATE_EVALUATED_HEAD
+$sharedFiles=@(
+  'scripts/private-full-chain-runner.js',
+  'scripts/lib/benchmark_metrics.js',
+  'scripts/lib/private_resume_privacy.js'
+)
 ```
 
-不要把 `resume_parser`、`pdf_text`、`resume_privacy` 或 candidate-only 产品 wiring 当作共享文件。若最终 tooling 与产品改动混在同一提交，必须从产品基线创建一个专用、可审计的 baseline-tooling 提交：仅从 `$TOOLING_HEAD` 复制上述 `$sharedFiles` 并提交；或 cherry-pick 一个只包含这些文件的最终 tooling 提交。不得使用未提交工作树内容，也不得把 Task 1/2 的 PDF 或隐私业务改动合入 baseline 产品行为。
+不要把 `resume_parser`、`pdf_text`、candidate-only `src/core/resume_privacy.js` 或其他产品 wiring 当作共享文件。`scripts/lib/private_resume_privacy.js` 仅提供 runner 的 identity schema 与残留 PII 断言，必须随 runner/metrics 一起复制。若最终 tooling 与产品改动混在同一提交，必须从产品基线创建一个专用、可审计的 baseline-tooling 提交：仅从 `$TOOLING_HEAD` 复制上述 `$sharedFiles` 并提交；或 cherry-pick 一个只包含这些文件的最终 tooling 提交。不得使用未提交工作树内容，也不得把 Task 1/2 的 PDF 或隐私业务改动合入 baseline 产品行为。
 
 - [ ] **Step 3: 创建隔离 baseline worktree**
 
@@ -76,11 +90,17 @@ Product commit P must be an older product commit explicitly approved by the user
 ```powershell
 $PRODUCT_BASELINE_COMMIT=$env:ROLEFLOW_APPROVED_BASELINE_PRODUCT_COMMIT
 if ($PRODUCT_BASELINE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'APPROVED_BASELINE_PRODUCT_COMMIT_REQUIRED' }
-$CANDIDATE_PRODUCT_HEAD=(git -C $candidate rev-parse HEAD).Trim()
-$CANDIDATE_EVALUATED_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$CANDIDATE_PRODUCT_COMMIT=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-product-commit.txt' -Raw).Trim()
+$CANDIDATE_EVALUATED_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-evaluated-commit.txt' -Raw).Trim()
+$CANDIDATE_ACTUAL_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$null=git -C $candidate cat-file -e "$CANDIDATE_PRODUCT_COMMIT^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'CANDIDATE_PRODUCT_NOT_GIT_VERIFIABLE' }
+$null=git -C $candidate merge-base --is-ancestor $CANDIDATE_PRODUCT_COMMIT $CANDIDATE_EVALUATED_HEAD
+if ($LASTEXITCODE -ne 0) { throw 'CANDIDATE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
+if ($CANDIDATE_ACTUAL_HEAD -ne $CANDIDATE_EVALUATED_HEAD) { throw 'CANDIDATE_EVALUATED_HEAD_CHANGED' }
 $null=git -C $candidate cat-file -e "$PRODUCT_BASELINE_COMMIT^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'APPROVED_BASELINE_PRODUCT_NOT_GIT_VERIFIABLE' }
-if ($PRODUCT_BASELINE_COMMIT -eq $CANDIDATE_PRODUCT_HEAD) { throw 'BASELINE_PRODUCT_MUST_DIFFER_FROM_CANDIDATE' }
+if ($PRODUCT_BASELINE_COMMIT -eq $CANDIDATE_PRODUCT_COMMIT) { throw 'BASELINE_PRODUCT_MUST_DIFFER_FROM_CANDIDATE' }
 $baseline='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1'
 $null=git -C $candidate worktree add -b 'codex/generic-evidence-matching-private-full-chain-baseline-v1' $baseline $PRODUCT_BASELINE_COMMIT
 # Apply only $sharedFiles from $TOOLING_HEAD and create the dedicated tooling commit T before reading BASELINE_EVALUATED_HEAD.
@@ -101,7 +121,8 @@ if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
 ```powershell
 $sharedFiles=@(
   'scripts/private-full-chain-runner.js',
-  'scripts/lib/benchmark_metrics.js'
+  'scripts/lib/benchmark_metrics.js',
+  'scripts/lib/private_resume_privacy.js'
 )
 foreach($file in $sharedFiles) {
   $candidateBlob=(git -C $candidate rev-parse "HEAD:$file").Trim()
@@ -136,17 +157,23 @@ Run from candidate worktree:
 ```powershell
 $env:ROLEFLOW_PRIVATE_ROOT='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $BASELINE_PRODUCT_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt' -Raw).Trim()
+$CANDIDATE_PRODUCT_COMMIT=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-product-commit.txt' -Raw).Trim()
+$CANDIDATE_EVALUATED_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-evaluated-commit.txt' -Raw).Trim()
 $null=git -C 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' cat-file -e "$BASELINE_PRODUCT_HEAD^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_GIT_VERIFIABLE' }
+$null=git -C 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' merge-base --is-ancestor $CANDIDATE_PRODUCT_COMMIT $CANDIDATE_EVALUATED_HEAD
+if ($LASTEXITCODE -ne 0) { throw 'CANDIDATE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
+if ((git -C 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' rev-parse HEAD).Trim() -ne $CANDIDATE_EVALUATED_HEAD) { throw 'CANDIDATE_EVALUATED_HEAD_CHANGED' }
 node scripts/private-full-chain-runner.js --init-manifest `
   --private-root "$env:ROLEFLOW_PRIVATE_ROOT" `
   --baseline-worktree 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' `
   --candidate-worktree 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' `
   --baseline-product-commit "$BASELINE_PRODUCT_HEAD" `
+  --candidate-product-commit "$CANDIDATE_PRODUCT_COMMIT" `
   --output "$env:ROLEFLOW_PRIVATE_ROOT\run-manifest.json"
 ```
 
-`init-manifest` reads candidate product/evaluated commits from the actual clean candidate worktree. In this flow they may be equal only when the candidate executes without an extra tooling commit; do not synthesize either value from P.
+`init-manifest` verifies the explicit candidate product P against the actual clean candidate evaluated HEAD T and records both values separately. It never trusts an arbitrary hash and never derives P from T.
 
 Expected: runner verifies P against the baseline Git history, then writes all four product/evaluated commits plus `harnessVersion` and the shared blob list; the target manifest must be new.
 
