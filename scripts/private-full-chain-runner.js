@@ -1581,6 +1581,14 @@ async function runPrivateFullChain(options, env, testSeam = null) {
           && analysis.errorRequestedMaxTokens <= 65536
           ? analysis.errorRequestedMaxTokens
           : null,
+        responseHttpStatus: Number.isInteger(analysis.errorHttpStatus)
+          && analysis.errorHttpStatus >= 100
+          && analysis.errorHttpStatus <= 599
+          ? analysis.errorHttpStatus
+          : null,
+        responseJsonModeApplied: typeof analysis.errorJsonModeApplied === "boolean"
+          ? analysis.errorJsonModeApplied
+          : null,
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
       };
     });

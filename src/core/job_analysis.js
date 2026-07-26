@@ -243,6 +243,14 @@ function failedAnalysis(configs, job, revision, error) {
     errorRequestedMaxTokens: Number.isFinite(Number(error?.requestedMaxTokens))
       ? Number(error.requestedMaxTokens)
       : null,
+    errorHttpStatus: Number.isInteger(Number(error?.httpStatus || error?.status))
+      && Number(error?.httpStatus || error?.status) >= 100
+      && Number(error?.httpStatus || error?.status) <= 599
+      ? Number(error?.httpStatus || error?.status)
+      : null,
+    errorJsonModeApplied: typeof error?.jsonModeApplied === "boolean"
+      ? error.jsonModeApplied
+      : null,
     realRoleType: "",
     businessScenario: "",
     coreRequirements: [],

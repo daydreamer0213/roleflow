@@ -501,14 +501,46 @@ Require an explicit list of one to five unique zero-based indices. The runner mu
 
 Record `diagnosticMode=true`, `acceptanceEligible=false`, the frozen total, and the selected indices. A full run records the inverse flags. The formal comparator rejects any diagnostic result.
 
-- [ ] **Step 3: Commit and rebuild a fresh diagnostic package**
+- [x] **Step 3: Commit and rebuild a fresh diagnostic package**
 
 Keep the previous v4-r4 preflight package untouched. Create a new single-parent baseline with the exact shared runner blob and a new private package with byte-identical confirmed inputs and labels.
 
-- [ ] **Step 4: Run a small candidate probe**
+- [x] **Step 4: Run a small candidate probe**
 
 Select up to five rows that failed safely in the preserved v4-r3 candidate result, without exposing job IDs or content. If the bounded JSON recovery still fails, diagnose from the allowlisted stage/phase/response-kind/token fields before spending a full 20-row run.
+
+The five-row probe exceeded the ten-minute outer limit and was stopped after its exact process identity was rechecked; it left three successful `understandJob` and two successful `matchJob` cache entries but no result file. A fresh two-row probe then completed in about nine minutes. One former contract-repair failure completed. The other row moved past its former `understandJob` failure but failed during initial `matchJob` with `MODEL_INVALID_RESPONSE`, `invalid_response_json`, and an 8192-token request. No full run was started.
 
 - [ ] **Step 5: Preserve the full gate**
 
 Only after the diagnostic probe is stable, create another fresh package and run the complete baseline and candidate sides serially. Diagnostic rows or caches must not be reused as formal acceptance evidence.
+
+---
+
+### Task 10: Distinguish provider-envelope failure from JSON-content complexity
+
+The two-row probe proves the remaining failure occurs before model-content contract validation, but the persisted safe row cannot yet prove whether the final no-`response_format` recovery ran or whether the provider returned HTTP 200 versus a gateway status.
+
+**Files:**
+- Modify: `src/adapters/models/openai_compatible.js`
+- Modify: `src/core/job_analysis.js`
+- Modify: `scripts/private-full-chain-runner.js`
+- Modify: `tests/model_adapter_smoke.js`
+- Modify: `tests/semantic_pipeline_smoke.js`
+- Modify: `tests/private_full_chain_runner_smoke.js`
+
+- [x] **Step 1: Write the failing final-recovery telemetry regression**
+
+Use a fake server where 4096 JSON mode, 8192 JSON mode, and the final 8192 no-`response_format` request all return an invalid response envelope. Require the final error to record `jsonModeApplied=false`, HTTP status 200, the fixed failure kind, and 8192 without persisting response content.
+
+- [x] **Step 2: Propagate only bounded metadata**
+
+Carry a boolean response-format flag and integer HTTP status 100–599 through the failed semantic analysis and private result row. Unknown values become `null`; no header, body, prompt, provider URL, request content, resume, or JD text is added.
+
+- [ ] **Step 3: Verify, review, and commit**
+
+Run the adapter, semantic-pipeline, and private-runner regressions, the full offline suite from a clean commit, and an independent read-only review.
+
+- [ ] **Step 4: Re-run only the single remaining failed position**
+
+Use another fresh private bundle and no cache reuse. If the failure records HTTP 200 and `responseJsonModeApplied=false`, the provider returned a non-JSON Chat Completions envelope even after response-format removal; Markdown cannot repair it. If the failure records a gateway status, treat it as provider transport instability. Only a valid HTTP envelope with `invalid_content_json` supports simplifying the semantic JSON contract as the immediate remedy.

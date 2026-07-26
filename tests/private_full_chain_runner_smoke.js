@@ -1317,7 +1317,9 @@ async function injectedLiveFlowSmoke(identityPath) {
     failureStage: index % 2 === 0 ? "understandJob" : "matchJob",
     failurePhase: index % 2 === 0 ? "initial" : "contract_repair",
     responseFailureKind: stableResponseKinds[index % stableResponseKinds.length],
-    requestedMaxTokens: index % 2 === 0 ? 4096 : 8192
+    requestedMaxTokens: index % 2 === 0 ? 4096 : 8192,
+    responseHttpStatus: index % 2 === 0 ? 200 : 503,
+    responseJsonModeApplied: index % 2 === 0
   }]));
   const stableFailureSeam = seamFor("candidate");
   stableFailureSeam.modules = {
@@ -1339,7 +1341,9 @@ async function injectedLiveFlowSmoke(identityPath) {
         errorStage: expected.failureStage,
         errorPhase: expected.failurePhase,
         errorResponseKind: expected.responseFailureKind,
-        errorRequestedMaxTokens: expected.requestedMaxTokens
+        errorRequestedMaxTokens: expected.requestedMaxTokens,
+        errorHttpStatus: expected.responseHttpStatus,
+        errorJsonModeApplied: expected.responseJsonModeApplied
       };
     },
     decisionState: () => "ready",
@@ -1360,6 +1364,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(row.failurePhase, expected.failurePhase);
     assert.strictEqual(row.responseFailureKind, expected.responseFailureKind);
     assert.strictEqual(row.requestedMaxTokens, expected.requestedMaxTokens);
+    assert.strictEqual(row.responseHttpStatus, expected.responseHttpStatus);
+    assert.strictEqual(row.responseJsonModeApplied, expected.responseJsonModeApplied);
   }
   const stableFailureRows = JSON.stringify(stableFailureResult.rows);
   assert(!stableFailureRows.includes(unsafeText), "private failure rows must not persist messages or source/model content");

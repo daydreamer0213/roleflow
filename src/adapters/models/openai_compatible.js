@@ -190,6 +190,7 @@ class OpenAICompatibleAdapter {
         finishReason: safeMetadataEnum(error?.finishReason, SAFE_FINISH_REASONS),
         contentLength: Number.isFinite(Number(error?.contentLength)) ? Number(error.contentLength) : null,
         responseFailureKind: safeMetadataEnum(error?.responseFailureKind, SAFE_RESPONSE_FAILURE_KINDS),
+        responseJsonModeApplied: typeof error?.jsonModeApplied === "boolean" ? error.jsonModeApplied : null,
         requestedMaxTokens: Number.isFinite(Number(error?.requestedMaxTokens))
           ? Number(error.requestedMaxTokens)
           : responseTokenLimit
@@ -226,6 +227,7 @@ class OpenAICompatibleAdapter {
         const detail = (await res.text()).slice(0, 800);
         const error = new Error(`Model request failed (HTTP ${res.status}).`);
         error.status = res.status;
+        error.jsonModeApplied = Boolean(jsonMode);
         error.providerRequestId = providerRequestId;
         error.retryable = res.status === 408 || res.status === 429 || res.status >= 500;
         if (res.status === 408 || res.status === 504) error.code = "MODEL_TIMEOUT";
@@ -246,6 +248,7 @@ class OpenAICompatibleAdapter {
           contentLength: rawEnvelope.length,
           providerRequestId,
           httpStatus: res.status,
+          jsonModeApplied: Boolean(jsonMode),
           retryable: true,
           responseFailureKind: "invalid_response_json",
           requestedMaxTokens: maxTokens
@@ -269,6 +272,7 @@ class OpenAICompatibleAdapter {
         contentLength: content.length,
         providerRequestId: requestId,
         httpStatus: res.status,
+        jsonModeApplied: Boolean(jsonMode),
         retryable: true,
         requestedMaxTokens: maxTokens
       };
@@ -291,7 +295,9 @@ class OpenAICompatibleAdapter {
         throw error;
       }
     } catch (error) {
-      throw normalizeTransportError(error, this.timeoutMs);
+      const normalized = normalizeTransportError(error, this.timeoutMs);
+      if (typeof normalized.jsonModeApplied !== "boolean") normalized.jsonModeApplied = Boolean(jsonMode);
+      throw normalized;
     } finally {
       clearTimeout(timer);
     }

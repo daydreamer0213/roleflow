@@ -43,6 +43,10 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "" } }] }));
       return;
     }
+    if (scenario === "invalid-response-final-failure") {
+      res.end("invalid final response envelope");
+      return;
+    }
     res.end(JSON.stringify({
       choices: [{ finish_reason: "stop", message: { content: "{\"expanded\":true}" } }],
       usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 }
@@ -261,12 +265,27 @@ server.listen(0, "127.0.0.1", async () => {
       await adaptiveAdapter.chatJson("return json", { scenario: "invalid-response" }, { kind: "adaptiveInvalidResponse" }),
       { expanded: true }
     );
+    const finalFailure = await rejectedError(
+      () => adaptiveAdapter.chatJson(
+        "return json",
+        { scenario: "invalid-response-final-failure" },
+        { kind: "adaptiveFinalFailure" }
+      )
+    );
+    assert.strictEqual(finalFailure.code, "MODEL_INVALID_RESPONSE");
+    assert.strictEqual(finalFailure.responseFailureKind, "invalid_response_json");
+    assert.strictEqual(finalFailure.requestedMaxTokens, 8192);
+    assert.strictEqual(finalFailure.httpStatus, 200);
+    assert.strictEqual(finalFailure.jsonModeApplied, false, "final failure metadata must prove the no-response_format recovery ran");
     assert.deepStrictEqual(adaptivePayloads, [
       { scenario: "truncated", maxTokens: 4096, jsonMode: true },
       { scenario: "truncated", maxTokens: 8192, jsonMode: true },
       { scenario: "invalid-response", maxTokens: 4096, jsonMode: true },
       { scenario: "invalid-response", maxTokens: 8192, jsonMode: true },
-      { scenario: "invalid-response", maxTokens: 8192, jsonMode: false }
+      { scenario: "invalid-response", maxTokens: 8192, jsonMode: false },
+      { scenario: "invalid-response-final-failure", maxTokens: 4096, jsonMode: true },
+      { scenario: "invalid-response-final-failure", maxTokens: 8192, jsonMode: true },
+      { scenario: "invalid-response-final-failure", maxTokens: 8192, jsonMode: false }
     ]);
     console.log("model_adapter_smoke ok");
   } catch (error) {
