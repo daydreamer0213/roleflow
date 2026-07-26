@@ -12,7 +12,7 @@ const { scoreJob, decisionState } = require("../src/core/scoring");
 const { openDb, decisionBucket } = require("../src/core/storage");
 const { mapWithConcurrency } = require("../src/core/async_pool");
 const { assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
-const { decisionHardBlockers } = require("../src/core/model_contract");
+const { decisionHardBlockers, effectiveHardBlockers } = require("../src/core/model_contract");
 const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
@@ -944,6 +944,37 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), invalidBlockerSeam);
   assert(invalidBlockerResult.rows.every((row) => row.hardBlocked === false),
     "legacy or malformed model blockers must not be reported as hard boundaries");
+
+  const legacyBaselineProbe = createMatchProbeBundle("legacy-baseline-hard-blocker-probe", "baseline");
+  const legacyBaselineSeam = seamFor("baseline");
+  legacyBaselineSeam.modules = {
+    ...legacyBaselineSeam.modules,
+    effectiveHardBlockers,
+    createJobAnalysisRunner: () => async () => ({
+      provider: "synthetic-provider",
+      semanticStatus: "complete",
+      decisionSource: "model",
+      recommendation: "skip",
+      evidence: { jd: ["jd"], resume: ["resume"] },
+      fitReasons: [],
+      missingPoints: [],
+      hardBlockers: ["legacy baseline blocker"],
+      errorCode: ""
+    }),
+    decisionState: () => "ready",
+    decisionBucket: () => "not_recommended"
+  };
+  delete legacyBaselineSeam.modules.decisionHardBlockers;
+  const legacyBaselineResult = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
+    privateRoot: legacyBaselineProbe.root,
+    output: legacyBaselineProbe.output,
+    profile: legacyBaselineProbe.profile,
+    matchingCard: legacyBaselineProbe.card,
+    jobs: legacyBaselineProbe.jobs,
+    labels: legacyBaselineProbe.labels
+  }), authorizedEnv(), legacyBaselineSeam);
+  assert(legacyBaselineResult.rows.every((row) => row.hardBlocked === true),
+    "legacy baseline products must fall back to their effective blocker semantics");
 
   const lifecycleProbe = createMatchProbeBundle("throwing-runner-constructor-probe");
   let closeCount = 0;

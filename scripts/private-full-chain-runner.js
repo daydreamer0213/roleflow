@@ -698,7 +698,7 @@ function loadProductionModules(mode) {
   }
   const { profileToRuntimeConfigs } = require("../src/core/search_plan");
   const { createJobAnalysisRunner } = require("../src/core/job_analysis");
-  const { decisionHardBlockers } = require("../src/core/model_contract");
+  const { decisionHardBlockers, effectiveHardBlockers } = require("../src/core/model_contract");
   const { scoreJob, decisionState } = require("../src/core/scoring");
   const { openDb, decisionBucket } = require("../src/core/storage");
   const { mapWithConcurrency } = require("../src/core/async_pool");
@@ -710,10 +710,21 @@ function loadProductionModules(mode) {
     scoreJob,
     decisionState,
     decisionHardBlockers,
+    effectiveHardBlockers,
     openDb,
     decisionBucket,
     mapWithConcurrency
   };
+}
+
+function productDecisionHardBlockers(modules, analysis) {
+  const select = typeof modules.decisionHardBlockers === "function"
+    ? modules.decisionHardBlockers
+    : modules.effectiveHardBlockers;
+  if (typeof select !== "function") {
+    throw runnerError("PRIVATE_FULL_CHAIN_FAILURE", "The evaluated product does not expose blocker semantics.");
+  }
+  return select(analysis);
 }
 
 function liveManifest(privateRoot, side, evaluatedCommit) {
@@ -1176,7 +1187,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
             ? (analysis.missingPoints || analysis.softGaps).length
             : 0
         },
-        hardBlocked: state === "blocked" || modules.decisionHardBlockers(analysis).length > 0,
+        hardBlocked: state === "blocked" || productDecisionHardBlockers(modules, analysis).length > 0,
         decisionState: safeEnum(state, SAFE_DECISION_STATES, "unknown"),
         errorCode: safeErrorCode(analysis.errorCode),
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
