@@ -199,6 +199,15 @@ class OpenAICompatibleAdapter {
           retryable: true
         });
       }
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response envelope was invalid.", {
+          finishReason: "",
+          contentLength: 0,
+          providerRequestId,
+          httpStatus: res.status,
+          retryable: true
+        });
+      }
       const requestId = providerRequestId || String(data.id || "");
       const content = extractContent(data);
       const responseMeta = {

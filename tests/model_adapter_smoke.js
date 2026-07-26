@@ -38,6 +38,10 @@ const server = http.createServer(async (req, res) => {
       res.end(sentinel);
       return;
     }
+    if (scenario === "null-envelope") {
+      res.end("null");
+      return;
+    }
     if (scenario === "missing-content") {
       res.end(JSON.stringify({ choices: [{ message: {} }] }));
       return;
@@ -167,6 +171,7 @@ server.listen(0, "127.0.0.1", async () => {
     for (const [scenario, code] of [
       ["truncated", "MODEL_OUTPUT_TRUNCATED"],
       ["invalid-envelope", "MODEL_INVALID_RESPONSE"],
+      ["null-envelope", "MODEL_INVALID_RESPONSE"],
       ["missing-content", "MODEL_INVALID_RESPONSE"],
       ["invalid-json", "MODEL_INVALID_JSON"]
     ]) {
@@ -179,7 +184,7 @@ server.listen(0, "127.0.0.1", async () => {
       assert.strictEqual(typeof error.finishReason, "string");
     }
     const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
-    assert.strictEqual(structuredFailureMetrics.length, 4);
+    assert.strictEqual(structuredFailureMetrics.length, 5);
     assert(!JSON.stringify(structuredFailureMetrics).includes("response sentinel"));
     console.log("model_adapter_smoke ok");
   } catch (error) {
