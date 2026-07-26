@@ -61,6 +61,11 @@ RoleFlow 的岗位筛选默认优先保留机会，只排除有明确证据的�
 
 `expectedRecommendation` 与 `expectedBucket` 继续保留，用于诊断模型落在哪一档；它们不再决定 recall-first 门禁是否通过。
 
+为保持现有逐行防伪指标与 v2 处置语义一致，v2 还必须满足：
+
+- `expectedDisposition: "keep"` 时 `expectedBucket` 只能是 `primary`、`talk` 或 `backup`。
+- `expectedDisposition: "exclude"` 时必须是 `expectedRecommendation: "skip"` 与 `expectedBucket: "not_recommended"`。
+
 v2 草稿的初始转换规则是：
 
 - v1 中非 `skip/not_recommended` 的 7 条全部为 `keep`。
