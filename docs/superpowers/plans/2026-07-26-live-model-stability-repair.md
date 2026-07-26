@@ -565,21 +565,23 @@ The live probe also showed that the current multi-stage match contract is too sl
 - Modify: `tests/semantic_pipeline_smoke.js`
 - Modify as required by red regressions: existing generic/benchmark/dashboard smoke tests
 
-- [ ] **Step 1: Write compact prompt and contract failures**
+- [x] **Step 1: Write compact prompt and contract failures**
 
 Require exact `R*`/`E*` coverage, no duplicate or invented IDs, candidate evidence for matched/transferable/satisfied/conflict states, a bounded `cautions` list for preferred/outcome/transition signals, and a high/medium/low certainty enum. Prove the prompt no longer asks the model to repeat or decide locally derived fields. A missing core item without candidate-side factual evidence must never be promoted into a hard blocker.
 
-- [ ] **Step 2: Derive the legacy analysis view locally**
+- [x] **Step 2: Derive the legacy analysis view locally**
 
 Join IDs to validated JD evidence, derive blockers and recommendation deterministically, and use the existing local match explainer for resume version, projects, and greeting angle. Keep the existing final rule guard.
 
-- [ ] **Step 3: Preserve compatibility**
+- [x] **Step 3: Preserve compatibility**
 
 Bump only the match pipeline version. Keep old MatchDecision payloads readable for fixtures/history and avoid a database migration.
 
-- [ ] **Step 4: Run targeted and full offline regressions**
+- [x] **Step 4: Run targeted and full offline regressions**
 
 The generic cross-occupation suite, semantic pipeline, adapter, dashboard, private runner, benchmark fixture, and full offline suite must pass from a clean commit.
+
+Result: targeted adapter, semantic, generic-evidence, and benchmark checks passed; the clean full suite reported 47 offline checks passed. Independent review found and verified fixes for four false-positive/false-negative risks plus the sparse-JD compact-to-legacy boundary, then returned `APPROVED`.
 
 - [ ] **Step 5: Run a fresh small private diagnostic**
 
