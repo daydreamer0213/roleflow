@@ -1156,6 +1156,27 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(concurrencyResult.rows.length, jobs.length);
   assert.strictEqual(maxSemanticJobs, 1, "injected private run must serialize semantic job analysis");
 
+  const diagnosticProbe = createMatchProbeBundle("diagnostic-subset-probe");
+  const diagnosticResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: diagnosticProbe.root,
+    output: diagnosticProbe.output,
+    profile: diagnosticProbe.profile,
+    matchingCard: diagnosticProbe.card,
+    jobs: diagnosticProbe.jobs,
+    labels: diagnosticProbe.labels,
+    diagnosticIndices: "0,2"
+  }), authorizedEnv(), seamFor("candidate"));
+  assert.strictEqual(diagnosticResult.diagnosticMode, true);
+  assert.strictEqual(diagnosticResult.acceptanceEligible, false);
+  assert.strictEqual(diagnosticResult.frozenFixtureTotal, jobs.length);
+  assert.deepStrictEqual(diagnosticResult.diagnosticIndices, [0, 2]);
+  assert.deepStrictEqual(
+    diagnosticResult.rows.map((row) => row.id),
+    [jobs[0].id, jobs[2].id],
+    "diagnostic mode must select only the requested rows after validating the full frozen fixture"
+  );
+  const diagnosticDbPathCount = captured.dbPaths.length;
+
   const offlineBaseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("baseline"));
@@ -1169,14 +1190,25 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(runner.comparePrivateFullChainResults(offlineBaseline, offlineCandidate).code, "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY");
   const baseline = { ...offlineBaseline, runMode: "live", authorizationGatePassed: true };
   const candidate = { ...offlineCandidate, runMode: "live", authorizationGatePassed: true };
+  for (const result of [baseline, candidate]) {
+    assert.strictEqual(result.diagnosticMode, false);
+    assert.strictEqual(result.acceptanceEligible, true);
+    assert.strictEqual(result.frozenFixtureTotal, jobs.length);
+    assert.deepStrictEqual(result.diagnosticIndices, []);
+  }
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(baseline, { ...candidate, diagnosticMode: true, acceptanceEligible: false }).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "diagnostic results must never enter the formal acceptance comparator"
+  );
   assert.deepStrictEqual(captured.fifthCardBySide.baseline, confirmedCard);
   assert.deepStrictEqual(captured.fifthCardBySide.candidate, confirmedCard);
   assert.strictEqual(baseline.matchingCardProvided, true);
   assert.strictEqual(baseline.matchingCardConsumed, false);
   assert.strictEqual(candidate.matchingCardProvided, true);
   assert.strictEqual(candidate.matchingCardConsumed, true);
-  assert.strictEqual(captured.dbPaths.length, 2);
-  assert.notStrictEqual(captured.dbPaths[0], captured.dbPaths[1]);
+  assert.strictEqual(captured.dbPaths.length, diagnosticDbPathCount + 2);
+  assert.notStrictEqual(captured.dbPaths.at(-2), captured.dbPaths.at(-1));
   assert(fs.existsSync(path.join(privatePath("runs", "baseline"), "model-cache.sqlite")), "baseline must create its SQLite cache normally");
   assert(fs.existsSync(path.join(privatePath("runs", "candidate"), "model-cache.sqlite")), "candidate must create its SQLite cache normally");
   await assert.rejects(
@@ -1185,7 +1217,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     }), authorizedEnv(), seamFor("candidate")),
     (error) => error.code === "PRIVATE_FULL_CHAIN_CACHE_EXISTS"
   );
-  assert.strictEqual(captured.dbPaths.length, 2, "same-side cache reuse must fail before opening SQLite");
+  assert.strictEqual(captured.dbPaths.length, diagnosticDbPathCount + 2, "same-side cache reuse must fail before opening SQLite");
   assert.deepStrictEqual(new Set(candidate.rows.map((row) => row.id)), new Set(labels.rows.map((row) => row.id)));
   const capturedMatch = captured.matchInputs.find((input) => input.candidateMatchCard);
   assert.deepStrictEqual(capturedMatch.candidateProfile, confirmedProfile);
@@ -1761,6 +1793,18 @@ async function main() {
       mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
       matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
       output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" }, gitProof: { clean: true, commit: "39557f2" }
+    });
+    expectGate("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", {
+      mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
+      matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
+      output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" },
+      diagnosticIndices: "0,0", gitProof: { clean: true, commit: "39557f2" }
+    });
+    expectGate("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", {
+      mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
+      matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
+      output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" },
+      diagnosticIndices: "0,1,2,3,4,5", gitProof: { clean: true, commit: "39557f2" }
     });
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({ privateRoot: path.resolve(__dirname, "..") }));
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({ privateRoot: "D:\\" }));

@@ -482,3 +482,33 @@ Run the targeted tests and full offline suites from clean commits. Build a new s
 - [ ] **Step 5: Run the next serial comparison**
 
 Use the same frozen inputs and labels. The candidate must have `failed=0` and must not regress recommendation/bucket accuracy or hard-placement metrics relative to its same-manifest baseline.
+
+---
+
+### Task 9: Add a bounded diagnostic subset before another 20-row run
+
+The user chose a small root-cause probe before another full live comparison because each 20-row serial cycle is slow. This does not reduce the final 20-row acceptance target.
+
+**Files:**
+- Modify: `scripts/private-full-chain-runner.js`
+- Modify: `tests/private_full_chain_runner_smoke.js`
+
+- [x] **Step 1: Write the failing diagnostic-subset regression**
+
+Require an explicit list of one to five unique zero-based indices. The runner must validate the complete frozen job/label fixture and confirmed evidence chain first, then analyze only the requested rows serially.
+
+- [x] **Step 2: Mark diagnostic output as ineligible for acceptance**
+
+Record `diagnosticMode=true`, `acceptanceEligible=false`, the frozen total, and the selected indices. A full run records the inverse flags. The formal comparator rejects any diagnostic result.
+
+- [ ] **Step 3: Commit and rebuild a fresh diagnostic package**
+
+Keep the previous v4-r4 preflight package untouched. Create a new single-parent baseline with the exact shared runner blob and a new private package with byte-identical confirmed inputs and labels.
+
+- [ ] **Step 4: Run a small candidate probe**
+
+Select up to five rows that failed safely in the preserved v4-r3 candidate result, without exposing job IDs or content. If the bounded JSON recovery still fails, diagnose from the allowlisted stage/phase/response-kind/token fields before spending a full 20-row run.
+
+- [ ] **Step 5: Preserve the full gate**
+
+Only after the diagnostic probe is stable, create another fresh package and run the complete baseline and candidate sides serially. Diagnostic rows or caches must not be reused as formal acceptance evidence.

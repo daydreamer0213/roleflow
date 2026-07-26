@@ -272,6 +272,20 @@ function normalizedMode(value) {
   return raw.startsWith("--") ? raw.slice(2) : raw;
 }
 
+function parseDiagnosticIndices(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { ok: true, indices: null };
+  const parts = raw.split(",");
+  if (parts.length > 5 || parts.some((part) => !/^(0|[1-9][0-9]*)$/.test(part))) {
+    return fail("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "Diagnostic selection requires one to five unique zero-based indices.");
+  }
+  const indices = parts.map(Number);
+  if (new Set(indices).size !== indices.length) {
+    return fail("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "Diagnostic selection requires one to five unique zero-based indices.");
+  }
+  return { ok: true, indices };
+}
+
 function checkSyntheticGitProof(value) {
   if (value == null) return { ok: true, proof: null };
   if (value?.clean !== true || !/^[0-9a-f]{7,40}$/i.test(String(value.commit || ""))) {
@@ -335,6 +349,11 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
   const environ = env || {};
   const mode = normalizedMode(opts.mode);
   if (!MODES.has(mode)) return fail("PRIVATE_FULL_CHAIN_MODE_REQUIRED", "Choose exactly one supported private full-chain mode.");
+  const diagnostic = parseDiagnosticIndices(opts.diagnosticIndices);
+  if (!diagnostic.ok) return diagnostic;
+  if (diagnostic.indices && mode !== "match-live") {
+    return fail("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "Diagnostic selection is only available for match-live.");
+  }
   if (mode === "compare") return validateComparePaths(opts);
 
   const root = checkPrivateRoot(opts.privateRoot);
@@ -440,6 +459,7 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
       output: side.output,
       modelSettingsRoot: settings.resolved,
       evaluatedCommit: proof.proof?.commit || "",
+      diagnosticIndices: diagnostic.indices,
       ...liveInputs
     }
   };
@@ -1415,6 +1435,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
     }
     preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue);
+    if (request.diagnosticIndices?.some((index) => index >= preflight.fixture.jobs.length)) {
+      throw runnerError("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "A diagnostic index is outside the frozen fixture.");
+    }
+    preflight.selectedJobs = request.diagnosticIndices
+      ? request.diagnosticIndices.map((index) => preflight.fixture.jobs[index])
+      : preflight.fixture.jobs;
   }
   if (request.mode === "card-live" && request.side !== "candidate") {
     throw runnerError("PRIVATE_FULL_CHAIN_CARD_UNSUPPORTED", "The baseline product does not support matching-card generation.");
@@ -1496,7 +1522,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     return result;
   }
 
-  const { profileInput, cardInput, fixture } = preflight;
+  const { profileInput, cardInput, fixture, selectedJobs } = preflight;
   const { resumeText, identityRaw } = preflight.resume;
   const searchPlan = privateSearchPlan(profileInput.profile);
   const runtimeBase = { ...base, model: modelConfig, candidateProfile: profileInput.profile };
@@ -1518,7 +1544,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       db,
       ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
     });
-    rows = await modules.mapWithConcurrency(fixture.jobs, 1, async (job) => {
+    rows = await modules.mapWithConcurrency(selectedJobs, 1, async (job) => {
       // The frozen fixture is already a complete, read-only JD snapshot. Activity/detail refresh
       // is an operational acquisition gate and is intentionally neutral in this matching benchmark.
       const benchmarkJob = frozenBenchmarkScoreInput(job);
@@ -1591,6 +1617,10 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     confirmedEvidenceSourceHarnessVersion: preflight.portability?.proof.sourceHarness || PRIVATE_HARNESS_VERSION,
     modelIdentity,
     modelIdentitySha256,
+    diagnosticMode: Boolean(request.diagnosticIndices),
+    acceptanceEligible: !request.diagnosticIndices,
+    frozenFixtureTotal: fixture.jobs.length,
+    diagnosticIndices: request.diagnosticIndices || [],
     ...derived.metrics,
     rows
   };
@@ -1624,6 +1654,8 @@ function comparePrivateFullChainResults(baseline, candidate) {
       || value.cardReviewStatus !== "confirmed"
       || value.matchingCardProvided !== true
       || typeof value.matchingCardConsumed !== "boolean"
+      || value.diagnosticMode !== false
+      || value.acceptanceEligible !== true
       || ![PRIVATE_HARNESS_VERSION, PORTABLE_SOURCE_HARNESS_VERSION].includes(value.confirmedEvidenceSourceHarnessVersion)
       || (value.confirmedEvidencePortabilitySha256 !== null
         && !/^[0-9a-f]{64}$/.test(String(value.confirmedEvidencePortabilitySha256 || "")))
@@ -1734,7 +1766,7 @@ function parseCli(argv) {
     "--private-root", "--baseline-worktree", "--candidate-worktree", "--output", "--pdf", "--identity",
     "--resume-text", "--parse-report", "--side", "--profile", "--matching-card", "--jobs", "--labels",
     "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit", "--candidate-product-commit",
-    "--source-private-root", "--portability-proof"
+    "--source-private-root", "--portability-proof", "--diagnostic-indices"
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
