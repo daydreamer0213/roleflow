@@ -1727,6 +1727,57 @@ function hasBoundModelIdentity(value) {
   }
 }
 
+const RECALL_FIRST_SUMMARY_FIELDS = [
+  "expectedKeep",
+  "retainedOpportunity",
+  "falseHardExclusion",
+  "expectedExclude",
+  "obviousMismatchExcluded",
+  "missedObviousExclusion",
+  "unresolvedDisposition",
+  "opportunityRetentionRate",
+  "obviousExclusionRate"
+];
+const RECALL_FIRST_ID_FIELDS = [
+  "falseHardExclusionIds",
+  "missedObviousExclusionIds",
+  "unresolvedDispositionIds"
+];
+
+function sameSortedStrings(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+function verifyStoredRecallFirstMetrics(value) {
+  const derived = deriveRecallFirstMetrics(value.rows);
+  if (!derived.ok) return derived;
+  for (const field of RECALL_FIRST_SUMMARY_FIELDS) {
+    if (value[field] !== derived.metrics[field]) {
+      return fail("BENCHMARK_COMPARE_METRICS", `Recall-first summary ${field} does not match rows.`);
+    }
+  }
+  for (const field of RECALL_FIRST_ID_FIELDS) {
+    if (!sameSortedStrings(value[field], derived.metrics[field])) {
+      return fail("BENCHMARK_COMPARE_METRICS", `Recall-first ID summary ${field} does not match rows.`);
+    }
+  }
+  return { ok: true, metrics: derived.metrics };
+}
+
+function recallFirstAcceptanceFailures(candidate) {
+  const failures = [];
+  for (const field of ["failed", "stale", "pending", "primaryWithoutEvidence", "unresolvedDisposition"]) {
+    if (candidate[field] !== 0) failures.push(`候选 ${field}=${candidate[field]}，召回优先验收要求为 0`);
+  }
+  if (candidate.falseHardExclusion !== 0) failures.push(`存在 ${candidate.falseHardExclusion} 条错误硬排除`);
+  if (candidate.missedObviousExclusion !== 0) failures.push(`存在 ${candidate.missedObviousExclusion} 条明确排除漏拦`);
+  const partialPrimary = candidate.rows.filter((row) => row.semanticStatus === "partial" && row.actualBucket === "primary");
+  if (partialPrimary.length) failures.push(`存在 ${partialPrimary.length} 条 partial -> primary`);
+  return failures;
+}
+
 function comparePrivateFullChainResults(baseline, candidate) {
   for (const [value, side] of [[baseline, "baseline"], [candidate, "candidate"]]) {
     if (!value || typeof value !== "object" || Array.isArray(value)
@@ -1797,19 +1848,51 @@ function comparePrivateFullChainResults(baseline, candidate) {
       return fail("BENCHMARK_COMPARE_METRICS", "Private comparison rows must record a boolean hard-blocker state.");
     }
   }
+  const recallMode = baseline.evaluationPolicy === RECALL_FIRST_POLICY
+    && candidate.evaluationPolicy === RECALL_FIRST_POLICY;
+  const hasVersionedPolicy = Boolean(baseline.evaluationPolicy || candidate.evaluationPolicy
+    || baseline.labelsVersion || candidate.labelsVersion);
+  if (hasVersionedPolicy && (!recallMode
+    || baseline.labelsVersion !== "private-real-jd-labels.v2"
+    || candidate.labelsVersion !== "private-real-jd-labels.v2")) {
+    return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison label policy identity does not match.");
+  }
   const compared = compareBenchmarkResults({ ...baseline, evaluatedCommit: baseline.productCommit }, candidate);
   if (!compared.ok) return compared;
+  let recallMetrics = null;
+  if (recallMode) {
+    const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
+    for (const row of candidate.rows) {
+      if (row.expectedDisposition !== baselineById.get(row.id)?.expectedDisposition) {
+        return fail("BENCHMARK_COMPARE_FIXTURE_SET", "Candidate must not rewrite expectedDisposition.");
+      }
+    }
+    const baselineRecall = verifyStoredRecallFirstMetrics(baseline);
+    if (!baselineRecall.ok) return baselineRecall;
+    const candidateRecall = verifyStoredRecallFirstMetrics(candidate);
+    if (!candidateRecall.ok) return candidateRecall;
+    recallMetrics = { baseline: baselineRecall.metrics, candidate: candidateRecall.metrics };
+  }
   if (baseline.rows.length !== baseline.frozenFixtureTotal
     || candidate.rows.length !== candidate.frozenFixtureTotal) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires every row in the complete frozen fixture.");
   }
   const before = new Map(baseline.rows.map((row) => [row.id, row]));
   const changed = (predicate) => candidate.rows.filter((row) => predicate(before.get(row.id), row)).map((row) => row.id).sort();
+  const failureReasons = recallMode
+    ? recallFirstAcceptanceFailures(candidate)
+    : compared.report.failureReasons;
   return {
     ok: true,
     report: {
       ...compared.report,
       runMode: "offline-private-compare",
+      ...(recallMode ? {
+        evaluationPolicy: RECALL_FIRST_POLICY,
+        recall: recallMetrics,
+        accepted: failureReasons.length === 0,
+        failureReasons
+      } : {}),
       profile: {
         baselineSha256: baseline.fixtureProfileSha256,
         candidateSha256: candidate.fixtureProfileSha256,
@@ -1840,7 +1923,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
 }
 
 function renderPrivateCompareMarkdown(report) {
-  return [
+  const lines = [
     "# Private full-chain comparison",
     "",
     `- Accepted: ${report.accepted}`,
@@ -1850,9 +1933,19 @@ function renderPrivateCompareMarkdown(report) {
     `- Candidate card consumed: ${report.card.candidateConsumed}`,
     `- Source harness: ${report.portability.sourceHarness}`,
     `- Portability proof: ${report.portability.proofSha256 || "native-v2"}`,
-    `- Failure reasons: ${report.failureReasons.length ? report.failureReasons.join("; ") : "none"}`,
-    ""
-  ].join("\n");
+    `- Failure reasons: ${report.failureReasons.length ? report.failureReasons.join("; ") : "none"}`
+  ];
+  if (report.evaluationPolicy === RECALL_FIRST_POLICY) {
+    const recall = report.recall.candidate;
+    lines.push(
+      `- Evaluation policy: ${RECALL_FIRST_POLICY}`,
+      `- Opportunities retained: ${recall.retainedOpportunity}/${recall.expectedKeep}`,
+      `- False hard exclusions: ${recall.falseHardExclusion}`,
+      `- Obvious mismatches excluded: ${recall.obviousMismatchExcluded}/${recall.expectedExclude}`,
+      `- Missed obvious exclusions: ${recall.missedObviousExclusion}`
+    );
+  }
+  return [...lines, ""].join("\n");
 }
 
 function parseCli(argv) {

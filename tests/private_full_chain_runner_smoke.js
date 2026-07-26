@@ -255,6 +255,21 @@ function applyDerivedMetrics(result) {
   return { ...result, ...derived.metrics };
 }
 
+function asRecallFirstResult(result) {
+  const withDisposition = applyDerivedMetrics({
+    ...structuredClone(result),
+    labelsVersion: "private-real-jd-labels.v2",
+    evaluationPolicy: "recall-first.v1",
+    rows: result.rows.map((row) => ({
+      ...row,
+      expectedDisposition: row.expectedBucket === "not_recommended" ? "exclude" : "keep"
+    }))
+  });
+  const recall = runner.deriveRecallFirstMetrics(withDisposition.rows);
+  assert.strictEqual(recall.ok, true);
+  return { ...withDisposition, ...recall.metrics };
+}
+
 function asRecallFirstLabels(labels) {
   return {
     ...structuredClone(labels),
@@ -1641,6 +1656,121 @@ async function injectedLiveFlowSmoke(identityPath) {
   for (const field of ["enteredNotRecommended", "exitedNotRecommended", "enteredPrimary", "hardBlockerChanges"]) {
     assert(Array.isArray(compared.report[field]), `${field} must be reported`);
   }
+
+  const recallBaseline = asRecallFirstResult(baseline);
+  const recallCandidate = asRecallFirstResult(candidate);
+  const retainedReference = recallCandidate.rows.find((row) => row.expectedDisposition === "keep" && row.evidenceComplete);
+  assert(retainedReference, "recall fixture requires one evidence-complete keep row");
+  const exactChangedButRetained = structuredClone(recallCandidate);
+  exactChangedButRetained.rows = exactChangedButRetained.rows.map((row) => row.id === retainedReference.id
+    ? { ...row, actualRecommendation: "caution", actualBucket: "talk", pass: false }
+    : row);
+  const retainedCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(exactChangedButRetained)
+  );
+  assert.strictEqual(retainedCompared.ok, true);
+  assert.strictEqual(retainedCompared.report.accepted, true, "精确档位变化但机会仍保留时，recall-first 验收必须通过");
+  assert.strictEqual(retainedCompared.report.evaluationPolicy, "recall-first.v1");
+
+  const wronglyExcluded = structuredClone(recallCandidate);
+  wronglyExcluded.rows = wronglyExcluded.rows.map((row) => row.id === retainedReference.id
+    ? { ...row, actualRecommendation: "skip", actualBucket: "not_recommended", pass: false }
+    : row);
+  const wronglyExcludedCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(wronglyExcluded)
+  );
+  assert.strictEqual(wronglyExcludedCompared.report.accepted, false);
+  assert.match(wronglyExcludedCompared.report.failureReasons.join("\n"), /错误硬排除/);
+
+  const excludedReference = recallCandidate.rows.find((row) => row.expectedDisposition === "exclude");
+  assert(excludedReference, "recall fixture requires one explicit exclude row");
+  const missedExclusion = structuredClone(recallCandidate);
+  missedExclusion.rows = missedExclusion.rows.map((row) => row.id === excludedReference.id
+    ? { ...row, actualRecommendation: "review", actualBucket: "talk", pass: false }
+    : row);
+  const missedExclusionCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(missedExclusion)
+  );
+  assert.strictEqual(missedExclusionCompared.report.accepted, false);
+  assert.match(missedExclusionCompared.report.failureReasons.join("\n"), /明确排除漏拦/);
+
+  const unresolvedRecall = structuredClone(recallCandidate);
+  unresolvedRecall.rows = unresolvedRecall.rows.map((row) => row.id === retainedReference.id
+    ? { ...row, actualRecommendation: "review", actualBucket: "analysis_pending", pass: false }
+    : row);
+  const unresolvedCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(unresolvedRecall)
+  );
+  assert.strictEqual(unresolvedCompared.report.accepted, false);
+  assert.match(unresolvedCompared.report.failureReasons.join("\n"), /unresolvedDisposition/);
+
+  const primaryWithoutEvidence = structuredClone(recallCandidate);
+  primaryWithoutEvidence.rows = primaryWithoutEvidence.rows.map((row) => row.id === retainedReference.id
+    ? { ...row, actualRecommendation: "apply", actualBucket: "primary", evidenceComplete: false, pass: row.expectedRecommendation === "apply" && row.expectedBucket === "primary" }
+    : row);
+  const primaryWithoutEvidenceCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(primaryWithoutEvidence)
+  );
+  assert.strictEqual(primaryWithoutEvidenceCompared.report.accepted, false);
+  assert.match(primaryWithoutEvidenceCompared.report.failureReasons.join("\n"), /primaryWithoutEvidence/);
+
+  const partialPrimary = structuredClone(recallCandidate);
+  partialPrimary.rows = partialPrimary.rows.map((row) => row.id === retainedReference.id
+    ? { ...row, actualRecommendation: "apply", actualBucket: "primary", semanticStatus: "partial", pass: row.expectedRecommendation === "apply" && row.expectedBucket === "primary" }
+    : row);
+  const partialPrimaryCompared = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    asRecallFirstResult(partialPrimary)
+  );
+  assert.strictEqual(partialPrimaryCompared.report.accepted, false);
+  assert.match(partialPrimaryCompared.report.failureReasons.join("\n"), /partial -> primary/);
+
+  const tamperedDisposition = structuredClone(recallCandidate);
+  tamperedDisposition.rows[0].expectedDisposition = tamperedDisposition.rows[0].expectedDisposition === "keep" ? "exclude" : "keep";
+  const tamperedDispositionResult = runner.comparePrivateFullChainResults(
+    recallBaseline,
+    { ...tamperedDisposition, ...runner.deriveRecallFirstMetrics(tamperedDisposition.rows).metrics }
+  );
+  assert.strictEqual(tamperedDispositionResult.ok, false);
+  assert.strictEqual(tamperedDispositionResult.code, "BENCHMARK_COMPARE_FIXTURE_SET");
+
+  const forgedRecallSummary = { ...recallCandidate, retainedOpportunity: recallCandidate.retainedOpportunity + 1 };
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(recallBaseline, forgedRecallSummary).code,
+    "BENCHMARK_COMPARE_METRICS"
+  );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(recallBaseline, { ...recallCandidate, evaluationPolicy: "exact.v1" }).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY"
+  );
+
+  const recallCliBundle = privatePath("cli-recall-accepted");
+  const recallCliBaseline = path.join(recallCliBundle, "runs", "baseline", "match-result.json");
+  const recallCliCandidate = path.join(recallCliBundle, "runs", "candidate", "match-result.json");
+  const recallCliReport = path.join(recallCliBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(recallCliBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(recallCliCandidate), { recursive: true });
+  fs.writeFileSync(recallCliBaseline, JSON.stringify(recallBaseline), "utf8");
+  fs.writeFileSync(recallCliCandidate, JSON.stringify(asRecallFirstResult(exactChangedButRetained)), "utf8");
+  const recallCliRun = require("node:child_process").spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", recallCliBaseline, "--candidate", recallCliCandidate, "--report", recallCliReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", env: { ...process.env, ALLOW_LIVE_MODEL_BENCHMARK: "" } });
+  assert.strictEqual(recallCliRun.status, 0, recallCliRun.stderr);
+  assert.strictEqual(JSON.parse(fs.readFileSync(recallCliReport, "utf8")).evaluationPolicy, "recall-first.v1");
+  const recallMarkdown = fs.readFileSync(recallCliReport.replace(/\.json$/i, ".md"), "utf8");
+  assert.match(recallMarkdown, /Evaluation policy: recall-first\.v1/);
+  assert.match(recallMarkdown, /Opportunities retained:/);
+  assert.match(recallMarkdown, /Obvious mismatches excluded:/);
+  for (const row of recallBaseline.rows) {
+    assert(!recallMarkdown.includes(row.id), "recall Markdown must contain aggregates, not private row IDs");
+  }
+
   const privateStructuralForgeries = [
     { ...baseline, runMode: "offline" },
     { ...baseline, authorizationGatePassed: "true" },
