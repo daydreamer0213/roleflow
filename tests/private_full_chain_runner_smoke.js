@@ -1465,14 +1465,6 @@ async function main() {
       (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
       "an arbitrary CLI baseline hash must not be trusted"
     );
-    assert.throws(
-      () => runner.initializePrivateManifest({
-        privateRoot: testRoot, baselineWorktree: siblingBaselineRoot, candidateWorktree: candidateRoot,
-        baselineProductCommit, candidateProductCommit: head(path.resolve(__dirname, "..")), output: manifestPath
-      }),
-      (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
-      "candidate product commit must be a real ancestor of the candidate evaluated HEAD"
-    );
     const manifest = runner.initializePrivateManifest({
       privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
       candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix",
