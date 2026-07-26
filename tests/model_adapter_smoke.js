@@ -184,6 +184,13 @@ server.listen(0, "127.0.0.1", async () => {
     // 真实模型回归：DeepSeek 倾向把 eligibilityConstraints 输出为对象数组，prompt 必须显式声明字符串数组形状。
     assert(understandPrompt.includes("eligibilityConstraints[非空字符串]"), "understandJob prompt 必须声明资格约束的字符串数组形状");
     assert(understandPrompt.includes("不要输出对象"), "understandJob prompt 必须禁止对象形式的资格约束");
+    // 真实小样本回归：JD 的“可接受应届生”是在放宽候选范围，不是“仅限应届”的硬资格。
+    assert(
+      understandPrompt.includes("可接受应届生")
+        && understandPrompt.includes("放宽候选范围")
+        && understandPrompt.includes("不能进入 eligibilityConstraints"),
+      "understandJob prompt 必须区分包容性应届措辞与硬资格"
+    );
     // 真实模型回归：经验年限被标 indispensable=true 后成为年限 hardBlockers；产品语义中年限只是偏好。
     assert(/年限[^\n]*不得[^\n]*indispensable=true|indispensable=true[^\n]*不得用于[^\n]*年限/.test(understandPrompt), "understandJob prompt 必须禁止把经验年限标为 indispensable=true");
     // v3 设计：措辞只是重要性信号，不能单独决定 indispensable；understandJob 必须有明确的单次契约修复指令。

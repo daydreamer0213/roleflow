@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const { matchingCardRevision } = require("./matching_card");
 
 const PIPELINE_VERSIONS = Object.freeze({
-  understandJob: "job-understanding-v6",
+  understandJob: "job-understanding-v7",
   matchJob: "match-decision-v14",
   communication: "communication-v2"
 });
