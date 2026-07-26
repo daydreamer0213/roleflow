@@ -35,7 +35,7 @@
 - Consumes: frozen jobs plus either a v1 or v2 private label envelope.
 - Produces: `privateJobsAndLabels(jobsValue, labelsValue)` with `labelsVersion`, `evaluationPolicy`, `labelsSha256`, and a `labelById` whose v2 rows contain `expectedDisposition`.
 
-- [ ] **Step 1: Write failing v2 fixture tests**
+- [x] **Step 1: Write failing v2 fixture tests**
 
 Add a helper beside the existing fixture helpers:
 
@@ -71,7 +71,7 @@ Also assert safe rejection for:
 - v1 with an added v2-only field;
 - v2 with any unrecognized extra envelope or row field.
 
-- [ ] **Step 2: Run the private runner smoke and verify red**
+- [x] **Step 2: Run the private runner smoke and verify red**
 
 Run:
 
@@ -81,7 +81,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: fail because `private-real-jd-labels.v2` is rejected by the current fixture validator.
 
-- [ ] **Step 3: Implement version-specific schemas**
+- [x] **Step 3: Implement version-specific schemas**
 
 In `scripts/private-full-chain-runner.js`, replace the single label schema with:
 
@@ -128,7 +128,7 @@ Return:
 }
 ```
 
-- [ ] **Step 4: Run v1 and v2 fixture tests**
+- [x] **Step 4: Run v1 and v2 fixture tests**
 
 Run:
 
@@ -138,7 +138,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: `private_full_chain_runner_smoke offline gates ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js
@@ -157,7 +157,7 @@ git commit -m "feat: accept recall-first private labels"
 - Produces: `deriveRecallFirstMetrics(rows)` returning `{ ok, metrics }`.
 - `metrics` includes `expectedKeep`, `retainedOpportunity`, `falseHardExclusion`, `expectedExclude`, `obviousMismatchExcluded`, `missedObviousExclusion`, `unresolvedDisposition`, `opportunityRetentionRate`, `obviousExclusionRate`, and the corresponding sorted ID arrays.
 
-- [ ] **Step 1: Write failing pure metric tests**
+- [x] **Step 1: Write failing pure metric tests**
 
 Export and test a wished-for function:
 
@@ -193,7 +193,7 @@ Add one row for each failure:
 - illegal expected disposition;
 - illegal actual bucket.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run:
 
@@ -203,7 +203,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: fail with `runner.deriveRecallFirstMetrics is not a function`.
 
-- [ ] **Step 3: Implement the pure derivation**
+- [x] **Step 3: Implement the pure derivation**
 
 Add:
 
@@ -228,7 +228,7 @@ function deriveRecallFirstMetrics(rows) {
 
 Use zero-safe rates: when a class has no expected rows, its rate is `1`.
 
-- [ ] **Step 4: Attach metrics to v2 match results**
+- [x] **Step 4: Attach metrics to v2 match results**
 
 When building result rows, include:
 
@@ -246,7 +246,7 @@ evaluationPolicy: fixture.evaluationPolicy,
 
 For v1, do not add v2 row fields or recall summaries.
 
-- [ ] **Step 5: Run targeted tests**
+- [x] **Step 5: Run targeted tests**
 
 Run:
 
@@ -258,7 +258,7 @@ node tests/generic_evidence_matching_smoke.js
 
 Expected: all pass; generic exact metrics remain unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js
@@ -277,7 +277,7 @@ git commit -m "feat: derive recall-first private metrics"
 - Produces: v2 private comparison report with `evaluationPolicy`, `recall`, `accepted`, and `failureReasons`.
 - Preserves: v1 report and exact acceptance behavior.
 
-- [ ] **Step 1: Write failing v2 comparison tests**
+- [x] **Step 1: Write failing v2 comparison tests**
 
 Create structurally valid baseline/candidate result pairs with identical v2 identity and recomputed exact plus recall summaries.
 
@@ -303,7 +303,7 @@ Also assert:
 - forged recall summary fails with `BENCHMARK_COMPARE_METRICS`;
 - v1 exact accuracy regression still fails exactly as before.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run:
 
@@ -313,7 +313,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: v2 pair is still rejected by the shared exact accuracy gate or lacks recall report fields.
 
-- [ ] **Step 3: Verify recall identity and summaries**
+- [x] **Step 3: Verify recall identity and summaries**
 
 Before the shared comparator result is accepted:
 
@@ -328,7 +328,7 @@ Require both sides to have the same `labelsVersion` and `evaluationPolicy`. For 
 - recompute recall summaries with `deriveRecallFirstMetrics`;
 - strictly compare every stored recall field and ID array with recomputed values.
 
-- [ ] **Step 4: Replace only v2 acceptance**
+- [x] **Step 4: Replace only v2 acceptance**
 
 Keep the shared comparator for all structural, Git, model, profile/card, fixture, label and exact-summary checks. For v2, derive failures:
 
@@ -349,7 +349,7 @@ function recallFirstAcceptanceFailures(candidate) {
 
 Set v2 report acceptance from those failures. Do not copy shared exact-accuracy failures into v2 `failureReasons`; preserve exact metrics under `baseline`, `candidate`, `deltas`, `regressions`, and `improvements`.
 
-- [ ] **Step 5: Extend the private Markdown report**
+- [x] **Step 5: Extend the private Markdown report**
 
 Add only aggregate fields:
 
@@ -363,7 +363,7 @@ Add only aggregate fields:
 
 Do not write job IDs, titles, companies, rationale, resume text, endpoint, or key to Markdown.
 
-- [ ] **Step 6: Run targeted tests**
+- [x] **Step 6: Run targeted tests**
 
 Run:
 
@@ -375,7 +375,7 @@ node tests/job_match_benchmark.js
 
 Expected: all pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js
@@ -395,11 +395,11 @@ git commit -m "feat: gate private comparison on opportunity recall"
 - Consumes: confirmed v1 bundle `D:\DevData\RoleFlow-private-benchmark\full-chain-v3-20260726`.
 - Produces: a distinct v2 bundle with the same jobs, profile, card, resume and identity hashes.
 
-- [ ] **Step 1: Create a new bundle without overwriting any prior package**
+- [x] **Step 1: Create a new bundle without overwriting any prior package**
 
 Verify the target does not exist. Copy the seven confirmed input/label source files exactly, then transform only the copied label file.
 
-- [ ] **Step 2: Produce an unconfirmed v2 draft**
+- [x] **Step 2: Produce an unconfirmed v2 draft**
 
 Use Node `fs.readFileSync(path, "utf8")` and `JSON.parse`. Preserve all IDs and rationales privately.
 
@@ -421,13 +421,13 @@ Classify:
 
 Write no raw row content to terminal output. Print only total, keep count, exclude count, changed row count, source hash, and draft hash.
 
-- [ ] **Step 3: Run offline fixture validation**
+- [x] **Step 3: Run offline fixture validation**
 
 Use a temporary copy with `userConfirmed:true` and a valid confirmation timestamp only for offline schema validation with an injected fake adapter. Do not run a real model.
 
 Expected: v2 accepted; removing or changing any disposition fails before provider or SQLite initialization.
 
-- [ ] **Step 4: One concentrated user confirmation**
+- [x] **Step 4: One concentrated user confirmation**
 
 Present only:
 
@@ -438,6 +438,17 @@ Present only:
 - no profile, card, JD or rationale changes.
 
 After explicit confirmation, set `userConfirmed:true`, set a new timestamp, freeze the v2 labels hash, and never edit that file in place again.
+
+Implementation checkpoint (2026-07-26):
+
+- Task 1 commit: `b06b7ad` (`feat: accept recall-first private labels`).
+- Task 2 commit: `7ccac32` (`feat: derive recall-first private metrics`).
+- Task 3 commit: `8efc01d` (`feat: gate private comparison on opportunity recall`).
+- The separate private v2 bundle contains 20 frozen rows: 18 `keep`, 2 `exclude`; 11 former strict skips are diagnostic `review/talk`.
+- The confirmed v2 label file, profile, card, resume, identity and JD inputs remain outside Git.
+- Offline fixture validation accepted all 20 v2 rows and rejected missing or invalid dispositions before provider or SQLite initialization.
+- `node tests/run_all.js`: all 47 offline checks passed.
+- Independent read-only review of `d9b497e..8efc01d` found no Critical, Important or Minor issues and assessed the implementation as ready for the bounded diagnostic.
 
 ---
 
