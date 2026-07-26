@@ -245,7 +245,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   const cardPath = privatePath("input", "confirmed-card.private.json");
   const manifest = {
     runMode: "private-init-manifest",
-    harnessVersion: "private-full-chain-harness.v1",
+    harnessVersion: "private-full-chain-harness.v2",
     baselineProductCommit: "3".repeat(40),
     baselineEvaluatedCommit: "1".repeat(40),
     candidateProductCommit: "2".repeat(40),
@@ -829,7 +829,11 @@ async function injectedLiveFlowSmoke(identityPath) {
       fitReasons: [],
       missingPoints: [],
       hardBlockers: [],
-      errorCode: unsafeText
+      error: unsafeText,
+      errorMessage: unsafeText,
+      errorCode: unsafeText,
+      errorStage: unsafeText,
+      errorPhase: unsafeText
     }),
     decisionState: () => "ready",
     decisionBucket: () => "talk"
@@ -847,8 +851,60 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(row.decisionState, "ready");
     assert.strictEqual(row.explanation.decisionSource, "unknown");
     assert.strictEqual(row.errorCode, "MODEL_ANALYSIS_FAILED");
+    assert.strictEqual(row.failureStage, "");
+    assert.strictEqual(row.failurePhase, "");
   }
   assert(!JSON.stringify(safeRowsResult.rows).includes(unsafeText), "unknown runtime/model strings must not survive row projection");
+
+  const stableFailureProbe = createMatchProbeBundle("stable-failure-provenance-probe");
+  const stableCodes = ["MODEL_INVALID_JSON", "MODEL_OUTPUT_TRUNCATED", "MODEL_INVALID_RESPONSE"];
+  const expectedFailureById = new Map(jobs.map((job, index) => [String(job.id), {
+    errorCode: stableCodes[index % stableCodes.length],
+    failureStage: index % 2 === 0 ? "understandJob" : "matchJob",
+    failurePhase: index % 2 === 0 ? "initial" : "contract_repair"
+  }]));
+  const stableFailureSeam = seamFor("candidate");
+  stableFailureSeam.modules = {
+    ...stableFailureSeam.modules,
+    createJobAnalysisRunner: () => async (job) => {
+      const expected = expectedFailureById.get(String(job.id));
+      return {
+        provider: "synthetic-provider",
+        semanticStatus: "failed",
+        decisionSource: "analysis_pending",
+        recommendation: "review",
+        evidence: { jd: [], resume: [] },
+        fitReasons: [],
+        missingPoints: [],
+        hardBlockers: [],
+        error: unsafeText,
+        errorMessage: unsafeText,
+        errorCode: expected.errorCode,
+        errorStage: expected.failureStage,
+        errorPhase: expected.failurePhase
+      };
+    },
+    decisionState: () => "ready",
+    decisionBucket: () => "talk"
+  };
+  const stableFailureResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: stableFailureProbe.root,
+    output: stableFailureProbe.output,
+    profile: stableFailureProbe.profile,
+    matchingCard: stableFailureProbe.card,
+    jobs: stableFailureProbe.jobs,
+    labels: stableFailureProbe.labels
+  }), authorizedEnv(), stableFailureSeam);
+  for (const row of stableFailureResult.rows) {
+    const expected = expectedFailureById.get(row.id);
+    assert.strictEqual(row.errorCode, expected.errorCode);
+    assert.strictEqual(row.failureStage, expected.failureStage);
+    assert.strictEqual(row.failurePhase, expected.failurePhase);
+  }
+  const stableFailureRows = JSON.stringify(stableFailureResult.rows);
+  assert(!stableFailureRows.includes(unsafeText), "private failure rows must not persist messages or source/model content");
+  for (const code of stableCodes) assert(stableFailureRows.includes(code), `${code} must remain stable in private rows`);
+
   const stateProbe = createMatchProbeBundle("unsafe-decision-state-probe");
   const unsafeStateSeam = seamFor("candidate");
   unsafeStateSeam.modules = {
@@ -1532,7 +1588,7 @@ async function main() {
       candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix",
       baselineProductCommit, candidateProductCommit, output: manifestPath
     });
-    assert.strictEqual(manifest.harnessVersion, "private-full-chain-harness.v1");
+    assert.strictEqual(manifest.harnessVersion, "private-full-chain-harness.v2");
     assert.strictEqual(manifest.baselineProductCommit, baselineProductCommit);
     assert.strictEqual(manifest.baselineEvaluatedCommit, head(siblingBaselineRoot));
     assert.strictEqual(manifest.candidateProductCommit, candidateProductCommit);

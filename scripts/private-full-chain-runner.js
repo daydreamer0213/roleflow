@@ -10,10 +10,12 @@ const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
 const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
 const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "profile-live", "card-live", "match-live", "compare"]);
 const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
-const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v1";
+const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v2";
 const SAFE_SEMANTIC_STATUSES = new Set(["complete", "partial", "pending", "failed", "stale", "blocked", "refresh", "rule_only"]);
 const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending", "hard_boundary", "source_refresh"]);
 const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
+const SAFE_FAILURE_STAGES = new Set(["understandJob", "matchJob"]);
+const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
 const PRIVATE_JOB_KEYS = [
   "id", "sourceId", "keyword", "title", "company", "location", "salary",
   "url", "description", "sourceContentHash", "capturedAt"
@@ -26,6 +28,9 @@ const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
   "MODEL_CONTRACT_INVALID",
+  "MODEL_INVALID_JSON",
+  "MODEL_INVALID_RESPONSE",
+  "MODEL_OUTPUT_TRUNCATED",
   "MODEL_REQUEST_FAILED",
   "MODEL_TIMEOUT"
 ]);
@@ -1204,6 +1209,8 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         hardBlocked: state === "blocked" || productDecisionHardBlockers(modules, analysis).length > 0,
         decisionState: safeEnum(state, SAFE_DECISION_STATES, "unknown"),
         errorCode: safeErrorCode(analysis.errorCode),
+        failureStage: safeEnum(analysis.errorStage, SAFE_FAILURE_STAGES, ""),
+        failurePhase: safeEnum(analysis.errorPhase, SAFE_FAILURE_PHASES, ""),
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
       };
     });

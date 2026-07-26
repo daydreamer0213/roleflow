@@ -28,6 +28,7 @@ const db = openDb(dbPath);
   try {
     await stableUnderstandingAndCandidateMatchSmoke();
     await contractRepairAndFailureSmoke();
+    await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
     await ruleGuardSmoke();
     await localEvidenceGuardSmoke();
@@ -555,9 +556,50 @@ async function contractRepairAndFailureSmoke() {
   const failed = await failing(completeJob("model-failure"));
   assert.strictEqual(failed.semanticStatus, "failed");
   assert.strictEqual(failed.recommendation, "review");
+  assert.strictEqual(failed.errorCode, "MODEL_TIMEOUT");
+  assert.strictEqual(failed.errorStage, "matchJob");
+  assert.strictEqual(failed.errorPhase, "initial");
   assert.strictEqual(decisionBucket({ ...completeJob("model-failure"), analysis: failed, qualityTags: [], risks: [] }), "analysis_pending");
 
   assert.throws(() => validateModelResult("matchJob", { recommendation: "apply", fitLevel: "A", confidence: 0.9 }), ModelContractError);
+}
+
+async function initialFailureProvenanceSmoke() {
+  const cases = [
+    {
+      sourceId: "understanding-initial-failure",
+      expectedStage: "understandJob",
+      expectedCode: "MODEL_INVALID_RESPONSE",
+      analyzer: {
+        understandJob: async () => {
+          throw Object.assign(new Error("synthetic initial understanding failure"), { code: "MODEL_INVALID_RESPONSE" });
+        },
+        matchJob: async () => {
+          throw new Error("matchJob must not run after understandJob fails");
+        }
+      }
+    },
+    {
+      sourceId: "matching-initial-failure",
+      expectedStage: "matchJob",
+      expectedCode: "MODEL_OUTPUT_TRUNCATED",
+      analyzer: {
+        understandJob: async ({ job }) => understanding(job.sourceId),
+        matchJob: async () => {
+          throw Object.assign(new Error("synthetic initial matching failure"), { code: "MODEL_OUTPUT_TRUNCATED" });
+        }
+      }
+    }
+  ];
+
+  for (const testCase of cases) {
+    const analyze = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], { db, analyzer: testCase.analyzer });
+    const failed = await analyze(completeJob(testCase.sourceId));
+    assert.strictEqual(failed.semanticStatus, "failed");
+    assert.strictEqual(failed.errorCode, testCase.expectedCode);
+    assert.strictEqual(failed.errorStage, testCase.expectedStage);
+    assert.strictEqual(failed.errorPhase, "initial");
+  }
 }
 
 async function pipelineVersionCacheSmoke() {
@@ -1241,6 +1283,9 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(failedRepairCalls, 2, "首次非法输出后只允许一次修复");
   assert.strictEqual(failedRepair.semanticStatus, "failed");
   assert.strictEqual(failedRepair.recommendation, "review");
+  assert.strictEqual(failedRepair.errorCode, "MODEL_CONTRACT_INVALID");
+  assert.strictEqual(failedRepair.errorStage, "understandJob");
+  assert.strictEqual(failedRepair.errorPhase, "contract_repair");
 }
 
 function understanding(jobId) {

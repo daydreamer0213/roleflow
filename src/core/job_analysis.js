@@ -119,7 +119,11 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
         logger?.info("model_call_completed", { kind, provider, model, cacheHit: true, latencyMs: 0, attempts: 0, httpStatus: null, usage: null, jsonModeFallback: false });
         return result;
       } catch (error) {
-        if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
+        if (error?.code !== "MODEL_CONTRACT_INVALID") {
+          error.modelStage = kind;
+          error.modelPhase = "initial";
+          throw error;
+        }
         logger?.warn("model_cache_contract_invalid", { kind, provider, model, pipelineVersion, errorMessage: error.message });
       }
     }
@@ -131,7 +135,11 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
     rawResult = await run(input);
     result = validateModelResult(kind, rawResult, validationContext);
   } catch (error) {
-    if (error?.code !== "MODEL_CONTRACT_INVALID") throw error;
+    if (error?.code !== "MODEL_CONTRACT_INVALID") {
+      error.modelStage = kind;
+      error.modelPhase = "initial";
+      throw error;
+    }
     const invalidOutput = error.invalidOutput ?? rawResult;
     logger?.warn("model_contract_repair_requested", {
       kind, provider, model, pipelineVersion, errorMessage: error.message,
@@ -155,6 +163,8 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
         errorMessage: repairError?.message || String(repairError),
         outputShape: contractOutputShape(repairError?.invalidOutput)
       });
+      repairError.modelStage = kind;
+      repairError.modelPhase = "contract_repair";
       throw repairError;
     }
   }
@@ -227,6 +237,8 @@ function failedAnalysis(configs, job, revision, error) {
     decisionSource: "analysis_pending",
     error: error?.message || String(error || "模型分析失败"),
     errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
+    errorStage: error?.modelStage || "",
+    errorPhase: error?.modelPhase || "",
     realRoleType: "",
     businessScenario: "",
     coreRequirements: [],
