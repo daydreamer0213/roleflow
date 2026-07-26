@@ -39,6 +39,7 @@ const PRIVATE_LABEL_V1_KEYS = ["id", "expectedRecommendation", "expectedBucket",
 const PRIVATE_LABEL_V2_KEYS = [...PRIVATE_LABEL_V1_KEYS, "expectedDisposition"];
 const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
 const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
+const PRIVATE_ACTUAL_BUCKETS = new Set([...PRIVATE_BUCKETS, "analysis_pending", "refresh"]);
 const PRIVATE_LABEL_PAIRS = new Set(["apply/primary", "caution/talk", "review/talk", "skip/not_recommended"]);
 const PRIVATE_DISPOSITIONS = new Set(["keep", "exclude"]);
 const RECALL_FIRST_POLICY = "recall-first.v1";
@@ -1254,6 +1255,55 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
   };
 }
 
+function deriveRecallFirstMetrics(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return fail("BENCHMARK_COMPARE_METRICS", "Recall-first results require non-empty rows.");
+  }
+  const ids = new Set();
+  for (const row of rows) {
+    const id = String(row?.id || "").trim();
+    if (!id || ids.has(id)
+      || !PRIVATE_DISPOSITIONS.has(row?.expectedDisposition)
+      || !PRIVATE_ACTUAL_BUCKETS.has(row?.actualBucket)) {
+      return fail("BENCHMARK_COMPARE_METRICS", "Recall-first row structure is invalid.");
+    }
+    ids.add(id);
+  }
+  const expectedKeepRows = rows.filter((row) => row.expectedDisposition === "keep");
+  const expectedExcludeRows = rows.filter((row) => row.expectedDisposition === "exclude");
+  const retainedRows = expectedKeepRows.filter((row) => ["primary", "talk", "backup"].includes(row.actualBucket));
+  const falseHardExclusionIds = expectedKeepRows
+    .filter((row) => row.actualBucket === "not_recommended")
+    .map((row) => row.id)
+    .sort();
+  const obviousMismatchExcludedRows = expectedExcludeRows.filter((row) => row.actualBucket === "not_recommended");
+  const missedObviousExclusionIds = expectedExcludeRows
+    .filter((row) => ["primary", "talk", "backup"].includes(row.actualBucket))
+    .map((row) => row.id)
+    .sort();
+  const unresolvedDispositionIds = rows
+    .filter((row) => ["analysis_pending", "refresh"].includes(row.actualBucket))
+    .map((row) => row.id)
+    .sort();
+  return {
+    ok: true,
+    metrics: {
+      expectedKeep: expectedKeepRows.length,
+      retainedOpportunity: retainedRows.length,
+      falseHardExclusion: falseHardExclusionIds.length,
+      falseHardExclusionIds,
+      expectedExclude: expectedExcludeRows.length,
+      obviousMismatchExcluded: obviousMismatchExcludedRows.length,
+      missedObviousExclusion: missedObviousExclusionIds.length,
+      missedObviousExclusionIds,
+      unresolvedDisposition: unresolvedDispositionIds.length,
+      unresolvedDispositionIds,
+      opportunityRetentionRate: expectedKeepRows.length ? retainedRows.length / expectedKeepRows.length : 1,
+      obviousExclusionRate: expectedExcludeRows.length ? obviousMismatchExcludedRows.length / expectedExcludeRows.length : 1
+    }
+  };
+}
+
 function readProfileLiveInputs(request, assertResumeIdentityRedacted) {
   let redactedText;
   let identityRaw;
@@ -1572,6 +1622,9 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       return {
         id: String(job.id),
         expectedRecommendation: label.expectedRecommendation,
+        ...(fixture.evaluationPolicy === RECALL_FIRST_POLICY
+          ? { expectedDisposition: label.expectedDisposition }
+          : {}),
         actualRecommendation,
         expectedBucket: label.expectedBucket,
         actualBucket,
@@ -1611,6 +1664,10 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }
   const derived = deriveBenchmarkMetrics(rows);
   if (!derived.ok) throw runnerError(derived.code, derived.message);
+  const recallDerived = fixture.evaluationPolicy === RECALL_FIRST_POLICY
+    ? deriveRecallFirstMetrics(rows)
+    : null;
+  if (recallDerived && !recallDerived.ok) throw runnerError(recallDerived.code, recallDerived.message);
   const result = {
     ...runAuthorizationMetadata(testSeam, "live"),
     benchmarkHarnessVersion: PRIVATE_HARNESS_VERSION,
@@ -1644,6 +1701,11 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     frozenFixtureTotal: fixture.jobs.length,
     diagnosticIndices: request.diagnosticIndices || [],
     ...derived.metrics,
+    ...(recallDerived ? {
+      labelsVersion: fixture.labelsVersion,
+      evaluationPolicy: fixture.evaluationPolicy,
+      ...recallDerived.metrics
+    } : {}),
     rows
   };
   writeJsonFile(request.privateRoot, resultFile, result);
@@ -1857,5 +1919,6 @@ module.exports = {
   createConfirmedEvidencePortability,
   validateProfileResultProvenance,
   runPrivateFullChain,
-  comparePrivateFullChainResults
+  comparePrivateFullChainResults,
+  deriveRecallFirstMetrics
 };

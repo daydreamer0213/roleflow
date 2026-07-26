@@ -1050,17 +1050,20 @@ async function injectedLiveFlowSmoke(identityPath) {
     JSON.stringify(asRecallFirstLabels(JSON.parse(fs.readFileSync(v2Probe.labels, "utf8")))),
     "utf8"
   );
-  await assert.doesNotReject(
-    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
-      privateRoot: v2Probe.root,
-      output: v2Probe.output,
-      profile: v2Probe.profile,
-      matchingCard: v2Probe.card,
-      jobs: v2Probe.jobs,
-      labels: v2Probe.labels
-    }), authorizedEnv(), seamFor("candidate")),
-    "user-confirmed recall-first v2 labels must be accepted"
-  );
+  const v2Result = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: v2Probe.root,
+    output: v2Probe.output,
+    profile: v2Probe.profile,
+    matchingCard: v2Probe.card,
+    jobs: v2Probe.jobs,
+    labels: v2Probe.labels
+  }), authorizedEnv(), seamFor("candidate"));
+  assert.strictEqual(v2Result.labelsVersion, "private-real-jd-labels.v2");
+  assert.strictEqual(v2Result.evaluationPolicy, "recall-first.v1");
+  assert(v2Result.rows.every((row) => ["keep", "exclude"].includes(row.expectedDisposition)));
+  assert.strictEqual(v2Result.expectedKeep + v2Result.expectedExclude, v2Result.total);
+  assert.strictEqual(v2Result.falseHardExclusion, v2Result.falseHardExclusionIds.length);
+  assert.strictEqual(v2Result.missedObviousExclusion, v2Result.missedObviousExclusionIds.length);
 
   const expectFixtureReject = async (name, mutate, { refreshJobsSha = true, v2 = false } = {}) => {
     const probe = createMatchProbeBundle(`fixture-${name}`);
@@ -1828,6 +1831,55 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(fs.existsSync(cliReport.replace(/\.json$/i, ".md")));
 }
 
+function recallFirstMetricSmoke() {
+  const derived = runner.deriveRecallFirstMetrics([
+    { id: "keep-talk", expectedDisposition: "keep", actualBucket: "talk" },
+    { id: "keep-primary", expectedDisposition: "keep", actualBucket: "primary" },
+    { id: "exclude", expectedDisposition: "exclude", actualBucket: "not_recommended" }
+  ]);
+  assert.strictEqual(derived.ok, true);
+  assert.deepStrictEqual(derived.metrics, {
+    expectedKeep: 2,
+    retainedOpportunity: 2,
+    falseHardExclusion: 0,
+    falseHardExclusionIds: [],
+    expectedExclude: 1,
+    obviousMismatchExcluded: 1,
+    missedObviousExclusion: 0,
+    missedObviousExclusionIds: [],
+    unresolvedDisposition: 0,
+    unresolvedDispositionIds: [],
+    opportunityRetentionRate: 1,
+    obviousExclusionRate: 1
+  });
+
+  const failures = runner.deriveRecallFirstMetrics([
+    { id: "keep-excluded", expectedDisposition: "keep", actualBucket: "not_recommended" },
+    { id: "exclude-missed", expectedDisposition: "exclude", actualBucket: "talk" },
+    { id: "pending", expectedDisposition: "keep", actualBucket: "analysis_pending" },
+    { id: "refresh", expectedDisposition: "keep", actualBucket: "refresh" }
+  ]);
+  assert.strictEqual(failures.ok, true);
+  assert.deepStrictEqual(failures.metrics.falseHardExclusionIds, ["keep-excluded"]);
+  assert.deepStrictEqual(failures.metrics.missedObviousExclusionIds, ["exclude-missed"]);
+  assert.deepStrictEqual(failures.metrics.unresolvedDispositionIds, ["pending", "refresh"]);
+  assert.strictEqual(failures.metrics.opportunityRetentionRate, 0);
+  assert.strictEqual(failures.metrics.obviousExclusionRate, 0);
+
+  for (const rows of [
+    [],
+    [{ id: "", expectedDisposition: "keep", actualBucket: "talk" }],
+    [
+      { id: "duplicate", expectedDisposition: "keep", actualBucket: "talk" },
+      { id: "duplicate", expectedDisposition: "keep", actualBucket: "primary" }
+    ],
+    [{ id: "bad-disposition", expectedDisposition: "maybe", actualBucket: "talk" }],
+    [{ id: "bad-bucket", expectedDisposition: "keep", actualBucket: "unknown" }]
+  ]) {
+    assert.strictEqual(runner.deriveRecallFirstMetrics(rows).code, "BENCHMARK_COMPARE_METRICS");
+  }
+}
+
 async function main() {
   fs.rmSync(testRoot, { recursive: true, force: true });
   fs.rmSync(siblingBaselineRoot, { recursive: true, force: true });
@@ -1836,6 +1888,7 @@ async function main() {
   try {
     fs.mkdirSync(externalRoot, { recursive: true });
     fs.writeFileSync(externalPdf, makeSyntheticPdf());
+    recallFirstMetricSmoke();
     expectGate("PRIVATE_FULL_CHAIN_MODE_REQUIRED", gateOptions({ mode: "" }));
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_REQUIRED", gateOptions({ privateRoot: "" }));
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({ privateRoot: "D:\\unsafe-private-root" }));
