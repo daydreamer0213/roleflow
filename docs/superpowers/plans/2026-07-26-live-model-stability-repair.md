@@ -541,6 +541,46 @@ Carry a boolean response-format flag and integer HTTP status 100–599 through t
 
 Run the adapter, semantic-pipeline, and private-runner regressions, the full offline suite from a clean commit, and an independent read-only review.
 
-- [ ] **Step 4: Re-run only the single remaining failed position**
+- [x] **Step 4: Re-run only the single remaining failed position**
 
 Use another fresh private bundle and no cache reuse. If the failure records HTTP 200 and `responseJsonModeApplied=false`, the provider returned a non-JSON Chat Completions envelope even after response-format removal; Markdown cannot repair it. If the failure records a gateway status, treat it as provider transport instability. Only a valid HTTP envelope with `invalid_content_json` supports simplifying the semantic JSON contract as the immediate remedy.
+
+The same position completed on a fresh rerun in about 223 seconds with no error fields. Combined with its previous `invalid_response_json` failure and no behavior change, this confirms an intermittent provider-envelope failure rather than a deterministic parser or schema failure. The run remains diagnostic-only. No 20-row run was started.
+
+---
+
+### Task 11: Replace the verbose match decision with compact evidence
+
+Design: `docs/superpowers/specs/2026-07-26-compact-match-evidence-contract-design.md`
+
+The live probe also showed that the current multi-stage match contract is too slow even when it eventually succeeds. Simplify only `matchJob`; preserve the current `understandJob` coverage until the match-only change is measured.
+
+**Files:**
+- Modify: `src/adapters/models/openai_compatible.js`
+- Modify: `src/adapters/models/mock.js`
+- Modify: `src/core/model_contract.js`
+- Modify: `src/core/job_analysis.js`
+- Modify: `src/core/analysis_revision.js`
+- Modify: `tests/model_adapter_smoke.js`
+- Modify: `tests/semantic_pipeline_smoke.js`
+- Modify as required by red regressions: existing generic/benchmark/dashboard smoke tests
+
+- [ ] **Step 1: Write compact prompt and contract failures**
+
+Require exact `R*`/`E*` coverage, no duplicate or invented IDs, candidate evidence for matched/transferable/conflict states, and a high/medium/low certainty enum. Prove the prompt no longer asks the model to repeat or decide locally derived fields.
+
+- [ ] **Step 2: Derive the legacy analysis view locally**
+
+Join IDs to validated JD evidence, derive blockers and recommendation deterministically, and use the existing local match explainer for resume version, projects, and greeting angle. Keep the existing final rule guard.
+
+- [ ] **Step 3: Preserve compatibility**
+
+Bump only the match pipeline version. Keep old MatchDecision payloads readable for fixtures/history and avoid a database migration.
+
+- [ ] **Step 4: Run targeted and full offline regressions**
+
+The generic cross-occupation suite, semantic pipeline, adapter, dashboard, private runner, benchmark fixture, and full offline suite must pass from a clean commit.
+
+- [ ] **Step 5: Run a fresh small private diagnostic**
+
+Use no prior diagnostic cache. Measure completion, failures, and elapsed time. Only then decide whether the formal 20-row baseline/candidate gate is justified.
