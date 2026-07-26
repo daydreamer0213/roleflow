@@ -168,9 +168,9 @@ async function checkMockAnalyzer() {
     resumeVersions: configs.resumeVersions,
     jobUnderstanding
   });
-  assert(["apply", "caution", "skip"].includes(matchDecision.recommendation));
-  assert(matchDecision.recommendedResumeVersion);
-  assert(Array.isArray(matchDecision.primaryProjects));
+  assert(["apply", "caution", "skip", "review"].includes(matchDecision.recommendation));
+  assert(Array.isArray(matchDecision.requirementMatches));
+  assert(matchDecision.requirementMatches.every((item) => item.jdEvidence));
 
   const communication = await analyzer.draftCommunication({
     mode: "greeting",

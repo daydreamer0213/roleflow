@@ -42,7 +42,7 @@ const db = openDb(dbPath);
     runtimeResumeVersionEntrySmoke();
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
-    compactMatchEvidenceContractSmoke();
+    await compactMatchEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
@@ -1311,7 +1311,7 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(failedRepair.errorPhase, "contract_repair");
 }
 
-function compactMatchEvidenceContractSmoke() {
+async function compactMatchEvidenceContractSmoke() {
   const jobUnderstanding = validateModelResult("understandJob", {
     jobId: "compact-1",
     roleSummary: "负责应用交付",
@@ -1331,6 +1331,20 @@ function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(jobUnderstanding.eligibilityItems, [
     { id: "E1", label: "仅限 2027 届应届生" }
   ]);
+
+  const compactAnalyzer = createLlmAnalyzer({
+    adapter: {
+      matchJob: async () => ({
+        matches: [
+          { id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" },
+          { id: "R2", state: "matched", resumeEvidence: "简历：参与客户需求访谈" }
+        ],
+        eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
+        uncertainties: [],
+        certainty: "high"
+      })
+    }
+  });
 
   const compactDirectPayload = {
     matches: [
@@ -1353,6 +1367,8 @@ function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(direct.hardBlockers, []);
   assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
+  const analyzed = await compactAnalyzer.matchJob({ jobUnderstanding });
+  assert.strictEqual(analyzed.recommendation, "apply", "analyzer 第一层校验必须携带同一份 jobUnderstanding");
 
   const transferable = validateModelResult("matchJob", {
     matches: [
