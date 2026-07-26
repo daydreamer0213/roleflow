@@ -1548,6 +1548,50 @@ async function compactMatchEvidenceContractSmoke() {
   }, { jobUnderstanding: tenureUnderstanding });
   assert.notStrictEqual(tenureGap.recommendation, "skip", "经验年限即使被误标 indispensable 也不得成为硬淘汰");
   assert.deepStrictEqual(tenureGap.hardBlockers, []);
+
+  const evidencedTenureGap = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "missing", resumeEvidence: "简历：仅有 1 年相关经验" }],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "high"
+  }, { jobUnderstanding: tenureUnderstanding });
+  assert.notStrictEqual(evidencedTenureGap.recommendation, "skip", "有真实简历证据的经验年限差距仍不得成为硬淘汰");
+  assert.deepStrictEqual(evidencedTenureGap.hardBlockers, []);
+  assert.doesNotThrow(
+    () => validateModelResult("matchJob", evidencedTenureGap, { jobUnderstanding: tenureUnderstanding }),
+    "经验年限软差距归一化后必须兼容既有 MatchDecision 契约"
+  );
+
+  const workHistoryUnderstanding = validateModelResult("understandJob", {
+    ...jobUnderstanding,
+    coreRequirements: [{ label: "3 年以上相关工作经历", indispensable: true, evidence: "JD：要求 3 年以上相关工作经历" }],
+    eligibilityConstraints: []
+  });
+  const workHistoryGap = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "missing", resumeEvidence: "简历：仅有 1 年相关工作经历" }],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "high"
+  }, { jobUnderstanding: workHistoryUnderstanding });
+  assert.notStrictEqual(workHistoryGap.recommendation, "skip", "工作经历写法的年限差距不得成为硬淘汰");
+  assert.deepStrictEqual(workHistoryGap.hardBlockers, []);
+
+  const chineseYearsUnderstanding = validateModelResult("understandJob", {
+    ...jobUnderstanding,
+    coreRequirements: [{ label: "两年以上工作经验", indispensable: true, evidence: "JD：要求两年以上工作经验" }],
+    eligibilityConstraints: []
+  });
+  const chineseYearsGap = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "missing", resumeEvidence: "简历：仅有 1 年相关工作经历" }],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "high"
+  }, { jobUnderstanding: chineseYearsUnderstanding });
+  assert.notStrictEqual(chineseYearsGap.recommendation, "skip", "中文“两年”写法的年限差距不得成为硬淘汰");
+  assert.deepStrictEqual(chineseYearsGap.hardBlockers, []);
 }
 
 function understanding(jobId) {

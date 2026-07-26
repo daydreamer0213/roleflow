@@ -72,6 +72,14 @@ const COMPACT_CAUTION_KINDS = ["candidate_transition", "preferred_gap", "outcome
 const HARD_BLOCKER_KINDS = ["eligibility", "indispensable_core", "safety"];
 const JOB_QUALITY_LEVELS = ["normal", "caution", "risk"];
 
+function isExperienceYearsRequirement(requirement) {
+  const source = `${requirement?.requirement || ""} ${requirement?.jdEvidence || ""}`;
+  const numeral = String.raw`(?:\d+|一|二|两|三|四|五|六|七|八|九|十)`;
+  const years = String.raw`${numeral}\s*(?:[-至到~～]\s*${numeral})?\s*年`;
+  const experience = String.raw`(?:经验|年限|工作经历|从业经历|相关经历)`;
+  return new RegExp(`${experience}.{0,20}${years}|${years}.{0,12}${experience}`).test(source);
+}
+
 function validateJobUnderstanding(value) {
   const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
   const coreRequirements = understandingCoreRequirements(value.coreRequirements)
@@ -149,7 +157,10 @@ function validateCompactMatchEvidence(value, context = {}) {
   const byEligibilityId = new Map(eligibility.map((item) => [item.id, item]));
   const hardBlockers = [];
   for (const requirement of requirementMatches) {
-    if (!requirement.indispensable || requirement.state !== "missing" || !requirement.resumeEvidence) continue;
+    if (!requirement.indispensable
+      || requirement.state !== "missing"
+      || !requirement.resumeEvidence
+      || isExperienceYearsRequirement(requirement)) continue;
     hardBlockers.push({
       kind: "indispensable_core",
       requirement: requirement.requirement,
@@ -471,7 +482,10 @@ function validateMatchDecision(value, context = {}) {
     }
   }
   for (const match of requirementMatches) {
-    if (match.indispensable && match.state === "missing" && !hardBlockers.some((blocker) => blocker.kind === "indispensable_core" && blocker.requirement === match.requirement)) {
+    if (match.indispensable
+      && match.state === "missing"
+      && !isExperienceYearsRequirement(match)
+      && !hardBlockers.some((blocker) => blocker.kind === "indispensable_core" && blocker.requirement === match.requirement)) {
       const applyDetail = value.recommendation === "apply" ? "，recommendation 不能为 apply" : "";
       throw new ModelContractError("matchJob", `缺少 indispensable_core 硬性阻断：核心必备要求「${match.requirement}」状态为 missing${applyDetail}`);
     }
