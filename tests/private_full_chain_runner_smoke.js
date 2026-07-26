@@ -843,6 +843,51 @@ async function injectedLiveFlowSmoke(identityPath) {
     "an unconfirmed v2 label policy must not receive a portability proof"
   );
 
+  const expectChangedLabelTransitionReject = (name, mutateSource, mutateTarget) => {
+    const sourceRoot = privatePath(`portability-label-transition-${name}-source`);
+    const targetRoot = privatePath(`portability-label-transition-${name}-target`);
+    fs.cpSync(sourcePortabilityRoot, sourceRoot, { recursive: true });
+    fs.cpSync(targetPortabilityRoot, targetRoot, { recursive: true });
+    fs.rmSync(path.join(targetRoot, "input", "confirmed-evidence-portability.json"));
+    const sourceLabels = path.join(sourceRoot, "labels", "jobs.reviewed.json");
+    const targetLabels = path.join(targetRoot, "labels", "jobs.reviewed.json");
+    mutateSource(sourceLabels);
+    mutateTarget(targetLabels);
+    assert.throws(
+      () => runner.createConfirmedEvidencePortability({
+        sourcePrivateRoot: sourceRoot,
+        privateRoot: targetRoot,
+        output: path.join(targetRoot, "input", "confirmed-evidence-portability.json")
+      }, portabilitySeam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+  };
+  const rewriteAsV2 = (file) => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify(asRecallFirstLabels(JSON.parse(fs.readFileSync(file, "utf8"))), null, 2),
+      "utf8"
+    );
+  };
+  const changeRationale = (file) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.rows[0].rationale += "（仍为合成测试理由）";
+    fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  };
+  expectChangedLabelTransitionReject("v1-to-v1", () => {}, changeRationale);
+  expectChangedLabelTransitionReject("v2-to-v1", rewriteAsV2, () => {});
+  expectChangedLabelTransitionReject("v2-to-v2", rewriteAsV2, (file) => {
+    rewriteAsV2(file);
+    changeRationale(file);
+  });
+  expectChangedLabelTransitionReject("invalid-v2-policy", () => {}, (file) => {
+    rewriteAsV2(file);
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.evaluationPolicy = "exact.v1";
+    fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  });
+
   const tamperedTransitionRoot = privatePath("portability-label-transition-tampered-v2");
   fs.cpSync(transitionTargetRoot, tamperedTransitionRoot, { recursive: true });
   fs.rmSync(path.join(tamperedTransitionRoot, "runs"), { recursive: true });
