@@ -2119,6 +2119,17 @@ function recallFirstMetricSmoke() {
     obviousExclusionRate: 1
   });
 
+  const noExplicitExclusions = runner.deriveRecallFirstMetrics([
+    { id: "keep-talk", expectedDisposition: "keep", actualBucket: "talk" },
+    { id: "keep-backup", expectedDisposition: "keep", actualBucket: "backup" }
+  ]);
+  assert.strictEqual(noExplicitExclusions.ok, true);
+  assert.strictEqual(noExplicitExclusions.metrics.expectedKeep, 2);
+  assert.strictEqual(noExplicitExclusions.metrics.expectedExclude, 0);
+  assert.strictEqual(noExplicitExclusions.metrics.missedObviousExclusion, 0);
+  assert.strictEqual(noExplicitExclusions.metrics.obviousExclusionRate, 1,
+    "真实样本没有明确排除项时应视为无漏拦，不能因分母为零使验收失败");
+
   const failures = runner.deriveRecallFirstMetrics([
     { id: "keep-excluded", expectedDisposition: "keep", actualBucket: "not_recommended" },
     { id: "exclude-missed", expectedDisposition: "exclude", actualBucket: "talk" },
