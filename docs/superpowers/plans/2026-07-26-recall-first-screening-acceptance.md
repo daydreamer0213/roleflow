@@ -449,6 +449,10 @@ Implementation checkpoint (2026-07-26):
 - Offline fixture validation accepted all 20 v2 rows and rejected missing or invalid dispositions before provider or SQLite initialization.
 - `node tests/run_all.js`: all 47 offline checks passed.
 - Independent read-only review of `d9b497e..8efc01d` found no Critical, Important or Minor issues and assessed the implementation as ready for the bounded diagnostic.
+- The first v6 manifest preflight stopped before any live call because the baseline did not yet share the v2 runner blobs. After rebuilding a single-parent baseline, the existing portability v1 proof correctly rejected the intentionally changed labels.
+- Commit `373ada1` adds `confirmed-evidence-portability.v2`: profile, card, resume, identity and jobs must remain byte-identical; only a confirmed `private-real-jd-labels.v1` to confirmed recall-first v2 transition may change label bytes, and both label hashes and versions are bound into the proof. Portability v1 remains unchanged.
+- Independent review found no portability-proof issues. Commit `96e7382` additionally locks out changed-label v1→v1, v2→v1, v2→v2 and invalid-policy transitions.
+- Because the v6 manifest is immutable, the bounded diagnostic uses a fresh v7 private bundle rather than overwriting the stopped preflight package.
 
 ---
 
@@ -462,7 +466,7 @@ Implementation checkpoint (2026-07-26):
 - Consumes: confirmed v2 bundle and current read-only model settings.
 - Produces: one diagnostic containing a retained borderline row, a retained primary row, and one explicit eligibility exclusion row.
 
-- [ ] **Step 1: Create an evaluated docs checkpoint**
+- [x] **Step 1: Create an evaluated docs checkpoint**
 
 The latest product commit must be a strict ancestor of a docs-only evaluated commit. Initialize the private manifest with those exact commits and the approved baseline product commit.
 
@@ -489,7 +493,7 @@ $env:ALLOW_PRIVATE_RESUME_BENCHMARK='YES'
 $env:ALLOW_LIVE_MODEL_BENCHMARK='YES'
 node scripts/private-full-chain-runner.js --match-live `
   --side candidate `
-  --private-root 'D:\DevData\RoleFlow-private-benchmark\full-chain-v6-recall-v2-20260726' `
+  --private-root 'D:\DevData\RoleFlow-private-benchmark\full-chain-v7-recall-v2-20260726' `
   --profile '<private confirmed profile>' `
   --matching-card '<private confirmed card>' `
   --jobs '<private frozen jobs>' `
