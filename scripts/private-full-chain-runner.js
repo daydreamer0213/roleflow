@@ -929,6 +929,20 @@ function resolvePortabilityTargetCommits(manifest, seam) {
   }
 }
 
+function resolvePortabilitySourceProduct(manifest, seam) {
+  const declared = String(manifest?.candidateProductCommit || "").toLowerCase();
+  const evaluated = String(manifest?.candidateEvaluatedCommit || "").toLowerCase();
+  try {
+    const resolved = typeof seam?.sourceProductResolver === "function"
+      ? String(seam.sourceProductResolver(declared, evaluated) || "").toLowerCase()
+      : verifyProductCommit(FIXED_CANDIDATE_WORKTREE, declared, evaluated);
+    if (!/^[0-9a-f]{40}$/.test(declared) || resolved !== declared) throw new Error("source product mismatch");
+    return resolved;
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The source product commit is not the declared strict ancestor.");
+  }
+}
+
 function portabilityBlobResolver(seam) {
   if (typeof seam?.blobResolver === "function") return seam.blobResolver;
   return (commit, file) => execFileSync("git", ["rev-parse", `${commit}:${file}`], {
@@ -973,6 +987,7 @@ function createConfirmedEvidencePortability(options, seam = null) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Portability requires a known v1 source manifest and current v2 target manifest.");
   }
   const targetCommits = resolvePortabilityTargetCommits(target.manifest, seam);
+  const sourceProductCommit = resolvePortabilitySourceProduct(source.manifest, seam);
   if (targetCommits.productCommit !== target.manifest.candidateProductCommit
     || targetCommits.evaluatedCommit !== target.manifest.candidateEvaluatedCommit) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target manifest and candidate commits do not match.");
@@ -994,6 +1009,8 @@ function createConfirmedEvidencePortability(options, seam = null) {
   const cardInput = confirmedCardInput(source.card, profileInput, sourceContext);
   if (profileInput.envelope.resumeContentSha256 !== sha256(source.bytes.resume)
     || profileInput.envelope.identityManifestSha256 !== sha256(source.bytes.identity)
+    || profileInput.envelope.productCommit !== sourceProductCommit
+    || cardInput.envelope.draft?.productCommit !== sourceProductCommit
     || !genericPortabilityConfirmationId(profileInput.envelope.id)
     || !genericPortabilityConfirmationId(cardInput.envelope.id)) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The source confirmation chain does not match its evidence hashes.");
@@ -1006,6 +1023,7 @@ function createConfirmedEvidencePortability(options, seam = null) {
     targetHarness: PRIVATE_HARNESS_VERSION,
     sourceRunManifestSha256: valueSha256(source.manifest),
     targetRunManifestSha256: valueSha256(target.manifest),
+    sourceProductCommit,
     sourceEvaluatedCommit: source.manifest.candidateEvaluatedCommit,
     targetProductCommit: targetCommits.productCommit,
     targetEvaluatedCommit: targetCommits.evaluatedCommit,
@@ -1042,7 +1060,7 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
   }
   const expectedKeys = [
     "proofVersion", "runMode", "modelCallPerformed", "sourceHarness", "targetHarness",
-    "sourceRunManifestSha256", "targetRunManifestSha256", "sourceEvaluatedCommit",
+    "sourceRunManifestSha256", "targetRunManifestSha256", "sourceProductCommit", "sourceEvaluatedCommit",
     "targetProductCommit", "targetEvaluatedCommit", "confirmedProfileFileSha256",
     "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
     "jobsFileSha256", "labelsFileSha256", "modelIdentitySha256", "profileConfirmationId",
@@ -1057,6 +1075,7 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
     || proof.proofSha256 !== valueSha256(portabilityProofPayload(proof))
     || !portabilityManifest(context.manifest, PRIVATE_HARNESS_VERSION)
     || proof.targetRunManifestSha256 !== context.runManifestSha256
+    || !/^[0-9a-f]{40}$/.test(String(proof.sourceProductCommit || ""))
     || proof.targetProductCommit !== context.manifest.candidateProductCommit
     || proof.targetEvaluatedCommit !== context.manifest.candidateEvaluatedCommit
     || !genericPortabilityConfirmationId(proof.profileConfirmationId)
@@ -1064,6 +1083,10 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The confirmed evidence portability proof is invalid.");
   }
   const targetCommits = resolvePortabilityTargetCommits(context.manifest, seam);
+  const sourceProductCommit = resolvePortabilitySourceProduct({
+    candidateProductCommit: proof.sourceProductCommit,
+    candidateEvaluatedCommit: proof.sourceEvaluatedCommit
+  }, seam);
   if (targetCommits.productCommit !== proof.targetProductCommit
     || targetCommits.evaluatedCommit !== proof.targetEvaluatedCommit) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target commit binding is invalid.");
@@ -1099,7 +1122,10 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
   const sourceContext = {
     injected: false,
     harnessVersion: PORTABLE_SOURCE_HARNESS_VERSION,
-    manifest: { candidateEvaluatedCommit: proof.sourceEvaluatedCommit },
+    manifest: {
+      candidateProductCommit: sourceProductCommit,
+      candidateEvaluatedCommit: proof.sourceEvaluatedCommit
+    },
     runManifestSha256: proof.sourceRunManifestSha256,
     side: context.side,
     evaluatedCommit: context.evaluatedCommit
@@ -1117,6 +1143,8 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
     || cardInput.envelope.id !== proof.cardConfirmationId
     || cardInput.envelope.confirmedAt !== proof.cardConfirmedAt
     || profileInput.envelope.modelIdentitySha256 !== proof.modelIdentitySha256
+    || profileInput.envelope.productCommit !== sourceProductCommit
+    || cardInput.envelope.draft?.productCommit !== sourceProductCommit
     || JSON.stringify(resolvePortabilityBlobs(proof.sourceEvaluatedCommit, proof.targetProductCommit, seam))
       !== JSON.stringify(proof.consumerCodeBlobs)) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof bindings are invalid.");

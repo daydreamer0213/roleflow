@@ -636,6 +636,11 @@ async function injectedLiveFlowSmoke(identityPath) {
       productCommit: manifest.candidateProductCommit,
       evaluatedCommit: manifest.candidateEvaluatedCommit
     },
+    sourceProductResolver: (productCommit, evaluatedCommit) => {
+      assert.strictEqual(productCommit, sourceManifest.candidateProductCommit);
+      assert.strictEqual(evaluatedCommit, sourceManifest.candidateEvaluatedCommit);
+      return productCommit;
+    },
     blobResolver: (commit, file) => {
       assert([sourceManifest.candidateEvaluatedCommit, manifest.candidateProductCommit].includes(commit));
       return portabilityBlobIds.get(file);
@@ -676,6 +681,55 @@ async function injectedLiveFlowSmoke(identityPath) {
   const sourceCardBefore = fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-card.private.json"));
   const targetProfileBefore = fs.readFileSync(portabilityProfilePath);
   const targetCardBefore = fs.readFileSync(portabilityCardPath);
+  const rehashProfileEnvelope = (value) => {
+    const payload = { ...value };
+    for (const field of ["id", "status", "userConfirmed", "confirmedAt", "profileResultSha256"]) delete payload[field];
+    value.profileResultSha256 = valueSha256(payload);
+  };
+  const rehashCardDraft = (value) => {
+    const payload = { ...value.draft };
+    delete payload.draftSha256;
+    value.draft.draftSha256 = valueSha256(payload);
+    value.draftSha256 = value.draft.draftSha256;
+    value.draftProfileResultSha256 = value.draft.profileResultSha256;
+  };
+  const expectPortabilityCreateReject = (name, mutate) => {
+    const sourceRoot = privatePath(`portability-create-${name}-source`);
+    const targetRoot = privatePath(`portability-create-${name}-target`);
+    fs.cpSync(sourcePortabilityRoot, sourceRoot, { recursive: true });
+    fs.cpSync(targetPortabilityRoot, targetRoot, { recursive: true });
+    mutate(sourceRoot);
+    mutate(targetRoot);
+    assert.throws(
+      () => runner.createConfirmedEvidencePortability({
+        sourcePrivateRoot: sourceRoot,
+        privateRoot: targetRoot,
+        output: path.join(targetRoot, "input", "confirmed-evidence-portability.json")
+      }, portabilitySeam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+  };
+  expectPortabilityCreateReject("profile-product-mismatch", (root) => {
+    const profileFile = path.join(root, "input", "confirmed-profile.private.json");
+    const cardFile = path.join(root, "input", "confirmed-card.private.json");
+    const profileValue = JSON.parse(fs.readFileSync(profileFile, "utf8"));
+    const cardValue = JSON.parse(fs.readFileSync(cardFile, "utf8"));
+    profileValue.productCommit = "f".repeat(40);
+    rehashProfileEnvelope(profileValue);
+    cardValue.profileResultSha256 = profileValue.profileResultSha256;
+    cardValue.draft.profileResultSha256 = profileValue.profileResultSha256;
+    rehashCardDraft(cardValue);
+    fs.writeFileSync(profileFile, JSON.stringify(profileValue, null, 2), "utf8");
+    fs.writeFileSync(cardFile, JSON.stringify(cardValue, null, 2), "utf8");
+  });
+  expectPortabilityCreateReject("card-draft-product-mismatch", (root) => {
+    const cardFile = path.join(root, "input", "confirmed-card.private.json");
+    const cardValue = JSON.parse(fs.readFileSync(cardFile, "utf8"));
+    cardValue.draft.productCommit = "f".repeat(40);
+    rehashCardDraft(cardValue);
+    fs.writeFileSync(cardFile, JSON.stringify(cardValue, null, 2), "utf8");
+  });
   const portabilityProof = runner.createConfirmedEvidencePortability({
     sourcePrivateRoot: sourcePortabilityRoot,
     privateRoot: targetPortabilityRoot,
@@ -683,6 +737,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   }, portabilitySeam);
   assert.strictEqual(portabilityProof.runMode, "offline-confirmed-evidence-portability");
   assert.strictEqual(portabilityProof.modelCallPerformed, false);
+  assert.strictEqual(portabilityProof.sourceProductCommit, sourceManifest.candidateProductCommit);
   assert.match(portabilityProof.proofSha256, /^[0-9a-f]{64}$/);
   assert.deepStrictEqual(fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-profile.private.json")), sourceProfileBefore);
   assert.deepStrictEqual(fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-card.private.json")), sourceCardBefore);
@@ -778,6 +833,12 @@ async function injectedLiveFlowSmoke(identityPath) {
   await portabilityRun("commit-binding", ({ proof }) => {
     const value = JSON.parse(fs.readFileSync(proof, "utf8"));
     value.targetProductCommit = "f".repeat(40);
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(proof, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("source-product-commit", ({ proof }) => {
+    const value = JSON.parse(fs.readFileSync(proof, "utf8"));
+    value.sourceProductCommit = "f".repeat(40);
     value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
     fs.writeFileSync(proof, JSON.stringify(value), "utf8");
   });
