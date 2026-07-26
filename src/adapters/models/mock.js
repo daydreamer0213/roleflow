@@ -113,50 +113,30 @@ class MockModelAdapter {
     };
   }
 
-  async matchJob({ candidateProfile = {}, resumeVersions = {}, jobUnderstanding = {}, candidateMatchCard = null } = {}) {
-    const versions = resumeVersions.versions || resumeVersions || [];
-    const version = chooseVersion(versions, jobUnderstanding);
+  async matchJob({ candidateProfile = {}, jobUnderstanding = {}, candidateMatchCard = null } = {}) {
     const resumeFacts = collectResumeFacts(candidateProfile, candidateMatchCard);
-    const requirementMatches = (jobUnderstanding.coreRequirements || []).map((requirement) => {
+    const matches = (jobUnderstanding.coreRequirements || []).map((requirement, index) => {
       const label = typeof requirement === "string" ? requirement : requirement.label;
       const hit = findSupportingFact(label, resumeFacts);
       return {
-        requirement: label,
+        id: requirement.id || `R${index + 1}`,
         state: hit ? "matched" : "unknown",
-        indispensable: Boolean(requirement.indispensable),
-        jdEvidence: String(requirement.evidence || ""),
         resumeEvidence: hit || ""
       };
     });
-    const matched = requirementMatches.filter((item) => item.state === "matched");
-    const unresolvedCore = requirementMatches.filter((item) => item.state !== "matched" && item.indispensable);
-    const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
-    const questions = [
-      ...(jobUnderstanding.hiddenRisks || []).map((risk) => risk.evidence).filter(Boolean),
-      ...unresolvedCore.map((item) => `核心要求「${item.requirement}」缺少候选人直接证据，待确认`)
-    ];
-    const sufficient = matched.length > 0 && unresolvedCore.length === 0 && requirementMatches.length > 0;
+    const eligibility = (jobUnderstanding.eligibilityItems || []).map((item, index) => ({
+      id: item.id || `E${index + 1}`,
+      state: "unknown",
+      resumeEvidence: ""
+    }));
     return {
-      recommendation: sufficient ? "apply" : "review",
-      fitLevel: sufficient ? "B" : "C",
-      confidence: sufficient ? 0.72 : 0.4,
-      fitReasons: sufficient
-        ? [`核心要求与候选人直接证据对应：${matched.map((item) => item.requirement).slice(0, 3).join("、")}`]
-        : [],
-      requirementMatches,
-      jobQuality,
-      hardBlockers: [],
-      softGaps: sufficient ? [] : ["JD 或简历缺少可逐条比对的信息，真实语义缺口等待模型 adapter 判断"],
-      questionsToVerify: questions,
-      recommendedResumeVersion: version?.id || "",
-      primaryProjects: version?.primaryProjects || pickProjectNames(candidateProfile.projects || []),
-      greetingAngle: version ? `围绕${version.name}切入，先确认岗位真实职责。` : "先确认岗位真实职责，再介绍相关项目。",
-      evidence: {
-        jd: matched.map((item) => item.jdEvidence).filter(Boolean).slice(0, 3).length
-          ? matched.map((item) => item.jdEvidence).filter(Boolean).slice(0, 3)
-          : (jobUnderstanding.evidenceSnippets || []).slice(0, 3),
-        resume: matched.map((item) => item.resumeEvidence).filter(Boolean).slice(0, 4)
-      }
+      matches,
+      eligibility,
+      uncertainties: [
+        ...matches.filter((item) => item.state === "unknown").map((item) => `${item.id} 缺少候选人直接证据`),
+        ...eligibility.map((item) => `${item.id} 资格信息待确认`)
+      ].slice(0, 8),
+      certainty: matches.length && matches.every((item) => item.state === "matched") && !eligibility.length ? "high" : "low"
     };
   }
 

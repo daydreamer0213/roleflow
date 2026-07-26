@@ -42,6 +42,7 @@ const db = openDb(dbPath);
     runtimeResumeVersionEntrySmoke();
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
+    compactMatchEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
@@ -626,7 +627,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v6");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v13");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v14");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1308,6 +1309,173 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(failedRepair.errorCode, "MODEL_CONTRACT_INVALID");
   assert.strictEqual(failedRepair.errorStage, "understandJob");
   assert.strictEqual(failedRepair.errorPhase, "contract_repair");
+}
+
+function compactMatchEvidenceContractSmoke() {
+  const jobUnderstanding = validateModelResult("understandJob", {
+    jobId: "compact-1",
+    roleSummary: "负责应用交付",
+    coreResponsibilities: [],
+    coreRequirements: [
+      { label: "独立交付应用", indispensable: true, evidence: "JD：独立完成应用交付" },
+      { label: "客户需求沟通", indispensable: false, evidence: "JD：与客户确认需求" }
+    ],
+    preferredRequirements: [],
+    outcomeExpectations: [],
+    eligibilityConstraints: ["仅限 2027 届应届生"],
+    hiddenRisks: [],
+    jobQuality: { level: "normal", concerns: [] },
+    evidenceSnippets: ["JD：独立完成应用交付"]
+  });
+  assert.deepStrictEqual(jobUnderstanding.coreRequirements.map((item) => item.id), ["R1", "R2"]);
+  assert.deepStrictEqual(jobUnderstanding.eligibilityItems, [
+    { id: "E1", label: "仅限 2027 届应届生" }
+  ]);
+
+  const compactDirectPayload = {
+    matches: [
+      { id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：参与客户需求访谈" }
+    ],
+    eligibility: [
+      { id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }
+    ],
+    uncertainties: [],
+    certainty: "high"
+  };
+  const direct = validateModelResult("matchJob", compactDirectPayload, { jobUnderstanding });
+  assert.strictEqual(direct.recommendation, "apply");
+  assert.strictEqual(direct.fitLevel, "A");
+  assert.strictEqual(direct.confidence, 0.9);
+  assert.deepStrictEqual(direct.jobQuality, jobUnderstanding.jobQuality);
+  assert.strictEqual(direct.requirementMatches[0].requirement, "独立交付应用");
+  assert.strictEqual(direct.requirementMatches[0].jdEvidence, "JD：独立完成应用交付");
+  assert.deepStrictEqual(direct.hardBlockers, []);
+  assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
+  assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
+
+  const transferable = validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "transferable", resumeEvidence: "简历：独立交付过内部工具" },
+      { id: "R2", state: "unknown", resumeEvidence: "" }
+    ],
+    eligibility: [{ id: "E1", state: "unknown", resumeEvidence: "" }],
+    uncertainties: ["客户沟通深度待确认"],
+    certainty: "medium"
+  }, { jobUnderstanding });
+  assert.strictEqual(transferable.recommendation, "review", "unknown 信息优先进入 review，不得因可迁移证据直接放行");
+
+  const transferableOnly = validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "transferable", resumeEvidence: "简历：独立交付过内部工具" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：参与客户需求访谈" }
+    ],
+    eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
+    uncertainties: [],
+    certainty: "medium"
+  }, { jobUnderstanding });
+  assert.strictEqual(transferableOnly.recommendation, "caution");
+  assert.strictEqual(transferableOnly.fitLevel, "B");
+
+  const hardMissing = validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "missing", resumeEvidence: "" },
+      { id: "R2", state: "not_applicable", resumeEvidence: "" }
+    ],
+    eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
+    uncertainties: [],
+    certainty: "high"
+  }, { jobUnderstanding });
+  assert.strictEqual(hardMissing.recommendation, "skip");
+  assert.strictEqual(hardMissing.hardBlockers[0].kind, "indispensable_core");
+
+  const eligibilityConflict = validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：参与客户需求访谈" }
+    ],
+    eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：2025 届毕业" }],
+    uncertainties: [],
+    certainty: "high"
+  }, { jobUnderstanding });
+  assert.strictEqual(eligibilityConflict.recommendation, "skip");
+  assert.strictEqual(eligibilityConflict.hardBlockers[0].kind, "eligibility");
+
+  for (const invalid of [
+    { ...compactDirectPayload, matches: compactDirectPayload.matches.slice(0, 1) },
+    {
+      matches: [
+        { id: "R1", state: "matched", resumeEvidence: "简历：证据" },
+        { id: "R1", state: "matched", resumeEvidence: "简历：重复" }
+      ],
+      eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
+      uncertainties: [],
+      certainty: "high"
+    },
+    {
+      matches: [
+        { id: "R1", state: "matched", resumeEvidence: "简历：证据" },
+        { id: "R9", state: "matched", resumeEvidence: "简历：虚构" }
+      ],
+      eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
+      uncertainties: [],
+      certainty: "high"
+    }
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", invalid, { jobUnderstanding }),
+      (error) => error instanceof ModelContractError && /matches|R/.test(error.message)
+    );
+  }
+
+  assert.throws(() => validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "matched", resumeEvidence: "" },
+      { id: "R2", state: "unknown", resumeEvidence: "" }
+    ],
+    eligibility: [{ id: "E1", state: "unknown", resumeEvidence: "" }],
+    uncertainties: [],
+    certainty: "high"
+  }, { jobUnderstanding }), (error) => error instanceof ModelContractError && /resumeEvidence/.test(error.message));
+
+  for (const invalid of [
+    { ...compactDirectPayload, eligibility: [] },
+    {
+      ...compactDirectPayload,
+      eligibility: [
+        { id: "E1", state: "satisfied", resumeEvidence: "" },
+        { id: "E1", state: "unknown", resumeEvidence: "" }
+      ]
+    },
+    {
+      ...compactDirectPayload,
+      eligibility: [{ id: "E9", state: "unknown", resumeEvidence: "" }]
+    },
+    {
+      ...compactDirectPayload,
+      eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "" }]
+    },
+    { ...compactDirectPayload, certainty: "certain" }
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", invalid, { jobUnderstanding }),
+      (error) => error instanceof ModelContractError
+    );
+  }
+
+  const tenureUnderstanding = validateModelResult("understandJob", {
+    ...jobUnderstanding,
+    coreRequirements: [{ label: "3 年以上相关经验", indispensable: true, evidence: "JD：要求 3 年以上相关经验" }],
+    eligibilityConstraints: []
+  });
+  const tenureGap = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "missing", resumeEvidence: "" }],
+    eligibility: [],
+    uncertainties: [],
+    certainty: "high"
+  }, { jobUnderstanding: tenureUnderstanding });
+  assert.notStrictEqual(tenureGap.recommendation, "skip", "经验年限即使被误标 indispensable 也不得成为硬淘汰");
+  assert.deepStrictEqual(tenureGap.hardBlockers, []);
 }
 
 function understanding(jobId) {

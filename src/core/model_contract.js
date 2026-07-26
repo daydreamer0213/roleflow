@@ -14,7 +14,14 @@ function validateModelResult(kind, value, context = {}) {
   if (kind === "analyzeResume") return validateResume(value);
   if (kind === "recommendSearchPlan") return validateSearchPlan(value);
   if (kind === "understandJob") return validateJobUnderstanding(value);
-  if (kind === "matchJob") return validateMatchDecision(value, context);
+  if (kind === "matchJob") {
+    if (Object.prototype.hasOwnProperty.call(value, "matches")
+      || Object.prototype.hasOwnProperty.call(value, "eligibility")
+      || Object.prototype.hasOwnProperty.call(value, "certainty")) {
+      return validateCompactMatchEvidence(value, context);
+    }
+    return validateMatchDecision(value, context);
+  }
   if (kind === "draftCommunication") return validateCommunication(value);
   if (kind === "buildCandidateMatchCard") return validateMatchingCardResult(value);
   throw new ModelContractError(kind, "未知分析类型");
@@ -59,30 +66,198 @@ function validateSearchPlan(value) {
 }
 
 const REQUIREMENT_MATCH_STATES = ["matched", "transferable", "missing", "unknown", "not_applicable"];
+const ELIGIBILITY_MATCH_STATES = ["satisfied", "conflict", "unknown"];
+const MATCH_CERTAINTY_LEVELS = ["high", "medium", "low"];
 const HARD_BLOCKER_KINDS = ["eligibility", "indispensable_core", "safety"];
 const JOB_QUALITY_LEVELS = ["normal", "caution", "risk"];
 
 function validateJobUnderstanding(value) {
   const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
+  const coreRequirements = understandingCoreRequirements(value.coreRequirements)
+    .map((item, index) => ({ id: `R${index + 1}`, ...item }));
+  const eligibilityConstraints = contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8);
   return {
     jobId: text(value.jobId),
     roleSummary: text(value.roleSummary),
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
     coreResponsibilities: understandingEvidenceList(value.coreResponsibilities, "coreResponsibilities", 12),
-    coreRequirements: understandingCoreRequirements(value.coreRequirements),
+    coreRequirements,
     preferredRequirements: understandingEvidenceList(value.preferredRequirements, "preferredRequirements", 16),
     outcomeExpectations: understandingEvidenceList(value.outcomeExpectations, "outcomeExpectations", 8),
     coreStack: contractStringArray(value.coreStack, "understandJob", "coreStack", 10),
     niceToHave: contractStringArray(value.niceToHave, "understandJob", "niceToHave", 16),
     senioritySignal: text(value.senioritySignal || "unknown"),
-    eligibilityConstraints: contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8),
+    eligibilityConstraints,
+    eligibilityItems: eligibilityConstraints.map((label, index) => ({ id: `E${index + 1}`, label })),
     hiddenRisks: understandingHiddenRisks(value.hiddenRisks),
     jobQuality: normalizeJobQuality(value.jobQuality, "understandJob"),
     isFakeAI: Boolean(value.isFakeAI),
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
     evidenceSnippets
   };
+}
+
+function validateCompactMatchEvidence(value, context = {}) {
+  const jobUnderstanding = context?.jobUnderstanding;
+  if (!jobUnderstanding || !Array.isArray(jobUnderstanding.coreRequirements)) {
+    throw new ModelContractError("matchJob", "紧凑匹配证据必须携带本次 jobUnderstanding");
+  }
+  const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
+    id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
+    label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    indispensable: Boolean(item.indispensable),
+    evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
+  }));
+  const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
+    ? jobUnderstanding.eligibilityItems
+    : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
+
+  const matches = compactEvidenceItems(value.matches, {
+    field: "matches",
+    expected: requirements,
+    states: REQUIREMENT_MATCH_STATES,
+    evidenceStates: ["matched", "transferable"]
+  });
+  const eligibility = compactEvidenceItems(value.eligibility, {
+    field: "eligibility",
+    expected: eligibilityItems,
+    states: ELIGIBILITY_MATCH_STATES,
+    evidenceStates: ["conflict"]
+  });
+  const uncertainties = contractStringArray(value.uncertainties, "matchJob", "uncertainties", 8);
+  if (!MATCH_CERTAINTY_LEVELS.includes(value.certainty)) {
+    throw new ModelContractError("matchJob", `certainty 必须是 ${MATCH_CERTAINTY_LEVELS.join("/")} 之一`);
+  }
+
+  const byRequirementId = new Map(matches.map((item) => [item.id, item]));
+  const requirementMatches = requirements.map((requirement) => {
+    const match = byRequirementId.get(requirement.id);
+    return {
+      requirement: requirement.label,
+      state: match.state,
+      indispensable: requirement.indispensable,
+      jdEvidence: requirement.evidence,
+      resumeEvidence: match.resumeEvidence
+    };
+  });
+  const byEligibilityId = new Map(eligibility.map((item) => [item.id, item]));
+  const hardBlockers = [];
+  for (const requirement of requirementMatches) {
+    if (requirement.indispensable && requirement.state === "missing" && !isExperienceYearsRequirement(requirement)) {
+      hardBlockers.push({
+        kind: "indispensable_core",
+        requirement: requirement.requirement,
+        jdEvidence: requirement.jdEvidence,
+        resumeEvidence: "简历：模型未找到与该核心要求对应的经历证据"
+      });
+    }
+  }
+  for (const item of eligibilityItems) {
+    const match = byEligibilityId.get(item.id);
+    if (match.state !== "conflict") continue;
+    hardBlockers.push({
+      kind: "eligibility",
+      requirement: item.label,
+      jdEvidence: `JD：${item.label}`,
+      resumeEvidence: match.resumeEvidence
+    });
+  }
+
+  const unknownRequirements = requirementMatches.filter((item) => ["unknown", "not_applicable"].includes(item.state));
+  const unknownEligibility = eligibility.filter((item) => item.state === "unknown");
+  const transferable = requirementMatches.filter((item) => item.state === "transferable");
+  const softMissing = requirementMatches.filter((item) => item.state === "missing" && !hardBlockers.some((blocker) => blocker.requirement === item.requirement));
+  const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
+  let recommendation;
+  if (hardBlockers.length) recommendation = "skip";
+  else if (!requirementMatches.length || unknownRequirements.length || unknownEligibility.length || value.certainty === "low") recommendation = "review";
+  else if (transferable.length || softMissing.length || jobQuality.level === "caution") recommendation = "caution";
+  else recommendation = "apply";
+
+  const fitLevel = recommendation === "skip"
+    ? "D"
+    : recommendation === "review"
+      ? "C"
+      : recommendation === "caution" || value.certainty !== "high"
+        ? "B"
+        : "A";
+  const confidence = value.certainty === "high" ? 0.9 : value.certainty === "medium" ? 0.72 : 0.45;
+  const fitReasons = requirementMatches
+    .filter((item) => ["matched", "transferable"].includes(item.state))
+    .map((item) => `${item.requirement}：${item.state === "matched" ? "有直接简历证据" : "有可迁移简历证据"}`)
+    .slice(0, 8);
+  const softGaps = [
+    ...transferable.map((item) => `${item.requirement}目前只有可迁移证据`),
+    ...softMissing.map((item) => `${item.requirement}未找到直接简历证据`)
+  ].slice(0, 8);
+  const questionsToVerify = [
+    ...uncertainties,
+    ...unknownRequirements.map((item) => `${item.requirement}的信息待确认`),
+    ...unknownEligibility.map((item) => `${eligibilityItems.find((entry) => entry.id === item.id)?.label || item.id}的资格信息待确认`)
+  ].slice(0, 8);
+  const jdEvidence = requirementMatches
+    .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
+    .map((item) => item.jdEvidence)
+    .filter(Boolean)
+    .slice(0, 6);
+  const resumeEvidence = [...matches, ...eligibility]
+    .map((item) => item.resumeEvidence)
+    .filter(Boolean)
+    .slice(0, 6);
+
+  return {
+    recommendation,
+    fitLevel,
+    confidence,
+    fitReasons,
+    requirementMatches,
+    jobQuality,
+    hardBlockers,
+    softGaps,
+    questionsToVerify,
+    missingPoints: softGaps,
+    blockingGaps: hardBlockers.map((item) => item.requirement),
+    riskQuestions: questionsToVerify,
+    recommendedResumeVersion: "",
+    primaryProjects: [],
+    greetingAngle: "",
+    evidence: { jd: jdEvidence, resume: resumeEvidence },
+    certainty: value.certainty,
+    uncertainties,
+    hrPrep: {}
+  };
+}
+
+function compactEvidenceItems(value, { field, expected, states, evidenceStates }) {
+  if (!Array.isArray(value)) throw new ModelContractError("matchJob", `${field} 必须是数组`);
+  const expectedIds = new Set(expected.map((item) => item.id));
+  const seen = new Set();
+  const result = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ModelContractError("matchJob", `${field} 必须是 {id,state,resumeEvidence} 对象数组`);
+    }
+    const id = requiredContractString(item.id, "matchJob", `${field}.id`);
+    if (!expectedIds.has(id)) throw new ModelContractError("matchJob", `${field} 包含不存在的 ID ${id}`);
+    if (seen.has(id)) throw new ModelContractError("matchJob", `${field} 中的 ID ${id} 重复`);
+    seen.add(id);
+    if (!states.includes(item.state)) {
+      throw new ModelContractError("matchJob", `${field}.state 必须是 ${states.join("/")} 之一`);
+    }
+    const resumeEvidence = optionalContractString(item.resumeEvidence, "matchJob", `${field}.resumeEvidence`);
+    if (evidenceStates.includes(item.state) && !resumeEvidence) {
+      throw new ModelContractError("matchJob", `${field} 的 ${item.state} 状态必须提供 resumeEvidence`);
+    }
+    return { id, state: item.state, resumeEvidence };
+  });
+  for (const item of expected) {
+    if (!seen.has(item.id)) throw new ModelContractError("matchJob", `${field} 漏掉 ${item.id}`);
+  }
+  return result;
+}
+
+function isExperienceYearsRequirement(requirement) {
+  return /(?:经验|年限).{0,20}(?:\d+|一|二|三|四|五|六|七|八|九|十)\s*(?:[-至到~～]\s*(?:\d+|一|二|三|四|五|六|七|八|九|十))?\s*年|(?:\d+|一|二|三|四|五|六|七|八|九|十)\s*(?:[-至到~～]\s*(?:\d+|一|二|三|四|五|六|七|八|九|十))?\s*年.{0,12}(?:经验|年限)/.test(`${requirement.requirement} ${requirement.jdEvidence}`);
 }
 
 // 旧字符串或缺 evidence 的条目一律抛契约错误进入修复，绝不静默升级为对象结构。

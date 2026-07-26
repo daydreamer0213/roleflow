@@ -55,7 +55,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         },
         run: analyzer.matchJob
       });
-      const analysis = compactAnalysis(configs, { job, jobUnderstanding, matchDecision, revision });
+      const analysis = compactAnalysis(configs, { job, jobUnderstanding, matchDecision, ruleMatch, revision });
       return applyRuleGuard(analysis, job);
     } catch (error) {
       logger?.warn("job_analysis_failed", {
@@ -186,8 +186,9 @@ function compactAnalysis(configs, parts) {
   const model = configs.model?.providers?.[provider]?.model || "";
   const decision = parts.matchDecision || {};
   const understanding = parts.jobUnderstanding || {};
+  const ruleMatch = parts.ruleMatch || {};
   const job = parts.job || {};
-  const versionId = decision.recommendedResumeVersion || "";
+  const versionId = decision.recommendedResumeVersion || ruleMatch.recommendedResumeVersion || "";
   const fullJd = job.detailRead === true || String(job.description || "").trim().length >= 120;
   return {
     provider,
@@ -212,7 +213,7 @@ function compactAnalysis(configs, parts) {
     confidence: decision.confidence,
     recommendedResumeVersion: versionId,
     recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
-    primaryProjects: decision.primaryProjects || [],
+    primaryProjects: decision.primaryProjects?.length ? decision.primaryProjects : (ruleMatch.primaryProjects || []),
     fitReasons: decision.fitReasons || [],
     hardBlockers: decision.hardBlockers || [],
     softGaps: decision.softGaps || decision.missingPoints || [],
@@ -221,7 +222,7 @@ function compactAnalysis(configs, parts) {
     blockingGaps: decision.blockingGaps || (decision.hardBlockers || []).map((item) => hardBlockerText(item)).filter(Boolean),
     riskQuestions: decision.questionsToVerify || decision.riskQuestions || [],
     evidence: decision.evidence || { jd: [], resume: [] },
-    greetingAngle: decision.greetingAngle || "",
+    greetingAngle: decision.greetingAngle || ruleMatch.greetingAngle || "",
     greeting: job.greeting || "",
     hrReplies: {},
     revision: parts.revision || buildAnalysisRevision(configs, sourceContentHash(jobFacts(job)))

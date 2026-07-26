@@ -124,30 +124,40 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");
     await retryAdapter.matchJob({ candidateProfile: {}, candidateMatchCard: { targetDirections: ["电商运营"] }, jobUnderstanding: {}, jobEvidence: {} });
     const matchPrompt = payloads.at(-1).messages[0].content;
-    assert(matchPrompt.includes("requirementMatches"));
-    assert(matchPrompt.includes("为 jobUnderstanding.coreRequirements 的每一项输出一条 requirementMatches"), "matchJob prompt 必须要求逐项覆盖核心要求");
+    assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
+    assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
+    assert(matchPrompt.includes("uncertainties") && matchPrompt.includes("certainty"), "matchJob prompt 必须保留不确定项与总体确定度");
+    assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
+    for (const locallyDerived of [
+      "requirementMatches",
+      "recommendation",
+      "fitLevel",
+      "confidence",
+      "fitReasons",
+      "jobQuality",
+      "hardBlockers",
+      "softGaps",
+      "questionsToVerify",
+      "recommendedResumeVersion",
+      "primaryProjects",
+      "greetingAngle",
+      "jdEvidence",
+      "evidence.jd",
+      "evidence.resume"
+    ]) {
+      assert(!matchPrompt.includes(locallyDerived), `matchJob prompt 不得要求模型重复本地可派生字段 ${locallyDerived}`);
+    }
     assert(matchPrompt.includes("candidateMatchCard"));
-    assert(matchPrompt.includes("indispensable_core"));
-    assert(matchPrompt.includes('"hardBlockers":[]'));
     assert(matchPrompt.includes("searchPreferences"));
     assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
     assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
-    // 真实模型回归（live-v2-20260725-01）：即使 understandJob 误标 indispensable，年限类要求也不得生成 hardBlockers。
-    assert(matchPrompt.includes("年限类要求") && matchPrompt.includes("不得生成 hardBlockers"), "matchJob prompt 必须禁止为年限类要求生成 hardBlockers");
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
-    assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility 阻断具备明确冲突证据");
+    assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");
     assert(
-      matchPrompt.includes("每个证据摘录（所有 evidence、jdEvidence、resumeEvidence）最多 120 个字符"),
+      matchPrompt.includes("resumeEvidence 最多 120 个字符"),
       "matchJob prompt 必须限制每段证据摘录最多 120 字符"
-    );
-    assert(
-      matchPrompt.includes("fitReasons、jobQuality.concerns、hardBlockers、softGaps、questionsToVerify、evidence.jd、evidence.resume 各最多 8 项")
-        && matchPrompt.includes("primaryProjects 最多 4 项")
-        && matchPrompt.includes("requirementMatches 不设独立数字上限")
-        && matchPrompt.includes("每一项恰好输出一条"),
-      "matchJob prompt 必须显式限制输出数组且完整覆盖核心要求"
     );
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
