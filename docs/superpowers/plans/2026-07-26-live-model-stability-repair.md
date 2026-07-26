@@ -336,3 +336,80 @@ Remove live authorization environment variables before invoking compare mode. Th
 - [ ] **Step 3: Apply the gate**
 
 If `accepted=true`, run the final offline suite once more and report the branch as eligible for integration review. If `accepted=false`, preserve the report, do not merge, and diagnose only from safe stage/phase/error fields before proposing another product change.
+
+---
+
+### Task 5.5: Carry confirmed v3 evidence into the v2 harness without rewriting history
+
+**Files:**
+- Modify: `scripts/private-full-chain-runner.js`
+- Modify: `tests/private_full_chain_runner_smoke.js`
+- Private only: `input\confirmed-evidence-portability.json`
+
+**Why this is required:**
+
+Task 5 intentionally copies the user-confirmed v3 profile and matching card byte-for-byte. Those envelopes honestly record `private-full-chain-harness.v1`, the v3 manifest hash, and the v3 evaluated commit. The v2 runner correctly rejects them as native v2 outputs. Rewriting their metadata would create false history, while rerunning unchanged profile/card generation would produce new output that requires another user confirmation.
+
+**Interfaces:**
+
+- An offline binding mode creates a sidecar proof and performs no model, settings, network, browser, database, or platform access.
+- The original confirmed profile/card files remain byte-identical.
+- The proof binds the exact source files and source v1 manifest to the target v2 manifest, plus unchanged resume/identity/model hashes and unchanged profile/card consumer-code blobs.
+- `match-live` accepts v1 confirmed inputs only with a valid explicit sidecar. The existing native v2 path remains unchanged.
+- Results record the portability proof hash and source harness. Baseline and candidate results must match on both fields.
+
+- [ ] **Step 1: Write failing portability tests**
+
+Cover:
+
+- v1 confirmed inputs still fail without a sidecar;
+- a valid sidecar permits both injected baseline and candidate match runs with the same byte-identical confirmed inputs;
+- creating the proof does not change either confirmed file;
+- missing/tampered proof, manifest, profile, card, draft, confirmation, resume/identity/model hash, commit binding, or consumer-code blob fails before settings resolution, provider initialization, SQLite creation, or model calls;
+- unknown source harnesses fail closed;
+- native v2 confirmed inputs continue to pass;
+- compare rejects unequal portability proof/source-harness fields.
+
+- [ ] **Step 2: Verify red**
+
+Run:
+
+```powershell
+node tests/private_full_chain_runner_smoke.js
+```
+
+Expected: fail because no offline portability mode or proof validation exists.
+
+- [ ] **Step 3: Implement the minimal sidecar**
+
+The sidecar contains hashes, harness identifiers, commit identifiers, generic confirmation IDs/timestamps, and consumer blob IDs only. It must not contain profile/card/resume/JD content, model settings, endpoint, key, company/title/URL, or filesystem paths.
+
+Require exact equality of the source and target copies for:
+
+- confirmed profile file bytes;
+- confirmed card file bytes;
+- redacted resume;
+- identity manifest;
+- frozen jobs;
+- confirmed labels.
+
+Require source v1 envelope self-consistency and cross-link consistency. Require target v2 manifest binding. Require unchanged Git blobs for the profile/card creation and consumption boundary (`profile_onboarding.js`, `matching_card.js`, `search_plan.js`, and `llm_analyzer.js`) between the source candidate evaluated commit and the target candidate product commit.
+
+- [ ] **Step 4: Verify green and commit**
+
+Run:
+
+```powershell
+node tests/private_full_chain_runner_smoke.js
+node tests/model_adapter_smoke.js
+node tests/semantic_pipeline_smoke.js
+git diff --check
+```
+
+Commit the tracked runner, tests, and this plan update as ordinary history. Do not amend previous commits.
+
+- [ ] **Step 5: Rebuild fresh v4-r2 harness artifacts**
+
+Create a new single-parent baseline and a new v4-r2 package; do not overwrite the already verified v4 preflight package. Copy the same eight input/label files byte-for-byte, initialize a new v2 manifest, create the sidecar offline, verify the bundle, and leave run directories empty.
+
+Only after all of Task 5.5 is green may Task 6 begin against v4-r2.

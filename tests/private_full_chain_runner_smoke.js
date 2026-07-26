@@ -204,6 +204,37 @@ function confirmedCardEnvelope(profileEnvelope, draft, card, id) {
   };
 }
 
+function portableV1Evidence(profileResult, draftResult, card, sourceManifest) {
+  const manifestSha256 = valueSha256(sourceManifest);
+  const profile = {
+    ...profileResult,
+    runMode: "live-profile",
+    authorizationGatePassed: true,
+    benchmarkHarnessVersion: "private-full-chain-harness.v1",
+    runManifestSha256: manifestSha256,
+    evaluatedCommit: sourceManifest.candidateEvaluatedCommit,
+    productCommit: sourceManifest.candidateProductCommit
+  };
+  profile.profileResultSha256 = valueSha256({ ...profile, profileResultSha256: undefined });
+  const profileEnvelope = confirmedProfileEnvelope(profile, "synthetic-confirmed-profile-v1");
+  const draft = {
+    ...draftResult,
+    runMode: "live-card-draft",
+    authorizationGatePassed: true,
+    benchmarkHarnessVersion: "private-full-chain-harness.v1",
+    runManifestSha256: manifestSha256,
+    evaluatedCommit: sourceManifest.candidateEvaluatedCommit,
+    productCommit: sourceManifest.candidateProductCommit,
+    profileResultSha256: profile.profileResultSha256,
+    profileSha256: profile.profileSha256
+  };
+  draft.draftSha256 = valueSha256({ ...draft, draftSha256: undefined });
+  return {
+    profile: profileEnvelope,
+    card: confirmedCardEnvelope(profileEnvelope, draft, card, "synthetic-confirmed-card-v1")
+  };
+}
+
 function liveOptions(mode, side, overrides = {}) {
   const options = {
     mode,
@@ -250,7 +281,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     baselineEvaluatedCommit: "1".repeat(40),
     candidateProductCommit: "2".repeat(40),
     candidateEvaluatedCommit: "2".repeat(40),
-    sharedFileBlobs: {}
+    sharedFileBlobs: {
+      "scripts/private-full-chain-runner.js": "5".repeat(40),
+      "scripts/lib/benchmark_metrics.js": "6".repeat(40),
+      "scripts/lib/private_resume_privacy.js": "7".repeat(40)
+    }
   };
   const runManifestSha256 = valueSha256(manifest);
   const jobs = selected.map((fixture) => {
@@ -553,6 +588,261 @@ async function injectedLiveFlowSmoke(identityPath) {
       output: path.join(root, "runs", side)
     };
   };
+  const sourceManifest = {
+    runMode: "private-init-manifest",
+    harnessVersion: "private-full-chain-harness.v1",
+    baselineProductCommit: "8".repeat(40),
+    baselineEvaluatedCommit: "b".repeat(40),
+    candidateProductCommit: "9".repeat(40),
+    candidateEvaluatedCommit: "a".repeat(40),
+    sharedFileBlobs: {
+      "scripts/private-full-chain-runner.js": "5".repeat(40),
+      "scripts/lib/benchmark_metrics.js": "6".repeat(40),
+      "scripts/lib/private_resume_privacy.js": "7".repeat(40)
+    }
+  };
+  const portableEvidence = portableV1Evidence(profileCandidate, draft, confirmedCard, sourceManifest);
+  const sourcePortabilityRoot = privatePath("portability-source-v1");
+  const targetPortabilityRoot = privatePath("portability-target-v2");
+  const sourcePortabilityInput = path.join(sourcePortabilityRoot, "input");
+  const targetPortabilityInput = path.join(targetPortabilityRoot, "input");
+  const portabilityProofPath = path.join(targetPortabilityInput, "confirmed-evidence-portability.json");
+  for (const [root, input, selectedManifest] of [
+    [sourcePortabilityRoot, sourcePortabilityInput, sourceManifest],
+    [targetPortabilityRoot, targetPortabilityInput, manifest]
+  ]) {
+    fs.mkdirSync(input, { recursive: true });
+    fs.mkdirSync(path.join(root, "labels"), { recursive: true });
+    fs.copyFileSync(resumePath, path.join(input, "resume.redacted.txt"));
+    fs.copyFileSync(identityPath, path.join(input, "identity.private.json"));
+    fs.writeFileSync(path.join(input, "confirmed-profile.private.json"), JSON.stringify(portableEvidence.profile, null, 2), "utf8");
+    fs.writeFileSync(path.join(input, "confirmed-card.private.json"), JSON.stringify(portableEvidence.card, null, 2), "utf8");
+    fs.copyFileSync(jobsPath, path.join(input, "jobs.private.json"));
+    fs.copyFileSync(labelsPath, path.join(root, "labels", "jobs.reviewed.json"));
+    fs.writeFileSync(path.join(root, "run-manifest.json"), JSON.stringify(selectedManifest, null, 2), "utf8");
+  }
+  const portabilityProfilePath = path.join(targetPortabilityInput, "confirmed-profile.private.json");
+  const portabilityCardPath = path.join(targetPortabilityInput, "confirmed-card.private.json");
+  const portabilityJobsPath = path.join(targetPortabilityInput, "jobs.private.json");
+  const portabilityLabelsPath = path.join(targetPortabilityRoot, "labels", "jobs.reviewed.json");
+  const portabilityBlobIds = new Map([
+    ["src/core/profile_onboarding.js", "1".repeat(40)],
+    ["src/core/matching_card.js", "2".repeat(40)],
+    ["src/core/search_plan.js", "3".repeat(40)],
+    ["src/core/llm_analyzer.js", "4".repeat(40)]
+  ]);
+  const portabilitySeam = {
+    targetCommits: {
+      productCommit: manifest.candidateProductCommit,
+      evaluatedCommit: manifest.candidateEvaluatedCommit
+    },
+    blobResolver: (commit, file) => {
+      assert([sourceManifest.candidateEvaluatedCommit, manifest.candidateProductCommit].includes(commit));
+      return portabilityBlobIds.get(file);
+    }
+  };
+  const portabilityMatchOptions = (side, overrides = {}) => liveOptions("match-live", side, {
+    privateRoot: targetPortabilityRoot,
+    output: path.join(targetPortabilityRoot, "runs", side),
+    profile: portabilityProfilePath,
+    matchingCard: portabilityCardPath,
+    jobs: portabilityJobsPath,
+    labels: portabilityLabelsPath,
+    ...overrides
+  });
+  const portabilityPreflightCounts = { loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0 };
+  const portabilityPreflightSeam = {
+    ...seamFor("candidate"),
+    ...portabilitySeam,
+    baseConfigs: undefined,
+    modelConfig: undefined,
+    modules: {
+      ...seamFor("candidate").modules,
+      loadConfigs: () => { portabilityPreflightCounts.loadConfigs += 1; throw new Error("config must not load"); },
+      resolveRuntimeModelConfig: () => { portabilityPreflightCounts.resolveRuntimeModelConfig += 1; throw new Error("provider must not initialize"); },
+      openDb: () => { portabilityPreflightCounts.openDb += 1; throw new Error("SQLite must not open"); },
+      createJobAnalysisRunner: () => {
+        portabilityPreflightCounts.provider += 1;
+        return async () => { portabilityPreflightCounts.model += 1; };
+      }
+    }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(portabilityMatchOptions("candidate"), authorizedEnv(), portabilityPreflightSeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED",
+    "v1 confirmed evidence must remain rejected without an explicit portability proof"
+  );
+  const sourceProfileBefore = fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-profile.private.json"));
+  const sourceCardBefore = fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-card.private.json"));
+  const targetProfileBefore = fs.readFileSync(portabilityProfilePath);
+  const targetCardBefore = fs.readFileSync(portabilityCardPath);
+  const portabilityProof = runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot,
+    privateRoot: targetPortabilityRoot,
+    output: portabilityProofPath
+  }, portabilitySeam);
+  assert.strictEqual(portabilityProof.runMode, "offline-confirmed-evidence-portability");
+  assert.strictEqual(portabilityProof.modelCallPerformed, false);
+  assert.match(portabilityProof.proofSha256, /^[0-9a-f]{64}$/);
+  assert.deepStrictEqual(fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-profile.private.json")), sourceProfileBefore);
+  assert.deepStrictEqual(fs.readFileSync(path.join(sourcePortabilityInput, "confirmed-card.private.json")), sourceCardBefore);
+  assert.deepStrictEqual(fs.readFileSync(portabilityProfilePath), targetProfileBefore);
+  assert.deepStrictEqual(fs.readFileSync(portabilityCardPath), targetCardBefore);
+  const serializedPortabilityProof = JSON.stringify(portabilityProof);
+  for (const forbidden of [
+    sourcePortabilityRoot, targetPortabilityRoot, "Synthetic Candidate", "Synthetic Corp",
+    "example.invalid", "apiKey", "modelSettingsRoot", "src/"
+  ]) {
+    assert(!serializedPortabilityProof.includes(forbidden), `portability proof must not contain ${forbidden}`);
+  }
+  assert.throws(
+    () => runner.createConfirmedEvidencePortability({
+      sourcePrivateRoot: sourcePortabilityRoot,
+      privateRoot: targetPortabilityRoot,
+      output: portabilityProofPath
+    }, portabilitySeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED",
+    "offline portability creation must never overwrite an existing proof"
+  );
+
+  const portabilityRun = async (name, mutate, expectedCode = "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID") => {
+    const probe = createMatchProbeBundle(`portability-${name}`);
+    fs.copyFileSync(portabilityProfilePath, probe.profile);
+    fs.copyFileSync(portabilityCardPath, probe.card);
+    fs.copyFileSync(path.join(targetPortabilityInput, "resume.redacted.txt"), path.join(probe.root, "input", "resume.redacted.txt"));
+    fs.copyFileSync(path.join(targetPortabilityInput, "identity.private.json"), path.join(probe.root, "input", "identity.private.json"));
+    fs.copyFileSync(portabilityJobsPath, probe.jobs);
+    fs.copyFileSync(portabilityLabelsPath, probe.labels);
+    fs.copyFileSync(portabilityProofPath, path.join(probe.root, "input", "confirmed-evidence-portability.json"));
+    const state = {
+      root: probe.root,
+      manifest: path.join(probe.root, "run-manifest.json"),
+      profile: probe.profile,
+      card: probe.card,
+      resume: path.join(probe.root, "input", "resume.redacted.txt"),
+      identity: path.join(probe.root, "input", "identity.private.json"),
+      jobs: probe.jobs,
+      labels: probe.labels,
+      proof: path.join(probe.root, "input", "confirmed-evidence-portability.json")
+    };
+    if (mutate) mutate(state);
+    await assert.rejects(
+      () => runner.runPrivateFullChain(portabilityMatchOptions("candidate", {
+        privateRoot: probe.root,
+        output: probe.output,
+        profile: probe.profile,
+        matchingCard: probe.card,
+        jobs: probe.jobs,
+        labels: probe.labels,
+        portabilityProof: state.proof
+      }), authorizedEnv(), portabilityPreflightSeam),
+      (error) => error.code === expectedCode,
+      name
+    );
+    assert.deepStrictEqual(portabilityPreflightCounts, {
+      loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
+    }, `${name} must fail before settings, provider, SQLite, or model access`);
+  };
+  await portabilityRun("missing-proof", ({ proof }) => fs.rmSync(proof));
+  await portabilityRun("tampered-self-hash", ({ proof }) => {
+    const value = JSON.parse(fs.readFileSync(proof, "utf8"));
+    value.sourceEvaluatedCommit = "f".repeat(40);
+    fs.writeFileSync(proof, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("target-manifest", ({ manifest: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.candidateProductCommit = "f".repeat(40);
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("profile-bytes", ({ profile: file }) => fs.appendFileSync(file, " "));
+  await portabilityRun("card-bytes", ({ card: file }) => fs.appendFileSync(file, " "));
+  await portabilityRun("draft", ({ card: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.draft.profileSha256 = "f".repeat(64);
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("confirmation", ({ profile: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    delete value.confirmedAt;
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("resume", ({ resume: file }) => fs.appendFileSync(file, "synthetic mutation"));
+  await portabilityRun("identity", ({ identity: file }) => fs.writeFileSync(file, JSON.stringify({
+    names: ["Synthetic Other"], phones: ["13900139000"], emails: ["other@example.invalid"]
+  }), "utf8"));
+  await portabilityRun("model-hash", ({ profile: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.modelIdentitySha256 = "f".repeat(64);
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await portabilityRun("commit-binding", ({ proof }) => {
+    const value = JSON.parse(fs.readFileSync(proof, "utf8"));
+    value.targetProductCommit = "f".repeat(40);
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(proof, JSON.stringify(value), "utf8");
+  });
+  const originalBlob = portabilityBlobIds.get("src/core/search_plan.js");
+  portabilityBlobIds.set("src/core/search_plan.js", "f".repeat(40));
+  await portabilityRun("consumer-blob", null);
+  portabilityBlobIds.set("src/core/search_plan.js", originalBlob);
+  const unknownHarnessProof = JSON.parse(fs.readFileSync(portabilityProofPath, "utf8"));
+  unknownHarnessProof.sourceHarness = "private-full-chain-harness.v0";
+  unknownHarnessProof.proofSha256 = valueSha256({ ...unknownHarnessProof, proofSha256: undefined });
+  fs.writeFileSync(portabilityProofPath, JSON.stringify(unknownHarnessProof, null, 2), "utf8");
+  await portabilityRun("unknown-source-harness", null);
+  fs.writeFileSync(portabilityProofPath, JSON.stringify(portabilityProof, null, 2), "utf8");
+  const portableRunSeam = (side) => {
+    const value = seamFor(side);
+    return {
+      ...value,
+      ...portabilitySeam,
+      modules: { ...value.modules, openDb }
+    };
+  };
+  const portableBaseline = await runner.runPrivateFullChain(portabilityMatchOptions("baseline", {
+    portabilityProof: portabilityProofPath
+  }), authorizedEnv(), portableRunSeam("baseline"));
+  const portableCandidate = await runner.runPrivateFullChain(portabilityMatchOptions("candidate", {
+    portabilityProof: portabilityProofPath
+  }), authorizedEnv(), portableRunSeam("candidate"));
+  for (const result of [portableBaseline, portableCandidate]) {
+    assert.strictEqual(result.confirmedEvidencePortabilitySha256, portabilityProof.proofSha256);
+    assert.strictEqual(result.confirmedEvidenceSourceHarnessVersion, "private-full-chain-harness.v1");
+  }
+  const portableCompared = runner.comparePrivateFullChainResults(
+    { ...portableBaseline, runMode: "live", authorizationGatePassed: true },
+    { ...portableCandidate, runMode: "live", authorizationGatePassed: true }
+  );
+  assert.strictEqual(portableCompared.ok, true, JSON.stringify(portableCompared));
+  assert.deepStrictEqual(portableCompared.report.portability, {
+    proofSha256: portabilityProof.proofSha256,
+    sourceHarness: "private-full-chain-harness.v1"
+  });
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(
+      { ...portableBaseline, runMode: "live", authorizationGatePassed: true },
+      {
+        ...portableCandidate,
+        runMode: "live",
+        authorizationGatePassed: true,
+        confirmedEvidencePortabilitySha256: "f".repeat(64)
+      }
+    ).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY"
+  );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(
+      { ...portableBaseline, runMode: "live", authorizationGatePassed: true },
+      {
+        ...portableCandidate,
+        runMode: "live",
+        authorizationGatePassed: true,
+        confirmedEvidenceSourceHarnessVersion: "private-full-chain-harness.v0"
+      }
+    ).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY"
+  );
+
   const draftCardPath = privatePath("input", "draft-card.private.json");
   fs.writeFileSync(draftCardPath, JSON.stringify({ ...cardEnvelope, status: "draft", userConfirmed: false }), "utf8");
   await assert.rejects(

@@ -8,9 +8,17 @@ const { checkIdentityManifestShape, assertResumeIdentityRedacted } = require("./
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
 const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
-const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "profile-live", "card-live", "match-live", "compare"]);
+const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "create-portability-proof", "profile-live", "card-live", "match-live", "compare"]);
 const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
 const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v2";
+const PORTABLE_SOURCE_HARNESS_VERSION = "private-full-chain-harness.v1";
+const PORTABILITY_PROOF_VERSION = "confirmed-evidence-portability.v1";
+const PORTABILITY_CONSUMER_FILES = {
+  profileCreationBlobId: "src/core/profile_onboarding.js",
+  cardCreationBlobId: "src/core/matching_card.js",
+  profileConsumptionBlobId: "src/core/search_plan.js",
+  cardConsumptionBlobId: "src/core/llm_analyzer.js"
+};
 const SAFE_SEMANTIC_STATUSES = new Set(["complete", "partial", "pending", "failed", "stale", "blocked", "refresh", "rule_only"]);
 const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending", "hard_boundary", "source_refresh"]);
 const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
@@ -364,6 +372,22 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
     if (failed) return failed;
     return { ok: true, code: "OK", request: { mode, privateRoot: root.resolved, resumeText: resumeText.resolved, identity: identity.resolved, parseReport: parseReport.resolved } };
   }
+  if (mode === "create-portability-proof") {
+    const source = checkPrivateRoot(opts.sourcePrivateRoot);
+    const output = checkPrivateArtifact(opts.output, root.resolved, "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED");
+    if (!source.ok) return source;
+    if (!output.ok) return output;
+    const expected = canonicalizePath(path.join(root.resolved, "input", "confirmed-evidence-portability.json"));
+    if (samePath(source.resolved, root.resolved) || !expected || !samePath(output.resolved, expected)) {
+      return fail("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "Portability requires distinct source and target bundles and the fixed new sidecar target.");
+    }
+    return { ok: true, code: "OK", request: {
+      mode,
+      sourcePrivateRoot: source.resolved,
+      privateRoot: root.resolved,
+      output: output.resolved
+    } };
+  }
 
   const side = checkSideAndOutput(opts, root.resolved);
   if (!side.ok) return side;
@@ -383,6 +407,11 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
       const checked = checkPrivateArtifact(opts[field], root.resolved, "PRIVATE_FULL_CHAIN_RESUME_REQUIRED");
       if (!checked.ok) return checked;
       liveInputs[field] = checked.resolved;
+    }
+    if (String(opts.portabilityProof || "").trim()) {
+      const portabilityProof = checkPrivateArtifact(opts.portabilityProof, root.resolved, "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID");
+      if (!portabilityProof.ok) return portabilityProof;
+      liveInputs.portabilityProof = portabilityProof.resolved;
     }
   }
   if (environ.ALLOW_PRIVATE_RESUME_BENCHMARK !== "YES") return fail("PRIVATE_FULL_CHAIN_NOT_AUTHORIZED", "Live modes require ALLOW_PRIVATE_RESUME_BENCHMARK=YES.");
@@ -812,7 +841,7 @@ function confirmedCardInput(value, profileInput, context) {
     || draft.draftSha256 !== valueSha256(cardDraftPayload(draft))
     || draft.runMode !== expectedDraftRunMode
     || draft.authorizationGatePassed !== expectedDraftAuthorized
-    || draft.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
+    || draft.benchmarkHarnessVersion !== (context.harnessVersion || PRIVATE_HARNESS_VERSION)
     || draft.runManifestSha256 !== context.runManifestSha256
     || draft.side !== "candidate"
     || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateEvaluatedCommit || "").toLowerCase()
@@ -834,6 +863,265 @@ function confirmedCardInput(value, profileInput, context) {
 function sameKeys(value, expected) {
   return value && typeof value === "object" && !Array.isArray(value)
     && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+}
+
+function portabilityArtifactPaths(privateRoot) {
+  const input = path.join(privateRoot, "input");
+  return {
+    manifest: path.join(privateRoot, "run-manifest.json"),
+    profile: path.join(input, "confirmed-profile.private.json"),
+    card: path.join(input, "confirmed-card.private.json"),
+    resume: path.join(input, "resume.redacted.txt"),
+    identity: path.join(input, "identity.private.json"),
+    jobs: path.join(input, "jobs.private.json"),
+    labels: path.join(privateRoot, "labels", "jobs.reviewed.json")
+  };
+}
+
+function readPortabilityArtifacts(privateRoot) {
+  const paths = portabilityArtifactPaths(privateRoot);
+  try {
+    const bytes = Object.fromEntries(Object.entries(paths).map(([name, file]) => [name, fs.readFileSync(file)]));
+    return {
+      bytes,
+      manifest: JSON.parse(bytes.manifest.toString("utf8")),
+      profile: JSON.parse(bytes.profile.toString("utf8")),
+      card: JSON.parse(bytes.card.toString("utf8"))
+    };
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Confirmed evidence portability inputs are missing or invalid.");
+  }
+}
+
+function portabilityManifest(value, harnessVersion) {
+  const manifestKeys = [
+    "runMode", "harnessVersion", "baselineProductCommit", "baselineEvaluatedCommit",
+    "candidateProductCommit", "candidateEvaluatedCommit", "sharedFileBlobs"
+  ];
+  return sameKeys(value, manifestKeys)
+    && value.runMode === "private-init-manifest"
+    && value?.harnessVersion === harnessVersion
+    && /^[0-9a-f]{40}$/.test(String(value?.baselineProductCommit || ""))
+    && /^[0-9a-f]{40}$/.test(String(value?.baselineEvaluatedCommit || ""))
+    && /^[0-9a-f]{40}$/.test(String(value?.candidateProductCommit || ""))
+    && /^[0-9a-f]{40}$/.test(String(value?.candidateEvaluatedCommit || ""))
+    && sameKeys(value.sharedFileBlobs, SHARED_MANIFEST_FILES)
+    && Object.values(value.sharedFileBlobs).every((blob) => /^[0-9a-f]{40,64}$/.test(String(blob || "")));
+}
+
+function resolvePortabilityTargetCommits(manifest, seam) {
+  if (seam?.targetCommits) {
+    const productCommit = String(seam.targetCommits.productCommit || "").toLowerCase();
+    const evaluatedCommit = String(seam.targetCommits.evaluatedCommit || "").toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(productCommit) || !/^[0-9a-f]{40}$/.test(evaluatedCommit)) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target commit binding is invalid.");
+    }
+    return { productCommit, evaluatedCommit };
+  }
+  try {
+    const inspected = inspectWorktree(FIXED_CANDIDATE_WORKTREE);
+    return {
+      productCommit: verifyProductCommit(FIXED_CANDIDATE_WORKTREE, manifest.candidateProductCommit, inspected.head),
+      evaluatedCommit: inspected.head
+    };
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target commit binding is invalid.");
+  }
+}
+
+function portabilityBlobResolver(seam) {
+  if (typeof seam?.blobResolver === "function") return seam.blobResolver;
+  return (commit, file) => execFileSync("git", ["rev-parse", `${commit}:${file}`], {
+    cwd: FIXED_CANDIDATE_WORKTREE,
+    encoding: "utf8",
+    windowsHide: true
+  }).trim().toLowerCase();
+}
+
+function resolvePortabilityBlobs(sourceCommit, targetCommit, seam) {
+  const resolveBlob = portabilityBlobResolver(seam);
+  try {
+    return Object.fromEntries(Object.entries(PORTABILITY_CONSUMER_FILES).map(([name, file]) => {
+      const source = String(resolveBlob(sourceCommit, file) || "").toLowerCase();
+      const target = String(resolveBlob(targetCommit, file) || "").toLowerCase();
+      if (!/^[0-9a-f]{40,64}$/.test(source) || source !== target) throw new Error("blob mismatch");
+      return [name, source];
+    }));
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The approved consumer-code blob binding is invalid.");
+  }
+}
+
+function portabilityProofPayload(value) {
+  const payload = { ...value };
+  delete payload.proofSha256;
+  return payload;
+}
+
+function genericPortabilityConfirmationId(value) {
+  return /^[a-z0-9][a-z0-9._-]{0,99}$/i.test(String(value || ""));
+}
+
+function createConfirmedEvidencePortability(options, seam = null) {
+  const gate = validatePrivateFullChainRequest({ ...(options || {}), mode: "create-portability-proof" }, {}, null);
+  if (!gate.ok) throw runnerError(gate.code, gate.message);
+  newPrivateOutputTarget(gate.request.privateRoot, gate.request.output);
+  const source = readPortabilityArtifacts(gate.request.sourcePrivateRoot);
+  const target = readPortabilityArtifacts(gate.request.privateRoot);
+  if (!portabilityManifest(source.manifest, PORTABLE_SOURCE_HARNESS_VERSION)
+    || !portabilityManifest(target.manifest, PRIVATE_HARNESS_VERSION)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Portability requires a known v1 source manifest and current v2 target manifest.");
+  }
+  const targetCommits = resolvePortabilityTargetCommits(target.manifest, seam);
+  if (targetCommits.productCommit !== target.manifest.candidateProductCommit
+    || targetCommits.evaluatedCommit !== target.manifest.candidateEvaluatedCommit) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target manifest and candidate commits do not match.");
+  }
+  for (const field of ["profile", "card", "resume", "identity", "jobs", "labels"]) {
+    if (!source.bytes[field].equals(target.bytes[field])) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Source and target confirmed evidence bytes do not match.");
+    }
+  }
+  const sourceContext = {
+    injected: false,
+    harnessVersion: PORTABLE_SOURCE_HARNESS_VERSION,
+    manifest: source.manifest,
+    runManifestSha256: valueSha256(source.manifest),
+    side: "candidate",
+    evaluatedCommit: source.manifest.candidateEvaluatedCommit
+  };
+  const profileInput = confirmedProfileInput(source.profile, sourceContext);
+  const cardInput = confirmedCardInput(source.card, profileInput, sourceContext);
+  if (profileInput.envelope.resumeContentSha256 !== sha256(source.bytes.resume)
+    || profileInput.envelope.identityManifestSha256 !== sha256(source.bytes.identity)
+    || !genericPortabilityConfirmationId(profileInput.envelope.id)
+    || !genericPortabilityConfirmationId(cardInput.envelope.id)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The source confirmation chain does not match its evidence hashes.");
+  }
+  const proof = {
+    proofVersion: PORTABILITY_PROOF_VERSION,
+    runMode: "offline-confirmed-evidence-portability",
+    modelCallPerformed: false,
+    sourceHarness: PORTABLE_SOURCE_HARNESS_VERSION,
+    targetHarness: PRIVATE_HARNESS_VERSION,
+    sourceRunManifestSha256: valueSha256(source.manifest),
+    targetRunManifestSha256: valueSha256(target.manifest),
+    sourceEvaluatedCommit: source.manifest.candidateEvaluatedCommit,
+    targetProductCommit: targetCommits.productCommit,
+    targetEvaluatedCommit: targetCommits.evaluatedCommit,
+    confirmedProfileFileSha256: sha256(source.bytes.profile),
+    confirmedCardFileSha256: sha256(source.bytes.card),
+    resumeContentSha256: sha256(source.bytes.resume),
+    identityManifestSha256: sha256(source.bytes.identity),
+    jobsFileSha256: sha256(source.bytes.jobs),
+    labelsFileSha256: sha256(source.bytes.labels),
+    modelIdentitySha256: profileInput.envelope.modelIdentitySha256,
+    profileConfirmationId: String(profileInput.envelope.id),
+    profileConfirmedAt: profileInput.envelope.confirmedAt,
+    cardConfirmationId: String(cardInput.envelope.id),
+    cardConfirmedAt: cardInput.envelope.confirmedAt,
+    consumerCodeBlobs: resolvePortabilityBlobs(
+      source.manifest.candidateEvaluatedCommit,
+      targetCommits.productCommit,
+      seam
+    )
+  };
+  proof.proofSha256 = valueSha256(proof);
+  writeJsonFile(gate.request.privateRoot, gate.request.output, proof);
+  return proof;
+}
+
+function validateConfirmedEvidencePortability(request, context, profileValue, cardValue, seam = null) {
+  let proof;
+  let proofRaw;
+  try {
+    proofRaw = fs.readFileSync(request.portabilityProof);
+    proof = JSON.parse(proofRaw.toString("utf8"));
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "An explicit valid portability proof is required for v1 confirmed evidence.");
+  }
+  const expectedKeys = [
+    "proofVersion", "runMode", "modelCallPerformed", "sourceHarness", "targetHarness",
+    "sourceRunManifestSha256", "targetRunManifestSha256", "sourceEvaluatedCommit",
+    "targetProductCommit", "targetEvaluatedCommit", "confirmedProfileFileSha256",
+    "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
+    "jobsFileSha256", "labelsFileSha256", "modelIdentitySha256", "profileConfirmationId",
+    "profileConfirmedAt", "cardConfirmationId", "cardConfirmedAt", "consumerCodeBlobs", "proofSha256"
+  ];
+  if (!sameKeys(proof, expectedKeys)
+    || proof.proofVersion !== PORTABILITY_PROOF_VERSION
+    || proof.runMode !== "offline-confirmed-evidence-portability"
+    || proof.modelCallPerformed !== false
+    || proof.sourceHarness !== PORTABLE_SOURCE_HARNESS_VERSION
+    || proof.targetHarness !== PRIVATE_HARNESS_VERSION
+    || proof.proofSha256 !== valueSha256(portabilityProofPayload(proof))
+    || !portabilityManifest(context.manifest, PRIVATE_HARNESS_VERSION)
+    || proof.targetRunManifestSha256 !== context.runManifestSha256
+    || proof.targetProductCommit !== context.manifest.candidateProductCommit
+    || proof.targetEvaluatedCommit !== context.manifest.candidateEvaluatedCommit
+    || !genericPortabilityConfirmationId(proof.profileConfirmationId)
+    || !genericPortabilityConfirmationId(proof.cardConfirmationId)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The confirmed evidence portability proof is invalid.");
+  }
+  const targetCommits = resolvePortabilityTargetCommits(context.manifest, seam);
+  if (targetCommits.productCommit !== proof.targetProductCommit
+    || targetCommits.evaluatedCommit !== proof.targetEvaluatedCommit) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target commit binding is invalid.");
+  }
+  let profileRaw;
+  let cardRaw;
+  let resumeRaw;
+  let identityRaw;
+  let jobsRaw;
+  let labelsRaw;
+  try {
+    profileRaw = fs.readFileSync(request.profile);
+    cardRaw = fs.readFileSync(request.matchingCard);
+    resumeRaw = fs.readFileSync(path.join(request.privateRoot, "input", "resume.redacted.txt"));
+    identityRaw = fs.readFileSync(path.join(request.privateRoot, "input", "identity.private.json"));
+    jobsRaw = fs.readFileSync(request.jobs);
+    labelsRaw = fs.readFileSync(request.labels);
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target evidence files are missing or invalid.");
+  }
+  for (const [value, field] of [
+    [profileRaw, "confirmedProfileFileSha256"],
+    [cardRaw, "confirmedCardFileSha256"],
+    [resumeRaw, "resumeContentSha256"],
+    [identityRaw, "identityManifestSha256"],
+    [jobsRaw, "jobsFileSha256"],
+    [labelsRaw, "labelsFileSha256"]
+  ]) {
+    if (sha256(value) !== proof[field]) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target evidence bytes do not match the portability proof.");
+    }
+  }
+  const sourceContext = {
+    injected: false,
+    harnessVersion: PORTABLE_SOURCE_HARNESS_VERSION,
+    manifest: { candidateEvaluatedCommit: proof.sourceEvaluatedCommit },
+    runManifestSha256: proof.sourceRunManifestSha256,
+    side: context.side,
+    evaluatedCommit: context.evaluatedCommit
+  };
+  let profileInput;
+  let cardInput;
+  try {
+    profileInput = confirmedProfileInput(profileValue, sourceContext);
+    cardInput = confirmedCardInput(cardValue, profileInput, sourceContext);
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The v1 confirmation provenance chain is invalid.");
+  }
+  if (profileInput.envelope.id !== proof.profileConfirmationId
+    || profileInput.envelope.confirmedAt !== proof.profileConfirmedAt
+    || cardInput.envelope.id !== proof.cardConfirmationId
+    || cardInput.envelope.confirmedAt !== proof.cardConfirmedAt
+    || profileInput.envelope.modelIdentitySha256 !== proof.modelIdentitySha256
+    || JSON.stringify(resolvePortabilityBlobs(proof.sourceEvaluatedCommit, proof.targetProductCommit, seam))
+      !== JSON.stringify(proof.consumerCodeBlobs)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof bindings are invalid.");
+  }
+  return { proof, profileInput, cardInput };
 }
 
 function frozenJobSourceContentHash(job) {
@@ -934,7 +1222,7 @@ function validateProfileResultProvenance(value, context) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || value.runMode !== expectedRunMode
     || value.authorizationGatePassed !== expectedAuthorized
-    || value.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
+    || value.benchmarkHarnessVersion !== (context.harnessVersion || PRIVATE_HARNESS_VERSION)
     || value.runManifestSha256 !== context.runManifestSha256
     || value.side !== "candidate"
     || String(value.evaluatedCommit || "").toLowerCase() !== expectedCommit
@@ -1070,8 +1358,23 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       side: request.side,
       evaluatedCommit: proof.commit
     };
-    preflight.profileInput = confirmedProfileInput(preflight.profileValue, provenanceContext);
-    preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput, provenanceContext);
+    if (preflight.profileValue?.benchmarkHarnessVersion === PORTABLE_SOURCE_HARNESS_VERSION) {
+      if (!request.portabilityProof) {
+        throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "V1 confirmed evidence requires an explicit portability proof.");
+      }
+      preflight.portability = validateConfirmedEvidencePortability(
+        request,
+        provenanceContext,
+        preflight.profileValue,
+        preflight.cardValue,
+        testSeam
+      );
+      preflight.profileInput = preflight.portability.profileInput;
+      preflight.cardInput = preflight.portability.cardInput;
+    } else {
+      preflight.profileInput = confirmedProfileInput(preflight.profileValue, provenanceContext);
+      preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput, provenanceContext);
+    }
     if (preflight.profileInput.envelope.resumeContentSha256 !== sha256(preflight.resume.resumeText)
       || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
       throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
@@ -1243,6 +1546,8 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     cardReviewStatus: "confirmed",
     fixtureJobSetSha256: fixture.jobsSha256,
     fixtureLabelsSha256: fixture.labelsSha256,
+    confirmedEvidencePortabilitySha256: preflight.portability?.proof.proofSha256 || null,
+    confirmedEvidenceSourceHarnessVersion: preflight.portability?.proof.sourceHarness || PRIVATE_HARNESS_VERSION,
     modelIdentity,
     modelIdentitySha256,
     ...derived.metrics,
@@ -1278,10 +1583,21 @@ function comparePrivateFullChainResults(baseline, candidate) {
       || value.cardReviewStatus !== "confirmed"
       || value.matchingCardProvided !== true
       || typeof value.matchingCardConsumed !== "boolean"
+      || ![PRIVATE_HARNESS_VERSION, PORTABLE_SOURCE_HARNESS_VERSION].includes(value.confirmedEvidenceSourceHarnessVersion)
+      || (value.confirmedEvidencePortabilitySha256 !== null
+        && !/^[0-9a-f]{64}$/.test(String(value.confirmedEvidencePortabilitySha256 || "")))
       || !/^[0-9a-f]{64}$/.test(String(value.fixtureProfileResultSha256 || ""))
       || !hasBoundModelIdentity(value)) {
       return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires strict live authorization, confirmation, side, worktree, and card-state fields.");
     }
+  }
+  if (baseline.confirmedEvidenceSourceHarnessVersion !== candidate.confirmedEvidenceSourceHarnessVersion
+    || baseline.confirmedEvidencePortabilitySha256 !== candidate.confirmedEvidencePortabilitySha256
+    || (baseline.confirmedEvidenceSourceHarnessVersion === PORTABLE_SOURCE_HARNESS_VERSION
+      && baseline.confirmedEvidencePortabilitySha256 === null)
+    || (baseline.confirmedEvidenceSourceHarnessVersion === PRIVATE_HARNESS_VERSION
+      && baseline.confirmedEvidencePortabilitySha256 !== null)) {
+    return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison portability identity does not match.");
   }
   for (const field of [
     "resumeContentSha256",
@@ -1336,6 +1652,10 @@ function comparePrivateFullChainResults(baseline, candidate) {
         baselineConsumed: baseline.matchingCardConsumed === true,
         candidateConsumed: candidate.matchingCardConsumed === true
       },
+      portability: {
+        proofSha256: baseline.confirmedEvidencePortabilitySha256,
+        sourceHarness: baseline.confirmedEvidenceSourceHarnessVersion
+      },
       commits: {
         baselineProductCommit: baseline.productCommit,
         baselineEvaluatedCommit: baseline.evaluatedCommit,
@@ -1359,6 +1679,8 @@ function renderPrivateCompareMarkdown(report) {
     `- Candidate: ${report.evaluatedCommit}`,
     `- Baseline card consumed: ${report.card.baselineConsumed}`,
     `- Candidate card consumed: ${report.card.candidateConsumed}`,
+    `- Source harness: ${report.portability.sourceHarness}`,
+    `- Portability proof: ${report.portability.proofSha256 || "native-v2"}`,
     `- Failure reasons: ${report.failureReasons.length ? report.failureReasons.join("; ") : "none"}`,
     ""
   ].join("\n");
@@ -1370,7 +1692,8 @@ function parseCli(argv) {
   const valueOptions = new Set([
     "--private-root", "--baseline-worktree", "--candidate-worktree", "--output", "--pdf", "--identity",
     "--resume-text", "--parse-report", "--side", "--profile", "--matching-card", "--jobs", "--labels",
-    "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit", "--candidate-product-commit"
+    "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit", "--candidate-product-commit",
+    "--source-private-root", "--portability-proof"
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -1394,6 +1717,7 @@ async function main() {
   if (options.mode === "prepare") return preparePrivateResume(options, process.env);
   if (options.mode === "init-manifest") return initializePrivateManifest(options);
   if (options.mode === "verify-private-bundle") return verifyPrivateBundle(options);
+  if (options.mode === "create-portability-proof") return createConfirmedEvidencePortability(options);
   if (options.mode === "compare") {
     const result = comparePrivateFullChainResults(JSON.parse(fs.readFileSync(pureGate.request.baseline, "utf8")), JSON.parse(fs.readFileSync(pureGate.request.candidate, "utf8")));
     if (!result.ok) throw runnerError(result.code, result.message);
@@ -1423,6 +1747,7 @@ module.exports = {
   verifyPrivateBundle,
   verifyProductCommit,
   initializePrivateManifest,
+  createConfirmedEvidencePortability,
   validateProfileResultProvenance,
   runPrivateFullChain,
   comparePrivateFullChainResults
