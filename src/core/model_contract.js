@@ -185,12 +185,14 @@ function validateCompactMatchEvidence(value, context = {}) {
     ...transferable.map((item) => `${item.requirement}目前只有可迁移证据`),
     ...softMissing.map((item) => `${item.requirement}未找到直接简历证据`),
     ...cautions.map((item) => item.detail),
+    ...(!requirementMatches.length ? ["JD 信息不足，未提取到可核对的核心要求"] : []),
     ...(jobQuality.level === "risk" ? ["岗位存在安全或合规风险，交由本地规则处理"] : [])
   ].slice(0, 8);
   const questionsToVerify = [
     ...uncertainties,
     ...unknownRequirements.map((item) => `${item.requirement}的信息待确认`),
-    ...unknownEligibility.map((item) => `${eligibilityItems.find((entry) => entry.id === item.id)?.label || item.id}的资格信息待确认`)
+    ...unknownEligibility.map((item) => `${eligibilityItems.find((entry) => entry.id === item.id)?.label || item.id}的资格信息待确认`),
+    ...(requirementMatches.length && !hasPositiveRequirementEvidence ? ["候选人核心要求证据缺少，待确认"] : [])
   ].slice(0, 8);
   const jdEvidence = requirementMatches
     .filter((item) => ["matched", "transferable", "missing"].includes(item.state))

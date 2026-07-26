@@ -1498,6 +1498,25 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(risky.recommendation, "review", "模型传输层只保留证据，安全风险由最终本地规则做 skip");
   assert.doesNotThrow(() => validateModelResult("matchJob", risky, { jobUnderstanding: riskyUnderstanding }));
 
+  const sparseUnderstanding = validateModelResult("understandJob", {
+    ...jobUnderstanding,
+    coreRequirements: [],
+    eligibilityConstraints: []
+  });
+  const sparseDecision = validateModelResult("matchJob", {
+    matches: [],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "low"
+  }, { jobUnderstanding: sparseUnderstanding });
+  assert.strictEqual(sparseDecision.recommendation, "review");
+  assert(sparseDecision.softGaps.some((item) => item.includes("信息不足")));
+  assert.doesNotThrow(
+    () => validateModelResult("matchJob", sparseDecision, { jobUnderstanding: sparseUnderstanding }),
+    "稀疏 JD 的紧凑结果归一化后必须能通过既有 review 契约"
+  );
+
   const tenureUnderstanding = validateModelResult("understandJob", {
     ...jobUnderstanding,
     coreRequirements: [{ label: "3 年以上相关经验", indispensable: true, evidence: "JD：要求 3 年以上相关经验" }],
