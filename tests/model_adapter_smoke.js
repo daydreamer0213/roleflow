@@ -27,6 +27,26 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: "upstream body must never reach errors or observer logs" } }));
     return;
   }
+  if (payload.model === "structured-failure-test") {
+    const scenario = JSON.parse(payload.messages[1].content).scenario;
+    const sentinel = "response sentinel must never reach errors or observer logs";
+    if (scenario === "truncated") {
+      res.end(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{\"partial\":" } }] }));
+      return;
+    }
+    if (scenario === "invalid-envelope") {
+      res.end(sentinel);
+      return;
+    }
+    if (scenario === "missing-content") {
+      res.end(JSON.stringify({ choices: [{ message: {} }] }));
+      return;
+    }
+    if (scenario === "invalid-json") {
+      res.end(JSON.stringify({ choices: [{ message: { content: sentinel } }] }));
+      return;
+    }
+  }
   const content = requests === 2 ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }] : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
@@ -137,6 +157,30 @@ server.listen(0, "127.0.0.1", async () => {
     assert(failureMetric.data.providerRequestId.startsWith("provider-request-"));
     assert.strictEqual(failureMetric.data.errorMessage, "Model request failed (HTTP 401).");
     assert(!JSON.stringify(failureMetric).includes("upstream body"));
+    const structuredFailureAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "structured-failure-test",
+      maxRetries: 0,
+      logger
+    });
+    for (const [scenario, code] of [
+      ["truncated", "MODEL_OUTPUT_TRUNCATED"],
+      ["invalid-envelope", "MODEL_INVALID_RESPONSE"],
+      ["missing-content", "MODEL_INVALID_RESPONSE"],
+      ["invalid-json", "MODEL_INVALID_JSON"]
+    ]) {
+      const error = await rejectedError(() => structuredFailureAdapter.chatJson("return json", { scenario }, { kind: "structuredFailure" }));
+      assert.strictEqual(error.code, code);
+      assert.strictEqual(error.httpStatus, 200);
+      assert(error.providerRequestId.startsWith("provider-request-"));
+      assert.strictEqual(error.retryable, true);
+      assert.strictEqual(typeof error.contentLength, "number");
+      assert.strictEqual(typeof error.finishReason, "string");
+    }
+    const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
+    assert.strictEqual(structuredFailureMetrics.length, 4);
+    assert(!JSON.stringify(structuredFailureMetrics).includes("response sentinel"));
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);
@@ -155,4 +199,13 @@ function readBody(req) {
     req.on("end", () => resolve(value));
     req.on("error", reject);
   });
+}
+
+async function rejectedError(operation) {
+  try {
+    await operation();
+  } catch (error) {
+    return error;
+  }
+  assert.fail("Expected operation to reject");
 }

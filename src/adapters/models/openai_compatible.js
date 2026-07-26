@@ -129,7 +129,7 @@ class OpenAICompatibleAdapter {
               jsonModeFallback = true;
               break;
             }
-            if (attempt < this.maxRetries && (error.retryable || error.code === "model_invalid_json")) {
+            if (attempt < this.maxRetries && error.retryable) {
               await delay(retryDelayMs(error, attempt));
               continue;
             }
@@ -187,13 +187,37 @@ class OpenAICompatibleAdapter {
         if (jsonMode && res.status === 400 && /response_format|json[_ -]?object|json mode|json schema/i.test(detail)) error.code = "json_mode_unsupported";
         throw error;
       }
-      const data = await res.json();
-      const requestId = providerRequestId || String(data.id || "");
+      let data;
       try {
-        return { value: parseJsonContent(extractContent(data)), usage: normalizeUsage(data.usage), httpStatus: res.status, providerRequestId: requestId };
+        data = await res.json();
+      } catch {
+        throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was not valid JSON.", {
+          finishReason: "",
+          contentLength: 0,
+          providerRequestId,
+          httpStatus: res.status,
+          retryable: true
+        });
+      }
+      const requestId = providerRequestId || String(data.id || "");
+      const content = extractContent(data);
+      const responseMeta = {
+        finishReason: String(data.choices?.[0]?.finish_reason || ""),
+        contentLength: content.length,
+        providerRequestId: requestId,
+        httpStatus: res.status,
+        retryable: true
+      };
+      if (responseMeta.finishReason === "length") {
+        throw modelResponseError("MODEL_OUTPUT_TRUNCATED", "Model output was truncated.", responseMeta);
+      }
+      if (!hasMessageContent(data)) {
+        throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was missing message content.", responseMeta);
+      }
+      try {
+        return { value: parseJsonContent(content), usage: normalizeUsage(data.usage), httpStatus: res.status, providerRequestId: requestId };
       } catch (error) {
-        error.httpStatus = res.status;
-        error.providerRequestId = requestId;
+        Object.assign(error, responseMeta);
         throw error;
       }
     } catch (error) {
@@ -213,6 +237,10 @@ function extractContent(data = {}) {
   return String(content || "");
 }
 
+function hasMessageContent(data = {}) {
+  return data.choices?.[0]?.message?.content != null || data.output_text != null;
+}
+
 function parseJsonContent(content) {
   const raw = String(content || "").trim();
   if (!raw) return invalidJson("模型响应缺少可解析的文本内容。");
@@ -226,9 +254,14 @@ function parseJsonContent(content) {
 }
 
 function invalidJson(message) {
+  throw modelResponseError("MODEL_INVALID_JSON", message, { retryable: true });
+}
+
+function modelResponseError(code, message, metadata = {}) {
   const error = new Error(message);
-  error.code = "model_invalid_json";
-  throw error;
+  error.code = code;
+  Object.assign(error, metadata);
+  return error;
 }
 
 function normalizeUsage(value = {}) {
