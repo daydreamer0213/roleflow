@@ -71,6 +71,19 @@ branch: codex/generic-evidence-matching-private-full-chain-baseline-v1
 path:   D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1
 ```
 
+Product commit P must be recorded before applying the final shared tooling and supplied to init-manifest.
+
+```powershell
+$PRODUCT_BASELINE_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$baselineProductProof='D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt'
+[System.IO.File]::WriteAllText($baselineProductProof, $PRODUCT_BASELINE_HEAD + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+# After adding only $sharedFiles and committing tooling, P must precede the actual execution head.
+$baseline='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1'
+$BASELINE_EVALUATED_HEAD=(git -C $baseline rev-parse HEAD).Trim()
+$null=git -C $baseline merge-base --is-ancestor $PRODUCT_BASELINE_HEAD $BASELINE_EVALUATED_HEAD
+if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
+```
+
 从 `$PRODUCT_BASELINE_HEAD` 建立 worktree，然后只应用 Step 2 的最终 shared tooling（cherry-pick 专用 tooling 提交，或只复制 `$sharedFiles` 后创建专用提交）。任何冲突立即停止并报告，不自行取整文件一侧。
 
 - [ ] **Step 4: 验证共享代码逐字节一致**
@@ -114,14 +127,18 @@ Run from candidate worktree:
 
 ```powershell
 $env:ROLEFLOW_PRIVATE_ROOT='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
+$BASELINE_PRODUCT_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt' -Raw).Trim()
+$null=git -C 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' cat-file -e "$BASELINE_PRODUCT_HEAD^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_GIT_VERIFIABLE' }
 node scripts/private-full-chain-runner.js --init-manifest `
   --private-root "$env:ROLEFLOW_PRIVATE_ROOT" `
   --baseline-worktree 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' `
   --candidate-worktree 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' `
+  --baseline-product-commit "$BASELINE_PRODUCT_HEAD" `
   --output "$env:ROLEFLOW_PRIVATE_ROOT\run-manifest.json"
 ```
 
-Expected: runner 自行写入 `harnessVersion`、实际 `baselineProductCommit` / `candidateProductCommit`、以及 shared blob 清单；不接受操作者传入提交值，且目标 manifest 必须是新文件。
+Expected: runner verifies P against the baseline Git history, then writes all four product/evaluated commits plus `harnessVersion` and the shared blob list; the target manifest must be new.
 
 ---
 

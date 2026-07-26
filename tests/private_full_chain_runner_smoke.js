@@ -245,8 +245,10 @@ async function injectedLiveFlowSmoke(identityPath) {
   const manifest = {
     runMode: "private-init-manifest",
     harnessVersion: "private-full-chain-harness.v1",
-    baselineProductCommit: "1".repeat(40),
+    baselineProductCommit: "3".repeat(40),
+    baselineEvaluatedCommit: "1".repeat(40),
     candidateProductCommit: "2".repeat(40),
+    candidateEvaluatedCommit: "2".repeat(40),
     sharedFileBlobs: {}
   };
   const runManifestSha256 = valueSha256(manifest);
@@ -718,6 +720,47 @@ async function injectedLiveFlowSmoke(identityPath) {
     loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0
   }, "JD and label integrity failures must stop before config, provider, or SQLite access");
 
+  for (const cacheFile of ["model-cache.sqlite", "model-cache.sqlite-wal", "model-cache.sqlite-shm"]) {
+    const cacheProbe = createMatchProbeBundle(`dangling-cache-${cacheFile.replace(/\./g, "_")}`);
+    const cachePath = path.join(cacheProbe.output, cacheFile);
+    const outsideTarget = path.join(externalRoot, `outside-${cacheFile}`);
+    fs.mkdirSync(cacheProbe.output, { recursive: true });
+    let danglingFileLink = false;
+    try {
+      fs.symlinkSync(outsideTarget, cachePath, "file");
+      danglingFileLink = true;
+    } catch (error) {
+      if (error?.code !== "EPERM") throw error;
+      fs.writeFileSync(cachePath, "pre-existing SQLite sidecar", "utf8");
+    }
+    let openDbCalls = 0;
+    const cacheSeam = seamFor("candidate");
+    cacheSeam.modules = {
+      ...cacheSeam.modules,
+      openDb: () => { openDbCalls += 1; throw new Error("SQLite must not open unsafe cache paths"); }
+    };
+    await assert.rejects(
+      () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+        privateRoot: cacheProbe.root,
+        output: cacheProbe.output,
+        profile: cacheProbe.profile,
+        matchingCard: cacheProbe.card,
+        jobs: cacheProbe.jobs,
+        labels: cacheProbe.labels
+      }), authorizedEnv(), cacheSeam),
+      (error) => {
+        return cacheFile === "model-cache.sqlite" && !danglingFileLink
+        ? error.code === "PRIVATE_FULL_CHAIN_CACHE_EXISTS"
+        : error.code === "PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED";
+      },
+      `${cacheFile} must be rejected before SQLite opens`
+    );
+    assert.strictEqual(openDbCalls, 0, `${cacheFile} must be rejected before openDb`);
+    if (danglingFileLink) {
+      assert(!fs.existsSync(outsideTarget), `${cacheFile} must not create an external SQLite artifact`);
+    }
+  }
+
   const offlineBaseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("baseline"));
@@ -739,6 +782,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(candidate.matchingCardConsumed, true);
   assert.strictEqual(captured.dbPaths.length, 2);
   assert.notStrictEqual(captured.dbPaths[0], captured.dbPaths[1]);
+  assert(fs.existsSync(path.join(privatePath("runs", "baseline"), "model-cache.sqlite")), "baseline must create its SQLite cache normally");
+  assert(fs.existsSync(path.join(privatePath("runs", "candidate"), "model-cache.sqlite")), "candidate must create its SQLite cache normally");
   await assert.rejects(
     () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
       profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
@@ -951,6 +996,12 @@ async function injectedLiveFlowSmoke(identityPath) {
   });
   assert.strictEqual(compared.report.card.baselineConsumed, false);
   assert.strictEqual(compared.report.card.candidateConsumed, true);
+  assert.deepStrictEqual(compared.report.commits, {
+    baselineProductCommit: "3".repeat(40),
+    baselineEvaluatedCommit: "1".repeat(40),
+    candidateProductCommit: "2".repeat(40),
+    candidateEvaluatedCommit: "2".repeat(40)
+  }, "compare must audit product attribution separately from evaluated runner commits");
   for (const field of ["enteredNotRecommended", "exitedNotRecommended", "enteredPrimary", "hardBlockerChanges"]) {
     assert(Array.isArray(compared.report[field]), `${field} must be reported`);
   }
@@ -1169,6 +1220,8 @@ async function main() {
     });
     expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_REQUIRED", { ...live, modelSettingsRoot: "" });
     expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: privatePath("forbidden-settings") });
+    expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: os.homedir() });
+    expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: os.tmpdir() });
     expectGate("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", gateOptions({ gitProof: { clean: false, commit: "39557f2" } }));
     expectGate("PRIVATE_FULL_CHAIN_REAL_MODEL_REQUIRED", { ...live, modelDescriptor: { provider: "mock" } });
 
@@ -1195,22 +1248,25 @@ async function main() {
       candidate: path.join(privatePath("other-bundle"), "runs", "candidate", "match-result.json"), report: path.join(bundle, "reports", "full-chain-compare.json")
     }, {});
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", {
-      mode: "init-manifest", privateRoot: testRoot, baselineWorktree: privatePath("baseline"), candidateWorktree: "D:\\Guo\\ZhiPing", output: privatePath("run-manifest.json")
+      mode: "init-manifest", privateRoot: testRoot, baselineWorktree: privatePath("baseline"), candidateWorktree: "D:\\Guo\\ZhiPing", baselineProductCommit: "1".repeat(40), output: privatePath("run-manifest.json")
     }, {});
     expectGateOk({
       mode: "init-manifest", privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
-      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", baselineProductCommit: "1".repeat(40), output: privatePath("run-manifest.json")
     }, {});
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", {
       mode: "init-manifest", privateRoot: testRoot, baselineWorktree: testRoot,
-      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", baselineProductCommit: "1".repeat(40), output: privatePath("run-manifest.json")
     }, {});
 
     fs.mkdirSync(testRoot, { recursive: true });
     fs.mkdirSync(downloadsRoot, { recursive: true });
     const downloadsPdf = path.join(downloadsRoot, "explicit-source.pdf");
+    const homePdf = path.join(os.homedir(), `roleflow-private-runner-home-${process.pid}.pdf`);
     fs.writeFileSync(downloadsPdf, makeSyntheticPdf());
+    fs.writeFileSync(homePdf, makeSyntheticPdf());
     expectGateOk(gateOptions({ pdf: downloadsPdf }));
+    expectGateOk(gateOptions({ pdf: homePdf }));
     expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: "relative-source.pdf" }));
     expectGate("PRIVATE_FULL_CHAIN_RESUME_REQUIRED", gateOptions({ pdf: "https://example.invalid/source.pdf" }));
     const repositoryPdf = path.join(path.resolve(__dirname, ".."), "private-source.pdf");
@@ -1225,6 +1281,7 @@ async function main() {
     fs.rmSync(repositoryPdf, { force: true });
     fs.rmSync(projectDataPdf, { force: true });
     fs.rmSync(tempPdf, { force: true });
+    fs.rmSync(homePdf, { force: true });
     const exclusiveTarget = privatePath("exclusive", "artifact.json");
     runner.exclusivePrivateWrite(testRoot, exclusiveTarget, "first");
     assert.throws(
@@ -1269,7 +1326,7 @@ async function main() {
     const copiedRunner = require(path.join(copiedScripts, "private-full-chain-runner.js"));
     const copiedManifestGate = copiedRunner.validatePrivateFullChainRequest({
       mode: "init-manifest", privateRoot: testRoot, baselineWorktree: privatePath("baseline-worktree"),
-      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: privatePath("run-manifest.json")
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", baselineProductCommit: "1".repeat(40), output: privatePath("run-manifest.json")
     }, {}, null);
     assert.strictEqual(copiedManifestGate.ok, true, "the same runner blob must recognize the literal candidate path outside its own checkout");
     fs.writeFileSync(pdfPath, makeSyntheticPdf());
@@ -1372,19 +1429,32 @@ async function main() {
     );
     assert(!fs.existsSync(privatePath("parse-failure")), "sanitized parser failure must not create output directories");
 
-    createSyntheticBaselineCheckout(siblingBaselineRoot);
+    const baselineProductCommit = createSyntheticBaselineCheckout(siblingBaselineRoot);
     const manifestPath = privatePath("run-manifest.json");
     fs.rmSync(manifestPath);
+    assert.throws(
+      () => runner.initializePrivateManifest({
+        privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
+        candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix",
+        baselineProductCommit: "f".repeat(40), output: manifestPath
+      }),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
+      "an arbitrary CLI baseline hash must not be trusted"
+    );
     const manifest = runner.initializePrivateManifest({
       privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
-      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", output: manifestPath
+      candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix",
+      baselineProductCommit, output: manifestPath
     });
     const { execFileSync } = require("node:child_process");
     const head = (cwd) => execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", windowsHide: true }).trim();
     assert.strictEqual(manifest.harnessVersion, "private-full-chain-harness.v1");
-    assert.strictEqual(manifest.baselineProductCommit, head(siblingBaselineRoot));
+    assert.strictEqual(manifest.baselineProductCommit, baselineProductCommit);
+    assert.strictEqual(manifest.baselineEvaluatedCommit, head(siblingBaselineRoot));
     assert.strictEqual(manifest.candidateProductCommit, head("D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix"));
+    assert.strictEqual(manifest.candidateEvaluatedCommit, head("D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix"));
     assert.notStrictEqual(manifest.baselineProductCommit, manifest.candidateProductCommit);
+    assert.notStrictEqual(manifest.baselineProductCommit, manifest.baselineEvaluatedCommit);
     for (const file of ["scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"]) {
       assert.strictEqual(manifest.sharedFileBlobs[file], execFileSync("git", ["rev-parse", `HEAD:${file}`], { cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true }).trim());
     }
@@ -1398,27 +1468,30 @@ async function main() {
     fs.rmSync(path.join(path.resolve(__dirname, ".."), "private-source.pdf"), { force: true });
     fs.rmSync(path.join(path.resolve(__dirname, ".."), "data", "private-source.pdf"), { force: true });
     fs.rmSync(path.join(os.tmpdir(), `roleflow-private-source-${process.pid}.pdf`), { force: true });
+    fs.rmSync(path.join(os.homedir(), `roleflow-private-runner-home-${process.pid}.pdf`), { force: true });
   }
 }
 
 function createSyntheticBaselineCheckout(root) {
   const { execFileSync } = require("node:child_process");
   const candidateRoot = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
-  const files = [
-    "scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"
-  ];
   fs.mkdirSync(root, { recursive: true });
-  for (const file of files) {
-    const destination = path.join(root, file);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(path.join(candidateRoot, file), destination);
-  }
   const git = (args) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
   git(["init", "-q"]);
   git(["config", "user.email", "synthetic@example.invalid"]);
   git(["config", "user.name", "Synthetic Baseline"]);
+  fs.writeFileSync(path.join(root, "product-baseline.txt"), "synthetic product baseline\n", "utf8");
   git(["add", "."]);
-  git(["commit", "-qm", "synthetic baseline"]);
+  git(["commit", "-qm", "synthetic product baseline"]);
+  const productCommit = git(["rev-parse", "HEAD"]).trim();
+  for (const file of ["scripts/private-full-chain-runner.js", "scripts/lib/benchmark_metrics.js"]) {
+    const destination = path.join(root, file);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(candidateRoot, file), destination);
+  }
+  git(["add", "."]);
+  git(["commit", "-qm", "synthetic tooling"]);
+  return productCommit;
 }
 
 function makeShortPdf() {

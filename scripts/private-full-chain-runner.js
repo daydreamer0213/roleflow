@@ -148,6 +148,23 @@ function newPrivateOutputTarget(privateRoot, file) {
   return target;
 }
 
+function preparePrivateSqliteCache(privateRoot, output) {
+  const cachePath = path.join(output, "model-cache.sqlite");
+  if (fs.existsSync(cachePath)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_CACHE_EXISTS", "Match live requires a fresh per-side SQLite cache.");
+  }
+  for (const target of [cachePath, `${cachePath}-wal`, `${cachePath}-shm`]) {
+    newPrivateOutputTarget(privateRoot, target);
+  }
+  fs.mkdirSync(output, { recursive: true });
+  const root = canonicalizePath(privateRoot, { allowMissingLeaf: false });
+  const directory = canonicalizePath(output, { allowMissingLeaf: false });
+  if (!root || !directory || hasReparsePoint(output) || !isWithinDirectory(directory, root)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_OUTPUT_REQUIRED", "SQLite cache directories must remain canonical paths inside the selected private bundle.");
+  }
+  return cachePath;
+}
+
 function exclusivePrivateWrite(privateRoot, file, content) {
   const target = newPrivateOutputTarget(privateRoot, file);
   const directory = path.dirname(target);
@@ -216,7 +233,10 @@ function checkExternalPdf(value, privateRoot) {
 function checkModelSettingsRoot(value) {
   if (!String(value || "").trim()) return fail("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_REQUIRED", "Live modes require an explicit model settings root.");
   const resolved = canonicalizePath(value);
-  if (!resolved || forbiddenArtifactLocation(resolved) || (canonicalPrivateParent && isWithinDirectory(resolved, canonicalPrivateParent))) {
+  const forbiddenRoots = [canonicalizePath(os.homedir()), canonicalizePath(os.tmpdir())];
+  if (!resolved || forbiddenArtifactLocation(resolved)
+    || forbiddenRoots.some((root) => !root || isWithinDirectory(resolved, root))
+    || (canonicalPrivateParent && isWithinDirectory(resolved, canonicalPrivateParent))) {
     return fail("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", "The model settings root must be a canonical local path outside repositories, private bundles, home, and temp.");
   }
   return { ok: true, resolved };
@@ -311,7 +331,13 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
       return fail("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", "Manifest baseline must be a distinct private worktree and candidate must be the fixed candidate worktree.");
     }
     if (!output.ok) return output;
-    return { ok: true, code: "OK", request: { mode, privateRoot: root.resolved, baselineWorktree: baseline.resolved, candidateWorktree: candidate, output: output.resolved } };
+    if (!/^[0-9a-f]{7,40}$/i.test(String(opts.baselineProductCommit || ""))) {
+      return fail("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Manifest initialization requires a baseline product commit to verify from Git evidence.");
+    }
+    return { ok: true, code: "OK", request: {
+      mode, privateRoot: root.resolved, baselineWorktree: baseline.resolved, candidateWorktree: candidate,
+      baselineProductCommit: String(opts.baselineProductCommit).toLowerCase(), output: output.resolved
+    } };
   }
   if (mode === "prepare") {
     const pdf = checkExternalPdf(opts.pdf, root.resolved);
@@ -548,8 +574,10 @@ function initializePrivateManifest(options) {
   const manifest = {
     runMode: "private-init-manifest",
     harnessVersion: PRIVATE_HARNESS_VERSION,
-    baselineProductCommit: baseline.head,
+    baselineProductCommit: verifyProductCommit(gate.request.baselineWorktree, gate.request.baselineProductCommit, baseline.head),
+    baselineEvaluatedCommit: baseline.head,
     candidateProductCommit: candidate.head,
+    candidateEvaluatedCommit: candidate.head,
     sharedFileBlobs: baseline.blobs
   };
   exclusivePrivateWrite(gate.request.privateRoot, gate.request.output, JSON.stringify(manifest, null, 2) + "\n");
@@ -591,6 +619,20 @@ function readJsonFile(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
 
 function writeJsonFile(privateRoot, file, value) {
   exclusivePrivateWrite(privateRoot, file, JSON.stringify(value, null, 2) + "\n");
+}
+
+function verifyProductCommit(worktree, productCommit, evaluatedCommit) {
+  const cwd = canonicalizePath(worktree, { allowMissingLeaf: false });
+  if (!cwd) throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "A product commit cannot be verified from its worktree.");
+  const runGit = (args) => execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true }).trim();
+  try {
+    const product = runGit(["rev-parse", "--verify", `${productCommit}^{commit}`]).toLowerCase();
+    execFileSync("git", ["merge-base", "--is-ancestor", product, evaluatedCommit], { cwd, windowsHide: true });
+    if (!/^[0-9a-f]{40}$/.test(product)) throw new Error("invalid product commit");
+    return product;
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The product commit must be Git-verifiable and precede the evaluated tooling commit.");
+  }
 }
 
 function privacySafeRequestSettings(value) {
@@ -669,7 +711,7 @@ function loadProductionModules(mode) {
 
 function liveManifest(privateRoot, side, evaluatedCommit) {
   const manifest = readJsonFile(path.join(privateRoot, "run-manifest.json"));
-  const expected = String(side === "baseline" ? manifest.baselineProductCommit : manifest.candidateProductCommit || "").toLowerCase();
+  const expected = String(side === "baseline" ? manifest.baselineEvaluatedCommit : manifest.candidateEvaluatedCommit || "").toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(expected) || expected !== String(evaluatedCommit || "").toLowerCase()) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The live worktree commit does not match the private run manifest.");
   }
@@ -740,7 +782,7 @@ function confirmedCardInput(value, profileInput, context) {
     || draft.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || draft.runManifestSha256 !== context.runManifestSha256
     || draft.side !== "candidate"
-    || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateProductCommit || "").toLowerCase()
+    || String(draft.evaluatedCommit || "").toLowerCase() !== String(context.manifest?.candidateEvaluatedCommit || "").toLowerCase()
     || draft.worktreeClean !== true
     || !hasBoundModelIdentity(draft)
     || draft.modelIdentitySha256 !== value.modelIdentitySha256
@@ -853,7 +895,7 @@ function profileResultPayload(value) {
 function validateProfileResultProvenance(value, context) {
   const expectedRunMode = context.injected ? "offline-test" : "live-profile";
   const expectedAuthorized = !context.injected;
-  const expectedCommit = String(context.manifest?.candidateProductCommit || "").toLowerCase();
+  const expectedCommit = String(context.manifest?.candidateEvaluatedCommit || "").toLowerCase();
   let profileSha256;
   try { profileSha256 = valueSha256(value?.profile); } catch { profileSha256 = ""; }
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -1041,6 +1083,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       runManifestSha256,
       side: request.side,
       evaluatedCommit: proof.commit,
+      productCommit: manifest.candidateProductCommit,
       worktreeClean: true,
       modelIdentity,
       modelIdentitySha256,
@@ -1064,6 +1107,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       runManifestSha256,
       side: request.side,
       evaluatedCommit: proof.commit,
+      productCommit: manifest.candidateProductCommit,
       worktreeClean: true,
       modelIdentity,
       modelIdentitySha256,
@@ -1094,12 +1138,8 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   );
   const matchingCardConsumed = configs?.matchingCard != null
     && valueSha256(configs.matchingCard) === cardInput.cardSha256;
-  const cachePath = path.join(request.output, "model-cache.sqlite");
-  if (fs.existsSync(cachePath)) {
-    throw runnerError("PRIVATE_FULL_CHAIN_CACHE_EXISTS", "Match live requires a fresh per-side SQLite cache.");
-  }
+  const cachePath = preparePrivateSqliteCache(request.privateRoot, request.output);
   newPrivateOutputTarget(request.privateRoot, resultFile);
-  fs.mkdirSync(request.output, { recursive: true });
   const db = modules.openDb(cachePath);
   let rows;
   try {
@@ -1146,6 +1186,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     runManifestSha256,
     side: request.side,
     evaluatedCommit: proof.commit,
+    productCommit: request.side === "baseline" ? manifest.baselineProductCommit : manifest.candidateProductCommit,
     baselineBehaviorCommit: request.side === "candidate" ? manifest.baselineProductCommit : null,
     worktreeClean: true,
     resumeContentSha256: sha256(resumeText),
@@ -1223,8 +1264,10 @@ function comparePrivateFullChainResults(baseline, candidate) {
     || candidate?.benchmarkHarnessVersion !== PRIVATE_HARNESS_VERSION
     || !/^[0-9a-f]{7,40}$/.test(String(baseline?.evaluatedCommit || ""))
     || !/^[0-9a-f]{7,40}$/.test(String(candidate?.evaluatedCommit || ""))
+    || !/^[0-9a-f]{7,40}$/.test(String(baseline?.productCommit || ""))
+    || !/^[0-9a-f]{7,40}$/.test(String(candidate?.productCommit || ""))
     || baseline.evaluatedCommit === candidate.evaluatedCommit
-    || candidate.baselineBehaviorCommit !== baseline.evaluatedCommit
+    || candidate.baselineBehaviorCommit !== baseline.productCommit
   ) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires clean, confirmed, harness-bound live results.");
   }
@@ -1233,7 +1276,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
       return fail("BENCHMARK_COMPARE_METRICS", "Private comparison rows must record a boolean hard-blocker state.");
     }
   }
-  const compared = compareBenchmarkResults(baseline, candidate);
+  const compared = compareBenchmarkResults({ ...baseline, evaluatedCommit: baseline.productCommit }, candidate);
   if (!compared.ok) return compared;
   const before = new Map(baseline.rows.map((row) => [row.id, row]));
   const changed = (predicate) => candidate.rows.filter((row) => predicate(before.get(row.id), row)).map((row) => row.id).sort();
@@ -1252,6 +1295,12 @@ function comparePrivateFullChainResults(baseline, candidate) {
         providedToBoth: baseline.matchingCardProvided === true && candidate.matchingCardProvided === true,
         baselineConsumed: baseline.matchingCardConsumed === true,
         candidateConsumed: candidate.matchingCardConsumed === true
+      },
+      commits: {
+        baselineProductCommit: baseline.productCommit,
+        baselineEvaluatedCommit: baseline.evaluatedCommit,
+        candidateProductCommit: candidate.productCommit,
+        candidateEvaluatedCommit: candidate.evaluatedCommit
       },
       enteredNotRecommended: changed((left, right) => left?.actualBucket !== "not_recommended" && right.actualBucket === "not_recommended"),
       exitedNotRecommended: changed((left, right) => left?.actualBucket === "not_recommended" && right.actualBucket !== "not_recommended"),
@@ -1281,7 +1330,7 @@ function parseCli(argv) {
   const valueOptions = new Set([
     "--private-root", "--baseline-worktree", "--candidate-worktree", "--output", "--pdf", "--identity",
     "--resume-text", "--parse-report", "--side", "--profile", "--matching-card", "--jobs", "--labels",
-    "--model-settings-root", "--baseline", "--candidate", "--report"
+    "--model-settings-root", "--baseline", "--candidate", "--report", "--baseline-product-commit"
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
