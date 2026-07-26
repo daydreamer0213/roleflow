@@ -62,7 +62,7 @@ $sharedFiles=@('scripts/private-full-chain-runner.js','scripts/lib/benchmark_met
 
 - [ ] **Step 3: 创建隔离 baseline worktree**
 
-执行时先确定当前批准的产品基线提交 `$PRODUCT_BASELINE_HEAD`，并验证目标不存在或为空；不得硬编码历史提交链。
+执行时必须由用户或主线负责人明确提供旧产品提交 `$PRODUCT_BASELINE_COMMIT`；不得默认取 candidate HEAD、不得硬编码历史提交链。
 
 创建：
 
@@ -71,20 +71,28 @@ branch: codex/generic-evidence-matching-private-full-chain-baseline-v1
 path:   D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1
 ```
 
-Product commit P must be recorded before applying the final shared tooling and supplied to init-manifest.
+Product commit P must be an older product commit explicitly approved by the user or mainline owner. It must never default to the candidate HEAD.
 
 ```powershell
-$PRODUCT_BASELINE_HEAD=(git -C $candidate rev-parse HEAD).Trim()
-$baselineProductProof='D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt'
-[System.IO.File]::WriteAllText($baselineProductProof, $PRODUCT_BASELINE_HEAD + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
-# After adding only $sharedFiles and committing tooling, P must precede the actual execution head.
+$PRODUCT_BASELINE_COMMIT=$env:ROLEFLOW_APPROVED_BASELINE_PRODUCT_COMMIT
+if ($PRODUCT_BASELINE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'APPROVED_BASELINE_PRODUCT_COMMIT_REQUIRED' }
+$CANDIDATE_PRODUCT_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$CANDIDATE_EVALUATED_HEAD=(git -C $candidate rev-parse HEAD).Trim()
+$null=git -C $candidate cat-file -e "$PRODUCT_BASELINE_COMMIT^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'APPROVED_BASELINE_PRODUCT_NOT_GIT_VERIFIABLE' }
+if ($PRODUCT_BASELINE_COMMIT -eq $CANDIDATE_PRODUCT_HEAD) { throw 'BASELINE_PRODUCT_MUST_DIFFER_FROM_CANDIDATE' }
 $baseline='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1'
+$null=git -C $candidate worktree add -b 'codex/generic-evidence-matching-private-full-chain-baseline-v1' $baseline $PRODUCT_BASELINE_COMMIT
+# Apply only $sharedFiles from $TOOLING_HEAD and create the dedicated tooling commit T before reading BASELINE_EVALUATED_HEAD.
+$baselineProductProof='D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt'
+[System.IO.File]::WriteAllText($baselineProductProof, $PRODUCT_BASELINE_COMMIT + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+# After adding only $sharedFiles and committing tooling, P must precede the actual execution head.
 $BASELINE_EVALUATED_HEAD=(git -C $baseline rev-parse HEAD).Trim()
-$null=git -C $baseline merge-base --is-ancestor $PRODUCT_BASELINE_HEAD $BASELINE_EVALUATED_HEAD
+$null=git -C $baseline merge-base --is-ancestor $PRODUCT_BASELINE_COMMIT $BASELINE_EVALUATED_HEAD
 if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
 ```
 
-从 `$PRODUCT_BASELINE_HEAD` 建立 worktree，然后只应用 Step 2 的最终 shared tooling（cherry-pick 专用 tooling 提交，或只复制 `$sharedFiles` 后创建专用提交）。任何冲突立即停止并报告，不自行取整文件一侧。
+从 `$PRODUCT_BASELINE_COMMIT` 建立 worktree，然后只应用 Step 2 的最终 shared tooling 形成 T（cherry-pick 专用 tooling 提交，或只复制 `$sharedFiles` 后创建专用提交）。任何冲突立即停止并报告，不自行取整文件一侧。
 
 - [ ] **Step 4: 验证共享代码逐字节一致**
 
@@ -137,6 +145,8 @@ node scripts/private-full-chain-runner.js --init-manifest `
   --baseline-product-commit "$BASELINE_PRODUCT_HEAD" `
   --output "$env:ROLEFLOW_PRIVATE_ROOT\run-manifest.json"
 ```
+
+`init-manifest` reads candidate product/evaluated commits from the actual clean candidate worktree. In this flow they may be equal only when the candidate executes without an extra tooling commit; do not synthesize either value from P.
 
 Expected: runner verifies P against the baseline Git history, then writes all four product/evaluated commits plus `harnessVersion` and the shared blob list; the target manifest must be new.
 

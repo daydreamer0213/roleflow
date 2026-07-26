@@ -1033,6 +1033,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
     "private compare must reject a mismatched canonical profile result hash"
   );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(baseline, { ...candidate, productCommit: baseline.productCommit }).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "private compare must reject identical product attribution under different evaluated commits"
+  );
 
   const forgedSummary = { ...candidate, total: candidate.total + 1 };
   assert.strictEqual(runner.comparePrivateFullChainResults(baseline, forgedSummary).code, "BENCHMARK_COMPARE_METRICS");
@@ -1222,6 +1227,11 @@ async function main() {
     expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: privatePath("forbidden-settings") });
     expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: os.homedir() });
     expectGate("PRIVATE_FULL_CHAIN_MODEL_SETTINGS_ROOT_FORBIDDEN", { ...live, modelSettingsRoot: os.tmpdir() });
+    assert.throws(
+      () => runner.assertDistinctManifestProducts("1".repeat(40), "1".repeat(40)),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
+      "manifest product identities must be distinct even when evaluated tooling commits differ"
+    );
     expectGate("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", gateOptions({ gitProof: { clean: false, commit: "39557f2" } }));
     expectGate("PRIVATE_FULL_CHAIN_REAL_MODEL_REQUIRED", { ...live, modelDescriptor: { provider: "mock" } });
 
@@ -1459,6 +1469,22 @@ async function main() {
       assert.strictEqual(manifest.sharedFileBlobs[file], execFileSync("git", ["rev-parse", `HEAD:${file}`], { cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true }).trim());
     }
     assert(fs.existsSync(manifestPath));
+    const candidateHead = head("D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix");
+    execFileSync("git", ["fetch", "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix", candidateHead], {
+      cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true
+    });
+    execFileSync("git", ["merge", "--allow-unrelated-histories", "-s", "ours", "--no-edit", candidateHead], {
+      cwd: siblingBaselineRoot, encoding: "utf8", windowsHide: true
+    });
+    assert.throws(
+      () => runner.initializePrivateManifest({
+        privateRoot: testRoot, baselineWorktree: siblingBaselineRoot,
+        candidateWorktree: "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix",
+        baselineProductCommit: candidateHead, output: privatePath("same-product-run-manifest.json")
+      }),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
+      "baseline and candidate must not claim the same product commit under different tooling commits"
+    );
     console.log("private_full_chain_runner_smoke offline gates ok");
   } finally {
     fs.rmSync(testRoot, { recursive: true, force: true });

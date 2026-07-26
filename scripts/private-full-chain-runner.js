@@ -571,10 +571,12 @@ function initializePrivateManifest(options) {
   if (samePath(baseline.head, candidate.head) || SHARED_MANIFEST_FILES.some((file) => baseline.blobs[file] !== candidate.blobs[file])) {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Baseline and candidate worktrees must be distinct commits with identical shared runner files.");
   }
+  const baselineProductCommit = verifyProductCommit(gate.request.baselineWorktree, gate.request.baselineProductCommit, baseline.head);
+  assertDistinctManifestProducts(baselineProductCommit, candidate.head);
   const manifest = {
     runMode: "private-init-manifest",
     harnessVersion: PRIVATE_HARNESS_VERSION,
-    baselineProductCommit: verifyProductCommit(gate.request.baselineWorktree, gate.request.baselineProductCommit, baseline.head),
+    baselineProductCommit,
     baselineEvaluatedCommit: baseline.head,
     candidateProductCommit: candidate.head,
     candidateEvaluatedCommit: candidate.head,
@@ -632,6 +634,12 @@ function verifyProductCommit(worktree, productCommit, evaluatedCommit) {
     return product;
   } catch {
     throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The product commit must be Git-verifiable and precede the evaluated tooling commit.");
+  }
+}
+
+function assertDistinctManifestProducts(baselineProductCommit, candidateProductCommit) {
+  if (String(baselineProductCommit || "").toLowerCase() === String(candidateProductCommit || "").toLowerCase()) {
+    throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "Baseline and candidate product commits must be distinct.");
   }
 }
 
@@ -1267,6 +1275,7 @@ function comparePrivateFullChainResults(baseline, candidate) {
     || !/^[0-9a-f]{7,40}$/.test(String(baseline?.productCommit || ""))
     || !/^[0-9a-f]{7,40}$/.test(String(candidate?.productCommit || ""))
     || baseline.evaluatedCommit === candidate.evaluatedCommit
+    || baseline.productCommit === candidate.productCommit
     || candidate.baselineBehaviorCommit !== baseline.productCommit
   ) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires clean, confirmed, harness-bound live results.");
@@ -1377,6 +1386,7 @@ if (require.main === module) main().catch((error) => { console.error(safeCliFail
 
 module.exports = {
   validatePrivateFullChainRequest,
+  assertDistinctManifestProducts,
   exclusivePrivateWrite,
   preparePrivateResume,
   verifyPrivateBundle,
