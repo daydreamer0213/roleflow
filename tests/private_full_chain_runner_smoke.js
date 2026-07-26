@@ -255,6 +255,18 @@ function applyDerivedMetrics(result) {
   return { ...result, ...derived.metrics };
 }
 
+function asRecallFirstLabels(labels) {
+  return {
+    ...structuredClone(labels),
+    labelsVersion: "private-real-jd-labels.v2",
+    evaluationPolicy: "recall-first.v1",
+    rows: labels.rows.map((row) => ({
+      ...row,
+      expectedDisposition: row.expectedBucket === "not_recommended" ? "exclude" : "keep"
+    }))
+  };
+}
+
 async function injectedLiveFlowSmoke(identityPath) {
   const selected = [genericFixtures[0], genericFixtures[1], genericFixtures[3], genericFixtures[4]];
   const confirmedProfile = {
@@ -1032,10 +1044,29 @@ async function injectedLiveFlowSmoke(identityPath) {
     loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0
   }, "profile/card provenance failures must stop before config, provider, or SQLite access");
 
-  const expectFixtureReject = async (name, mutate, { refreshJobsSha = true } = {}) => {
+  const v2Probe = createMatchProbeBundle("fixture-labels-v2-valid");
+  fs.writeFileSync(
+    v2Probe.labels,
+    JSON.stringify(asRecallFirstLabels(JSON.parse(fs.readFileSync(v2Probe.labels, "utf8")))),
+    "utf8"
+  );
+  await assert.doesNotReject(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: v2Probe.root,
+      output: v2Probe.output,
+      profile: v2Probe.profile,
+      matchingCard: v2Probe.card,
+      jobs: v2Probe.jobs,
+      labels: v2Probe.labels
+    }), authorizedEnv(), seamFor("candidate")),
+    "user-confirmed recall-first v2 labels must be accepted"
+  );
+
+  const expectFixtureReject = async (name, mutate, { refreshJobsSha = true, v2 = false } = {}) => {
     const probe = createMatchProbeBundle(`fixture-${name}`);
     const probeJobs = JSON.parse(fs.readFileSync(probe.jobs, "utf8"));
-    const probeLabels = JSON.parse(fs.readFileSync(probe.labels, "utf8"));
+    const sourceLabels = JSON.parse(fs.readFileSync(probe.labels, "utf8"));
+    const probeLabels = v2 ? asRecallFirstLabels(sourceLabels) : sourceLabels;
     mutate(probeJobs, probeLabels);
     if (refreshJobsSha) probeLabels.jobsSha256 = valueSha256(probeJobs);
     fs.writeFileSync(probe.jobs, JSON.stringify(probeJobs), "utf8");
@@ -1060,7 +1091,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     probeJobs[0].sourceContentHash = sourceContentHash(probeJobs[0]);
   });
   await expectFixtureReject("job-content-hash", (probeJobs) => { probeJobs[0].sourceContentHash = "f".repeat(64); });
-  await expectFixtureReject("labels-version", (_probeJobs, probeLabels) => { probeLabels.labelsVersion = "private-real-jd-labels.v2"; });
+  await expectFixtureReject("labels-version", (_probeJobs, probeLabels) => { probeLabels.labelsVersion = "private-real-jd-labels.v3"; });
   await expectFixtureReject("labels-jobs-sha-required", (_probeJobs, probeLabels) => { delete probeLabels.jobsSha256; }, { refreshJobsSha: false });
   await expectFixtureReject("labels-recommendation-enum", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedRecommendation = "maybe"; });
   await expectFixtureReject("labels-bucket-enum", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedBucket = "analysis_pending"; });
@@ -1070,6 +1101,23 @@ async function injectedLiveFlowSmoke(identityPath) {
   });
   await expectFixtureReject("labels-rationale", (_probeJobs, probeLabels) => { probeLabels.rows[0].rationale = "  "; });
   await expectFixtureReject("labels-extra-field", (_probeJobs, probeLabels) => { probeLabels.rows[0].actualRecommendation = "apply"; });
+  await expectFixtureReject("labels-v2-policy-required", (_probeJobs, probeLabels) => { delete probeLabels.evaluationPolicy; }, { v2: true });
+  await expectFixtureReject("labels-v2-policy-enum", (_probeJobs, probeLabels) => { probeLabels.evaluationPolicy = "exact.v1"; }, { v2: true });
+  await expectFixtureReject("labels-v2-disposition-required", (_probeJobs, probeLabels) => { delete probeLabels.rows[0].expectedDisposition; }, { v2: true });
+  await expectFixtureReject("labels-v2-disposition-enum", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedDisposition = "maybe"; }, { v2: true });
+  await expectFixtureReject("labels-v2-keep-pair", (_probeJobs, probeLabels) => {
+    probeLabels.rows[0].expectedDisposition = "keep";
+    probeLabels.rows[0].expectedRecommendation = "skip";
+    probeLabels.rows[0].expectedBucket = "not_recommended";
+  }, { v2: true });
+  await expectFixtureReject("labels-v2-exclude-pair", (_probeJobs, probeLabels) => {
+    probeLabels.rows[0].expectedDisposition = "exclude";
+    probeLabels.rows[0].expectedRecommendation = "review";
+    probeLabels.rows[0].expectedBucket = "talk";
+  }, { v2: true });
+  await expectFixtureReject("labels-v2-extra-envelope", (_probeJobs, probeLabels) => { probeLabels.extra = true; }, { v2: true });
+  await expectFixtureReject("labels-v2-extra-row", (_probeJobs, probeLabels) => { probeLabels.rows[0].extra = true; }, { v2: true });
+  await expectFixtureReject("labels-v1-v2-field", (_probeJobs, probeLabels) => { probeLabels.rows[0].expectedDisposition = "keep"; });
   assert.deepStrictEqual(preflightCounts, {
     loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0
   }, "JD and label integrity failures must stop before config, provider, or SQLite access");

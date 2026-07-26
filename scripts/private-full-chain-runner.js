@@ -35,10 +35,13 @@ const PRIVATE_JOB_KEYS = [
   "id", "sourceId", "keyword", "title", "company", "location", "salary",
   "url", "description", "sourceContentHash", "capturedAt"
 ];
-const PRIVATE_LABEL_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
+const PRIVATE_LABEL_V1_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
+const PRIVATE_LABEL_V2_KEYS = [...PRIVATE_LABEL_V1_KEYS, "expectedDisposition"];
 const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
 const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
 const PRIVATE_LABEL_PAIRS = new Set(["apply/primary", "caution/talk", "review/talk", "skip/not_recommended"]);
+const PRIVATE_DISPOSITIONS = new Set(["keep", "exclude"]);
+const RECALL_FIRST_POLICY = "recall-first.v1";
 const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
@@ -1195,10 +1198,15 @@ function frozenJobSourceContentHash(job) {
 function privateJobsAndLabels(jobsValue, labelsValue) {
   const jobs = Array.isArray(jobsValue) ? jobsValue : jobsValue?.rows;
   const labels = labelsValue?.rows;
-  const labelEnvelopeKeys = ["labelsVersion", "userConfirmed", "confirmedAt", "jobsSha256", "rows"];
+  const isV1 = labelsValue?.labelsVersion === "private-real-jd-labels.v1";
+  const isV2 = labelsValue?.labelsVersion === "private-real-jd-labels.v2";
+  const labelEnvelopeKeys = isV2
+    ? ["labelsVersion", "evaluationPolicy", "userConfirmed", "confirmedAt", "jobsSha256", "rows"]
+    : ["labelsVersion", "userConfirmed", "confirmedAt", "jobsSha256", "rows"];
   if (!Array.isArray(jobs) || !jobs.length || !Array.isArray(labels)
     || !sameKeys(labelsValue, labelEnvelopeKeys)
-    || labelsValue.labelsVersion !== "private-real-jd-labels.v1"
+    || (!isV1 && !isV2)
+    || (isV2 && labelsValue.evaluationPolicy !== RECALL_FIRST_POLICY)
     || labelsValue.userConfirmed !== true
     || !String(labelsValue.confirmedAt || "").trim()
     || !Number.isFinite(Date.parse(labelsValue.confirmedAt))) {
@@ -1219,11 +1227,15 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
   if (jobIds.some((id) => !id) || labelIds.some((id) => !id)
     || new Set(jobIds).size !== jobIds.length || new Set(labelIds).size !== labelIds.length
     || JSON.stringify([...jobIds].sort()) !== JSON.stringify([...labelIds].sort())
-    || labels.some((label) => !sameKeys(label, PRIVATE_LABEL_KEYS)
+    || labels.some((label) => !sameKeys(label, isV2 ? PRIVATE_LABEL_V2_KEYS : PRIVATE_LABEL_V1_KEYS)
       || !String(label.rationale || "").trim()
       || !PRIVATE_RECOMMENDATIONS.has(label.expectedRecommendation)
       || !PRIVATE_BUCKETS.has(label.expectedBucket)
-      || !PRIVATE_LABEL_PAIRS.has(`${label.expectedRecommendation}/${label.expectedBucket}`))) {
+      || !PRIVATE_LABEL_PAIRS.has(`${label.expectedRecommendation}/${label.expectedBucket}`)
+      || (isV2 && (!PRIVATE_DISPOSITIONS.has(label.expectedDisposition)
+        || (label.expectedDisposition === "exclude"
+          ? label.expectedRecommendation !== "skip" || label.expectedBucket !== "not_recommended"
+          : label.expectedBucket === "not_recommended"))))) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Job and label IDs must be unique, complete, and exactly equal.");
   }
   const jobsSha256 = valueSha256(jobs);
@@ -1234,6 +1246,8 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
   return {
     jobs,
     labels,
+    labelsVersion: labelsValue.labelsVersion,
+    evaluationPolicy: isV2 ? RECALL_FIRST_POLICY : "exact.v1",
     jobsSha256,
     labelsSha256: valueSha256(labelsValue),
     labelById: new Map(labels.map((label) => [String(label.id), label]))
