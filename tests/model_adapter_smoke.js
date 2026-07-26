@@ -30,13 +30,17 @@ const server = http.createServer(async (req, res) => {
   }
   if (payload.model === "adaptive-output-test") {
     const scenario = JSON.parse(payload.messages[1].content).scenario;
-    adaptivePayloads.push({ scenario, maxTokens: payload.max_tokens });
+    adaptivePayloads.push({ scenario, maxTokens: payload.max_tokens, jsonMode: Boolean(payload.response_format) });
     if (payload.max_tokens <= 4096) {
       if (scenario === "truncated") {
         res.end(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{\"partial\":" } }] }));
       } else {
         res.end("invalid response envelope");
       }
+      return;
+    }
+    if (scenario === "invalid-response" && payload.response_format) {
+      res.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "" } }] }));
       return;
     }
     res.end(JSON.stringify({
@@ -66,6 +70,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (scenario === "invalid-json") {
       res.end(JSON.stringify({ choices: [{ message: { content: sentinel } }] }));
+      return;
+    }
+    if (scenario === "invalid-json-finish-sentinel") {
+      res.end(JSON.stringify({
+        choices: [{
+          finish_reason: "finish reason sentinel must never reach errors or observer logs",
+          message: { content: sentinel }
+        }]
+      }));
       return;
     }
   }
@@ -208,15 +221,19 @@ server.listen(0, "127.0.0.1", async () => {
       maxRetries: 0,
       logger
     });
-    for (const [scenario, code] of [
-      ["truncated", "MODEL_OUTPUT_TRUNCATED"],
-      ["invalid-envelope", "MODEL_INVALID_RESPONSE"],
-      ["null-envelope", "MODEL_INVALID_RESPONSE"],
-      ["missing-content", "MODEL_INVALID_RESPONSE"],
-      ["invalid-json", "MODEL_INVALID_JSON"]
+    for (const [scenario, code, responseFailureKind] of [
+      ["truncated", "MODEL_OUTPUT_TRUNCATED", "truncated_content"],
+      ["invalid-envelope", "MODEL_INVALID_RESPONSE", "invalid_response_json"],
+      ["null-envelope", "MODEL_INVALID_RESPONSE", "invalid_envelope"],
+      ["missing-content", "MODEL_INVALID_RESPONSE", "missing_content"],
+      ["invalid-json", "MODEL_INVALID_JSON", "invalid_content_json"],
+      ["invalid-json-finish-sentinel", "MODEL_INVALID_JSON", "invalid_content_json"]
     ]) {
       const error = await rejectedError(() => structuredFailureAdapter.chatJson("return json", { scenario }, { kind: "structuredFailure" }));
       assert.strictEqual(error.code, code);
+      assert.strictEqual(error.responseFailureKind, responseFailureKind);
+      assert.strictEqual(error.requestedMaxTokens, 4096);
+      assert(!String(error.finishReason || "").includes("finish reason sentinel"));
       assert.strictEqual(error.httpStatus, 200);
       assert(error.providerRequestId.startsWith("provider-request-"));
       assert.strictEqual(error.retryable, true);
@@ -224,13 +241,14 @@ server.listen(0, "127.0.0.1", async () => {
       assert.strictEqual(typeof error.finishReason, "string");
     }
     const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
-    assert.strictEqual(structuredFailureMetrics.length, 5);
+    assert.strictEqual(structuredFailureMetrics.length, 6);
     assert(!JSON.stringify(structuredFailureMetrics).includes("response sentinel"));
+    assert(!JSON.stringify(structuredFailureMetrics).includes("finish reason sentinel"));
     const adaptiveAdapter = new OpenAICompatibleAdapter({
       baseUrl,
       apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
       model: "adaptive-output-test",
-      jsonMode: false,
+      jsonMode: true,
       maxTokens: 4096,
       maxRetries: 1,
       logger
@@ -244,10 +262,11 @@ server.listen(0, "127.0.0.1", async () => {
       { expanded: true }
     );
     assert.deepStrictEqual(adaptivePayloads, [
-      { scenario: "truncated", maxTokens: 4096 },
-      { scenario: "truncated", maxTokens: 8192 },
-      { scenario: "invalid-response", maxTokens: 4096 },
-      { scenario: "invalid-response", maxTokens: 8192 }
+      { scenario: "truncated", maxTokens: 4096, jsonMode: true },
+      { scenario: "truncated", maxTokens: 8192, jsonMode: true },
+      { scenario: "invalid-response", maxTokens: 4096, jsonMode: true },
+      { scenario: "invalid-response", maxTokens: 8192, jsonMode: true },
+      { scenario: "invalid-response", maxTokens: 8192, jsonMode: false }
     ]);
     console.log("model_adapter_smoke ok");
   } catch (error) {

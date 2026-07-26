@@ -4,6 +4,24 @@ const EXPANDABLE_RESPONSE_ERRORS = new Set([
   "MODEL_INVALID_JSON",
   "MODEL_INVALID_RESPONSE"
 ]);
+const JSON_MODE_RECOVERY_ERRORS = new Set([
+  "MODEL_INVALID_JSON",
+  "MODEL_INVALID_RESPONSE"
+]);
+const SAFE_FINISH_REASONS = new Set([
+  "stop",
+  "length",
+  "content_filter",
+  "tool_calls",
+  "insufficient_system_resource"
+]);
+const SAFE_RESPONSE_FAILURE_KINDS = new Set([
+  "truncated_content",
+  "invalid_response_json",
+  "invalid_envelope",
+  "missing_content",
+  "invalid_content_json"
+]);
 
 class OpenAICompatibleAdapter {
   constructor(config = {}) {
@@ -118,11 +136,13 @@ class OpenAICompatibleAdapter {
     let lastError;
     let attempts = 0;
     let jsonModeFallback = false;
+    let structuredJsonModeFallback = false;
     let responseTokenLimit = this.maxTokens;
     const startedAt = Date.now();
     try {
       for (const jsonMode of this.jsonMode ? [true, false] : [false]) {
-        for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+        const retryLimit = structuredJsonModeFallback && !jsonMode ? 0 : this.maxRetries;
+        for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
           attempts += 1;
           try {
             const response = await this.requestJson({
@@ -136,7 +156,7 @@ class OpenAICompatibleAdapter {
               kind, provider: this.provider, model: this.model, cacheHit: false,
               latencyMs: Date.now() - startedAt, attempts, httpStatus: response.httpStatus,
               usage: response.usage, providerRequestId: response.providerRequestId,
-              jsonMode, jsonModeFallback
+              jsonMode, jsonModeFallback, requestedMaxTokens: responseTokenLimit
             });
             return response.value;
           } catch (error) {
@@ -145,10 +165,15 @@ class OpenAICompatibleAdapter {
               jsonModeFallback = true;
               break;
             }
-            if (attempt < this.maxRetries && error.retryable) {
+            if (attempt < retryLimit && error.retryable) {
               responseTokenLimit = adaptiveResponseTokenLimit(responseTokenLimit, error);
               await delay(retryDelayMs(error, attempt));
               continue;
+            }
+            if (jsonMode && this.maxRetries > 0 && error.retryable && JSON_MODE_RECOVERY_ERRORS.has(error.code)) {
+              jsonModeFallback = true;
+              structuredJsonModeFallback = true;
+              break;
             }
             throw error;
           }
@@ -161,7 +186,13 @@ class OpenAICompatibleAdapter {
         latencyMs: Date.now() - startedAt, attempts, httpStatus: error?.status || error?.httpStatus || null,
         usage: null, providerRequestId: error?.providerRequestId || "", jsonModeFallback,
         errorCode: error?.code || (error?.status ? `HTTP_${error.status}` : "MODEL_REQUEST_FAILED"),
-        errorMessage: error?.message || String(error)
+        errorMessage: error?.message || String(error),
+        finishReason: safeMetadataEnum(error?.finishReason, SAFE_FINISH_REASONS),
+        contentLength: Number.isFinite(Number(error?.contentLength)) ? Number(error.contentLength) : null,
+        responseFailureKind: safeMetadataEnum(error?.responseFailureKind, SAFE_RESPONSE_FAILURE_KINDS),
+        requestedMaxTokens: Number.isFinite(Number(error?.requestedMaxTokens))
+          ? Number(error.requestedMaxTokens)
+          : responseTokenLimit
       });
       throw error;
     }
@@ -205,45 +236,58 @@ class OpenAICompatibleAdapter {
         throw error;
       }
       let data;
+      let rawEnvelope = "";
       try {
-        data = await res.json();
+        rawEnvelope = await res.text();
+        data = JSON.parse(rawEnvelope);
       } catch {
         throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was not valid JSON.", {
           finishReason: "",
-          contentLength: 0,
+          contentLength: rawEnvelope.length,
           providerRequestId,
           httpStatus: res.status,
-          retryable: true
+          retryable: true,
+          responseFailureKind: "invalid_response_json",
+          requestedMaxTokens: maxTokens
         });
       }
       if (!data || typeof data !== "object" || Array.isArray(data)) {
         throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response envelope was invalid.", {
           finishReason: "",
-          contentLength: 0,
+          contentLength: rawEnvelope.length,
           providerRequestId,
           httpStatus: res.status,
-          retryable: true
+          retryable: true,
+          responseFailureKind: "invalid_envelope",
+          requestedMaxTokens: maxTokens
         });
       }
       const requestId = providerRequestId || String(data.id || "");
       const content = extractContent(data);
       const responseMeta = {
-        finishReason: String(data.choices?.[0]?.finish_reason || ""),
+        finishReason: safeMetadataEnum(data.choices?.[0]?.finish_reason, SAFE_FINISH_REASONS),
         contentLength: content.length,
         providerRequestId: requestId,
         httpStatus: res.status,
-        retryable: true
+        retryable: true,
+        requestedMaxTokens: maxTokens
       };
       if (responseMeta.finishReason === "length") {
-        throw modelResponseError("MODEL_OUTPUT_TRUNCATED", "Model output was truncated.", responseMeta);
+        throw modelResponseError("MODEL_OUTPUT_TRUNCATED", "Model output was truncated.", {
+          ...responseMeta,
+          responseFailureKind: "truncated_content"
+        });
       }
       if (!hasMessageContent(data)) {
-        throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was missing message content.", responseMeta);
+        throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was missing message content.", {
+          ...responseMeta,
+          responseFailureKind: "missing_content"
+        });
       }
       try {
         return { value: parseJsonContent(content), usage: normalizeUsage(data.usage), httpStatus: res.status, providerRequestId: requestId };
       } catch (error) {
-        Object.assign(error, responseMeta);
+        Object.assign(error, responseMeta, { responseFailureKind: "invalid_content_json" });
         throw error;
       }
     } catch (error) {
@@ -258,6 +302,11 @@ function adaptiveResponseTokenLimit(current, error) {
   const value = Number(current);
   if (!EXPANDABLE_RESPONSE_ERRORS.has(error?.code) || !Number.isFinite(value) || value <= 0) return current;
   return Math.max(value, Math.min(MAX_ADAPTIVE_RESPONSE_TOKENS, value * 2));
+}
+
+function safeMetadataEnum(value, allowed) {
+  const normalized = String(value || "");
+  return allowed.has(normalized) ? normalized : "";
 }
 
 function extractContent(data = {}) {

@@ -441,10 +441,44 @@ Use a local fake HTTP server. Return `finish_reason=length` or an invalid respon
 
 Keep the first request and all ordinary retries unchanged. Only when an already-authorized retry follows `MODEL_OUTPUT_TRUNCATED`, `MODEL_INVALID_JSON`, or `MODEL_INVALID_RESPONSE`, double the response budget up to 8192. Do not change prompts, fields, JD coverage, concurrency, timeout, or contract validation.
 
-- [ ] **Step 4: Verify, commit, and rebuild an identity-matched package**
+- [x] **Step 4: Verify, commit, and rebuild an identity-matched package**
 
 Run the targeted semantic and private-runner smoke tests, then the full offline suite from a clean commit. Create a fresh single-parent baseline harness and fresh package bound to the new candidate product/evaluated commits; do not overwrite v4-r2.
 
-- [ ] **Step 5: Rerun the two live sides serially and compare offline**
+- [x] **Step 5: Rerun the two live sides serially and compare offline**
 
 Use the same frozen confirmed inputs, labels, formal model identity, and existing authorizations in this continuous execution window. Preserve both results even if rejected. Do not reduce output fields or array coverage without a separate quantified product-quality decision.
+
+The v4-r3 run was preserved and rejected: truncation fell from 10 to 0, but the candidate still had 9 `MODEL_INVALID_RESPONSE` failures and 2 contract-repair failures. The result proves that a larger budget alone is insufficient.
+
+---
+
+### Task 8: Recover from JSON-output empty or invalid envelopes
+
+**Files:**
+- Modify: `src/adapters/models/openai_compatible.js`
+- Modify: `src/core/job_analysis.js`
+- Modify: `scripts/private-full-chain-runner.js`
+- Modify: `tests/model_adapter_smoke.js`
+- Modify: `tests/semantic_pipeline_smoke.js`
+- Modify: `tests/private_full_chain_runner_smoke.js`
+
+- [x] **Step 1: Write failing fallback and safe-telemetry tests**
+
+Cover a JSON-mode request that returns an invalid envelope at 4096, an empty/invalid JSON content response at 8192, and valid JSON only after `response_format` is removed. Require a single fallback request, preserve zero-retry behavior, and prove safe failure subtype/token-budget propagation through the semantic pipeline and private result rows.
+
+- [x] **Step 2: Add one bounded JSON-mode recovery request**
+
+After all configured JSON-mode attempts fail with `MODEL_INVALID_JSON` or `MODEL_INVALID_RESPONSE`, and only when retries are enabled, issue one final request without `response_format`. Keep the system instruction requiring JSON, the current 8192 cap, timeout, serial execution, and all contracts unchanged. Do not apply this fallback to truncation-only, HTTP, timeout, or transport failures.
+
+- [x] **Step 3: Add content-free failure metadata**
+
+Classify only `truncated_content`, `invalid_response_json`, `invalid_envelope`, `missing_content`, or `invalid_content_json`, plus the numeric requested token budget. Never persist response text, prompt text, settings, endpoint, job content, or provider error body.
+
+- [ ] **Step 4: Verify, review, commit, and build a fresh package**
+
+Run the targeted tests and full offline suites from clean commits. Build a new single-parent baseline harness and new private package; do not overwrite v4-r2 or v4-r3.
+
+- [ ] **Step 5: Run the next serial comparison**
+
+Use the same frozen inputs and labels. The candidate must have `failed=0` and must not regress recommendation/bucket accuracy or hard-placement metrics relative to its same-manifest baseline.

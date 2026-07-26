@@ -1250,10 +1250,13 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const stableFailureProbe = createMatchProbeBundle("stable-failure-provenance-probe");
   const stableCodes = ["MODEL_INVALID_JSON", "MODEL_OUTPUT_TRUNCATED", "MODEL_INVALID_RESPONSE"];
+  const stableResponseKinds = ["invalid_content_json", "truncated_content", "missing_content"];
   const expectedFailureById = new Map(jobs.map((job, index) => [String(job.id), {
     errorCode: stableCodes[index % stableCodes.length],
     failureStage: index % 2 === 0 ? "understandJob" : "matchJob",
-    failurePhase: index % 2 === 0 ? "initial" : "contract_repair"
+    failurePhase: index % 2 === 0 ? "initial" : "contract_repair",
+    responseFailureKind: stableResponseKinds[index % stableResponseKinds.length],
+    requestedMaxTokens: index % 2 === 0 ? 4096 : 8192
   }]));
   const stableFailureSeam = seamFor("candidate");
   stableFailureSeam.modules = {
@@ -1273,7 +1276,9 @@ async function injectedLiveFlowSmoke(identityPath) {
         errorMessage: unsafeText,
         errorCode: expected.errorCode,
         errorStage: expected.failureStage,
-        errorPhase: expected.failurePhase
+        errorPhase: expected.failurePhase,
+        errorResponseKind: expected.responseFailureKind,
+        errorRequestedMaxTokens: expected.requestedMaxTokens
       };
     },
     decisionState: () => "ready",
@@ -1292,6 +1297,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(row.errorCode, expected.errorCode);
     assert.strictEqual(row.failureStage, expected.failureStage);
     assert.strictEqual(row.failurePhase, expected.failurePhase);
+    assert.strictEqual(row.responseFailureKind, expected.responseFailureKind);
+    assert.strictEqual(row.requestedMaxTokens, expected.requestedMaxTokens);
   }
   const stableFailureRows = JSON.stringify(stableFailureResult.rows);
   assert(!stableFailureRows.includes(unsafeText), "private failure rows must not persist messages or source/model content");

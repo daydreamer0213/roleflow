@@ -239,6 +239,10 @@ function failedAnalysis(configs, job, revision, error) {
     errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
     errorStage: error?.modelStage || "",
     errorPhase: error?.modelPhase || "",
+    errorResponseKind: error?.responseFailureKind || "",
+    errorRequestedMaxTokens: Number.isFinite(Number(error?.requestedMaxTokens))
+      ? Number(error.requestedMaxTokens)
+      : null,
     realRoleType: "",
     businessScenario: "",
     coreRequirements: [],

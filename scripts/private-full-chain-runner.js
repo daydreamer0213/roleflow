@@ -24,6 +24,13 @@ const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending
 const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
 const SAFE_FAILURE_STAGES = new Set(["understandJob", "matchJob"]);
 const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
+const SAFE_RESPONSE_FAILURE_KINDS = new Set([
+  "truncated_content",
+  "invalid_response_json",
+  "invalid_envelope",
+  "missing_content",
+  "invalid_content_json"
+]);
 const PRIVATE_JOB_KEYS = [
   "id", "sourceId", "keyword", "title", "company", "location", "salary",
   "url", "description", "sourceContentHash", "capturedAt"
@@ -1542,6 +1549,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         errorCode: safeErrorCode(analysis.errorCode),
         failureStage: safeEnum(analysis.errorStage, SAFE_FAILURE_STAGES, ""),
         failurePhase: safeEnum(analysis.errorPhase, SAFE_FAILURE_PHASES, ""),
+        responseFailureKind: safeEnum(analysis.errorResponseKind, SAFE_RESPONSE_FAILURE_KINDS, ""),
+        requestedMaxTokens: Number.isInteger(analysis.errorRequestedMaxTokens)
+          && analysis.errorRequestedMaxTokens > 0
+          && analysis.errorRequestedMaxTokens <= 65536
+          ? analysis.errorRequestedMaxTokens
+          : null,
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
       };
     });

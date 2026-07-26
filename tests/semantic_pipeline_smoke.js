@@ -570,9 +570,14 @@ async function initialFailureProvenanceSmoke() {
       sourceId: "understanding-initial-failure",
       expectedStage: "understandJob",
       expectedCode: "MODEL_INVALID_RESPONSE",
+      expectedResponseFailureKind: "missing_content",
       analyzer: {
         understandJob: async () => {
-          throw Object.assign(new Error("synthetic initial understanding failure"), { code: "MODEL_INVALID_RESPONSE" });
+          throw Object.assign(new Error("synthetic initial understanding failure"), {
+            code: "MODEL_INVALID_RESPONSE",
+            responseFailureKind: "missing_content",
+            requestedMaxTokens: 8192
+          });
         },
         matchJob: async () => {
           throw new Error("matchJob must not run after understandJob fails");
@@ -583,10 +588,15 @@ async function initialFailureProvenanceSmoke() {
       sourceId: "matching-initial-failure",
       expectedStage: "matchJob",
       expectedCode: "MODEL_OUTPUT_TRUNCATED",
+      expectedResponseFailureKind: "truncated_content",
       analyzer: {
         understandJob: async ({ job }) => understanding(job.sourceId),
         matchJob: async () => {
-          throw Object.assign(new Error("synthetic initial matching failure"), { code: "MODEL_OUTPUT_TRUNCATED" });
+          throw Object.assign(new Error("synthetic initial matching failure"), {
+            code: "MODEL_OUTPUT_TRUNCATED",
+            responseFailureKind: "truncated_content",
+            requestedMaxTokens: 4096
+          });
         }
       }
     }
@@ -599,6 +609,8 @@ async function initialFailureProvenanceSmoke() {
     assert.strictEqual(failed.errorCode, testCase.expectedCode);
     assert.strictEqual(failed.errorStage, testCase.expectedStage);
     assert.strictEqual(failed.errorPhase, "initial");
+    assert.strictEqual(failed.errorResponseKind, testCase.expectedResponseFailureKind);
+    assert.strictEqual(failed.errorRequestedMaxTokens, testCase.expectedCode === "MODEL_INVALID_RESPONSE" ? 8192 : 4096);
   }
 }
 
