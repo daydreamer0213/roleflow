@@ -1196,10 +1196,39 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(result.frozenFixtureTotal, jobs.length);
     assert.deepStrictEqual(result.diagnosticIndices, []);
   }
+  const liveDiagnostic = { ...diagnosticResult, runMode: "live", authorizationGatePassed: true };
   assert.strictEqual(
-    runner.comparePrivateFullChainResults(baseline, { ...candidate, diagnosticMode: true, acceptanceEligible: false }).code,
+    runner.comparePrivateFullChainResults(baseline, liveDiagnostic).code,
     "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
-    "diagnostic results must never enter the formal acceptance comparator"
+    "an actual diagnostic result must never enter the formal acceptance comparator"
+  );
+  const forgedDiagnosticBaseline = {
+    ...liveDiagnostic,
+    side: "baseline",
+    evaluatedCommit: baseline.evaluatedCommit,
+    productCommit: baseline.productCommit,
+    baselineBehaviorCommit: null,
+    matchingCardConsumed: baseline.matchingCardConsumed,
+    diagnosticMode: false,
+    acceptanceEligible: true
+  };
+  const forgedDiagnosticCandidate = {
+    ...liveDiagnostic,
+    diagnosticMode: false,
+    acceptanceEligible: true
+  };
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(forgedDiagnosticBaseline, forgedDiagnosticCandidate).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "flipping diagnostic booleans on matching subset rows must not make them eligible for formal acceptance"
+  );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(
+      { ...forgedDiagnosticBaseline, diagnosticIndices: [] },
+      { ...forgedDiagnosticCandidate, diagnosticIndices: [] }
+    ).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "clearing diagnostic indices must not hide that subset rows are incomplete"
   );
   assert.deepStrictEqual(captured.fifthCardBySide.baseline, confirmedCard);
   assert.deepStrictEqual(captured.fifthCardBySide.candidate, confirmedCard);

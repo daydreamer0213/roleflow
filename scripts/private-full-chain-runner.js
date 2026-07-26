@@ -1656,6 +1656,11 @@ function comparePrivateFullChainResults(baseline, candidate) {
       || typeof value.matchingCardConsumed !== "boolean"
       || value.diagnosticMode !== false
       || value.acceptanceEligible !== true
+      || !Array.isArray(value.diagnosticIndices)
+      || value.diagnosticIndices.length !== 0
+      || !Number.isInteger(value.frozenFixtureTotal)
+      || value.frozenFixtureTotal <= 0
+      || !Array.isArray(value.rows)
       || ![PRIVATE_HARNESS_VERSION, PORTABLE_SOURCE_HARNESS_VERSION].includes(value.confirmedEvidenceSourceHarnessVersion)
       || (value.confirmedEvidencePortabilitySha256 !== null
         && !/^[0-9a-f]{64}$/.test(String(value.confirmedEvidencePortabilitySha256 || "")))
@@ -1663,6 +1668,9 @@ function comparePrivateFullChainResults(baseline, candidate) {
       || !hasBoundModelIdentity(value)) {
       return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires strict live authorization, confirmation, side, worktree, and card-state fields.");
     }
+  }
+  if (baseline.frozenFixtureTotal !== candidate.frozenFixtureTotal) {
+    return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires the same complete frozen fixture on both sides.");
   }
   if (baseline.confirmedEvidenceSourceHarnessVersion !== candidate.confirmedEvidenceSourceHarnessVersion
     || baseline.confirmedEvidencePortabilitySha256 !== candidate.confirmedEvidencePortabilitySha256
@@ -1707,6 +1715,10 @@ function comparePrivateFullChainResults(baseline, candidate) {
   }
   const compared = compareBenchmarkResults({ ...baseline, evaluatedCommit: baseline.productCommit }, candidate);
   if (!compared.ok) return compared;
+  if (baseline.rows.length !== baseline.frozenFixtureTotal
+    || candidate.rows.length !== candidate.frozenFixtureTotal) {
+    return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires every row in the complete frozen fixture.");
+  }
   const before = new Map(baseline.rows.map((row) => [row.id, row]));
   const changed = (predicate) => candidate.rows.filter((row) => predicate(before.get(row.id), row)).map((row) => row.id).sort();
   return {
