@@ -777,6 +777,97 @@ async function injectedLiveFlowSmoke(identityPath) {
   ]) {
     assert(!serializedPortabilityProof.includes(forbidden), `portability proof must not contain ${forbidden}`);
   }
+
+  const transitionSourceRoot = privatePath("portability-label-transition-source-v1");
+  const transitionTargetRoot = privatePath("portability-label-transition-target-v2");
+  fs.cpSync(sourcePortabilityRoot, transitionSourceRoot, { recursive: true });
+  fs.cpSync(targetPortabilityRoot, transitionTargetRoot, { recursive: true });
+  const transitionProofPath = path.join(transitionTargetRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(transitionProofPath);
+  const transitionLabelsPath = path.join(transitionTargetRoot, "labels", "jobs.reviewed.json");
+  fs.writeFileSync(
+    transitionLabelsPath,
+    JSON.stringify(asRecallFirstLabels(JSON.parse(fs.readFileSync(transitionLabelsPath, "utf8"))), null, 2),
+    "utf8"
+  );
+  const transitionProof = runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: transitionSourceRoot,
+    privateRoot: transitionTargetRoot,
+    output: transitionProofPath
+  }, portabilitySeam);
+  assert.strictEqual(
+    transitionProof.proofVersion,
+    "confirmed-evidence-portability.v2",
+    "v1 confirmed profile/card evidence must support an explicit confirmed v2 label-policy transition"
+  );
+  assert.strictEqual(transitionProof.sourceLabelsVersion, "private-real-jd-labels.v1");
+  assert.strictEqual(transitionProof.targetLabelsVersion, "private-real-jd-labels.v2");
+  assert.strictEqual(transitionProof.targetEvaluationPolicy, "recall-first.v1");
+  assert.notStrictEqual(transitionProof.sourceLabelsFileSha256, transitionProof.targetLabelsFileSha256);
+  const transitionRunSeam = seamFor("candidate");
+  const transitionResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: transitionTargetRoot,
+    output: path.join(transitionTargetRoot, "runs", "candidate"),
+    profile: path.join(transitionTargetRoot, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(transitionTargetRoot, "input", "confirmed-card.private.json"),
+    jobs: path.join(transitionTargetRoot, "input", "jobs.private.json"),
+    labels: transitionLabelsPath,
+    portabilityProof: transitionProofPath
+  }), authorizedEnv(), {
+    ...transitionRunSeam,
+    ...portabilitySeam,
+    modules: { ...transitionRunSeam.modules, openDb }
+  });
+  assert.strictEqual(transitionResult.labelsVersion, "private-real-jd-labels.v2");
+  assert.strictEqual(transitionResult.evaluationPolicy, "recall-first.v1");
+
+  const unconfirmedTransitionRoot = privatePath("portability-label-transition-unconfirmed-v2");
+  fs.cpSync(targetPortabilityRoot, unconfirmedTransitionRoot, { recursive: true });
+  const unconfirmedTransitionProof = path.join(unconfirmedTransitionRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(unconfirmedTransitionProof);
+  const unconfirmedTransitionLabels = path.join(unconfirmedTransitionRoot, "labels", "jobs.reviewed.json");
+  const unconfirmedValue = asRecallFirstLabels(JSON.parse(fs.readFileSync(unconfirmedTransitionLabels, "utf8")));
+  unconfirmedValue.userConfirmed = false;
+  unconfirmedValue.confirmedAt = "";
+  fs.writeFileSync(unconfirmedTransitionLabels, JSON.stringify(unconfirmedValue, null, 2), "utf8");
+  assert.throws(
+    () => runner.createConfirmedEvidencePortability({
+      sourcePrivateRoot: transitionSourceRoot,
+      privateRoot: unconfirmedTransitionRoot,
+      output: unconfirmedTransitionProof
+    }, portabilitySeam),
+    (error) => {
+      assert.strictEqual(error.code, "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", `unexpected unconfirmed transition code: ${error.code}`);
+      return true;
+    },
+    "an unconfirmed v2 label policy must not receive a portability proof"
+  );
+
+  const tamperedTransitionRoot = privatePath("portability-label-transition-tampered-v2");
+  fs.cpSync(transitionTargetRoot, tamperedTransitionRoot, { recursive: true });
+  fs.rmSync(path.join(tamperedTransitionRoot, "runs"), { recursive: true });
+  const tamperedTransitionLabels = path.join(tamperedTransitionRoot, "labels", "jobs.reviewed.json");
+  fs.appendFileSync(tamperedTransitionLabels, " ");
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: tamperedTransitionRoot,
+      output: path.join(tamperedTransitionRoot, "runs", "candidate"),
+      profile: path.join(tamperedTransitionRoot, "input", "confirmed-profile.private.json"),
+      matchingCard: path.join(tamperedTransitionRoot, "input", "confirmed-card.private.json"),
+      jobs: path.join(tamperedTransitionRoot, "input", "jobs.private.json"),
+      labels: tamperedTransitionLabels,
+      portabilityProof: path.join(tamperedTransitionRoot, "input", "confirmed-evidence-portability.json")
+    }), authorizedEnv(), portabilityPreflightSeam),
+    (error) => {
+      assert.strictEqual(error.code, "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", `unexpected transition tamper code: ${error.code}`);
+      return true;
+    },
+    "changing confirmed v2 label bytes after proof creation must fail before provider or SQLite"
+  );
+  assert.deepStrictEqual(portabilityPreflightCounts, {
+    loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
+  });
+
   assert.throws(
     () => runner.createConfirmedEvidencePortability({
       sourcePrivateRoot: sourcePortabilityRoot,

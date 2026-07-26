@@ -13,6 +13,7 @@ const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
 const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v2";
 const PORTABLE_SOURCE_HARNESS_VERSION = "private-full-chain-harness.v1";
 const PORTABILITY_PROOF_VERSION = "confirmed-evidence-portability.v1";
+const PORTABILITY_LABEL_TRANSITION_PROOF_VERSION = "confirmed-evidence-portability.v2";
 const PORTABILITY_CONSUMER_FILES = {
   profileCreationBlobId: "src/core/profile_onboarding.js",
   cardCreationBlobId: "src/core/matching_card.js",
@@ -1023,10 +1024,27 @@ function createConfirmedEvidencePortability(options, seam = null) {
     || targetCommits.evaluatedCommit !== target.manifest.candidateEvaluatedCommit) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target manifest and candidate commits do not match.");
   }
-  for (const field of ["profile", "card", "resume", "identity", "jobs", "labels"]) {
+  for (const field of ["profile", "card", "resume", "identity", "jobs"]) {
     if (!source.bytes[field].equals(target.bytes[field])) {
       throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Source and target confirmed evidence bytes do not match.");
     }
+  }
+  let sourceFixture;
+  let targetFixture;
+  try {
+    const jobs = JSON.parse(source.bytes.jobs.toString("utf8"));
+    sourceFixture = privateJobsAndLabels(jobs, JSON.parse(source.bytes.labels.toString("utf8")));
+    targetFixture = privateJobsAndLabels(jobs, JSON.parse(target.bytes.labels.toString("utf8")));
+  } catch {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Source and target labels must both be confirmed valid fixtures.");
+  }
+  const labelsIdentical = source.bytes.labels.equals(target.bytes.labels);
+  const labelPolicyTransition = !labelsIdentical
+    && sourceFixture.labelsVersion === "private-real-jd-labels.v1"
+    && targetFixture.labelsVersion === "private-real-jd-labels.v2"
+    && targetFixture.evaluationPolicy === RECALL_FIRST_POLICY;
+  if (!labelsIdentical && !labelPolicyTransition) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Only a confirmed v1 to recall-first v2 label-policy transition may change label bytes.");
   }
   const sourceContext = {
     injected: false,
@@ -1047,7 +1065,9 @@ function createConfirmedEvidencePortability(options, seam = null) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The source confirmation chain does not match its evidence hashes.");
   }
   const proof = {
-    proofVersion: PORTABILITY_PROOF_VERSION,
+    proofVersion: labelPolicyTransition
+      ? PORTABILITY_LABEL_TRANSITION_PROOF_VERSION
+      : PORTABILITY_PROOF_VERSION,
     runMode: "offline-confirmed-evidence-portability",
     modelCallPerformed: false,
     sourceHarness: PORTABLE_SOURCE_HARNESS_VERSION,
@@ -1063,7 +1083,15 @@ function createConfirmedEvidencePortability(options, seam = null) {
     resumeContentSha256: sha256(source.bytes.resume),
     identityManifestSha256: sha256(source.bytes.identity),
     jobsFileSha256: sha256(source.bytes.jobs),
-    labelsFileSha256: sha256(source.bytes.labels),
+    ...(labelPolicyTransition ? {
+      sourceLabelsFileSha256: sha256(source.bytes.labels),
+      targetLabelsFileSha256: sha256(target.bytes.labels),
+      sourceLabelsVersion: sourceFixture.labelsVersion,
+      targetLabelsVersion: targetFixture.labelsVersion,
+      targetEvaluationPolicy: targetFixture.evaluationPolicy
+    } : {
+      labelsFileSha256: sha256(source.bytes.labels)
+    }),
     modelIdentitySha256: profileInput.envelope.modelIdentitySha256,
     profileConfirmationId: String(profileInput.envelope.id),
     profileConfirmedAt: profileInput.envelope.confirmedAt,
@@ -1089,16 +1117,26 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
   } catch {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "An explicit valid portability proof is required for v1 confirmed evidence.");
   }
-  const expectedKeys = [
+  const commonKeys = [
     "proofVersion", "runMode", "modelCallPerformed", "sourceHarness", "targetHarness",
     "sourceRunManifestSha256", "targetRunManifestSha256", "sourceProductCommit", "sourceEvaluatedCommit",
     "targetProductCommit", "targetEvaluatedCommit", "confirmedProfileFileSha256",
     "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
-    "jobsFileSha256", "labelsFileSha256", "modelIdentitySha256", "profileConfirmationId",
+    "jobsFileSha256", "modelIdentitySha256", "profileConfirmationId",
     "profileConfirmedAt", "cardConfirmationId", "cardConfirmedAt", "consumerCodeBlobs", "proofSha256"
   ];
+  const labelTransition = proof?.proofVersion === PORTABILITY_LABEL_TRANSITION_PROOF_VERSION;
+  const expectedKeys = [
+    ...commonKeys,
+    ...(labelTransition
+      ? [
+        "sourceLabelsFileSha256", "targetLabelsFileSha256",
+        "sourceLabelsVersion", "targetLabelsVersion", "targetEvaluationPolicy"
+      ]
+      : ["labelsFileSha256"])
+  ];
   if (!sameKeys(proof, expectedKeys)
-    || proof.proofVersion !== PORTABILITY_PROOF_VERSION
+    || ![PORTABILITY_PROOF_VERSION, PORTABILITY_LABEL_TRANSITION_PROOF_VERSION].includes(proof.proofVersion)
     || proof.runMode !== "offline-confirmed-evidence-portability"
     || proof.modelCallPerformed !== false
     || proof.sourceHarness !== PORTABLE_SOURCE_HARNESS_VERSION
@@ -1110,7 +1148,15 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
     || proof.targetProductCommit !== context.manifest.candidateProductCommit
     || proof.targetEvaluatedCommit !== context.manifest.candidateEvaluatedCommit
     || !genericPortabilityConfirmationId(proof.profileConfirmationId)
-    || !genericPortabilityConfirmationId(proof.cardConfirmationId)) {
+    || !genericPortabilityConfirmationId(proof.cardConfirmationId)
+    || (labelTransition && (
+      !/^[0-9a-f]{64}$/.test(String(proof.sourceLabelsFileSha256 || ""))
+      || !/^[0-9a-f]{64}$/.test(String(proof.targetLabelsFileSha256 || ""))
+      || proof.sourceLabelsFileSha256 === proof.targetLabelsFileSha256
+      || proof.sourceLabelsVersion !== "private-real-jd-labels.v1"
+      || proof.targetLabelsVersion !== "private-real-jd-labels.v2"
+      || proof.targetEvaluationPolicy !== RECALL_FIRST_POLICY
+    ))) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The confirmed evidence portability proof is invalid.");
   }
   const targetCommits = resolvePortabilityTargetCommits(context.manifest, seam);
@@ -1143,11 +1189,28 @@ function validateConfirmedEvidencePortability(request, context, profileValue, ca
     [cardRaw, "confirmedCardFileSha256"],
     [resumeRaw, "resumeContentSha256"],
     [identityRaw, "identityManifestSha256"],
-    [jobsRaw, "jobsFileSha256"],
-    [labelsRaw, "labelsFileSha256"]
+    [jobsRaw, "jobsFileSha256"]
   ]) {
     if (sha256(value) !== proof[field]) {
       throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target evidence bytes do not match the portability proof.");
+    }
+  }
+  if (sha256(labelsRaw) !== (labelTransition ? proof.targetLabelsFileSha256 : proof.labelsFileSha256)) {
+    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target label file does not match the portability proof.");
+  }
+  if (labelTransition) {
+    let targetFixture;
+    try {
+      targetFixture = privateJobsAndLabels(
+        JSON.parse(jobsRaw.toString("utf8")),
+        JSON.parse(labelsRaw.toString("utf8"))
+      );
+    } catch {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target recall-first labels are invalid.");
+    }
+    if (targetFixture.labelsVersion !== proof.targetLabelsVersion
+      || targetFixture.evaluationPolicy !== proof.targetEvaluationPolicy) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target recall-first label policy does not match the portability proof.");
     }
   }
   const sourceContext = {
