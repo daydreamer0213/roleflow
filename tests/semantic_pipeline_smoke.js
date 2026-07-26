@@ -1486,8 +1486,25 @@ async function compactMatchEvidenceContractSmoke() {
     ...compactDirectPayload,
     cautions: [{ kind: "preferred_gap", detail: "加分项中的行业经验没有直接简历证据" }]
   }, { jobUnderstanding });
-  assert.strictEqual(preferredGap.recommendation, "caution", "加分项、成果期望或谨慎转向信号必须能把结果降为先沟通");
   assert(preferredGap.softGaps.includes("加分项中的行业经验没有直接简历证据"));
+  assert.strictEqual(preferredGap.recommendation, "apply", "普通加分项缺口不得单独阻止主投");
+
+  const transitionRisk = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    cautions: [{ kind: "candidate_transition", detail: "该方向仅属于用户确认的谨慎转向" }]
+  }, { jobUnderstanding });
+  assert.strictEqual(transitionRisk.recommendation, "caution", "用户确认的谨慎转向仍必须降为先沟通");
+
+  const evidencedCoreConflict = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    matches: [
+      { id: "R1", state: "missing", resumeEvidence: "简历：现有项目只承担辅助配置工作，未独立交付应用" },
+      compactDirectPayload.matches[1]
+    ]
+  }, { jobUnderstanding });
+  assert.strictEqual(evidencedCoreConflict.recommendation, "skip", "只有真实候选人事实支撑的核心冲突才可硬淘汰");
+  assert.strictEqual(evidencedCoreConflict.hardBlockers[0].resumeEvidence, "简历：现有项目只承担辅助配置工作，未独立交付应用");
+  assert.doesNotThrow(() => validateModelResult("matchJob", evidencedCoreConflict, { jobUnderstanding }));
 
   const riskyUnderstanding = {
     ...jobUnderstanding,

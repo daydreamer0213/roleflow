@@ -135,9 +135,12 @@ function validateCompactMatchEvidence(value, context = {}) {
   const byRequirementId = new Map(matches.map((item) => [item.id, item]));
   const requirementMatches = requirements.map((requirement) => {
     const match = byRequirementId.get(requirement.id);
+    const evidencedCoreConflict = match.state === "missing"
+      && requirement.indispensable
+      && Boolean(match.resumeEvidence);
     return {
       requirement: requirement.label,
-      state: match.state === "missing" && requirement.indispensable ? "unknown" : match.state,
+      state: match.state === "missing" && requirement.indispensable && !evidencedCoreConflict ? "unknown" : match.state,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
       resumeEvidence: match.resumeEvidence
@@ -145,6 +148,15 @@ function validateCompactMatchEvidence(value, context = {}) {
   });
   const byEligibilityId = new Map(eligibility.map((item) => [item.id, item]));
   const hardBlockers = [];
+  for (const requirement of requirementMatches) {
+    if (!requirement.indispensable || requirement.state !== "missing" || !requirement.resumeEvidence) continue;
+    hardBlockers.push({
+      kind: "indispensable_core",
+      requirement: requirement.requirement,
+      jdEvidence: requirement.jdEvidence,
+      resumeEvidence: requirement.resumeEvidence
+    });
+  }
   for (const item of eligibilityItems) {
     const match = byEligibilityId.get(item.id);
     if (match.state !== "conflict") continue;
@@ -160,13 +172,14 @@ function validateCompactMatchEvidence(value, context = {}) {
   const unknownEligibility = eligibility.filter((item) => item.state === "unknown");
   const transferable = requirementMatches.filter((item) => item.state === "transferable");
   const softMissing = requirementMatches.filter((item) => item.state === "missing" && !hardBlockers.some((blocker) => blocker.requirement === item.requirement));
+  const decisionCautions = cautions.filter((item) => ["candidate_transition", "preference_conflict"].includes(item.kind));
   const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
   const hasPositiveRequirementEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state));
   let recommendation;
   if (hardBlockers.length) recommendation = "skip";
   else if (!requirementMatches.length || !hasPositiveRequirementEvidence || unknownRequirements.length || unknownEligibility.length
     || uncertainties.length || value.certainty === "low" || jobQuality.level === "risk") recommendation = "review";
-  else if (transferable.length || softMissing.length || cautions.length || jobQuality.level === "caution") recommendation = "caution";
+  else if (transferable.length || softMissing.length || decisionCautions.length || jobQuality.level === "caution") recommendation = "caution";
   else recommendation = "apply";
 
   const fitLevel = recommendation === "skip"
@@ -248,6 +261,9 @@ function compactEvidenceItems(value, { field, expected, states, evidenceStates }
     const resumeEvidence = optionalContractString(item.resumeEvidence, "matchJob", `${field}.resumeEvidence`);
     if (evidenceStates.includes(item.state) && !resumeEvidence) {
       throw new ModelContractError("matchJob", `${field} 的 ${item.state} 状态必须提供 resumeEvidence`);
+    }
+    if (resumeEvidence && !resumeEvidence.startsWith("简历：")) {
+      throw new ModelContractError("matchJob", `${field}.resumeEvidence 必须以“简历：”开头并引用候选人事实`);
     }
     return { id, state: item.state, resumeEvidence };
   });

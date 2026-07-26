@@ -586,3 +586,5 @@ Result: targeted adapter, semantic, generic-evidence, and benchmark checks passe
 - [ ] **Step 5: Run a fresh small private diagnostic**
 
 Use no prior diagnostic cache. Measure completion, failures, and elapsed time. Only then decide whether the formal 20-row baseline/candidate gate is justified.
+
+First compact diagnostics used fresh caches and completed 2/2 rows in about 181 seconds, then 3/3 rows in about 270 seconds, with no failed/stale/pending/partial rows. The old two-row probe took about 541 seconds and included a provider-envelope failure. The small runs therefore cleared the stability and latency premise but exposed over-conservative calibration: evidenced core conflicts were being normalized like unsupported absence, while preferred/outcome soft gaps could overuse `uncertainties`. The follow-up calibration keeps evidence-free absence at review, permits hard blocking only with real candidate evidence, and prevents ordinary wish-list gaps from independently blocking primary.

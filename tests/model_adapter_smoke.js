@@ -164,6 +164,8 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
     assert(matchPrompt.includes("preferredRequirements") && matchPrompt.includes("outcomeExpectations") && matchPrompt.includes("cautionTransitions"), "紧凑输出仍必须考虑加分项、成果期望与谨慎转向");
+    assert(matchPrompt.includes("preferred_gap") && matchPrompt.includes("不能单独否定主投"), "普通加分项缺口不得被提示词升级成主投阻断");
+    assert(matchPrompt.includes("无法映射到 R*/E* 状态") && matchPrompt.includes("不能写入 uncertainties"), "uncertainties 只能承载真正阻断判断的未决信息");
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");

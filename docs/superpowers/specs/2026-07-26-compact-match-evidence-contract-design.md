@@ -69,11 +69,13 @@ Local code exclusively derives:
 
 Decision order:
 
-1. explicit eligibility conflict with candidate evidence -> `skip`;
+1. explicit eligibility conflict, or an indispensable-core conflict, with real candidate evidence -> `skip`;
 2. JD safety or quality risk remains a JD-only risk and is handled by the existing rule guard, not disguised as candidate resume evidence;
 3. unknown or missing indispensable information, no positive core evidence, any unresolved uncertainty, no core requirement, or low certainty -> `review`;
-4. transferable evidence, a bounded caution item, caution-quality JD, or a non-core missing item -> at most `caution`;
+4. transferable evidence, `candidate_transition`, `preference_conflict`, caution-quality JD, or a non-core missing item -> at most `caution`;
 5. complete direct evidence with normal JD quality -> `apply`.
+
+`preferred_gap` and `outcome_uncertain` remain visible soft notes but do not alone block the strongest recommendation. They describe common JD wish-list gaps, not eligibility or indispensable-core conflicts.
 
 `fitLevel` is derived as `D` for skip, `C` for review, `B` for caution, and `A`/`B` for apply based on high/medium certainty. Certainty may lower a result and may never raise one.
 
@@ -90,6 +92,7 @@ Decision order:
 - Do not remove JD or resume evidence from the normalized analysis.
 - Do not turn unknown eligibility into a blocker.
 - Do not manufacture a resume quote or “absence evidence” from a model `missing` state.
+- An indispensable `missing` state may become a blocker only when the model supplies a real `resumeEvidence` fact beginning with `简历：`; otherwise normalize it to `unknown`.
 - Do not treat an eligibility item as satisfied without explicit candidate evidence.
 - Do not allow unresolved `uncertainties` to enter the strongest recommendation bucket.
 - Do not create fake candidate evidence for JD-only safety risks.
