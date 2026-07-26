@@ -320,6 +320,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   const captured = {
     resumeInputs: [],
     cardProfile: null,
+    understandInputs: [],
     matchInputs: [],
     fifthCardBySide: {},
     dbPaths: [],
@@ -328,6 +329,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   const byId = new Map(selected.map((fixture) => [fixture.id, fixture]));
   const adapter = {
     understandJob: async (input) => {
+      captured.understandInputs.push(input);
       const fixture = byId.get(input.job.sourceId);
       assert(fixture, `missing synthetic fixture ${input.job.sourceId}`);
       return { jobId: input.job.sourceId, ...fixture.jobUnderstanding };
@@ -975,6 +977,35 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), legacyBaselineSeam);
   assert(legacyBaselineResult.rows.every((row) => row.hardBlocked === true),
     "legacy baseline products must fall back to their effective blocker semantics");
+
+  const frozenSnapshotProbe = createMatchProbeBundle("frozen-snapshot-ready-probe");
+  const frozenSnapshotSeam = seamFor("candidate");
+  frozenSnapshotSeam.modules = {
+    ...frozenSnapshotSeam.modules,
+    decisionState
+  };
+  const matchInputsBeforeFrozenProbe = captured.matchInputs.length;
+  const understandInputsBeforeFrozenProbe = captured.understandInputs.length;
+  const frozenSnapshotResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: frozenSnapshotProbe.root,
+    output: frozenSnapshotProbe.output,
+    profile: frozenSnapshotProbe.profile,
+    matchingCard: frozenSnapshotProbe.card,
+    jobs: frozenSnapshotProbe.jobs,
+    labels: frozenSnapshotProbe.labels
+  }), authorizedEnv(), frozenSnapshotSeam);
+  assert(frozenSnapshotResult.rows.every((row) => row.decisionState === "ready"),
+    "fresh frozen full-JD snapshots must not be diverted to the operational activity/detail refresh queue");
+  assert.strictEqual(
+    captured.matchInputs.length - matchInputsBeforeFrozenProbe,
+    jobs.length,
+    "every benchmark-ready frozen snapshot must reach semantic matching"
+  );
+  assert(
+    captured.understandInputs.slice(understandInputsBeforeFrozenProbe)
+      .every((input) => !JSON.stringify(input).includes("今日活跃")),
+    "the benchmark-only activity neutralizer must not enter model input"
+  );
 
   const lifecycleProbe = createMatchProbeBundle("throwing-runner-constructor-probe");
   let closeCount = 0;

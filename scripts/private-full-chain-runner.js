@@ -727,6 +727,16 @@ function productDecisionHardBlockers(modules, analysis) {
   return select(analysis);
 }
 
+function frozenBenchmarkScoreInput(job) {
+  return {
+    ...job,
+    source: "boss",
+    bossActiveText: "今日活跃",
+    detailRequired: true,
+    detailRead: true
+  };
+}
+
 function liveManifest(privateRoot, side, evaluatedCommit) {
   const manifest = readJsonFile(path.join(privateRoot, "run-manifest.json"));
   const expected = String(side === "baseline" ? manifest.baselineEvaluatedCommit : manifest.candidateEvaluatedCommit || "").toLowerCase();
@@ -1166,10 +1176,14 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
     });
     rows = await modules.mapWithConcurrency(fixture.jobs, 3, async (job) => {
-      const scored = modules.scoreJob(job, configs);
+      // The frozen fixture is already a complete, read-only JD snapshot. Activity/detail refresh
+      // is an operational acquisition gate and is intentionally neutral in this matching benchmark.
+      const benchmarkJob = frozenBenchmarkScoreInput(job);
+      const scored = modules.scoreJob(benchmarkJob, configs);
       const state = modules.decisionState(scored);
-      const analysis = state === "ready" ? await analyze({ ...job, ...scored }) : ruleBlockedAnalysis();
-      const actualBucket = modules.decisionBucket({ ...job, ...scored, analysis });
+      const analysisJob = { ...job, source: "boss", detailRequired: true, detailRead: true, ...scored };
+      const analysis = state === "ready" ? await analyze(analysisJob) : ruleBlockedAnalysis();
+      const actualBucket = modules.decisionBucket({ ...analysisJob, analysis });
       const label = fixture.labelById.get(String(job.id));
       const actualRecommendation = String(analysis.recommendation || "review");
       return {
