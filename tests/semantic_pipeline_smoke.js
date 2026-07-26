@@ -325,6 +325,34 @@ function matchGenericContractSmoke() {
   const skipValidated = validateModelResult("matchJob", validSkip);
   assert.strictEqual(skipValidated.recommendation, "skip");
   assert.strictEqual(skipValidated.hardBlockers[0].kind, "indispensable_core");
+  const missingIndispensableWithoutBlocker = {
+    ...validSkip,
+    recommendation: "caution",
+    requirementMatches: [{
+      requirement: "Core platform development",
+      state: "missing",
+      indispensable: true,
+      jdEvidence: "",
+      resumeEvidence: ""
+    }],
+    hardBlockers: [],
+    evidence: { jd: ["JD: requires core platform development"], resume: ["Resume: no related experience"] }
+  };
+  assert.throws(() => validateModelResult("matchJob", missingIndispensableWithoutBlocker),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "missing indispensable core requirement must have an indispensable_core blocker");
+
+  const repairedMissingIndispensable = validateModelResult("matchJob", {
+    ...missingIndispensableWithoutBlocker,
+    recommendation: "skip",
+    hardBlockers: [{
+      kind: "indispensable_core",
+      requirement: "Core platform development",
+      jdEvidence: "JD: requires core platform development",
+      resumeEvidence: "Resume: no related experience"
+    }]
+  });
+  assert.strictEqual(repairedMissingIndispensable.recommendation, "skip");
   assert.throws(() => validateModelResult("matchJob", {
     ...validSkip,
     hardBlockers: [{ ...validSkip.hardBlockers[0], requirement: {}, jdEvidence: 1, resumeEvidence: {} }]

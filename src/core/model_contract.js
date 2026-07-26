@@ -269,6 +269,12 @@ function validateMatchDecision(value, context = {}) {
       throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」只能对应 state=missing 且 indispensable=true 的核心要求`);
     }
   }
+  for (const match of requirementMatches) {
+    if (match.indispensable && match.state === "missing" && !hardBlockers.some((blocker) => blocker.kind === "indispensable_core" && blocker.requirement === match.requirement)) {
+      const applyDetail = value.recommendation === "apply" ? "，recommendation 不能为 apply" : "";
+      throw new ModelContractError("matchJob", `缺少 indispensable_core 硬性阻断：核心必备要求「${match.requirement}」状态为 missing${applyDetail}`);
+    }
+  }
   const transferableCore = requirementMatches.some((item) => item.state === "transferable" && item.indispensable);
   if (value.recommendation === "apply") {
     // apply 要求每一条核心必备项都有直接证据；仅可迁移证据自动降 caution，其余未决状态一律触发契约修复。
