@@ -1,3 +1,10 @@
+const MAX_ADAPTIVE_RESPONSE_TOKENS = 8192;
+const EXPANDABLE_RESPONSE_ERRORS = new Set([
+  "MODEL_OUTPUT_TRUNCATED",
+  "MODEL_INVALID_JSON",
+  "MODEL_INVALID_RESPONSE"
+]);
+
 class OpenAICompatibleAdapter {
   constructor(config = {}) {
     this.provider = "openai_compatible";
@@ -111,13 +118,20 @@ class OpenAICompatibleAdapter {
     let lastError;
     let attempts = 0;
     let jsonModeFallback = false;
+    let responseTokenLimit = this.maxTokens;
     const startedAt = Date.now();
     try {
       for (const jsonMode of this.jsonMode ? [true, false] : [false]) {
         for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
           attempts += 1;
           try {
-            const response = await this.requestJson({ apiKey, systemPrompt, input, jsonMode });
+            const response = await this.requestJson({
+              apiKey,
+              systemPrompt,
+              input,
+              jsonMode,
+              maxTokens: responseTokenLimit
+            });
             this.logger?.info("model_call_completed", {
               kind, provider: this.provider, model: this.model, cacheHit: false,
               latencyMs: Date.now() - startedAt, attempts, httpStatus: response.httpStatus,
@@ -132,6 +146,7 @@ class OpenAICompatibleAdapter {
               break;
             }
             if (attempt < this.maxRetries && error.retryable) {
+              responseTokenLimit = adaptiveResponseTokenLimit(responseTokenLimit, error);
               await delay(retryDelayMs(error, attempt));
               continue;
             }
@@ -152,14 +167,14 @@ class OpenAICompatibleAdapter {
     }
   }
 
-  async requestJson({ apiKey, systemPrompt, input, jsonMode }) {
+  async requestJson({ apiKey, systemPrompt, input, jsonMode, maxTokens = this.maxTokens }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const body = {
         model: this.model,
         temperature: this.temperature,
-        max_tokens: this.maxTokens,
+        max_tokens: maxTokens,
         messages: [
           { role: "system", content: `${systemPrompt} 只输出 JSON，不要输出 Markdown。` },
           { role: "user", content: JSON.stringify(input) }
@@ -237,6 +252,12 @@ class OpenAICompatibleAdapter {
       clearTimeout(timer);
     }
   }
+}
+
+function adaptiveResponseTokenLimit(current, error) {
+  const value = Number(current);
+  if (!EXPANDABLE_RESPONSE_ERRORS.has(error?.code) || !Number.isFinite(value) || value <= 0) return current;
+  return Math.max(value, Math.min(MAX_ADAPTIVE_RESPONSE_TOKENS, value * 2));
 }
 
 function extractContent(data = {}) {

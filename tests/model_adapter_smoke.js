@@ -5,6 +5,7 @@ const { PRODUCT_POLICY } = require("../src/core/product_policy");
 
 let requests = 0;
 const payloads = [];
+const adaptivePayloads = [];
 const server = http.createServer(async (req, res) => {
   requests += 1;
   const body = await readBody(req);
@@ -25,6 +26,23 @@ const server = http.createServer(async (req, res) => {
   if (payload.model === "error-message-test") {
     res.statusCode = 401;
     res.end(JSON.stringify({ error: { message: "upstream body must never reach errors or observer logs" } }));
+    return;
+  }
+  if (payload.model === "adaptive-output-test") {
+    const scenario = JSON.parse(payload.messages[1].content).scenario;
+    adaptivePayloads.push({ scenario, maxTokens: payload.max_tokens });
+    if (payload.max_tokens <= 4096) {
+      if (scenario === "truncated") {
+        res.end(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "{\"partial\":" } }] }));
+      } else {
+        res.end("invalid response envelope");
+      }
+      return;
+    }
+    res.end(JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: "{\"expanded\":true}" } }],
+      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 }
+    }));
     return;
   }
   if (payload.model === "structured-failure-test") {
@@ -76,6 +94,7 @@ server.listen(0, "127.0.0.1", async () => {
     const retryAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", jsonMode: false, maxRetries: 1, logger });
     assert.deepStrictEqual(await retryAdapter.chatJson("return json", { test: true }, { kind: "matchJob" }), { retried: true });
     assert.strictEqual(requests, 4);
+    assert.deepStrictEqual(payloads.slice(2, 4).map((payload) => payload.max_tokens), [4096, 4096]);
     assert.deepStrictEqual(parseJsonContent("prefix {\"value\":1} suffix"), { value: 1 });
     assert.strictEqual(metrics[0].event, "model_call_completed");
     assert.strictEqual(metrics[0].data.kind, "understandJob");
@@ -207,6 +226,29 @@ server.listen(0, "127.0.0.1", async () => {
     const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
     assert.strictEqual(structuredFailureMetrics.length, 5);
     assert(!JSON.stringify(structuredFailureMetrics).includes("response sentinel"));
+    const adaptiveAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "adaptive-output-test",
+      jsonMode: false,
+      maxTokens: 4096,
+      maxRetries: 1,
+      logger
+    });
+    assert.deepStrictEqual(
+      await adaptiveAdapter.chatJson("return json", { scenario: "truncated" }, { kind: "adaptiveTruncated" }),
+      { expanded: true }
+    );
+    assert.deepStrictEqual(
+      await adaptiveAdapter.chatJson("return json", { scenario: "invalid-response" }, { kind: "adaptiveInvalidResponse" }),
+      { expanded: true }
+    );
+    assert.deepStrictEqual(adaptivePayloads, [
+      { scenario: "truncated", maxTokens: 4096 },
+      { scenario: "truncated", maxTokens: 8192 },
+      { scenario: "invalid-response", maxTokens: 4096 },
+      { scenario: "invalid-response", maxTokens: 8192 }
+    ]);
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);

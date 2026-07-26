@@ -413,3 +413,38 @@ Commit the tracked runner, tests, and this plan update as ordinary history. Do n
 Create a new single-parent baseline and a new v4-r2 package; do not overwrite the already verified v4 preflight package. Copy the same eight input/label files byte-for-byte, initialize a new v2 manifest, create the sidecar offline, verify the bundle, and leave run directories empty.
 
 Only after all of Task 5.5 is green may Task 6 begin against v4-r2.
+
+---
+
+### Task 7: Repair the v4-r2 structured-output truncation
+
+**Observed v4-r2 result:**
+
+- Baseline: 20 rows, 1 failed, recommendation accuracy 0.70, bucket accuracy 0.75.
+- Candidate: 20 rows, 14 failed, recommendation accuracy 0.20, bucket accuracy 0.20.
+- Candidate safe failure metadata: 10 `MODEL_OUTPUT_TRUNCATED`, 4 `MODEL_INVALID_RESPONSE`; 11 failures at `understandJob`, 3 at `matchJob`; all failures occurred in the initial phase.
+- The offline comparator correctly wrote `accepted=false`; this result is preserved and must not be merged.
+
+**Files:**
+- Modify: `src/adapters/models/openai_compatible.js`
+- Modify: `tests/model_adapter_smoke.js`
+
+- [x] **Step 1: Establish the root cause without reading private content**
+
+The formal runtime path supplies provider, model, endpoint, and timeout but does not override the adapter's 4096-token default. Structured response failures were retried with the same prompt, input, and output budget. Successful candidate cache entries were materially larger than the baseline, while the safe provider metadata explicitly classified ten failures as truncated.
+
+- [x] **Step 2: Write the failing adapter regression**
+
+Use a local fake HTTP server. Return `finish_reason=length` or an invalid response envelope at 4096 tokens, then return valid JSON only when the retry budget is 8192. Also assert that an ordinary HTTP retry stays at 4096 and that existing zero-retry structured failures remain failures.
+
+- [x] **Step 3: Implement the minimal adaptive retry**
+
+Keep the first request and all ordinary retries unchanged. Only when an already-authorized retry follows `MODEL_OUTPUT_TRUNCATED`, `MODEL_INVALID_JSON`, or `MODEL_INVALID_RESPONSE`, double the response budget up to 8192. Do not change prompts, fields, JD coverage, concurrency, timeout, or contract validation.
+
+- [ ] **Step 4: Verify, commit, and rebuild an identity-matched package**
+
+Run the targeted semantic and private-runner smoke tests, then the full offline suite from a clean commit. Create a fresh single-parent baseline harness and fresh package bound to the new candidate product/evaluated commits; do not overwrite v4-r2.
+
+- [ ] **Step 5: Rerun the two live sides serially and compare offline**
+
+Use the same frozen confirmed inputs, labels, formal model identity, and existing authorizations in this continuous execution window. Preserve both results even if rejected. Do not reduce output fields or array coverage without a separate quantified product-quality decision.
