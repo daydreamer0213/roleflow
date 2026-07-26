@@ -581,7 +581,7 @@ Bump only the match pipeline version. Keep old MatchDecision payloads readable f
 
 The generic cross-occupation suite, semantic pipeline, adapter, dashboard, private runner, benchmark fixture, and full offline suite must pass from a clean commit.
 
-Result: targeted adapter, semantic, generic-evidence, and benchmark checks passed; the clean full suite reported 47 offline checks passed. Independent review found and verified fixes for four false-positive/false-negative risks plus the sparse-JD compact-to-legacy boundary, then returned `APPROVED`.
+Result: targeted adapter, semantic, generic-evidence, and benchmark checks passed; the clean full suite reported 47 offline checks passed. Independent review found and verified fixes for four false-positive/false-negative risks plus the sparse-JD compact-to-legacy boundary. A later calibration pass restored evidence-backed core blockers while keeping preferred/outcome gaps soft; its experience-year exemption covers numeric and Chinese year forms across experience, tenure, and work-history wording, and passes compact-to-legacy validation. The calibrated product commit `6ffd6ed24488c9063f7181001b7d459bc724f57b` again passed all 47 offline checks under a process-local low-memory test setting after Windows commit-memory pressure caused transient child-process startup failures. Independent review returned `APPROVED`.
 
 - [ ] **Step 5: Run a fresh small private diagnostic**
 
