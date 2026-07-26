@@ -537,7 +537,7 @@ Use a fake server where 4096 JSON mode, 8192 JSON mode, and the final 8192 no-`r
 
 Carry a boolean response-format flag and integer HTTP status 100–599 through the failed semantic analysis and private result row. Unknown values become `null`; no header, body, prompt, provider URL, request content, resume, or JD text is added.
 
-- [ ] **Step 3: Verify, review, and commit**
+- [x] **Step 3: Verify, review, and commit**
 
 Run the adapter, semantic-pipeline, and private-runner regressions, the full offline suite from a clean commit, and an independent read-only review.
 
