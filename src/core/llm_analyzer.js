@@ -14,19 +14,15 @@ function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null,
     analyzeResume: async (input) => validateAdapterResult("analyzeResume", await modelAdapter.analyzeResume(input)),
     recommendSearchPlan: async (input) => validateAdapterResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),
     understandJob: async (input) => validateAdapterResult("understandJob", await modelAdapter.understandJob(input)),
-    matchJob: async (input) => validateAdapterResult(
-      "matchJob",
-      await modelAdapter.matchJob(input),
-      { jobUnderstanding: input?.jobUnderstanding }
-    ),
+    matchJob: async (input) => validateAdapterResult("matchJob", await modelAdapter.matchJob(input)),
     draftCommunication: async (input) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input)),
     buildCandidateMatchCard: async (input) => validateAdapterResult("buildCandidateMatchCard", await modelAdapter.buildCandidateMatchCard(input))
   };
 }
 
-function validateAdapterResult(kind, value, context = {}) {
+function validateAdapterResult(kind, value) {
   try {
-    return validateModelResult(kind, value, context);
+    return validateModelResult(kind, value);
   } catch (error) {
     if (error?.code === "MODEL_CONTRACT_INVALID") error.invalidOutput = value;
     throw error;

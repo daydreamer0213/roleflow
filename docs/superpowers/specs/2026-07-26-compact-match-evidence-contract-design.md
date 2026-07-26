@@ -34,13 +34,16 @@ The model receives those IDs and returns only:
     }
   ],
   "uncertainties": [],
+  "cautions": [],
   "certainty": "high"
 }
 ```
 
 Allowed requirement states remain `matched`, `transferable`, `missing`, `unknown`, and `not_applicable`. Eligibility states are `satisfied`, `conflict`, and `unknown`. Both arrays must cover the corresponding input IDs exactly once; duplicate, missing, or invented IDs fail the contract and may receive the existing single repair attempt.
 
-Matched and transferable requirements require candidate evidence. Eligibility conflicts require explicit candidate evidence. Unknown values never become hard blockers.
+Matched and transferable requirements require candidate evidence. Both satisfied and conflicting eligibility states require explicit candidate evidence. Unknown values never become hard blockers.
+
+`cautions` is a small bounded list of `{kind,detail}` items. Its allowed kinds are `candidate_transition`, `preferred_gap`, `outcome_uncertain`, and `preference_conflict`. This preserves the decision effect of preferred requirements, outcome expectations, matching-card caution transitions, user notes, and search preferences without restoring the verbose decision payload.
 
 ## Deterministic derivation
 
@@ -66,10 +69,10 @@ Local code exclusively derives:
 
 Decision order:
 
-1. explicit eligibility conflict or an indispensable requirement in `missing` state -> `skip`;
+1. explicit eligibility conflict with candidate evidence -> `skip`;
 2. JD safety or quality risk remains a JD-only risk and is handled by the existing rule guard, not disguised as candidate resume evidence;
-3. unknown required information, no core requirement, or low certainty -> `review`;
-4. transferable core evidence, caution-quality JD, or a non-core missing item -> at most `caution`;
+3. unknown or missing indispensable information, no positive core evidence, any unresolved uncertainty, no core requirement, or low certainty -> `review`;
+4. transferable evidence, a bounded caution item, caution-quality JD, or a non-core missing item -> at most `caution`;
 5. complete direct evidence with normal JD quality -> `apply`.
 
 `fitLevel` is derived as `D` for skip, `C` for review, `B` for caution, and `A`/`B` for apply based on high/medium certainty. Certainty may lower a result and may never raise one.
@@ -86,6 +89,9 @@ Decision order:
 - Do not reduce the number of core requirements extracted from the JD.
 - Do not remove JD or resume evidence from the normalized analysis.
 - Do not turn unknown eligibility into a blocker.
+- Do not manufacture a resume quote or “absence evidence” from a model `missing` state.
+- Do not treat an eligibility item as satisfied without explicit candidate evidence.
+- Do not allow unresolved `uncertainties` to enter the strongest recommendation bucket.
 - Do not create fake candidate evidence for JD-only safety risks.
 - Do not run the 20-row live gate until compact-contract offline regressions and a small private diagnostic pass.
 

@@ -567,7 +567,7 @@ The live probe also showed that the current multi-stage match contract is too sl
 
 - [ ] **Step 1: Write compact prompt and contract failures**
 
-Require exact `R*`/`E*` coverage, no duplicate or invented IDs, candidate evidence for matched/transferable/conflict states, and a high/medium/low certainty enum. Prove the prompt no longer asks the model to repeat or decide locally derived fields.
+Require exact `R*`/`E*` coverage, no duplicate or invented IDs, candidate evidence for matched/transferable/satisfied/conflict states, a bounded `cautions` list for preferred/outcome/transition signals, and a high/medium/low certainty enum. Prove the prompt no longer asks the model to repeat or decide locally derived fields. A missing core item without candidate-side factual evidence must never be promoted into a hard blocker.
 
 - [ ] **Step 2: Derive the legacy analysis view locally**
 

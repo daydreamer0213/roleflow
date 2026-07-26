@@ -86,7 +86,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
-  const content = requests === 2 ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }] : "{\"retried\":true}";
+  const compactMatchRequest = payload.messages?.[0]?.content?.includes("MatchEvidence JSON");
+  const content = requests === 2
+    ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }]
+    : compactMatchRequest
+      ? JSON.stringify({ matches: [], eligibility: [], uncertainties: [], cautions: [], certainty: "low" })
+      : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
 
@@ -122,11 +127,17 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(metrics[1].data.kind, "matchJob");
     assert.strictEqual(metrics[1].data.attempts, 2);
     assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");
-    await retryAdapter.matchJob({ candidateProfile: {}, candidateMatchCard: { targetDirections: ["电商运营"] }, jobUnderstanding: {}, jobEvidence: {} });
+    const compactNormalized = await retryAdapter.matchJob({
+      candidateProfile: {},
+      candidateMatchCard: { targetDirections: ["电商运营"] },
+      jobUnderstanding: { coreRequirements: [], eligibilityItems: [], jobQuality: { level: "normal", concerns: [] } },
+      jobEvidence: {}
+    });
+    assert.strictEqual(compactNormalized.recommendation, "review", "OpenAI adapter 必须把紧凑传输格式归一化为既有分析格式");
     const matchPrompt = payloads.at(-1).messages[0].content;
     assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
     assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
-    assert(matchPrompt.includes("uncertainties") && matchPrompt.includes("certainty"), "matchJob prompt 必须保留不确定项与总体确定度");
+    assert(matchPrompt.includes("uncertainties") && matchPrompt.includes("certainty") && matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt 必须保留不确定项、谨慎项与总体确定度");
     assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
     for (const locallyDerived of [
       "requirementMatches",
@@ -152,6 +163,7 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
     assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
+    assert(matchPrompt.includes("preferredRequirements") && matchPrompt.includes("outcomeExpectations") && matchPrompt.includes("cautionTransitions"), "紧凑输出仍必须考虑加分项、成果期望与谨慎转向");
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");

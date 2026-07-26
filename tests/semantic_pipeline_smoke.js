@@ -1332,20 +1332,6 @@ async function compactMatchEvidenceContractSmoke() {
     { id: "E1", label: "仅限 2027 届应届生" }
   ]);
 
-  const compactAnalyzer = createLlmAnalyzer({
-    adapter: {
-      matchJob: async () => ({
-        matches: [
-          { id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" },
-          { id: "R2", state: "matched", resumeEvidence: "简历：参与客户需求访谈" }
-        ],
-        eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
-        uncertainties: [],
-        certainty: "high"
-      })
-    }
-  });
-
   const compactDirectPayload = {
     matches: [
       { id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" },
@@ -1355,6 +1341,7 @@ async function compactMatchEvidenceContractSmoke() {
       { id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }
     ],
     uncertainties: [],
+    cautions: [],
     certainty: "high"
   };
   const direct = validateModelResult("matchJob", compactDirectPayload, { jobUnderstanding });
@@ -1367,9 +1354,6 @@ async function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(direct.hardBlockers, []);
   assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
-  const analyzed = await compactAnalyzer.matchJob({ jobUnderstanding });
-  assert.strictEqual(analyzed.recommendation, "apply", "analyzer 第一层校验必须携带同一份 jobUnderstanding");
-
   const transferable = validateModelResult("matchJob", {
     matches: [
       { id: "R1", state: "transferable", resumeEvidence: "简历：独立交付过内部工具" },
@@ -1377,6 +1361,7 @@ async function compactMatchEvidenceContractSmoke() {
     ],
     eligibility: [{ id: "E1", state: "unknown", resumeEvidence: "" }],
     uncertainties: ["客户沟通深度待确认"],
+    cautions: [],
     certainty: "medium"
   }, { jobUnderstanding });
   assert.strictEqual(transferable.recommendation, "review", "unknown 信息优先进入 review，不得因可迁移证据直接放行");
@@ -1388,6 +1373,7 @@ async function compactMatchEvidenceContractSmoke() {
     ],
     eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
     uncertainties: [],
+    cautions: [],
     certainty: "medium"
   }, { jobUnderstanding });
   assert.strictEqual(transferableOnly.recommendation, "caution");
@@ -1400,10 +1386,12 @@ async function compactMatchEvidenceContractSmoke() {
     ],
     eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
     uncertainties: [],
+    cautions: [],
     certainty: "high"
   }, { jobUnderstanding });
-  assert.strictEqual(hardMissing.recommendation, "skip");
-  assert.strictEqual(hardMissing.hardBlockers[0].kind, "indispensable_core");
+  assert.notStrictEqual(hardMissing.recommendation, "skip", "没有候选人事实证据时不得把 missing 提升为硬淘汰");
+  assert.deepStrictEqual(hardMissing.hardBlockers, []);
+  assert.doesNotThrow(() => validateModelResult("matchJob", hardMissing, { jobUnderstanding }), "紧凑结果归一化后必须仍能通过既有 MatchDecision 边界");
 
   const eligibilityConflict = validateModelResult("matchJob", {
     matches: [
@@ -1412,10 +1400,12 @@ async function compactMatchEvidenceContractSmoke() {
     ],
     eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：2025 届毕业" }],
     uncertainties: [],
+    cautions: [],
     certainty: "high"
   }, { jobUnderstanding });
   assert.strictEqual(eligibilityConflict.recommendation, "skip");
   assert.strictEqual(eligibilityConflict.hardBlockers[0].kind, "eligibility");
+  assert.doesNotThrow(() => validateModelResult("matchJob", eligibilityConflict, { jobUnderstanding }), "有双侧证据的资格冲突必须兼容既有下游契约");
 
   for (const invalid of [
     { ...compactDirectPayload, matches: compactDirectPayload.matches.slice(0, 1) },
@@ -1426,6 +1416,7 @@ async function compactMatchEvidenceContractSmoke() {
       ],
       eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
       uncertainties: [],
+      cautions: [],
       certainty: "high"
     },
     {
@@ -1435,6 +1426,7 @@ async function compactMatchEvidenceContractSmoke() {
       ],
       eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
       uncertainties: [],
+      cautions: [],
       certainty: "high"
     }
   ]) {
@@ -1451,6 +1443,7 @@ async function compactMatchEvidenceContractSmoke() {
     ],
     eligibility: [{ id: "E1", state: "unknown", resumeEvidence: "" }],
     uncertainties: [],
+    cautions: [],
     certainty: "high"
   }, { jobUnderstanding }), (error) => error instanceof ModelContractError && /resumeEvidence/.test(error.message));
 
@@ -1471,6 +1464,10 @@ async function compactMatchEvidenceContractSmoke() {
       ...compactDirectPayload,
       eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "" }]
     },
+    {
+      ...compactDirectPayload,
+      eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "" }]
+    },
     { ...compactDirectPayload, certainty: "certain" }
   ]) {
     assert.throws(
@@ -1478,6 +1475,28 @@ async function compactMatchEvidenceContractSmoke() {
       (error) => error instanceof ModelContractError
     );
   }
+
+  const unresolved = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    uncertainties: ["实际工作制待确认"]
+  }, { jobUnderstanding });
+  assert.strictEqual(unresolved.recommendation, "review", "仍有待确认问题时不得进入主投");
+
+  const preferredGap = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    cautions: [{ kind: "preferred_gap", detail: "加分项中的行业经验没有直接简历证据" }]
+  }, { jobUnderstanding });
+  assert.strictEqual(preferredGap.recommendation, "caution", "加分项、成果期望或谨慎转向信号必须能把结果降为先沟通");
+  assert(preferredGap.softGaps.includes("加分项中的行业经验没有直接简历证据"));
+
+  const riskyUnderstanding = {
+    ...jobUnderstanding,
+    hiddenRisks: [{ type: "fee_fraud", severity: "high", evidence: "JD：入职前需要支付培训费" }],
+    jobQuality: { level: "risk", concerns: [{ type: "fee_fraud", evidence: "JD：入职前需要支付培训费" }] }
+  };
+  const risky = validateModelResult("matchJob", compactDirectPayload, { jobUnderstanding: riskyUnderstanding });
+  assert.strictEqual(risky.recommendation, "review", "模型传输层只保留证据，安全风险由最终本地规则做 skip");
+  assert.doesNotThrow(() => validateModelResult("matchJob", risky, { jobUnderstanding: riskyUnderstanding }));
 
   const tenureUnderstanding = validateModelResult("understandJob", {
     ...jobUnderstanding,
@@ -1488,6 +1507,7 @@ async function compactMatchEvidenceContractSmoke() {
     matches: [{ id: "R1", state: "missing", resumeEvidence: "" }],
     eligibility: [],
     uncertainties: [],
+    cautions: [],
     certainty: "high"
   }, { jobUnderstanding: tenureUnderstanding });
   assert.notStrictEqual(tenureGap.recommendation, "skip", "经验年限即使被误标 indispensable 也不得成为硬淘汰");
