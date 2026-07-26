@@ -737,7 +737,7 @@ runner 顶层不得 require Task 1/2 的 candidate-only 模块。共享 `scripts
 
 同一任务还实现两个无网络 mode：
 
-- `--init-manifest` 从两个实际 worktree 读取 HEAD、工作树状态和共享文件 blob，并用 Git 分别验证显式 baseline/candidate 产品提交是各自 evaluated HEAD 的真实祖先；任何不一致均失败；
+- `--init-manifest` 从两个实际 worktree 读取 HEAD、工作树状态和共享文件 blob，并用 Git 分别验证显式 baseline/candidate 产品提交是各自 evaluated HEAD 的严格祖先；任一侧 P=T 或任何其他不一致均失败；
 - `--verify-private-bundle` 重新核对已遮盖正文、identity、parse report 的 hash、章节顺序和零敏感值残留，不读取模型配置。
 
 - [ ] **Step 5: 运行 prepare 离线测试**

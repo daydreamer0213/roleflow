@@ -626,11 +626,13 @@ function verifyProductCommit(worktree, productCommit, evaluatedCommit) {
   const runGit = (args) => execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true }).trim();
   try {
     const product = runGit(["rev-parse", "--verify", `${productCommit}^{commit}`]).toLowerCase();
-    execFileSync("git", ["merge-base", "--is-ancestor", product, evaluatedCommit], { cwd, windowsHide: true });
-    if (!/^[0-9a-f]{40}$/.test(product)) throw new Error("invalid product commit");
+    const evaluated = runGit(["rev-parse", "--verify", `${evaluatedCommit}^{commit}`]).toLowerCase();
+    if (product === evaluated) throw new Error("product commit equals evaluated commit");
+    execFileSync("git", ["merge-base", "--is-ancestor", product, evaluated], { cwd, windowsHide: true });
+    if (!/^[0-9a-f]{40}$/.test(product) || !/^[0-9a-f]{40}$/.test(evaluated)) throw new Error("invalid product commit");
     return product;
   } catch {
-    throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The product commit must be Git-verifiable and precede the evaluated tooling commit.");
+    throw runnerError("PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "The product commit must be a Git-verifiable strict ancestor of the evaluated tooling commit.");
   }
 }
 

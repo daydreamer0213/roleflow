@@ -51,7 +51,7 @@ Expected: 工作树干净，全部 46 项离线检查通过，HEAD 已推送到 
 
 - [ ] **Step 2: 固定最终 runner tooling**
 
-产品代码完成并通过 Step 1 后、应用任何 runner-only tooling 前，先记录 candidate 产品提交 P。runner-only tooling 提交完成后再记录实际执行提交 T；P 必须是 T 的真实祖先且二者不得相同：
+产品代码完成并通过 Step 1 后、应用任何 runner-only tooling 前，先记录 candidate 产品提交 P。runner-only tooling 提交完成后再记录实际执行提交 T；P 必须是 T 的严格祖先，P=T 明确失败：
 
 ```powershell
 $CANDIDATE_PRODUCT_COMMIT=(git -C $candidate rev-parse HEAD).Trim()
@@ -108,6 +108,7 @@ $baselineProductProof='D:\DevData\RoleFlow-private-benchmark\baseline-product-co
 [System.IO.File]::WriteAllText($baselineProductProof, $PRODUCT_BASELINE_COMMIT + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 # After adding only $sharedFiles and committing tooling, P must precede the actual execution head.
 $BASELINE_EVALUATED_HEAD=(git -C $baseline rev-parse HEAD).Trim()
+if ($PRODUCT_BASELINE_COMMIT -eq $BASELINE_EVALUATED_HEAD) { throw 'BASELINE_TOOLING_COMMIT_REQUIRED' }
 $null=git -C $baseline merge-base --is-ancestor $PRODUCT_BASELINE_COMMIT $BASELINE_EVALUATED_HEAD
 if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
 ```
@@ -159,10 +160,13 @@ $env:ROLEFLOW_PRIVATE_ROOT='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-
 $BASELINE_PRODUCT_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\baseline-product-commit.txt' -Raw).Trim()
 $CANDIDATE_PRODUCT_COMMIT=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-product-commit.txt' -Raw).Trim()
 $CANDIDATE_EVALUATED_HEAD=(Get-Content -LiteralPath 'D:\DevData\RoleFlow-private-benchmark\candidate-evaluated-commit.txt' -Raw).Trim()
+$BASELINE_EVALUATED_HEAD=(git -C 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' rev-parse HEAD).Trim()
 $null=git -C 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-v1' cat-file -e "$BASELINE_PRODUCT_HEAD^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'BASELINE_PRODUCT_NOT_GIT_VERIFIABLE' }
+if ($BASELINE_PRODUCT_HEAD -eq $BASELINE_EVALUATED_HEAD) { throw 'BASELINE_TOOLING_COMMIT_REQUIRED' }
 $null=git -C 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' merge-base --is-ancestor $CANDIDATE_PRODUCT_COMMIT $CANDIDATE_EVALUATED_HEAD
 if ($LASTEXITCODE -ne 0) { throw 'CANDIDATE_PRODUCT_NOT_ANCESTOR_OF_EVALUATED' }
+if ($CANDIDATE_PRODUCT_COMMIT -eq $CANDIDATE_EVALUATED_HEAD) { throw 'CANDIDATE_TOOLING_COMMIT_REQUIRED' }
 if ((git -C 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix' rev-parse HEAD).Trim() -ne $CANDIDATE_EVALUATED_HEAD) { throw 'CANDIDATE_EVALUATED_HEAD_CHANGED' }
 node scripts/private-full-chain-runner.js --init-manifest `
   --private-root "$env:ROLEFLOW_PRIVATE_ROOT" `
@@ -173,7 +177,7 @@ node scripts/private-full-chain-runner.js --init-manifest `
   --output "$env:ROLEFLOW_PRIVATE_ROOT\run-manifest.json"
 ```
 
-`init-manifest` verifies the explicit candidate product P against the actual clean candidate evaluated HEAD T and records both values separately. It never trusts an arbitrary hash and never derives P from T.
+`init-manifest` verifies both explicit product commits P as strict ancestors of their actual clean evaluated HEADs T and records all four values separately. Baseline or candidate P=T fails explicitly; the runner never trusts an arbitrary hash or derives P from T.
 
 Expected: runner verifies P against the baseline Git history, then writes all four product/evaluated commits plus `harnessVersion` and the shared blob list; the target manifest must be new.
 

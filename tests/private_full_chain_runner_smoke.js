@@ -1577,6 +1577,19 @@ function formalSharedBaselinePreflightSmoke() {
     commits.productCommit,
     "candidate product P must be accepted only when it is a real ancestor of evaluated T"
   );
+  const equalProductAndEvaluatedCodes = ["baseline", "candidate"].map(() => {
+    try {
+      runner.verifyProductCommit(formalBaselineRoot, commits.evaluatedCommit, commits.evaluatedCommit);
+      return "";
+    } catch (error) {
+      return error.code;
+    }
+  });
+  assert.deepStrictEqual(
+    equalProductAndEvaluatedCodes,
+    ["PRIVATE_FULL_CHAIN_WORKTREE_DIRTY", "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY"],
+    "baseline and candidate product P must each be a strict ancestor of evaluated T"
+  );
   assert.throws(
     () => runner.verifyProductCommit(formalBaselineRoot, commits.nonAncestorCommit, commits.evaluatedCommit),
     (error) => error.code === "PRIVATE_FULL_CHAIN_WORKTREE_DIRTY",
