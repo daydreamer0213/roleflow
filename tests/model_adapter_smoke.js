@@ -62,7 +62,7 @@ server.listen(0, "127.0.0.1", async () => {
   const logger = { info: (event, data) => metrics.push({ level: "info", event, data }), warn: (event, data) => metrics.push({ level: "warn", event, data }) };
   try {
     assert.deepStrictEqual(PRODUCT_POLICY.operations.modelAnalysis, {
-      scanConcurrency: 3,
+      scanConcurrency: 1,
       retryConcurrency: 2,
       maxRetryJobs: 50
     });
@@ -102,6 +102,17 @@ server.listen(0, "127.0.0.1", async () => {
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility 阻断具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");
+    assert(
+      matchPrompt.includes("每个证据摘录（所有 evidence、jdEvidence、resumeEvidence）最多 120 个字符"),
+      "matchJob prompt 必须限制每段证据摘录最多 120 字符"
+    );
+    assert(
+      matchPrompt.includes("fitReasons、jobQuality.concerns、hardBlockers、softGaps、questionsToVerify、evidence.jd、evidence.resume 各最多 8 项")
+        && matchPrompt.includes("primaryProjects 最多 4 项")
+        && matchPrompt.includes("requirementMatches 不设独立数字上限")
+        && matchPrompt.includes("每一项恰好输出一条"),
+      "matchJob prompt 必须显式限制输出数组且完整覆盖核心要求"
+    );
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
@@ -139,6 +150,16 @@ server.listen(0, "127.0.0.1", async () => {
         && understandPrompt.includes("优先")
         && understandPrompt.includes("不得自动"),
       "平台愿望项不得自动升级为硬阻断"
+    );
+    assert(
+      understandPrompt.includes("每个证据摘录（所有 evidence 与 evidenceSnippets）最多 120 个字符"),
+      "understandJob prompt 必须限制每段证据摘录最多 120 字符"
+    );
+    assert(
+      understandPrompt.includes("coreResponsibilities 最多 12 项")
+        && understandPrompt.includes("coreRequirements 和 preferredRequirements 各最多 16 项")
+        && understandPrompt.includes("outcomeExpectations、eligibilityConstraints、hiddenRisks、jobQuality.concerns、evidenceSnippets 各最多 8 项"),
+      "understandJob prompt 必须显式限制输出数组"
     );
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     const failureAdapter = new OpenAICompatibleAdapter({

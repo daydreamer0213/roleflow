@@ -1180,7 +1180,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       db,
       ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
     });
-    rows = await modules.mapWithConcurrency(fixture.jobs, 3, async (job) => {
+    rows = await modules.mapWithConcurrency(fixture.jobs, 1, async (job) => {
       // The frozen fixture is already a complete, read-only JD snapshot. Activity/detail refresh
       // is an operational acquisition gate and is intentionally neutral in this matching benchmark.
       const benchmarkJob = frozenBenchmarkScoreInput(job);

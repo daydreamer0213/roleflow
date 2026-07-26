@@ -764,6 +764,47 @@ async function injectedLiveFlowSmoke(identityPath) {
     }
   }
 
+  const concurrencyProbe = createMatchProbeBundle("semantic-concurrency-probe");
+  const concurrencySeam = seamFor("candidate");
+  let activeSemanticJobs = 0;
+  let maxSemanticJobs = 0;
+  concurrencySeam.modules = {
+    ...concurrencySeam.modules,
+    createJobAnalysisRunner: () => async () => {
+      activeSemanticJobs += 1;
+      maxSemanticJobs = Math.max(maxSemanticJobs, activeSemanticJobs);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          provider: "synthetic-provider",
+          semanticStatus: "completed",
+          decisionSource: "model",
+          recommendation: "review",
+          evidence: { jd: [], resume: [] },
+          fitReasons: [],
+          softGaps: ["信息不足"],
+          hardBlockers: [],
+          errorCode: ""
+        };
+      } finally {
+        activeSemanticJobs -= 1;
+      }
+    },
+    openDb,
+    decisionState: () => "ready",
+    decisionBucket: () => "talk"
+  };
+  const concurrencyResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: concurrencyProbe.root,
+    output: concurrencyProbe.output,
+    profile: concurrencyProbe.profile,
+    matchingCard: concurrencyProbe.card,
+    jobs: concurrencyProbe.jobs,
+    labels: concurrencyProbe.labels
+  }), authorizedEnv(), concurrencySeam);
+  assert.strictEqual(concurrencyResult.rows.length, jobs.length);
+  assert.strictEqual(maxSemanticJobs, 1, "injected private run must serialize semantic job analysis");
+
   const offlineBaseline = await runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
     profile: profilePath, matchingCard: cardPath, jobs: jobsPath, labels: labelsPath
   }), authorizedEnv(), seamFor("baseline"));
