@@ -1139,6 +1139,16 @@ function matchBoundaryContractSmoke() {
     })),
     evidence: { jd: ["硕士优先，本科及以上学历"], resume: ["本科学历"] }
   }), ModelContractError, "学历偏好不得覆盖同一句中的较低硬门槛");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "硕士及以上学历优先，本科及以上学历",
+      jdEvidence: "JD：硕士及以上学历优先，本科及以上学历",
+      resumeEvidence: "简历：本科学历"
+    })),
+    evidence: { jd: ["硕士及以上学历优先，本科及以上学历"], resume: ["本科学历"] }
+  }), ModelContractError, "带“及以上”的学历偏好也不得覆盖较低硬门槛");
   const lowerDegreeConflict = validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1192,6 +1202,16 @@ function matchBoundaryContractSmoke() {
     })),
     evidence: { jd: ["仅限非在校人员"], resume: ["已毕业"] }
   }), ModelContractError, "非在校要求不得因字符串中包含“在校”而反向误判");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "不要求为在校生",
+      jdEvidence: "JD：不要求为在校生",
+      resumeEvidence: "简历：已毕业"
+    })),
+    evidence: { jd: ["不要求为在校生"], resume: ["已毕业"] }
+  }), ModelContractError, "明确不要求在校时不得反向误判");
   assert.throws(() => validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1267,7 +1287,7 @@ function matchBoundaryContractSmoke() {
     })),
     evidence: { jd: ["教师资格证优先，本科及以上学历"], resume: ["本科学历，未持有教师资格证"] }
   }), ModelContractError, "证书优先是软条件，不得因同句另有学历硬门槛而升级为硬排除");
-  for (const inSchoolRequirement of ["硬性要求：在校学生", "要求为在校生"]) {
+  for (const inSchoolRequirement of ["硬性要求：在校学生", "要求为在校生", "需为在校生", "需要是在校生"]) {
     const inSchoolConflict = validateModelResult("matchJob", {
       ...eligibility,
       hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1290,6 +1310,40 @@ function matchBoundaryContractSmoke() {
     })),
     evidence: { jd: ["必须持有教师资格证"], resume: ["已持有教师资格证"] }
   }), ModelContractError, "已经持有同名资格证时，即使模型声称 conflict 也不得硬排除");
+  for (const certificateRequirement of ["须持教师资格证", "必须持有有效的教师资格证", "教师资格证为必备项"]) {
+    const normalizedCertificateConflict = validateModelResult("matchJob", {
+      ...eligibility,
+      hardBlockers: eligibility.hardBlockers.map((item) => ({
+        ...item,
+        requirement: certificateRequirement,
+        jdEvidence: `JD：${certificateRequirement}`,
+        resumeEvidence: "简历：未持有教师资格证"
+      })),
+      evidence: { jd: [certificateRequirement], resume: ["未持有教师资格证"] }
+    });
+    assert.strictEqual(normalizedCertificateConflict.recommendation, "skip", `${certificateRequirement} 应识别为同名证书硬门槛`);
+  }
+  const fullTimeDegreeConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "要求全日制本科及以上学历",
+      jdEvidence: "JD：要求全日制本科及以上学历",
+      resumeEvidence: "简历：非全日制本科学历"
+    })),
+    evidence: { jd: ["要求全日制本科及以上学历"], resume: ["非全日制本科学历"] }
+  });
+  assert.strictEqual(fullTimeDegreeConflict.recommendation, "skip", "全日制硬门槛与明确非全日制学历是资格冲突");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "全日制本科优先，本科及以上学历",
+      jdEvidence: "JD：全日制本科优先，本科及以上学历",
+      resumeEvidence: "简历：非全日制本科学历"
+    })),
+    evidence: { jd: ["全日制本科优先，本科及以上学历"], resume: ["非全日制本科学历"] }
+  }), ModelContractError, "全日制偏好不得升级为硬门槛");
 
   // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持展示兼容读取，但绝不参与新决策。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);

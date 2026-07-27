@@ -179,19 +179,30 @@ function negatedEducationRank(value) {
     .reduce((highest, item) => Math.max(highest, item.rank), 0);
 }
 
+function eligibilityClauses(value) {
+  return String(value || "")
+    .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function isSoftQualificationClause(value) {
+  return /优先|加分|可选|可接受|不限|无硬性要求/.test(String(value || ""));
+}
+
 function requiredEducationRank(value) {
-  const source = String(value || "");
-  const mentions = educationMentions(source);
-  const threshold = mentions.find((item) => {
-    const before = source.slice(Math.max(0, item.index - 8), item.index);
-    const after = source.slice(item.index + item.label.length, item.index + item.label.length + 8);
-    return /(?:至少|最低|不低于).{0,4}$/.test(before) || /^(?:学历)?(?:及以上|以上|起)/.test(after);
-  });
-  if (threshold) return threshold.rank;
-  return mentions.find((item) => {
-    const after = source.slice(item.index + item.label.length, item.index + item.label.length + 6);
-    return !/^(?:学历)?(?:优先|加分)/.test(after);
-  })?.rank || 0;
+  for (const clause of eligibilityClauses(value)) {
+    if (isSoftQualificationClause(clause)) continue;
+    const mentions = educationMentions(clause);
+    const threshold = mentions.find((item) => {
+      const before = clause.slice(Math.max(0, item.index - 8), item.index);
+      const after = clause.slice(item.index + item.label.length, item.index + item.label.length + 8);
+      return /(?:至少|最低|不低于).{0,4}$/.test(before) || /^(?:学历)?(?:及以上|以上|起)/.test(after);
+    });
+    if (threshold) return threshold.rank;
+    if (mentions.length) return mentions[0].rank;
+  }
+  return 0;
 }
 
 function requiredCertificate(value) {
@@ -199,12 +210,17 @@ function requiredCertificate(value) {
     .replace(/JD[：:]?/gi, " ")
     .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
     .find((part) => /资格证|证书|认证/.test(part)
-      && /必须|须|硬性|要求|应当|需要|持有|具有|具备|取得|通过/.test(part)
-      && !/优先|加分|可选|可接受|不限|无硬性要求/.test(part));
+      && /必须|须|硬性|要求|应当|需要|持有|须持|必备|具有|具备|取得|通过/.test(part)
+      && !isSoftQualificationClause(part));
   const source = String(clause || "")
-    .replace(/(?:必须|须|硬性|要求|应当|需要|持有|具有|具备|取得|通过)/g, " ");
+    .replace(/(?:必须持有|必须持|须持有|须持|持有|持|必须|须|硬性|要求|应当|需要|必备项?|具有|具备|取得|通过|有效的?)/g, " ");
   const match = source.match(/(?:^|[\s：:])([A-Za-z0-9\u4e00-\u9fa5]{1,16}(?:资格证|证书|认证))/);
   return match?.[1] || "";
+}
+
+function requiresFullTimeEducation(value) {
+  return eligibilityClauses(value)
+    .some((part) => /全日制/.test(part) && !/非全日制/.test(part) && !isSoftQualificationClause(part));
 }
 
 function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeEvidence) {
@@ -221,14 +237,15 @@ function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeE
     if (!actualYears.some((year) => matchesCohortConstraint(expectedCohort, year))) return true;
   }
   const requiresInSchool = expected
-    .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
-    .some((part) => !/可接受|均可|优先|加分|不限|无硬性要求/.test(part)
-      && !/(?:非|不)在校|(?:非|不)在读/.test(part)
-      && /(?:仅限|只招|仅招|限定|仅面向|必须|须为|硬性要求|要求为|要求).{0,16}(?:在校|在读)/.test(part));
+    && eligibilityClauses(expected)
+      .some((part) => !isSoftQualificationClause(part)
+        && !/(?:非|不)在校|(?:非|不)在读|不(?:要求|需要|限).{0,8}(?:在校|在读)|无需.{0,8}(?:在校|在读)/.test(part)
+        && /(?:仅限|只招|仅招|限定|仅面向|必须|须为|需为|需要是|需要为|硬性要求|要求为|要求).{0,16}(?:在校|在读)/.test(part));
   if (requiresInSchool && /已毕业|已经毕业|毕业于|非在校|不在校|已离校|已退学/.test(actual)) return true;
 
   const minimumEducation = requiredEducationRank(expected);
   const actualEducation = educationRank(actual);
+  if (requiresFullTimeEducation(expected) && /非全日制|非统招|成人(?:教育|本科)|函授|自考/.test(actual)) return true;
   if (minimumEducation && actualEducation && actualEducation < minimumEducation) return true;
   if (minimumEducation && actualEducation < minimumEducation && negatedEducationRank(actual) >= minimumEducation) return true;
 
