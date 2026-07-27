@@ -98,10 +98,118 @@ function hasExplicitCoreIncompatibilityEvidence(value) {
   return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(source);
 }
 
-function hasExplicitEligibilityConflictEvidence(value) {
-  const source = String(value || "").trim();
-  return Boolean(source)
-    && !/未提供|未体现|未提及|未说明|不能确认|不能确定|无法确认|无法确定|不确定|待确认|尚待确认|信息不足|缺少(?:相关)?信息/.test(source);
+function normalizedCohortYear(value) {
+  const digits = String(value || "");
+  return Number(digits.length === 2 ? `20${digits}` : digits);
+}
+
+function cohortYears(value) {
+  const source = String(value || "");
+  const years = new Set();
+  for (const match of source.matchAll(/((?:20)?\d{2})\s*[-至到~～]\s*((?:20)?\d{2})\s*届/g)) {
+    const first = normalizedCohortYear(match[1]);
+    const last = normalizedCohortYear(match[2]);
+    if (Number.isInteger(first) && Number.isInteger(last) && last >= first && last - first <= 10) {
+      for (let year = first; year <= last; year += 1) years.add(year);
+    }
+  }
+  for (const match of source.matchAll(/((?:20)?\d{2})\s*(?:届|年.{0,8}(?:毕业|入学))/g)) {
+    years.add(normalizedCohortYear(match[1]));
+  }
+  return [...years];
+}
+
+const EDUCATION_RANKS = Object.freeze({
+  中专: 1,
+  高中: 1,
+  大专: 2,
+  专科: 2,
+  本科: 3,
+  学士: 3,
+  硕士: 4,
+  研究生: 4,
+  博士: 5
+});
+
+function educationMentions(value) {
+  const source = String(value || "");
+  return [...source.matchAll(/中专|高中|大专|专科|本科|学士|硕士|研究生|博士/g)]
+    .map((match) => ({
+      label: match[0],
+      rank: EDUCATION_RANKS[match[0]],
+      index: match.index,
+      negated: /(?:未取得|未获得|未达到|没有|无).{0,4}$/.test(source.slice(Math.max(0, match.index - 10), match.index))
+    }));
+}
+
+function educationRank(value) {
+  return educationMentions(value)
+    .filter((item) => !item.negated)
+    .reduce((highest, item) => Math.max(highest, item.rank), 0);
+}
+
+function negatedEducationRank(value) {
+  return educationMentions(value)
+    .filter((item) => item.negated)
+    .reduce((highest, item) => Math.max(highest, item.rank), 0);
+}
+
+function requiredEducationRank(value) {
+  const source = String(value || "");
+  const mentions = educationMentions(source);
+  const threshold = mentions.find((item) => {
+    const before = source.slice(Math.max(0, item.index - 8), item.index);
+    const after = source.slice(item.index + item.label.length, item.index + item.label.length + 8);
+    return /(?:至少|最低|不低于).{0,4}$/.test(before) || /^(?:学历)?(?:及以上|以上|起)/.test(after);
+  });
+  if (threshold) return threshold.rank;
+  return mentions.find((item) => {
+    const after = source.slice(item.index + item.label.length, item.index + item.label.length + 6);
+    return !/^(?:学历)?(?:优先|加分)/.test(after);
+  })?.rank || 0;
+}
+
+function requiredCertificate(value) {
+  const source = String(value || "")
+    .replace(/JD[：:]?/gi, " ")
+    .replace(/(?:必须|须|要求|应当|需要|持有|具有|具备|取得|通过)/g, " ");
+  const match = source.match(/(?:^|[\s，,；;。])([A-Za-z0-9\u4e00-\u9fa5]{1,16}(?:资格证|证书|认证))/);
+  return match?.[1] || "";
+}
+
+function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeEvidence) {
+  const expected = `${requirement || ""} ${jdEvidence || ""}`.trim();
+  const actual = String(resumeEvidence || "").trim();
+  if (!expected || !actual
+    || /未提供|未体现|未提及|未说明|不能确认|不能确定|无法确认|无法确定|不确定|待确认|尚待确认|信息不足|缺少(?:相关)?信息|可能|似乎|或许|疑似|大概|推测|估计|也许|未知|不详|未核实|待核实/.test(actual)) {
+    return false;
+  }
+
+  const expectedYears = cohortYears(expected);
+  const actualYears = cohortYears(actual);
+  if (expectedYears.length && actualYears.length && /仅限|只招|仅招|限定|仅面向|只接受|仅接受/.test(expected)) {
+    return !actualYears.some((year) => expectedYears.includes(year));
+  }
+  const requiresInSchool = expected
+    .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
+    .some((part) => !/可接受|均可|优先|加分|不限|无硬性要求/.test(part)
+      && !/(?:非|不)在校|(?:非|不)在读/.test(part)
+      && /(?:仅限|只招|仅招|限定|仅面向|必须|须为).{0,16}(?:在校|在读)/.test(part));
+  if (requiresInSchool && /已毕业|已经毕业|毕业于|非在校|不在校|已离校|已退学/.test(actual)) return true;
+
+  const minimumEducation = requiredEducationRank(expected);
+  const actualEducation = educationRank(actual);
+  if (minimumEducation && actualEducation >= minimumEducation) return false;
+  if (minimumEducation && actualEducation && actualEducation < minimumEducation) return true;
+  if (minimumEducation && negatedEducationRank(actual) >= minimumEducation) return true;
+
+  const certificate = requiredCertificate(expected);
+  if (certificate && actual.includes(certificate)
+    && (new RegExp(`(?:未取得|未持有|没有|无).{0,8}${certificate}`).test(actual)
+      || new RegExp(`${certificate}.{0,8}(?:尚未取得|未取得|未持有|没有|无)`).test(actual))) {
+    return true;
+  }
+  return false;
 }
 
 function validateJobUnderstanding(value) {
@@ -153,12 +261,17 @@ function validateCompactMatchEvidence(value, context = {}) {
     states: REQUIREMENT_MATCH_STATES,
     evidenceStates: ["matched", "transferable"]
   });
+  const expectedEligibilityById = new Map(eligibilityItems.map((item) => [item.id, item]));
   const eligibility = compactEvidenceItems(value.eligibility, {
     field: "eligibility",
     expected: eligibilityItems,
     states: ELIGIBILITY_MATCH_STATES,
     evidenceStates: ["satisfied", "conflict"]
-  }).map((item) => item.state === "conflict" && !hasExplicitEligibilityConflictEvidence(item.resumeEvidence)
+  }).map((item) => item.state === "conflict" && !hasExplicitEligibilityConflictEvidence(
+    expectedEligibilityById.get(item.id)?.label,
+    "",
+    item.resumeEvidence
+  )
     ? { ...item, state: "unknown", resumeEvidence: "" }
     : item);
   const uncertainties = contractStringArray(value.uncertainties, "matchJob", "uncertainties", 8);
@@ -512,7 +625,11 @@ function validateMatchDecision(value, context = {}) {
     }
   }
   for (const blocker of hardBlockers) {
-    if (blocker.kind === "eligibility" && !hasExplicitEligibilityConflictEvidence(blocker.resumeEvidence)) {
+    if (blocker.kind === "eligibility" && !hasExplicitEligibilityConflictEvidence(
+      blocker.requirement,
+      blocker.jdEvidence,
+      blocker.resumeEvidence
+    )) {
       throw new ModelContractError("matchJob", `eligibility 硬性阻断「${blocker.requirement}」不能仅依据资格信息缺失`);
     }
   }
@@ -597,7 +714,9 @@ function isDecisionHardBlocker(item) {
     && typeof item.resumeEvidence === "string" && Boolean(item.resumeEvidence.trim());
   if (!structured) return false;
   if (item.kind === "indispensable_core") return hasExplicitCoreIncompatibilityEvidence(item.resumeEvidence);
-  if (item.kind === "eligibility") return hasExplicitEligibilityConflictEvidence(item.resumeEvidence);
+  if (item.kind === "eligibility") {
+    return hasExplicitEligibilityConflictEvidence(item.requirement, item.jdEvidence, item.resumeEvidence);
+  }
   return true;
 }
 

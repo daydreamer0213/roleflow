@@ -643,7 +643,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v9");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v16");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v17");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1109,6 +1109,121 @@ function matchBoundaryContractSmoke() {
     })),
     evidence: { jd: eligibility.evidence.jd, resume: ["未提供学历信息"] }
   }), ModelContractError, "旧 MatchDecision 不得把资格信息缺失当作明确冲突");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：学历似乎不符合要求"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["学历似乎不符合要求"] }
+  }), ModelContractError, "旧 MatchDecision 不得把不确定的学历判断当作明确资格冲突");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：本科学历"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["本科学历"] }
+  }), ModelContractError, "同等学历满足门槛时，即使模型声称 conflict 也不得硬排除");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "硕士优先，本科及以上学历",
+      jdEvidence: "JD：硕士优先，本科及以上学历",
+      resumeEvidence: "简历：本科学历"
+    })),
+    evidence: { jd: ["硕士优先，本科及以上学历"], resume: ["本科学历"] }
+  }), ModelContractError, "学历偏好不得覆盖同一句中的较低硬门槛");
+  const lowerDegreeConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：最高学历为大专"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["最高学历为大专"] }
+  });
+  assert.strictEqual(lowerDegreeConflict.recommendation, "skip", "明确低于学历门槛的事实仍可硬排除");
+  const nonStudentConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "仅限在校学生",
+      jdEvidence: "JD：仅限在校学生",
+      resumeEvidence: "简历：当前为非在校生"
+    })),
+    evidence: { jd: ["仅限在校学生"], resume: ["当前为非在校生"] }
+  });
+  assert.strictEqual(nonStudentConflict.recommendation, "skip", "明确的非在校事实仍可硬排除");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "仅限非在校人员",
+      jdEvidence: "JD：仅限非在校人员",
+      resumeEvidence: "简历：已毕业"
+    })),
+    evidence: { jd: ["仅限非在校人员"], resume: ["已毕业"] }
+  }), ModelContractError, "非在校要求不得因字符串中包含“在校”而反向误判");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "可接受在校生，本科及以上学历",
+      jdEvidence: "JD：可接受在校生，本科及以上学历",
+      resumeEvidence: "简历：已毕业，本科学历"
+    })),
+    evidence: { jd: ["可接受在校生，本科及以上学历"], resume: ["已毕业，本科学历"] }
+  }), ModelContractError, "混合资格句中的在校软条件不得触发硬排除");
+  const negativeDegreeConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：未取得本科学历"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["未取得本科学历"] }
+  });
+  assert.strictEqual(negativeDegreeConflict.recommendation, "skip", "明确未取得最低学历仍可硬排除");
+  const certificateConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "必须持有教师资格证",
+      jdEvidence: "JD：必须持有教师资格证",
+      resumeEvidence: "简历：未持有教师资格证"
+    })),
+    evidence: { jd: ["必须持有教师资格证"], resume: ["未持有教师资格证"] }
+  });
+  assert.strictEqual(certificateConflict.recommendation, "skip", "明确缺少岗位要求的同名资格证仍可硬排除");
+  const trailingCertificateConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "必须持有教师资格证",
+      jdEvidence: "JD：必须持有教师资格证",
+      resumeEvidence: "简历：教师资格证尚未取得"
+    })),
+    evidence: { jd: ["必须持有教师资格证"], resume: ["教师资格证尚未取得"] }
+  });
+  assert.strictEqual(trailingCertificateConflict.recommendation, "skip", "否定词位于证书名之后时仍应识别明确冲突");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "必须持有教师资格证",
+      jdEvidence: "JD：必须持有教师资格证",
+      resumeEvidence: "简历：已持有教师资格证"
+    })),
+    evidence: { jd: ["必须持有教师资格证"], resume: ["已持有教师资格证"] }
+  }), ModelContractError, "已经持有同名资格证时，即使模型声称 conflict 也不得硬排除");
 
   // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持展示兼容读取，但绝不参与新决策。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
@@ -1143,6 +1258,15 @@ function matchBoundaryContractSmoke() {
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
     kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：未提供学历信息"
   }] }), [], "资格信息缺失不得进入历史决策路径");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：学历似乎不符合要求"
+  }] }), [], "不确定学历判断不得进入历史决策路径");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：本科学历"
+  }] }), [], "满足学历门槛的历史 blocker 不得进入决策");
+  assert.strictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：最高学历为大专"
+  }] }).length, 1, "明确低于学历门槛的历史 blocker 仍须生效");
   const incompleteBlockerAnalysis = {
     semanticStatus: "complete",
     recommendation: "review",
@@ -1498,6 +1622,27 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(eligibilityConflict.recommendation, "skip");
   assert.strictEqual(eligibilityConflict.hardBlockers[0].kind, "eligibility");
   assert.doesNotThrow(() => validateModelResult("matchJob", eligibilityConflict, { jobUnderstanding }), "有双侧证据的资格冲突必须兼容既有下游契约");
+  const shortCohortConflict = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：25 届毕业" }]
+  }, { jobUnderstanding });
+  assert.strictEqual(shortCohortConflict.recommendation, "skip", "两位数届别的明确冲突仍可硬排除");
+  for (const [label, resumeEvidence] of [
+    ["仅限 2025 届或 2026 届", "简历：2026 届毕业"],
+    ["仅限 2025-2027 届", "简历：2026 届毕业"]
+  ]) {
+    const allowedCohortUnderstanding = {
+      ...jobUnderstanding,
+      eligibilityConstraints: [label],
+      eligibilityItems: [{ id: "E1", label }]
+    };
+    const allowedCohort = validateModelResult("matchJob", {
+      ...compactDirectPayload,
+      eligibility: [{ id: "E1", state: "conflict", resumeEvidence }]
+    }, { jobUnderstanding: allowedCohortUnderstanding });
+    assert.notStrictEqual(allowedCohort.recommendation, "skip", `${label} 范围内的届别不得硬排除`);
+    assert.deepStrictEqual(allowedCohort.hardBlockers, []);
+  }
   const eligibilityUnknown = validateModelResult("matchJob", {
     ...compactDirectPayload,
     eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：未提供届别或学历信息" }]
@@ -1505,6 +1650,13 @@ async function compactMatchEvidenceContractSmoke() {
   assert.notStrictEqual(eligibilityUnknown.recommendation, "skip",
     "资格信息缺失只能进入待确认，不能作为明确资格冲突");
   assert.deepStrictEqual(eligibilityUnknown.hardBlockers, []);
+  const eligibilityUncertain = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：候选人可能为 2025 届" }]
+  }, { jobUnderstanding });
+  assert.notStrictEqual(eligibilityUncertain.recommendation, "skip",
+    "带有可能、似乎等不确定措辞的资格判断只能进入待确认");
+  assert.deepStrictEqual(eligibilityUncertain.hardBlockers, []);
 
   for (const invalid of [
     { ...compactDirectPayload, matches: compactDirectPayload.matches.slice(0, 1) },
