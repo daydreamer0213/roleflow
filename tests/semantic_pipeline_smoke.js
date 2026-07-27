@@ -1150,6 +1150,27 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["本科及以上学历"], resume: ["最高学历为大专"] }
   });
   assert.strictEqual(lowerDegreeConflict.recommendation, "skip", "明确低于学历门槛的事实仍可硬排除");
+  const cohortMatchedDegreeConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "仅限 2025 届，本科及以上学历",
+      jdEvidence: "JD：仅限 2025 届，本科及以上学历",
+      resumeEvidence: "简历：2025 届毕业，最高学历大专"
+    })),
+    evidence: { jd: ["仅限 2025 届，本科及以上学历"], resume: ["2025 届毕业，最高学历大专"] }
+  });
+  assert.strictEqual(cohortMatchedDegreeConflict.recommendation, "skip", "届别满足后仍须继续核对同一句中的学历硬门槛");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：本科学历，硕士尚未取得"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["本科学历，硕士尚未取得"] }
+  }), ModelContractError, "已经满足最低学历时，未取得更高学历不得反向触发冲突");
   const nonStudentConflict = validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1236,6 +1257,29 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["本科及以上学历，必须持有教师资格证"], resume: ["本科学历，未持有教师资格证"] }
   });
   assert.strictEqual(combinedQualificationConflict.recommendation, "skip", "满足学历不得遮住同一句中的明确证书冲突");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "教师资格证优先，本科及以上学历",
+      jdEvidence: "JD：教师资格证优先，本科及以上学历",
+      resumeEvidence: "简历：本科学历，未持有教师资格证"
+    })),
+    evidence: { jd: ["教师资格证优先，本科及以上学历"], resume: ["本科学历，未持有教师资格证"] }
+  }), ModelContractError, "证书优先是软条件，不得因同句另有学历硬门槛而升级为硬排除");
+  for (const inSchoolRequirement of ["硬性要求：在校学生", "要求为在校生"]) {
+    const inSchoolConflict = validateModelResult("matchJob", {
+      ...eligibility,
+      hardBlockers: eligibility.hardBlockers.map((item) => ({
+        ...item,
+        requirement: inSchoolRequirement,
+        jdEvidence: `JD：${inSchoolRequirement}`,
+        resumeEvidence: "简历：已毕业，当前非在校"
+      })),
+      evidence: { jd: [inSchoolRequirement], resume: ["已毕业，当前非在校"] }
+    });
+    assert.strictEqual(inSchoolConflict.recommendation, "skip", `${inSchoolRequirement} 是明确在校硬门槛`);
+  }
   assert.throws(() => validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1651,6 +1695,8 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(shortCohortConflict.recommendation, "skip", "两位数届别的明确冲突仍可硬排除");
   for (const [label, resumeEvidence] of [
     ["仅限 2025 届或 2026 届", "简历：2026 届毕业"],
+    ["仅限 2025、2026 届", "简历：2025 届毕业"],
+    ["仅限 25/26 届", "简历：25 届毕业"],
     ["仅限 2025-2027 届", "简历：2026 届毕业"],
     ["仅限 2025 届及以后", "简历：2026 届毕业"],
     ["仅限 2025 届以前", "简历：2024 届毕业"]

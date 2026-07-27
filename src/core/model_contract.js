@@ -113,6 +113,9 @@ function cohortYears(value) {
       for (let year = first; year <= last; year += 1) years.add(year);
     }
   }
+  for (const match of source.matchAll(/((?:(?:20)?\d{2}\s*(?:、|,|，|\/|或)\s*)+(?:20)?\d{2})\s*届/g)) {
+    for (const year of match[1].matchAll(/(?:20)?\d{2}/g)) years.add(normalizedCohortYear(year[0]));
+  }
   for (const match of source.matchAll(/((?:20)?\d{2})\s*(?:届|年.{0,8}毕业)/g)) {
     years.add(normalizedCohortYear(match[1]));
   }
@@ -192,10 +195,15 @@ function requiredEducationRank(value) {
 }
 
 function requiredCertificate(value) {
-  const source = String(value || "")
+  const clause = String(value || "")
     .replace(/JD[：:]?/gi, " ")
-    .replace(/(?:必须|须|要求|应当|需要|持有|具有|具备|取得|通过)/g, " ");
-  const match = source.match(/(?:^|[\s，,；;。])([A-Za-z0-9\u4e00-\u9fa5]{1,16}(?:资格证|证书|认证))/);
+    .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
+    .find((part) => /资格证|证书|认证/.test(part)
+      && /必须|须|硬性|要求|应当|需要|持有|具有|具备|取得|通过/.test(part)
+      && !/优先|加分|可选|可接受|不限|无硬性要求/.test(part));
+  const source = String(clause || "")
+    .replace(/(?:必须|须|硬性|要求|应当|需要|持有|具有|具备|取得|通过)/g, " ");
+  const match = source.match(/(?:^|[\s：:])([A-Za-z0-9\u4e00-\u9fa5]{1,16}(?:资格证|证书|认证))/);
   return match?.[1] || "";
 }
 
@@ -210,19 +218,19 @@ function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeE
   const expectedCohort = cohortConstraint(expected);
   const actualYears = cohortYears(actual);
   if (expectedCohort.years.length && actualYears.length && /仅限|只招|仅招|限定|仅面向|只接受|仅接受/.test(expected)) {
-    return !actualYears.some((year) => matchesCohortConstraint(expectedCohort, year));
+    if (!actualYears.some((year) => matchesCohortConstraint(expectedCohort, year))) return true;
   }
   const requiresInSchool = expected
     .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
     .some((part) => !/可接受|均可|优先|加分|不限|无硬性要求/.test(part)
       && !/(?:非|不)在校|(?:非|不)在读/.test(part)
-      && /(?:仅限|只招|仅招|限定|仅面向|必须|须为).{0,16}(?:在校|在读)/.test(part));
+      && /(?:仅限|只招|仅招|限定|仅面向|必须|须为|硬性要求|要求为|要求).{0,16}(?:在校|在读)/.test(part));
   if (requiresInSchool && /已毕业|已经毕业|毕业于|非在校|不在校|已离校|已退学/.test(actual)) return true;
 
   const minimumEducation = requiredEducationRank(expected);
   const actualEducation = educationRank(actual);
   if (minimumEducation && actualEducation && actualEducation < minimumEducation) return true;
-  if (minimumEducation && negatedEducationRank(actual) >= minimumEducation) return true;
+  if (minimumEducation && actualEducation < minimumEducation && negatedEducationRank(actual) >= minimumEducation) return true;
 
   const certificate = requiredCertificate(expected);
   if (certificate && actual.includes(certificate)
