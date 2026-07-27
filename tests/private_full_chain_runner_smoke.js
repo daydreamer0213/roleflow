@@ -1488,7 +1488,12 @@ async function injectedLiveFlowSmoke(identityPath) {
       errorMessage: unsafeText,
       errorCode: unsafeText,
       errorStage: unsafeText,
-      errorPhase: unsafeText
+      errorPhase: unsafeText,
+      errorContentLength: 20000000,
+      errorContentTypeKind: "application/javascript",
+      errorEnvelopeKind: "weird-envelope",
+      errorParseFailureKind: 999,
+      errorHadUtf8Bom: "true"
     }),
     decisionState: () => "ready",
     decisionBucket: () => "talk"
@@ -1508,6 +1513,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(row.errorCode, "MODEL_ANALYSIS_FAILED");
     assert.strictEqual(row.failureStage, "");
     assert.strictEqual(row.failurePhase, "");
+    assert.strictEqual(row.responseContentLength, null);
+    assert.strictEqual(row.responseContentTypeKind, "");
+    assert.strictEqual(row.responseEnvelopeKind, "");
+    assert.strictEqual(row.responseParseFailureKind, "");
+    assert.strictEqual(row.responseHadUtf8Bom, null);
   }
   assert(!JSON.stringify(safeRowsResult.rows).includes(unsafeText), "unknown runtime/model strings must not survive row projection");
 
