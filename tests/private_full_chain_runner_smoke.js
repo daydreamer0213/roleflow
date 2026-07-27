@@ -2075,10 +2075,27 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(overlapJson.pairedAccepted, true);
   assert.strictEqual(overlapJson.accepted, false);
   assert.strictEqual(overlapJson.status, "paired_pass_full_incomplete");
+  assert.deepStrictEqual(overlapJson.coverage, {
+    frozenTotal: recallBaseline.rows.length,
+    comparableTotal: recallBaseline.rows.length - 1,
+    excludedEmptyTotal: 1,
+    baselineEmptyTotal: 0,
+    candidateEmptyTotal: 1,
+    bothEmptyTotal: 0,
+    fullCoverageComplete: false
+  });
+  const fullRecall = overlapJson.recall.candidate;
+  const pairedRecall = overlapJson.pairedRecall.candidate;
+  assert.notDeepStrictEqual(fullRecall, pairedRecall, "the empty response must change the paired recall denominator");
   const overlapMarkdown = fs.readFileSync(overlapReport.replace(/\.json$/i, ".md"), "utf8");
-  assert.match(overlapMarkdown, /Comparable rows:/);
+  assert.match(overlapMarkdown, /Accepted: false/);
+  assert.match(overlapMarkdown, /Status: paired_pass_full_incomplete/);
+  assert.match(overlapMarkdown, new RegExp(`Comparable rows: ${recallBaseline.rows.length - 1}/${recallBaseline.rows.length}`));
+  assert.match(overlapMarkdown, /Empty-response rows excluded: 1/);
   assert.match(overlapMarkdown, /Full coverage complete: false/);
   assert.match(overlapMarkdown, /Paired accepted: true/);
+  assert.match(overlapMarkdown, new RegExp(`Opportunities retained: ${pairedRecall.retainedOpportunity}/${pairedRecall.expectedKeep}`));
+  assert(!overlapMarkdown.includes(`Opportunities retained: ${fullRecall.retainedOpportunity}/${fullRecall.expectedKeep}`));
   for (const row of recallBaseline.rows) {
     assert(!overlapMarkdown.includes(row.id), `overlap Markdown must not include private row id ${row.id}`);
   }
