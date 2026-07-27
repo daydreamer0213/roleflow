@@ -270,6 +270,33 @@ function asRecallFirstResult(result) {
   return { ...withDisposition, ...recall.metrics };
 }
 
+function asEmptyEnvelopeFailure(result, rowIndex = 0) {
+  const changed = structuredClone(result);
+  changed.rows[rowIndex] = {
+    ...changed.rows[rowIndex],
+    actualRecommendation: "review",
+    actualBucket: "analysis_pending",
+    semanticStatus: "failed",
+    evidenceComplete: false,
+    hardBlocked: false,
+    decisionState: "ready",
+    errorCode: "MODEL_INVALID_RESPONSE",
+    failureStage: "understandJob",
+    failurePhase: "initial",
+    responseFailureKind: "invalid_response_json",
+    requestedMaxTokens: 8192,
+    responseHttpStatus: 200,
+    responseJsonModeApplied: false,
+    responseContentLength: 0,
+    responseContentTypeKind: "json",
+    responseEnvelopeKind: "empty",
+    responseParseFailureKind: "other",
+    responseHadUtf8Bom: false,
+    pass: false
+  };
+  return asRecallFirstResult(changed);
+}
+
 function asRecallFirstLabels(labels) {
   return {
     ...structuredClone(labels),
@@ -1834,6 +1861,81 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(retainedCompared.report.accepted, true, "精确档位变化但机会仍保留时，recall-first 验收必须通过");
   assert.strictEqual(retainedCompared.report.evaluationPolicy, "recall-first.v1");
 
+  const baselineEmpty = asEmptyEnvelopeFailure(recallBaseline, 0);
+  const baselineEmptyCompared = runner.comparePrivateFullChainResults(baselineEmpty, recallCandidate);
+  assert.strictEqual(baselineEmptyCompared.ok, true);
+  assert.deepStrictEqual(baselineEmptyCompared.report.coverage, {
+    frozenTotal: recallBaseline.rows.length,
+    comparableTotal: recallBaseline.rows.length - 1,
+    excludedEmptyTotal: 1,
+    baselineEmptyTotal: 1,
+    candidateEmptyTotal: 0,
+    bothEmptyTotal: 0,
+    fullCoverageComplete: false
+  });
+  assert.strictEqual(baselineEmptyCompared.report.pairedAccepted, true);
+  assert.strictEqual(baselineEmptyCompared.report.accepted, false);
+  assert.strictEqual(baselineEmptyCompared.report.status, "paired_pass_full_incomplete");
+
+  const candidateEmpty = asEmptyEnvelopeFailure(recallCandidate, 1);
+  const candidateEmptyCompared = runner.comparePrivateFullChainResults(recallBaseline, candidateEmpty);
+  assert.strictEqual(candidateEmptyCompared.report.coverage.candidateEmptyTotal, 1);
+  assert.strictEqual(candidateEmptyCompared.report.coverage.comparableTotal, recallBaseline.rows.length - 1);
+  assert.strictEqual(candidateEmptyCompared.report.pairedAccepted, true);
+  assert.strictEqual(candidateEmptyCompared.report.accepted, false);
+
+  const bothSameEmpty = runner.comparePrivateFullChainResults(
+    asEmptyEnvelopeFailure(recallBaseline, 0),
+    asEmptyEnvelopeFailure(recallCandidate, 0)
+  );
+  assert.strictEqual(bothSameEmpty.report.coverage.excludedEmptyTotal, 1);
+  assert.strictEqual(bothSameEmpty.report.coverage.bothEmptyTotal, 1);
+
+  const differentEmpty = runner.comparePrivateFullChainResults(
+    asEmptyEnvelopeFailure(recallBaseline, 0),
+    asEmptyEnvelopeFailure(recallCandidate, 1)
+  );
+  assert.strictEqual(differentEmpty.report.coverage.excludedEmptyTotal, 2);
+  assert.strictEqual(differentEmpty.report.coverage.comparableTotal, recallBaseline.rows.length - 2);
+
+  const contractFailure = asEmptyEnvelopeFailure(recallCandidate, 0);
+  contractFailure.rows[0].errorCode = "MODEL_CONTRACT_INVALID";
+  Object.assign(contractFailure, deriveBenchmarkMetrics(contractFailure.rows).metrics);
+  Object.assign(contractFailure, runner.deriveRecallFirstMetrics(contractFailure.rows).metrics);
+  const contractCompared = runner.comparePrivateFullChainResults(recallBaseline, contractFailure);
+  assert.strictEqual(contractCompared.report.coverage.excludedEmptyTotal, 0);
+  assert.strictEqual(contractCompared.report.pairedAccepted, false);
+
+  const baselineContractFailure = asEmptyEnvelopeFailure(recallBaseline, 0);
+  baselineContractFailure.rows[0].errorCode = "MODEL_CONTRACT_INVALID";
+  Object.assign(baselineContractFailure, deriveBenchmarkMetrics(baselineContractFailure.rows).metrics);
+  Object.assign(baselineContractFailure, runner.deriveRecallFirstMetrics(baselineContractFailure.rows).metrics);
+  const baselineContractCompared = runner.comparePrivateFullChainResults(baselineContractFailure, recallCandidate);
+  assert.strictEqual(baselineContractCompared.report.coverage.excludedEmptyTotal, 0);
+  assert.strictEqual(baselineContractCompared.report.pairedAccepted, false);
+
+  const contractRepairEmpty = asEmptyEnvelopeFailure(recallCandidate, 0);
+  contractRepairEmpty.rows[0].failurePhase = "contract_repair";
+  Object.assign(contractRepairEmpty, deriveBenchmarkMetrics(contractRepairEmpty.rows).metrics);
+  Object.assign(contractRepairEmpty, runner.deriveRecallFirstMetrics(contractRepairEmpty.rows).metrics);
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(recallBaseline, contractRepairEmpty).report.coverage.excludedEmptyTotal,
+    0
+  );
+
+  const allEmptyBaseline = recallBaseline.rows.reduce(
+    (value, _row, index) => asEmptyEnvelopeFailure(value, index),
+    recallBaseline
+  );
+  const allEmptyCandidate = recallCandidate.rows.reduce(
+    (value, _row, index) => asEmptyEnvelopeFailure(value, index),
+    recallCandidate
+  );
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(allEmptyBaseline, allEmptyCandidate).code,
+    "BENCHMARK_COMPARE_METRICS"
+  );
+
   const wronglyExcluded = structuredClone(recallCandidate);
   wronglyExcluded.rows = wronglyExcluded.rows.map((row) => row.id === retainedReference.id
     ? { ...row, actualRecommendation: "skip", actualBucket: "not_recommended", pass: false }
@@ -1992,6 +2094,14 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const forgedSummary = { ...candidate, total: candidate.total + 1 };
   assert.strictEqual(runner.comparePrivateFullChainResults(baseline, forgedSummary).code, "BENCHMARK_COMPARE_METRICS");
+  const forgedBeforeProjection = {
+    ...asEmptyEnvelopeFailure(recallCandidate, 0),
+    failed: 0
+  };
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(recallBaseline, forgedBeforeProjection).code,
+    "BENCHMARK_COMPARE_METRICS"
+  );
   const duplicateId = { ...candidate, rows: [...candidate.rows, { ...candidate.rows[0] }] };
   assert.strictEqual(runner.comparePrivateFullChainResults(baseline, duplicateId).code, "BENCHMARK_COMPARE_METRICS");
   const tamperedLabels = structuredClone(candidate);

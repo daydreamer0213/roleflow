@@ -1855,6 +1855,64 @@ function recallFirstAcceptanceFailures(candidate) {
   return failures;
 }
 
+function isSkippableEmptyResponse(row) {
+  return row?.semanticStatus === "failed"
+    && row?.errorCode === "MODEL_INVALID_RESPONSE"
+    && row?.failurePhase === "initial"
+    && ["understandJob", "matchJob"].includes(row?.failureStage)
+    && row?.responseFailureKind === "invalid_response_json"
+    && row?.responseHttpStatus === 200
+    && row?.responseContentLength === 0
+    && row?.responseContentTypeKind === "json"
+    && row?.responseEnvelopeKind === "empty";
+}
+
+function projectPrivateResult(value, excludedIds, recallMode) {
+  const rows = value.rows.filter((row) => !excludedIds.has(String(row.id)));
+  if (!rows.length) return fail("BENCHMARK_COMPARE_METRICS", "Paired overlap requires at least one comparable row.");
+  const benchmark = deriveBenchmarkMetrics(rows);
+  if (!benchmark.ok) return benchmark;
+  const result = { ...value, rows, ...benchmark.metrics };
+  if (!recallMode) return { ok: true, result, recall: null };
+  const recall = deriveRecallFirstMetrics(rows);
+  if (!recall.ok) return recall;
+  return { ok: true, result: { ...result, ...recall.metrics }, recall: recall.metrics };
+}
+
+function pairedProjection(baseline, candidate, recallMode) {
+  const baselineEmptyIds = new Set(baseline.rows.filter(isSkippableEmptyResponse).map((row) => String(row.id)));
+  const candidateEmptyIds = new Set(candidate.rows.filter(isSkippableEmptyResponse).map((row) => String(row.id)));
+  const excludedIds = new Set([...baselineEmptyIds, ...candidateEmptyIds]);
+  const baselineProjected = projectPrivateResult(baseline, excludedIds, recallMode);
+  if (!baselineProjected.ok) return baselineProjected;
+  const candidateProjected = projectPrivateResult(candidate, excludedIds, recallMode);
+  if (!candidateProjected.ok) return candidateProjected;
+  return {
+    ok: true,
+    baseline: baselineProjected.result,
+    candidate: candidateProjected.result,
+    pairedRecall: recallMode ? {
+      baseline: baselineProjected.recall,
+      candidate: candidateProjected.recall
+    } : null,
+    coverage: {
+      frozenTotal: baseline.frozenFixtureTotal,
+      comparableTotal: baselineProjected.result.rows.length,
+      excludedEmptyTotal: excludedIds.size,
+      baselineEmptyTotal: baselineEmptyIds.size,
+      candidateEmptyTotal: candidateEmptyIds.size,
+      bothEmptyTotal: [...baselineEmptyIds].filter((id) => candidateEmptyIds.has(id)).length,
+      fullCoverageComplete: excludedIds.size === 0
+    }
+  };
+}
+
+function pairedInputFailures(value, sideLabel) {
+  return ["failed", "stale", "pending"]
+    .filter((field) => value[field] !== 0)
+    .map((field) => `${sideLabel} ${field}=${value[field]}，不是可忽略的空响应`);
+}
+
 function comparePrivateFullChainResults(baseline, candidate) {
   for (const [value, side] of [[baseline, "baseline"], [candidate, "candidate"]]) {
     if (!value || typeof value !== "object" || Array.isArray(value)
@@ -1936,8 +1994,11 @@ function comparePrivateFullChainResults(baseline, candidate) {
     || candidate.labelsVersion !== "private-real-jd-labels.v2")) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison label policy identity does not match.");
   }
-  const compared = compareBenchmarkResults({ ...baseline, evaluatedCommit: baseline.productCommit }, candidate);
-  if (!compared.ok) return compared;
+  const fullCompared = compareBenchmarkResults(
+    { ...baseline, evaluatedCommit: baseline.productCommit },
+    candidate
+  );
+  if (!fullCompared.ok) return fullCompared;
   let recallMetrics = null;
   if (recallMode) {
     const baselineById = new Map(baseline.rows.map((row) => [row.id, row]));
@@ -1956,22 +2017,75 @@ function comparePrivateFullChainResults(baseline, candidate) {
     || candidate.rows.length !== candidate.frozenFixtureTotal) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison requires every row in the complete frozen fixture.");
   }
-  const before = new Map(baseline.rows.map((row) => [row.id, row]));
-  const changed = (predicate) => candidate.rows.filter((row) => predicate(before.get(row.id), row)).map((row) => row.id).sort();
-  const failureReasons = recallMode
-    ? recallFirstAcceptanceFailures(candidate)
-    : compared.report.failureReasons;
+  const projected = pairedProjection(baseline, candidate, recallMode);
+  if (!projected.ok) return projected;
+  const pairedCompared = projected.coverage.fullCoverageComplete
+    ? fullCompared
+    : compareBenchmarkResults(
+        { ...projected.baseline, evaluatedCommit: projected.baseline.productCommit },
+        projected.candidate
+      );
+  if (!pairedCompared.ok) return pairedCompared;
+  const pairedFailureReasons = [...new Set([
+    ...pairedInputFailures(projected.baseline, "基线"),
+    ...pairedInputFailures(projected.candidate, "候选"),
+    ...(recallMode
+      ? recallFirstAcceptanceFailures(projected.candidate)
+      : pairedCompared.report.failureReasons)
+  ])];
+  const pairedAccepted = pairedFailureReasons.length === 0;
+  const accepted = pairedAccepted && projected.coverage.fullCoverageComplete;
+  const status = accepted
+    ? "full_pass"
+    : pairedAccepted
+      ? "paired_pass_full_incomplete"
+      : "paired_fail";
+  const failureReasons = projected.coverage.fullCoverageComplete
+    ? pairedFailureReasons
+    : [
+        ...pairedFailureReasons,
+        `有效配对 ${projected.coverage.comparableTotal}/${projected.coverage.frozenTotal}，全量覆盖未完成`
+      ];
+  const before = new Map(projected.baseline.rows.map((row) => [row.id, row]));
+  const changed = (predicate) => projected.candidate.rows
+    .filter((row) => predicate(before.get(row.id), row))
+    .map((row) => row.id)
+    .sort();
   return {
     ok: true,
     report: {
-      ...compared.report,
+      ...pairedCompared.report,
       runMode: "offline-private-compare",
+      coverage: projected.coverage,
+      pairedAccepted,
+      accepted,
+      status,
+      failureReasons,
       ...(recallMode ? {
         evaluationPolicy: RECALL_FIRST_POLICY,
         recall: recallMetrics,
-        accepted: failureReasons.length === 0,
-        failureReasons
+        pairedRecall: projected.pairedRecall
       } : {}),
+      fullSummary: {
+        baseline: {
+          total: baseline.total,
+          failed: baseline.failed,
+          stale: baseline.stale,
+          pending: baseline.pending,
+          partial: baseline.partial,
+          primaryWithoutEvidence: baseline.primaryWithoutEvidence,
+          hardFalsePlacement: baseline.hardFalsePlacement
+        },
+        candidate: {
+          total: candidate.total,
+          failed: candidate.failed,
+          stale: candidate.stale,
+          pending: candidate.pending,
+          partial: candidate.partial,
+          primaryWithoutEvidence: candidate.primaryWithoutEvidence,
+          hardFalsePlacement: candidate.hardFalsePlacement
+        }
+      },
       profile: {
         baselineSha256: baseline.fixtureProfileSha256,
         candidateSha256: candidate.fixtureProfileSha256,
