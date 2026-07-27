@@ -113,10 +113,27 @@ function cohortYears(value) {
       for (let year = first; year <= last; year += 1) years.add(year);
     }
   }
-  for (const match of source.matchAll(/((?:20)?\d{2})\s*(?:届|年.{0,8}(?:毕业|入学))/g)) {
+  for (const match of source.matchAll(/((?:20)?\d{2})\s*(?:届|年.{0,8}毕业)/g)) {
     years.add(normalizedCohortYear(match[1]));
   }
   return [...years];
+}
+
+function cohortConstraint(value) {
+  const source = String(value || "");
+  const after = source.match(/((?:20)?\d{2})\s*届\s*(?:及\s*)?(?:以后|之后|起)/);
+  const before = source.match(/((?:20)?\d{2})\s*届\s*(?:及\s*)?(?:以前|之前)/);
+  return {
+    years: cohortYears(source),
+    minimum: after ? normalizedCohortYear(after[1]) : 0,
+    maximum: before ? normalizedCohortYear(before[1]) : 0
+  };
+}
+
+function matchesCohortConstraint(constraint, year) {
+  return constraint.years.includes(year)
+    || Boolean(constraint.minimum && year >= constraint.minimum)
+    || Boolean(constraint.maximum && year <= constraint.maximum);
 }
 
 const EDUCATION_RANKS = Object.freeze({
@@ -134,12 +151,17 @@ const EDUCATION_RANKS = Object.freeze({
 function educationMentions(value) {
   const source = String(value || "");
   return [...source.matchAll(/中专|高中|大专|专科|本科|学士|硕士|研究生|博士/g)]
-    .map((match) => ({
-      label: match[0],
-      rank: EDUCATION_RANKS[match[0]],
-      index: match.index,
-      negated: /(?:未取得|未获得|未达到|没有|无).{0,4}$/.test(source.slice(Math.max(0, match.index - 10), match.index))
-    }));
+    .map((match) => {
+      const before = source.slice(Math.max(0, match.index - 10), match.index);
+      const after = source.slice(match.index + match[0].length, match.index + match[0].length + 12);
+      return {
+        label: match[0],
+        rank: EDUCATION_RANKS[match[0]],
+        index: match.index,
+        negated: /(?:未取得|未获得|未达到|没有|无).{0,4}$/.test(before)
+          || /^(?:学历|学位)?(?:尚未取得|未取得|未获得|未达到|没有|无)/.test(after)
+      };
+    });
 }
 
 function educationRank(value) {
@@ -185,10 +207,10 @@ function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeE
     return false;
   }
 
-  const expectedYears = cohortYears(expected);
+  const expectedCohort = cohortConstraint(expected);
   const actualYears = cohortYears(actual);
-  if (expectedYears.length && actualYears.length && /仅限|只招|仅招|限定|仅面向|只接受|仅接受/.test(expected)) {
-    return !actualYears.some((year) => expectedYears.includes(year));
+  if (expectedCohort.years.length && actualYears.length && /仅限|只招|仅招|限定|仅面向|只接受|仅接受/.test(expected)) {
+    return !actualYears.some((year) => matchesCohortConstraint(expectedCohort, year));
   }
   const requiresInSchool = expected
     .split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
@@ -199,7 +221,6 @@ function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeE
 
   const minimumEducation = requiredEducationRank(expected);
   const actualEducation = educationRank(actual);
-  if (minimumEducation && actualEducation >= minimumEducation) return false;
   if (minimumEducation && actualEducation && actualEducation < minimumEducation) return true;
   if (minimumEducation && negatedEducationRank(actual) >= minimumEducation) return true;
 

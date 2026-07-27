@@ -1192,6 +1192,17 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["本科及以上学历"], resume: ["未取得本科学历"] }
   });
   assert.strictEqual(negativeDegreeConflict.recommendation, "skip", "明确未取得最低学历仍可硬排除");
+  const trailingNegativeDegreeConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历",
+      jdEvidence: "JD：本科及以上学历",
+      resumeEvidence: "简历：本科学历尚未取得"
+    })),
+    evidence: { jd: ["本科及以上学历"], resume: ["本科学历尚未取得"] }
+  });
+  assert.strictEqual(trailingNegativeDegreeConflict.recommendation, "skip", "学历词后的明确否定仍应识别为资格冲突");
   const certificateConflict = validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1214,6 +1225,17 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["必须持有教师资格证"], resume: ["教师资格证尚未取得"] }
   });
   assert.strictEqual(trailingCertificateConflict.recommendation, "skip", "否定词位于证书名之后时仍应识别明确冲突");
+  const combinedQualificationConflict = validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      requirement: "本科及以上学历，必须持有教师资格证",
+      jdEvidence: "JD：本科及以上学历，必须持有教师资格证",
+      resumeEvidence: "简历：本科学历，未持有教师资格证"
+    })),
+    evidence: { jd: ["本科及以上学历，必须持有教师资格证"], resume: ["本科学历，未持有教师资格证"] }
+  });
+  assert.strictEqual(combinedQualificationConflict.recommendation, "skip", "满足学历不得遮住同一句中的明确证书冲突");
   assert.throws(() => validateModelResult("matchJob", {
     ...eligibility,
     hardBlockers: eligibility.hardBlockers.map((item) => ({
@@ -1629,7 +1651,9 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(shortCohortConflict.recommendation, "skip", "两位数届别的明确冲突仍可硬排除");
   for (const [label, resumeEvidence] of [
     ["仅限 2025 届或 2026 届", "简历：2026 届毕业"],
-    ["仅限 2025-2027 届", "简历：2026 届毕业"]
+    ["仅限 2025-2027 届", "简历：2026 届毕业"],
+    ["仅限 2025 届及以后", "简历：2026 届毕业"],
+    ["仅限 2025 届以前", "简历：2024 届毕业"]
   ]) {
     const allowedCohortUnderstanding = {
       ...jobUnderstanding,
@@ -1643,6 +1667,12 @@ async function compactMatchEvidenceContractSmoke() {
     assert.notStrictEqual(allowedCohort.recommendation, "skip", `${label} 范围内的届别不得硬排除`);
     assert.deepStrictEqual(allowedCohort.hardBlockers, []);
   }
+  const entryYearMustNotMaskGraduationConflict = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：2027 年入学，2031 届毕业" }]
+  }, { jobUnderstanding });
+  assert.strictEqual(entryYearMustNotMaskGraduationConflict.recommendation, "skip",
+    "入学年份不得冒充毕业届别，遮住明确的毕业届别冲突");
   const eligibilityUnknown = validateModelResult("matchJob", {
     ...compactDirectPayload,
     eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：未提供届别或学历信息" }]
