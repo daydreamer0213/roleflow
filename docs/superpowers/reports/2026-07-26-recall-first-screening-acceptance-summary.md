@@ -10,13 +10,13 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 
 - Branch: `codex/claude-generic-evidence-matching-live-fix`
 - Approved baseline product commit: `fb0168afce265cf351f03e80f66d9e0f24015887`
-- Final evaluated product commit: `aafc5be17ea8d160f23bcdd386b5a1ffdb5a320b`
-- Live evaluated checkpoint: pending the final v12 diagnostic
+- Final evaluated product commit: `98e74da`
+- Live evaluated checkpoint: pending the final v13 diagnostic
 - Private harness: `private-full-chain-harness.v2`
 - Label schema: `private-real-jd-labels.v2`
 - Evaluation policy: `recall-first.v1`
 - Job-understanding pipeline: `job-understanding-v9`
-- Match-decision pipeline: `match-decision-v16`
+- Match-decision pipeline: `match-decision-v17`
 
 ## Confirmed labels
 
@@ -42,13 +42,15 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 - Diagnostic mode: yes
 - Formal acceptance eligible: no, by design for a three-row subset
 
-This successful v11 result predates the final broad-review fixes in `aafc5be`; a fresh v12 run is required before the branch is published.
+This successful v11 result predates the final explicit eligibility comparison fixes in `98e74da`; a fresh v13 run is required before the branch is published.
 
 ## Contract changes
 
 - Inclusive or preference-only eligibility wording is removed from hard qualification inputs.
 - Explicit cohort, education and certificate restrictions remain eligible for hard qualification checks.
 - Mixed soft and hard qualification sentences keep the explicit hard qualification.
+- Hard eligibility decisions compare explicit facts instead of trusting a model-authored `conflict` state. Common cohort sets/ranges, in-school polarity, education thresholds, full-time study and named certificates are checked conservatively.
+- Preference-only or uncertain qualification wording remains non-blocking, and satisfying one condition never hides another hard condition in the same sentence.
 - A missing resume claim or a different technology stack is not direct incompatibility evidence.
 - Epistemic wording such as “cannot confirm” remains unknown.
 - Explicit candidate boundaries such as refusal, inability or a clearly limited responsibility boundary can still support an indispensable-core exclusion.
