@@ -1521,7 +1521,12 @@ async function injectedLiveFlowSmoke(identityPath) {
     responseFailureKind: stableResponseKinds[index % stableResponseKinds.length],
     requestedMaxTokens: index % 2 === 0 ? 4096 : 8192,
     responseHttpStatus: index % 2 === 0 ? 200 : 503,
-    responseJsonModeApplied: index % 2 === 0
+    responseJsonModeApplied: index % 2 === 0,
+    responseContentLength: 40 + index,
+    responseContentTypeKind: index % 2 === 0 ? "json" : "html",
+    responseEnvelopeKind: index % 2 === 0 ? "json_object" : "html",
+    responseParseFailureKind: index % 2 === 0 ? "unexpected_end" : "unexpected_token",
+    responseHadUtf8Bom: false
   }]));
   const stableFailureSeam = seamFor("candidate");
   stableFailureSeam.modules = {
@@ -1545,7 +1550,12 @@ async function injectedLiveFlowSmoke(identityPath) {
         errorResponseKind: expected.responseFailureKind,
         errorRequestedMaxTokens: expected.requestedMaxTokens,
         errorHttpStatus: expected.responseHttpStatus,
-        errorJsonModeApplied: expected.responseJsonModeApplied
+        errorJsonModeApplied: expected.responseJsonModeApplied,
+        errorContentLength: expected.responseContentLength,
+        errorContentTypeKind: expected.responseContentTypeKind,
+        errorEnvelopeKind: expected.responseEnvelopeKind,
+        errorParseFailureKind: expected.responseParseFailureKind,
+        errorHadUtf8Bom: expected.responseHadUtf8Bom
       };
     },
     decisionState: () => "ready",
@@ -1568,6 +1578,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert.strictEqual(row.requestedMaxTokens, expected.requestedMaxTokens);
     assert.strictEqual(row.responseHttpStatus, expected.responseHttpStatus);
     assert.strictEqual(row.responseJsonModeApplied, expected.responseJsonModeApplied);
+    assert.strictEqual(row.responseContentLength, expected.responseContentLength);
+    assert.strictEqual(row.responseContentTypeKind, expected.responseContentTypeKind);
+    assert.strictEqual(row.responseEnvelopeKind, expected.responseEnvelopeKind);
+    assert.strictEqual(row.responseParseFailureKind, expected.responseParseFailureKind);
+    assert.strictEqual(row.responseHadUtf8Bom, expected.responseHadUtf8Bom);
   }
   const stableFailureRows = JSON.stringify(stableFailureResult.rows);
   assert(!stableFailureRows.includes(unsafeText), "private failure rows must not persist messages or source/model content");

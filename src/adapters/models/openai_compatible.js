@@ -24,6 +24,27 @@ const SAFE_RESPONSE_FAILURE_KINDS = new Set([
   "missing_content",
   "invalid_content_json"
 ]);
+const SAFE_RESPONSE_CONTENT_TYPE_KINDS = new Set([
+  "json",
+  "event_stream",
+  "html",
+  "plain_text",
+  "other",
+  "missing"
+]);
+const SAFE_RESPONSE_ENVELOPE_KINDS = new Set([
+  "empty",
+  "json_object",
+  "json_array",
+  "event_stream",
+  "html",
+  "other"
+]);
+const SAFE_RESPONSE_PARSE_FAILURE_KINDS = new Set([
+  "unexpected_end",
+  "unexpected_token",
+  "other"
+]);
 
 class OpenAICompatibleAdapter {
   constructor(config = {}) {
@@ -195,6 +216,10 @@ class OpenAICompatibleAdapter {
         finishReason: safeMetadataEnum(error?.finishReason, SAFE_FINISH_REASONS),
         contentLength: Number.isFinite(Number(error?.contentLength)) ? Number(error.contentLength) : null,
         responseFailureKind: safeMetadataEnum(error?.responseFailureKind, SAFE_RESPONSE_FAILURE_KINDS),
+        responseContentTypeKind: safeMetadataEnum(error?.responseContentTypeKind, SAFE_RESPONSE_CONTENT_TYPE_KINDS),
+        responseEnvelopeKind: safeMetadataEnum(error?.responseEnvelopeKind, SAFE_RESPONSE_ENVELOPE_KINDS),
+        responseParseFailureKind: safeMetadataEnum(error?.responseParseFailureKind, SAFE_RESPONSE_PARSE_FAILURE_KINDS),
+        responseHadUtf8Bom: typeof error?.responseHadUtf8Bom === "boolean" ? error.responseHadUtf8Bom : null,
         responseJsonModeApplied: typeof error?.jsonModeApplied === "boolean" ? error.jsonModeApplied : null,
         requestedMaxTokens: Number.isFinite(Number(error?.requestedMaxTokens))
           ? Number(error.requestedMaxTokens)
@@ -244,10 +269,11 @@ class OpenAICompatibleAdapter {
       }
       let data;
       let rawEnvelope = "";
+      const responseContentTypeKind = classifyResponseContentType(res.headers.get("content-type"));
       try {
         rawEnvelope = await res.text();
         data = JSON.parse(rawEnvelope);
-      } catch {
+      } catch (parseError) {
         throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was not valid JSON.", {
           finishReason: "",
           contentLength: rawEnvelope.length,
@@ -256,6 +282,10 @@ class OpenAICompatibleAdapter {
           jsonModeApplied: Boolean(jsonMode),
           retryable: true,
           responseFailureKind: "invalid_response_json",
+          responseContentTypeKind,
+          responseEnvelopeKind: classifyResponseEnvelope(rawEnvelope),
+          responseParseFailureKind: classifyJsonParseFailure(parseError),
+          responseHadUtf8Bom: rawEnvelope.charCodeAt(0) === 0xfeff,
           requestedMaxTokens: maxTokens
         });
       }
@@ -267,6 +297,10 @@ class OpenAICompatibleAdapter {
           httpStatus: res.status,
           retryable: true,
           responseFailureKind: "invalid_envelope",
+          responseContentTypeKind,
+          responseEnvelopeKind: classifyResponseEnvelope(rawEnvelope),
+          responseParseFailureKind: "",
+          responseHadUtf8Bom: rawEnvelope.charCodeAt(0) === 0xfeff,
           requestedMaxTokens: maxTokens
         });
       }
@@ -318,6 +352,33 @@ function adaptiveResponseTokenLimit(current, error) {
 function safeMetadataEnum(value, allowed) {
   const normalized = String(value || "");
   return allowed.has(normalized) ? normalized : "";
+}
+
+function classifyResponseContentType(value) {
+  const normalized = String(value || "").split(";", 1)[0].trim().toLowerCase();
+  if (!normalized) return "missing";
+  if (normalized === "application/json" || normalized.endsWith("+json")) return "json";
+  if (normalized === "text/event-stream") return "event_stream";
+  if (normalized === "text/html" || normalized === "application/xhtml+xml") return "html";
+  if (normalized === "text/plain") return "plain_text";
+  return "other";
+}
+
+function classifyResponseEnvelope(value) {
+  const normalized = String(value || "").trim().replace(/^\ufeff/, "");
+  if (!normalized) return "empty";
+  if (/^data\s*:/i.test(normalized)) return "event_stream";
+  if (normalized.startsWith("<")) return "html";
+  if (normalized.startsWith("{")) return "json_object";
+  if (normalized.startsWith("[")) return "json_array";
+  return "other";
+}
+
+function classifyJsonParseFailure(error) {
+  const message = String(error?.message || "");
+  if (/unexpected end|end of json|unterminated/i.test(message)) return "unexpected_end";
+  if (/unexpected token|unexpected non-whitespace|not valid json/i.test(message)) return "unexpected_token";
+  return "other";
 }
 
 function extractContent(data = {}) {

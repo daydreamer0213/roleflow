@@ -581,7 +581,12 @@ async function initialFailureProvenanceSmoke() {
             responseFailureKind: "missing_content",
             requestedMaxTokens: 8192,
             httpStatus: 200,
-            jsonModeApplied: false
+            jsonModeApplied: false,
+            contentLength: 37,
+            responseContentTypeKind: "html",
+            responseEnvelopeKind: "html",
+            responseParseFailureKind: "unexpected_token",
+            responseHadUtf8Bom: false
           });
         },
         matchJob: async () => {
@@ -622,6 +627,13 @@ async function initialFailureProvenanceSmoke() {
     assert.strictEqual(failed.errorRequestedMaxTokens, testCase.expectedCode === "MODEL_INVALID_RESPONSE" ? 8192 : 4096);
     assert.strictEqual(failed.errorHttpStatus, testCase.expectedHttpStatus);
     assert.strictEqual(failed.errorJsonModeApplied, testCase.expectedJsonModeApplied);
+    if (testCase.expectedCode === "MODEL_INVALID_RESPONSE") {
+      assert.strictEqual(failed.errorContentLength, 37);
+      assert.strictEqual(failed.errorContentTypeKind, "html");
+      assert.strictEqual(failed.errorEnvelopeKind, "html");
+      assert.strictEqual(failed.errorParseFailureKind, "unexpected_token");
+      assert.strictEqual(failed.errorHadUtf8Bom, false);
+    }
   }
 }
 

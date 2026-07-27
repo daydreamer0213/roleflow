@@ -64,6 +64,20 @@ const server = http.createServer(async (req, res) => {
       res.end(sentinel);
       return;
     }
+    if (scenario === "invalid-envelope-html") {
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end("<html><body>temporary gateway page</body></html>");
+      return;
+    }
+    if (scenario === "invalid-envelope-sse") {
+      res.setHeader("content-type", "text/event-stream");
+      res.end("data: {\"choices\":[]}\n\n");
+      return;
+    }
+    if (scenario === "invalid-envelope-truncated") {
+      res.end("{\"choices\":[");
+      return;
+    }
     if (scenario === "null-envelope") {
       res.end("null");
       return;
@@ -256,9 +270,20 @@ server.listen(0, "127.0.0.1", async () => {
       maxRetries: 0,
       logger
     });
-    for (const [scenario, code, responseFailureKind] of [
+    for (const [scenario, code, responseFailureKind, diagnostics = {}] of [
       ["truncated", "MODEL_OUTPUT_TRUNCATED", "truncated_content"],
-      ["invalid-envelope", "MODEL_INVALID_RESPONSE", "invalid_response_json"],
+      ["invalid-envelope", "MODEL_INVALID_RESPONSE", "invalid_response_json", {
+        responseContentTypeKind: "json", responseEnvelopeKind: "other", responseParseFailureKind: "unexpected_token"
+      }],
+      ["invalid-envelope-html", "MODEL_INVALID_RESPONSE", "invalid_response_json", {
+        responseContentTypeKind: "html", responseEnvelopeKind: "html", responseParseFailureKind: "unexpected_token"
+      }],
+      ["invalid-envelope-sse", "MODEL_INVALID_RESPONSE", "invalid_response_json", {
+        responseContentTypeKind: "event_stream", responseEnvelopeKind: "event_stream", responseParseFailureKind: "unexpected_token"
+      }],
+      ["invalid-envelope-truncated", "MODEL_INVALID_RESPONSE", "invalid_response_json", {
+        responseContentTypeKind: "json", responseEnvelopeKind: "json_object", responseParseFailureKind: "unexpected_end"
+      }],
       ["null-envelope", "MODEL_INVALID_RESPONSE", "invalid_envelope"],
       ["missing-content", "MODEL_INVALID_RESPONSE", "missing_content"],
       ["invalid-json", "MODEL_INVALID_JSON", "invalid_content_json"],
@@ -274,9 +299,19 @@ server.listen(0, "127.0.0.1", async () => {
       assert.strictEqual(error.retryable, true);
       assert.strictEqual(typeof error.contentLength, "number");
       assert.strictEqual(typeof error.finishReason, "string");
+      for (const [field, expected] of Object.entries(diagnostics)) assert.strictEqual(error[field], expected);
+      if (responseFailureKind === "invalid_response_json") {
+        assert.strictEqual(error.responseHadUtf8Bom, false);
+      }
     }
     const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
-    assert.strictEqual(structuredFailureMetrics.length, 6);
+    assert.strictEqual(structuredFailureMetrics.length, 9);
+    for (const metric of structuredFailureMetrics.filter((item) => item.data.responseFailureKind === "invalid_response_json")) {
+      assert(["json", "html", "event_stream"].includes(metric.data.responseContentTypeKind));
+      assert(["other", "html", "event_stream", "json_object"].includes(metric.data.responseEnvelopeKind));
+      assert(["unexpected_token", "unexpected_end"].includes(metric.data.responseParseFailureKind));
+      assert.strictEqual(metric.data.responseHadUtf8Bom, false);
+    }
     assert(!JSON.stringify(structuredFailureMetrics).includes("response sentinel"));
     assert(!JSON.stringify(structuredFailureMetrics).includes("finish reason sentinel"));
     const adaptiveAdapter = new OpenAICompatibleAdapter({

@@ -32,6 +32,9 @@ const SAFE_RESPONSE_FAILURE_KINDS = new Set([
   "missing_content",
   "invalid_content_json"
 ]);
+const SAFE_RESPONSE_CONTENT_TYPE_KINDS = new Set(["json", "event_stream", "html", "plain_text", "other", "missing"]);
+const SAFE_RESPONSE_ENVELOPE_KINDS = new Set(["empty", "json_object", "json_array", "event_stream", "html", "other"]);
+const SAFE_RESPONSE_PARSE_FAILURE_KINDS = new Set(["unexpected_end", "unexpected_token", "other"]);
 const PRIVATE_JOB_KEYS = [
   "id", "sourceId", "keyword", "title", "company", "location", "salary",
   "url", "description", "sourceContentHash", "capturedAt"
@@ -1718,6 +1721,17 @@ async function runPrivateFullChain(options, env, testSeam = null) {
           : null,
         responseJsonModeApplied: typeof analysis.errorJsonModeApplied === "boolean"
           ? analysis.errorJsonModeApplied
+          : null,
+        responseContentLength: Number.isInteger(analysis.errorContentLength)
+          && analysis.errorContentLength >= 0
+          && analysis.errorContentLength <= 10000000
+          ? analysis.errorContentLength
+          : null,
+        responseContentTypeKind: safeEnum(analysis.errorContentTypeKind, SAFE_RESPONSE_CONTENT_TYPE_KINDS, ""),
+        responseEnvelopeKind: safeEnum(analysis.errorEnvelopeKind, SAFE_RESPONSE_ENVELOPE_KINDS, ""),
+        responseParseFailureKind: safeEnum(analysis.errorParseFailureKind, SAFE_RESPONSE_PARSE_FAILURE_KINDS, ""),
+        responseHadUtf8Bom: typeof analysis.errorHadUtf8Bom === "boolean"
+          ? analysis.errorHadUtf8Bom
           : null,
         pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
       };

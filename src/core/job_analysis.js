@@ -252,6 +252,17 @@ function failedAnalysis(configs, job, revision, error) {
     errorJsonModeApplied: typeof error?.jsonModeApplied === "boolean"
       ? error.jsonModeApplied
       : null,
+    errorContentLength: Number.isInteger(Number(error?.contentLength))
+      && Number(error.contentLength) >= 0
+      && Number(error.contentLength) <= 10000000
+      ? Number(error.contentLength)
+      : null,
+    errorContentTypeKind: error?.responseContentTypeKind || "",
+    errorEnvelopeKind: error?.responseEnvelopeKind || "",
+    errorParseFailureKind: error?.responseParseFailureKind || "",
+    errorHadUtf8Bom: typeof error?.responseHadUtf8Bom === "boolean"
+      ? error.responseHadUtf8Bom
+      : null,
     realRoleType: "",
     businessScenario: "",
     coreRequirements: [],
