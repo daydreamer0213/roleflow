@@ -506,7 +506,7 @@ node scripts/private-full-chain-runner.js --match-live `
 
 Redirect stdout/stderr to private logs. Poll every 30 seconds. Do not print model responses.
 
-- [ ] **Step 5: Evaluate safe aggregates**
+- [x] **Step 5: Evaluate safe aggregates**
 
 Require:
 
@@ -529,6 +529,7 @@ If any row fails, diagnose only the failed response shape before expanding. Do n
 - Commit `0b135a6` adds content-free response-envelope diagnostics (content-type class, envelope class, parse-failure class, length and BOM flag). It never persists the response body. The next fresh diagnostic must use the same three indices only long enough to classify the upstream envelope failure before deciding whether parsing or provider behavior needs a fix.
 - A fresh two-row envelope diagnostic parsed both responses, confirming that the earlier JSON-envelope failures are intermittent rather than a deterministic parser defect. It also exposed one genuine false hard exclusion: inclusive eligibility language and resume-absence wording were being accepted as hard-conflict evidence. Commit `de5374b` fixes both shared contract boundaries, advances the affected pipeline versions, and passes all 47 offline checks. The next fresh diagnostic remains limited to the same three confirmed `keep` rows.
 - The v10 diagnostic at `de5374b` completed all three rows as evidence-complete `review/talk`: 3/3 opportunities retained, zero hard blockers, zero failed/stale/pending/partial/unresolved rows, and the matching card was consumed. Independent review then found two adjacent contract edges: mixed soft/hard qualifications joined without punctuation and epistemic wording such as “cannot confirm”. Commit `d30eeb5` preserves the hard qualification in the former and keeps the latter at `unknown`; all 47 offline checks still pass. Because this is a product-code descendant of the v10 manifest, a fresh v11 three-row run is required before final acceptance.
+- The final v11 diagnostic bound to product commit `d30eeb5` repeated the successful result: all three rows completed as evidence-complete `review/talk`, 3/3 opportunities were retained, and failed/stale/pending/partial/unresolved, false hard exclusion, missed obvious exclusion, primary without evidence, and hard blocker counts were all zero. The confirmed matching card was provided and consumed. Diagnostic mode correctly remained ineligible for a formal 20-row acceptance claim, and no broader run was started.
 
 ---
 
@@ -554,7 +555,7 @@ git status --short
 
 Expected: all registered offline checks pass; diff check has no output.
 
-- [ ] **Step 2: Independent read-only review**
+- [x] **Step 2: Independent read-only review**
 
 Review:
 
@@ -565,7 +566,7 @@ Review:
 - privacy of reports;
 - no accidental runtime prompt or decision loosening beyond existing product policy.
 
-- [ ] **Step 3: Write the non-sensitive summary**
+- [x] **Step 3: Write the non-sensitive summary**
 
 Record only commits, harness/policy versions, total/keep/exclude counts, safe aggregate metrics, test results, and safety boundaries. Do not include private IDs, titles, companies, JD text, rationale, resume facts, URL, endpoint or key.
 
