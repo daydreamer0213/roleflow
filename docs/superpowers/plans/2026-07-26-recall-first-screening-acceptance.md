@@ -533,6 +533,8 @@ If any row fails, diagnose only the failed response shape before expanding. Do n
 - Broad final review then found three shared-boundary gaps: both sides could erase v2 policy fields during comparison, qualification-information absence could still become an eligibility blocker, and legacy MatchDecision blockers could still treat another technology stack as direct incompatibility. Commit `aafc5be` closes those gates, preserves true explicit eligibility/core/safety blockers, moves the affected pipelines to v9/v16, and changes the two absence-only synthetic exclusions to `review/talk`. Candidate 47-check and fresh single-parent baseline 41-check suites pass. A final v12 run against `aafc5be` is required because the product and shared harness both changed after v11.
 - Repeated boundary review then showed that the remaining eligibility gate still trusted too many model-authored `conflict` states. Commits through `98e74da` replace that blacklist with conservative fact comparison across compact, full and historical paths; cover common cohort sets/ranges, in-school polarity, education thresholds/full-time study and named certificates; preserve compound hard conditions without promoting preferences; and advance the match pipeline to v17. All 47 offline checks pass and independent terminal review found no remaining high-probability Critical or Important issue. Because product behavior changed after v11, the final bounded run moves to a fresh immutable v13 bundle.
 - The v13 three-row run failed before contract validation because all three provider responses were HTTP 200 with an empty JSON envelope after the built-in retry/fallback sequence. A fresh one-row v14 retry proved the transport failure intermittent, then exposed a real false hard exclusion: the only indispensable-core trigger was a historical “participated only” responsibility boundary, not refusal or inability. Commit `ec781ee` removes past “only participated/performed/undertook” scope from explicit incompatibility, preserves explicit refusal/inability and advances match decisions to v18. Targeted checks, all 47 offline checks and focused independent review pass. A fresh immutable v15 one-row retry must confirm the corrected product before any three-row expansion.
+- The v15 retry again ended at `understandJob` with an HTTP 200 empty envelope. A fresh v16 retry completed as `review/talk`, consumed the confirmed matching card, and produced no hard blocker, confirming the `ec781ee` product correction without loosening explicit refusal or inability.
+- The final v17 three-row diagnostic completed two rows as `review/talk`: both completed opportunities were retained, one was evidence-complete, and neither had a hard blocker. The third row ended at `understandJob` with an HTTP 200 response whose JSON envelope was empty. A fresh v18 retry of only that row produced the same content-free upstream failure after the built-in retry sequence. Its JD length and character structure were ordinary, and no contract or product decision ran. The safe final result is therefore two retained completed decisions, zero false hard exclusions, and one unresolved upstream failure; it is not a fully passed three-row acceptance gate and was not expanded to 20 rows.
 
 ---
 
@@ -573,7 +575,7 @@ Review:
 
 Record only commits, harness/policy versions, total/keep/exclude counts, safe aggregate metrics, test results, and safety boundaries. Do not include private IDs, titles, companies, JD text, rationale, resume facts, URL, endpoint or key.
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```powershell
 git add scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js `
@@ -583,6 +585,6 @@ git commit -m "docs: record recall-first screening acceptance"
 git push origin codex/claude-generic-evidence-matching-live-fix
 ```
 
-- [ ] **Step 5: Do not merge automatically**
+- [x] **Step 5: Do not merge automatically**
 
 Report the branch and commits. Leave `D:\Guo\ZhiPing`, its database, browser and 8787 untouched. Use the branch-finishing workflow only after the goal's tests, v2 confirmation and small live diagnostic are all proven.

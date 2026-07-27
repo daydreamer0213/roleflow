@@ -4,14 +4,14 @@
 
 The isolated branch now treats job screening as an opportunity-retention step: it hard-excludes only explicit, evidence-backed incompatibilities while keeping experience-year gaps, wish-list gaps, transferable ability and ordinary uncertainty available for communication.
 
-This is a bounded acceptance result, not a claim of perfect matching accuracy or a completed 20-row benchmark.
+This is a bounded verification result, not a claim of perfect matching accuracy, a fully passed three-row gate, or a completed 20-row benchmark.
 
 ## Version identity
 
 - Branch: `codex/claude-generic-evidence-matching-live-fix`
 - Approved baseline product commit: `fb0168afce265cf351f03e80f66d9e0f24015887`
 - Final evaluated product commit: `ec781ee`
-- Live evaluated checkpoint: pending the final v15 diagnostic
+- Live evaluated checkpoint: `d376d666ad00f197713cf09ada29a2eb4b4d1438`
 - Private harness: `private-full-chain-harness.v2`
 - Label schema: `private-real-jd-labels.v2`
 - Evaluation policy: `recall-first.v1`
@@ -26,14 +26,15 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 - Profile, matching card, resume evidence and job inputs were unchanged while the two remaining dispositions were corrected.
 - True eligibility, indispensable-core and safety exclusions remain covered by synthetic offline fixtures.
 
-## Latest bounded live diagnostic
+## Final bounded live diagnostic
 
-- Rows evaluated: 3
-- Completed: 3
-- Opportunities retained: 3/3
-- Result bucket: 3 `review/talk`
-- Evidence complete: 3/3
-- Failed, stale, pending, partial or unresolved: 0
+- Unique rows selected: 3
+- Completed product decisions: 2
+- Opportunities retained among completed decisions: 2/2
+- Result buckets: 2 `review/talk`, 1 `analysis_pending`
+- Evidence complete among completed decisions: 1/2
+- Failed and unresolved: 1
+- Stale, pending or partial: 0
 - False hard exclusions: 0
 - Missed obvious exclusions: 0
 - Primary without evidence: 0
@@ -42,7 +43,9 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 - Diagnostic mode: yes
 - Formal acceptance eligible: no, by design for a three-row subset
 
-The v13 three-row diagnostic received three upstream HTTP 200 responses with empty bodies and therefore produced no product decision. A fresh one-row v14 retry completed and exposed one false indispensable-core exclusion caused solely by a historical “participated only” responsibility boundary. Product commit `ec781ee` keeps historical role scope non-blocking while preserving explicit refusal or inability; a fresh v15 retry is required before the branch is published.
+The v13 three-row diagnostic received three upstream HTTP 200 responses with empty bodies and therefore produced no product decision. A fresh one-row v14 retry completed and exposed one false indispensable-core exclusion caused solely by a historical “participated only” responsibility boundary. Product commit `ec781ee` keeps historical role scope non-blocking while preserving explicit refusal or inability.
+
+The v15 request again received an empty HTTP 200 response. The next fresh one-row v16 run completed as `review/talk` without a hard blocker, directly confirming the role-boundary correction. The final v17 three-row run completed two rows as `review/talk` with no hard blocker; the remaining row received an empty HTTP 200 JSON envelope at `understandJob`. A fresh v18 retry of only that row produced the same content-free upstream response after the adapter's retry sequence. The input had ordinary length and no invalid or control characters. No product decision was made for that row, so the branch does not claim a fully passed three-row gate.
 
 ## Contract changes
 
@@ -60,7 +63,7 @@ The v13 three-row diagnostic received three upstream HTTP 200 responses with emp
 
 - Regression tests were observed failing before the contract fixes and passing afterward.
 - Targeted semantic, model-adapter, generic-evidence, benchmark and private-runner checks passed.
-- The complete registered offline suite passed all 47 checks again after the final contract, review-coverage and documentation commits.
+- The complete registered offline suite passed all 47 checks after the final product contract and review-coverage commits.
 - Independent review findings on mixed qualifications, uncertainty wording and safe diagnostic-field projection were addressed or covered.
 
 ## Safety boundary
@@ -74,6 +77,7 @@ The v13 three-row diagnostic received three upstream HTTP 200 responses with emp
 
 ## Residual limits
 
-- Three rows prove the corrected failure modes and the complete private chain, not overall precision across every occupation.
-- Historical upstream JSON-envelope failures were intermittent; content-free envelope diagnostics remain available if they recur.
+- The completed rows prove the corrected false-exclusion paths and the complete private chain, not overall precision across every occupation.
+- The final three-row gate remains inconclusive because one frozen row repeatedly received an HTTP 200 response with an empty body before contract validation. The row remained `analysis_pending`; it was not falsely excluded.
+- Content-free envelope diagnostics identify the upstream failure without persisting response bodies.
 - The full 20-row live run was intentionally not executed.
