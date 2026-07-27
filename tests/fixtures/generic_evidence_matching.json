@@ -288,25 +288,23 @@
       "evidenceSnippets": ["JD：必须能承受高频电话销售与客户陌拜"]
     },
     "matchDecision": {
-      "recommendation": "skip",
-      "fitLevel": "D",
-      "confidence": 0.9,
-      "fitReasons": ["核心必备的电话销售与陌拜要求无任何候选人证据，且匹配卡明确将纯销售列为谨慎转向"],
+      "recommendation": "review",
+      "fitLevel": "C",
+      "confidence": 0.45,
+      "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "电话销售与客户陌拜", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：候选人经历为线上用户运营，无电话销售或陌拜记录" }
+        { "requirement": "电话销售与客户陌拜", "state": "unknown", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
-      "hardBlockers": [
-        { "kind": "indispensable_core", "requirement": "电话销售与客户陌拜", "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：候选人经历为线上用户运营，无电话销售或陌拜记录" }
-      ],
-      "softGaps": [],
-      "questionsToVerify": [],
+      "hardBlockers": [],
+      "softGaps": ["匹配卡将纯销售列为谨慎转向"],
+      "questionsToVerify": ["确认候选人是否愿意接受高频电话销售与客户陌拜"],
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": ["简历：候选人经历为线上用户运营，无电话销售或陌拜记录"] }
+      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": [] }
     },
-    "expected": { "recommendation": "skip", "jobQualityLevel": "normal", "bucket": "not_recommended", "hardBlockerKind": "indispensable_core" }
+    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "talk", "requireUnknown": true, "forbidFitReasons": true }
   },
   {
     "id": "insufficient-evidence",
@@ -433,24 +431,22 @@
       "evidenceSnippets": ["JD：必须精通 Java 与 Spring Boot"]
     },
     "matchDecision": {
-      "recommendation": "skip",
-      "fitLevel": "D",
-      "confidence": 0.92,
-      "fitReasons": ["岗位唯一核心栈为 Java/Spring，候选人仅有 Python 项目证据"],
+      "recommendation": "review",
+      "fitLevel": "C",
+      "confidence": 0.45,
+      "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "Java/Spring 核心开发", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：候选人为 Python/FastAPI 项目经历，无 Java 证据" }
+        { "requirement": "Java/Spring 核心开发", "state": "unknown", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
-      "hardBlockers": [
-        { "kind": "indispensable_core", "requirement": "Java/Spring 核心开发", "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：候选人为 Python/FastAPI 项目经历，无 Java 证据" }
-      ],
-      "softGaps": [],
-      "questionsToVerify": [],
+      "hardBlockers": [],
+      "softGaps": ["简历没有直接 Java/Spring 项目证据"],
+      "questionsToVerify": ["确认候选人是否具备可核对的 Java/Spring 项目经历"],
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": ["简历：候选人为 Python/FastAPI 项目经历，无 Java 证据"] }
+      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": [] }
     },
-    "expected": { "recommendation": "skip", "jobQualityLevel": "normal", "bucket": "not_recommended", "hardBlockerKind": "indispensable_core" }
+    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "talk", "requireUnknown": true, "forbidFitReasons": true }
   }
 ]

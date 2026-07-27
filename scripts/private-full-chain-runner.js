@@ -1929,7 +1929,9 @@ function comparePrivateFullChainResults(baseline, candidate) {
     && candidate.evaluationPolicy === RECALL_FIRST_POLICY;
   const hasVersionedPolicy = Boolean(baseline.evaluationPolicy || candidate.evaluationPolicy
     || baseline.labelsVersion || candidate.labelsVersion);
-  if (hasVersionedPolicy && (!recallMode
+  const hasRecallRows = [baseline, candidate].some((value) => value.rows.some((row) =>
+    Object.prototype.hasOwnProperty.call(row, "expectedDisposition")));
+  if ((hasVersionedPolicy || hasRecallRows) && (!recallMode
     || baseline.labelsVersion !== "private-real-jd-labels.v2"
     || candidate.labelsVersion !== "private-real-jd-labels.v2")) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison label policy identity does not match.");

@@ -85,7 +85,7 @@ function isSoftOnlyEligibilityConstraint(value) {
   const softPattern = /可接受|接受应届|欢迎应届|应届亦可|均可|优先|加分|不限|无硬性要求/;
   const soft = softPattern.test(source);
   const hard = /仅限|只招|仅招|只接受|仅接受|必须|须为|限定|不接受|不招|不得|硬性/.test(source);
-  const hasSeparateHardQualification = source.split(/[，,；;。]|并且|同时|且|但/)
+  const hasSeparateHardQualification = source.split(/[，,；;。()（）/、]|并且|同时|而且|以及|和|且|但/)
     .some((part) => !softPattern.test(part) && /大专|专科|本科|学士|硕士|研究生|博士|学历|学位|证书|资格证/.test(part));
   return soft && !hard && !hasSeparateHardQualification;
 }
@@ -96,6 +96,12 @@ function hasExplicitCoreIncompatibilityEvidence(value) {
     return false;
   }
   return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(source);
+}
+
+function hasExplicitEligibilityConflictEvidence(value) {
+  const source = String(value || "").trim();
+  return Boolean(source)
+    && !/未提供|未体现|未提及|未说明|不能确认|不能确定|无法确认|无法确定|不确定|待确认|尚待确认|信息不足|缺少(?:相关)?信息/.test(source);
 }
 
 function validateJobUnderstanding(value) {
@@ -152,7 +158,9 @@ function validateCompactMatchEvidence(value, context = {}) {
     expected: eligibilityItems,
     states: ELIGIBILITY_MATCH_STATES,
     evidenceStates: ["satisfied", "conflict"]
-  });
+  }).map((item) => item.state === "conflict" && !hasExplicitEligibilityConflictEvidence(item.resumeEvidence)
+    ? { ...item, state: "unknown", resumeEvidence: "" }
+    : item);
   const uncertainties = contractStringArray(value.uncertainties, "matchJob", "uncertainties", 8);
   const cautions = compactCautions(value.cautions);
   if (!MATCH_CERTAINTY_LEVELS.includes(value.certainty)) {
@@ -499,6 +507,14 @@ function validateMatchDecision(value, context = {}) {
     if (match.state !== "missing" || !match.indispensable) {
       throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」只能对应 state=missing 且 indispensable=true 的核心要求`);
     }
+    if (!hasExplicitCoreIncompatibilityEvidence(blocker.resumeEvidence)) {
+      throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」必须包含候选人明确不兼容的事实`);
+    }
+  }
+  for (const blocker of hardBlockers) {
+    if (blocker.kind === "eligibility" && !hasExplicitEligibilityConflictEvidence(blocker.resumeEvidence)) {
+      throw new ModelContractError("matchJob", `eligibility 硬性阻断「${blocker.requirement}」不能仅依据资格信息缺失`);
+    }
   }
   for (const match of requirementMatches) {
     if (match.indispensable
@@ -574,11 +590,15 @@ function validateMatchDecision(value, context = {}) {
 // 决策路径只接受结构完整的三类 blocker：合法 kind、非空 requirement、JD 与候选人双侧证据齐全。
 // 历史分析里的字符串 blocker、缺字段对象或非法 kind 仅供页面展示或忽略，绝不进入 skip、分桶或任何硬排除判断。
 function isDecisionHardBlocker(item) {
-  return Boolean(item) && typeof item === "object" && !Array.isArray(item)
+  const structured = Boolean(item) && typeof item === "object" && !Array.isArray(item)
     && HARD_BLOCKER_KINDS.includes(item.kind)
     && typeof item.requirement === "string" && Boolean(item.requirement.trim())
     && typeof item.jdEvidence === "string" && Boolean(item.jdEvidence.trim())
     && typeof item.resumeEvidence === "string" && Boolean(item.resumeEvidence.trim());
+  if (!structured) return false;
+  if (item.kind === "indispensable_core") return hasExplicitCoreIncompatibilityEvidence(item.resumeEvidence);
+  if (item.kind === "eligibility") return hasExplicitEligibilityConflictEvidence(item.resumeEvidence);
+  return true;
 }
 
 function decisionHardBlockers(analysis = {}) {

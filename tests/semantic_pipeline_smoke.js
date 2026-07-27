@@ -305,24 +305,24 @@ function matchGenericContractSmoke() {
     recommendation: "skip",
     fitLevel: "D",
     confidence: 0.9,
-    fitReasons: ["核心必备要求完全无证据"],
+    fitReasons: ["候选人明确拒绝岗位核心技术方向"],
     requirementMatches: [{
       requirement: "JAVA 核心开发",
       state: "missing",
       indispensable: true,
       jdEvidence: "JD：必须精通 Java 与 Spring Boot",
-      resumeEvidence: "简历：候选人为 Python 项目经历"
+      resumeEvidence: "简历：候选人明确不接受 Java 开发岗位"
     }],
     jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [{
       kind: "indispensable_core",
       requirement: "JAVA 核心开发",
       jdEvidence: "JD：必须精通 Java 与 Spring Boot",
-      resumeEvidence: "简历：候选人为 Python 项目经历"
+      resumeEvidence: "简历：候选人明确不接受 Java 开发岗位"
     }],
     softGaps: [],
     questionsToVerify: [],
-    evidence: { jd: ["JD：必须精通 Java 与 Spring Boot"], resume: ["简历：候选人为 Python 项目经历"] }
+    evidence: { jd: ["JD：必须精通 Java 与 Spring Boot"], resume: ["简历：候选人明确不接受 Java 开发岗位"] }
   };
   const skipValidated = validateModelResult("matchJob", validSkip);
   assert.strictEqual(skipValidated.recommendation, "skip");
@@ -347,11 +347,15 @@ function matchGenericContractSmoke() {
   const repairedMissingIndispensable = validateModelResult("matchJob", {
     ...missingIndispensableWithoutBlocker,
     recommendation: "skip",
+    requirementMatches: missingIndispensableWithoutBlocker.requirementMatches.map((item) => ({
+      ...item,
+      resumeEvidence: "简历：候选人明确不接受核心平台开发"
+    })),
     hardBlockers: [{
       kind: "indispensable_core",
       requirement: "Core platform development",
       jdEvidence: "JD: requires core platform development",
-      resumeEvidence: "Resume: no related experience"
+      resumeEvidence: "简历：候选人明确不接受核心平台开发"
     }]
   });
   assert.strictEqual(repairedMissingIndispensable.recommendation, "skip");
@@ -638,8 +642,8 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v8");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v15");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v9");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v16");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -684,6 +688,12 @@ function understandingContractSmoke() {
   });
   assert.deepStrictEqual(conjunctiveEligibility.eligibilityConstraints, ["JD：可接受应届毕业生且本科及以上学历"],
     "软硬条件用连接词组合时，明确学历资格仍必须保留");
+  const parentheticalEligibility = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    eligibilityConstraints: ["JD：本科及以上学历（可接受应届毕业生）"]
+  });
+  assert.deepStrictEqual(parentheticalEligibility.eligibilityConstraints, ["JD：本科及以上学历（可接受应届毕业生）"],
+    "软偏好放在括号中时，不得把括号外的明确学历资格一起过滤");
   const exclusiveEligibility = validateModelResult("understandJob", {
     ...validUnderstanding,
     eligibilityConstraints: ["JD：仅限 2027 届应届毕业生"]
@@ -1034,7 +1044,7 @@ function matchBoundaryContractSmoke() {
     softGaps: ["未达到 3-5 年"],
     evidence: { jd: ["要求 3-5 年"], resume: ["企业经历较短"] }
   }), ModelContractError);
-  const hard = validateModelResult("matchJob", {
+  const unsupportedHardBlocker = {
     recommendation: "skip",
     fitLevel: "D",
     confidence: 0.9,
@@ -1056,9 +1066,22 @@ function matchBoundaryContractSmoke() {
     softGaps: [],
     questionsToVerify: [],
     evidence: { jd: ["必须熟练掌握 C++"], resume: ["候选人主栈为 Python/FastAPI"] }
+  };
+  assert.throws(() => validateModelResult("matchJob", unsupportedHardBlocker), ModelContractError,
+    "旧 MatchDecision 也不得把另一技术栈当作候选人明确不兼容");
+  const hard = validateModelResult("matchJob", {
+    ...unsupportedHardBlocker,
+    requirementMatches: unsupportedHardBlocker.requirementMatches.map((item) => ({
+      ...item,
+      resumeEvidence: "简历：候选人明确不接受 C++ 岗位"
+    })),
+    hardBlockers: unsupportedHardBlocker.hardBlockers.map((item) => ({
+      ...item,
+      resumeEvidence: "简历：候选人明确不接受 C++ 岗位"
+    })),
+    evidence: { jd: ["必须熟练掌握 C++"], resume: ["候选人明确不接受 C++ 岗位"] }
   });
-  assert.strictEqual(hard.hardBlockers.length, 1);
-  assert.strictEqual(hard.hardBlockers[0].kind, "indispensable_core");
+  assert.strictEqual(hard.hardBlockers.length, 1, "候选人明确拒绝的核心边界仍可硬排除");
   assert.deepStrictEqual(hard.blockingGaps, ["C++ 核心开发"], "旧渲染仍读取字符串化的阻断摘要");
   const eligibility = validateModelResult("matchJob", {
     recommendation: "skip",
@@ -1078,6 +1101,14 @@ function matchBoundaryContractSmoke() {
   });
   assert.strictEqual(eligibility.recommendation, "skip");
   assert.strictEqual(eligibility.hardBlockers[0].kind, "eligibility");
+  assert.throws(() => validateModelResult("matchJob", {
+    ...eligibility,
+    hardBlockers: eligibility.hardBlockers.map((item) => ({
+      ...item,
+      resumeEvidence: "简历：未提供学历信息"
+    })),
+    evidence: { jd: eligibility.evidence.jd, resume: ["未提供学历信息"] }
+  }), ModelContractError, "旧 MatchDecision 不得把资格信息缺失当作明确冲突");
 
   // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持展示兼容读取，但绝不参与新决策。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
@@ -1106,6 +1137,12 @@ function matchBoundaryContractSmoke() {
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", resumeEvidence: "简历：无相关约定" }] }), [], "缺 JD 证据不得参与决策");
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "unknown_kind", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无相关约定" }] }), [], "字段齐全的非法 kind 也不得参与决策");
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{ kind: "safety", requirement: {}, jdEvidence: 1, resumeEvidence: {} }] }), [], "对象和数字字段不得被字符串化后参与决策");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "indispensable_core", requirement: "C++ 核心开发", jdEvidence: "JD：必须熟练掌握 C++", resumeEvidence: "简历：候选人主栈为 Python"
+  }] }), [], "另一技术栈不是候选人明确不兼容，不得进入历史决策路径");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：未提供学历信息"
+  }] }), [], "资格信息缺失不得进入历史决策路径");
   const incompleteBlockerAnalysis = {
     semanticStatus: "complete",
     recommendation: "review",
@@ -1461,6 +1498,13 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(eligibilityConflict.recommendation, "skip");
   assert.strictEqual(eligibilityConflict.hardBlockers[0].kind, "eligibility");
   assert.doesNotThrow(() => validateModelResult("matchJob", eligibilityConflict, { jobUnderstanding }), "有双侧证据的资格冲突必须兼容既有下游契约");
+  const eligibilityUnknown = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    eligibility: [{ id: "E1", state: "conflict", resumeEvidence: "简历：未提供届别或学历信息" }]
+  }, { jobUnderstanding });
+  assert.notStrictEqual(eligibilityUnknown.recommendation, "skip",
+    "资格信息缺失只能进入待确认，不能作为明确资格冲突");
+  assert.deepStrictEqual(eligibilityUnknown.hardBlockers, []);
 
   for (const invalid of [
     { ...compactDirectPayload, matches: compactDirectPayload.matches.slice(0, 1) },

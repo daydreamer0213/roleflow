@@ -1844,15 +1844,39 @@ async function injectedLiveFlowSmoke(identityPath) {
   );
   assert.strictEqual(wronglyExcludedCompared.report.accepted, false);
   assert.match(wronglyExcludedCompared.report.failureReasons.join("\n"), /错误硬排除/);
+  const downgradedBaseline = structuredClone(recallBaseline);
+  const downgradedCandidate = asRecallFirstResult(wronglyExcluded);
+  for (const value of [downgradedBaseline, downgradedCandidate]) {
+    delete value.evaluationPolicy;
+    delete value.labelsVersion;
+  }
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(downgradedBaseline, downgradedCandidate).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY",
+    "v2 rows must not become exact-v1 results when both sides erase their policy identity"
+  );
 
-  const excludedReference = recallCandidate.rows.find((row) => row.expectedDisposition === "exclude");
-  assert(excludedReference, "recall fixture requires one explicit exclude row");
-  const missedExclusion = structuredClone(recallCandidate);
+  const explicitExcludeBaseline = structuredClone(baseline);
+  const explicitExcludeCandidate = structuredClone(candidate);
+  for (const value of [explicitExcludeBaseline, explicitExcludeCandidate]) {
+    value.rows[0] = {
+      ...value.rows[0],
+      expectedRecommendation: "skip",
+      expectedBucket: "not_recommended",
+      actualRecommendation: "skip",
+      actualBucket: "not_recommended",
+      pass: true
+    };
+  }
+  const recallExcludeBaseline = asRecallFirstResult(explicitExcludeBaseline);
+  const recallExcludeCandidate = asRecallFirstResult(explicitExcludeCandidate);
+  const excludedReference = recallExcludeCandidate.rows[0];
+  const missedExclusion = structuredClone(recallExcludeCandidate);
   missedExclusion.rows = missedExclusion.rows.map((row) => row.id === excludedReference.id
     ? { ...row, actualRecommendation: "review", actualBucket: "talk", pass: false }
     : row);
   const missedExclusionCompared = runner.comparePrivateFullChainResults(
-    recallBaseline,
+    recallExcludeBaseline,
     asRecallFirstResult(missedExclusion)
   );
   assert.strictEqual(missedExclusionCompared.report.accepted, false);
