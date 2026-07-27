@@ -464,27 +464,27 @@ Implementation checkpoint (2026-07-26):
 
 **Interfaces:**
 - Consumes: confirmed v2 bundle and current read-only model settings.
-- Produces: one diagnostic containing a retained borderline row, a retained primary row, and one explicit eligibility exclusion row.
+- Produces: one diagnostic containing the retained borderline cases actually present in the frozen sample. Do not invent an `exclude` label merely to balance the fixture.
 
 - [x] **Step 1: Create an evaluated docs checkpoint**
 
 The latest product commit must be a strict ancestor of a docs-only evaluated commit. Initialize the private manifest with those exact commits and the approved baseline product commit.
 
-- [ ] **Step 2: Verify bundle and portability**
+- [x] **Step 2: Verify bundle and portability**
 
 Run the existing `--create-portability-proof` and `--verify-private-bundle` modes. Verify exact copied hashes without printing private contents.
 
-- [ ] **Step 3: Select three indices safely**
+- [x] **Step 3: Select three indices safely**
 
-Use private local parsing to select:
+Private local inspection found that the two remaining `exclude` labels contradicted the confirmed recall-first policy: one JD used inclusive fresh-graduate wording rather than an exclusive cohort restriction, and the other was only an experience-years gap. The user confirmed both as `keep`, producing a 20-keep / 0-exclude v2 fixture. Select three keep rows covering:
 
-- the previously observed former strict-skip row now labelled `keep`;
-- the previously correct `apply/primary` row labelled `keep`;
-- one of the two explicit eligibility rows labelled `exclude`.
+- the previously observed former strict-skip row;
+- the inclusive cohort-language correction;
+- the experience-years soft-signal correction.
 
 Print only the numeric indices.
 
-- [ ] **Step 4: Run candidate match serially**
+- [x] **Step 4: Run candidate match serially**
 
 Use:
 
@@ -493,7 +493,7 @@ $env:ALLOW_PRIVATE_RESUME_BENCHMARK='YES'
 $env:ALLOW_LIVE_MODEL_BENCHMARK='YES'
 node scripts/private-full-chain-runner.js --match-live `
   --side candidate `
-  --private-root 'D:\DevData\RoleFlow-private-benchmark\full-chain-v7-recall-v2-20260726' `
+  --private-root '<fresh confirmed recall-first bundle>' `
   --profile '<private confirmed profile>' `
   --matching-card '<private confirmed card>' `
   --jobs '<private frozen jobs>' `
@@ -518,7 +518,15 @@ Require:
 - matching card consumed;
 - diagnostic mode true and acceptance eligible false.
 
-If the explicit eligibility row is not excluded, diagnose only that row before expanding. Do not run 20 rows automatically.
+If any row fails, diagnose only the failed response shape before expanding. Do not run 20 rows automatically.
+
+**Observed bounded diagnostics**
+
+- The first v7 three-row run retained the known positive row and did not hard-exclude the inclusive cohort row, but one row ended in `MODEL_INVALID_RESPONSE`. A fresh one-row retry completed as `review/talk` with evidence, proving that the product rule itself retained the opportunity.
+- Evidence inspection then corrected the two false `exclude` labels. The user explicitly confirmed both changes; the v8 fixture is 20 `keep`, 0 `exclude`. Offline synthetic fixtures continue to cover true eligibility, indispensable-core and safety exclusions.
+- Commit `d150210` makes the inclusive wording explicit in the prompt and advances the job-understanding pipeline to v7 so old cache entries cannot mask the change. Commit `4c8b254` locks the zero-explicit-exclusion metric behavior.
+- The fresh v8 three-row run retained the experience-years row as evidence-complete `review/talk` with no hard blocker. The other two rows ended at `understandJob` after exhausting the existing three-step response recovery: HTTP 200, 8192 response tokens, final request without JSON mode, `invalid_response_json`. No row was falsely hard-excluded and the run was not expanded.
+- Commit `0b135a6` adds content-free response-envelope diagnostics (content-type class, envelope class, parse-failure class, length and BOM flag). It never persists the response body. The next fresh diagnostic must use the same three indices only long enough to classify the upstream envelope failure before deciding whether parsing or provider behavior needs a fix.
 
 ---
 
