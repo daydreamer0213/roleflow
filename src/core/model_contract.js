@@ -95,7 +95,7 @@ function hasExplicitCoreIncompatibilityEvidence(value) {
   if (/不能确认|不能确定|不能判断|不能证明|无法确认|无法确定|无法判断|无法证明|不确定|待确认|尚待确认|无法从(?:简历|现有材料|材料)确认/.test(source)) {
     return false;
   }
-  return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(source);
+  return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受/.test(source);
 }
 
 function normalizedCohortYear(value) {
