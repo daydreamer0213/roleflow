@@ -2120,6 +2120,11 @@ function renderPrivateCompareMarkdown(report) {
     "# Private full-chain comparison",
     "",
     `- Accepted: ${report.accepted}`,
+    `- Status: ${report.status || (report.accepted ? "full_pass" : "paired_fail")}`,
+    `- Paired accepted: ${report.pairedAccepted ?? report.accepted}`,
+    `- Comparable rows: ${report.coverage?.comparableTotal ?? report.total}/${report.coverage?.frozenTotal ?? report.total}`,
+    `- Empty-response rows excluded: ${report.coverage?.excludedEmptyTotal ?? 0}`,
+    `- Full coverage complete: ${report.coverage?.fullCoverageComplete ?? true}`,
     `- Baseline: ${report.baselineBehaviorCommit}`,
     `- Candidate: ${report.evaluatedCommit}`,
     `- Baseline card consumed: ${report.card.baselineConsumed}`,
@@ -2129,7 +2134,7 @@ function renderPrivateCompareMarkdown(report) {
     `- Failure reasons: ${report.failureReasons.length ? report.failureReasons.join("; ") : "none"}`
   ];
   if (report.evaluationPolicy === RECALL_FIRST_POLICY) {
-    const recall = report.recall.candidate;
+    const recall = report.pairedRecall?.candidate || report.recall.candidate;
     lines.push(
       `- Evaluation policy: ${RECALL_FIRST_POLICY}`,
       `- Opportunities retained: ${recall.retainedOpportunity}/${recall.expectedKeep}`,

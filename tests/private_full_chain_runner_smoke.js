@@ -2058,6 +2058,31 @@ async function injectedLiveFlowSmoke(identityPath) {
     assert(!recallMarkdown.includes(row.id), "recall Markdown must contain aggregates, not private row IDs");
   }
 
+  const overlapBundle = privatePath("cli-recall-incomplete-overlap");
+  const overlapBaseline = path.join(overlapBundle, "runs", "baseline", "match-result.json");
+  const overlapCandidate = path.join(overlapBundle, "runs", "candidate", "match-result.json");
+  const overlapReport = path.join(overlapBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(overlapBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(overlapCandidate), { recursive: true });
+  fs.writeFileSync(overlapBaseline, JSON.stringify(recallBaseline), "utf8");
+  fs.writeFileSync(overlapCandidate, JSON.stringify(asEmptyEnvelopeFailure(recallCandidate, 0)), "utf8");
+  const overlapCli = require("node:child_process").spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", overlapBaseline, "--candidate", overlapCandidate, "--report", overlapReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", env: { ...process.env, ALLOW_LIVE_MODEL_BENCHMARK: "" } });
+  assert.notStrictEqual(overlapCli.status, 0, overlapCli.stderr);
+  const overlapJson = JSON.parse(fs.readFileSync(overlapReport, "utf8"));
+  assert.strictEqual(overlapJson.pairedAccepted, true);
+  assert.strictEqual(overlapJson.accepted, false);
+  assert.strictEqual(overlapJson.status, "paired_pass_full_incomplete");
+  const overlapMarkdown = fs.readFileSync(overlapReport.replace(/\.json$/i, ".md"), "utf8");
+  assert.match(overlapMarkdown, /Comparable rows:/);
+  assert.match(overlapMarkdown, /Full coverage complete: false/);
+  assert.match(overlapMarkdown, /Paired accepted: true/);
+  for (const row of recallBaseline.rows) {
+    assert(!overlapMarkdown.includes(row.id), `overlap Markdown must not include private row id ${row.id}`);
+  }
+
   const privateStructuralForgeries = [
     { ...baseline, runMode: "offline" },
     { ...baseline, authorizationGatePassed: "true" },
