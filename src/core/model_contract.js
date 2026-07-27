@@ -80,11 +80,26 @@ function isExperienceYearsRequirement(requirement) {
   return new RegExp(`${experience}.{0,20}${years}|${years}.{0,12}${experience}`).test(source);
 }
 
+function isSoftOnlyEligibilityConstraint(value) {
+  const source = String(value || "");
+  const softPattern = /可接受|接受应届|欢迎应届|应届亦可|均可|优先|加分|不限|无硬性要求/;
+  const soft = softPattern.test(source);
+  const hard = /仅限|只招|仅招|只接受|仅接受|必须|须为|限定|不接受|不招|不得|硬性/.test(source);
+  const hasSeparateHardQualification = source.split(/[，,；;。]/)
+    .some((part) => !softPattern.test(part) && /大专|专科|本科|学士|硕士|研究生|博士|学历|学位|证书|资格证/.test(part));
+  return soft && !hard && !hasSeparateHardQualification;
+}
+
+function hasExplicitCoreIncompatibilityEvidence(value) {
+  return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(String(value || ""));
+}
+
 function validateJobUnderstanding(value) {
   const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
   const coreRequirements = understandingCoreRequirements(value.coreRequirements)
     .map((item, index) => ({ id: `R${index + 1}`, ...item }));
-  const eligibilityConstraints = contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8);
+  const eligibilityConstraints = contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8)
+    .filter((item) => !isSoftOnlyEligibilityConstraint(item));
   return {
     jobId: text(value.jobId),
     roleSummary: text(value.roleSummary),
@@ -145,7 +160,7 @@ function validateCompactMatchEvidence(value, context = {}) {
     const match = byRequirementId.get(requirement.id);
     const evidencedCoreConflict = match.state === "missing"
       && requirement.indispensable
-      && Boolean(match.resumeEvidence);
+      && hasExplicitCoreIncompatibilityEvidence(match.resumeEvidence);
     return {
       requirement: requirement.label,
       state: match.state === "missing" && requirement.indispensable && !evidencedCoreConflict ? "unknown" : match.state,

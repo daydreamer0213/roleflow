@@ -638,8 +638,8 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v7");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v14");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v8");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v15");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -665,6 +665,25 @@ function understandingContractSmoke() {
   };
   const understood = validateModelResult("understandJob", validUnderstanding);
   assert.strictEqual(understood.coreRequirements[0].indispensable, true, "合法对象结构必须保留");
+
+  const normalizedEligibility = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    eligibilityConstraints: ["JD：可接受应届毕业生", "JD：本科及以上学历"]
+  });
+  assert.deepStrictEqual(normalizedEligibility.eligibilityConstraints, ["JD：本科及以上学历"],
+    "包容性届别措辞不得进入硬资格，明确学历资格必须保留");
+  const mixedEligibility = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    eligibilityConstraints: ["JD：本科及以上学历，硕士优先"]
+  });
+  assert.deepStrictEqual(mixedEligibility.eligibilityConstraints, ["JD：本科及以上学历，硕士优先"],
+    "同一句同时包含明确学历资格和软偏好时，不得连同硬资格一起丢弃");
+  const exclusiveEligibility = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    eligibilityConstraints: ["JD：仅限 2027 届应届毕业生"]
+  });
+  assert.deepStrictEqual(exclusiveEligibility.eligibilityConstraints, ["JD：仅限 2027 届应届毕业生"],
+    "明确限定届别仍必须保留为硬资格");
 
   const sparse = validateModelResult("understandJob", {
     ...validUnderstanding,
@@ -1404,6 +1423,23 @@ async function compactMatchEvidenceContractSmoke() {
   assert.notStrictEqual(hardMissing.recommendation, "skip", "没有候选人事实证据时不得把 missing 提升为硬淘汰");
   assert.deepStrictEqual(hardMissing.hardBlockers, []);
   assert.doesNotThrow(() => validateModelResult("matchJob", hardMissing, { jobUnderstanding }), "紧凑结果归一化后必须仍能通过既有 MatchDecision 边界");
+
+  for (const inferredAbsence of [
+    "简历：未体现独立交付应用的经历",
+    "简历：现有项目技术栈为 Python 和 Node.js"
+  ]) {
+    const absenceOnly = validateModelResult("matchJob", {
+      ...compactDirectPayload,
+      matches: [
+        { id: "R1", state: "missing", resumeEvidence: inferredAbsence },
+        compactDirectPayload.matches[1]
+      ]
+    }, { jobUnderstanding });
+    assert.notStrictEqual(absenceOnly.recommendation, "skip",
+      "未写某项能力或只列出其他技术栈，不是候选人明确不兼容的证据");
+    assert.strictEqual(absenceOnly.requirementMatches[0].state, "unknown");
+    assert.deepStrictEqual(absenceOnly.hardBlockers, []);
+  }
 
   const eligibilityConflict = validateModelResult("matchJob", {
     matches: [
