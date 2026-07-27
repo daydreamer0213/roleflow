@@ -542,7 +542,7 @@ If any row fails, diagnose only the failed response shape before expanding. Do n
 **Interfaces:**
 - Produces: a non-sensitive final report and a pushed isolated branch.
 
-- [ ] **Step 1: Run the complete offline suite**
+- [x] **Step 1: Run the complete offline suite**
 
 Run:
 

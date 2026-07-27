@@ -55,7 +55,7 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 
 - Regression tests were observed failing before the contract fixes and passing afterward.
 - Targeted semantic, model-adapter, generic-evidence, benchmark and private-runner checks passed.
-- The complete registered offline suite passed 47 checks before final documentation.
+- The complete registered offline suite passed all 47 checks again after the final contract, review-coverage and documentation commits.
 - Independent review findings on mixed qualifications, uncertainty wording and safe diagnostic-field projection were addressed or covered.
 
 ## Safety boundary
