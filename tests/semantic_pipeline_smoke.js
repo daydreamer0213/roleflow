@@ -642,7 +642,7 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v9");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v10");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v18");
   const configs = configFor(["Python"]);
   let runs = 0;
@@ -1645,6 +1645,17 @@ async function understandingContractRepairSmoke() {
 }
 
 async function compactMatchEvidenceContractSmoke() {
+  const compact = validateModelResult("understandJob", {
+    roleSummary: "交付应用",
+    requirements: [{ label: "独立交付", indispensable: true, evidence: "JD：独立交付应用" }],
+    eligibility: ["JD：本科及以上"],
+    riskSignals: []
+  });
+  assert.strictEqual(compact.coreRequirements[0].id, "R1");
+  assert.strictEqual(compact.eligibilityItems[0].id, "E1");
+  assert.deepStrictEqual(compact.preferredRequirements, []);
+  assert.deepStrictEqual(compact.jobQuality, { level: "normal", concerns: [] });
+
   const jobUnderstanding = validateModelResult("understandJob", {
     jobId: "compact-1",
     roleSummary: "负责应用交付",

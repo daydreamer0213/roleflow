@@ -259,6 +259,11 @@ function hasExplicitEligibilityConflictEvidence(requirement, jdEvidence, resumeE
 }
 
 function validateJobUnderstanding(value) {
+  if (Object.prototype.hasOwnProperty.call(value, "requirements")
+    || Object.prototype.hasOwnProperty.call(value, "eligibility")
+    || Object.prototype.hasOwnProperty.call(value, "riskSignals")) {
+    return validateCompactJobUnderstanding(value);
+  }
   const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
   const coreRequirements = understandingCoreRequirements(value.coreRequirements)
     .map((item, index) => ({ id: `R${index + 1}`, ...item }));
@@ -283,6 +288,38 @@ function validateJobUnderstanding(value) {
     isFakeAI: Boolean(value.isFakeAI),
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
     evidenceSnippets
+  };
+}
+
+function validateCompactJobUnderstanding(value) {
+  const coreRequirements = understandingCoreRequirements(value.requirements)
+    .map((item, index) => ({ id: `R${index + 1}`, ...item }));
+  const eligibilityConstraints = contractStringArray(value.eligibility, "understandJob", "eligibility", 8)
+    .filter((item) => !isSoftOnlyEligibilityConstraint(item));
+  const hiddenRisks = understandingHiddenRisks(value.riskSignals);
+  const concerns = hiddenRisks.map(({ type, evidence }) => ({ type, evidence }));
+  return {
+    jobId: text(value.jobId),
+    roleSummary: text(value.roleSummary),
+    realRoleType: "unknown",
+    businessScenario: "",
+    coreResponsibilities: [],
+    coreRequirements,
+    preferredRequirements: [],
+    outcomeExpectations: [],
+    coreStack: [],
+    niceToHave: [],
+    senioritySignal: "unknown",
+    eligibilityConstraints,
+    eligibilityItems: eligibilityConstraints.map((label, index) => ({ id: `E${index + 1}`, label })),
+    hiddenRisks,
+    jobQuality: {
+      level: hiddenRisks.some((risk) => risk.severity === "high") ? "risk" : (hiddenRisks.length ? "caution" : "normal"),
+      concerns
+    },
+    isFakeAI: false,
+    isTrainingOrSales: false,
+    evidenceSnippets: []
   };
 }
 

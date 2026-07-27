@@ -191,56 +191,31 @@ server.listen(0, "127.0.0.1", async () => {
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
-    assert(understandPrompt.includes("coreResponsibilities"));
-    assert(understandPrompt.includes("coreRequirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求结构化核心要求对象");
-    assert(understandPrompt.includes("jobQuality.level 只能是 normal、caution 或 risk"), "understandJob prompt 必须限定岗位质量枚举");
-    assert(understandPrompt.includes("responsibility_sprawl"));
-    // 真实模型回归：DeepSeek 倾向把 eligibilityConstraints 输出为对象数组，prompt 必须显式声明字符串数组形状。
-    assert(understandPrompt.includes("eligibilityConstraints[非空字符串]"), "understandJob prompt 必须声明资格约束的字符串数组形状");
-    assert(understandPrompt.includes("不要输出对象"), "understandJob prompt 必须禁止对象形式的资格约束");
-    // 真实小样本回归：JD 的“可接受应届生”是在放宽候选范围，不是“仅限应届”的硬资格。
-    assert(
-      understandPrompt.includes("可接受应届生")
-        && understandPrompt.includes("放宽候选范围")
-        && understandPrompt.includes("不能进入 eligibilityConstraints"),
-      "understandJob prompt 必须区分包容性应届措辞与硬资格"
-    );
-    // 真实模型回归：经验年限被标 indispensable=true 后成为年限 hardBlockers；产品语义中年限只是偏好。
+    assert(understandPrompt.includes("requirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求紧凑 requirements");
+    assert(understandPrompt.includes("eligibility[非空字符串]"), "understandJob prompt 必须要求紧凑 eligibility");
+    assert(understandPrompt.includes("riskSignals[{type,severity,evidence}]"), "understandJob prompt 必须要求紧凑 riskSignals");
+    assert(understandPrompt.includes("roleSummary"), "understandJob prompt 必须要求 roleSummary");
+    for (const removedField of [
+      "coreResponsibilities",
+      "preferredRequirements",
+      "outcomeExpectations",
+      "senioritySignal",
+      "evidenceSnippets",
+      "jobQuality.concerns"
+    ]) {
+      assert(!understandPrompt.includes(removedField), `understandJob prompt 不得请求旧字段 ${removedField}`);
+    }
     assert(/年限[^\n]*不得[^\n]*indispensable=true|indispensable=true[^\n]*不得用于[^\n]*年限/.test(understandPrompt), "understandJob prompt 必须禁止把经验年限标为 indispensable=true");
-    // v3 设计：措辞只是重要性信号，不能单独决定 indispensable；understandJob 必须有明确的单次契约修复指令。
+    assert(understandPrompt.includes("责任发散") && understandPrompt.includes("low 或 medium"), "职责发散必须作为低或中风险信号");
+    assert(understandPrompt.includes("收费、诈骗、安全或合规") && understandPrompt.includes("high"), "收费、诈骗、安全或合规必须作为高风险信号");
+    assert(understandPrompt.includes("每段 evidence 最多 120 个字符"), "understandJob prompt 必须限制每段证据摘录最多 120 字符");
+    assert(understandPrompt.includes("requirements 最多 16 项") && understandPrompt.includes("eligibility 和 riskSignals 各最多 8 项"), "understandJob prompt 必须显式限制紧凑数组");
     assert(
       understandPrompt.includes("若输入含 contractRepair")
         && understandPrompt.includes("contractRepair.invalidOutput")
         && understandPrompt.includes("contractRepair.reason")
         && understandPrompt.includes("返回修正后的完整 JSON"),
       "understandJob prompt 必须给出可执行的单次契约修复指令"
-    );
-    assert(
-      understandPrompt.includes("措辞只是重要性信号")
-        && understandPrompt.includes("岗位持续承担的核心工作")
-        && understandPrompt.includes("不可替代"),
-      "understandJob prompt 不得仅凭“要求/需要”措辞判 indispensable"
-    );
-    assert(
-      understandPrompt.includes("需要理解业务")
-        && understandPrompt.includes("不得仅凭该短语"),
-      "普通业务理解要求不得自动升级为硬阻断"
-    );
-    assert(
-      understandPrompt.includes("要求熟悉某平台")
-        && understandPrompt.includes("优先")
-        && understandPrompt.includes("不得自动"),
-      "平台愿望项不得自动升级为硬阻断"
-    );
-    assert(
-      understandPrompt.includes("每个证据摘录（所有 evidence 与 evidenceSnippets）最多 120 个字符"),
-      "understandJob prompt 必须限制每段证据摘录最多 120 字符"
-    );
-    assert(
-      understandPrompt.includes("coreResponsibilities 最多 12 项")
-        && understandPrompt.includes("coreRequirements 和 preferredRequirements 各最多 16 项")
-        && understandPrompt.includes("outcomeExpectations、eligibilityConstraints、hiddenRisks、jobQuality.concerns、evidenceSnippets 各最多 8 项"),
-      "understandJob prompt 必须显式限制输出数组"
     );
     assert(!understandPrompt.includes("Go/C++"), "understandJob prompt 不得保留固定职业分类");
     const failureAdapter = new OpenAICompatibleAdapter({
