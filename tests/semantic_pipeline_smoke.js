@@ -678,6 +678,12 @@ function understandingContractSmoke() {
   });
   assert.deepStrictEqual(mixedEligibility.eligibilityConstraints, ["JD：本科及以上学历，硕士优先"],
     "同一句同时包含明确学历资格和软偏好时，不得连同硬资格一起丢弃");
+  const conjunctiveEligibility = validateModelResult("understandJob", {
+    ...validUnderstanding,
+    eligibilityConstraints: ["JD：可接受应届毕业生且本科及以上学历"]
+  });
+  assert.deepStrictEqual(conjunctiveEligibility.eligibilityConstraints, ["JD：可接受应届毕业生且本科及以上学历"],
+    "软硬条件用连接词组合时，明确学历资格仍必须保留");
   const exclusiveEligibility = validateModelResult("understandJob", {
     ...validUnderstanding,
     eligibilityConstraints: ["JD：仅限 2027 届应届毕业生"]
@@ -1426,7 +1432,8 @@ async function compactMatchEvidenceContractSmoke() {
 
   for (const inferredAbsence of [
     "简历：未体现独立交付应用的经历",
-    "简历：现有项目技术栈为 Python 和 Node.js"
+    "简历：现有项目技术栈为 Python 和 Node.js",
+    "简历：不能确认是否有独立交付经验"
   ]) {
     const absenceOnly = validateModelResult("matchJob", {
       ...compactDirectPayload,

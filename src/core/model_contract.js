@@ -85,13 +85,17 @@ function isSoftOnlyEligibilityConstraint(value) {
   const softPattern = /可接受|接受应届|欢迎应届|应届亦可|均可|优先|加分|不限|无硬性要求/;
   const soft = softPattern.test(source);
   const hard = /仅限|只招|仅招|只接受|仅接受|必须|须为|限定|不接受|不招|不得|硬性/.test(source);
-  const hasSeparateHardQualification = source.split(/[，,；;。]/)
+  const hasSeparateHardQualification = source.split(/[，,；;。]|并且|同时|且|但/)
     .some((part) => !softPattern.test(part) && /大专|专科|本科|学士|硕士|研究生|博士|学历|学位|证书|资格证/.test(part));
   return soft && !hard && !hasSeparateHardQualification;
 }
 
 function hasExplicitCoreIncompatibilityEvidence(value) {
-  return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(String(value || ""));
+  const source = String(value || "");
+  if (/不能确认|不能确定|不能判断|不能证明|无法确认|无法确定|无法判断|无法证明|不确定|待确认|尚待确认|无法从(?:简历|现有材料|材料)确认/.test(source)) {
+    return false;
+  }
+  return /不接受|不考虑|拒绝|不能|无法|不愿|只接受|仅接受|只做|仅做|只承担|仅承担|只参与|仅参与/.test(source);
 }
 
 function validateJobUnderstanding(value) {
