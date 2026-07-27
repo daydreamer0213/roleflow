@@ -10,13 +10,13 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 
 - Branch: `codex/claude-generic-evidence-matching-live-fix`
 - Approved baseline product commit: `fb0168afce265cf351f03e80f66d9e0f24015887`
-- Final evaluated product commit: `d30eeb5b83d23ce38cb93256db229fc97fccf071`
-- Live evaluated checkpoint: `86718c5c581612d97581f69ea511792cc39dad7b`
+- Final evaluated product commit: `aafc5be17ea8d160f23bcdd386b5a1ffdb5a320b`
+- Live evaluated checkpoint: pending the final v12 diagnostic
 - Private harness: `private-full-chain-harness.v2`
 - Label schema: `private-real-jd-labels.v2`
 - Evaluation policy: `recall-first.v1`
-- Job-understanding pipeline: `job-understanding-v8`
-- Match-decision pipeline: `match-decision-v15`
+- Job-understanding pipeline: `job-understanding-v9`
+- Match-decision pipeline: `match-decision-v16`
 
 ## Confirmed labels
 
@@ -26,7 +26,7 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 - Profile, matching card, resume evidence and job inputs were unchanged while the two remaining dispositions were corrected.
 - True eligibility, indispensable-core and safety exclusions remain covered by synthetic offline fixtures.
 
-## Final bounded live diagnostic
+## Latest bounded live diagnostic
 
 - Rows evaluated: 3
 - Completed: 3
@@ -41,6 +41,8 @@ This is a bounded acceptance result, not a claim of perfect matching accuracy or
 - Confirmed matching card provided and consumed: yes
 - Diagnostic mode: yes
 - Formal acceptance eligible: no, by design for a three-row subset
+
+This successful v11 result predates the final broad-review fixes in `aafc5be`; a fresh v12 run is required before the branch is published.
 
 ## Contract changes
 
