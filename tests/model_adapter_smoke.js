@@ -187,6 +187,19 @@ server.listen(0, "127.0.0.1", async () => {
       matchPrompt.includes("resumeEvidence 最多 120 个字符"),
       "matchJob prompt 必须限制每段证据摘录最多 120 字符"
     );
+    assert(
+      matchPrompt.includes("Match by meaning, not exact wording")
+        && matchPrompt.includes("narrower concrete candidate fact")
+        && matchPrompt.includes("direct instance"),
+      "matchJob prompt 必须允许具体简历事实证明更宽泛的岗位要求"
+    );
+    assert(
+      matchPrompt.includes("Do not reverse this relation")
+        && matchPrompt.includes("named platform")
+        && matchPrompt.includes("specialist workflow")
+        && matchPrompt.includes("business system"),
+      "matchJob prompt 不得用宽泛或相邻经历冒充明确的平台、流程或业务系统经验"
+    );
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });

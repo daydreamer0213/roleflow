@@ -648,7 +648,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v11");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v20");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v21");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
