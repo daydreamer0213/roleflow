@@ -1615,6 +1615,32 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(calls, 2, "对象形式的资格约束只允许一次契约修复");
   assert.strictEqual(result.semanticStatus, "complete");
 
+  const incompleteCompactUnderstanding = {
+    roleSummary: "交付应用",
+    requirements: [
+      { label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" },
+      { label: "RAG", indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
+    ],
+    eligibility: []
+  };
+  let compactRepairCalls = 0;
+  const compactRepairRunner = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
+    db,
+    analyzer: {
+      understandJob: async (input) => {
+        compactRepairCalls += 1;
+        if (!input.contractRepair) return incompleteCompactUnderstanding;
+        assert.match(input.contractRepair.reason, /riskSignals/, "紧凑字段缺失的修复原因必须指出 riskSignals");
+        assert.deepStrictEqual(input.contractRepair.invalidOutput, incompleteCompactUnderstanding);
+        return { ...incompleteCompactUnderstanding, riskSignals: [] };
+      },
+      matchJob: async () => decision("apply", "A", "Python")
+    }
+  });
+  const compactRepairResult = await compactRepairRunner(completeJob("understanding-compact-repair"));
+  assert.strictEqual(compactRepairCalls, 2, "紧凑字段缺失必须触发一次既有契约修复");
+  assert.strictEqual(compactRepairResult.semanticStatus, "complete");
+
   // 修复后仍非法：最多再尝试一次修复，随后进入现有失败路径，不得无限重试。
   const stillInvalid = {
     ...understanding("understanding-repair-fails"),
@@ -1645,16 +1671,52 @@ async function understandingContractRepairSmoke() {
 }
 
 async function compactMatchEvidenceContractSmoke() {
-  const compact = validateModelResult("understandJob", {
+  const compactInput = {
     roleSummary: "交付应用",
     requirements: [{ label: "独立交付", indispensable: true, evidence: "JD：独立交付应用" }],
     eligibility: ["JD：本科及以上"],
     riskSignals: []
-  });
+  };
+  const compact = validateModelResult("understandJob", compactInput);
   assert.strictEqual(compact.coreRequirements[0].id, "R1");
   assert.strictEqual(compact.eligibilityItems[0].id, "E1");
   assert.deepStrictEqual(compact.preferredRequirements, []);
   assert.deepStrictEqual(compact.jobQuality, { level: "normal", concerns: [] });
+  assert.doesNotThrow(() => validateModelResult("understandJob", {
+    roleSummary: "交付应用",
+    requirements: [],
+    eligibility: [],
+    riskSignals: []
+  }), "紧凑 understandJob 的空数组仍是合法输出");
+
+  for (const field of ["roleSummary", "requirements", "eligibility", "riskSignals"]) {
+    const missing = { ...compactInput };
+    delete missing[field];
+    assert.throws(
+      () => validateModelResult("understandJob", missing),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && error.message.includes(field),
+      `紧凑 understandJob 缺少 ${field} 必须触发契约修复，不能静默归一化`
+    );
+  }
+  for (const [field, invalidValue] of [["roleSummary", []], ["requirements", {}], ["eligibility", "JD：本科及以上"], ["riskSignals", {}]]) {
+    assert.throws(
+      () => validateModelResult("understandJob", { ...compactInput, [field]: invalidValue }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && error.message.includes(field),
+      `紧凑 understandJob 的 ${field} 必须使用正确类型`
+    );
+  }
+  for (const invalidOutput of [
+    { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: "JD: 独立交付应用" }] },
+    { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: `JD：${"x".repeat(118)}` }] },
+    { ...compactInput, riskSignals: [{ type: "fee_fraud", severity: "high", evidence: " JD：要求缴纳培训费" }] },
+    { ...compactInput, riskSignals: [{ type: "fee_fraud", severity: "high", evidence: `JD：${"x".repeat(118)}` }] }
+  ]) {
+    assert.throws(
+      () => validateModelResult("understandJob", invalidOutput),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /evidence/.test(error.message),
+      "紧凑 requirements 和 riskSignals 的 evidence 必须以 JD：开头且最多 120 个 JavaScript 字符"
+    );
+  }
 
   const jobUnderstanding = validateModelResult("understandJob", {
     jobId: "compact-1",

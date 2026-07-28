@@ -292,15 +292,25 @@ function validateJobUnderstanding(value) {
 }
 
 function validateCompactJobUnderstanding(value) {
-  const coreRequirements = understandingCoreRequirements(value.requirements)
+  const roleSummary = requiredCompactString(value.roleSummary, "roleSummary");
+  const requirements = requiredCompactArray(value.requirements, "requirements");
+  const eligibility = requiredCompactArray(value.eligibility, "eligibility");
+  const riskSignals = requiredCompactArray(value.riskSignals, "riskSignals");
+  for (const requirement of requirements) {
+    validateCompactEvidence(requirement?.evidence, "requirements.evidence");
+  }
+  for (const riskSignal of riskSignals) {
+    validateCompactEvidence(riskSignal?.evidence, "riskSignals.evidence");
+  }
+  const coreRequirements = understandingCoreRequirements(requirements)
     .map((item, index) => ({ id: `R${index + 1}`, ...item }));
-  const eligibilityConstraints = contractStringArray(value.eligibility, "understandJob", "eligibility", 8)
+  const eligibilityConstraints = contractStringArray(eligibility, "understandJob", "eligibility", 8)
     .filter((item) => !isSoftOnlyEligibilityConstraint(item));
-  const hiddenRisks = understandingHiddenRisks(value.riskSignals);
+  const hiddenRisks = understandingHiddenRisks(riskSignals);
   const concerns = hiddenRisks.map(({ type, evidence }) => ({ type, evidence }));
   return {
     jobId: text(value.jobId),
-    roleSummary: text(value.roleSummary),
+    roleSummary,
     realRoleType: "unknown",
     businessScenario: "",
     coreResponsibilities: [],
@@ -321,6 +331,26 @@ function validateCompactJobUnderstanding(value) {
     isTrainingOrSales: false,
     evidenceSnippets: []
   };
+}
+
+function requiredCompactString(value, field) {
+  if (typeof value !== "string") {
+    throw new ModelContractError("understandJob", `${field} 必须是字符串`);
+  }
+  return text(value);
+}
+
+function requiredCompactArray(value, field) {
+  if (!Array.isArray(value)) {
+    throw new ModelContractError("understandJob", `${field} 必须是数组；没有内容时输出空数组 []`);
+  }
+  return value;
+}
+
+function validateCompactEvidence(value, field) {
+  if (typeof value !== "string" || !value.startsWith("JD：") || value.length > 120) {
+    throw new ModelContractError("understandJob", `${field} evidence 必须以 JD：开头且最多 120 个字符`);
+  }
 }
 
 function validateCompactMatchEvidence(value, context = {}) {
