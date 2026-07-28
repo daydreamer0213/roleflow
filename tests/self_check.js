@@ -402,7 +402,16 @@ async function checkMockAnalyzer() {
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
     understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
-    matchJob: async ({ jobEvidence }) => { calls.matchJob += 1; assert.strictEqual(jobEvidence.title, "Cache test"); return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }; },
+    matchJob: async (input) => {
+      calls.matchJob += 1;
+      for (const field of ["candidateProfile", "candidateMatchCard", "jobUnderstanding", "searchPreferences"]) {
+        assert(Object.hasOwn(input, field), `matchJob input must keep ${field}`);
+      }
+      for (const field of ["resumeVersions", "jobEvidence", "job", "ruleMatch"]) {
+        assert.strictEqual(Object.hasOwn(input, field), false, `matchJob input must omit ${field}`);
+      }
+      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
+    },
     draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
   const cachedRunner = createJobAnalysisRunner(configs, keywordPlan, { db, analyzer: fakeAnalyzer });
