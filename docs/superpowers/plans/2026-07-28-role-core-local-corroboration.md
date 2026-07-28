@@ -1,4 +1,14 @@
-# Role Core Local Corroboration Implementation Plan
+# SUPERSEDED — DO NOT EXECUTE
+
+This plan is retained only as history. Its fuzzy local text corroboration cannot
+separate AI-assisted frontend work from AI-assisted full-stack work and may
+rescue both rows. The replacement design is:
+
+`docs/superpowers/specs/2026-07-28-role-foundation-evidence-design.md`
+
+No task below may be executed.
+
+# Role Core Local Corroboration Implementation Plan (Historical)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
