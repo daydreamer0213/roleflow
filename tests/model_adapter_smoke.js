@@ -200,6 +200,20 @@ server.listen(0, "127.0.0.1", async () => {
         && matchPrompt.includes("business system"),
       "matchJob prompt 不得用宽泛或相邻经历冒充明确的平台、流程或业务系统经验"
     );
+    assert(
+      matchPrompt.includes("semantic-level example, not an occupation rule")
+        && matchPrompt.includes("AI 工具实践")
+        && matchPrompt.includes("Agent/RAG/Dify")
+        && matchPrompt.includes("AI 代码调试")
+        && ["logging", "tests", "mock", "exception tracing", "API debugging"]
+          .every((term) => matchPrompt.includes(term)),
+      "matchJob prompt 必须用非职业硬编码示例说明上位要求与具体事实的证据关系"
+    );
+    assert(
+      ["image-generation/visual workflow", "named Agent platform", "data warehouse", "big-data framework", "ERP integration"]
+        .every((term) => matchPrompt.includes(term)),
+      "matchJob prompt 的具体示例必须保留相邻方向反向推断限制"
+    );
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
