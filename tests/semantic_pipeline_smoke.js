@@ -42,6 +42,7 @@ const db = openDb(dbPath);
     runtimeResumeVersionEntrySmoke();
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
+    compactCentralRequirementSmoke();
     await compactMatchEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
@@ -639,8 +640,8 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v10");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v19");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v11");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v20");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1684,6 +1685,53 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(failedRepair.errorCode, "MODEL_CONTRACT_INVALID");
   assert.strictEqual(failedRepair.errorStage, "understandJob");
   assert.strictEqual(failedRepair.errorPhase, "contract_repair");
+}
+
+function compactCentralRequirementSmoke() {
+  const understanding = validateModelResult("understandJob", {
+    roleSummary: "负责大模型推理部署与硬件性能优化",
+    requirements: [
+      {
+        label: "推理框架与硬件适配",
+        central: true,
+        indispensable: false,
+        evidence: "JD：负责推理框架部署与硬件性能优化"
+      },
+      {
+        label: "基础开发能力",
+        central: false,
+        indispensable: true,
+        evidence: "JD：具备一定基础开发能力"
+      }
+    ],
+    eligibility: [],
+    riskSignals: []
+  });
+  assert.strictEqual(understanding.coreRequirements[0].central, true);
+  assert.strictEqual(understanding.coreRequirements[1].central, false);
+
+  const legacy = validateModelResult("understandJob", {
+    roleSummary: "负责通用应用开发",
+    requirements: [{
+      label: "基础开发能力",
+      indispensable: true,
+      evidence: "JD：具备基础开发能力"
+    }],
+    eligibility: [],
+    riskSignals: []
+  });
+  assert.strictEqual(legacy.coreRequirements[0].central, true);
+
+  const decision = validateModelResult("matchJob", {
+    matches: [{
+      id: "R2",
+      state: "matched",
+      resumeEvidence: "简历：完成过企业级 RAG 后端开发"
+    }],
+    eligibility: []
+  }, { jobUnderstanding: understanding });
+  assert.strictEqual(decision.requirementMatches[0].central, true);
+  assert.strictEqual(decision.requirementMatches[1].central, false);
 }
 
 async function compactMatchEvidenceContractSmoke() {

@@ -89,8 +89,8 @@ class OpenAICompatibleAdapter {
   async understandJob(input) {
     const prompt = [
       "你是中文求职岗位筛选助手。请只基于输入的完整 JD，输出 JobUnderstanding JSON，不推测 JD 之外的信息。",
-      "只输出且必须输出这四个字段：roleSummary、requirements[{label,indispensable,evidence}]、eligibility[非空字符串]、riskSignals[{type,severity,evidence}]。数组无内容时输出 []，不要输出其他字段。",
-      "roleSummary 用一句话概括岗位真实主线。requirements 只收 JD 明确写出的任职要求；每项 label 控制在 4-24 字，evidence 必须引用 JD 原文短句并以“JD：”开头。必须、熟练、精通、掌握、至少、扎实、具备、要求熟悉、需要理解等措辞只是重要性信号，不能单独决定 indispensable；只有要求直接服务于岗位持续承担的工作，且 JD 把它表达为不可替代条件时，indispensable=true。经验年限只是偏好，不得 indispensable=true。信息不充分时 requirements 留空，不得把关键词命中写成事实。",
+      "只输出且必须输出这四个字段：roleSummary、requirements[{label,central,indispensable,evidence}]、eligibility[非空字符串]、riskSignals[{type,severity,evidence}]。数组无内容时输出 []，不要输出其他字段。",
+      "roleSummary 用一句话概括岗位真实主线。requirements 只收 JD 明确写出的任职要求；central=true 表示该要求直接定义岗位持续承担的主要工作，并能区分相邻岗位。基础开发、学习、沟通、责任心、通用排错等跨岗位能力不能单独标成 central=true。“优先、熟悉、了解”不妨碍一项要求成为 central=true。indispensable=true 仍只表示 JD 明确表达的不可替代硬条件；经验年限不得 indispensable=true。每项 label 控制在 4-24 字，evidence 必须引用 JD 原文短句并以“JD：”开头。信息不充分时 requirements 留空，不得把关键词命中写成事实。",
       "eligibility 只保存 JD 明确的届别、在校、学历或证书硬资格，每项是一句非空字符串（如“JD：本科及以上学历”）。“可接受应届生”表示放宽候选范围，不是硬资格，不能进入 eligibility；没有硬资格时输出 []，不要输出对象或 null。",
       "JD 同时堆叠多个不相关职责（例如多平台运营、拍摄、剪辑、直播混合）时，在 riskSignals 输出 {type:\"responsibility_sprawl\", severity, evidence}，severity 必须是 low 或 medium；这是责任发散的 JD 质量信号，不判断候选人是否匹配。发现收费、诈骗、安全或合规风险时，输出 severity:\"high\" 的风险信号；每个风险必须引用 JD 原文证据，不要猜测。",
       "每段 evidence 最多 120 个字符。输出数组上限：requirements 最多 16 项，eligibility 和 riskSignals 各最多 8 项。",

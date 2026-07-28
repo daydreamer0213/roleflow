@@ -366,6 +366,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
     id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
     label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
     indispensable: Boolean(item.indispensable),
     evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
   }));
@@ -394,6 +395,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     return {
       requirement: requirement.label,
       state: unverifiedIndispensableMissing ? "unknown" : match.state,
+      central: requirement.central,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
       resumeEvidence: match.resumeEvidence
@@ -700,7 +702,12 @@ function understandingCoreRequirements(value) {
     if (typeof item.indispensable !== "boolean") {
       throw new ModelContractError("understandJob", `coreRequirements「${label}」的 indispensable 必须是 boolean`);
     }
-    return { label, indispensable: item.indispensable, evidence };
+    return {
+      label,
+      central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
+      indispensable: item.indispensable,
+      evidence
+    };
   }).slice(0, 16);
   assertUniqueCoreRequirements(requirements, "understandJob");
   return requirements;

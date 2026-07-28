@@ -191,7 +191,14 @@ server.listen(0, "127.0.0.1", async () => {
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
-    assert(understandPrompt.includes("requirements[{label,indispensable,evidence}]"), "understandJob prompt 必须要求紧凑 requirements");
+    assert(
+      understandPrompt.includes("requirements[{label,central,indispensable,evidence}]"),
+      "understandJob prompt 必须保留轻量 central 标记"
+    );
+    assert(
+      understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
+      "通用能力不得冒充岗位主线"
+    );
     assert(understandPrompt.includes("eligibility[非空字符串]"), "understandJob prompt 必须要求紧凑 eligibility");
     assert(understandPrompt.includes("riskSignals[{type,severity,evidence}]"), "understandJob prompt 必须要求紧凑 riskSignals");
     assert(understandPrompt.includes("roleSummary"), "understandJob prompt 必须要求 roleSummary");
