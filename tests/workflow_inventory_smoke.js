@@ -104,6 +104,11 @@ try {
     "旧模型仅凭字符串 blocker 给出的 skip/D 不得继续拒绝工作流"
   );
 
+  assert.deepStrictEqual(
+    workflowEligibility(job("role-core-unproven", { analysis: roleCoreUnprovenAnalysis() }), { now }),
+    { eligible: false, tier: "", reasonCode: "WORKFLOW_BACKUP_NOT_LOW_RISK" }
+  );
+
   const outcomeJobIds = {
     succeeded: insert("outcome-succeeded", {}, batchId),
     already: insert("outcome-already", {}, batchId),
@@ -206,6 +211,26 @@ function partialAnalysis() {
     semanticStatus: "partial",
     recommendation: "review",
     evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
+    hardBlockers: []
+  };
+}
+
+function roleCoreUnprovenAnalysis() {
+  return {
+    provider: "openai_compatible",
+    semanticStatus: "complete",
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.45,
+    requirementMatches: [{
+      requirement: "推理框架与硬件适配",
+      state: "unknown",
+      central: true,
+      indispensable: false,
+      jdEvidence: "JD：负责推理框架部署与硬件适配",
+      resumeEvidence: ""
+    }],
+    evidence: { jd: [], resume: [] },
     hardBlockers: []
   };
 }

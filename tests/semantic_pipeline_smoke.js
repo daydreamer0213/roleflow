@@ -4,7 +4,13 @@ const path = require("path");
 const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
-const { validateModelResult, ModelContractError, effectiveHardBlockers, decisionHardBlockers } = require("../src/core/model_contract");
+const {
+  validateModelResult,
+  ModelContractError,
+  effectiveHardBlockers,
+  decisionHardBlockers,
+  roleCoreEvidenceState
+} = require("../src/core/model_contract");
 const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
@@ -43,6 +49,7 @@ const db = openDb(dbPath);
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
     compactCentralRequirementSmoke();
+    roleCentralBucketSmoke();
     await compactMatchEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
@@ -1732,6 +1739,63 @@ function compactCentralRequirementSmoke() {
   }, { jobUnderstanding: understanding });
   assert.strictEqual(decision.requirementMatches[0].central, true);
   assert.strictEqual(decision.requirementMatches[1].central, false);
+}
+
+function roleCentralBucketSmoke() {
+  const analysis = {
+    semanticStatus: "complete",
+    recommendation: "review",
+    fitLevel: "C",
+    confidence: 0.45,
+    fitReasons: ["基础开发能力：有直接简历证据"],
+    requirementMatches: [
+      {
+        requirement: "推理框架与硬件适配",
+        state: "unknown",
+        central: true,
+        indispensable: false,
+        jdEvidence: "JD：负责推理框架部署与硬件适配",
+        resumeEvidence: ""
+      },
+      {
+        requirement: "基础开发能力",
+        state: "matched",
+        central: false,
+        indispensable: true,
+        jdEvidence: "JD：具备基础开发能力",
+        resumeEvidence: "简历：完成过企业级 RAG 后端开发"
+      }
+    ],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    evidence: {
+      jd: ["JD：具备基础开发能力"],
+      resume: ["简历：完成过企业级 RAG 后端开发"]
+    }
+  };
+  assert.deepStrictEqual(roleCoreEvidenceState(analysis), {
+    centralRequirementCount: 1,
+    centralEvidenceCount: 0,
+    unproven: true
+  });
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("role-core-unproven"), analysis, qualityTags: [], risks: [] }),
+    "backup"
+  );
+
+  const transferable = {
+    ...analysis,
+    requirementMatches: analysis.requirementMatches.map((item, index) => (
+      index === 0
+        ? { ...item, state: "transferable", resumeEvidence: "简历：完成过模型服务部署与接口集成" }
+        : item
+    ))
+  };
+  assert.strictEqual(roleCoreEvidenceState(transferable).unproven, false);
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("role-core-transferable"), analysis: transferable, qualityTags: [], risks: [] }),
+    "talk"
+  );
 }
 
 async function compactMatchEvidenceContractSmoke() {

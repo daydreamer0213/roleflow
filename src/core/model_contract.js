@@ -439,8 +439,12 @@ function validateSparseMatchEvidence(value, context = {}) {
   else recommendation = "apply";
   const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !unknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
   const fitLevel = recommendation === "skip" ? "D" : recommendation === "review" ? "C" : recommendation === "caution" ? "B" : "A";
-  const fitReasons = requirementMatches.filter((item) => ["matched", "transferable"].includes(item.state))
-    .map((item) => `${item.requirement}：${item.state === "matched" ? "有直接简历证据" : "有可迁移简历证据"}`).slice(0, 8);
+  const roleCore = roleCoreEvidenceState({ requirementMatches });
+  const fitReasons = [
+    ...(roleCore.unproven ? ["岗位主线与当前简历证据偏离，需要作为备选人工查看。"] : []),
+    ...requirementMatches.filter((item) => ["matched", "transferable"].includes(item.state))
+      .map((item) => `${item.requirement}：${item.state === "matched" ? "有直接简历证据" : "有可迁移简历证据"}`)
+  ].slice(0, 8);
   const softGaps = [
     ...transferable.map((item) => `${item.requirement}目前只有可迁移证据`),
     ...softMissing.map((item) => `${item.requirement}缺少直接简历证据`),
@@ -972,6 +976,20 @@ function decisionHardBlockers(analysis = {}) {
   return list(analysis.hardBlockers).filter(isDecisionHardBlocker);
 }
 
+function roleCoreEvidenceState(analysis = {}) {
+  const central = list(analysis.requirementMatches).filter((item) => item?.central === true);
+  const centralEvidence = central.filter((item) => (
+    ["matched", "transferable"].includes(item.state)
+      && typeof item.resumeEvidence === "string"
+      && Boolean(item.resumeEvidence.trim())
+  ));
+  return {
+    centralRequirementCount: central.length,
+    centralEvidenceCount: centralEvidence.length,
+    unproven: central.length > 0 && centralEvidence.length === 0
+  };
+}
+
 // 展示兼容：读取历史分析中的硬缺口条目（含旧式字符串），只用于页面呈现，禁止用于新决策。
 function effectiveHardBlockers(analysis = {}) {
   const raw = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
@@ -1053,4 +1071,11 @@ function contractListItem(value) {
   return text(value.reason || value.gap || value.description || value.message || value.issue || value.value);
 }
 
-module.exports = { ModelContractError, validateModelResult, effectiveHardBlockers, decisionHardBlockers, hardBlockerText };
+module.exports = {
+  ModelContractError,
+  validateModelResult,
+  effectiveHardBlockers,
+  decisionHardBlockers,
+  roleCoreEvidenceState,
+  hardBlockerText
+};
