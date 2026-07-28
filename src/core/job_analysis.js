@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, roleCoreEvidenceState, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -303,6 +303,9 @@ function applyRuleGuard(analysis, job) {
   }
   if (analysis.jobQuality?.level === "risk") {
     return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
+  }
+  if (roleCoreEvidenceState(analysis).unproven) {
+    return addGuard(analysis, "review", analysis.fitLevel || "C", "岗位主线与当前简历证据偏离，需要作为备选人工查看。", analysis.semanticStatus, "role_core_unproven_guard");
   }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
   if (analysis.recommendation === "apply" && materialRisk) {

@@ -1739,6 +1739,23 @@ function compactCentralRequirementSmoke() {
   }, { jobUnderstanding: understanding });
   assert.strictEqual(decision.requirementMatches[0].central, true);
   assert.strictEqual(decision.requirementMatches[1].central, false);
+
+  const revalidated = validateModelResult("matchJob", decision, { jobUnderstanding: understanding });
+  assert.strictEqual(revalidated.requirementMatches[0].central, true);
+  assert.strictEqual(revalidated.requirementMatches[1].central, false);
+
+  const legacyCompact = validateModelResult("matchJob", {
+    matches: [
+      { id: "R1", state: "unknown", resumeEvidence: "" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：完成过企业级 RAG 后端开发" }
+    ],
+    eligibility: [],
+    uncertainties: ["推理部署经验待确认"],
+    cautions: [],
+    certainty: "low"
+  }, { jobUnderstanding: understanding });
+  assert.strictEqual(legacyCompact.requirementMatches[0].central, true);
+  assert.strictEqual(legacyCompact.requirementMatches[1].central, false);
 }
 
 function roleCentralBucketSmoke() {
@@ -1778,10 +1795,36 @@ function roleCentralBucketSmoke() {
     centralEvidenceCount: 0,
     unproven: true
   });
+  assert.strictEqual(roleCoreEvidenceState({
+    requirementMatches: [{
+      requirement: "旧格式核心要求",
+      state: "unknown",
+      indispensable: true,
+      jdEvidence: "JD：旧缓存没有 central 字段",
+      resumeEvidence: ""
+    }]
+  }).unproven, true, "旧分析缺少 central 时必须回退到 indispensable");
   assert.strictEqual(
     decisionBucket({ ...completeJob("role-core-unproven"), analysis, qualityTags: [], risks: [] }),
     "backup"
   );
+  const guarded = applyRuleGuard(analysis, completeJob("role-core-unproven"));
+  assert.strictEqual(guarded.decisionSource, "role_core_unproven_guard");
+  assert.match(guarded.fitReasons[0], /岗位主线.*备选/);
+
+  const riskGuarded = applyRuleGuard({
+    ...analysis,
+    jobQuality: { level: "risk", concerns: [{ type: "fee_fraud", evidence: "JD：要求付费培训" }] }
+  }, completeJob("role-core-risk"));
+  assert.strictEqual(riskGuarded.decisionSource, "job_quality_risk_guard");
+  assert(!riskGuarded.fitReasons.some((reason) => /岗位主线.*备选/.test(reason)));
+
+  const partialGuarded = applyRuleGuard({
+    ...analysis,
+    semanticStatus: "partial"
+  }, completeJob("role-core-partial"));
+  assert.strictEqual(partialGuarded.decisionSource, "model_partial");
+  assert(!partialGuarded.fitReasons.some((reason) => /岗位主线.*备选/.test(reason)));
 
   const transferable = {
     ...analysis,

@@ -439,9 +439,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   else recommendation = "apply";
   const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !unknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
   const fitLevel = recommendation === "skip" ? "D" : recommendation === "review" ? "C" : recommendation === "caution" ? "B" : "A";
-  const roleCore = roleCoreEvidenceState({ requirementMatches });
   const fitReasons = [
-    ...(roleCore.unproven ? ["岗位主线与当前简历证据偏离，需要作为备选人工查看。"] : []),
     ...requirementMatches.filter((item) => ["matched", "transferable"].includes(item.state))
       .map((item) => `${item.requirement}：${item.state === "matched" ? "有直接简历证据" : "有可迁移简历证据"}`)
   ].slice(0, 8);
@@ -491,6 +489,7 @@ function validateCompactMatchEvidence(value, context = {}) {
   const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
     id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
     label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
     indispensable: Boolean(item.indispensable),
     evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
   }));
@@ -532,6 +531,7 @@ function validateCompactMatchEvidence(value, context = {}) {
     return {
       requirement: requirement.label,
       state: match.state === "missing" && requirement.indispensable && !evidencedCoreConflict ? "unknown" : match.state,
+      central: requirement.central,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
       resumeEvidence: match.resumeEvidence
@@ -763,6 +763,7 @@ function normalizeRequirementMatches(value) {
     return {
       requirement,
       state: item.state,
+      central: typeof item.central === "boolean" ? item.central : item.indispensable,
       indispensable: item.indispensable,
       jdEvidence: optionalContractString(item.jdEvidence, "matchJob", "requirementMatches.jdEvidence"),
       resumeEvidence: optionalContractString(item.resumeEvidence, "matchJob", "requirementMatches.resumeEvidence")
@@ -860,6 +861,11 @@ function validateMatchDecision(value, context = {}) {
   const jobUnderstanding = context?.jobUnderstanding;
   if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
     assertRequirementCoverage(jobUnderstanding.coreRequirements, requirementMatches);
+    const sourceRequirements = new Map(jobUnderstanding.coreRequirements.map((item) => [text(item.label), item]));
+    for (const match of requirementMatches) {
+      const source = sourceRequirements.get(match.requirement);
+      match.central = typeof source?.central === "boolean" ? source.central : Boolean(source?.indispensable);
+    }
   }
   assertJobQualityAlignment(jobUnderstanding, jobQuality);
   // indispensable_core 阻断必须精确对应同名、state=missing 且 indispensable=true 的核心项。
@@ -977,7 +983,10 @@ function decisionHardBlockers(analysis = {}) {
 }
 
 function roleCoreEvidenceState(analysis = {}) {
-  const central = list(analysis.requirementMatches).filter((item) => item?.central === true);
+  const central = list(analysis.requirementMatches).filter((item) => (
+    item?.central === true
+      || (typeof item?.central !== "boolean" && item?.indispensable === true)
+  ));
   const centralEvidence = central.filter((item) => (
     ["matched", "transferable"].includes(item.state)
       && typeof item.resumeEvidence === "string"

@@ -7,6 +7,7 @@ const {
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
+const { roleCoreEvidenceState } = require("./model_contract");
 
 const MAX_ACTIVE_DAYS = 3;
 const MIN_DETAIL_LENGTH = 80;
@@ -62,6 +63,9 @@ function workflowEligibility(job = {}, context = {}) {
     return { eligible: true, tier: bucket, reasonCode: "" };
   }
   if (bucket !== "backup") return ineligible("WORKFLOW_DECISION_INELIGIBLE");
+  if (roleCoreEvidenceState(job.analysis).unproven) {
+    return ineligible("WORKFLOW_ROLE_CORE_UNPROVEN");
+  }
   if (!tags.has("salary_target_core") || !tags.has("experience_salary_overlap")
     || [...LOW_RISK_BACKUP_BLOCKERS].some((tag) => tags.has(tag))) {
     return ineligible("WORKFLOW_BACKUP_NOT_LOW_RISK");
@@ -103,12 +107,14 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
         && [...LOW_RISK_BACKUP_BLOCKERS]
           .filter((tag) => tag !== "salary_target_high")
           .every((tag) => !tags.has(tag));
-      if (!result.eligible && !highSalaryBackup) return null;
+      const roleCoreBackup = !result.eligible
+        && result.reasonCode === "WORKFLOW_ROLE_CORE_UNPROVEN";
+      if (!result.eligible && !highSalaryBackup && !roleCoreBackup) return null;
       return {
         ...job,
         workflowRunId: workflow.id,
         workflowEligibility: result,
-        workflowTier: highSalaryBackup ? "high_salary_backup" : result.tier,
+        workflowTier: highSalaryBackup ? "high_salary_backup" : roleCoreBackup ? "role_core_backup" : result.tier,
         fromCurrentScan: Boolean(workflow.scanBatchId && Number(job.batchId) === workflow.scanBatchId),
         defaultChecked: false,
         selectable: true
@@ -125,7 +131,7 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   );
   let remainingDefaults = workflow.targetSuccessCount + replacementBuffer;
   return candidates.map((candidate) => {
-    const defaultChecked = candidate.workflowTier !== "high_salary_backup" && remainingDefaults > 0;
+    const defaultChecked = !["high_salary_backup", "role_core_backup"].includes(candidate.workflowTier) && remainingDefaults > 0;
     if (defaultChecked) remainingDefaults -= 1;
     return { ...candidate, defaultChecked };
   });
@@ -194,7 +200,7 @@ function tierRank(tier) {
 }
 
 function reviewTierRank(tier) {
-  return { primary: 0, talk: 1, low_risk_backup: 2, high_salary_backup: 3 }[tier] ?? 9;
+  return { primary: 0, talk: 1, low_risk_backup: 2, role_core_backup: 3, high_salary_backup: 4 }[tier] ?? 9;
 }
 
 function nonNegativeInteger(value) {

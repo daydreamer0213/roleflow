@@ -33,6 +33,26 @@ async function workflowCommunicationSmoke() {
       salary: "15-25K",
       qualityTags: ["salary_target_high", "experience_salary_overlap"]
     }), scanBatchId);
+    const roleCoreBackupId = upsertJob(db, job("role-core-unproven", {
+      qualityTags: ["salary_target_core", "experience_salary_overlap"],
+      analysis: {
+        provider: "openai_compatible",
+        semanticStatus: "complete",
+        recommendation: "review",
+        fitLevel: "C",
+        confidence: 0.45,
+        requirementMatches: [{
+          requirement: "推理框架与硬件适配",
+          state: "unknown",
+          central: true,
+          indispensable: false,
+          jdEvidence: "JD：负责推理框架部署与硬件适配",
+          resumeEvidence: ""
+        }],
+        evidence: { jd: [], resume: [] },
+        hardBlockers: []
+      }
+    }), scanBatchId);
 
     const workflow = createWorkflowRun(db, {
       profileId,
@@ -52,6 +72,8 @@ async function workflowCommunicationSmoke() {
     assert.deepStrictEqual([...selectedIds].sort((a, b) => a - b), lowRiskIds);
     assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.defaultChecked, false);
     assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.workflowTier, "high_salary_backup");
+    assert.strictEqual(review.find((candidate) => candidate.id === roleCoreBackupId)?.defaultChecked, false);
+    assert.strictEqual(review.find((candidate) => candidate.id === roleCoreBackupId)?.workflowTier, "role_core_backup");
 
     const batch = createCommunicationBatch(db, {
       workflowRunId: workflow.id,

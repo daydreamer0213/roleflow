@@ -304,7 +304,7 @@
       "greetingAngle": "",
       "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": [] }
     },
-    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "talk", "requireUnknown": true, "forbidFitReasons": true }
+    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "backup", "requireUnknown": true, "forbidFitReasons": true }
   },
   {
     "id": "insufficient-evidence",
@@ -447,6 +447,6 @@
       "greetingAngle": "",
       "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": [] }
     },
-    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "talk", "requireUnknown": true, "forbidFitReasons": true }
+    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "backup", "requireUnknown": true, "forbidFitReasons": true }
   }
 ]

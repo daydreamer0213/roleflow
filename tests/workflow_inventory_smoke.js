@@ -106,7 +106,15 @@ try {
 
   assert.deepStrictEqual(
     workflowEligibility(job("role-core-unproven", { analysis: roleCoreUnprovenAnalysis() }), { now }),
-    { eligible: false, tier: "", reasonCode: "WORKFLOW_BACKUP_NOT_LOW_RISK" }
+    { eligible: false, tier: "", reasonCode: "WORKFLOW_ROLE_CORE_UNPROVEN" }
+  );
+  assert.deepStrictEqual(
+    workflowEligibility(job("role-core-unproven-overlap", {
+      analysis: roleCoreUnprovenAnalysis(),
+      qualityTags: ["salary_target_core", "experience_salary_overlap"]
+    }), { now }),
+    { eligible: false, tier: "", reasonCode: "WORKFLOW_ROLE_CORE_UNPROVEN" },
+    "岗位主线无证据时，即使薪资与经验重叠，也不得进入默认勾选的低风险补位"
   );
 
   const outcomeJobIds = {
