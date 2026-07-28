@@ -199,6 +199,20 @@ server.listen(0, "127.0.0.1", async () => {
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
       "通用能力不得冒充岗位主线"
     );
+    assert(
+      ["编程语言", "操作系统", "数据库", "办公工具", "通用数据清洗", "基础 AI 概念"]
+        .every((term) => understandPrompt.includes(term)),
+      "understandJob prompt 必须明确列出不得单独作为 central 的通用能力"
+    );
+    assert(
+      understandPrompt.includes("岗位特有的工作动作或交付结果")
+        && understandPrompt.includes("模型训练")
+        && understandPrompt.includes("图像处理")
+        && understandPrompt.includes("目标检测")
+        && understandPrompt.includes("Agent")
+        && understandPrompt.includes("RAG"),
+      "understandJob prompt 必须要求 central 包含岗位特有动作或交付结果"
+    );
     assert(understandPrompt.includes("eligibility[非空字符串]"), "understandJob prompt 必须要求紧凑 eligibility");
     assert(understandPrompt.includes("riskSignals[{type,severity,evidence}]"), "understandJob prompt 必须要求紧凑 riskSignals");
     assert(understandPrompt.includes("roleSummary"), "understandJob prompt 必须要求 roleSummary");
