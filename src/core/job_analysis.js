@@ -41,16 +41,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         input: {
           candidateProfile: candidateProfileForJobMatch(candidateProfile),
           candidateMatchCard: configs.matchingCard || null,
-          resumeVersions: resumeVersionsForJobMatch(configs.resumeVersions),
           jobUnderstanding,
-          jobEvidence: {
-            sourceId: facts.sourceId,
-            title: facts.title,
-            salary: facts.salary,
-            experience: facts.experience,
-            education: facts.education,
-            description: facts.description
-          },
           searchPreferences: searchPreferences(configs)
         },
         run: analyzer.matchJob

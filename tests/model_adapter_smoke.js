@@ -100,7 +100,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
-  const compactMatchRequest = payload.messages?.[0]?.content?.includes("MatchEvidence JSON");
+  const compactMatchRequest = payload.messages?.[0]?.content?.includes("output only evidence-bearing rows");
   const content = requests === 2
     ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }]
     : compactMatchRequest
@@ -144,14 +144,13 @@ server.listen(0, "127.0.0.1", async () => {
     const compactNormalized = await retryAdapter.matchJob({
       candidateProfile: {},
       candidateMatchCard: { targetDirections: ["电商运营"] },
-      jobUnderstanding: { coreRequirements: [], eligibilityItems: [], jobQuality: { level: "normal", concerns: [] } },
-      jobEvidence: {}
+      jobUnderstanding: { coreRequirements: [], eligibilityItems: [], jobQuality: { level: "normal", concerns: [] } }
     });
     assert.strictEqual(compactNormalized.recommendation, "review", "OpenAI adapter 必须把紧凑传输格式归一化为既有分析格式");
     const matchPrompt = payloads.at(-1).messages[0].content;
     assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
     assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
-    assert(matchPrompt.includes("uncertainties") && matchPrompt.includes("certainty") && matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt 必须保留不确定项、谨慎项与总体确定度");
+    assert(!matchPrompt.includes("uncertainties") && !matchPrompt.includes("certainty") && !matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt must only request sparse evidence rows");
     assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
     for (const locallyDerived of [
       "requirementMatches",
@@ -177,9 +176,8 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
     assert(matchPrompt.includes("优先级高于模型"), "matchJob prompt 必须说明用户补充偏好优先于模型归纳方向");
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
-    assert(matchPrompt.includes("preferredRequirements") && matchPrompt.includes("outcomeExpectations") && matchPrompt.includes("cautionTransitions"), "紧凑输出仍必须考虑加分项、成果期望与谨慎转向");
-    assert(matchPrompt.includes("preferred_gap") && matchPrompt.includes("不能单独否定主投"), "普通加分项缺口不得被提示词升级成主投阻断");
-    assert(matchPrompt.includes("无法映射到 R*/E* 状态") && matchPrompt.includes("不能写入 uncertainties"), "uncertainties 只能承载真正阻断判断的未决信息");
+    assert(matchPrompt.includes("omit unknown rows"), "matchJob prompt must allow omitted unknown rows");
+    assert(matchPrompt.includes("output only"), "matchJob prompt must request evidence rows only");
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");

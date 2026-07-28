@@ -18,7 +18,12 @@ function validateModelResult(kind, value, context = {}) {
     if (Object.prototype.hasOwnProperty.call(value, "matches")
       || Object.prototype.hasOwnProperty.call(value, "eligibility")
       || Object.prototype.hasOwnProperty.call(value, "certainty")) {
-      return validateCompactMatchEvidence(value, context);
+      if (Object.prototype.hasOwnProperty.call(value, "certainty")
+        || Object.prototype.hasOwnProperty.call(value, "uncertainties")
+        || Object.prototype.hasOwnProperty.call(value, "cautions")) {
+        return validateCompactMatchEvidence(value, context);
+      }
+      return validateSparseMatchEvidence(value, context);
     }
     return validateMatchDecision(value, context);
   }
@@ -351,6 +356,127 @@ function validateCompactEvidence(value, field) {
   if (typeof value !== "string" || !value.startsWith("JD：") || !value.slice("JD：".length).trim() || value.length > 120) {
     throw new ModelContractError("understandJob", `${field} evidence 必须以 JD：开头、包含原文且最多 120 个字符`);
   }
+}
+
+function validateSparseMatchEvidence(value, context = {}) {
+  const jobUnderstanding = context?.jobUnderstanding;
+  if (!jobUnderstanding || !Array.isArray(jobUnderstanding.coreRequirements)) {
+    throw new ModelContractError("matchJob", "sparse match evidence requires jobUnderstanding");
+  }
+  const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
+    id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
+    label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    indispensable: Boolean(item.indispensable),
+    evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
+  }));
+  const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
+    ? jobUnderstanding.eligibilityItems
+    : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
+  const matches = sparseEvidenceItems(value.matches, {
+    field: "matches",
+    expected: requirements,
+    states: REQUIREMENT_MATCH_STATES,
+    evidenceStates: ["matched", "transferable", "missing"]
+  });
+  const eligibility = sparseEvidenceItems(value.eligibility, {
+    field: "eligibility",
+    expected: eligibilityItems,
+    states: ELIGIBILITY_MATCH_STATES,
+    evidenceStates: ["satisfied", "conflict"]
+  });
+  const byRequirementId = new Map(matches.map((item) => [item.id, item]));
+  const byEligibilityId = new Map(eligibility.map((item) => [item.id, item]));
+  const requirementMatches = requirements.map((requirement) => {
+    const match = byRequirementId.get(requirement.id) || { state: "unknown", resumeEvidence: "" };
+    const verifiedMissing = match.state === "missing"
+      && requirement.indispensable
+      && hasExplicitCoreIncompatibilityEvidence(match.resumeEvidence);
+    return {
+      requirement: requirement.label,
+      state: match.state === "missing" && !verifiedMissing ? "unknown" : match.state,
+      indispensable: requirement.indispensable,
+      jdEvidence: requirement.evidence,
+      resumeEvidence: match.resumeEvidence
+    };
+  });
+  const normalizedEligibility = eligibilityItems.map((item, index) => {
+    const id = requiredContractString(item.id || `E${index + 1}`, "matchJob", "jobUnderstanding.eligibilityItems.id");
+    const label = requiredContractString(item.label, "matchJob", "jobUnderstanding.eligibilityItems.label");
+    const match = byEligibilityId.get(id) || { state: "unknown", resumeEvidence: "" };
+    const verifiedConflict = match.state === "conflict" && hasExplicitEligibilityConflictEvidence(
+      label,
+      `JD：${label}`,
+      match.resumeEvidence
+    );
+    return { id, label, state: match.state === "conflict" && !verifiedConflict ? "unknown" : match.state, resumeEvidence: match.resumeEvidence };
+  });
+  const hardBlockers = [];
+  for (const match of requirementMatches) {
+    if (match.indispensable && match.state === "missing" && !isExperienceYearsRequirement(match)) {
+      hardBlockers.push({ kind: "indispensable_core", requirement: match.requirement, jdEvidence: match.jdEvidence, resumeEvidence: match.resumeEvidence });
+    }
+  }
+  for (const item of normalizedEligibility) {
+    if (item.state === "conflict") {
+      hardBlockers.push({ kind: "eligibility", requirement: item.label, jdEvidence: `JD：${item.label}`, resumeEvidence: item.resumeEvidence });
+    }
+  }
+  const unknownRequirements = requirementMatches.filter((item) => ["unknown", "not_applicable"].includes(item.state));
+  const unknownEligibility = normalizedEligibility.filter((item) => item.state === "unknown");
+  const transferable = requirementMatches.filter((item) => item.state === "transferable");
+  const softMissing = requirementMatches.filter((item) => item.state === "missing" && !hardBlockers.some((blocker) => blocker.requirement === item.requirement));
+  const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
+  const hasPositiveEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state));
+  const completeDirect = requirementMatches.length > 0
+    && requirementMatches.every((item) => item.state === "matched")
+    && normalizedEligibility.every((item) => item.state === "satisfied");
+  let recommendation;
+  if (hardBlockers.length) recommendation = "skip";
+  else if (!requirementMatches.length || !hasPositiveEvidence || unknownRequirements.length || unknownEligibility.length || jobQuality.level === "risk") recommendation = "review";
+  else if (transferable.length || softMissing.length || jobQuality.level === "caution") recommendation = "caution";
+  else recommendation = "apply";
+  const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !unknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
+  const fitLevel = recommendation === "skip" ? "D" : recommendation === "review" ? "C" : recommendation === "caution" ? "B" : "A";
+  const fitReasons = requirementMatches.filter((item) => ["matched", "transferable"].includes(item.state))
+    .map((item) => `${item.requirement}：${item.state === "matched" ? "有直接简历证据" : "有可迁移简历证据"}`).slice(0, 8);
+  const softGaps = [
+    ...transferable.map((item) => `${item.requirement}目前只有可迁移证据`),
+    ...softMissing.map((item) => `${item.requirement}缺少直接简历证据`),
+    ...(jobQuality.level === "risk" ? ["岗位存在安全或合规风险，交由本地规则处理"] : [])
+  ].slice(0, 8);
+  const questionsToVerify = [
+    ...unknownRequirements.map((item) => `${item.requirement}的信息待确认`),
+    ...unknownEligibility.map((item) => `${item.label}的资格信息待确认`),
+    ...(requirementMatches.length && !hasPositiveEvidence ? ["候选人核心要求证据缺少，待确认"] : [])
+  ].slice(0, 8);
+  const jdEvidence = requirementMatches.filter((item) => ["matched", "transferable", "missing"].includes(item.state)).map((item) => item.jdEvidence)
+    .concat(hardBlockers.filter((item) => item.kind === "eligibility").map((item) => item.jdEvidence), list(jobUnderstanding.hiddenRisks).map((item) => text(item?.evidence)).filter(Boolean), list(jobQuality.concerns).map((item) => text(item?.evidence)).filter(Boolean)).slice(0, 6);
+  const resumeEvidence = [...matches, ...normalizedEligibility].map((item) => item.resumeEvidence).filter(Boolean).slice(0, 6);
+  return {
+    recommendation, fitLevel, confidence, fitReasons, requirementMatches, jobQuality, hardBlockers, softGaps, questionsToVerify,
+    missingPoints: softGaps, blockingGaps: hardBlockers.map((item) => item.requirement), riskQuestions: questionsToVerify,
+    recommendedResumeVersion: "", primaryProjects: [], greetingAngle: "", evidence: { jd: jdEvidence, resume: resumeEvidence }, hrPrep: {}
+  };
+}
+
+function sparseEvidenceItems(value, { field, expected, states, evidenceStates }) {
+  if (!Array.isArray(value)) throw new ModelContractError("matchJob", `${field} must be an array`);
+  const expectedIds = new Set(expected.map((item, index) => item.id || `${field === "matches" ? "R" : "E"}${index + 1}`));
+  const seen = new Set();
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new ModelContractError("matchJob", `${field} must contain evidence objects`);
+    const id = requiredContractString(item.id, "matchJob", `${field}.id`);
+    if (!expectedIds.has(id)) throw new ModelContractError("matchJob", `${field} contains unknown ID ${id}`);
+    if (seen.has(id)) throw new ModelContractError("matchJob", `${field} contains duplicate ID ${id}`);
+    seen.add(id);
+    if (!states.includes(item.state)) throw new ModelContractError("matchJob", `${field}.state is invalid`);
+    const resumeEvidence = optionalContractString(item.resumeEvidence, "matchJob", `${field}.resumeEvidence`);
+    if (evidenceStates.includes(item.state) && !resumeEvidence) throw new ModelContractError("matchJob", `${field}.${item.state} requires resumeEvidence`);
+    if (resumeEvidence && (!resumeEvidence.startsWith("简历：") || !resumeEvidence.slice("简历：".length).trim() || resumeEvidence.length > 120)) {
+      throw new ModelContractError("matchJob", `${field}.resumeEvidence must be a concrete 简历： fact within 120 characters`);
+    }
+    return { id, state: item.state, resumeEvidence };
+  });
 }
 
 function validateCompactMatchEvidence(value, context = {}) {

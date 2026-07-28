@@ -88,14 +88,11 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
       assert.strictEqual(input.candidateProfile.candidate.expectedSalary, undefined);
       assert.strictEqual(input.candidateProfile.candidate.adjustableSalary, undefined);
       assert.strictEqual(input.candidateProfile.resumeVersions, undefined);
-      if (input.resumeVersions.versions[0].sourceDocument) {
-        assert(input.resumeVersions.versions[0].sourceDocument.textExcerpt.includes("广州大学"));
-        sanitizedSourceSeen = true;
-      }
-      assert(!JSON.stringify({ candidateProfile: input.candidateProfile, resumeVersions: input.resumeVersions }).includes("8-12K"));
+      assert.strictEqual(Object.hasOwn(input, "resumeVersions"), false, "matchJob input must not repeat resume versions");
+      assert.strictEqual(Object.hasOwn(input, "jobEvidence"), false, "matchJob input must not repeat raw JD evidence");
+      assert(!JSON.stringify(input.candidateProfile).includes("8-12K"));
       assert.strictEqual(Object.hasOwn(input.searchPreferences, "salary"), false);
       assert(input.jobUnderstanding);
-      assert(input.jobEvidence);
       assert.strictEqual(input.ruleMatch, undefined);
       assert.strictEqual(input.job, undefined);
       const javaCandidate = input.candidateProfile.skills.some((skill) => (skill.name || skill) === "Java");
@@ -120,7 +117,7 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(calls.matchJob, 2, "不同候选人的匹配结论必须分别计算");
   assert.strictEqual(calls.analyzeResume, 0, "岗位扫描不得重新解析空简历");
   assert.strictEqual(calls.draftCommunication, 0, "批量扫描不得生成招呼语");
-  assert.strictEqual(sanitizedSourceSeen, true);
+  assert.strictEqual(sanitizedSourceSeen, false);
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   assert.strictEqual(decisionBucket({ ...job, analysis: pythonResult, qualityTags: [], risks: [] }), "primary");
   assert.strictEqual(decisionBucket({ ...job, analysis: javaResult, qualityTags: [], risks: [] }), "talk");
@@ -643,7 +640,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v10");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v18");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v19");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1786,6 +1783,28 @@ async function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(direct.hardBlockers, []);
   assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
+  const sparse = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" }],
+    eligibility: []
+  }, { jobUnderstanding });
+  assert.strictEqual(sparse.requirementMatches.find((item) => item.requirement === "客户需求沟通").state, "unknown");
+  assert.strictEqual(sparse.recommendation, "review", "omitted evidence rows must stay conservative");
+  const sparseDirect = validateModelResult("matchJob", {
+    matches: compactDirectPayload.matches,
+    eligibility: compactDirectPayload.eligibility
+  }, { jobUnderstanding });
+  assert.strictEqual(sparseDirect.recommendation, "apply");
+  assert.strictEqual(sparseDirect.confidence, 0.9);
+  for (const invalidSparse of [
+    { matches: [{ id: "R9", state: "matched", resumeEvidence: "简历：虚构" }], eligibility: [] },
+    { matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：事实" }, { id: "R1", state: "matched", resumeEvidence: "简历：重复" }], eligibility: [] },
+    { matches: [{ id: "R1", state: "invalid", resumeEvidence: "简历：事实" }], eligibility: [] },
+    { matches: [{ id: "R1", state: "matched", resumeEvidence: "没有前缀" }], eligibility: [] },
+    { matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：   " }], eligibility: [] }
+  ]) {
+    assert.throws(() => validateModelResult("matchJob", invalidSparse, { jobUnderstanding }), ModelContractError,
+      "sparse evidence must keep ID, enum, duplicate, and concrete-evidence guards");
+  }
   const transferable = validateModelResult("matchJob", {
     matches: [
       { id: "R1", state: "transferable", resumeEvidence: "简历：独立交付过内部工具" },
@@ -1813,7 +1832,7 @@ async function compactMatchEvidenceContractSmoke() {
 
   const hardMissing = validateModelResult("matchJob", {
     matches: [
-      { id: "R1", state: "missing", resumeEvidence: "" },
+      { id: "R1", state: "unknown", resumeEvidence: "" },
       { id: "R2", state: "not_applicable", resumeEvidence: "" }
     ],
     eligibility: [{ id: "E1", state: "satisfied", resumeEvidence: "简历：2027 届应届生" }],
