@@ -334,8 +334,8 @@ function validateCompactJobUnderstanding(value) {
 }
 
 function requiredCompactString(value, field) {
-  if (typeof value !== "string") {
-    throw new ModelContractError("understandJob", `${field} 必须是字符串`);
+  if (typeof value !== "string" || !value.trim()) {
+    throw new ModelContractError("understandJob", `${field} 必须是非空字符串`);
   }
   return text(value);
 }
@@ -348,8 +348,8 @@ function requiredCompactArray(value, field) {
 }
 
 function validateCompactEvidence(value, field) {
-  if (typeof value !== "string" || !value.startsWith("JD：") || value.length > 120) {
-    throw new ModelContractError("understandJob", `${field} evidence 必须以 JD：开头且最多 120 个字符`);
+  if (typeof value !== "string" || !value.startsWith("JD：") || !value.slice("JD：".length).trim() || value.length > 120) {
+    throw new ModelContractError("understandJob", `${field} evidence 必须以 JD：开头、包含原文且最多 120 个字符`);
   }
 }
 

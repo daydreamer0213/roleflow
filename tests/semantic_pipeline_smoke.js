@@ -1641,6 +1641,25 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(compactRepairCalls, 2, "紧凑字段缺失必须触发一次既有契约修复");
   assert.strictEqual(compactRepairResult.semanticStatus, "complete");
 
+  const whitespaceRoleSummary = { ...incompleteCompactUnderstanding, roleSummary: "   ", riskSignals: [] };
+  let whitespaceRoleRepairCalls = 0;
+  const whitespaceRoleRepairRunner = createJobAnalysisRunner(configFor(["Python", "RAG"]), [], {
+    db,
+    analyzer: {
+      understandJob: async (input) => {
+        whitespaceRoleRepairCalls += 1;
+        if (!input.contractRepair) return whitespaceRoleSummary;
+        assert.match(input.contractRepair.reason, /roleSummary/, "空白 roleSummary 的修复原因必须指出 roleSummary");
+        assert.deepStrictEqual(input.contractRepair.invalidOutput, whitespaceRoleSummary);
+        return { ...whitespaceRoleSummary, roleSummary: "交付应用" };
+      },
+      matchJob: async () => decision("apply", "A", "Python")
+    }
+  });
+  const whitespaceRoleRepairResult = await whitespaceRoleRepairRunner(completeJob("understanding-whitespace-role-repair"));
+  assert.strictEqual(whitespaceRoleRepairCalls, 2, "空白 roleSummary 必须触发一次既有契约修复");
+  assert.strictEqual(whitespaceRoleRepairResult.semanticStatus, "complete");
+
   // 修复后仍非法：最多再尝试一次修复，随后进入现有失败路径，不得无限重试。
   const stillInvalid = {
     ...understanding("understanding-repair-fails"),
@@ -1705,16 +1724,23 @@ async function compactMatchEvidenceContractSmoke() {
       `紧凑 understandJob 的 ${field} 必须使用正确类型`
     );
   }
+  assert.throws(
+    () => validateModelResult("understandJob", { ...compactInput, roleSummary: "   " }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /roleSummary/.test(error.message),
+    "紧凑 roleSummary 不能只包含空白字符"
+  );
   for (const invalidOutput of [
+    { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: "JD：" }] },
     { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: "JD: 独立交付应用" }] },
     { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: `JD：${"x".repeat(118)}` }] },
+    { ...compactInput, riskSignals: [{ type: "fee_fraud", severity: "high", evidence: "JD：   " }] },
     { ...compactInput, riskSignals: [{ type: "fee_fraud", severity: "high", evidence: " JD：要求缴纳培训费" }] },
     { ...compactInput, riskSignals: [{ type: "fee_fraud", severity: "high", evidence: `JD：${"x".repeat(118)}` }] }
   ]) {
     assert.throws(
       () => validateModelResult("understandJob", invalidOutput),
       (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /evidence/.test(error.message),
-      "紧凑 requirements 和 riskSignals 的 evidence 必须以 JD：开头且最多 120 个 JavaScript 字符"
+      "无内容的紧凑 evidence 必须在进入 apply 或风险决策前被拒绝；其余 evidence 必须以 JD：开头且最多 120 个 JavaScript 字符"
     );
   }
 
