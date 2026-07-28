@@ -178,6 +178,8 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("不得作为 resumeEvidence"), "matchJob prompt 必须禁止把用户备注当成简历证据");
     assert(matchPrompt.includes("omit unknown rows"), "matchJob prompt must allow omitted unknown rows");
     assert(matchPrompt.includes("output only"), "matchJob prompt must request evidence rows only");
+    assert(matchPrompt.includes("non-core explicit gap"), "matchJob prompt must retain evidenced non-core gaps as soft signals");
+    assert(matchPrompt.includes("indispensable") && matchPrompt.includes("hard blocker"), "matchJob prompt must reserve hard blocking for explicit indispensable incompatibility");
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");

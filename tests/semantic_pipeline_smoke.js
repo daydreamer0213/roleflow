@@ -1783,6 +1783,13 @@ async function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(direct.hardBlockers, []);
   assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
+  for (const invalidLegacyEvidence of ["简历：", "简历：   ", `简历：${"x".repeat(118)}`]) {
+    assert.throws(() => validateModelResult("matchJob", {
+      ...compactDirectPayload,
+      matches: [{ ...compactDirectPayload.matches[0], resumeEvidence: invalidLegacyEvidence }, compactDirectPayload.matches[1]]
+    }, { jobUnderstanding }), ModelContractError,
+    "legacy compact evidence must reject an empty or overlong 简历： value before it can reach apply");
+  }
   const sparse = validateModelResult("matchJob", {
     matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" }],
     eligibility: []
@@ -1795,6 +1802,17 @@ async function compactMatchEvidenceContractSmoke() {
   }, { jobUnderstanding });
   assert.strictEqual(sparseDirect.recommendation, "apply");
   assert.strictEqual(sparseDirect.confidence, 0.9);
+  const sparseNonCoreGap = validateModelResult("matchJob", {
+    matches: [
+      compactDirectPayload.matches[0],
+      { id: "R2", state: "missing", resumeEvidence: "简历：没有客户需求沟通经历" }
+    ],
+    eligibility: compactDirectPayload.eligibility
+  }, { jobUnderstanding });
+  assert.strictEqual(sparseNonCoreGap.requirementMatches.find((item) => item.requirement === "客户需求沟通").state, "missing");
+  assert.strictEqual(sparseNonCoreGap.recommendation, "caution");
+  assert.strictEqual(sparseNonCoreGap.confidence, 0.72);
+  assert.deepStrictEqual(sparseNonCoreGap.hardBlockers, []);
   for (const invalidSparse of [
     { matches: [{ id: "R9", state: "matched", resumeEvidence: "简历：虚构" }], eligibility: [] },
     { matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：事实" }, { id: "R1", state: "matched", resumeEvidence: "简历：重复" }], eligibility: [] },

@@ -388,12 +388,12 @@ function validateSparseMatchEvidence(value, context = {}) {
   const byEligibilityId = new Map(eligibility.map((item) => [item.id, item]));
   const requirementMatches = requirements.map((requirement) => {
     const match = byRequirementId.get(requirement.id) || { state: "unknown", resumeEvidence: "" };
-    const verifiedMissing = match.state === "missing"
+    const unverifiedIndispensableMissing = match.state === "missing"
       && requirement.indispensable
-      && hasExplicitCoreIncompatibilityEvidence(match.resumeEvidence);
+      && !hasExplicitCoreIncompatibilityEvidence(match.resumeEvidence);
     return {
       requirement: requirement.label,
-      state: match.state === "missing" && !verifiedMissing ? "unknown" : match.state,
+      state: unverifiedIndispensableMissing ? "unknown" : match.state,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
       resumeEvidence: match.resumeEvidence
@@ -472,9 +472,7 @@ function sparseEvidenceItems(value, { field, expected, states, evidenceStates })
     if (!states.includes(item.state)) throw new ModelContractError("matchJob", `${field}.state is invalid`);
     const resumeEvidence = optionalContractString(item.resumeEvidence, "matchJob", `${field}.resumeEvidence`);
     if (evidenceStates.includes(item.state) && !resumeEvidence) throw new ModelContractError("matchJob", `${field}.${item.state} requires resumeEvidence`);
-    if (resumeEvidence && (!resumeEvidence.startsWith("简历：") || !resumeEvidence.slice("简历：".length).trim() || resumeEvidence.length > 120)) {
-      throw new ModelContractError("matchJob", `${field}.resumeEvidence must be a concrete 简历： fact within 120 characters`);
-    }
+    if (resumeEvidence) validateMatchResumeEvidence(resumeEvidence, field);
     return { id, state: item.state, resumeEvidence };
   });
 }
@@ -652,15 +650,19 @@ function compactEvidenceItems(value, { field, expected, states, evidenceStates }
     if (evidenceStates.includes(item.state) && !resumeEvidence) {
       throw new ModelContractError("matchJob", `${field} 的 ${item.state} 状态必须提供 resumeEvidence`);
     }
-    if (resumeEvidence && !resumeEvidence.startsWith("简历：")) {
-      throw new ModelContractError("matchJob", `${field}.resumeEvidence 必须以“简历：”开头并引用候选人事实`);
-    }
+    if (resumeEvidence) validateMatchResumeEvidence(resumeEvidence, field);
     return { id, state: item.state, resumeEvidence };
   });
   for (const item of expected) {
     if (!seen.has(item.id)) throw new ModelContractError("matchJob", `${field} 漏掉 ${item.id}`);
   }
   return result;
+}
+
+function validateMatchResumeEvidence(resumeEvidence, field) {
+  if (!resumeEvidence.startsWith("简历：") || !resumeEvidence.slice("简历：".length).trim() || resumeEvidence.length > 120) {
+    throw new ModelContractError("matchJob", `${field}.resumeEvidence 必须以“简历：”开头、包含候选人事实且最多 120 个字符`);
+  }
 }
 
 function compactCautions(value) {
