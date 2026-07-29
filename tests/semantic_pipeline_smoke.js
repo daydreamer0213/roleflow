@@ -2273,6 +2273,17 @@ async function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(direct.hardBlockers, []);
   assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
+  const compactNonCoreGap = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    matches: [
+      compactDirectPayload.matches[0],
+      { id: "R2", state: "missing", resumeEvidence: "简历：没有客户需求沟通经历" }
+    ]
+  }, { jobUnderstanding });
+  assert.strictEqual(compactNonCoreGap.recommendation, "apply",
+    "旧紧凑路径中的普通附带要求缺口也不得单独阻止主投或可投");
+  assert(compactNonCoreGap.softGaps.includes("客户需求沟通未找到直接简历证据"),
+    "旧紧凑路径仍必须保留普通附带缺口解释");
   for (const invalidLegacyEvidence of ["简历：", "简历：   ", `简历：${"x".repeat(118)}`]) {
     assert.throws(() => validateModelResult("matchJob", {
       ...compactDirectPayload,
@@ -2308,8 +2319,11 @@ async function compactMatchEvidenceContractSmoke() {
     eligibility: compactDirectPayload.eligibility
   }, { jobUnderstanding });
   assert.strictEqual(sparseNonCoreGap.requirementMatches.find((item) => item.requirement === "客户需求沟通").state, "missing");
-  assert.strictEqual(sparseNonCoreGap.recommendation, "caution");
-  assert.strictEqual(sparseNonCoreGap.confidence, 0.72);
+  assert.strictEqual(sparseNonCoreGap.recommendation, "apply",
+    "普通附带要求缺口必须保留说明，但不得单独阻止主投或可投");
+  assert(sparseNonCoreGap.softGaps.includes("客户需求沟通缺少直接简历证据"),
+    "普通附带要求缺口仍必须保留在解释中");
+  assert.strictEqual(sparseNonCoreGap.confidence, 0.9);
   assert.deepStrictEqual(sparseNonCoreGap.hardBlockers, []);
   for (const invalidSparse of [
     { matches: [{ id: "R9", state: "matched", resumeEvidence: "简历：虚构" }], eligibility: [] },

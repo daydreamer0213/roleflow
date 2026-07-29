@@ -460,15 +460,19 @@ function validateSparseMatchEvidence(value, context = {}) {
   const unknownEligibility = normalizedEligibility.filter((item) => item.state === "unknown");
   const transferable = requirementMatches.filter((item) => item.state === "transferable");
   const softMissing = requirementMatches.filter((item) => item.state === "missing" && !hardBlockers.some((blocker) => blocker.requirement === item.requirement));
+  const decisionRequirements = requirementMatches.filter((item) => item.foundation || item.central || item.indispensable);
+  const decisionUnknownRequirements = unknownRequirements.filter((item) => decisionRequirements.includes(item));
+  const decisionTransferable = transferable.filter((item) => decisionRequirements.includes(item));
+  const decisionSoftMissing = softMissing.filter((item) => decisionRequirements.includes(item));
   const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
   const hasPositiveEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state));
-  const completeDirect = requirementMatches.length > 0
-    && requirementMatches.every((item) => item.state === "matched")
+  const completeDirect = decisionRequirements.length > 0
+    && decisionRequirements.every((item) => item.state === "matched")
     && normalizedEligibility.every((item) => item.state === "satisfied");
   let recommendation;
   if (hardBlockers.length) recommendation = "skip";
-  else if (!requirementMatches.length || !hasPositiveEvidence || unknownRequirements.length || unknownEligibility.length || jobQuality.level === "risk") recommendation = "review";
-  else if (transferable.length || softMissing.length || jobQuality.level === "caution") recommendation = "caution";
+  else if (!requirementMatches.length || !hasPositiveEvidence || decisionUnknownRequirements.length || unknownEligibility.length || jobQuality.level === "risk") recommendation = "review";
+  else if (decisionTransferable.length || decisionSoftMissing.length || jobQuality.level === "caution") recommendation = "caution";
   else recommendation = "apply";
   const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !unknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
   const fitLevel = recommendation === "skip" ? "D" : recommendation === "review" ? "C" : recommendation === "caution" ? "B" : "A";
@@ -624,14 +628,18 @@ function validateCompactMatchEvidence(value, context = {}) {
   const unknownEligibility = eligibility.filter((item) => item.state === "unknown");
   const transferable = requirementMatches.filter((item) => item.state === "transferable");
   const softMissing = requirementMatches.filter((item) => item.state === "missing" && !hardBlockers.some((blocker) => blocker.requirement === item.requirement));
+  const decisionRequirements = requirementMatches.filter((item) => item.foundation || item.central || item.indispensable);
+  const decisionUnknownRequirements = unknownRequirements.filter((item) => decisionRequirements.includes(item));
+  const decisionTransferable = transferable.filter((item) => decisionRequirements.includes(item));
+  const decisionSoftMissing = softMissing.filter((item) => decisionRequirements.includes(item));
   const decisionCautions = cautions.filter((item) => ["candidate_transition", "preference_conflict"].includes(item.kind));
   const jobQuality = jobUnderstanding.jobQuality || { level: "normal", concerns: [] };
   const hasPositiveRequirementEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state));
   let recommendation;
   if (hardBlockers.length) recommendation = "skip";
-  else if (!requirementMatches.length || !hasPositiveRequirementEvidence || unknownRequirements.length || unknownEligibility.length
+  else if (!requirementMatches.length || !hasPositiveRequirementEvidence || decisionUnknownRequirements.length || unknownEligibility.length
     || uncertainties.length || value.certainty === "low" || jobQuality.level === "risk") recommendation = "review";
-  else if (transferable.length || softMissing.length || decisionCautions.length || jobQuality.level === "caution") recommendation = "caution";
+  else if (decisionTransferable.length || decisionSoftMissing.length || decisionCautions.length || jobQuality.level === "caution") recommendation = "caution";
   else recommendation = "apply";
 
   const fitLevel = recommendation === "skip"
