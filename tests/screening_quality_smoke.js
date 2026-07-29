@@ -21,6 +21,7 @@ const {
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
+const { applyRuleGuard } = require("../src/core/job_analysis");
 const { extractJobMetadata } = require("../src/core/job_metadata");
 const { normalizeSearchPlan, normalizeBossActiveDays } = require("../src/core/profile_schema");
 const {
@@ -66,6 +67,18 @@ const expiredActivity = applyJobQualityGovernance([{
 assert.strictEqual(expiredActivity.effectiveBossActiveDays, 5);
 assert(expiredActivity.qualityTags.includes("stale_or_unknown_active"));
 assert.strictEqual(expiredActivity.decisionBucket, "refresh");
+
+const sharedTalkAnalysis = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
+const sharedTalkGuard = applyRuleGuard(sharedTalkAnalysis, job());
+assert.strictEqual(sharedTalkGuard.recommendation, "caution");
+assert.strictEqual(sharedTalkGuard.decisionSource, "role_evidence_talk_guard");
+assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkAnalysis }), "talk");
+
+const sharedBackupAnalysis = layeredDecisionAnalysis("misaligned", ["matched"]);
+const sharedBackupGuard = applyRuleGuard(sharedBackupAnalysis, job());
+assert.strictEqual(sharedBackupGuard.recommendation, "review");
+assert.strictEqual(sharedBackupGuard.decisionSource, "role_evidence_backup_guard");
+assert.strictEqual(decisionBucket({ ...job(), analysis: sharedBackupAnalysis }), "backup");
 
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/job_detail/abc123.html?ka=search"), "https://www.zhipin.com/job_detail/abc123.html");
 assert.strictEqual(normalizeBossNavigationUrl("https://www.zhipin.com/job_detail/abc123.html?securityId=token"), "https://www.zhipin.com/job_detail/abc123.html?securityId=token");
@@ -663,4 +676,23 @@ function job(overrides = {}) {
 
 function completeApplyAnalysis() {
   return { semanticStatus: "complete", recommendation: "apply", confidence: 0.9, evidence: { jd: ["Python"], resume: ["Python"] } };
+}
+
+function layeredDecisionAnalysis(roleAlignment, states) {
+  return {
+    ...completeApplyAnalysis(),
+    fitLevel: "A",
+    roleAlignment,
+    requirementMatches: states.map((state, index) => ({
+      state,
+      foundation: true,
+      central: false,
+      indispensable: true,
+      jdEvidence: `JD ${index}`,
+      resumeEvidence: ["matched", "transferable"].includes(state) ? `Resume ${index}` : ""
+    })),
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    hiddenRisks: []
+  };
 }

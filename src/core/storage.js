@@ -7,7 +7,7 @@ const { parseBossActivityText } = require("./activity_status");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
-const { decisionHardBlockers, roleCoreEvidenceState } = require("./model_contract");
+const { decisionHardBlockers, roleEvidenceDecisionState } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 
@@ -3318,7 +3318,9 @@ function decisionBucket(job) {
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
     if (tags.has("experience_salary_overlap")) return "backup";
-    if (roleCoreEvidenceState(analysis).unproven) return "backup";
+    const roleEvidence = roleEvidenceDecisionState(analysis);
+    if (roleEvidence.bucketCeiling === "backup") return "backup";
+    if (roleEvidence.bucketCeiling === "talk" && recommendation === "apply") return "talk";
     if (recommendation === "skip") return "talk";
     if (recommendation === "apply") {
       const evidence = analysis.evidence || {};

@@ -3,11 +3,16 @@ const {
   openDb,
   createBatch,
   upsertJob,
-  markCandidateJob
+  markCandidateJob,
+  decisionBucket,
+  createWorkflowRun,
+  transitionWorkflowRun
 } = require("../src/core/storage");
+const { applyRuleGuard } = require("../src/core/job_analysis");
 const {
   workflowEligibility,
   listWorkflowInventory,
+  listWorkflowReviewCandidates,
   reconcileCommunicationOutcome
 } = require("../src/core/workflow_inventory");
 
@@ -115,6 +120,63 @@ try {
     }), { now }),
     { eligible: false, tier: "", reasonCode: "WORKFLOW_ROLE_CORE_UNPROVEN" },
     "岗位主线无证据时，即使薪资与经验重叠，也不得进入默认勾选的低风险补位"
+  );
+
+  const roleEvidenceBackup = layeredDecisionAnalysis("misaligned", ["matched"]);
+  assert.strictEqual(
+    applyRuleGuard(roleEvidenceBackup, job("role-evidence-backup")).decisionSource,
+    "role_evidence_backup_guard"
+  );
+  assert.strictEqual(decisionBucket(job("role-evidence-backup", { analysis: roleEvidenceBackup })), "backup");
+  assert.deepStrictEqual(
+    workflowEligibility(job("role-evidence-backup", { analysis: roleEvidenceBackup }), { now }),
+    { eligible: false, tier: "", reasonCode: "WORKFLOW_ROLE_EVIDENCE_BACKUP" }
+  );
+  const roleEvidenceTalk = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
+  assert.strictEqual(
+    applyRuleGuard(roleEvidenceTalk, job("role-evidence-talk")).decisionSource,
+    "role_evidence_talk_guard"
+  );
+  assert.strictEqual(decisionBucket(job("role-evidence-talk", { analysis: roleEvidenceTalk })), "talk");
+  assert.deepStrictEqual(
+    workflowEligibility(job("role-evidence-talk", { analysis: roleEvidenceTalk }), { now }),
+    { eligible: true, tier: "talk", reasonCode: "" }
+  );
+  const roleEvidenceBackupId = insert("role-evidence-review", { analysis: roleEvidenceBackup }, batchId);
+  const legacyRoleCoreId = insert("legacy-role-core-review", { analysis: roleCoreUnprovenAnalysis() }, batchId);
+  const layeredHighSalaryId = insert("layered-high-salary-review", {
+    analysis: roleEvidenceBackup,
+    qualityTags: ["salary_target_high", "experience_salary_overlap"]
+  }, batchId);
+  const workflow = createWorkflowRun(db, {
+    profileId,
+    planId,
+    localDay: "2026-07-20",
+    sequence: 1,
+    targetSuccessCount: 1,
+    inventoryCount: 2,
+    candidateGap: 0,
+    scanNeeded: false,
+    planner: { replacementBuffer: 0 }
+  });
+  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", updatedAt: now });
+  const reviewCandidates = listWorkflowReviewCandidates(db, workflow.id, { now });
+  assert.deepStrictEqual(
+    {
+      tier: reviewCandidates.find((candidate) => candidate.id === roleEvidenceBackupId)?.workflowTier,
+      defaultChecked: reviewCandidates.find((candidate) => candidate.id === roleEvidenceBackupId)?.defaultChecked
+    },
+    { tier: "role_evidence_backup", defaultChecked: false }
+  );
+  assert.strictEqual(
+    reviewCandidates.find((candidate) => candidate.id === legacyRoleCoreId)?.workflowTier,
+    "role_core_backup",
+    "legacy workflow rows must remain readable"
+  );
+  assert.strictEqual(
+    reviewCandidates.find((candidate) => candidate.id === layeredHighSalaryId)?.workflowTier,
+    "high_salary_backup",
+    "existing high-salary backup behavior must retain precedence"
   );
 
   const outcomeJobIds = {
@@ -240,5 +302,22 @@ function roleCoreUnprovenAnalysis() {
     }],
     evidence: { jd: [], resume: [] },
     hardBlockers: []
+  };
+}
+
+function layeredDecisionAnalysis(roleAlignment, states) {
+  return {
+    ...completeAnalysis(),
+    roleAlignment,
+    requirementMatches: states.map((state, index) => ({
+      state,
+      foundation: true,
+      central: false,
+      indispensable: true,
+      jdEvidence: `JD ${index}`,
+      resumeEvidence: ["matched", "transferable"].includes(state) ? `Resume ${index}` : ""
+    })),
+    jobQuality: { level: "normal", concerns: [] },
+    hiddenRisks: []
   };
 }

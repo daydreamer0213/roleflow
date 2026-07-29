@@ -1070,6 +1070,62 @@ function roleCoreEvidenceState(analysis = {}) {
   };
 }
 
+function roleEvidenceDecisionState(analysis = {}) {
+  const matches = Array.isArray(analysis.requirementMatches) ? analysis.requirementMatches : [];
+  const hasLayeredSemantics = ROLE_ALIGNMENT_STATES.includes(analysis.roleAlignment);
+  const foundation = matches.filter((item) => item?.foundation === true);
+
+  if (!hasLayeredSemantics) {
+    const legacy = roleCoreEvidenceState(analysis);
+    return {
+      semantics: "legacy",
+      alignment: "",
+      foundationState: legacy.unproven ? "unproven" : "none",
+      foundationRequirementCount: 0,
+      foundationPositiveCount: 0,
+      hasTransferableFoundation: false,
+      bucketCeiling: legacy.unproven ? "backup" : "primary",
+      reasonCode: legacy.unproven ? "legacy_role_core_unproven" : ""
+    };
+  }
+
+  const positive = foundation.filter((item) => ["matched", "transferable"].includes(item.state));
+  const foundationState = !foundation.length
+    ? "none"
+    : !positive.length
+      ? "unproven"
+      : positive.length === foundation.length
+        ? "complete"
+        : "partial";
+  const hasTransferableFoundation = foundation.some((item) => item.state === "transferable");
+
+  let bucketCeiling = "backup";
+  if (analysis.roleAlignment === "aligned" && foundationState === "complete" && !hasTransferableFoundation) {
+    bucketCeiling = "primary";
+  } else if (
+    (analysis.roleAlignment === "aligned" && ["complete", "partial"].includes(foundationState))
+    || (analysis.roleAlignment === "mostly_aligned" && ["complete", "partial"].includes(foundationState))
+  ) {
+    bucketCeiling = "talk";
+  }
+
+  return {
+    semantics: "layered",
+    alignment: analysis.roleAlignment,
+    foundationState,
+    foundationRequirementCount: foundation.length,
+    foundationPositiveCount: positive.length,
+    hasTransferableFoundation,
+    bucketCeiling,
+    reasonCode: roleEvidenceReasonCode(analysis.roleAlignment, foundationState)
+  };
+}
+
+function roleEvidenceReasonCode(alignment, foundationState) {
+  if (alignment !== "aligned") return `role_${alignment}`;
+  return foundationState === "complete" ? "role_aligned" : `foundation_${foundationState}`;
+}
+
 // 展示兼容：读取历史分析中的硬缺口条目（含旧式字符串），只用于页面呈现，禁止用于新决策。
 function effectiveHardBlockers(analysis = {}) {
   const raw = Object.prototype.hasOwnProperty.call(analysis, "hardBlockers")
@@ -1169,5 +1225,6 @@ module.exports = {
   effectiveHardBlockers,
   decisionHardBlockers,
   roleCoreEvidenceState,
+  roleEvidenceDecisionState,
   hardBlockerText
 };

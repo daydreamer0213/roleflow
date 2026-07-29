@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, roleCoreEvidenceState, hardBlockerText } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -292,33 +292,47 @@ function applyRuleGuard(analysis, job) {
   if (hardBlockers.length) {
     return addGuard({ ...analysis, hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`, analysis.semanticStatus, "hard_blocker_guard");
   }
+  if (analysis.jobQuality?.level === "risk") {
+    return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
+  }
+  let guarded = analysis;
   if (analysis.recommendation === "skip") {
-    return addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
+    guarded = addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
   }
   if (["apply", "caution"].includes(analysis.recommendation) && missingEitherSideEvidence(analysis)) {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "模型结论缺少可核对的双侧证据，需要人工复核 JD 与简历。", analysis.semanticStatus, "model_evidence_gap");
   }
   if (analysis.recommendation === "apply" && (hasTransferableCore(analysis) || analysis.jobQuality?.level === "caution")) {
-    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "核心要求仅有可迁移证据或岗位质量需关注，建议先沟通确认再投递。", analysis.semanticStatus, "evidence_quality_guard");
-  }
-  if (analysis.jobQuality?.level === "risk") {
-    return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
-  }
-  if (roleCoreEvidenceState(analysis).unproven) {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "岗位主线与当前简历证据偏离，需要作为备选人工查看。", analysis.semanticStatus, "role_core_unproven_guard");
+    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "核心要求仅有可迁移证据或岗位质量需关注，建议先沟通确认再投递。", analysis.semanticStatus, "evidence_quality_guard");
   }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
-  if (analysis.recommendation === "apply" && materialRisk) {
+  if (guarded === analysis && analysis.recommendation === "apply" && materialRisk) {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
-    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
+    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
   }
-  if (analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
-    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
+  if (guarded === analysis && analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
+    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
   }
+  const roleEvidence = roleEvidenceDecisionState(analysis);
+  if (roleEvidence.bucketCeiling === "backup") {
+    return addGuard(guarded, "review", guarded.fitLevel || "C", roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_backup_guard");
+  }
+  if (roleEvidence.bucketCeiling === "talk" && guarded.recommendation === "apply") {
+    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_talk_guard");
+  }
+  if (guarded !== analysis) return guarded;
   if (Number(analysis.confidence ?? 0) < 0.62) {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
   }
   return analysis;
+}
+
+function roleEvidenceGuardReason(roleEvidence) {
+  if (roleEvidence.semantics === "legacy") return "岗位主线与当前简历证据偏离，需要作为备选人工查看。";
+  if (roleEvidence.foundationState === "none" || roleEvidence.foundationState === "unproven") {
+    return "岗位基础要求缺少可核对的简历证据，需要作为备选人工查看。";
+  }
+  return "岗位方向或基础要求仅部分匹配，建议先沟通确认再投递。";
 }
 
 function missingEitherSideEvidence(analysis) {

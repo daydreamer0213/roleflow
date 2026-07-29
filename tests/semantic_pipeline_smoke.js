@@ -10,7 +10,8 @@ const {
   ModelContractError,
   effectiveHardBlockers,
   decisionHardBlockers,
-  roleCoreEvidenceState
+  roleCoreEvidenceState,
+  roleEvidenceDecisionState
 } = require("../src/core/model_contract");
 const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
@@ -54,6 +55,7 @@ const db = openDb(dbPath);
     compactResponsibilityFoundationContractSmoke();
     compactCentralRequirementSmoke();
     roleCentralBucketSmoke();
+    roleEvidenceDecisionStateSmoke();
     await compactMatchEvidenceContractSmoke();
     roleAlignmentEvidenceContractSmoke();
     await understandingContractRepairSmoke();
@@ -1924,7 +1926,7 @@ function roleCentralBucketSmoke() {
     "backup"
   );
   const guarded = applyRuleGuard(analysis, completeJob("role-core-unproven"));
-  assert.strictEqual(guarded.decisionSource, "role_core_unproven_guard");
+  assert.strictEqual(guarded.decisionSource, "role_evidence_backup_guard");
   assert.match(guarded.fitReasons[0], /岗位主线.*备选/);
 
   const riskGuarded = applyRuleGuard({
@@ -1954,6 +1956,154 @@ function roleCentralBucketSmoke() {
     decisionBucket({ ...completeJob("role-core-transferable"), analysis: transferable, qualityTags: [], risks: [] }),
     "talk"
   );
+}
+
+function roleEvidenceDecisionStateSmoke() {
+  assert.strictEqual(typeof roleEvidenceDecisionState, "function", "shared role evidence decision helper must be exported");
+  const matrix = [
+    ["aligned", ["matched", "matched"], "primary"],
+    ["aligned", ["matched", "unknown"], "talk"],
+    ["aligned", ["transferable", "matched"], "talk"],
+    ["aligned", ["unknown", "missing"], "backup"],
+    ["mostly_aligned", ["matched", "matched"], "talk"],
+    ["mostly_aligned", ["matched", "unknown"], "talk"],
+    ["mostly_aligned", ["unknown", "missing"], "backup"],
+    ["partially_aligned", ["matched"], "backup"],
+    ["misaligned", ["matched"], "backup"],
+    ["insufficient_evidence", ["matched"], "backup"]
+  ];
+  for (const [alignment, states, expected] of matrix) {
+    assert.strictEqual(
+      roleEvidenceDecisionState(layeredRoleAnalysis(alignment, states)).bucketCeiling,
+      expected,
+      `${alignment} + ${states.join("/")} should have ${expected} ceiling`
+    );
+  }
+
+  assert.deepStrictEqual(
+    roleEvidenceDecisionState(layeredRoleAnalysis("mostly_aligned", ["matched", "unknown", "matched"])),
+    {
+      semantics: "layered",
+      alignment: "mostly_aligned",
+      foundationState: "partial",
+      foundationRequirementCount: 3,
+      foundationPositiveCount: 2,
+      hasTransferableFoundation: false,
+      bucketCeiling: "talk",
+      reasonCode: "role_mostly_aligned"
+    }
+  );
+  const noFoundation = layeredRoleAnalysis("aligned", []);
+  assert.strictEqual(roleEvidenceDecisionState(noFoundation).bucketCeiling, "backup");
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("role-no-foundation"), analysis: noFoundation }),
+    "backup",
+    "new layered analyses without foundation requirements must stay backup"
+  );
+
+  const misaligned = layeredRoleAnalysis("misaligned", ["matched"]);
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("role-misaligned"), analysis: misaligned }),
+    "backup",
+    "role misalignment alone must never become not_recommended"
+  );
+  const blocked = {
+    ...misaligned,
+    recommendation: "skip",
+    fitLevel: "D",
+    hardBlockers: [{
+      kind: "safety",
+      requirement: "No paid onboarding",
+      jdEvidence: "JD: paid onboarding required",
+      resumeEvidence: "Resume: candidate does not accept paid onboarding"
+    }]
+  };
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("role-hard-blocker"), analysis: blocked }),
+    "not_recommended",
+    "valid structured hard blockers retain priority over the shared ceiling"
+  );
+
+  const legacy = {
+    requirementMatches: [{
+      state: "unknown",
+      central: true,
+      indispensable: false,
+      resumeEvidence: ""
+    }]
+  };
+  const legacyCore = roleCoreEvidenceState(legacy);
+  const legacyDecision = roleEvidenceDecisionState(legacy);
+  assert.strictEqual(legacyDecision.semantics, "legacy");
+  assert.strictEqual(legacyDecision.foundationState, legacyCore.unproven ? "unproven" : "none");
+  assert.strictEqual(legacyDecision.bucketCeiling, legacyCore.unproven ? "backup" : "primary");
+
+  const frontend = roleEvidenceDecisionState(layeredRoleAnalysis("misaligned", ["unknown", "missing"]));
+  assert.deepStrictEqual(
+    {
+      roleAlignment: frontend.alignment,
+      foundationState: frontend.foundationState,
+      bucket: frontend.bucketCeiling
+    },
+    { roleAlignment: "misaligned", foundationState: "unproven", bucket: "backup" }
+  );
+  const fullStack = roleEvidenceDecisionState(layeredRoleAnalysis("mostly_aligned", ["matched", "unknown"]));
+  assert.deepStrictEqual(
+    {
+      roleAlignment: fullStack.alignment,
+      foundationState: fullStack.foundationState,
+      bucket: fullStack.bucketCeiling
+    },
+    { roleAlignment: "mostly_aligned", foundationState: "partial", bucket: "talk" }
+  );
+
+  for (const recommendation of ["review", "caution"]) {
+    const original = layeredRoleAnalysis("mostly_aligned", ["matched", "unknown"], { recommendation });
+    assert.strictEqual(
+      applyRuleGuard(original, completeJob(`role-no-promotion-${recommendation}`)).recommendation,
+      recommendation,
+      "the shared ceiling must not promote an existing recommendation"
+    );
+  }
+
+  const backupGuardCases = [
+    [layeredRoleAnalysis("misaligned", ["matched"], { recommendation: "skip" }), {}],
+    [layeredRoleAnalysis("misaligned", ["transferable"]), {}],
+    [{ ...layeredRoleAnalysis("misaligned", ["matched"]), jobQuality: { level: "caution", concerns: [] } }, {}],
+    [{
+      ...layeredRoleAnalysis("misaligned", ["matched"]),
+      hiddenRisks: [{ severity: "medium", evidence: "JD: confirm delivery ownership" }]
+    }, {}],
+    [layeredRoleAnalysis("misaligned", ["matched"]), { qualityTags: ["experience_stretch"] }]
+  ];
+  for (const [analysis, jobOverrides] of backupGuardCases) {
+    const guarded = applyRuleGuard(analysis, completeJob("role-backup-precedence", jobOverrides));
+    assert.strictEqual(guarded.recommendation, "review", "backup ceiling must cap every non-hard caution guard");
+    assert.strictEqual(guarded.decisionSource, "role_evidence_backup_guard");
+  }
+}
+
+function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" } = {}) {
+  return {
+    semanticStatus: "complete",
+    recommendation,
+    fitLevel: recommendation === "apply" ? "A" : "C",
+    confidence: 0.9,
+    roleAlignment,
+    requirementMatches: states.map((state, index) => ({
+      requirement: `Foundation ${index + 1}`,
+      state,
+      foundation: true,
+      central: false,
+      indispensable: true,
+      jdEvidence: `JD: Foundation ${index + 1}`,
+      resumeEvidence: ["matched", "transferable"].includes(state) ? `Resume: Foundation ${index + 1}` : ""
+    })),
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    hiddenRisks: [],
+    evidence: { jd: ["JD evidence"], resume: ["Resume evidence"] }
+  };
 }
 
 async function compactMatchEvidenceContractSmoke() {
