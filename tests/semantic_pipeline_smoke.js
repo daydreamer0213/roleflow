@@ -2284,6 +2284,24 @@ async function compactMatchEvidenceContractSmoke() {
     "旧紧凑路径中的普通附带要求缺口也不得单独阻止主投或可投");
   assert(compactNonCoreGap.softGaps.includes("客户需求沟通未找到直接简历证据"),
     "旧紧凑路径仍必须保留普通附带缺口解释");
+  const compactFoundationOnlyUnderstanding = {
+    ...jobUnderstanding,
+    coreRequirements: [
+      { ...jobUnderstanding.coreRequirements[0], foundation: true, central: false, indispensable: false },
+      { ...jobUnderstanding.coreRequirements[1], foundation: false, central: false, indispensable: false }
+    ]
+  };
+  const compactFoundationGap = validateModelResult("matchJob", {
+    ...compactDirectPayload,
+    matches: [
+      { id: "R1", state: "missing", resumeEvidence: "简历：没有独立交付应用经历" },
+      compactDirectPayload.matches[1]
+    ]
+  }, { jobUnderstanding: compactFoundationOnlyUnderstanding });
+  assert.strictEqual(compactFoundationGap.requirementMatches[0].foundation, true,
+    "旧紧凑路径必须继承岗位理解中的 foundation 标记");
+  assert.strictEqual(compactFoundationGap.recommendation, "caution",
+    "foundation 缺口即使不是 central 或 indispensable，也必须继续影响排序");
   for (const invalidLegacyEvidence of ["简历：", "简历：   ", `简历：${"x".repeat(118)}`]) {
     assert.throws(() => validateModelResult("matchJob", {
       ...compactDirectPayload,

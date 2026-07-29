@@ -551,6 +551,7 @@ function validateCompactMatchEvidence(value, context = {}) {
   const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
     id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
     label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    foundation: Boolean(item.foundation),
     central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
     indispensable: Boolean(item.indispensable),
     evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
@@ -593,6 +594,7 @@ function validateCompactMatchEvidence(value, context = {}) {
     return {
       requirement: requirement.label,
       state: match.state === "missing" && requirement.indispensable && !evidencedCoreConflict ? "unknown" : match.state,
+      foundation: requirement.foundation,
       central: requirement.central,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
