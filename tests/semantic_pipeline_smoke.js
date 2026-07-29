@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { loadConfigs } = require("../src/config");
-const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard } = require("../src/core/job_analysis");
+const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard, compactAnalysis, createRuleOnlyAnalysis } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 const { MockModelAdapter } = require("../src/adapters/models/mock");
 const {
@@ -38,6 +38,7 @@ const db = openDb(dbPath);
     await contractRepairAndFailureSmoke();
     await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
+    await compactRoleEvidencePersistenceSmoke();
     await ruleGuardSmoke();
     await localEvidenceGuardSmoke();
     await matchingCardContractSmoke();
@@ -684,8 +685,9 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v11");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v22");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v12");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v23");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v1");
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1590,6 +1592,44 @@ function genericPolicySmoke() {
   assert(!internScore.qualityTags.includes("internship_role"));
 }
 
+async function compactRoleEvidencePersistenceSmoke() {
+  const configs = { model: { provider: "test", providers: { test: { model: "test-model" } } }, resumeVersions: { versions: [] } };
+  const jobUnderstanding = understanding("persist-role-evidence");
+  const matchDecision = decision("apply", "A", "Python");
+  const compact = compactAnalysis(configs, { job: completeJob("persist-role-evidence"), jobUnderstanding, matchDecision, revision: {} });
+  assert.deepStrictEqual(
+    {
+      roleSummary: compact.roleSummary,
+      responsibilityEvidence: compact.responsibilityEvidence,
+      roleAlignment: compact.roleAlignment,
+      roleResumeEvidence: compact.roleResumeEvidence,
+      roleGaps: compact.roleGaps,
+      requirementMatches: compact.requirementMatches
+    },
+    {
+      roleSummary: jobUnderstanding.roleSummary,
+      responsibilityEvidence: jobUnderstanding.responsibilityEvidence,
+      roleAlignment: matchDecision.roleAlignment,
+      roleResumeEvidence: matchDecision.roleResumeEvidence,
+      roleGaps: matchDecision.roleGaps,
+      requirementMatches: matchDecision.requirementMatches
+    },
+    "compact analysis must preserve role evidence and authoritative requirement flags"
+  );
+  assert.strictEqual(compact.requirementMatches[0].foundation, true);
+
+  const ruleOnly = createRuleOnlyAnalysis(configs, completeJob("rule-only-role-evidence"), {}, {});
+  const failed = await createJobAnalysisRunner({ ...configs, candidateProfile: null }, [], { analyzer: {} })(completeJob("failed-role-evidence"));
+  for (const analysis of [ruleOnly, failed]) {
+    assert.strictEqual(analysis.roleSummary, "");
+    assert.strictEqual(analysis.roleAlignment, "");
+    assert.deepStrictEqual(analysis.responsibilityEvidence, []);
+    assert.deepStrictEqual(analysis.roleResumeEvidence, []);
+    assert.deepStrictEqual(analysis.roleGaps, []);
+    assert.deepStrictEqual(analysis.requirementMatches, []);
+  }
+}
+
 function staleAnalysisSmoke() {
   const oldPipelineRevision = {
     profileVersion: "profile",
@@ -1600,6 +1640,22 @@ function staleAnalysisSmoke() {
   };
   const currentPipelineRevision = { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS };
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
+  assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
+  assert.deepStrictEqual(PIPELINE_VERSIONS, {
+    understandJob: "job-understanding-v12",
+    matchJob: "match-decision-v23",
+    decisionRules: "role-direction-requirements-v1",
+    communication: "communication-v2"
+  });
+  const decisionRulesOnlyChanged = analysisStaleReasons({
+    revision: { ...oldPipelineRevision, pipelineVersions: { ...PIPELINE_VERSIONS, decisionRules: "previous-rules" } }
+  }, { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS });
+  assert.deepStrictEqual(decisionRulesOnlyChanged, ["decision_rules_changed"]);
+  assert.deepStrictEqual(
+    analysisStaleReasons({ revision: { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS } }, { ...oldPipelineRevision, pipelineVersions: PIPELINE_VERSIONS }),
+    [],
+    "current revisions must not be stale"
+  );
   assert(contractUpgradeReasons.includes("job_understanding_pipeline_changed"), "理解提示词升级后必须使 v5 持久化分析 stale");
   assert(contractUpgradeReasons.includes("match_pipeline_changed"), "匹配语义升级后必须使 v12 持久化分析 stale");
 
@@ -2658,7 +2714,11 @@ function roleAlignmentEvidenceContractSmoke() {
     roleGaps: ["JD 未提供可核对的具体职责"]
   }, { jobUnderstanding: { ...jobUnderstanding, responsibilityEvidence: [] } }));
 
-  const historical = validateModelResult("matchJob", decision("apply", "A", "Python"));
+  const historicalDecision = decision("apply", "A", "Python");
+  delete historicalDecision.roleAlignment;
+  delete historicalDecision.roleResumeEvidence;
+  delete historicalDecision.roleGaps;
+  const historical = validateModelResult("matchJob", historicalDecision);
   assert.deepStrictEqual(
     {
       roleAlignment: historical.roleAlignment,
@@ -2674,10 +2734,12 @@ function understanding(jobId) {
   return {
     jobId,
     realRoleType: "ai_application",
+    roleSummary: "Enterprise knowledge-base application development",
+    responsibilityEvidence: ["JD：负责 RAG 知识库与 Agent 应用开发"],
     businessScenario: "企业知识库",
     coreResponsibilities: [{ label: "企业知识库应用开发", evidence: "JD：负责 RAG 知识库和 Agent 应用开发" }],
     coreRequirements: [
-      { label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" },
+      { label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" },
       { label: "RAG", indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
     ],
     preferredRequirements: [],
@@ -2694,10 +2756,13 @@ function decision(recommendation, fitLevel, resumeEvidence) {
   return {
     recommendation,
     fitLevel,
+    roleAlignment: "aligned",
+    roleResumeEvidence: [`简历：${resumeEvidence}`],
+    roleGaps: [],
     confidence: 0.88,
     fitReasons: ["岗位核心职责与候选人的 Python/RAG 项目经验对应"],
     requirementMatches: [
-      { requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: `简历：${resumeEvidence}` },
+      { requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: `简历：${resumeEvidence}` },
       { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：负责 RAG 知识库建设", resumeEvidence: `简历：${resumeEvidence}` }
     ],
     jobQuality: { level: "normal", concerns: [] },

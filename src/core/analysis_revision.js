@@ -2,8 +2,9 @@ const crypto = require("crypto");
 const { matchingCardRevision } = require("./matching_card");
 
 const PIPELINE_VERSIONS = Object.freeze({
-  understandJob: "job-understanding-v11",
-  matchJob: "match-decision-v22",
+  understandJob: "job-understanding-v12",
+  matchJob: "match-decision-v23",
+  decisionRules: "role-direction-requirements-v1",
   communication: "communication-v2"
 });
 
@@ -51,6 +52,7 @@ function analysisStaleReasons(analysis, currentRevision) {
   if (revision.sourceContentHash !== currentRevision.sourceContentHash) reasons.push("job_source_changed");
   if (revision.pipelineVersions?.understandJob !== PIPELINE_VERSIONS.understandJob) reasons.push("job_understanding_pipeline_changed");
   if (revision.pipelineVersions?.matchJob !== PIPELINE_VERSIONS.matchJob) reasons.push("match_pipeline_changed");
+  if (revision.pipelineVersions?.decisionRules !== PIPELINE_VERSIONS.decisionRules) reasons.push("decision_rules_changed");
   return reasons;
 }
 

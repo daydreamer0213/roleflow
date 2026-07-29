@@ -401,7 +401,7 @@ async function checkMockAnalyzer() {
   const calls = { analyzeResume: 0, understandJob: 0, matchJob: 0, draftCommunication: 0 };
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
-    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
+    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", roleSummary: "Python application development", responsibilityEvidence: [`JD：${job.title}`], coreRequirements: [{ label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
     matchJob: async (input) => {
       calls.matchJob += 1;
       for (const field of ["candidateProfile", "candidateMatchCard", "jobUnderstanding", "searchPreferences"]) {
@@ -410,13 +410,18 @@ async function checkMockAnalyzer() {
       for (const field of ["resumeVersions", "jobEvidence", "job", "ruleMatch"]) {
         assert.strictEqual(Object.hasOwn(input, field), false, `matchJob input must omit ${field}`);
       }
-      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
+      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, roleAlignment: "aligned", roleResumeEvidence: ["简历：Python 项目经验"], roleGaps: [], primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
     },
     draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
   const cachedRunner = createJobAnalysisRunner(configs, keywordPlan, { db, analyzer: fakeAnalyzer });
   const cacheJob = { ...sample[0], ...good, sourceId: "model-cache-regression", title: "Cache test", greeting };
-  await cachedRunner(cacheJob);
+  const cachedAnalysis = await cachedRunner(cacheJob);
+  assert.deepStrictEqual(cachedAnalysis.responsibilityEvidence, [`JD：${cacheJob.title}`]);
+  assert.strictEqual(cachedAnalysis.roleAlignment, "aligned");
+  assert.deepStrictEqual(cachedAnalysis.roleResumeEvidence, ["简历：Python 项目经验"]);
+  assert.deepStrictEqual(cachedAnalysis.roleGaps, []);
+  assert.strictEqual(cachedAnalysis.requirementMatches[0].foundation, true);
   await cachedRunner(cacheJob);
   assert.deepStrictEqual(calls, { analyzeResume: 0, understandJob: 1, matchJob: 1, draftCommunication: 0 });
 
