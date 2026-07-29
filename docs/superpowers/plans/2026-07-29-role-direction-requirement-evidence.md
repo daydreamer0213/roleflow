@@ -1131,6 +1131,7 @@ $baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-
 $baselineBranch='codex/role-direction-private-baseline-v1'
 $baselineProductCommit='fb0168afce265cf351f03e80f66d9e0f24015887'
 git -C $candidateWorktree worktree add -b $baselineBranch $baselineWorktree $baselineProductCommit
+New-Item -ItemType Directory -Path (Join-Path $baselineWorktree 'scripts\lib') -Force | Out-Null
 foreach($relative in @(
   'scripts\private-full-chain-runner.js',
   'scripts\lib\benchmark_metrics.js',
