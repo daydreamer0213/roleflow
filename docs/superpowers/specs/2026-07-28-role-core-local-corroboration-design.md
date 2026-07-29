@@ -1,7 +1,7 @@
 # 已废弃：岗位主线本地证据复核设计
 
 > **状态：不得实施。** 2026-07-28 用户复核两个真实岗位后确认，本设计的中文双字片段与技术词模糊匹配会把“AI 辅助前端”和“AI 辅助全栈”同时救回，不能区分工作方法与工作对象。替代设计见
-> `docs/superpowers/specs/2026-07-28-role-foundation-evidence-design.md`。
+> `docs/superpowers/specs/2026-07-29-role-direction-requirement-evidence-design.md`。
 
 # 岗位主线本地证据复核设计（历史记录）
 

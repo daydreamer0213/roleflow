@@ -4,7 +4,7 @@ This plan is retained only as history. Its fuzzy local text corroboration cannot
 separate AI-assisted frontend work from AI-assisted full-stack work and may
 rescue both rows. The replacement design is:
 
-`docs/superpowers/specs/2026-07-28-role-foundation-evidence-design.md`
+`docs/superpowers/specs/2026-07-29-role-direction-requirement-evidence-design.md`
 
 No task below may be executed.
 
