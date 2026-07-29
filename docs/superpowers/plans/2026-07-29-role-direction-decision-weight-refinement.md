@@ -398,9 +398,30 @@ to be fixed before completion:
   invalidates old model-cache entries and marks stored analyses stale instead of
   silently retaining the previous role-family and requirement-weight behavior.
 
-Neither fix weakens a hard boundary. Because they create a new final product
-commit after the first diagnostic, the same two saved rows must be rerun in a
-fresh private root and bound to `9b6b47f` before completion.
+Neither fix weakens a hard boundary. Because they created a new final product
+commit after the first diagnostic, the same two saved rows were rerun in a
+fresh private root bound to `9b6b47f`.
+
+The final rerun completed in
+`D:\DevData\RoleFlow-private-benchmark\full-chain-v38-role-direction-weight-refinement-2-20260729-r2`:
+
+- Final product commit:
+  `9b6b47f68b8f5bb446eb08a4a3a0848ec181f744`.
+- Final evaluated tooling commit:
+  `ee486fe6df6e0b919327e4724acc3347a92d8d72`.
+- Sample 2 remained `review` / `talk`, with
+  `roleAlignment=mostly_aligned`, `foundationState=partial`, two calls, two
+  attempts, zero empty responses, zero repairs, and `17,610 ms` total time.
+- Sample 15 remained `caution` / `talk`, with
+  `roleAlignment=mostly_aligned`, `foundationState=complete`, two calls, two
+  attempts, zero empty responses, zero repairs, and `13,807 ms` total time.
+- Both rows were complete, evidence-bearing, and not hard-blocked. There were
+  zero failed, stale, pending, or partial rows; zero unsupported primary
+  placements; and zero false hard exclusions.
+- The exact frozen-label count remains one of two because sample 15 is still
+  compared with the older exact `apply` / `primary` label. Both rows meet the
+  user-approved `talk` retention floor, and the diagnostic correctly remains
+  marked non-acceptance-eligible rather than claiming a full benchmark pass.
 
 ## Final Self-Review Checklist
 
