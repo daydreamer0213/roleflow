@@ -270,7 +270,8 @@ function asRecallFirstResult(result) {
   return { ...withDisposition, ...recall.metrics };
 }
 
-function asEmptyEnvelopeFailure(result, rowIndex = 0) {
+function asEmptyEnvelopeFailure(result, rowIndex = 0, classification = "legacy") {
+  const bounded = classification === "bounded";
   const changed = structuredClone(result);
   changed.rows[rowIndex] = {
     ...changed.rows[rowIndex],
@@ -280,17 +281,17 @@ function asEmptyEnvelopeFailure(result, rowIndex = 0) {
     evidenceComplete: false,
     hardBlocked: false,
     decisionState: "ready",
-    errorCode: "MODEL_INVALID_RESPONSE",
+    errorCode: bounded ? "MODEL_EMPTY_RESPONSE" : "MODEL_INVALID_RESPONSE",
     failureStage: "understandJob",
     failurePhase: "initial",
-    responseFailureKind: "invalid_response_json",
-    requestedMaxTokens: 8192,
+    responseFailureKind: bounded ? "empty_response" : "invalid_response_json",
+    requestedMaxTokens: bounded ? 4096 : 8192,
     responseHttpStatus: 200,
-    responseJsonModeApplied: false,
+    responseJsonModeApplied: bounded,
     responseContentLength: 0,
     responseContentTypeKind: "json",
     responseEnvelopeKind: "empty",
-    responseParseFailureKind: "other",
+    responseParseFailureKind: bounded ? "" : "other",
     responseHadUtf8Bom: false,
     pass: false
   };
@@ -1394,6 +1395,44 @@ async function injectedLiveFlowSmoke(identityPath) {
     createJobAnalysisRunner: (_configs, _keywords, { logger = { info() {}, warn() {} } }) => async (job) => {
       const index = jobs.findIndex((item) => item.id === job.id);
       if (index < 2) {
+        logger.info("model_call_attempt_completed", {
+          kind: "understandJob",
+          attempt: 1,
+          latencyMs: 15000,
+          httpStatus: 200,
+          errorCode: "",
+          responseFailureKind: "",
+          responseContentLength: 1200,
+          jsonModeApplied: true,
+          requestedMaxTokens: 4096,
+          raw: telemetrySecret
+        });
+        if (index === 1) {
+          logger.warn("model_call_attempt_failed", {
+            kind: "matchJob",
+            attempt: 1,
+            latencyMs: 500,
+            httpStatus: 200,
+            errorCode: "MODEL_EMPTY_RESPONSE",
+            responseFailureKind: "empty_response",
+            responseContentLength: 0,
+            jsonModeApplied: true,
+            requestedMaxTokens: 4096,
+            raw: telemetrySecret
+          });
+        }
+        logger.info("model_call_attempt_completed", {
+          kind: "matchJob",
+          attempt: index === 1 ? 2 : 1,
+          latencyMs: 22000,
+          httpStatus: 200,
+          errorCode: "",
+          responseFailureKind: "",
+          responseContentLength: 2212,
+          jsonModeApplied: true,
+          requestedMaxTokens: 4096,
+          raw: telemetrySecret
+        });
         logger.info("model_call_completed", {
           event: telemetrySecret,
           kind: "understandJob",
@@ -1422,6 +1461,13 @@ async function injectedLiveFlowSmoke(identityPath) {
           raw: telemetrySecret
         });
       } else if (index === 2) {
+        logger.info("model_call_attempt_completed", {
+          kind: telemetrySecret,
+          attempt: Number.MAX_SAFE_INTEGER,
+          latencyMs: Number.MAX_SAFE_INTEGER,
+          responseFailureKind: telemetrySecret,
+          raw: telemetrySecret
+        });
         logger.info("model_call_completed", {
           kind: "understandJob",
           latencyMs: Number.MAX_SAFE_INTEGER,
@@ -1476,6 +1522,9 @@ async function injectedLiveFlowSmoke(identityPath) {
     "understandJobLatencyMs",
     "matchJobLatencyMs",
     "modelCallCount",
+    "modelAttemptCount",
+    "emptyResponseAttemptCount",
+    "modelAttemptLatencyMs",
     "contractRepairCount",
     "responseContentChars"
   ];
@@ -1518,12 +1567,28 @@ async function injectedLiveFlowSmoke(identityPath) {
     understandJobLatencyMs: 15100,
     matchJobLatencyMs: 22400,
     modelCallCount: 2,
+    modelAttemptCount: 2,
+    emptyResponseAttemptCount: 0,
+    modelAttemptLatencyMs: 37000,
     contractRepairCount: 0,
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
   assert.strictEqual(telemetryResult.rows[1].contractRepairCount, 1,
     "only model_contract_repair_requested may increment contractRepairCount");
+  assert.deepStrictEqual(
+    {
+      modelAttemptCount: telemetryResult.rows[1].modelAttemptCount,
+      emptyResponseAttemptCount: telemetryResult.rows[1].emptyResponseAttemptCount,
+      modelAttemptLatencyMs: telemetryResult.rows[1].modelAttemptLatencyMs
+    },
+    {
+      modelAttemptCount: 3,
+      emptyResponseAttemptCount: 1,
+      modelAttemptLatencyMs: 37500
+    },
+    "attempt telemetry must count the empty response and its one bounded recovery attempt"
+  );
   assert.deepStrictEqual(
     Object.fromEntries(telemetryFields.map((field) => [field, telemetryResult.rows[2][field]])),
     {
@@ -1533,6 +1598,9 @@ async function injectedLiveFlowSmoke(identityPath) {
       understandJobLatencyMs: 0,
       matchJobLatencyMs: 0,
       modelCallCount: 2,
+      modelAttemptCount: 0,
+      emptyResponseAttemptCount: 0,
+      modelAttemptLatencyMs: 0,
       contractRepairCount: 0,
       responseContentChars: 0
     },
@@ -1551,6 +1619,15 @@ async function injectedLiveFlowSmoke(identityPath) {
     "the exact row schema must reject an injected extra logger field"
   );
   assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
+  assert.deepStrictEqual(
+    {
+      modelAttemptCount: telemetryResult.rows[3].modelAttemptCount,
+      emptyResponseAttemptCount: telemetryResult.rows[3].emptyResponseAttemptCount,
+      modelAttemptLatencyMs: telemetryResult.rows[3].modelAttemptLatencyMs
+    },
+    { modelAttemptCount: 0, emptyResponseAttemptCount: 0, modelAttemptLatencyMs: 0 },
+    "attempt telemetry must reset before each serial analysis"
+  );
   const serializedTelemetryRows = JSON.stringify(telemetryResult.rows);
   assert(!serializedTelemetryRows.includes(telemetrySecret), "private telemetry rows must not persist event or analysis payload text");
   const telemetryKeys = new Set();
@@ -1738,8 +1815,18 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(!JSON.stringify(safeRowsResult.rows).includes(unsafeText), "unknown runtime/model strings must not survive row projection");
 
   const stableFailureProbe = createMatchProbeBundle("stable-failure-provenance-probe");
-  const stableCodes = ["MODEL_INVALID_JSON", "MODEL_OUTPUT_TRUNCATED", "MODEL_INVALID_RESPONSE"];
-  const stableResponseKinds = ["invalid_content_json", "truncated_content", "missing_content"];
+  const stableCodes = [
+    "MODEL_INVALID_JSON",
+    "MODEL_OUTPUT_TRUNCATED",
+    "MODEL_INVALID_RESPONSE",
+    "MODEL_EMPTY_RESPONSE"
+  ];
+  const stableResponseKinds = [
+    "invalid_content_json",
+    "truncated_content",
+    "missing_content",
+    "empty_response"
+  ];
   const expectedFailureById = new Map(jobs.map((job, index) => [String(job.id), {
     errorCode: stableCodes[index % stableCodes.length],
     failureStage: index % 2 === 0 ? "understandJob" : "matchJob",
@@ -2066,7 +2153,9 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(baselineEmptyCompared.report.accepted, false);
   assert.strictEqual(baselineEmptyCompared.report.status, "paired_pass_full_incomplete");
 
-  const candidateEmpty = asEmptyEnvelopeFailure(recallCandidate, 1);
+  const candidateEmpty = asEmptyEnvelopeFailure(recallCandidate, 1, "bounded");
+  assert.strictEqual(candidateEmpty.rows[1].errorCode, "MODEL_EMPTY_RESPONSE");
+  assert.strictEqual(candidateEmpty.rows[1].responseFailureKind, "empty_response");
   const candidateEmptyCompared = runner.comparePrivateFullChainResults(recallBaseline, candidateEmpty);
   assert.strictEqual(candidateEmptyCompared.report.coverage.candidateEmptyTotal, 1);
   assert.strictEqual(candidateEmptyCompared.report.coverage.comparableTotal, recallBaseline.rows.length - 1);
@@ -2075,7 +2164,7 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const bothSameEmpty = runner.comparePrivateFullChainResults(
     asEmptyEnvelopeFailure(recallBaseline, 0),
-    asEmptyEnvelopeFailure(recallCandidate, 0)
+    asEmptyEnvelopeFailure(recallCandidate, 0, "bounded")
   );
   assert.strictEqual(bothSameEmpty.report.coverage.excludedEmptyTotal, 1);
   assert.strictEqual(bothSameEmpty.report.coverage.bothEmptyTotal, 1);
@@ -2254,7 +2343,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   fs.mkdirSync(path.dirname(overlapBaseline), { recursive: true });
   fs.mkdirSync(path.dirname(overlapCandidate), { recursive: true });
   fs.writeFileSync(overlapBaseline, JSON.stringify(recallBaseline), "utf8");
-  fs.writeFileSync(overlapCandidate, JSON.stringify(asEmptyEnvelopeFailure(recallCandidate, 0)), "utf8");
+  fs.writeFileSync(overlapCandidate, JSON.stringify(asEmptyEnvelopeFailure(recallCandidate, 0, "bounded")), "utf8");
   const overlapCli = require("node:child_process").spawnSync(process.execPath, [
     path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
     "--compare", "--baseline", overlapBaseline, "--candidate", overlapCandidate, "--report", overlapReport

@@ -35,6 +35,7 @@ const SAFE_FOUNDATION_STATES = new Set(["none", "unproven", "partial", "complete
 const MAX_SAFE_TELEMETRY_INTEGER = 10000000;
 const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
 const SAFE_RESPONSE_FAILURE_KINDS = new Set([
+  "empty_response",
   "truncated_content",
   "invalid_response_json",
   "invalid_envelope",
@@ -60,6 +61,7 @@ const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
   "MODEL_CONTRACT_INVALID",
+  "MODEL_EMPTY_RESPONSE",
   "MODEL_INVALID_JSON",
   "MODEL_INVALID_RESPONSE",
   "MODEL_OUTPUT_TRUNCATED",
@@ -1512,6 +1514,9 @@ function createPrivateTelemetryCollector() {
       understandJobLatencyMs: 0,
       matchJobLatencyMs: 0,
       modelCallCount: 0,
+      modelAttemptCount: 0,
+      emptyResponseAttemptCount: 0,
+      modelAttemptLatencyMs: 0,
       contractRepairCount: 0,
       responseContentChars: 0
     };
@@ -1519,6 +1524,26 @@ function createPrivateTelemetryCollector() {
   const collect = (event, data) => {
     if (event === "model_contract_repair_requested") {
       values.contractRepairCount = Math.min(MAX_SAFE_TELEMETRY_INTEGER, values.contractRepairCount + 1);
+      return;
+    }
+    if (event === "model_call_attempt_completed" || event === "model_call_attempt_failed") {
+      const stage = safeEnum(data?.kind, SAFE_FAILURE_STAGES, "");
+      if (!stage) return;
+      values.modelAttemptCount = Math.min(MAX_SAFE_TELEMETRY_INTEGER, values.modelAttemptCount + 1);
+      values.modelAttemptLatencyMs = Math.min(
+        MAX_SAFE_TELEMETRY_INTEGER,
+        values.modelAttemptLatencyMs + safeTelemetryInteger(data?.latencyMs)
+      );
+      if (
+        event === "model_call_attempt_failed"
+        && data?.errorCode === "MODEL_EMPTY_RESPONSE"
+        && data?.responseFailureKind === "empty_response"
+      ) {
+        values.emptyResponseAttemptCount = Math.min(
+          MAX_SAFE_TELEMETRY_INTEGER,
+          values.emptyResponseAttemptCount + 1
+        );
+      }
       return;
     }
     if (event !== "model_call_completed") return;
@@ -1921,14 +1946,16 @@ function recallFirstAcceptanceFailures(candidate) {
 
 function isSkippableEmptyResponse(row) {
   return row?.semanticStatus === "failed"
-    && row?.errorCode === "MODEL_INVALID_RESPONSE"
     && row?.failurePhase === "initial"
     && ["understandJob", "matchJob"].includes(row?.failureStage)
-    && row?.responseFailureKind === "invalid_response_json"
     && row?.responseHttpStatus === 200
     && row?.responseContentLength === 0
     && row?.responseContentTypeKind === "json"
-    && row?.responseEnvelopeKind === "empty";
+    && row?.responseEnvelopeKind === "empty"
+    && (
+      (row?.errorCode === "MODEL_EMPTY_RESPONSE" && row?.responseFailureKind === "empty_response")
+      || (row?.errorCode === "MODEL_INVALID_RESPONSE" && row?.responseFailureKind === "invalid_response_json")
+    );
 }
 
 function projectPrivateResult(value, excludedIds, recallMode) {
