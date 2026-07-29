@@ -48,6 +48,7 @@ const db = openDb(dbPath);
     runtimeResumeVersionEntrySmoke();
     understandingContractSmoke();
     matchUnderstandingAlignmentSmoke();
+    compactResponsibilityFoundationContractSmoke();
     compactCentralRequirementSmoke();
     roleCentralBucketSmoke();
     await compactMatchEvidenceContractSmoke();
@@ -738,6 +739,77 @@ function understandingContractSmoke() {
     (error) => error instanceof ModelContractError && /severity/.test(error.message), "非法 severity 必须拒绝");
   assert.throws(() => validateModelResult("understandJob", { ...validUnderstanding, hiddenRisks: [{ type: "outsourcing", severity: "medium" }] }),
     (error) => error instanceof ModelContractError && /evidence/.test(error.message), "hiddenRisks 缺 evidence 必须拒绝");
+}
+
+function compactResponsibilityFoundationContractSmoke() {
+  const validCompactUnderstanding = {
+    roleSummary: "企业业务系统全栈交付",
+    responsibilityEvidence: ["JD：完成企业业务系统前后端开发、联调与上线"],
+    requirements: [{
+      label: "后端开发能力",
+      foundation: true,
+      central: false,
+      indispensable: false,
+      evidence: "JD：后端熟悉 Python 或 Node.js"
+    }],
+    eligibility: [],
+    riskSignals: []
+  };
+
+  assert.throws(
+    () => validateModelResult("understandJob", {
+      roleSummary: validCompactUnderstanding.roleSummary,
+      requirements: [],
+      eligibility: [],
+      riskSignals: []
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID" && /responsibilityEvidence/.test(error.message)
+  );
+  assert.throws(
+    () => validateModelResult("understandJob", {
+      ...validCompactUnderstanding,
+      responsibilityEvidence: ["负责企业系统开发"]
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID" && /JD：/.test(error.message)
+  );
+  assert.throws(
+    () => validateModelResult("understandJob", {
+      ...validCompactUnderstanding,
+      requirements: [{
+        label: "后端开发能力",
+        central: false,
+        indispensable: false,
+        evidence: "JD：熟悉 Python"
+      }]
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID" && /foundation/.test(error.message)
+  );
+  for (const responsibilityEvidence of [[""], ["JD：" + "a".repeat(121)], [42]]) {
+    assert.throws(
+      () => validateModelResult("understandJob", { ...validCompactUnderstanding, responsibilityEvidence }),
+      (error) => error.code === "MODEL_CONTRACT_INVALID" && /responsibilityEvidence/.test(error.message)
+    );
+  }
+  assert.throws(
+    () => validateModelResult("understandJob", {
+      ...validCompactUnderstanding,
+      requirements: [{ ...validCompactUnderstanding.requirements[0], foundation: "true" }]
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID" && /foundation/.test(error.message)
+  );
+
+  const emptyResponsibilities = validateModelResult("understandJob", {
+    ...validCompactUnderstanding,
+    responsibilityEvidence: []
+  });
+  assert.deepStrictEqual(emptyResponsibilities.responsibilityEvidence, []);
+
+  const normalized = validateModelResult("understandJob", {
+    ...validCompactUnderstanding,
+    responsibilityEvidence: ["JD：职责一", "JD：职责二", "JD：职责三", "JD：职责四", "JD：职责五"]
+  });
+  assert.deepStrictEqual(normalized.responsibilityEvidence, ["JD：职责一", "JD：职责二", "JD：职责三", "JD：职责四"]);
+  assert.strictEqual(normalized.coreRequirements[0].foundation, true);
 }
 
 function matchUnderstandingAlignmentSmoke() {
@@ -1622,9 +1694,10 @@ async function understandingContractRepairSmoke() {
 
   const incompleteCompactUnderstanding = {
     roleSummary: "交付应用",
+    responsibilityEvidence: ["JD：负责交付应用"],
     requirements: [
-      { label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" },
-      { label: "RAG", indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
+      { label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" },
+      { label: "RAG", foundation: true, indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
     ],
     eligibility: []
   };
@@ -1697,15 +1770,18 @@ async function understandingContractRepairSmoke() {
 function compactCentralRequirementSmoke() {
   const understanding = validateModelResult("understandJob", {
     roleSummary: "负责大模型推理部署与硬件性能优化",
+    responsibilityEvidence: ["JD：负责推理框架部署与硬件性能优化"],
     requirements: [
       {
         label: "推理框架与硬件适配",
+        foundation: true,
         central: true,
         indispensable: false,
         evidence: "JD：负责推理框架部署与硬件性能优化"
       },
       {
         label: "基础开发能力",
+        foundation: false,
         central: false,
         indispensable: true,
         evidence: "JD：具备一定基础开发能力"
@@ -1719,8 +1795,10 @@ function compactCentralRequirementSmoke() {
 
   const legacy = validateModelResult("understandJob", {
     roleSummary: "负责通用应用开发",
+    responsibilityEvidence: ["JD：负责通用应用开发"],
     requirements: [{
       label: "基础开发能力",
+      foundation: true,
       indispensable: true,
       evidence: "JD：具备基础开发能力"
     }],
@@ -1844,7 +1922,8 @@ function roleCentralBucketSmoke() {
 async function compactMatchEvidenceContractSmoke() {
   const compactInput = {
     roleSummary: "交付应用",
-    requirements: [{ label: "独立交付", indispensable: true, evidence: "JD：独立交付应用" }],
+    responsibilityEvidence: ["JD：独立交付应用"],
+    requirements: [{ label: "独立交付", foundation: true, indispensable: true, evidence: "JD：独立交付应用" }],
     eligibility: ["JD：本科及以上"],
     riskSignals: []
   };
@@ -1855,12 +1934,13 @@ async function compactMatchEvidenceContractSmoke() {
   assert.deepStrictEqual(compact.jobQuality, { level: "normal", concerns: [] });
   assert.doesNotThrow(() => validateModelResult("understandJob", {
     roleSummary: "交付应用",
+    responsibilityEvidence: [],
     requirements: [],
     eligibility: [],
     riskSignals: []
   }), "紧凑 understandJob 的空数组仍是合法输出");
 
-  for (const field of ["roleSummary", "requirements", "eligibility", "riskSignals"]) {
+  for (const field of ["roleSummary", "responsibilityEvidence", "requirements", "eligibility", "riskSignals"]) {
     const missing = { ...compactInput };
     delete missing[field];
     assert.throws(

@@ -80,20 +80,29 @@ class MockModelAdapter {
     const coreRequirements = sentences
       .filter((sentence) => /必须|熟练|精通|掌握|至少|扎实|具备|要求|负责/.test(sentence))
       .slice(0, 8)
-      .map((sentence) => ({
-        label: clip(sentence, 24),
-        indispensable: /必须|熟练|精通|至少|扎实/.test(sentence),
-        evidence: `JD：${clip(sentence, 80)}`
-      }));
+      .map((sentence) => {
+        const indispensable = /必须|熟练|精通|至少|扎实/.test(sentence);
+        return {
+          label: clip(sentence, 24),
+          foundation: indispensable,
+          indispensable,
+          evidence: `JD：${clip(sentence, 80)}`
+        };
+      });
+    const coreResponsibilities = sentences
+      .filter((sentence) => /负责|职责|主要工作/.test(sentence))
+      .slice(0, 6)
+      .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` }));
     return {
       jobId: job.sourceId || job.url || "",
       roleSummary: clip(sentences.find((sentence) => /负责/.test(sentence)) || sentences[0] || job.title || "", 60),
       realRoleType: "unknown",
       businessScenario: "",
-      coreResponsibilities: sentences
-        .filter((sentence) => /负责|职责|主要工作/.test(sentence))
-        .slice(0, 6)
-        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
+      coreResponsibilities,
+      responsibilityEvidence: coreResponsibilities
+        .map((item) => `JD：${String(item?.evidence || item?.label || "").replace(/^JD：/, "")}`)
+        .filter((item) => item !== "JD：")
+        .slice(0, 4),
       coreRequirements,
       preferredRequirements: sentences
         .filter((sentence) => /优先|加分|了解/.test(sentence))

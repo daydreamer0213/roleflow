@@ -298,6 +298,7 @@ function validateJobUnderstanding(value) {
 
 function validateCompactJobUnderstanding(value) {
   const roleSummary = requiredCompactString(value.roleSummary, "roleSummary");
+  const responsibilityEvidence = responsibilityEvidenceList(value.responsibilityEvidence);
   const requirements = requiredCompactArray(value.requirements, "requirements");
   const eligibility = requiredCompactArray(value.eligibility, "eligibility");
   const riskSignals = requiredCompactArray(value.riskSignals, "riskSignals");
@@ -307,7 +308,7 @@ function validateCompactJobUnderstanding(value) {
   for (const riskSignal of riskSignals) {
     validateCompactEvidence(riskSignal?.evidence, "riskSignals.evidence");
   }
-  const coreRequirements = understandingCoreRequirements(requirements)
+  const coreRequirements = understandingCoreRequirements(requirements, { requireFoundation: true })
     .map((item, index) => ({ id: `R${index + 1}`, ...item }));
   const eligibilityConstraints = contractStringArray(eligibility, "understandJob", "eligibility", 8)
     .filter((item) => !isSoftOnlyEligibilityConstraint(item));
@@ -316,6 +317,7 @@ function validateCompactJobUnderstanding(value) {
   return {
     jobId: text(value.jobId),
     roleSummary,
+    responsibilityEvidence,
     realRoleType: "unknown",
     businessScenario: "",
     coreResponsibilities: [],
@@ -350,6 +352,22 @@ function requiredCompactArray(value, field) {
     throw new ModelContractError("understandJob", `${field} 必须是数组；没有内容时输出空数组 []`);
   }
   return value;
+}
+
+function responsibilityEvidenceList(value) {
+  if (!Array.isArray(value)) {
+    throw new ModelContractError("understandJob", "responsibilityEvidence 必须是字符串数组");
+  }
+  return value.map((item) => {
+    const evidence = requiredContractString(item, "understandJob", "responsibilityEvidence");
+    if (!evidence.startsWith("JD：") || evidence.length > 120) {
+      throw new ModelContractError(
+        "understandJob",
+        "responsibilityEvidence 必须以“JD：”开头且不超过 120 个字符"
+      );
+    }
+    return evidence;
+  }).slice(0, 4);
 }
 
 function validateCompactEvidence(value, field) {
@@ -696,7 +714,7 @@ function understandingEvidenceList(value, field, limit) {
   }).slice(0, limit);
 }
 
-function understandingCoreRequirements(value) {
+function understandingCoreRequirements(value, { requireFoundation = false } = {}) {
   const requirements = list(value).map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ModelContractError("understandJob", "coreRequirements 必须是 {label,indispensable,evidence} 对象数组，不接受字符串");
@@ -706,8 +724,12 @@ function understandingCoreRequirements(value) {
     if (typeof item.indispensable !== "boolean") {
       throw new ModelContractError("understandJob", `coreRequirements「${label}」的 indispensable 必须是 boolean`);
     }
+    if (requireFoundation && typeof item.foundation !== "boolean") {
+      throw new ModelContractError("understandJob", `coreRequirements「${label}」的 foundation 必须是 boolean`);
+    }
     return {
       label,
+      foundation: requireFoundation ? item.foundation : Boolean(item.foundation),
       central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
       indispensable: item.indispensable,
       evidence

@@ -219,8 +219,8 @@ server.listen(0, "127.0.0.1", async () => {
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
     assert(
-      understandPrompt.includes("requirements[{label,central,indispensable,evidence}]"),
-      "understandJob prompt 必须保留轻量 central 标记"
+      understandPrompt.includes("requirements[{label,foundation,central,indispensable,evidence}]"),
+      "understandJob prompt 必须保留 foundation 与 central 标记"
     );
     assert(
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
@@ -243,6 +243,18 @@ server.listen(0, "127.0.0.1", async () => {
     assert(understandPrompt.includes("eligibility[非空字符串]"), "understandJob prompt 必须要求紧凑 eligibility");
     assert(understandPrompt.includes("riskSignals[{type,severity,evidence}]"), "understandJob prompt 必须要求紧凑 riskSignals");
     assert(understandPrompt.includes("roleSummary"), "understandJob prompt 必须要求 roleSummary");
+    for (const phrase of [
+      "responsibilityEvidence",
+      "foundation",
+      "工作对象",
+      "主要动作",
+      "交付结果",
+      "复合要求必须拆开"
+    ]) {
+      assert(understandPrompt.includes(phrase), `understandJob prompt 必须包含 ${phrase}`);
+    }
+    assert(understandPrompt.includes("只输出 JSON") && understandPrompt.includes("不输出 Markdown"),
+      "understandJob prompt 必须请求 JSON 而非 Markdown");
     for (const removedField of [
       "coreResponsibilities",
       "preferredRequirements",
