@@ -6,6 +6,8 @@ const { PRODUCT_POLICY } = require("../src/core/product_policy");
 let requests = 0;
 const payloads = [];
 const adaptivePayloads = [];
+const emptyResponsePayloads = [];
+const emptyResponseAttempts = new Map();
 const PRIVATE_RESPONSE_CONTENT_SENTINEL = "PRIVATE_RESPONSE_CONTENT_SENTINEL";
 const sentinelResponseContent = `\`\`\`json\n{"ok":true,"marker":"${PRIVATE_RESPONSE_CONTENT_SENTINEL}"}\n\`\`\``;
 
@@ -43,6 +45,24 @@ const server = http.createServer(async (req, res) => {
   if (payload.model === "error-message-test") {
     res.statusCode = 401;
     res.end(JSON.stringify({ error: { message: "upstream body must never reach errors or observer logs" } }));
+    return;
+  }
+  if (payload.model === "empty-response-test") {
+    const scenario = JSON.parse(payload.messages[1].content).scenario;
+    const attempt = (emptyResponseAttempts.get(scenario) || 0) + 1;
+    emptyResponseAttempts.set(scenario, attempt);
+    emptyResponsePayloads.push({
+      scenario,
+      maxTokens: payload.max_tokens,
+      jsonMode: Boolean(payload.response_format)
+    });
+    if (scenario === "empty-response-then-valid" && attempt > 1) {
+      res.end(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }]
+      }));
+      return;
+    }
+    res.end(scenario === "empty-response-then-valid" ? " \r\n" : "");
     return;
   }
   if (payload.model === "adaptive-output-test") {
@@ -152,14 +172,16 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(requests, 4);
     assert.deepStrictEqual(payloads.slice(2, 4).map((payload) => payload.max_tokens), [4096, 4096]);
     assert.deepStrictEqual(parseJsonContent("prefix {\"value\":1} suffix"), { value: 1 });
-    assert.strictEqual(metrics[0].event, "model_call_completed");
-    assert.strictEqual(metrics[0].data.kind, "understandJob");
-    assert.strictEqual(metrics[0].data.attempts, 2);
-    assert.strictEqual(metrics[0].data.jsonModeFallback, true);
-    assert.strictEqual(metrics[0].data.usage.total_tokens, 14);
-    assert.strictEqual(metrics[0].data.providerRequestId, "provider-request-2");
-    assert.strictEqual(metrics[0].data.contentLength, sentinelResponseContent.length);
-    assert(Number.isInteger(metrics[0].data.contentLength));
+    const understandCompletedMetric = metrics.find((metric) =>
+      metric.event === "model_call_completed" && metric.data.kind === "understandJob");
+    const matchCompletedMetric = metrics.find((metric) =>
+      metric.event === "model_call_completed" && metric.data.kind === "matchJob");
+    assert.strictEqual(understandCompletedMetric.data.attempts, 2);
+    assert.strictEqual(understandCompletedMetric.data.jsonModeFallback, true);
+    assert.strictEqual(understandCompletedMetric.data.usage.total_tokens, 14);
+    assert.strictEqual(understandCompletedMetric.data.providerRequestId, "provider-request-2");
+    assert.strictEqual(understandCompletedMetric.data.contentLength, sentinelResponseContent.length);
+    assert(Number.isInteger(understandCompletedMetric.data.contentLength));
     assert.throws(
       () => assertSafeCompletedEvent({
         level: "info",
@@ -176,10 +198,9 @@ server.listen(0, "127.0.0.1", async () => {
         `privacy assertion must reject the ${forbiddenKey} key even without the sentinel`
       );
     }
-    assertSafeCompletedEvent(metrics[0]);
-    assert.strictEqual(metrics[1].data.kind, "matchJob");
-    assert.strictEqual(metrics[1].data.attempts, 2);
-    assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");
+    assertSafeCompletedEvent(understandCompletedMetric);
+    assert.strictEqual(matchCompletedMetric.data.attempts, 2);
+    assert.strictEqual(matchCompletedMetric.data.providerRequestId, "provider-request-4");
     const compactNormalized = await retryAdapter.matchJob({
       candidateProfile: {},
       candidateMatchCard: { targetDirections: ["电商运营"] },
@@ -401,7 +422,8 @@ server.listen(0, "127.0.0.1", async () => {
         assert.strictEqual(error.responseHadUtf8Bom, false);
       }
     }
-    const structuredFailureMetrics = metrics.filter((metric) => metric.data.kind === "structuredFailure");
+    const structuredFailureMetrics = metrics.filter((metric) =>
+      metric.event === "model_call_failed" && metric.data.kind === "structuredFailure");
     assert.strictEqual(structuredFailureMetrics.length, 9);
     for (const metric of structuredFailureMetrics.filter((item) => item.data.responseFailureKind === "invalid_response_json")) {
       assert(["json", "html", "event_stream"].includes(metric.data.responseContentTypeKind));
@@ -450,6 +472,84 @@ server.listen(0, "127.0.0.1", async () => {
       { scenario: "invalid-response-final-failure", maxTokens: 8192, jsonMode: true },
       { scenario: "invalid-response-final-failure", maxTokens: 8192, jsonMode: false }
     ]);
+    const emptyResponseAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "empty-response-test",
+      jsonMode: true,
+      maxTokens: 4096,
+      maxRetries: 1,
+      logger
+    });
+    const emptyResponseFailure = await rejectedError(
+      () => emptyResponseAdapter.chatJson(
+        "return json",
+        { scenario: "empty-response-final-failure" },
+        { kind: "emptyResponseFinalFailure" }
+      )
+    );
+    assert.strictEqual(emptyResponseFailure.code, "MODEL_EMPTY_RESPONSE");
+    assert.strictEqual(emptyResponseFailure.responseFailureKind, "empty_response");
+    assert.strictEqual(emptyResponseFailure.responseEnvelopeKind, "empty");
+    assert.strictEqual(emptyResponseFailure.contentLength, 0);
+    assert.strictEqual(emptyResponseFailure.requestedMaxTokens, 4096);
+    assert.strictEqual(emptyResponseFailure.jsonModeApplied, true);
+    assert.deepStrictEqual(
+      await emptyResponseAdapter.chatJson(
+        "return json",
+        { scenario: "empty-response-then-valid" },
+        { kind: "emptyResponseThenValid" }
+      ),
+      { ok: true }
+    );
+    assert.deepStrictEqual(emptyResponsePayloads, [
+      { scenario: "empty-response-final-failure", maxTokens: 4096, jsonMode: true },
+      { scenario: "empty-response-final-failure", maxTokens: 4096, jsonMode: true },
+      { scenario: "empty-response-then-valid", maxTokens: 4096, jsonMode: true },
+      { scenario: "empty-response-then-valid", maxTokens: 4096, jsonMode: true }
+    ]);
+    const expectedAttemptKeys = [
+      "attempt",
+      "errorCode",
+      "httpStatus",
+      "jsonModeApplied",
+      "kind",
+      "latencyMs",
+      "requestedMaxTokens",
+      "responseContentLength",
+      "responseFailureKind"
+    ];
+    const emptyFinalAttemptEvents = metrics.filter((metric) =>
+      metric.data.kind === "emptyResponseFinalFailure"
+      && metric.event.startsWith("model_call_attempt_"));
+    const emptyRecoveryAttemptEvents = metrics.filter((metric) =>
+      metric.data.kind === "emptyResponseThenValid"
+      && metric.event.startsWith("model_call_attempt_"));
+    assert.deepStrictEqual(
+      emptyFinalAttemptEvents.map((metric) => metric.event),
+      ["model_call_attempt_failed", "model_call_attempt_failed"]
+    );
+    assert.deepStrictEqual(
+      emptyRecoveryAttemptEvents.map((metric) => metric.event),
+      ["model_call_attempt_failed", "model_call_attempt_completed"]
+    );
+    for (const metric of [...emptyFinalAttemptEvents, ...emptyRecoveryAttemptEvents]) {
+      assert.deepStrictEqual(Object.keys(metric.data).sort(), expectedAttemptKeys);
+      assert(Number.isInteger(metric.data.attempt) && metric.data.attempt > 0);
+      assert(Number.isInteger(metric.data.latencyMs) && metric.data.latencyMs >= 0);
+      assert.strictEqual(metric.data.requestedMaxTokens, 4096);
+      assert.strictEqual(metric.data.jsonModeApplied, true);
+      for (const forbiddenKey of [
+        "response", "content", "raw", "prompt", "provider", "model",
+        "baseUrl", "apiKey", "providerRequestId", "usage"
+      ]) {
+        assert(!Object.prototype.hasOwnProperty.call(metric.data, forbiddenKey));
+      }
+    }
+    assert.strictEqual(emptyFinalAttemptEvents[0].data.errorCode, "MODEL_EMPTY_RESPONSE");
+    assert.strictEqual(emptyFinalAttemptEvents[0].data.responseFailureKind, "empty_response");
+    assert.strictEqual(emptyRecoveryAttemptEvents[0].data.responseContentLength, 3);
+    assert(!JSON.stringify([...emptyFinalAttemptEvents, ...emptyRecoveryAttemptEvents]).includes("PRIVATE_RESPONSE_CONTENT_SENTINEL"));
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);

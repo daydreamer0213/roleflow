@@ -18,6 +18,7 @@ const SAFE_FINISH_REASONS = new Set([
   "insufficient_system_resource"
 ]);
 const SAFE_RESPONSE_FAILURE_KINDS = new Set([
+  "empty_response",
   "truncated_content",
   "invalid_response_json",
   "invalid_envelope",
@@ -169,6 +170,7 @@ class OpenAICompatibleAdapter {
         const retryLimit = structuredJsonModeFallback && !jsonMode ? 0 : this.maxRetries;
         for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
           attempts += 1;
+          const attemptStartedAt = Date.now();
           try {
             const response = await this.requestJson({
               apiKey,
@@ -177,6 +179,14 @@ class OpenAICompatibleAdapter {
               jsonMode,
               maxTokens: responseTokenLimit
             });
+            this.logger?.info("model_call_attempt_completed", modelAttemptEventData({
+              kind,
+              attempt: attempts,
+              startedAt: attemptStartedAt,
+              jsonMode,
+              requestedMaxTokens: responseTokenLimit,
+              response
+            }));
             this.logger?.info("model_call_completed", {
               kind, provider: this.provider, model: this.model, cacheHit: false,
               latencyMs: Date.now() - startedAt, attempts, httpStatus: response.httpStatus,
@@ -187,6 +197,14 @@ class OpenAICompatibleAdapter {
             return response.value;
           } catch (error) {
             lastError = error;
+            this.logger?.warn("model_call_attempt_failed", modelAttemptEventData({
+              kind,
+              attempt: attempts,
+              startedAt: attemptStartedAt,
+              jsonMode,
+              requestedMaxTokens: responseTokenLimit,
+              error
+            }));
             if (jsonMode && error.code === "json_mode_unsupported") {
               jsonModeFallback = true;
               break;
@@ -268,10 +286,25 @@ class OpenAICompatibleAdapter {
         throw error;
       }
       let data;
-      let rawEnvelope = "";
       const responseContentTypeKind = classifyResponseContentType(res.headers.get("content-type"));
+      const rawEnvelope = await res.text();
+      if (!rawEnvelope.trim()) {
+        throw modelResponseError("MODEL_EMPTY_RESPONSE", "Model response body was empty.", {
+          finishReason: "",
+          contentLength: rawEnvelope.length,
+          providerRequestId,
+          httpStatus: res.status,
+          jsonModeApplied: Boolean(jsonMode),
+          retryable: true,
+          responseFailureKind: "empty_response",
+          responseContentTypeKind,
+          responseEnvelopeKind: "empty",
+          responseParseFailureKind: "",
+          responseHadUtf8Bom: false,
+          requestedMaxTokens: maxTokens
+        });
+      }
       try {
-        rawEnvelope = await res.text();
         data = JSON.parse(rawEnvelope);
       } catch (parseError) {
         throw modelResponseError("MODEL_INVALID_RESPONSE", "Model response was not valid JSON.", {
@@ -353,6 +386,36 @@ function adaptiveResponseTokenLimit(current, error) {
   const value = Number(current);
   if (!EXPANDABLE_RESPONSE_ERRORS.has(error?.code) || !Number.isFinite(value) || value <= 0) return current;
   return Math.max(value, Math.min(MAX_ADAPTIVE_RESPONSE_TOKENS, value * 2));
+}
+
+function modelAttemptEventData({
+  kind,
+  attempt,
+  startedAt,
+  jsonMode,
+  requestedMaxTokens,
+  response,
+  error
+}) {
+  const source = error || response || {};
+  const status = source.httpStatus ?? source.status;
+  return {
+    kind,
+    attempt,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+    httpStatus: Number.isFinite(Number(status)) ? Number(status) : null,
+    errorCode: error
+      ? error.code || (error.status ? `HTTP_${error.status}` : "MODEL_REQUEST_FAILED")
+      : "",
+    responseFailureKind: error
+      ? safeMetadataEnum(error.responseFailureKind, SAFE_RESPONSE_FAILURE_KINDS)
+      : "",
+    responseContentLength: Number.isFinite(Number(source.contentLength))
+      ? Number(source.contentLength)
+      : null,
+    jsonModeApplied: Boolean(jsonMode),
+    requestedMaxTokens: Number(requestedMaxTokens)
+  };
 }
 
 function safeMetadataEnum(value, allowed) {
