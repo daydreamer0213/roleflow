@@ -2066,6 +2066,17 @@ function roleEvidenceDecisionStateSmoke() {
     );
   }
 
+  const lowConfidenceTalk = applyRuleGuard({
+    ...layeredRoleAnalysis("mostly_aligned", ["matched", "unknown"]),
+    confidence: 0.5
+  }, completeJob("role-talk-low-confidence"));
+  assert.strictEqual(lowConfidenceTalk.recommendation, "review");
+  assert.strictEqual(
+    lowConfidenceTalk.decisionSource,
+    "model_low_confidence",
+    "talk ceiling must not bypass the existing low-confidence review guard"
+  );
+
   const backupGuardCases = [
     [layeredRoleAnalysis("misaligned", ["matched"], { recommendation: "skip" }), {}],
     [layeredRoleAnalysis("misaligned", ["transferable"]), {}],

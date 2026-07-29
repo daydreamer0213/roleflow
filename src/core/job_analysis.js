@@ -317,13 +317,13 @@ function applyRuleGuard(analysis, job) {
   if (roleEvidence.bucketCeiling === "backup") {
     return addGuard(guarded, "review", guarded.fitLevel || "C", roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_backup_guard");
   }
+  if (guarded === analysis && Number(analysis.confidence ?? 0) < 0.62) {
+    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
+  }
   if (roleEvidence.bucketCeiling === "talk" && guarded.recommendation === "apply") {
     return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_talk_guard");
   }
   if (guarded !== analysis) return guarded;
-  if (Number(analysis.confidence ?? 0) < 0.62) {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
-  }
   return analysis;
 }
 
