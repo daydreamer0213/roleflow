@@ -1395,6 +1395,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       const index = jobs.findIndex((item) => item.id === job.id);
       if (index < 2) {
         logger.info("model_call_completed", {
+          event: telemetrySecret,
           kind: "understandJob",
           latencyMs: 15100,
           contentLength: 1200,
@@ -1478,6 +1479,37 @@ async function injectedLiveFlowSmoke(identityPath) {
     "contractRepairCount",
     "responseContentChars"
   ];
+  const expectedTelemetryRowKeys = [
+    "id",
+    "expectedRecommendation",
+    "actualRecommendation",
+    "expectedBucket",
+    "actualBucket",
+    ...telemetryFields,
+    "semanticStatus",
+    "evidenceComplete",
+    "explanation",
+    "hardBlocked",
+    "decisionState",
+    "errorCode",
+    "failureStage",
+    "failurePhase",
+    "responseFailureKind",
+    "requestedMaxTokens",
+    "responseHttpStatus",
+    "responseJsonModeApplied",
+    "responseContentLength",
+    "responseContentTypeKind",
+    "responseEnvelopeKind",
+    "responseParseFailureKind",
+    "responseHadUtf8Bom",
+    "pass"
+  ].sort();
+  const assertExactTelemetryRowSchema = (row) => assert.deepStrictEqual(
+    Object.keys(row).sort(),
+    expectedTelemetryRowKeys,
+    "private result row must contain exactly the approved v1 row schema"
+  );
   const firstTelemetry = Object.fromEntries(telemetryFields.map((field) => [field, telemetryResult.rows[0][field]]));
   assert.deepStrictEqual(firstTelemetry, {
     roleAlignment: "mostly_aligned",
@@ -1506,13 +1538,18 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     "invalid enum and numeric telemetry must default safely"
   );
-  for (const row of telemetryResult.rows) {
-    assert.deepStrictEqual(
-      telemetryFields.filter((field) => Object.hasOwn(row, field)),
-      telemetryFields,
-      "the diagnostic projection must contain only the approved enum/numeric fields"
-    );
-  }
+  for (const row of telemetryResult.rows) assertExactTelemetryRowSchema(row);
+  const maliciousTelemetryRow = { ...telemetryResult.rows[0], raw: telemetrySecret };
+  assert.deepStrictEqual(
+    telemetryFields.filter((field) => Object.hasOwn(maliciousTelemetryRow, field)),
+    telemetryFields,
+    "the former presence-only assertion would accept an extra logger field"
+  );
+  assert.throws(
+    () => assertExactTelemetryRowSchema(maliciousTelemetryRow),
+    assert.AssertionError,
+    "the exact row schema must reject an injected extra logger field"
+  );
   assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
   const serializedTelemetryRows = JSON.stringify(telemetryResult.rows);
   assert(!serializedTelemetryRows.includes(telemetrySecret), "private telemetry rows must not persist event or analysis payload text");
@@ -1522,6 +1559,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     return value;
   });
   for (const forbiddenKey of [
+    "event", "kind", "latencyMs", "contentLength", "providerRequestId", "usage", "raw",
     "provider", "model", "baseUrl", "apiKey", "prompt",
     "jd", "resumeEvidence", "title", "company"
   ]) {

@@ -6,6 +6,23 @@ const { PRODUCT_POLICY } = require("../src/core/product_policy");
 let requests = 0;
 const payloads = [];
 const adaptivePayloads = [];
+const PRIVATE_RESPONSE_CONTENT_SENTINEL = "PRIVATE_RESPONSE_CONTENT_SENTINEL";
+const sentinelResponseContent = `\`\`\`json\n{"ok":true,"marker":"${PRIVATE_RESPONSE_CONTENT_SENTINEL}"}\n\`\`\``;
+
+function assertSafeCompletedEvent(metric) {
+  const serialized = JSON.stringify(metric);
+  assert(!serialized.includes(PRIVATE_RESPONSE_CONTENT_SENTINEL),
+    "successful model telemetry must not expose response content");
+  const keys = new Set();
+  JSON.stringify(metric, (key, value) => {
+    if (key) keys.add(key);
+    return value;
+  });
+  for (const forbiddenKey of ["response", "content", "raw"]) {
+    assert(!keys.has(forbiddenKey), `successful model telemetry must not expose ${forbiddenKey}`);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   requests += 1;
   const body = await readBody(req);
@@ -102,7 +119,7 @@ const server = http.createServer(async (req, res) => {
   }
   const compactMatchRequest = payload.messages?.[0]?.content?.includes("output only evidence-bearing rows");
   const content = requests === 2
-    ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }]
+    ? [{ type: "text", text: sentinelResponseContent }]
     : compactMatchRequest
       ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [] })
       : "{\"retried\":true}";
@@ -122,7 +139,10 @@ server.listen(0, "127.0.0.1", async () => {
     });
     const fallbackAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", maxRetries: 0, logger });
     assert.strictEqual(fallbackAdapter.timeoutMs, 60000);
-    assert.deepStrictEqual(await fallbackAdapter.chatJson("return json", { test: true }, { kind: "understandJob" }), { ok: true });
+    assert.deepStrictEqual(
+      await fallbackAdapter.chatJson("return json", { test: true }, { kind: "understandJob" }),
+      { ok: true, marker: PRIVATE_RESPONSE_CONTENT_SENTINEL }
+    );
     assert.strictEqual(requests, 2);
     assert.strictEqual(payloads[1].temperature, 0.1);
     assert.strictEqual(payloads[1].max_tokens, 4096);
@@ -138,9 +158,25 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(metrics[0].data.jsonModeFallback, true);
     assert.strictEqual(metrics[0].data.usage.total_tokens, 14);
     assert.strictEqual(metrics[0].data.providerRequestId, "provider-request-2");
-    assert.strictEqual(metrics[0].data.contentLength, "```json\n{\"ok\":true}\n```".length);
+    assert.strictEqual(metrics[0].data.contentLength, sentinelResponseContent.length);
     assert(Number.isInteger(metrics[0].data.contentLength));
-    assert(!JSON.stringify(metrics[0]).includes("{\"ok\":true}"), "successful model telemetry must not expose response content");
+    assert.throws(
+      () => assertSafeCompletedEvent({
+        level: "info",
+        event: "model_call_completed",
+        data: { content: PRIVATE_RESPONSE_CONTENT_SENTINEL }
+      }),
+      assert.AssertionError,
+      "privacy assertion must reject a synthetic event containing raw response content"
+    );
+    for (const forbiddenKey of ["response", "content", "raw"]) {
+      assert.throws(
+        () => assertSafeCompletedEvent({ event: "model_call_completed", data: { [forbiddenKey]: "redacted" } }),
+        assert.AssertionError,
+        `privacy assertion must reject the ${forbiddenKey} key even without the sentinel`
+      );
+    }
+    assertSafeCompletedEvent(metrics[0]);
     assert.strictEqual(metrics[1].data.kind, "matchJob");
     assert.strictEqual(metrics[1].data.attempts, 2);
     assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");
