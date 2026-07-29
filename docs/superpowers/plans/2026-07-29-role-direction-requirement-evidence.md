@@ -1109,7 +1109,7 @@ Expected: all Task 1–6 commits are present, the worktree is clean, and nothing
 
 - Source confirmed evidence: `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`
 - Frozen JD/profile/card input: `D:\DevData\RoleFlow-private-benchmark\full-chain-v28-role-central-evidence-retry-20260728`
-- Baseline worktree: `D:\DevData\RoleFlow-private-benchmark\baseline-worktree-paired-overlap`
+- Baseline worktree: `D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1`
 - Candidate worktree: `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`
 - New private roots:
   - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-front-a-20260729`
@@ -1119,18 +1119,50 @@ Expected: all Task 1–6 commits are present, the worktree is clean, and nothing
 
 The user has already authorized private-resume and live-model saved-JD diagnostics. These commands still require both environment gates on every process. They do not authorize recruitment-site access.
 
+- [ ] **Step 0: Create the dedicated harness-only baseline**
+
+Do not mutate the earlier paired-overlap baseline. From the approved baseline
+product commit, create a new isolated worktree and copy only the three shared
+runner files from the clean candidate:
+
+```powershell
+$candidateWorktree='D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
+$baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1'
+$baselineBranch='codex/role-direction-private-baseline-v1'
+$baselineProductCommit='fb0168afce265cf351f03e80f66d9e0f24015887'
+git -C $candidateWorktree worktree add -b $baselineBranch $baselineWorktree $baselineProductCommit
+foreach($relative in @(
+  'scripts\private-full-chain-runner.js',
+  'scripts\lib\benchmark_metrics.js',
+  'scripts\lib\private_resume_privacy.js'
+)){
+  Copy-Item -LiteralPath (Join-Path $candidateWorktree $relative) -Destination (Join-Path $baselineWorktree $relative)
+}
+git -C $baselineWorktree add -- scripts/private-full-chain-runner.js scripts/lib/benchmark_metrics.js scripts/lib/private_resume_privacy.js
+git -C $baselineWorktree commit -m "test: sync layered role evidence diagnostic harness"
+```
+
+Expected: the baseline evaluated commit has exactly the approved baseline
+product commit as its single parent; its three shared file blobs equal the
+candidate HEAD blobs; both worktrees are clean.
+
 - [ ] **Step 1: Verify immutable code state**
 
 ```powershell
 $candidateWorktree='D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
-$baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-paired-overlap'
-$candidateProductCommit=(git -C $candidateWorktree rev-parse HEAD).Trim()
+$baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1'
+$candidateProductCommit='ac8fe5b479f63f58fd1fd0d1756d934e7d1853f2'
+$candidateEvaluatedCommit=(git -C $candidateWorktree rev-parse HEAD).Trim()
 $baselineProductCommit='fb0168afce265cf351f03e80f66d9e0f24015887'
 git -C $candidateWorktree status --porcelain
 git -C $baselineWorktree status --porcelain
+git -C $candidateWorktree merge-base --is-ancestor $candidateProductCommit $candidateEvaluatedCommit
 ```
 
-Expected: both status commands print nothing.
+Expected: both status commands print nothing, the candidate product commit is a
+strict ancestor of the evaluated candidate HEAD, and the baseline is a dedicated
+harness-only descendant of the approved baseline product commit. The three
+shared runner blobs must be identical between the two worktrees.
 
 - [ ] **Step 2: Create two fresh, cache-empty diagnostic bundles**
 
@@ -1313,9 +1345,11 @@ $root='D:\DevData\RoleFlow-private-benchmark\full-chain-v30-role-direction-evide
 $sourceEvidence='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $frozenInput='D:\DevData\RoleFlow-private-benchmark\full-chain-v28-role-central-evidence-retry-20260728'
 $candidateWorktree='D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
-$baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-paired-overlap'
-$candidateProductCommit=(git -C $candidateWorktree rev-parse HEAD).Trim()
+$baselineWorktree='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1'
+$candidateProductCommit='ac8fe5b479f63f58fd1fd0d1756d934e7d1853f2'
+$candidateEvaluatedCommit=(git -C $candidateWorktree rev-parse HEAD).Trim()
 $baselineProductCommit='fb0168afce265cf351f03e80f66d9e0f24015887'
+git -C $candidateWorktree merge-base --is-ancestor $candidateProductCommit $candidateEvaluatedCommit
 if(Test-Path -LiteralPath $root){ throw "Private output already exists: $root" }
 New-Item -ItemType Directory -Path (Join-Path $root 'input') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $root 'labels') -Force | Out-Null
