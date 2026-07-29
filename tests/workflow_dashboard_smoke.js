@@ -102,7 +102,8 @@ let server;
     searchPlanId: saved.planId
   });
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
-  for (let index = 0; index < 6; index += 1) upsertJob(db, job(index + 1), batchId);
+  for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
+  upsertJob(db, layeredBackupJob(), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
   transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
 
@@ -113,6 +114,18 @@ let server;
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
   assert.match(reviewPage.body, /有效候选\s*<strong>6/);
   assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 6);
+  for (const label of ["岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基", "慎投"]) {
+    assert.match(reviewPage.body, new RegExp(label));
+  }
+  assert.match(reviewPage.body, /硬性限制：岗位方向需谨慎/);
+  for (const internalValue of ["mostly_aligned", "foundationState", "role_evidence_backup", "insufficient_evidence", "简历：完成 RAG 应用交付"]) {
+    assert.doesNotMatch(reviewPage.body, new RegExp(internalValue));
+  }
+  const jobsPage = await getText(baseUrl, `/jobs?planId=${saved.planId}&batch=latest`);
+  for (const label of ["岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
+    assert.match(jobsPage.body, new RegExp(label));
+  }
+  assert.doesNotMatch(jobsPage.body, /简历：完成 RAG 应用交付/);
 
   const selectedIds = listWorkflowReviewCandidates(db, workflow.id)
     .filter((candidate) => candidate.defaultChecked)
@@ -246,6 +259,43 @@ function job(index) {
       confidence: 0.9,
       evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
       hardBlockers: []
+    }
+  };
+}
+
+function layeredBackupJob() {
+  return {
+    ...job("layered-backup"),
+    analysis: {
+      ...job("layered-backup").analysis,
+      roleSummary: "负责 RAG 应用交付与持续优化",
+      responsibilityEvidence: ["JD：负责 RAG 应用交付"],
+      roleAlignment: "misaligned",
+      roleResumeEvidence: ["简历：完成 RAG 应用交付"],
+      roleGaps: ["生产环境部署经验待确认"],
+      hardBlockers: ["岗位方向需谨慎"],
+      requirementMatches: [
+        { requirement: "RAG 应用交付", foundation: true, state: "matched" },
+        { requirement: "生产环境部署", foundation: true, state: "unknown" }
+      ]
+    }
+  };
+}
+
+function layeredTalkJob() {
+  return {
+    ...job("layered-talk"),
+    analysis: {
+      ...job("layered-talk").analysis,
+      roleSummary: "负责 RAG 应用交付与持续优化",
+      responsibilityEvidence: ["JD：负责 RAG 应用交付"],
+      roleAlignment: "mostly_aligned",
+      roleResumeEvidence: ["简历：完成 RAG 应用交付"],
+      roleGaps: ["生产环境部署经验待确认"],
+      requirementMatches: [
+        { requirement: "RAG 应用交付", foundation: true, state: "matched" },
+        { requirement: "生产环境部署", foundation: true, state: "unknown" }
+      ]
     }
   };
 }

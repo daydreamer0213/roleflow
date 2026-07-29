@@ -153,7 +153,7 @@ try {
     planId,
     localDay: "2026-07-20",
     sequence: 1,
-    targetSuccessCount: 1,
+    targetSuccessCount: 2,
     inventoryCount: 2,
     candidateGap: 0,
     scanNeeded: false,
@@ -167,6 +167,19 @@ try {
       defaultChecked: reviewCandidates.find((candidate) => candidate.id === roleEvidenceBackupId)?.defaultChecked
     },
     { tier: "role_evidence_backup", defaultChecked: false }
+  );
+  assert.strictEqual(
+    reviewCandidates.find((candidate) => candidate.id === ids.talk)?.defaultChecked,
+    true,
+    "容量允许时，可沟通岗位仍须默认勾选"
+  );
+  assert.deepStrictEqual(
+    {
+      tier: reviewCandidates.find((candidate) => candidate.id === legacyRoleCoreId)?.workflowTier,
+      defaultChecked: reviewCandidates.find((candidate) => candidate.id === legacyRoleCoreId)?.defaultChecked
+    },
+    { tier: "role_core_backup", defaultChecked: false },
+    "历史方向备选仍须可读且不默认勾选"
   );
   assert.strictEqual(
     reviewCandidates.find((candidate) => candidate.id === legacyRoleCoreId)?.workflowTier,
