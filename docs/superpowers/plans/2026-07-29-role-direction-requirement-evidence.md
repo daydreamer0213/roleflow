@@ -1112,8 +1112,8 @@ Expected: all Task 1–6 commits are present, the worktree is clean, and nothing
 - Baseline worktree: `D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1`
 - Candidate worktree: `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`
 - New private roots:
-  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-front-a-20260729`
-  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-fullstack-a-20260729`
+  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-front-a2-20260729`
+  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-fullstack-a2-20260729`
   - repeat roots use suffixes `-b-20260729` and `-c-20260729`
 - Create aggregate-only report: `docs/superpowers/reports/2026-07-29-role-direction-requirement-evidence-diagnostic.md`
 
@@ -1171,8 +1171,8 @@ shared runner blobs must be identical between the two worktrees.
 $sourceEvidence='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $frozenInput='D:\DevData\RoleFlow-private-benchmark\full-chain-v28-role-central-evidence-retry-20260728'
 $runs=@(
-  @{Name='full-chain-v29-role-direction-front-a-20260729';Index='0'},
-  @{Name='full-chain-v29-role-direction-fullstack-a-20260729';Index='1'}
+  @{Name='full-chain-v29-role-direction-front-a2-20260729';Index='0'},
+  @{Name='full-chain-v29-role-direction-fullstack-a2-20260729';Index='1'}
 )
 foreach($run in $runs){
   $root=Join-Path 'D:\DevData\RoleFlow-private-benchmark' $run.Name
@@ -1250,11 +1250,19 @@ Expected:
 - index 0: `roleAlignment === "misaligned"`, `foundationState === "unproven"`, `actualBucket === "backup"`;
 - index 1: `roleAlignment === "mostly_aligned"`, `foundationState === "partial"`, `actualBucket === "talk"`;
 - no row has a hard blocker;
+- each row completes within the 180-second outer safety limit;
 - no BOSS/browser process is used.
 
 - [ ] **Step 5: Stop and diagnose before repeats if Gate A fails**
 
-Stop without creating more live calls if any condition above fails, if either job exceeds 90 seconds wall time, or if a contract repair occurs. Preserve the two private roots and inspect only:
+Stop without creating more live calls if any functional condition above fails or
+if a contract repair occurs. The earlier 90-second hard stop is intentionally
+retired: previous accepted evidence measured an 84.04-second median and a
+147.18-second maximum, so 90 seconds misclassifies known model-service variance.
+Use a 180-second outer safety limit per row. A row between 90 and 180 seconds is
+a performance warning that must be reported, not a functional failure. If a row
+is still running at 180 seconds, terminate that exact process, preserve the two
+private roots and inspect only:
 
 - safe enums;
 - stage latency;
@@ -1282,6 +1290,7 @@ Expected across all six independent rows:
 - 3/3 front-end rows are `misaligned + unproven + backup`;
 - 3/3 full-stack rows are `mostly_aligned + partial + talk`;
 - all rows use exactly two calls and zero repairs;
+- no row exceeds the 180-second outer safety limit;
 - median and maximum elapsed times are reported separately;
 - response character counts stay bounded and do not show runaway output growth.
 
