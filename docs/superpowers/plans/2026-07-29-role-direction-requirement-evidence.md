@@ -1112,8 +1112,8 @@ Expected: all Task 1–6 commits are present, the worktree is clean, and nothing
 - Baseline worktree: `D:\DevData\RoleFlow-private-benchmark\baseline-worktree-role-direction-v1`
 - Candidate worktree: `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`
 - New private roots:
-  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-front-a2-20260729`
-  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-fullstack-a2-20260729`
+  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-front-a3-20260729`
+  - `D:\DevData\RoleFlow-private-benchmark\full-chain-v29-role-direction-fullstack-a3-20260729`
   - repeat roots use suffixes `-b-20260729` and `-c-20260729`
 - Create aggregate-only report: `docs/superpowers/reports/2026-07-29-role-direction-requirement-evidence-diagnostic.md`
 
@@ -1171,8 +1171,8 @@ shared runner blobs must be identical between the two worktrees.
 $sourceEvidence='D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $frozenInput='D:\DevData\RoleFlow-private-benchmark\full-chain-v28-role-central-evidence-retry-20260728'
 $runs=@(
-  @{Name='full-chain-v29-role-direction-front-a2-20260729';Index='0'},
-  @{Name='full-chain-v29-role-direction-fullstack-a2-20260729';Index='1'}
+  @{Name='full-chain-v29-role-direction-front-a3-20260729';Index='0'},
+  @{Name='full-chain-v29-role-direction-fullstack-a3-20260729';Index='1'}
 )
 foreach($run in $runs){
   $root=Join-Path 'D:\DevData\RoleFlow-private-benchmark' $run.Name
@@ -1271,6 +1271,14 @@ private roots and inspect only:
 - safe error metadata.
 
 Do not print JD, resume evidence, card content, model identity or settings.
+
+One narrow transport exception is allowed before declaring Gate A failed: when
+the only completed result is an initial-stage `MODEL_INVALID_RESPONSE` with HTTP
+200, an empty response envelope, zero response characters and zero contract
+repairs, preserve that root and retry the same diagnostic index exactly once in
+a fresh cache-empty root. This is a model-service empty-response retry, not a
+contract or quality retry. A second empty response, any other failure, or any
+repair stops the task immediately.
 
 - [ ] **Step 6: If Gate A passes, repeat each job twice with fresh caches**
 
