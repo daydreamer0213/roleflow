@@ -104,7 +104,7 @@ const server = http.createServer(async (req, res) => {
   const content = requests === 2
     ? [{ type: "text", text: "```json\n{\"ok\":true}\n```" }]
     : compactMatchRequest
-      ? JSON.stringify({ matches: [], eligibility: [], uncertainties: [], cautions: [], certainty: "low" })
+      ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [] })
       : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
@@ -148,6 +148,9 @@ server.listen(0, "127.0.0.1", async () => {
     });
     assert.strictEqual(compactNormalized.recommendation, "review", "OpenAI adapter 必须把紧凑传输格式归一化为既有分析格式");
     const matchPrompt = payloads.at(-1).messages[0].content;
+    for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "matches", "eligibility"]) {
+      assert(matchPrompt.includes(field), `matchJob prompt must request ${field}`);
+    }
     assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
     assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
     assert(!matchPrompt.includes("uncertainties") && !matchPrompt.includes("certainty") && !matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt must only request sparse evidence rows");
@@ -201,7 +204,7 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob prompt 不得用宽泛或相邻经历冒充明确的平台、流程或业务系统经验"
     );
     assert(
-      matchPrompt.includes("semantic-level example, not an occupation rule")
+      !matchPrompt.includes("for broad “AI 工具实践”, concrete Agent/RAG/Dify workflow delivery is a direct instance")
         && matchPrompt.includes("AI 工具实践")
         && matchPrompt.includes("Agent/RAG/Dify")
         && matchPrompt.includes("AI 代码调试")
@@ -218,6 +221,26 @@ server.listen(0, "127.0.0.1", async () => {
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
+    assert(
+      matchPrompt.includes("roleSummary")
+        && matchPrompt.includes("responsibilityEvidence")
+        && matchPrompt.includes("work object")
+        && matchPrompt.includes("action")
+        && matchPrompt.includes("deliverable"),
+      "matchJob prompt must compare the role summary, responsibility evidence, and concrete work object/action/deliverable"
+    );
+    assert(
+      matchPrompt.includes("Agent/RAG/AI coding tools")
+        && matchPrompt.includes("UI components")
+        && matchPrompt.includes("visual front-end delivery"),
+      "AI tool overlap must not prove front-end work objects or delivery"
+    );
+    assert(
+      matchPrompt.includes("Python/FastAPI/API/testing/debugging")
+        && matchPrompt.includes("back-end portion")
+        && matchPrompt.includes("full-stack delivery"),
+      "back-end evidence must not prove the front-end portion of full-stack delivery"
+    );
     assert(
       understandPrompt.includes("requirements[{label,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"

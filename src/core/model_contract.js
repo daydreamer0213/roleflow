@@ -9,6 +9,14 @@ class ModelContractError extends Error {
 
 const { normalizeMatchingCard } = require("./matching_card");
 
+const ROLE_ALIGNMENT_STATES = Object.freeze([
+  "aligned",
+  "mostly_aligned",
+  "partially_aligned",
+  "misaligned",
+  "insufficient_evidence"
+]);
+
 function validateModelResult(kind, value, context = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelContractError(kind, "必须返回 JSON 对象");
   if (kind === "analyzeResume") return validateResume(value);
@@ -388,6 +396,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
     id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
     label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    foundation: Boolean(item.foundation),
     central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
     indispensable: Boolean(item.indispensable),
     evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
@@ -395,6 +404,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
     : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
+  const roleAlignmentEvidence = validateRoleAlignmentEvidence(value, jobUnderstanding);
   const matches = sparseEvidenceItems(value.matches, {
     field: "matches",
     expected: requirements,
@@ -417,6 +427,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     return {
       requirement: requirement.label,
       state: unverifiedIndispensableMissing ? "unknown" : match.state,
+      foundation: requirement.foundation,
       central: requirement.central,
       indispensable: requirement.indispensable,
       jdEvidence: requirement.evidence,
@@ -479,10 +490,35 @@ function validateSparseMatchEvidence(value, context = {}) {
     .concat(hardBlockers.filter((item) => item.kind === "eligibility").map((item) => item.jdEvidence), list(jobUnderstanding.hiddenRisks).map((item) => text(item?.evidence)).filter(Boolean), list(jobQuality.concerns).map((item) => text(item?.evidence)).filter(Boolean)).slice(0, 6);
   const resumeEvidence = [...matches, ...normalizedEligibility].map((item) => item.resumeEvidence).filter(Boolean).slice(0, 6);
   return {
+    ...roleAlignmentEvidence,
     recommendation, fitLevel, confidence, fitReasons, requirementMatches, jobQuality, hardBlockers, softGaps, questionsToVerify,
     missingPoints: softGaps, blockingGaps: hardBlockers.map((item) => item.requirement), riskQuestions: questionsToVerify,
     recommendedResumeVersion: "", primaryProjects: [], greetingAngle: "", evidence: { jd: jdEvidence, resume: resumeEvidence }, hrPrep: {}
   };
+}
+
+function validateRoleAlignmentEvidence(value, jobUnderstanding) {
+  if (!ROLE_ALIGNMENT_STATES.includes(value.roleAlignment)) {
+    throw new ModelContractError("matchJob", `roleAlignment must be one of ${ROLE_ALIGNMENT_STATES.join("/")}`);
+  }
+  const roleResumeEvidence = contractStringsStrict(value.roleResumeEvidence, "matchJob", "roleResumeEvidence", {
+    prefix: "简历：", limit: 4, maxLength: 120
+  });
+  const roleGaps = contractStringsStrict(value.roleGaps, "matchJob", "roleGaps", { limit: 4, maxLength: 120 });
+  const responsibilityEvidence = jobUnderstanding?.responsibilityEvidence || [];
+  if (!responsibilityEvidence.length && value.roleAlignment !== "insufficient_evidence") {
+    throw new ModelContractError("matchJob", "empty responsibilityEvidence requires insufficient_evidence");
+  }
+  if (["aligned", "mostly_aligned", "partially_aligned"].includes(value.roleAlignment) && !roleResumeEvidence.length) {
+    throw new ModelContractError("matchJob", `${value.roleAlignment} requires roleResumeEvidence`);
+  }
+  if (value.roleAlignment === "misaligned" && (!responsibilityEvidence.length || !roleResumeEvidence.length || !roleGaps.length)) {
+    throw new ModelContractError("matchJob", "misaligned requires responsibility evidence, resume evidence, and a gap");
+  }
+  if (value.roleAlignment === "insufficient_evidence" && !roleGaps.length) {
+    throw new ModelContractError("matchJob", "insufficient_evidence requires a concrete gap");
+  }
+  return { roleAlignment: value.roleAlignment, roleResumeEvidence, roleGaps };
 }
 
 function sparseEvidenceItems(value, { field, expected, states, evidenceStates }) {
@@ -789,6 +825,7 @@ function normalizeRequirementMatches(value) {
     return {
       requirement,
       state: item.state,
+      foundation: Boolean(item.foundation),
       central: typeof item.central === "boolean" ? item.central : item.indispensable,
       indispensable: item.indispensable,
       jdEvidence: optionalContractString(item.jdEvidence, "matchJob", "requirementMatches.jdEvidence"),
@@ -884,13 +921,18 @@ function validateMatchDecision(value, context = {}) {
   const requirementMatches = normalizeRequirementMatches(value.requirementMatches);
   const jobQuality = normalizeJobQuality(value.jobQuality, "matchJob");
   const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
+  const roleAlignment = ROLE_ALIGNMENT_STATES.includes(value.roleAlignment) ? value.roleAlignment : "";
+  const roleResumeEvidence = Array.isArray(value.roleResumeEvidence) ? contractStrings(value.roleResumeEvidence, 4) : [];
+  const roleGaps = Array.isArray(value.roleGaps) ? contractStrings(value.roleGaps, 4) : [];
   const jobUnderstanding = context?.jobUnderstanding;
   if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
     assertRequirementCoverage(jobUnderstanding.coreRequirements, requirementMatches);
     const sourceRequirements = new Map(jobUnderstanding.coreRequirements.map((item) => [text(item.label), item]));
     for (const match of requirementMatches) {
       const source = sourceRequirements.get(match.requirement);
+      match.foundation = Boolean(source?.foundation);
       match.central = typeof source?.central === "boolean" ? source.central : Boolean(source?.indispensable);
+      match.indispensable = Boolean(source?.indispensable);
     }
   }
   assertJobQualityAlignment(jobUnderstanding, jobQuality);
@@ -947,6 +989,9 @@ function validateMatchDecision(value, context = {}) {
   const evidence = normalizeEvidence(value.evidence, "matchJob");
   const fitReasons = contractStrings(value.fitReasons ?? value.fit_reasons ?? value.matchReasons, 8);
   const result = {
+    roleAlignment,
+    roleResumeEvidence,
+    roleGaps,
     recommendation,
     fitLevel: demoteApply && value.fitLevel === "A" ? "B" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
     confidence,
@@ -1093,6 +1138,18 @@ function contractStringArray(value, kind, field, limit) {
     throw new ModelContractError(kind, `${field} 必须是非空字符串数组（每项一句原文短句；没有内容时输出空数组 []，不要输出对象或 null）`);
   }
   return [...new Set(values.map((item) => text(item)))].slice(0, limit);
+}
+
+function contractStringsStrict(value, kind, field, { prefix = "", limit, maxLength }) {
+  if (!Array.isArray(value)) throw new ModelContractError(kind, `${field} must be an array`);
+  return [...new Set(value.map((item) => {
+    if (typeof item !== "string" || !item.trim()) throw new ModelContractError(kind, `${field} must contain non-empty strings`);
+    const itemText = item.trim();
+    if ((prefix && (!itemText.startsWith(prefix) || !itemText.slice(prefix.length).trim())) || itemText.length > maxLength) {
+      throw new ModelContractError(kind, `${field} must use the required evidence format`);
+    }
+    return itemText;
+  }))].slice(0, limit);
 }
 
 function object(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }

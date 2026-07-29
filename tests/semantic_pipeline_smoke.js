@@ -41,6 +41,7 @@ const db = openDb(dbPath);
     await localEvidenceGuardSmoke();
     await matchingCardContractSmoke();
     await mockResponsibilityEvidenceNormalizationSmoke();
+    await mockRoleAlignmentSmoke();
     await genericEvidenceContractSmoke();
     matchGenericContractSmoke();
     matchBoundaryContractSmoke();
@@ -54,6 +55,7 @@ const db = openDb(dbPath);
     compactCentralRequirementSmoke();
     roleCentralBucketSmoke();
     await compactMatchEvidenceContractSmoke();
+    roleAlignmentEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
@@ -147,6 +149,21 @@ async function mockResponsibilityEvidenceNormalizationSmoke() {
   const normalized = validateModelResult("understandJob", rawUnderstanding);
   assert.deepStrictEqual(normalized.responsibilityEvidence, rawUnderstanding.responsibilityEvidence,
     "Mock 的职责证据必须在历史 JobUnderstanding 归一化后保留");
+}
+
+async function mockRoleAlignmentSmoke() {
+  const adapter = new MockModelAdapter();
+  const decision = await adapter.matchJob({
+    resumeVersions: [],
+    jobUnderstanding: {
+      responsibilityEvidence: ["JD：负责企业系统交付"],
+      coreRequirements: [],
+      jobQuality: { level: "normal", concerns: [] }
+    }
+  });
+  assert.strictEqual(decision.roleAlignment, "insufficient_evidence");
+  assert.deepStrictEqual(decision.roleResumeEvidence, []);
+  assert(decision.roleGaps[0].includes("Mock"), "offline Mock must label the deterministic evidence gap");
 }
 
 async function genericEvidenceContractSmoke() {
@@ -1825,6 +1842,9 @@ function compactCentralRequirementSmoke() {
   assert.strictEqual(legacy.coreRequirements[0].central, true);
 
   const decision = validateModelResult("matchJob", {
+    roleAlignment: "partially_aligned",
+    roleResumeEvidence: ["简历：完成过企业级 RAG 后端开发"],
+    roleGaps: [],
     matches: [{
       id: "R2",
       state: "matched",
@@ -1997,6 +2017,7 @@ async function compactMatchEvidenceContractSmoke() {
     jobId: "compact-1",
     roleSummary: "负责应用交付",
     coreResponsibilities: [],
+    responsibilityEvidence: ["JD：负责应用交付"],
     coreRequirements: [
       { label: "独立交付应用", indispensable: true, evidence: "JD：独立完成应用交付" },
       { label: "客户需求沟通", indispensable: false, evidence: "JD：与客户确认需求" }
@@ -2042,19 +2063,27 @@ async function compactMatchEvidenceContractSmoke() {
     }, { jobUnderstanding }), ModelContractError,
     "legacy compact evidence must reject an empty or overlong 简历： value before it can reach apply");
   }
+  const sparseRoleEvidence = {
+    roleAlignment: "mostly_aligned",
+    roleResumeEvidence: ["简历：独立交付过知识库应用"],
+    roleGaps: []
+  };
   const sparse = validateModelResult("matchJob", {
+    ...sparseRoleEvidence,
     matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：独立交付过知识库应用" }],
     eligibility: []
   }, { jobUnderstanding });
   assert.strictEqual(sparse.requirementMatches.find((item) => item.requirement === "客户需求沟通").state, "unknown");
   assert.strictEqual(sparse.recommendation, "review", "omitted evidence rows must stay conservative");
   const sparseDirect = validateModelResult("matchJob", {
+    ...sparseRoleEvidence,
     matches: compactDirectPayload.matches,
     eligibility: compactDirectPayload.eligibility
   }, { jobUnderstanding });
   assert.strictEqual(sparseDirect.recommendation, "apply");
   assert.strictEqual(sparseDirect.confidence, 0.9);
   const sparseNonCoreGap = validateModelResult("matchJob", {
+    ...sparseRoleEvidence,
     matches: [
       compactDirectPayload.matches[0],
       { id: "R2", state: "missing", resumeEvidence: "简历：没有客户需求沟通经历" }
@@ -2387,6 +2416,97 @@ async function compactMatchEvidenceContractSmoke() {
   }, { jobUnderstanding: chineseYearsUnderstanding });
   assert.notStrictEqual(chineseYearsGap.recommendation, "skip", "中文“两年”写法的年限差距不得成为硬淘汰");
   assert.deepStrictEqual(chineseYearsGap.hardBlockers, []);
+}
+
+function roleAlignmentEvidenceContractSmoke() {
+  const jobUnderstanding = {
+    responsibilityEvidence: ["JD：负责企业系统前后端交付"],
+    coreRequirements: [{
+      id: "R1",
+      label: "企业系统交付",
+      foundation: true,
+      central: true,
+      indispensable: false,
+      evidence: "JD：负责企业系统前后端交付"
+    }],
+    eligibilityItems: [],
+    jobQuality: { level: "normal", concerns: [] }
+  };
+  const sparse = {
+    roleAlignment: "mostly_aligned",
+    roleResumeEvidence: ["简历：使用 Python/FastAPI 参与业务系统后端开发"],
+    roleGaps: ["前端交付尚未证明"],
+    matches: [{
+      id: "R1",
+      state: "matched",
+      foundation: false,
+      central: false,
+      indispensable: true,
+      resumeEvidence: "简历：使用 Python 开发接口"
+    }],
+    eligibility: []
+  };
+  const normalized = validateModelResult("matchJob", sparse, { jobUnderstanding });
+  assert.strictEqual(normalized.roleAlignment, "mostly_aligned");
+  assert.deepStrictEqual(normalized.roleResumeEvidence, sparse.roleResumeEvidence);
+  assert.deepStrictEqual(normalized.roleGaps, sparse.roleGaps);
+  assert.deepStrictEqual(
+    normalized.requirementMatches.map(({ foundation, central, indispensable }) => ({ foundation, central, indispensable })),
+    [{ foundation: true, central: true, indispensable: false }],
+    "normalized requirement matches must inherit every role flag from jobUnderstanding"
+  );
+
+  for (const invalid of [
+    (() => { const value = { ...sparse }; delete value.roleAlignment; return value; })(),
+    { ...sparse, roleAlignment: "close_enough" },
+    { ...sparse, roleResumeEvidence: "简历：使用 Python/FastAPI 参与业务系统后端开发" },
+    { ...sparse, roleGaps: "前端交付尚未证明" },
+    { ...sparse, roleResumeEvidence: ["使用 Python/FastAPI 参与业务系统后端开发"] },
+    { ...sparse, roleAlignment: "aligned", roleResumeEvidence: [] },
+    { ...sparse, roleAlignment: "mostly_aligned", roleResumeEvidence: [] },
+    { ...sparse, roleAlignment: "partially_aligned", roleResumeEvidence: [] },
+    { ...sparse, roleAlignment: "misaligned", roleResumeEvidence: [], roleGaps: ["前端交付尚未证明"] },
+    { ...sparse, roleAlignment: "misaligned", roleGaps: [] },
+    { ...sparse, roleAlignment: "insufficient_evidence", roleGaps: [] }
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", invalid, { jobUnderstanding }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+      "sparse role alignment fields must be strict evidence-bearing contract fields"
+    );
+  }
+  assert.throws(
+    () => validateModelResult("matchJob", sparse, {
+      jobUnderstanding: { ...jobUnderstanding, responsibilityEvidence: [] }
+    }),
+    ModelContractError,
+    "empty responsibility evidence may only return insufficient_evidence"
+  );
+  assert.throws(
+    () => validateModelResult("matchJob", {
+      ...sparse,
+      roleAlignment: "misaligned"
+    }, { jobUnderstanding: { ...jobUnderstanding, responsibilityEvidence: [] } }),
+    ModelContractError,
+    "misaligned cannot replace missing responsibility evidence"
+  );
+  assert.doesNotThrow(() => validateModelResult("matchJob", {
+    ...sparse,
+    roleAlignment: "insufficient_evidence",
+    roleResumeEvidence: [],
+    roleGaps: ["JD 未提供可核对的具体职责"]
+  }, { jobUnderstanding: { ...jobUnderstanding, responsibilityEvidence: [] } }));
+
+  const historical = validateModelResult("matchJob", decision("apply", "A", "Python"));
+  assert.deepStrictEqual(
+    {
+      roleAlignment: historical.roleAlignment,
+      roleResumeEvidence: historical.roleResumeEvidence,
+      roleGaps: historical.roleGaps
+    },
+    { roleAlignment: "", roleResumeEvidence: [], roleGaps: [] },
+    "legacy normalized decisions without role alignment retain historical semantics"
+  );
 }
 
 function understanding(jobId) {

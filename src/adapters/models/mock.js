@@ -132,6 +132,8 @@ class MockModelAdapter {
       return {
         requirement: label,
         state: hit ? "matched" : "unknown",
+        foundation: Boolean(requirement.foundation),
+        central: typeof requirement.central === "boolean" ? requirement.central : Boolean(requirement.indispensable),
         indispensable: Boolean(requirement.indispensable),
         jdEvidence: String(requirement.evidence || ""),
         resumeEvidence: hit || ""
@@ -145,7 +147,16 @@ class MockModelAdapter {
       ...unresolvedCore.map((item) => `核心要求「${item.requirement}」缺少候选人直接证据，待确认`)
     ];
     const sufficient = matched.length > 0 && unresolvedCore.length === 0 && requirementMatches.length > 0;
+    const responsibilityEvidence = jobUnderstanding.responsibilityEvidence || [];
+    const roleResumeEvidence = matched.map((item) => item.resumeEvidence).filter((item) => item.startsWith("简历：")).slice(0, 4);
+    const roleAlignment = responsibilityEvidence.length && roleResumeEvidence.length ? "partially_aligned" : "insufficient_evidence";
+    const roleGaps = roleAlignment === "insufficient_evidence"
+      ? [responsibilityEvidence.length ? "离线 Mock 未找到可核对的岗位职责简历事实" : "JD 未提供可核对的具体职责"]
+      : [];
     return {
+      roleAlignment,
+      roleResumeEvidence,
+      roleGaps,
       recommendation: sufficient ? "apply" : "review",
       fitLevel: sufficient ? "B" : "C",
       confidence: sufficient ? 0.72 : 0.4,
