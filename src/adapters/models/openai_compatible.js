@@ -263,7 +263,7 @@ class OpenAICompatibleAdapter {
         ]
       };
       if (jsonMode) body.response_format = { type: "json_object" };
-      if (shouldDisableDeepSeekThinking(this.baseUrl, this.model, kind)) {
+      if (shouldDisableDeepSeekThinking(this.baseUrl, this.model, kind, input)) {
         body.thinking = { type: "disabled" };
       }
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -550,8 +550,9 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shouldDisableDeepSeekThinking(baseUrl, model, kind) {
+function shouldDisableDeepSeekThinking(baseUrl, model, kind, input) {
   if ((kind !== "understandJob" && kind !== "matchJob")
+    || (kind === "matchJob" && input?.contractRepair)
     || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
     return false;
   }
