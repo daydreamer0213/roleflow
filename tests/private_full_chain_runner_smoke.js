@@ -12,7 +12,7 @@ const { scoreJob, decisionState } = require("../src/core/scoring");
 const { openDb, decisionBucket } = require("../src/core/storage");
 const { mapWithConcurrency } = require("../src/core/async_pool");
 const { assertResumeIdentityRedacted } = require("../src/core/resume_privacy");
-const { decisionHardBlockers, effectiveHardBlockers } = require("../src/core/model_contract");
+const { decisionHardBlockers, effectiveHardBlockers, roleEvidenceDecisionState } = require("../src/core/model_contract");
 const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
@@ -450,6 +450,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     decisionState: () => "ready",
     decisionBucket,
     decisionHardBlockers,
+    roleEvidenceDecisionState,
     assertResumeIdentityRedacted,
     openDb: (dbPath) => {
       captured.dbPaths.push(dbPath);
@@ -1384,6 +1385,156 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), concurrencySeam);
   assert.strictEqual(concurrencyResult.rows.length, jobs.length);
   assert.strictEqual(maxSemanticJobs, 1, "injected private run must serialize semantic job analysis");
+
+  const telemetryProbe = createMatchProbeBundle("safe-row-telemetry-probe");
+  const telemetrySeam = seamFor("candidate");
+  const telemetrySecret = "private telemetry payload sentinel";
+  telemetrySeam.modules = {
+    ...telemetrySeam.modules,
+    createJobAnalysisRunner: (_configs, _keywords, { logger = { info() {}, warn() {} } }) => async (job) => {
+      const index = jobs.findIndex((item) => item.id === job.id);
+      if (index < 2) {
+        logger.info("model_call_completed", {
+          kind: "understandJob",
+          latencyMs: 15100,
+          contentLength: 1200,
+          provider: telemetrySecret,
+          model: telemetrySecret,
+          baseUrl: telemetrySecret,
+          apiKey: telemetrySecret,
+          prompt: telemetrySecret,
+          title: telemetrySecret,
+          company: telemetrySecret,
+          jd: telemetrySecret,
+          resumeEvidence: telemetrySecret
+        });
+        logger.info("model_call_completed", {
+          kind: "matchJob",
+          latencyMs: 22400,
+          contentLength: 2212,
+          providerRequestId: telemetrySecret,
+          usage: { secret: telemetrySecret }
+        });
+        logger.warn(index === 0 ? "model_contract_repair_completed" : "model_contract_repair_requested", {
+          kind: "matchJob",
+          contentLength: 999999,
+          raw: telemetrySecret
+        });
+      } else if (index === 2) {
+        logger.info("model_call_completed", {
+          kind: "understandJob",
+          latencyMs: Number.MAX_SAFE_INTEGER,
+          contentLength: -1,
+          raw: telemetrySecret
+        });
+        logger.info("model_call_completed", {
+          kind: "matchJob",
+          latencyMs: 1.5,
+          contentLength: Number.POSITIVE_INFINITY,
+          raw: telemetrySecret
+        });
+        logger.info("model_call_completed", {
+          kind: telemetrySecret,
+          latencyMs: 10,
+          contentLength: 10,
+          raw: telemetrySecret
+        });
+        logger.warn("model_contract_repair_requested_but_not_exact", { kind: "matchJob", raw: telemetrySecret });
+      }
+      return {
+        provider: telemetrySecret,
+        model: telemetrySecret,
+        semanticStatus: "complete",
+        decisionSource: "model",
+        recommendation: "review",
+        roleAlignment: index === 2 ? telemetrySecret : "mostly_aligned",
+        foundationStateForTest: index === 2 ? telemetrySecret : "partial",
+        evidence: { jd: [telemetrySecret], resume: [telemetrySecret] },
+        fitReasons: [],
+        missingPoints: [],
+        hardBlockers: [],
+        errorCode: ""
+      };
+    },
+    roleEvidenceDecisionState: (analysis) => ({ foundationState: analysis.foundationStateForTest }),
+    decisionState: () => "ready",
+    decisionBucket: () => "talk"
+  };
+  const telemetryResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: telemetryProbe.root,
+    output: telemetryProbe.output,
+    profile: telemetryProbe.profile,
+    matchingCard: telemetryProbe.card,
+    jobs: telemetryProbe.jobs,
+    labels: telemetryProbe.labels
+  }), authorizedEnv(), telemetrySeam);
+  const telemetryFields = [
+    "roleAlignment",
+    "foundationState",
+    "analysisElapsedMs",
+    "understandJobLatencyMs",
+    "matchJobLatencyMs",
+    "modelCallCount",
+    "contractRepairCount",
+    "responseContentChars"
+  ];
+  const firstTelemetry = Object.fromEntries(telemetryFields.map((field) => [field, telemetryResult.rows[0][field]]));
+  assert.deepStrictEqual(firstTelemetry, {
+    roleAlignment: "mostly_aligned",
+    foundationState: "partial",
+    analysisElapsedMs: firstTelemetry.analysisElapsedMs,
+    understandJobLatencyMs: 15100,
+    matchJobLatencyMs: 22400,
+    modelCallCount: 2,
+    contractRepairCount: 0,
+    responseContentChars: 3412
+  });
+  assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
+  assert.strictEqual(telemetryResult.rows[1].contractRepairCount, 1,
+    "only model_contract_repair_requested may increment contractRepairCount");
+  assert.deepStrictEqual(
+    Object.fromEntries(telemetryFields.map((field) => [field, telemetryResult.rows[2][field]])),
+    {
+      roleAlignment: "insufficient_evidence",
+      foundationState: "none",
+      analysisElapsedMs: telemetryResult.rows[2].analysisElapsedMs,
+      understandJobLatencyMs: 0,
+      matchJobLatencyMs: 0,
+      modelCallCount: 2,
+      contractRepairCount: 0,
+      responseContentChars: 0
+    },
+    "invalid enum and numeric telemetry must default safely"
+  );
+  for (const row of telemetryResult.rows) {
+    assert.deepStrictEqual(
+      telemetryFields.filter((field) => Object.hasOwn(row, field)),
+      telemetryFields,
+      "the diagnostic projection must contain only the approved enum/numeric fields"
+    );
+  }
+  assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
+  const serializedTelemetryRows = JSON.stringify(telemetryResult.rows);
+  assert(!serializedTelemetryRows.includes(telemetrySecret), "private telemetry rows must not persist event or analysis payload text");
+  const telemetryKeys = new Set();
+  JSON.parse(serializedTelemetryRows, (key, value) => {
+    if (key) telemetryKeys.add(key);
+    return value;
+  });
+  for (const forbiddenKey of [
+    "provider", "model", "baseUrl", "apiKey", "prompt",
+    "jd", "resumeEvidence", "title", "company"
+  ]) {
+    assert(!telemetryKeys.has(forbiddenKey), `private telemetry rows must not persist ${forbiddenKey}`);
+  }
+  const withoutTelemetry = telemetryResult.rows.map((row) => Object.fromEntries(
+    Object.entries(row).filter(([key]) => !telemetryFields.includes(key))
+  ));
+  assert.deepStrictEqual(
+    deriveBenchmarkMetrics(telemetryResult.rows),
+    deriveBenchmarkMetrics(withoutTelemetry),
+    "safe telemetry must not change benchmark pass/fail derivation"
+  );
 
   const diagnosticProbe = createMatchProbeBundle("diagnostic-subset-probe");
   const diagnosticResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {

@@ -181,7 +181,8 @@ class OpenAICompatibleAdapter {
               kind, provider: this.provider, model: this.model, cacheHit: false,
               latencyMs: Date.now() - startedAt, attempts, httpStatus: response.httpStatus,
               usage: response.usage, providerRequestId: response.providerRequestId,
-              jsonMode, jsonModeFallback, requestedMaxTokens: responseTokenLimit
+              jsonMode, jsonModeFallback, requestedMaxTokens: responseTokenLimit,
+              contentLength: response.contentLength
             });
             return response.value;
           } catch (error) {
@@ -327,7 +328,13 @@ class OpenAICompatibleAdapter {
         });
       }
       try {
-        return { value: parseJsonContent(content), usage: normalizeUsage(data.usage), httpStatus: res.status, providerRequestId: requestId };
+        return {
+          value: parseJsonContent(content),
+          usage: normalizeUsage(data.usage),
+          httpStatus: res.status,
+          providerRequestId: requestId,
+          contentLength: content.length
+        };
       } catch (error) {
         Object.assign(error, responseMeta, { responseFailureKind: "invalid_content_json" });
         throw error;

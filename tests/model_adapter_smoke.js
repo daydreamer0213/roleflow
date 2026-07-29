@@ -138,6 +138,9 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(metrics[0].data.jsonModeFallback, true);
     assert.strictEqual(metrics[0].data.usage.total_tokens, 14);
     assert.strictEqual(metrics[0].data.providerRequestId, "provider-request-2");
+    assert.strictEqual(metrics[0].data.contentLength, "```json\n{\"ok\":true}\n```".length);
+    assert(Number.isInteger(metrics[0].data.contentLength));
+    assert(!JSON.stringify(metrics[0]).includes("{\"ok\":true}"), "successful model telemetry must not expose response content");
     assert.strictEqual(metrics[1].data.kind, "matchJob");
     assert.strictEqual(metrics[1].data.attempts, 2);
     assert.strictEqual(metrics[1].data.providerRequestId, "provider-request-4");

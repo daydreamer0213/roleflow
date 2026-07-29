@@ -24,6 +24,15 @@ const SAFE_SEMANTIC_STATUSES = new Set(["complete", "partial", "pending", "faile
 const SAFE_DECISION_SOURCES = new Set(["local_rules", "model", "analysis_pending", "hard_boundary", "source_refresh"]);
 const SAFE_DECISION_STATES = new Set(["ready", "blocked", "refresh"]);
 const SAFE_FAILURE_STAGES = new Set(["understandJob", "matchJob"]);
+const SAFE_ROLE_ALIGNMENTS = new Set([
+  "aligned",
+  "mostly_aligned",
+  "partially_aligned",
+  "misaligned",
+  "insufficient_evidence"
+]);
+const SAFE_FOUNDATION_STATES = new Set(["none", "unproven", "partial", "complete"]);
+const MAX_SAFE_TELEMETRY_INTEGER = 10000000;
 const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
 const SAFE_RESPONSE_FAILURE_KINDS = new Set([
   "truncated_content",
@@ -767,7 +776,7 @@ function loadProductionModules(mode) {
   }
   const { profileToRuntimeConfigs } = require("../src/core/search_plan");
   const { createJobAnalysisRunner } = require("../src/core/job_analysis");
-  const { decisionHardBlockers, effectiveHardBlockers } = require("../src/core/model_contract");
+  const { decisionHardBlockers, effectiveHardBlockers, roleEvidenceDecisionState } = require("../src/core/model_contract");
   const { scoreJob, decisionState } = require("../src/core/scoring");
   const { openDb, decisionBucket } = require("../src/core/storage");
   const { mapWithConcurrency } = require("../src/core/async_pool");
@@ -780,6 +789,7 @@ function loadProductionModules(mode) {
     decisionState,
     decisionHardBlockers,
     effectiveHardBlockers,
+    roleEvidenceDecisionState,
     openDb,
     decisionBucket,
     mapWithConcurrency
@@ -1491,6 +1501,47 @@ function safeEnum(value, allowed, fallback) {
   return allowed.has(text) ? text : fallback;
 }
 
+function safeTelemetryInteger(value) {
+  return Number.isInteger(value) && value >= 0 && value <= MAX_SAFE_TELEMETRY_INTEGER ? value : 0;
+}
+
+function createPrivateTelemetryCollector() {
+  let values;
+  const reset = () => {
+    values = {
+      understandJobLatencyMs: 0,
+      matchJobLatencyMs: 0,
+      modelCallCount: 0,
+      contractRepairCount: 0,
+      responseContentChars: 0
+    };
+  };
+  const collect = (event, data) => {
+    if (event === "model_contract_repair_requested") {
+      values.contractRepairCount = Math.min(MAX_SAFE_TELEMETRY_INTEGER, values.contractRepairCount + 1);
+      return;
+    }
+    if (event !== "model_call_completed") return;
+    const stage = safeEnum(data?.kind, SAFE_FAILURE_STAGES, "");
+    if (!stage) return;
+    values[`${stage}LatencyMs`] = Math.min(
+      MAX_SAFE_TELEMETRY_INTEGER,
+      values[`${stage}LatencyMs`] + safeTelemetryInteger(data?.latencyMs)
+    );
+    values.modelCallCount = Math.min(MAX_SAFE_TELEMETRY_INTEGER, values.modelCallCount + 1);
+    values.responseContentChars = Math.min(
+      MAX_SAFE_TELEMETRY_INTEGER,
+      values.responseContentChars + safeTelemetryInteger(data?.contentLength)
+    );
+  };
+  reset();
+  return {
+    logger: { info: collect, warn: collect },
+    reset,
+    snapshot: () => ({ ...values })
+  };
+}
+
 function safeErrorCode(value) {
   const text = String(value || "");
   if (!text) return "";
@@ -1670,9 +1721,11 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const db = modules.openDb(cachePath);
   let rows;
   try {
+    const telemetry = createPrivateTelemetryCollector();
     const analyze = modules.createJobAnalysisRunner(configs, searchPlan.keywords, {
       db,
-      ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {})
+      ...(testSeam?.adapter ? { analyzer: testSeam.adapter } : {}),
+      logger: telemetry.logger
     });
     rows = await modules.mapWithConcurrency(selectedJobs, 1, async (job) => {
       // The frozen fixture is already a complete, read-only JD snapshot. Activity/detail refresh
@@ -1681,7 +1734,10 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       const scored = modules.scoreJob(benchmarkJob, configs);
       const state = modules.decisionState(scored);
       const analysisJob = { ...job, source: "boss", detailRequired: true, detailRead: true, ...scored };
+      telemetry.reset();
+      const analysisStartedAt = Date.now();
       const analysis = state === "ready" ? await analyze(analysisJob) : ruleBlockedAnalysis();
+      const telemetryValues = telemetry.snapshot();
       const actualBucket = modules.decisionBucket({ ...analysisJob, analysis });
       const label = fixture.labelById.get(String(job.id));
       const actualRecommendation = String(analysis.recommendation || "review");
@@ -1694,6 +1750,14 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         actualRecommendation,
         expectedBucket: label.expectedBucket,
         actualBucket,
+        roleAlignment: safeEnum(analysis.roleAlignment, SAFE_ROLE_ALIGNMENTS, "insufficient_evidence"),
+        foundationState: safeEnum(
+          modules.roleEvidenceDecisionState(analysis).foundationState,
+          SAFE_FOUNDATION_STATES,
+          "none"
+        ),
+        analysisElapsedMs: safeTelemetryInteger(Date.now() - analysisStartedAt),
+        ...telemetryValues,
         semanticStatus: safeEnum(analysis.semanticStatus, SAFE_SEMANTIC_STATUSES, "failed"),
         evidenceComplete: Boolean(analysis.evidence?.jd?.length && analysis.evidence?.resume?.length),
         explanation: {
