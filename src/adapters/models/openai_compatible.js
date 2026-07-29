@@ -551,7 +551,8 @@ function delay(ms) {
 }
 
 function shouldDisableDeepSeekThinking(baseUrl, model, kind) {
-  if (kind !== "understandJob" || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
+  if ((kind !== "understandJob" && kind !== "matchJob")
+    || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
     return false;
   }
   try {

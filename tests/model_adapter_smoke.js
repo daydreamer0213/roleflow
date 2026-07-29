@@ -597,9 +597,14 @@ server.listen(0, "127.0.0.1", async () => {
       { type: "disabled" },
       "official DeepSeek V4 Flash understandJob must disable thinking"
     );
-    for (const payload of deepSeekRequestBodies.slice(2)) {
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[2].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 Pro matchJob must disable thinking in the A/B candidate"
+    );
+    for (const payload of deepSeekRequestBodies.slice(3)) {
       assert(!Object.prototype.hasOwnProperty.call(payload, "thinking"),
-        "matchJob, other models, custom endpoints, and invalid URLs must keep their existing request body");
+        "other models, custom endpoints, and invalid URLs must keep their existing request body");
     }
     console.log("model_adapter_smoke ok");
   } catch (error) {
