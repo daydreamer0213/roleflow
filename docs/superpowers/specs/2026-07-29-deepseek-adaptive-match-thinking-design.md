@@ -20,9 +20,9 @@ enough; always keeping thinking is too slow for the normal path.
 
 ## Decision
 
-Use adaptive thinking for official DeepSeek V4 matching:
+Use adaptive thinking for both official DeepSeek V4 job-analysis stages:
 
-1. The initial `matchJob` request sends
+1. The initial `understandJob` and `matchJob` requests send
    `thinking: {type: "disabled"}`.
 2. If and only if model-contract validation rejects that result, the existing
    `contractRepair` request does not send `thinking: {type: "disabled"}` and
@@ -35,7 +35,12 @@ The existing provider boundary remains unchanged: the behavior applies only to
 `api.deepseek.com` endpoint. Other models and custom endpoints receive no
 DeepSeek-specific field.
 
-`understandJob` keeps its already validated non-thinking behavior.
+This extension is evidence-driven. In the first 20-job hybrid run, 19 rows
+completed and the median `matchJob` latency was 10.1 seconds. The only failed
+row never reached `matchJob`: its initial `understandJob` result and its
+non-thinking repair result both violated the model contract. The same narrow
+fallback that recovered a live `matchJob` repair therefore also applies to an
+`understandJob` repair. Ordinary understanding requests remain non-thinking.
 
 ## What "Non-Compliant" Means
 
@@ -74,9 +79,10 @@ does not prove that a structurally valid judgment is semantically correct.
 The production change is one request-body condition in
 `src/adapters/models/openai_compatible.js`:
 
-- official DeepSeek V4 initial `matchJob`: thinking disabled;
-- official DeepSeek V4 `matchJob` with `contractRepair`: thinking omitted;
-- all existing `understandJob` and non-DeepSeek behavior retained.
+- official DeepSeek V4 initial `understandJob` and `matchJob`: thinking
+  disabled;
+- either stage with `contractRepair`: thinking omitted;
+- all non-repair and non-DeepSeek behavior retained.
 
 `tests/model_adapter_smoke.js` must prove these request bodies before the
 production condition is changed. No new dependency, configuration field,
@@ -162,8 +168,9 @@ failed, pending or partial; a new hard blocker appears without stronger
 evidence; or manual review finds a systematically worse role direction. Exact
 recommendation and bucket equality is not required.
 
-If any condition fails, revert the experimental match-thinking change and keep
-the already validated `understandJob` optimization only.
+If any condition fails after the targeted understanding-repair retry and a
+fresh 20-row run, revert the adaptive repair change and keep only the already
+validated initial-request non-thinking behavior.
 
 ## Safety and Privacy
 

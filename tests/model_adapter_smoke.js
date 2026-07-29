@@ -566,6 +566,18 @@ server.listen(0, "127.0.0.1", async () => {
       for (const [adapterBaseUrl, model, kind, input] of [
         ["https://api.deepseek.com", "deepseek-v4-pro", "understandJob", { test: true }],
         ["https://api.deepseek.com", "deepseek-v4-flash", "understandJob", { test: true }],
+        [
+          "https://api.deepseek.com",
+          "deepseek-v4-pro",
+          "understandJob",
+          {
+            test: true,
+            contractRepair: {
+              reason: "synthetic contract failure",
+              invalidOutput: { requirements: [] }
+            }
+          }
+        ],
         ["https://api.deepseek.com", "deepseek-v4-pro", "matchJob", { test: true }],
         [
           "https://api.deepseek.com",
@@ -609,16 +621,20 @@ server.listen(0, "127.0.0.1", async () => {
       { type: "disabled" },
       "official DeepSeek V4 Flash understandJob must disable thinking"
     );
+    assert(
+      !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[2], "thinking"),
+      "official DeepSeek V4 understandJob contract repair must restore default thinking"
+    );
     assert.deepStrictEqual(
-      deepSeekRequestBodies[2].thinking,
+      deepSeekRequestBodies[3].thinking,
       { type: "disabled" },
       "official DeepSeek V4 Pro matchJob must disable thinking in the A/B candidate"
     );
     assert(
-      !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[3], "thinking"),
-      "official DeepSeek V4 contract repair must restore default thinking"
+      !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[4], "thinking"),
+      "official DeepSeek V4 matchJob contract repair must restore default thinking"
     );
-    for (const payload of deepSeekRequestBodies.slice(4)) {
+    for (const payload of deepSeekRequestBodies.slice(5)) {
       assert(!Object.prototype.hasOwnProperty.call(payload, "thinking"),
         "other models, custom endpoints, and invalid URLs must keep their existing request body");
     }

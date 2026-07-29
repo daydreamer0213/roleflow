@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep ordinary official DeepSeek V4 job matching fast by disabling thinking on the initial request, while restoring default thinking for the existing contract-repair request and validating quality on the frozen 20-job private fixture.
+**Goal:** Keep ordinary official DeepSeek V4 job analysis fast by disabling thinking on initial understanding and matching requests, while restoring default thinking for either stage's existing contract-repair request and validating quality on the frozen 20-job private fixture.
 
-**Architecture:** The adapter makes one request-body decision from the existing `kind` and `input.contractRepair` values. No new retry or model stage is introduced. Real-model validation is staged: offline tests, a three-job stop/go diagnostic, one 20-job candidate run, and an offline overlap comparison against the nine usable default-thinking cache pairs.
+**Architecture:** The adapter makes one request-body decision from the existing `kind` and `input.contractRepair` values. No new retry or model stage is introduced. Real-model validation is staged: offline tests, a three-job stop/go diagnostic, one 20-job candidate run, an offline overlap comparison against the nine usable default-thinking cache pairs, and an evidence-driven retry for the one understanding-stage failure.
 
 **Tech Stack:** Node.js 22, CommonJS, built-in `node:test`-style smoke scripts using `assert`, Git worktrees, built-in SQLite, existing private full-chain runner.
 
@@ -32,7 +32,7 @@
 **Interfaces:**
 - Consumes: `OpenAICompatibleAdapter.chatJson(systemPrompt, input, {kind})`.
 - Produces: `shouldDisableDeepSeekThinking(baseUrl, model, kind, input) -> boolean`.
-- Behavior: initial official DeepSeek V4 `matchJob` returns `true`; the same request with `input.contractRepair` returns `false`.
+- Behavior: initial official DeepSeek V4 `understandJob` and `matchJob` return `true`; either request with `input.contractRepair` returns `false`.
 
 - [ ] **Step 1: Add the failing request-body test**
 
@@ -544,6 +544,7 @@ $overlap=Join-Path $root 'reports\default-thinking-overlap.json'
 const fs = require("node:fs");
 const path = require("node:path");
 
+(async () => {
 const fixed = process.argv[2];
 const root = process.argv[3];
 const replayDb = process.argv[4];
@@ -580,9 +581,11 @@ const searchPlan = {
   cities: city ? [city] : [],
   salary: {minK: 0, maxK: 0},
   salaryMode: "wide",
-  experience: ["经验不限", "0-3年", "1-3年", "3-5年（可冲）"],
+  // Unicode escapes keep this inline probe stable under localized
+  // Windows PowerShell 5.1 pipe encoding.
+  experience: ["\u7ecf\u9a8c\u4e0d\u9650", "0-3\u5e74", "1-3\u5e74", "3-5\u5e74\uff08\u53ef\u51b2\uff09"],
   allowExperienceStretch: true,
-  jobTypes: ["全职"],
+  jobTypes: ["\u5168\u804c"],
   directions,
   keywords: directions.map((word) => ({
     word,
@@ -642,7 +645,7 @@ try {
     const benchmarkJob = {
       ...job,
       source: "boss",
-      bossActiveText: "今日活跃",
+      bossActiveText: "\u4eca\u65e5\u6d3b\u8dc3",
       detailRequired: true,
       detailRead: true
     };
@@ -724,6 +727,10 @@ console.log(JSON.stringify({
   automaticRegressionCount: report.automaticRegressionCount,
   cacheMissCount
 }));
+})().catch((error) => {
+  console.error(error?.stack || error);
+  process.exitCode = 1;
+});
 '@ | node - $fixed $root $replayDb $overlap
 ```
 
@@ -742,6 +749,70 @@ bucket, role alignment and foundation state. Reject the adaptive strategy if a
 baseline-complete row becomes incomplete, a new hard blocker appears, or the
 changed role-direction rows show a systematic semantic regression. Do not
 require exact recommendation/bucket equality.
+
+---
+
+### Task 5A: Extend the same adaptive fallback to understanding repair
+
+The first v35 20-row run completed 19 rows. Its only failed row (index 11)
+failed inside `understandJob` after both the initial request and the existing
+non-thinking contract-repair request returned invalid output; `matchJob` was
+never called. The same run also proved the intended fallback on index 9:
+initial non-thinking `matchJob` output was invalid and its thinking-enabled
+repair completed successfully.
+
+**Files:**
+- Modify: `tests/model_adapter_smoke.js`
+- Modify: `src/adapters/models/openai_compatible.js`
+- Modify: this plan and the matching design document
+- Create outside Git: one fresh index-11 private diagnostic bundle
+- Create outside Git after the diagnostic passes: one fresh 20-row private
+  acceptance bundle
+
+**Interfaces:**
+- Initial official DeepSeek V4 `understandJob` and `matchJob` requests disable
+  thinking.
+- Either stage with `input.contractRepair` omits the thinking override and uses
+  the provider's default thinking mode.
+- No extra retry, model stage, timeout or setting is added.
+
+- [ ] **Step 1: Add the failing adapter request-body assertion**
+
+Add an official DeepSeek V4 `understandJob` input containing
+`contractRepair`. Require the request body to omit `thinking`. Run:
+
+```powershell
+node tests/model_adapter_smoke.js
+```
+
+Expected red failure: the understanding-repair request still contains
+`thinking: {type: "disabled"}`.
+
+- [ ] **Step 2: Apply the minimal adapter condition**
+
+Inside `shouldDisableDeepSeekThinking`, return false whenever
+`input.contractRepair` is present after the existing kind guard. Do not change
+the provider, model or endpoint boundary. Re-run the focused test and the full
+offline suite.
+
+- [ ] **Step 3: Run only frozen index 11 in a fresh private bundle**
+
+Use the existing private runner, the same confirmed profile/card/JD fixture,
+the evaluated experimental commit, `--diagnostic-indices 11`, and formal model
+settings only through `--model-settings-root D:\Guo\ZhiPing`. Restore the fixed
+candidate worktree immediately afterward. Require:
+
+- `semanticStatus=complete`;
+- `evidenceComplete=true`;
+- `hardBlocked=false`;
+- one understanding contract repair and a completed match result.
+
+- [ ] **Step 4: Run one fresh 20-row acceptance bundle**
+
+Proceed only after index 11 passes. Require zero failed/pending/partial/stale
+rows, zero false hard exclusions, complete evidence on completed rows, and
+median `matchJob` latency at most 30 seconds. The nine-row offline overlap
+remains the quality baseline and is not rerun against the model.
 
 ---
 

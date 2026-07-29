@@ -552,7 +552,7 @@ function delay(ms) {
 
 function shouldDisableDeepSeekThinking(baseUrl, model, kind, input) {
   if ((kind !== "understandJob" && kind !== "matchJob")
-    || (kind === "matchJob" && input?.contractRepair)
+    || input?.contractRepair
     || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
     return false;
   }
