@@ -1,6 +1,7 @@
 const { validateModelResult } = require("../../core/model_contract");
 
 const MAX_ADAPTIVE_RESPONSE_TOKENS = 8192;
+const DEEPSEEK_V4_MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
 const EXPANDABLE_RESPONSE_ERRORS = new Set([
   "MODEL_OUTPUT_TRUNCATED",
   "MODEL_INVALID_JSON",
@@ -176,6 +177,7 @@ class OpenAICompatibleAdapter {
               apiKey,
               systemPrompt,
               input,
+              kind,
               jsonMode,
               maxTokens: responseTokenLimit
             });
@@ -247,7 +249,7 @@ class OpenAICompatibleAdapter {
     }
   }
 
-  async requestJson({ apiKey, systemPrompt, input, jsonMode, maxTokens = this.maxTokens }) {
+  async requestJson({ apiKey, systemPrompt, input, kind, jsonMode, maxTokens = this.maxTokens }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -261,6 +263,9 @@ class OpenAICompatibleAdapter {
         ]
       };
       if (jsonMode) body.response_format = { type: "json_object" };
+      if (shouldDisableDeepSeekThinking(this.baseUrl, this.model, kind)) {
+        body.thinking = { type: "disabled" };
+      }
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
@@ -543,6 +548,17 @@ const RETRYABLE_TRANSPORT_CODES = new Set([
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldDisableDeepSeekThinking(baseUrl, model, kind) {
+  if (kind !== "understandJob" || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
+    return false;
+  }
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.deepseek.com";
+  } catch {
+    return false;
+  }
 }
 
 module.exports = { OpenAICompatibleAdapter, extractContent, parseJsonContent };

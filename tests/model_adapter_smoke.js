@@ -550,6 +550,57 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(emptyFinalAttemptEvents[0].data.responseFailureKind, "empty_response");
     assert.strictEqual(emptyRecoveryAttemptEvents[0].data.responseContentLength, 3);
     assert(!JSON.stringify([...emptyFinalAttemptEvents, ...emptyRecoveryAttemptEvents]).includes("PRIVATE_RESPONSE_CONTENT_SENTINEL"));
+
+    const originalFetch = global.fetch;
+    const deepSeekRequestBodies = [];
+    global.fetch = async (_url, options) => {
+      deepSeekRequestBodies.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }]
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-request-id": "deepseek-thinking-test" }
+      });
+    };
+    try {
+      for (const [adapterBaseUrl, model, kind] of [
+        ["https://api.deepseek.com", "deepseek-v4-pro", "understandJob"],
+        ["https://api.deepseek.com", "deepseek-v4-flash", "understandJob"],
+        ["https://api.deepseek.com", "deepseek-v4-pro", "matchJob"],
+        ["https://api.deepseek.com", "other-model", "understandJob"],
+        ["https://example.invalid", "deepseek-v4-pro", "understandJob"],
+        ["not-a-valid-url", "deepseek-v4-pro", "understandJob"]
+      ]) {
+        const adapter = new OpenAICompatibleAdapter({
+          baseUrl: adapterBaseUrl,
+          apiKey: "test-key",
+          model,
+          jsonMode: false,
+          maxRetries: 0,
+          logger
+        });
+        assert.deepStrictEqual(
+          await adapter.chatJson("return json", { test: true }, { kind }),
+          { ok: true }
+        );
+      }
+    } finally {
+      global.fetch = originalFetch;
+    }
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[0].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 Pro understandJob must disable thinking"
+    );
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[1].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 Flash understandJob must disable thinking"
+    );
+    for (const payload of deepSeekRequestBodies.slice(2)) {
+      assert(!Object.prototype.hasOwnProperty.call(payload, "thinking"),
+        "matchJob, other models, custom endpoints, and invalid URLs must keep their existing request body");
+    }
     console.log("model_adapter_smoke ok");
   } catch (error) {
     console.error(error.stack || error.message);
