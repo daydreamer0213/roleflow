@@ -4,6 +4,7 @@ const path = require("path");
 const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
+const { MockModelAdapter } = require("../src/adapters/models/mock");
 const {
   validateModelResult,
   ModelContractError,
@@ -39,6 +40,7 @@ const db = openDb(dbPath);
     await ruleGuardSmoke();
     await localEvidenceGuardSmoke();
     await matchingCardContractSmoke();
+    await mockResponsibilityEvidenceNormalizationSmoke();
     await genericEvidenceContractSmoke();
     matchGenericContractSmoke();
     matchBoundaryContractSmoke();
@@ -130,6 +132,21 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   assert.strictEqual(decisionBucket({ ...job, analysis: pythonResult, qualityTags: [], risks: [] }), "primary");
   assert.strictEqual(decisionBucket({ ...job, analysis: javaResult, qualityTags: [], risks: [] }), "talk");
+}
+
+async function mockResponsibilityEvidenceNormalizationSmoke() {
+  const rawUnderstanding = await new MockModelAdapter().understandJob({
+    job: {
+      sourceId: "mock-responsibility-evidence",
+      title: "企业系统开发",
+      description: "负责企业业务系统前后端开发、联调与上线。"
+    }
+  });
+  assert(rawUnderstanding.responsibilityEvidence.length > 0, "Mock 必须先输出职责证据");
+
+  const normalized = validateModelResult("understandJob", rawUnderstanding);
+  assert.deepStrictEqual(normalized.responsibilityEvidence, rawUnderstanding.responsibilityEvidence,
+    "Mock 的职责证据必须在历史 JobUnderstanding 归一化后保留");
 }
 
 async function genericEvidenceContractSmoke() {

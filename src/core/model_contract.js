@@ -274,9 +274,13 @@ function validateJobUnderstanding(value) {
     .map((item, index) => ({ id: `R${index + 1}`, ...item }));
   const eligibilityConstraints = contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8)
     .filter((item) => !isSoftOnlyEligibilityConstraint(item));
+  const responsibilityEvidence = Object.prototype.hasOwnProperty.call(value, "responsibilityEvidence")
+    ? responsibilityEvidenceList(value.responsibilityEvidence)
+    : [];
   return {
     jobId: text(value.jobId),
     roleSummary: text(value.roleSummary),
+    responsibilityEvidence,
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
     coreResponsibilities: understandingEvidenceList(value.coreResponsibilities, "coreResponsibilities", 12),
