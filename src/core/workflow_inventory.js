@@ -142,7 +142,7 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   );
   let remainingDefaults = workflow.targetSuccessCount + replacementBuffer;
   return candidates.map((candidate) => {
-    const defaultChecked = !["high_salary_backup", "role_core_backup", "role_evidence_backup"].includes(candidate.workflowTier) && remainingDefaults > 0;
+    const defaultChecked = !["low_risk_backup", "high_salary_backup", "role_core_backup", "role_evidence_backup"].includes(candidate.workflowTier) && remainingDefaults > 0;
     if (defaultChecked) remainingDefaults -= 1;
     return { ...candidate, defaultChecked };
   });

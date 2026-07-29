@@ -103,6 +103,7 @@ let server;
   });
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
   for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
+  upsertJob(db, lowRiskBackupJob(), batchId);
   upsertJob(db, layeredBackupJob(), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
   transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
@@ -112,12 +113,15 @@ let server;
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 6);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
-  assert.match(reviewPage.body, /有效候选\s*<strong>6/);
-  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 6);
+  assert.match(reviewPage.body, /有效候选\s*<strong>7/);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 7);
   for (const label of ["岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基", "慎投"]) {
     assert.match(reviewPage.body, new RegExp(label));
   }
   assert.match(reviewPage.body, /硬性限制：岗位方向需谨慎/);
+  assert.match(reviewPage.body, /workflow-tier backup-tier">慎投/);
+  assert.match(reviewPage.body, /workflow-tier\s*">低风险备选/);
+  assert.doesNotMatch(reviewPage.body, /workflow-tier backup-tier">低风险备选/);
   for (const internalValue of ["mostly_aligned", "foundationState", "role_evidence_backup", "insufficient_evidence", "简历：完成 RAG 应用交付"]) {
     assert.doesNotMatch(reviewPage.body, new RegExp(internalValue));
   }
@@ -279,6 +283,13 @@ function layeredBackupJob() {
         { requirement: "生产环境部署", foundation: true, state: "unknown" }
       ]
     }
+  };
+}
+
+function lowRiskBackupJob() {
+  return {
+    ...job("low-risk-backup"),
+    qualityTags: ["salary_target_core", "experience_salary_overlap"]
   };
 }
 

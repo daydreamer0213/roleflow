@@ -153,7 +153,7 @@ try {
     planId,
     localDay: "2026-07-20",
     sequence: 1,
-    targetSuccessCount: 2,
+    targetSuccessCount: 10,
     inventoryCount: 2,
     candidateGap: 0,
     scanNeeded: false,
@@ -172,6 +172,11 @@ try {
     reviewCandidates.find((candidate) => candidate.id === ids.talk)?.defaultChecked,
     true,
     "容量允许时，可沟通岗位仍须默认勾选"
+  );
+  assert.strictEqual(
+    reviewCandidates.find((candidate) => candidate.id === ids.lowRiskBackup)?.defaultChecked,
+    false,
+    "低风险备选仍是备选，不得默认勾选"
   );
   assert.deepStrictEqual(
     {

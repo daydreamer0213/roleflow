@@ -2326,7 +2326,7 @@ function workflowTierLabel(tier) {
 
 function workflowTierClass(tier) {
   if (tier === "primary" || tier === "talk") return tier;
-  return "backup-tier";
+  return ["high_salary_backup", "role_core_backup", "role_evidence_backup"].includes(tier) ? "backup-tier" : "";
 }
 
 function roleAlignmentLabel(value) {
