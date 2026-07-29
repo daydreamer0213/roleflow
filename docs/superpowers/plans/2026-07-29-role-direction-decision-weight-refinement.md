@@ -4,13 +4,13 @@
 
 **Goal:** Keep same-family full-stack roles in the recall-first `talk` pool and prevent ordinary advisory requirements from lowering an otherwise qualified role.
 
-**Architecture:** Preserve the existing two-model-call pipeline. Clarify only the `matchJob` role-alignment prompt, then narrow the local recommendation inputs to requirements marked `foundation`, `central`, or `indispensable`; all requirement rows remain available for explanations.
+**Architecture:** Preserve the existing two-model-call pipeline. Clarify only the `matchJob` role-alignment prompt, then narrow the local recommendation inputs to requirements marked `foundation`, `central`, or `indispensable` in both the active sparse normalizer and the legacy compact normalizer; all requirement rows remain available for explanations.
 
 **Tech Stack:** Node.js 22, CommonJS, built-in `assert`, existing smoke-test runner, existing private full-chain benchmark runner.
 
 ## Global Constraints
 
-- Work only in `D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab`.
+- Make product and documentation changes only in `D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab`. The saved-JD live diagnostic may temporarily check the evaluated commit out at the runner's fixed candidate worktree, then must restore that worktree to its original branch and commit.
 - Do not access BOSS or another recruitment platform, do not operate a browser, and do not touch `D:\Guo\ZhiPing\data\jobs.sqlite` or port 8787.
 - Keep the normal path at one `understandJob` call plus one `matchJob` call.
 - Do not add an occupation taxonomy, local keyword rescue, dependency, database migration, or third model stage.
@@ -34,7 +34,7 @@
 - Consumes: `OpenAICompatibleAdapter.matchJob(input)`.
 - Produces: the same sparse JSON contract `{roleAlignment, roleResumeEvidence, roleGaps, matches, eligibility}`.
 
-- [ ] **Step 1: Add the failing prompt-contract test**
+- [x] **Step 1: Add the failing prompt-contract test**
 
 Add this assertion next to the existing full-stack prompt assertions in
 `tests/model_adapter_smoke.js`:
@@ -52,7 +52,7 @@ assert(
 );
 ```
 
-- [ ] **Step 2: Run the test and verify the intended red failure**
+- [x] **Step 2: Run the test and verify the intended red failure**
 
 Run:
 
@@ -64,7 +64,7 @@ Expected: exit 1 at the new assertion because the current prompt says back-end
 evidence does not prove full-stack delivery but does not tell the model when the
 same-family result must be `mostly_aligned`.
 
-- [ ] **Step 3: Add the minimum prompt clarification**
+- [x] **Step 3: Add the minimum prompt clarification**
 
 Insert these two lines after the existing work-object/action/deliverable rule in
 `OpenAICompatibleAdapter.matchJob()`:
@@ -77,7 +77,7 @@ Insert these two lines after the existing work-object/action/deliverable rule in
 Do not remove the existing reverse-inference restriction: back-end evidence
 still does not prove the missing front-end requirement.
 
-- [ ] **Step 4: Run the focused test**
+- [x] **Step 4: Run the focused test**
 
 Run:
 
@@ -87,7 +87,7 @@ node tests/model_adapter_smoke.js
 
 Expected: `model adapter smoke ok`.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add -- tests/model_adapter_smoke.js src/adapters/models/openai_compatible.js
@@ -108,9 +108,9 @@ git commit -m "fix: keep substantial full-stack delivery in the same role family
 - Consumes: normalized requirement rows containing `foundation`, `central`, `indispensable`, and `state`.
 - Produces: the existing normalized MatchDecision; no field or schema changes.
 
-- [ ] **Step 1: Change the existing non-core-gap assertion to the approved behavior**
+- [x] **Step 1: Change the existing non-core-gap assertion to the approved behavior**
 
-Replace the three assertions after `sparseNonCoreGap` with:
+Replace the assertions after `sparseNonCoreGap` with:
 
 ```js
 assert.strictEqual(sparseNonCoreGap.requirementMatches.find((item) => item.requirement === "客户需求沟通").state, "missing");
@@ -125,7 +125,12 @@ assert.deepStrictEqual(sparseNonCoreGap.hardBlockers, []);
 Keep the existing central, foundation, transferable, eligibility, and hard
 blocker tests unchanged.
 
-- [ ] **Step 2: Run the test and verify the intended red failure**
+Add the equivalent legacy compact-path regression: an ordinary missing
+requirement remains in `softGaps`, while the normalized recommendation remains
+`apply`. This prevents the inactive-looking compatibility path from drifting
+back to the old behavior.
+
+- [x] **Step 2: Run the test and verify the intended red failure**
 
 Run:
 
@@ -135,10 +140,11 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: exit 1 because the actual recommendation is `caution`, not `apply`.
 
-- [ ] **Step 3: Limit ranking signals to decision-bearing requirements**
+- [x] **Step 3: Limit ranking signals to decision-bearing requirements**
 
-In `validateCompactMatchEvidence()` keep the display lists over all requirement
-rows, and derive separate decision lists:
+In both `validateSparseMatchEvidence()` and
+`validateCompactMatchEvidence()`, keep the display lists over all requirement
+rows and derive separate decision lists:
 
 ```js
 const unknownRequirements = requirementMatches.filter((item) => ["unknown", "not_applicable"].includes(item.state));
@@ -168,7 +174,7 @@ Continue using `unknownRequirements`, `transferable`, and `softMissing` when
 building `questionsToVerify` and `softGaps`, so advisory information remains
 visible.
 
-- [ ] **Step 4: Run the focused semantic test**
+- [x] **Step 4: Run the focused semantic test**
 
 Run:
 
@@ -178,7 +184,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: `semantic pipeline smoke ok`.
 
-- [ ] **Step 5: Run adjacent decision tests**
+- [x] **Step 5: Run adjacent decision tests**
 
 Run:
 
@@ -191,7 +197,7 @@ node tests/workflow_dashboard_smoke.js
 Expected: all three commands exit 0. In particular, the existing Java/role
 evidence backup tests and hard-blocker tests remain green.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```powershell
 git add -- tests/semantic_pipeline_smoke.js src/core/model_contract.js
@@ -213,7 +219,7 @@ git commit -m "fix: keep advisory requirement gaps out of ranking"
 - Consumes: the frozen private inputs from the accepted 20-row run.
 - Produces: two diagnostic rows for indices `1,14`; the output is not committed.
 
-- [ ] **Step 1: Run the full offline gate**
+- [x] **Step 1: Run the full offline gate**
 
 ```powershell
 node tests/model_adapter_smoke.js
@@ -229,12 +235,13 @@ git status --short
 Expected: all focused tests pass, `npm.cmd test` reports every offline check
 passed, `git diff --check` prints nothing, and the worktree is clean.
 
-- [ ] **Step 2: Create a fresh two-row private bundle**
+- [x] **Step 2: Create a fresh two-row private bundle**
 
 ```powershell
 $source='D:\DevData\RoleFlow-private-benchmark\full-chain-v37-deepseek-adaptive-understanding-repair-20-20260729'
 $root='D:\DevData\RoleFlow-private-benchmark\full-chain-v38-role-direction-weight-refinement-2-20260729'
-$candidate='D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab'
+$sourceCandidate='D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab'
+$candidate='D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
 $baseline='D:\DevData\RoleFlow-private-benchmark\baseline-worktree-empty-response-v1'
 if(Test-Path -LiteralPath $root){ throw "Private output already exists: $root" }
 New-Item -ItemType Directory -Path (Join-Path $root 'input') -Force | Out-Null
@@ -255,11 +262,35 @@ Copy-Item -LiteralPath (Join-Path $source 'labels\jobs.reviewed.json') -Destinat
 Expected: the new root contains frozen input and labels only; there is no model
 cache or result.
 
-- [ ] **Step 3: Initialize the manifest and evidence portability proof offline**
+- [ ] **Step 3: Stage the evaluated commit at the runner's fixed candidate worktree**
+
+The runner intentionally accepts candidate live runs only from
+`D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`.
+Do not weaken that gate. Record the fixed worktree's original branch and commit,
+verify it is clean, then create a temporary branch there at the evaluated
+documentation commit:
+
+```powershell
+$candidateProduct='c8281680304c19839e0f375ca3433943ca19d1b3'
+$candidateEvaluated=(git -C $sourceCandidate rev-parse HEAD).Trim()
+$originalCandidateBranch=(git -C $candidate branch --show-current).Trim()
+$originalCandidateCommit=(git -C $candidate rev-parse HEAD).Trim()
+if(git -C $candidate status --porcelain){ throw 'Fixed candidate worktree is dirty' }
+git -C $sourceCandidate merge-base --is-ancestor $candidateProduct $candidateEvaluated
+if($LASTEXITCODE -ne 0 -or $candidateProduct -eq $candidateEvaluated){
+  throw 'Candidate product commit must be a strict ancestor of the evaluated documentation commit'
+}
+git -C $candidate switch -c codex/role-direction-weight-live-candidate $candidateEvaluated
+Push-Location $candidate
+```
+
+Expected: the fixed candidate worktree is clean at the evaluated commit, while
+the product commit is its strict ancestor. No main worktree is changed.
+
+- [ ] **Step 4: Initialize the manifest and evidence portability proof offline**
 
 ```powershell
 $baselineProduct='fb0168afce265cf351f03e80f66d9e0f24015887'
-$candidateProduct=(git -C $candidate rev-parse HEAD).Trim()
 node scripts/private-full-chain-runner.js --init-manifest `
   --private-root $root `
   --baseline-worktree $baseline `
@@ -275,7 +306,7 @@ node scripts/private-full-chain-runner.js --create-portability-proof `
 
 Expected: both commands exit 0 without a model call.
 
-- [ ] **Step 4: Run exactly the two saved-JD diagnostics**
+- [ ] **Step 5: Run exactly the two saved-JD diagnostics**
 
 The user already authorized small saved-JD real-model diagnostics. This step
 does not authorize BOSS access.
@@ -304,7 +335,18 @@ Expected:
 - neither row has a hard blocker;
 - no recruitment platform, browser, main database, or port 8787 is touched.
 
-- [ ] **Step 5: Stop after the two rows and report**
+- [ ] **Step 6: Restore the fixed candidate worktree, then stop and report**
+
+Restore the fixed candidate worktree even if the diagnostic fails:
+
+```powershell
+Pop-Location
+git -C $candidate switch $originalCandidateBranch
+if((git -C $candidate rev-parse HEAD).Trim() -ne $originalCandidateCommit){
+  throw 'Fixed candidate worktree did not return to its original commit'
+}
+if(git -C $candidate status --porcelain){ throw 'Fixed candidate worktree is dirty after restore' }
+```
 
 Do not start another 20-row run. Report:
 
