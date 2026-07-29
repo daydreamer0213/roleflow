@@ -686,8 +686,29 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v12");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v23");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v1");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v24");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v2");
+  const currentRevision = {
+    profileVersion: "profile",
+    searchPlanVersion: "plan",
+    matchingCardVersion: "card",
+    sourceContentHash: "job",
+    pipelineVersions: PIPELINE_VERSIONS
+  };
+  assert.deepStrictEqual(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: {
+          ...PIPELINE_VERSIONS,
+          matchJob: "match-decision-v23",
+          decisionRules: "role-direction-requirements-v1"
+        }
+      }
+    }, currentRevision),
+    ["match_pipeline_changed", "decision_rules_changed"],
+    "岗位族提示词与要求权重变化必须使旧匹配缓存和旧分析结论失效"
+  );
   const configs = configFor(["Python"]);
   let runs = 0;
   const run = async () => { runs += 1; return understanding("pipeline-cache"); };
@@ -1643,8 +1664,8 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v12",
-    matchJob: "match-decision-v23",
-    decisionRules: "role-direction-requirements-v1",
+    matchJob: "match-decision-v24",
+    decisionRules: "role-direction-requirements-v2",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
