@@ -302,6 +302,16 @@ server.listen(0, "127.0.0.1", async () => {
       "back-end evidence must not prove the front-end portion of full-stack delivery"
     );
     assert(
+      matchPrompt.includes("main role family and delivery direction")
+        && matchPrompt.includes("substantial back-end delivery")
+        && matchPrompt.includes("mostly_aligned")
+        && matchPrompt.includes("missing front-end")
+        && matchPrompt.includes("requirement gap")
+        && matchPrompt.includes("adjacent AI workflows")
+        && matchPrompt.includes("partially_aligned"),
+      "full-stack roles must stay in the same role family when a substantial delivery lane is proven"
+    );
+    assert(
       understandPrompt.includes("requirements[{label,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"
     );
