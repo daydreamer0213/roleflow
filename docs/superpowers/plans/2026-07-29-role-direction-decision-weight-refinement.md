@@ -262,7 +262,7 @@ Copy-Item -LiteralPath (Join-Path $source 'labels\jobs.reviewed.json') -Destinat
 Expected: the new root contains frozen input and labels only; there is no model
 cache or result.
 
-- [ ] **Step 3: Stage the evaluated commit at the runner's fixed candidate worktree**
+- [x] **Step 3: Stage the evaluated commit at the runner's fixed candidate worktree**
 
 The runner intentionally accepts candidate live runs only from
 `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`.
@@ -287,7 +287,7 @@ Push-Location $candidate
 Expected: the fixed candidate worktree is clean at the evaluated commit, while
 the product commit is its strict ancestor. No main worktree is changed.
 
-- [ ] **Step 4: Initialize the manifest and evidence portability proof offline**
+- [x] **Step 4: Initialize the manifest and evidence portability proof offline**
 
 ```powershell
 $baselineProduct='fb0168afce265cf351f03e80f66d9e0f24015887'
@@ -306,7 +306,7 @@ node scripts/private-full-chain-runner.js --create-portability-proof `
 
 Expected: both commands exit 0 without a model call.
 
-- [ ] **Step 5: Run exactly the two saved-JD diagnostics**
+- [x] **Step 5: Run exactly the two saved-JD diagnostics**
 
 The user already authorized small saved-JD real-model diagnostics. This step
 does not authorize BOSS access.
@@ -335,7 +335,7 @@ Expected:
 - neither row has a hard blocker;
 - no recruitment platform, browser, main database, or port 8787 is touched.
 
-- [ ] **Step 6: Restore the fixed candidate worktree, then stop and report**
+- [x] **Step 6: Restore the fixed candidate worktree, then stop and report**
 
 Restore the fixed candidate worktree even if the diagnostic fails:
 
@@ -360,11 +360,53 @@ Do not start another 20-row run. Report:
 If either row is below `talk`, preserve the private root and diagnose before any
 new live call.
 
+## Execution Result (2026-07-29)
+
+- Candidate product commit: `c8281680304c19839e0f375ca3433943ca19d1b3`.
+- Candidate evaluated tooling commit: `f8d007ddef8c8a35f19c76bc5f43e334f44406bd`.
+- The runner's fixed candidate worktree was temporarily switched to the
+  evaluated commit and restored to
+  `codex/claude-generic-evidence-matching-live-fix` at
+  `1fc49dac3670a71c720bfcaed943fa29204d93c5` after the diagnostic.
+- Sample 2 completed as `review` / `talk`, with
+  `roleAlignment=mostly_aligned`, `foundationState=partial`, no hard blocker,
+  two model calls, two attempts, zero empty responses, zero contract repairs,
+  and `18,252 ms` total analysis time.
+- Sample 15 completed as `caution` / `talk`, with
+  `roleAlignment=mostly_aligned`, `foundationState=complete`, no hard blocker,
+  two model calls, two attempts, zero empty responses, zero contract repairs,
+  and `15,446 ms` total analysis time.
+- Both rows met the user-approved retention floor (`talk`). The frozen exact
+  label benchmark reports one of two rows as an exact pass because sample 15's
+  historical label is `apply` / `primary`; this two-row diagnostic is not an
+  acceptance-eligible full benchmark and does not claim exact-label parity.
+- Private artifacts remain outside the repository at
+  `D:\DevData\RoleFlow-private-benchmark\full-chain-v38-role-direction-weight-refinement-2-20260729`.
+
+## Post-diagnostic Review
+
+The first live diagnostic exercised the active sparse path and met both
+retention floors, but the final review found two compatibility issues that had
+to be fixed before completion:
+
+- `835ae40` preserves the `foundation` flag in the legacy compact normalizer and
+  adds a foundation-only regression. The missing flag could otherwise make a
+  decision-bearing legacy requirement look advisory.
+- `9b6b47f` advances `matchJob` from `match-decision-v23` to
+  `match-decision-v24` and `decisionRules` from
+  `role-direction-requirements-v1` to `role-direction-requirements-v2`. This
+  invalidates old model-cache entries and marks stored analyses stale instead of
+  silently retaining the previous role-family and requirement-weight behavior.
+
+Neither fix weakens a hard boundary. Because they create a new final product
+commit after the first diagnostic, the same two saved rows must be rerun in a
+fresh private root and bound to `9b6b47f` before completion.
+
 ## Final Self-Review Checklist
 
-- [ ] The prompt clarification changes role-family interpretation without claiming that back-end evidence proves missing front-end skills.
-- [ ] Ordinary advisory gaps remain visible in `softGaps` or `questionsToVerify`.
-- [ ] Only `foundation`, `central`, or `indispensable` gaps affect ranking.
-- [ ] Hard blockers and existing safety boundaries are unchanged.
-- [ ] No third model call, taxonomy, dependency, schema change, or UI terminology change is introduced.
-- [ ] The two live rows use saved JD data only and stop before a 20-row run.
+- [x] The prompt clarification changes role-family interpretation without claiming that back-end evidence proves missing front-end skills.
+- [x] Ordinary advisory gaps remain visible in `softGaps` or `questionsToVerify`.
+- [x] Only `foundation`, `central`, or `indispensable` gaps affect ranking.
+- [x] Hard blockers and existing safety boundaries are unchanged.
+- [x] No third model call, taxonomy, dependency, schema change, or UI terminology change is introduced.
+- [x] The two live rows use saved JD data only and stop before a 20-row run.
