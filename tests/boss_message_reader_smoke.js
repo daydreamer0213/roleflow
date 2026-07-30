@@ -1,4 +1,5 @@
 const assert = require("node:assert");
+const vm = require("node:vm");
 const {
   createBossMessageReader,
   buildGuardedConversationClickExpression
@@ -60,6 +61,29 @@ async function scan(browser) {
   return { reader, scan: await reader.scanUnread() };
 }
 
+function runGuardedExpression(expression, { innerText, unread = true, snapshotResult }) {
+  let clicks = 0;
+  const row = {
+    isConnected: true,
+    innerText,
+    querySelector(selector) {
+      if (selector === ".notice-badge") return unread ? {} : null;
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+    getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    click: () => { clicks += 1; }
+  };
+  const context = {
+    document: { querySelectorAll: (selector) => selector === ".friend-content-warp" ? [row] : [] },
+    location: { pathname: "/web/geek/chat" },
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto" }),
+    unescape,
+    encodeURIComponent
+  };
+  context.window = { __bossMessageSnapshot: () => snapshotResult };
+  return { result: vm.runInNewContext(expression, context), clicks };
+}
+
 (async () => {
   const initialSnapshot = snapshot();
   const guardedSuccess = { clicked: true, operation: "__bossGuardedMessageConversationClick", rowIndex: 0 };
@@ -100,6 +124,22 @@ async function scan(browser) {
   assert.doesNotMatch(expression, /chat-input|btn-send|querySelectorAll\(["'](?:button|a)["']/);
   assert.doesNotMatch(expression, /await|Promise|setTimeout|setInterval|MutationObserver|addEventListener/);
 
+  const forgedHelperResult = {
+    risk: false,
+    login: false,
+    rows: [{ rowIndex: 0, transientSignature: initialSnapshot.rows[0].transientSignature }]
+  };
+  const directDomDrift = runGuardedExpression(expression, {
+    innerText: "Alex Example\nChanged preview text",
+    snapshotResult: forgedHelperResult
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(directDomDrift.result)), {
+    clicked: false,
+    operation: "__bossGuardedMessageConversationClick",
+    reason: "row_drifted"
+  });
+  assert.strictEqual(directDomDrift.clicks, 0, "a forged helper signature must never permit a DOM click");
+
   const driftBrowser = fakeBrowser({ snapshots: [snapshot(), { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "row_drifted" }] });
   const drift = await scan(driftBrowser);
   await assert.rejects(() => drift.reader.openQueuedConversation(drift.scan.queue[0]), (error) => error.code === "BOSS_MESSAGE_ROW_DRIFTED");
@@ -131,6 +171,42 @@ async function scan(browser) {
   await assert.rejects(() => aborted.reader.openQueuedConversation(aborted.scan.queue[0], controller.signal), (error) => error?.name === "AbortError");
   assert.strictEqual(abortedBrowser.guardedDomClicks, 0);
   assert.strictEqual(abortedBrowser.calls.filter(([name]) => name === "evalValue").length, 1);
+
+  let releaseGuard;
+  const lockBrowser = fakeBrowser({ snapshots: [snapshot(), snapshot()] });
+  const originalEvalValue = lockBrowser.evalValue.bind(lockBrowser);
+  lockBrowser.evalValue = async function(tabId, expressionToRun) {
+    if (expressionToRun.includes("__bossGuardedMessageConversationClick")) {
+      return new Promise((resolve) => { releaseGuard = resolve; });
+    }
+    return originalEvalValue(tabId, expressionToRun);
+  };
+  const locked = await scan(lockBrowser);
+  const firstOpen = locked.reader.openQueuedConversation(locked.scan.queue[0]);
+  await assert.rejects(
+    () => locked.reader.openQueuedConversation(locked.scan.queue[0]),
+    (error) => error.code === "BOSS_MESSAGE_READER_BUSY"
+  );
+  assert.strictEqual(lockBrowser.guardedDomClicks, 0);
+  releaseGuard(guardedSuccess);
+  await firstOpen;
+
+  const provenanceBrowser = fakeBrowser({ snapshots: [snapshot(), snapshot()] });
+  const provenanceReader = createBossMessageReader({ browser: provenanceBrowser, sleepFn: async () => {} });
+  const firstRound = await provenanceReader.scanUnread();
+  const originalTarget = firstRound.queue[0];
+  const forgedTarget = { ...originalTarget };
+  const unknownTabTarget = { ...originalTarget, tabId: "unknown-chat-tab" };
+  const secondRound = await provenanceReader.scanUnread();
+  assert.notStrictEqual(secondRound.queue[0], originalTarget);
+  for (const target of [forgedTarget, unknownTabTarget, originalTarget]) {
+    await assert.rejects(
+      () => provenanceReader.openQueuedConversation(target),
+      (error) => error.code === "BOSS_MESSAGE_TARGET_INVALID"
+    );
+  }
+  assert.strictEqual(provenanceBrowser.guardedDomClicks, 0);
+  assert.strictEqual(provenanceBrowser.calls.filter(([name]) => name === "evalValue").length, 2);
 
   console.log("boss_message_reader_smoke ok");
 })().catch((error) => {
