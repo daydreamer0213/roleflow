@@ -315,6 +315,26 @@ git commit -m "fix: keep industry context out of role alignment"
   `screening_quality_smoke.js`, `workflow_inventory_smoke.js`, and
   `workflow_dashboard_smoke.js` exited 0; `git diff --check` was clean.
 - Task 2 commit: `d8f515f fix: keep industry context out of role alignment`.
+- First five-row live diagnostic:
+  - sample 1 stayed `backup`;
+  - samples 3, 4, and 14 reached `talk`;
+  - sample 20 stayed `partially_aligned/backup`;
+  - all five rows were complete with two model calls, no failed/stale/pending
+    result, no empty response, and no contract repair.
+- Sample 20 root cause: `industryContext` was present, but `roleSummary` still
+  treated named-system maintenance and secondary development as the defining
+  work. The match stage then repeated the named system, domain, maintenance,
+  and integration gaps as role-family gaps despite matched back-end/API
+  delivery evidence.
+- Refinement red: `model_adapter_smoke.js` failed with
+  `roleSummary 必须去掉行业外壳，但保留真正改变工作的领域动作`;
+  `semantic_pipeline_smoke.js` reported actual `job-understanding-v13`
+  versus expected `job-understanding-v14`.
+- Refinement green: `model_adapter_smoke.js`, `semantic_pipeline_smoke.js`,
+  `screening_quality_smoke.js`, `workflow_inventory_smoke.js`, and
+  `workflow_dashboard_smoke.js` exited 0; `git diff --check` was clean.
+- Refinement commit:
+  `6412ee6 fix: normalize primary work across industry contexts`.
 
 ---
 
@@ -332,7 +352,7 @@ git commit -m "fix: keep industry context out of role alignment"
 
 Mark Tasks 1-2 complete and append exact failing assertion messages, green commands, and both product commit hashes. Do not change product files.
 
-- [ ] **Step 2: Commit the checkpoint**
+- [x] **Step 2: Commit the checkpoint**
 
 ```powershell
 git add -- docs/superpowers/plans/2026-07-30-role-direction-domain-boundary.md
@@ -340,6 +360,13 @@ git commit -m "docs: prepare industry context live verification"
 ```
 
 Expected: both product commits are strict ancestors of this docs-only evaluated commit.
+
+- [x] **Step 3: Commit a new checkpoint after the first live miss**
+
+Record the first five-row result and the evidence-based refinement above, then
+commit a new docs-only evaluated checkpoint whose direct parent is `6412ee6`.
+The first checkpoint `b794d03` remains immutable evidence for the failed
+diagnostic.
 
 ---
 
@@ -359,7 +386,15 @@ Expected: both product commits are strict ancestors of this docs-only evaluated 
 
 Copy only frozen `input` files and `labels/jobs.reviewed.json`. Bind the approved baseline product, Task 2 product commit, and Task 3 evaluated commit using the existing private runner. Temporarily switch `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix` to a new branch at the evaluated commit; do not weaken the fixed-path gate.
 
-- [ ] **Step 2: Run exactly five diagnostic rows**
+- [ ] **Step 2: Run a two-row refinement diagnostic**
+
+Use a fresh private root and run indices `0,19` first. Sample 1 must remain
+`backup`; sample 20 must reach at least `talk`. Both rows must be complete,
+evidence-bearing, and free of hard blockers, failed/stale/pending status, empty
+responses, and more than one contract repair. Restore the fixed worktree after
+the run.
+
+- [ ] **Step 3: Rerun exactly five diagnostic rows**
 
 Run candidate `match-live` with:
 
@@ -376,11 +411,11 @@ Acceptance:
 - one existing contract-repair attempt is allowed and must be reported;
 - any failed, stale, pending, empty-response, or safety result stops the run.
 
-- [ ] **Step 3: Restore the fixed candidate worktree**
+- [ ] **Step 4: Restore the fixed candidate worktree**
 
 Switch it back to `codex/claude-generic-evidence-matching-live-fix` at `1fc49dac3670a71c720bfcaed943fa29204d93c5`, and verify it is clean.
 
-- [ ] **Step 4: Stop on an acceptance miss**
+- [ ] **Step 5: Stop on an acceptance miss**
 
 If the negative control is promoted or any positive row remains below `talk`, preserve the private root and diagnose before another live call. Do not start the final 20-row run.
 
