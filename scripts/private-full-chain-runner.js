@@ -1144,9 +1144,14 @@ function createConfirmedEvidencePortability(options, seam = null) {
       })
     }),
     modelIdentitySha256: profileInput.envelope.modelIdentitySha256,
-    profileConfirmationId: String(profileInput.envelope.id),
+    ...(fixtureTransition ? {
+      profileConfirmationIdSha256: sha256(String(profileInput.envelope.id)),
+      cardConfirmationIdSha256: sha256(String(cardInput.envelope.id))
+    } : {
+      profileConfirmationId: String(profileInput.envelope.id),
+      cardConfirmationId: String(cardInput.envelope.id)
+    }),
     profileConfirmedAt: profileInput.envelope.confirmedAt,
-    cardConfirmationId: String(cardInput.envelope.id),
     cardConfirmedAt: cardInput.envelope.confirmedAt,
     consumerCodeBlobs: resolvePortabilityBlobs(
       source.manifest.candidateEvaluatedCommit,
@@ -1172,8 +1177,7 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
     "sourceRunManifestSha256", "targetRunManifestSha256", "sourceProductCommit", "sourceEvaluatedCommit",
     "targetProductCommit", "targetEvaluatedCommit", "confirmedProfileFileSha256",
     "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
-    "modelIdentitySha256", "profileConfirmationId",
-    "profileConfirmedAt", "cardConfirmationId", "cardConfirmedAt", "consumerCodeBlobs", "proofSha256"
+    "modelIdentitySha256", "profileConfirmedAt", "cardConfirmedAt", "consumerCodeBlobs", "proofSha256"
   ];
   const labelTransition = proof?.proofVersion === PORTABILITY_LABEL_TRANSITION_PROOF_VERSION;
   const fixtureTransition = proof?.proofVersion === PORTABILITY_FIXTURE_TRANSITION_PROOF_VERSION;
@@ -1182,9 +1186,10 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
     ...(fixtureTransition
       ? [
         "targetJobsFileSha256", "targetLabelsFileSha256", "targetFixtureTotal",
-        "targetLabelsVersion", "targetEvaluationPolicy", "targetLabelsConfirmedAt"
+        "targetLabelsVersion", "targetEvaluationPolicy", "targetLabelsConfirmedAt",
+        "profileConfirmationIdSha256", "cardConfirmationIdSha256"
       ]
-      : ["jobsFileSha256", ...(labelTransition
+      : ["profileConfirmationId", "cardConfirmationId", "jobsFileSha256", ...(labelTransition
       ? [
         "sourceLabelsFileSha256", "targetLabelsFileSha256",
         "sourceLabelsVersion", "targetLabelsVersion", "targetEvaluationPolicy"
@@ -1203,8 +1208,8 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
     || !/^[0-9a-f]{40}$/.test(String(proof.sourceProductCommit || ""))
     || proof.targetProductCommit !== context.manifest.candidateProductCommit
     || proof.targetEvaluatedCommit !== context.manifest.candidateEvaluatedCommit
-    || !genericPortabilityConfirmationId(proof.profileConfirmationId)
-    || !genericPortabilityConfirmationId(proof.cardConfirmationId)
+    || (!fixtureTransition && (!genericPortabilityConfirmationId(proof.profileConfirmationId)
+      || !genericPortabilityConfirmationId(proof.cardConfirmationId)))
     || (labelTransition && (
       !/^[0-9a-f]{64}$/.test(String(proof.sourceLabelsFileSha256 || ""))
       || !/^[0-9a-f]{64}$/.test(String(proof.targetLabelsFileSha256 || ""))
@@ -1220,6 +1225,8 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
       || proof.targetLabelsVersion !== "private-real-jd-labels.v2"
       || proof.targetEvaluationPolicy !== RECALL_FIRST_POLICY
       || !Number.isFinite(Date.parse(proof.targetLabelsConfirmedAt))
+      || !/^[0-9a-f]{64}$/.test(String(proof.profileConfirmationIdSha256 || ""))
+      || !/^[0-9a-f]{64}$/.test(String(proof.cardConfirmationIdSha256 || ""))
     ))) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The confirmed evidence portability proof is invalid.");
   }
@@ -1310,9 +1317,12 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
   } catch {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The v1 confirmation provenance chain is invalid.");
   }
-  if (profileInput.envelope.id !== proof.profileConfirmationId
+  if ((fixtureTransition
+    ? sha256(String(profileInput.envelope.id)) !== proof.profileConfirmationIdSha256
+      || sha256(String(cardInput.envelope.id)) !== proof.cardConfirmationIdSha256
+    : profileInput.envelope.id !== proof.profileConfirmationId
+      || cardInput.envelope.id !== proof.cardConfirmationId)
     || profileInput.envelope.confirmedAt !== proof.profileConfirmedAt
-    || cardInput.envelope.id !== proof.cardConfirmationId
     || cardInput.envelope.confirmedAt !== proof.cardConfirmedAt
     || profileInput.envelope.modelIdentitySha256 !== proof.modelIdentitySha256
     || profileInput.envelope.productCommit !== sourceProductCommit

@@ -834,6 +834,9 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(v3Proof.targetLabelsVersion, "private-real-jd-labels.v2");
   assert.strictEqual(v3Proof.targetEvaluationPolicy, "recall-first.v1");
   assert.strictEqual(v3Proof.targetLabelsConfirmedAt, changedLabels.confirmedAt);
+  for (const confirmationId of [portableEvidence.profile.id, portableEvidence.card.id]) {
+    assert(!JSON.stringify(v3Proof).includes(confirmationId), `v3 portability proof must not contain confirmation ID ${confirmationId}`);
+  }
   assert.deepStrictEqual(Object.keys(v3Proof.consumerCodeBlobs).sort(), [
     "cardCreationBlobId",
     "profileConsumptionBlobId",
@@ -1266,6 +1269,29 @@ async function injectedLiveFlowSmoke(identityPath) {
   await v3PortabilityRun("fixture-total", ({ proof: file }) => {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     value.targetFixtureTotal += 1;
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("raw-proof-self-hash", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.proofSha256 = "f".repeat(64);
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("target-commit-binding", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.targetProductCommit = "f".repeat(40);
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("profile-confirmation-id-hash", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.profileConfirmationIdSha256 = "f".repeat(64);
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("card-confirmation-id-hash", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.cardConfirmationIdSha256 = "f".repeat(64);
     value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
     fs.writeFileSync(file, JSON.stringify(value), "utf8");
   });
