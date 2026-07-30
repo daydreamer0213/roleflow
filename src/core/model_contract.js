@@ -334,6 +334,11 @@ function validateCompactJobUnderstanding(value) {
     || Object.prototype.hasOwnProperty.call(value, "responsibilityEvidence"))) {
     throw new ModelContractError("understandJob", "hiringTracks 紧凑格式不得包含顶层 roleSummary 或 responsibilityEvidence");
   }
+  if (hasHiringTracks && Object.keys(value).some((field) => ![
+    "industryContext", "hiringTracks", "requirements", "eligibility", "riskSignals"
+  ].includes(field))) {
+    throw new ModelContractError("understandJob", "新版紧凑 understandJob 只允许 industryContext、hiringTracks、requirements、eligibility、riskSignals");
+  }
   if (!hasHiringTracks) {
     requiredCompactString(value.roleSummary, "roleSummary");
     responsibilityEvidenceList(value.responsibilityEvidence);
@@ -344,6 +349,9 @@ function validateCompactJobUnderstanding(value) {
   });
   const trackIds = new Set(hiringTracks.map((track) => track.id));
   const requirements = requiredCompactArray(value.requirements, "requirements");
+  if (requirements.length > 16) {
+    throw new ModelContractError("understandJob", "requirements 最多包含 16 条");
+  }
   const eligibility = requiredCompactArray(value.eligibility, "eligibility");
   const riskSignals = requiredCompactArray(value.riskSignals, "riskSignals");
   for (const requirement of requirements) {

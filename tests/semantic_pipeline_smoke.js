@@ -2378,6 +2378,24 @@ async function compactMatchEvidenceContractSmoke() {
       (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID"
     );
   }
+  assert.throws(
+    () => validateModelResult("understandJob", {
+      ...multiTrackUnderstandingInput,
+      requirements: Array.from({ length: 17 }, (_, index) => ({
+        ...multiTrackUnderstandingInput.requirements[0],
+        label: `超限要求 ${index + 1}`
+      }))
+    }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "新版紧凑 requirements 超过 16 条必须拒绝，不能静默截断"
+  );
+  for (const [field, fieldValue] of [["jobId", "compact-1"], ["arbitraryField", true]]) {
+    assert.throws(
+      () => validateModelResult("understandJob", { ...multiTrackUnderstandingInput, [field]: fieldValue }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+      `新版紧凑 understandJob 不得包含顶层 ${field}`
+    );
+  }
 
   const compactInput = {
     ...singleTrackInput,
