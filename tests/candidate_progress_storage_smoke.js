@@ -8,6 +8,7 @@ const {
   recordProgressEvent,
   transitionProgressCard,
   correctProgressStage,
+  recordIncomingMessageClassification,
   getProgressCardForJob,
   listProgressCards,
   listProgressEvents
@@ -48,6 +49,27 @@ try {
     jobId
   });
   assert(!JSON.stringify(initialEvents).includes("HR 原话正文"));
+
+  const sanitizedFixture = createFixture(db, "sanitized-summary", now);
+  const sanitizedCard = ensureProgressCard(db, {
+    ...sanitizedFixture,
+    source: "boss",
+    now
+  });
+  recordIncomingMessageClassification(db, {
+    cardId: sanitizedCard.id,
+    messageCategory: "project_fact",
+    missingFactKey: "project_status",
+    progressUpdate: {
+      stage: "needs_user_action",
+      nextAction: "请用户确认项目事实",
+      summary: "HR 原话正文"
+    },
+    occurredAt: "2026-07-23T08:01:30.000Z"
+  });
+  const sanitizedEvents = listProgressEvents(db, sanitizedCard.id);
+  assert.strictEqual(sanitizedEvents[0].summary, "项目事实确认");
+  assert(!JSON.stringify(sanitizedEvents).includes("HR 原话正文"));
 
   for (const forbiddenKey of ["message", "body", "text", "html", "draft", "screenshot"]) {
     assert.throws(

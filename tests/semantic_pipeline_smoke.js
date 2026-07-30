@@ -4,6 +4,7 @@ const path = require("path");
 const { loadConfigs } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
+const { MockModelAdapter } = require("../src/adapters/models/mock");
 const { validateModelResult, ModelContractError, effectiveHardBlockers } = require("../src/core/model_contract");
 const { runtimeAnalysisContext } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
@@ -31,6 +32,8 @@ const db = openDb(dbPath);
     await pipelineVersionCacheSmoke();
     await roleIntentGuardSmoke();
     matchBoundaryContractSmoke();
+    communicationContractSmoke();
+    await communicationFactsGuardSmoke();
     genericPolicySmoke();
     staleAnalysisSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
@@ -45,6 +48,58 @@ const db = openDb(dbPath);
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+function communicationContractSmoke() {
+  const invitation = validateModelResult("draftCommunication", {
+    kind: "hr_reply",
+    jobId: "job-1",
+    messages: [],
+    missingFact: null,
+    messageCategory: "interview_invitation",
+    progressUpdate: {
+      stage: "interview_invited",
+      nextAction: "请用户决定是否接受并安排时间",
+      summary: "收到面试邀约"
+    },
+    evidence: { jd: [], resume: [] },
+    tone: "自然、稳健"
+  });
+  assert.strictEqual(invitation.messageCategory, "interview_invitation");
+  assert.deepStrictEqual(invitation.messages, []);
+  assert.throws(
+    () => validateModelResult("draftCommunication", {
+      ...invitation,
+      messages: ["我先确认一下安排。"]
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID"
+  );
+  assert.throws(
+    () => validateModelResult("draftCommunication", {
+      kind: "hr_reply",
+      messages: ["可以"],
+      missingFact: null,
+      messageCategory: "other",
+      progressUpdate: { stage: "unknown", nextAction: "", summary: "未知状态" },
+      evidence: { jd: [], resume: [] }
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID"
+  );
+}
+
+async function communicationFactsGuardSmoke() {
+  const analyzer = createLlmAnalyzer({ adapter: new MockModelAdapter() });
+  const salaryDraft = await analyzer.draftCommunication({
+    mode: "hr_reply",
+    candidateProfile: { candidate: {}, skills: [], projects: [] },
+    jobUnderstanding: { jobId: "salary-job", evidenceSnippets: [] },
+    matchDecision: { evidence: { jd: [], resume: [] } },
+    hrMessage: "你的期望薪资是多少？",
+    userProvidedFacts: []
+  });
+  assert.deepStrictEqual(salaryDraft.messages, []);
+  assert.strictEqual(salaryDraft.missingFact.key, "salary_expectation");
+  assert.strictEqual(salaryDraft.progressUpdate.stage, "needs_user_action");
+}
 
 async function stableUnderstandingAndCandidateMatchSmoke() {
   const calls = { understandJob: 0, matchJob: 0, analyzeResume: 0, draftCommunication: 0 };

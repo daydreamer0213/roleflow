@@ -9,6 +9,15 @@ const PROGRESS_STAGES = new Set([
   "rejected",
   "closed"
 ]);
+const MESSAGE_CATEGORIES = new Set([
+  "project_fact",
+  "qualification",
+  "salary",
+  "availability",
+  "interview_invitation",
+  "other",
+  "identity_uncertain"
+]);
 
 const TERMINAL_PROGRESS_STAGES = new Set(["rejected", "closed"]);
 const FORBIDDEN_METADATA_KEYS = new Set(["message", "body", "text", "html", "draft", "screenshot"]);
@@ -31,7 +40,7 @@ const ALLOWED_METADATA_KEYS = new Set([
   "source"
 ]);
 const TRANSITIONS = new Map([
-  ["contact_started", new Set(["waiting_reply", "needs_user_action", "closed"])],
+  ["contact_started", new Set(["waiting_reply", "needs_user_action", "reply_ready", "interview_invited", "closed"])],
   ["waiting_reply", new Set(["needs_user_action", "reply_ready", "interview_invited", "resume_submitted", "rejected", "closed"])],
   ["needs_user_action", new Set(["waiting_reply", "reply_ready", "interview_invited", "interview_scheduled", "resume_submitted", "rejected", "closed"])],
   ["reply_ready", new Set(["waiting_reply", "needs_user_action", "interview_invited", "rejected", "closed"])],
@@ -190,6 +199,63 @@ function recordVerifiedCommunicationStart(db, input = {}) {
   return card;
 }
 
+function recordIncomingMessageClassification(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const messageCategory = String(input.messageCategory || "").trim();
+  if (!MESSAGE_CATEGORIES.has(messageCategory)) {
+    throw progressError("PROGRESS_MESSAGE_CATEGORY_INVALID", "message category is invalid");
+  }
+  const progressUpdate = input.progressUpdate && typeof input.progressUpdate === "object"
+    ? input.progressUpdate
+    : {};
+  const stage = legalStage(progressUpdate.stage);
+  const missingFactKey = shortText(input.missingFactKey, 80);
+  const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const occurredAt = isoText(input.occurredAt);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    recordProgressEvent(db, {
+      cardId,
+      type: "incoming_message_classified",
+      actor: "system",
+      summary,
+      metadata: {
+        messageCategory,
+        missingFactKey,
+        stage
+      },
+      occurredAt
+    });
+    transitionProgressCard(db, {
+      cardId,
+      expectedStage: card.stage,
+      stage,
+      nextAction: shortText(progressUpdate.nextAction, 240),
+      now: occurredAt
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return getProgressCard(db, cardId);
+}
+
+function sanitizedMessageSummary(messageCategory, { missingFactKey = "" } = {}) {
+  const category = String(messageCategory || "").trim();
+  return {
+    project_fact: "项目事实确认",
+    qualification: "资格条件确认",
+    salary: "薪资问题确认",
+    availability: "到岗时间确认",
+    interview_invitation: "收到面试邀约",
+    identity_uncertain: "岗位或线程关联待确认",
+    other: missingFactKey ? "需要补充用户确认事实" : "招聘方问题已分类"
+  }[category] || "招聘方问题已分类";
+}
+
 function getProgressCardForJob(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const jobId = positiveInteger(input.jobId, "jobId");
@@ -310,12 +376,15 @@ function progressError(code, message) {
 
 module.exports = {
   PROGRESS_STAGES,
+  MESSAGE_CATEGORIES,
   TERMINAL_PROGRESS_STAGES,
   ensureProgressCard,
   recordProgressEvent,
   transitionProgressCard,
   correctProgressStage,
   recordVerifiedCommunicationStart,
+  recordIncomingMessageClassification,
+  sanitizedMessageSummary,
   getProgressCardForJob,
   listProgressCards,
   listProgressEvents

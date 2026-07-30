@@ -1,3 +1,5 @@
+const { MESSAGE_CATEGORIES, PROGRESS_STAGES } = require("./candidate_progress");
+
 class ModelContractError extends Error {
   constructor(kind, message) {
     super(`${kind} 模型输出不符合契约：${message}`);
@@ -145,16 +147,42 @@ function validateCommunication(value) {
     ? { key: text(rawMissingFact.key).slice(0, 80), question: text(rawMissingFact.question) }
     : null;
   const evidence = normalizeEvidence(value.evidence);
+  const messageCategory = MESSAGE_CATEGORIES.has(String(value.messageCategory || "").trim())
+    ? String(value.messageCategory).trim()
+    : "other";
+  const rawProgressUpdate = object(value.progressUpdate);
+  const progressUpdate = {
+    stage: text(rawProgressUpdate.stage).slice(0, 80),
+    nextAction: text(rawProgressUpdate.nextAction).slice(0, 240),
+    summary: text(rawProgressUpdate.summary).slice(0, 240)
+  };
+  if (!PROGRESS_STAGES.has(progressUpdate.stage) || !progressUpdate.summary) {
+    throw new ModelContractError("draftCommunication", "progressUpdate 必须包含合法 stage、nextAction 和短摘要");
+  }
   if (missingFact) {
     if (!missingFact.key || !missingFact.question) throw new ModelContractError("draftCommunication", "missingFact 必须同时包含 key 和 question");
     if (messages.length) throw new ModelContractError("draftCommunication", "缺少关键事实时不能同时生成可发送回复");
+    if (progressUpdate.stage !== "needs_user_action") throw new ModelContractError("draftCommunication", "缺少事实时进展必须停在 needs_user_action");
+  } else if (["interview_invitation", "identity_uncertain"].includes(messageCategory)) {
+    if (messages.length) throw new ModelContractError("draftCommunication", "面试邀约或身份不确定时不能生成建议回复");
+    const requiredStage = messageCategory === "interview_invitation" ? "interview_invited" : "needs_user_action";
+    if (progressUpdate.stage !== requiredStage) throw new ModelContractError("draftCommunication", "消息分类与进展阶段不一致");
   } else if (!messages.length) {
     throw new ModelContractError("draftCommunication", "缺少可发送文案或待补事实问题");
   }
   if (!missingFact && ["greeting", "follow_up"].includes(kind) && (!evidence.jd.length || !evidence.resume.length)) {
     throw new ModelContractError("draftCommunication", "定制沟通必须同时包含 JD 与候选人证据");
   }
-  return { kind, jobId: text(value.jobId), messages, missingFact, evidence, tone: text(value.tone) };
+  return {
+    kind,
+    jobId: text(value.jobId),
+    messages,
+    missingFact,
+    messageCategory,
+    progressUpdate,
+    evidence,
+    tone: text(value.tone)
+  };
 }
 
 function normalizeEvidence(value) {

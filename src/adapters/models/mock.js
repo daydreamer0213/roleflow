@@ -115,32 +115,131 @@ class MockModelAdapter {
     const resumeEvidence = (matchDecision.evidence?.resume || (candidateProfile.skills || []).map((skill) => skill.name || skill)).slice(0, 2);
     const facts = Object.fromEntries((userProvidedFacts || []).map((item) => [item.factKey, item.factValue]));
     if (kind === "hr_reply") {
-      const required = requiredCommunicationFact(hrMessage);
-      if (required && !facts[required.key]) {
-        return { kind, jobId: jobUnderstanding.jobId || "", messages: [], missingFact: required, evidence: { jd: [], resume: [] }, tone: "自然、稳健、不夸大" };
+      const messageCategory = classifyCommunicationMessage(hrMessage);
+      if (messageCategory === "interview_invitation") {
+        return communicationDraft({
+          kind,
+          jobId: jobUnderstanding.jobId,
+          messageCategory,
+          messages: [],
+          stage: "interview_invited",
+          nextAction: "请用户决定是否接受，并自行确认面试时间",
+          summary: "收到面试邀约"
+        });
       }
+      if (messageCategory === "identity_uncertain") {
+        return communicationDraft({
+          kind,
+          jobId: jobUnderstanding.jobId,
+          messageCategory,
+          messages: [],
+          stage: "needs_user_action",
+          nextAction: "请先确认岗位和招聘方线程",
+          summary: "岗位或线程关联待确认"
+        });
+      }
+      const required = requiredCommunicationFact(hrMessage);
       const salary = candidateProfile.candidate?.expectedSalary;
-      const answer = required ? facts[required.key]
+      const confirmedFact = required?.key === "salary_expectation"
+        ? facts[required.key] || salary
+        : required ? facts[required.key] : "";
+      if (required && !confirmedFact) {
+        return communicationDraft({
+          kind,
+          jobId: jobUnderstanding.jobId,
+          messageCategory,
+          messages: [],
+          missingFact: required,
+          stage: "needs_user_action",
+          nextAction: required.question,
+          summary: messageCategory === "project_fact" ? "项目事实确认" : "需要补充用户确认事实"
+        });
+      }
+      const answer = required ? confirmedFact
         : /薪资|期望/.test(hrMessage) && salary ? `目前期望薪资是 ${salary}，也可以结合岗位职责和整体待遇进一步沟通。`
           : "您好，已收到您的问题。我会按简历中的实际经历如实说明，也愿意进一步沟通岗位细节。";
-      return { kind, jobId: jobUnderstanding.jobId || "", messages: [answer], missingFact: null, evidence: { jd: [], resume: required ? [answer] : resumeEvidence }, tone: "自然、稳健、不夸大" };
+      return communicationDraft({
+        kind,
+        jobId: jobUnderstanding.jobId,
+        messageCategory,
+        messages: [answer],
+        stage: "reply_ready",
+        nextAction: "复制草稿并手动发送",
+        summary: communicationCategorySummary(messageCategory),
+        evidence: { jd: [], resume: required ? [answer] : resumeEvidence }
+      });
     }
     const role = jobUnderstanding.businessScenario || jobUnderstanding.realRoleType || "岗位核心工作";
     const project = matchDecision.primaryProjects?.[0] || "相关项目";
     const message = kind === "follow_up"
       ? `您好，补充一下：我在${project}中有与${role}相关的实践，和岗位职责比较贴近。如岗位仍在推进，希望能进一步沟通。`
       : `您好，我在${project}中做过与${role}相关的工作，和这个岗位的核心职责比较贴近，希望进一步沟通。`;
-    return { kind, jobId: jobUnderstanding.jobId || "", messages: [message], missingFact: null, evidence: { jd: jobEvidence, resume: resumeEvidence }, tone: "自然、稳健、不夸大" };
+    return communicationDraft({
+      kind,
+      jobId: jobUnderstanding.jobId,
+      messageCategory: "other",
+      messages: [message],
+      stage: kind === "follow_up" ? "reply_ready" : "contact_started",
+      nextAction: "复制草稿并手动发送",
+      summary: kind === "follow_up" ? "跟进草稿已生成" : "招呼草稿已生成",
+      evidence: { jd: jobEvidence, resume: resumeEvidence }
+    });
   }
 }
 
 function requiredCommunicationFact(message) {
   const text = String(message || "");
+  if (/项目.{0,12}(?:上线|落地|生产|客户)|实际上线/.test(text)) return { key: "project_status", question: "请确认这个项目是否实际部署或上线，以及可以对外说明的范围。" };
+  if (/薪资|工资|期望待遇/.test(text)) return { key: "salary_expectation", question: "请确认你希望对 HR 说明的薪资期望。" };
   if (/gap|空窗|为什么.*(?:没工作|没上班|中断)/i.test(text)) return { key: "gap", question: "这段 GAP 期间你实际在做什么？请用一两句话填写可对外说明的事实。" };
   if (/离职|为什么.*离开|不继续做/.test(text)) return { key: "leaving_reason", question: "请填写你希望对 HR 说明的真实离开原因。" };
   if (/到岗|什么时候.*(?:上班|入职)|入职时间/.test(text)) return { key: "arrival", question: "你目前最早可以什么时候到岗？" };
   if (/短期项目|为什么.*短|项目.*(?:结束|离开)/.test(text)) return { key: "short_project", question: "请填写这个短期项目的真实性质和结束原因。" };
   return null;
+}
+
+function classifyCommunicationMessage(message) {
+  const text = String(message || "");
+  if (/面试|约面|到公司聊|视频聊/.test(text)) return "interview_invitation";
+  if (/哪个岗位|哪家公司|你是谁|哪位招聘/.test(text)) return "identity_uncertain";
+  if (/项目|上线|落地|生产环境|客户/.test(text)) return "project_fact";
+  if (/学历|本科|硕士|经验|年限|资格/.test(text)) return "qualification";
+  if (/薪资|工资|期望|待遇/.test(text)) return "salary";
+  if (/到岗|入职时间|什么时候.*(?:上班|入职)/.test(text)) return "availability";
+  return "other";
+}
+
+function communicationCategorySummary(category) {
+  return {
+    project_fact: "项目事实确认",
+    qualification: "资格条件回复",
+    salary: "薪资问题回复",
+    availability: "到岗时间回复",
+    other: "招聘方问题回复"
+  }[category] || "招聘方问题回复";
+}
+
+function communicationDraft({
+  kind,
+  jobId = "",
+  messageCategory,
+  messages,
+  missingFact = null,
+  stage,
+  nextAction,
+  summary,
+  evidence = { jd: [], resume: [] }
+}) {
+  return {
+    kind,
+    jobId: jobId || "",
+    messages,
+    missingFact,
+    messageCategory,
+    progressUpdate: { stage, nextAction, summary },
+    evidence,
+    tone: "自然、稳健、不夸大"
+  };
 }
 
 function profileFromResumeText(resumeText) {

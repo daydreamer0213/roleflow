@@ -90,6 +90,12 @@ const {
   listWorkflowInventory,
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
+const {
+  ensureProgressCard,
+  getProgressCardForJob,
+  recordIncomingMessageClassification,
+  sanitizedMessageSummary
+} = require("../core/candidate_progress");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
@@ -1258,8 +1264,21 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
     const mode = ["greeting", "hr_reply", "follow_up"].includes(params.mode) ? params.mode : "greeting";
     if (mode === "greeting" && !canGenerateGreeting(job)) throw new Error("只有证据完整的主投岗位可以生成定制招呼语；其他岗位请使用 BOSS 通用招呼语。");
     if (mode === "follow_up" && job.applicationStatus !== "no_reply") throw new Error("只有已标记为“无回复待跟进”的岗位可以生成跟进文案。");
-    if (mode === "hr_reply" && !String(params.hrMessage || "").trim()) throw new Error("请粘贴 HR 的原话。");
-    if (params.factKey && params.factValue) saveCandidateFact(db, { profileId: profile.id, factKey: params.factKey, factValue: params.factValue, source: "user_provided" });
+    const factSaved = Boolean(params.factKey && params.factValue);
+    if (factSaved) saveCandidateFact(db, { profileId: profile.id, factKey: params.factKey, factValue: params.factValue, source: "user_provided" });
+    if (mode === "hr_reply" && !String(params.hrMessage || "").trim()) {
+      if (factSaved) return redirect(res, `/queue?planId=${plan.id}`);
+      throw new Error("请粘贴 HR 的原话。");
+    }
+    const progressCard = mode === "hr_reply"
+      ? getProgressCardForJob(db, { profileId: profile.id, jobId: job.id })
+        || ensureProgressCard(db, {
+          profileId: profile.id,
+          planId: plan.id,
+          jobId: job.id,
+          source: job.source || "boss"
+        })
+      : null;
 
     const analysis = job.analysis || {};
     const { riskMessaging: _ignoredRiskMessaging, ...candidateFacts } = profile.profile || {};
@@ -1282,15 +1301,16 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
       hrMessage: String(params.hrMessage || "").trim(),
       userProvidedFacts: listCandidateFacts(db, profile.id)
     });
-    recordCandidateJobEvent(db, {
-      profileId: profile.id,
-      jobId: job.id,
-      planId: plan.id,
-      eventType: `communication_${mode}`,
-      payload: { result, hrMessage: mode === "hr_reply" ? String(params.hrMessage || "").trim().slice(0, 2000) : "" }
-    });
+    if (progressCard) {
+      recordIncomingMessageClassification(db, {
+        cardId: progressCard.id,
+        messageCategory: result.messageCategory,
+        missingFactKey: result.missingFact?.key || "",
+        progressUpdate: result.progressUpdate
+      });
+    }
     logger.info("communication_draft_generated", { requestId, profileId: profile.id, planId: plan.id, jobId: job.id, mode, missingFact: result.missingFact?.key || "", messageCount: result.messages.length });
-    sendHtml(res, renderCommunicationResult({ result, job, profile, plan, hrMessage: params.hrMessage || "" }));
+    sendHtml(res, renderCommunicationResult({ result, job, profile, plan }));
   } catch (error) {
     const planId = Number(params.planId || 0);
     respondUiError(res, error, planId ? `/queue?planId=${planId}` : "/", { logger, requestId, event: "communication_draft_failed", fallbackCode: "COMMUNICATION_DRAFT_FAILED" });
@@ -1303,11 +1323,12 @@ function canGenerateGreeting(job) {
     && Boolean(analysis.evidence?.jd?.length && analysis.evidence?.resume?.length);
 }
 
-function renderCommunicationResult({ result, job, profile, plan, hrMessage }) {
+function renderCommunicationResult({ result, job, profile, plan }) {
   const title = { greeting: "定制招呼语", hr_reply: "HR 回复", follow_up: "无回复跟进" }[result.kind] || "沟通草稿";
   const messages = (result.messages || []).map((message, index) => `<section class="panel"><textarea id="communication-${index}" readonly>${escapeHtml(message)}</textarea><button type="button" onclick="copyCommunication('communication-${index}')">复制</button></section>`).join("");
-  const missing = result.missingFact ? `<section class="panel"><p>${escapeHtml(result.missingFact.question)}</p><form class="form-stack" method="post" action="/api/communication"><input type="hidden" name="mode" value="${escapeAttr(result.kind)}"><input type="hidden" name="jobId" value="${job.id}"><input type="hidden" name="profileId" value="${profile.id}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="hrMessage" value="${escapeAttr(hrMessage)}"><input type="hidden" name="factKey" value="${escapeAttr(result.missingFact.key)}"><label>你的真实情况<textarea name="factValue" required></textarea></label><button>保存事实并生成回复</button></form></section>` : "";
-  return renderPage(title, `<main><nav>${navLinks(`/queue?planId=${plan.id}`)}</nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(job.title)} · ${escapeHtml(job.company || "")}。文案只生成到本页，不会自动发送。</p>${missing}${messages || (!missing ? '<section class="panel">没有生成可发送文案。</section>' : "")}</main><script>async function copyCommunication(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>`);
+  const missing = result.missingFact ? `<section class="panel"><p>${escapeHtml(result.missingFact.question)}</p><form class="form-stack" method="post" action="/api/communication"><input type="hidden" name="mode" value="${escapeAttr(result.kind)}"><input type="hidden" name="jobId" value="${job.id}"><input type="hidden" name="profileId" value="${profile.id}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="factKey" value="${escapeAttr(result.missingFact.key)}"><label>你的真实情况<textarea name="factValue" required></textarea></label><button>保存事实</button></form><p>为保护隐私，本页不会保留 HR 原话。保存后请返回岗位卡重新粘贴问题。</p></section>` : "";
+  const category = `<p class="hint" data-message-category="${escapeAttr(result.messageCategory || "other")}">消息分类：${escapeHtml(sanitizedMessageSummary(result.messageCategory, { missingFactKey: result.missingFact?.key || "" }))}</p>`;
+  return renderPage(title, `<main><nav>${navLinks(`/queue?planId=${plan.id}`)}</nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(job.title)} · ${escapeHtml(job.company || "")}。文案只生成到本页，不会自动发送。</p>${category}${missing}${messages || (!missing ? '<section class="panel">没有生成可发送文案。</section>' : "")}</main><script>async function copyCommunication(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>`);
 }
 
 function parseBody(rawBody, contentType) {

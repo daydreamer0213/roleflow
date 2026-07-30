@@ -12,6 +12,12 @@ const {
   buildFeedbackSummary,
   listCandidateFacts
 } = require("../src/core/storage");
+const {
+  ensureProgressCard,
+  transitionProgressCard,
+  getProgressCardForJob,
+  listProgressEvents
+} = require("../src/core/candidate_progress");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-communication-"));
@@ -59,6 +65,19 @@ let server;
       score: 20, level: "优先", matches: ["Python", "RAG"], risks: [], qualityTags: ["work_schedule_double"], analysis
     }, batchId);
 
+    const progressCard = ensureProgressCard(db, {
+      profileId: saved.profileId,
+      planId: saved.planId,
+      jobId,
+      source: "boss"
+    });
+    transitionProgressCard(db, {
+      cardId: progressCard.id,
+      expectedStage: "contact_started",
+      stage: "waiting_reply",
+      nextAction: "等待招聘方回复"
+    });
+
     server = createDashboardServer({ db, root, dbPath, forceMock: true });
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -72,14 +91,59 @@ let server;
     assert(greetingHtml.includes("KnowledgeFlow"));
     assert(greetingHtml.includes("企业知识库"));
 
+    const projectQuestion = "RAG 项目实际上线了吗？";
+    const projectReply = await post(base, "/api/communication", {
+      mode: "hr_reply",
+      jobId,
+      profileId: saved.profileId,
+      planId: saved.planId,
+      hrMessage: projectQuestion
+    });
+    const projectReplyHtml = await projectReply.text();
+    assert.strictEqual(projectReply.status, 200, projectReplyHtml);
+    assert(projectReplyHtml.includes('data-message-category="project_fact"'));
+    assert(!projectReplyHtml.includes(projectQuestion), "HR 原话不能回显到结果页或隐藏字段");
+    let progressEvents = listProgressEvents(db, progressCard.id);
+    assert.strictEqual(progressEvents.at(-1).summary, "项目事实确认");
+    assert.strictEqual(progressEvents.at(-1).metadata.messageCategory, "project_fact");
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "needs_user_action");
+    assert(!progressStorageText(db).includes(projectQuestion), "HR 原话不能写入进展表");
+
+    const interviewQuestion = "这周五下午三点可以面试吗？";
+    const interviewReply = await post(base, "/api/communication", {
+      mode: "hr_reply",
+      jobId,
+      profileId: saved.profileId,
+      planId: saved.planId,
+      hrMessage: interviewQuestion
+    });
+    const interviewReplyHtml = await interviewReply.text();
+    assert.strictEqual(interviewReply.status, 200, interviewReplyHtml);
+    assert(interviewReplyHtml.includes('data-message-category="interview_invitation"'));
+    assert(!interviewReplyHtml.includes('id="communication-0"'), "面试邀约不能生成建议回复");
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "interview_invited");
+    progressEvents = listProgressEvents(db, progressCard.id);
+    assert.strictEqual(progressEvents.at(-1).summary, "收到面试邀约");
+    assert(!progressStorageText(db).includes(interviewQuestion), "面试原话不能写入进展表");
+
     const missingGap = await post(base, "/api/communication", { mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId, hrMessage: "为什么中间 GAP 了一年？" });
     const missingGapHtml = await missingGap.text();
     assert.strictEqual(missingGap.status, 200, missingGapHtml);
     assert(missingGapHtml.includes("这段 GAP 期间你实际在做什么"));
     assert(!missingGapHtml.includes("持续学习并做项目"), "缺少事实时不能生成猜测回复");
 
+    assert(!missingGapHtml.includes('name="hrMessage"'), "缺事实页不能缓存 HR 原话");
     const gapFact = "这段时间主要做职业方向探索，并系统学习和实践 AI 应用开发。";
-    const answeredGap = await post(base, "/api/communication", { mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId, hrMessage: "为什么中间 GAP 了一年？", factKey: "gap", factValue: gapFact });
+    const savedGap = await post(base, "/api/communication", {
+      mode: "hr_reply",
+      jobId,
+      profileId: saved.profileId,
+      planId: saved.planId,
+      factKey: "gap",
+      factValue: gapFact
+    });
+    assert.strictEqual(savedGap.status, 303);
+    const answeredGap = await post(base, "/api/communication", { mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId, hrMessage: "为什么中间 GAP 了一年？" });
     const answeredGapHtml = await answeredGap.text();
     assert.strictEqual(answeredGap.status, 200, answeredGapHtml);
     assert(answeredGapHtml.includes(gapFact));
@@ -158,5 +222,13 @@ function post(base, route, values) {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)])).toString(),
     redirect: "manual"
+  });
+}
+
+function progressStorageText(database) {
+  return JSON.stringify({
+    cards: database.prepare("SELECT * FROM candidate_progress_cards ORDER BY id").all(),
+    events: database.prepare("SELECT * FROM candidate_progress_events ORDER BY id").all(),
+    legacyEvents: database.prepare("SELECT event_type, payload_json FROM candidate_job_events ORDER BY id").all()
   });
 }
