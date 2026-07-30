@@ -670,3 +670,15 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
   evaluated commit. Its exact SHA must be recorded by an immediate descendant
   docs-only binding record before private root creation. Candidate product
   `6cc09c9ef2603ac24e1a7c3928ce05f996c74214` must be its strict ancestor.
+
+### Cross-track sprawl exact evaluated binding
+
+- Candidate evaluated is exactly
+  `615fe7fd5d0c1150017d0a1dcfd686eb67c894fb`. Candidate product
+  `6cc09c9ef2603ac24e1a7c3928ce05f996c74214` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `615fe7fd5d0c1150017d0a1dcfd686eb67c894fb` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated/product remain exactly
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
