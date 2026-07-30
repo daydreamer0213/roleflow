@@ -6,7 +6,7 @@ const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard, compactAnalysi
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 const { MockModelAdapter } = require("../src/adapters/models/mock");
 const {
-  validateModelResult,
+  validateModelResult: validateModelResultRaw,
   ModelContractError,
   effectiveHardBlockers,
   decisionHardBlockers,
@@ -14,6 +14,34 @@ const {
   roleEvidenceDecisionState,
   requirementsForTrack
 } = require("../src/core/model_contract");
+
+function legacyFullTestContext(value) {
+  const requirements = Array.isArray(value?.requirementMatches)
+    ? value.requirementMatches.map((item) => ({
+      label: item?.requirement || "测试核心要求",
+      foundation: Boolean(item?.foundation),
+      central: typeof item?.central === "boolean" ? item.central : Boolean(item?.indispensable),
+      indispensable: Boolean(item?.indispensable),
+      evidence: item?.jdEvidence || "JD：测试核心要求"
+    }))
+    : [];
+  return {
+    roleSummary: "测试单轨岗位",
+    responsibilityEvidence: ["JD：测试岗位职责"],
+    coreRequirements: requirements,
+    jobQuality: value?.jobQuality || { level: "normal", concerns: [] }
+  };
+}
+
+function validateModelResult(kind, value, context) {
+  const evidenceShape = Object.prototype.hasOwnProperty.call(value || {}, "matches")
+    || Object.prototype.hasOwnProperty.call(value || {}, "eligibility")
+    || Object.prototype.hasOwnProperty.call(value || {}, "certainty");
+  if (kind !== "matchJob" || context !== undefined || evidenceShape) {
+    return validateModelResultRaw(kind, value, context);
+  }
+  return validateModelResultRaw(kind, value, { jobUnderstanding: legacyFullTestContext(value) });
+}
 const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
@@ -922,6 +950,8 @@ function compactResponsibilityFoundationContractSmoke() {
 function matchUnderstandingAlignmentSmoke() {
   // MatchDecision 必须与本次 JobUnderstanding 一一核对：漏项、重复、虚构、改 indispensable 全部进入契约修复。
   const jobUnderstanding = {
+    roleSummary: "店铺投放运营",
+    responsibilityEvidence: ["JD：负责店铺投放与 ROI 复盘"],
     coreRequirements: [
       { label: "投放 ROI 复盘", indispensable: true, evidence: "JD：必须独立完成投放 ROI 复盘" },
       { label: "店铺活动运营", indispensable: false, evidence: "JD：负责店铺活动运营" }
@@ -968,6 +998,8 @@ function matchUnderstandingAlignmentSmoke() {
     requirementMatches: [baseDecision.requirementMatches[0]]
   }, {
     jobUnderstanding: {
+      roleSummary: jobUnderstanding.roleSummary,
+      responsibilityEvidence: jobUnderstanding.responsibilityEvidence,
       coreRequirements: [
         jobUnderstanding.coreRequirements[0],
         { ...jobUnderstanding.coreRequirements[0], evidence: "JD：重复描述同一项要求" }
@@ -1037,7 +1069,7 @@ function matchUnderstandingAlignmentSmoke() {
     softGaps: [],
     questionsToVerify: [],
     evidence: { jd: ["JD：岗位职责面议"], resume: ["简历：店铺运营经历"] }
-  }, { jobUnderstanding: { coreRequirements: [] } }),
+  }, { jobUnderstanding: { roleSummary: "未知岗位", responsibilityEvidence: [], coreRequirements: [] } }),
     (error) => error instanceof ModelContractError && /apply/.test(error.message), "没有可核对核心要求时 recommendation 不能为 apply");
   const reviewNoCore = validateModelResult("matchJob", {
     recommendation: "review",
@@ -1050,7 +1082,7 @@ function matchUnderstandingAlignmentSmoke() {
     softGaps: ["JD 未提供可核对的核心要求"],
     questionsToVerify: [],
     evidence: { jd: [], resume: [] }
-  }, { jobUnderstanding: { coreRequirements: [] } });
+  }, { jobUnderstanding: { roleSummary: "未知岗位", responsibilityEvidence: [], coreRequirements: [] } });
   assert.strictEqual(reviewNoCore.recommendation, "review", "没有核心要求时 review 是合法结论");
 }
 
@@ -2387,6 +2419,49 @@ async function compactMatchEvidenceContractSmoke() {
     "JD：本科及以上学历的资格信息待确认"
   ]);
 
+  const legacyT1Decision = {
+    selectedTrackId: "T1",
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.9,
+    fitReasons: ["Agent 与 RAG 应用交付已有简历证据"],
+    requirementMatches: [
+      { requirement: "Agent 与 RAG 应用交付", state: "matched", indispensable: false, jdEvidence: "JD：熟悉 Agent 搭建并有 RAG 项目经验", resumeEvidence: "简历：交付过 Agentic RAG" },
+      { requirement: "Python 编程", state: "matched", indispensable: false, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：使用 Python 开发 API" }
+    ],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：熟悉 Agent 搭建并有 RAG 项目经验"], resume: ["简历：交付过 Agentic RAG"] }
+  };
+  const compactT1Decision = {
+    selectedTrackId: "T1",
+    roleAlignment: "aligned",
+    roleResumeEvidence: ["简历：交付过 Agentic RAG 与 Python API"],
+    roleGaps: [],
+    matches: [
+      { id: "R1", state: "matched", resumeEvidence: "简历：交付过 Agentic RAG" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }
+    ],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "high"
+  };
+  for (const legacyPayload of [legacyT1Decision, compactT1Decision]) {
+    assert.throws(
+      () => validateModelResult("matchJob", legacyPayload, { jobUnderstanding: multiTrack }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+      "多轨岗位不得接受可携带非选中分支自由文本的旧式匹配形状"
+    );
+  }
+  assert.throws(
+    () => validateModelResultRaw("matchJob", legacyT1Decision),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "没有 jobUnderstanding 的旧式完整匹配不得合成 T1"
+  );
+
   const singleTrackInput = {
     industryContext: "企业服务",
     hiringTracks: [{
@@ -2409,6 +2484,27 @@ async function compactMatchEvidenceContractSmoke() {
   const singleTrack = validateModelResult("understandJob", singleTrackInput);
   assert.strictEqual(singleTrack.roleSummary, "交付应用");
   assert.deepStrictEqual(singleTrack.responsibilityEvidence, ["JD：独立交付应用"]);
+  const singleTrackCompact = validateModelResult("matchJob", {
+    matches: [{ id: "R1", state: "matched", resumeEvidence: "简历：独立交付过应用" }],
+    eligibility: [],
+    uncertainties: [],
+    cautions: [],
+    certainty: "high"
+  }, { jobUnderstanding: singleTrack });
+  assert.strictEqual(singleTrackCompact.selectedTrackId, "T1");
+  const singleTrackFull = validateModelResult("matchJob", {
+    recommendation: "apply",
+    fitLevel: "A",
+    confidence: 0.9,
+    fitReasons: ["独立交付已有简历证据"],
+    requirementMatches: [{ requirement: "独立交付", state: "matched", indispensable: true, jdEvidence: "JD：独立交付应用", resumeEvidence: "简历：独立交付过应用" }],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    softGaps: [],
+    questionsToVerify: [],
+    evidence: { jd: ["JD：独立交付应用"], resume: ["简历：独立交付过应用"] }
+  }, { jobUnderstanding: singleTrack });
+  assert.strictEqual(singleTrackFull.selectedTrackId, "T1");
 
   const invalidTrackOutputs = [
     { ...multiTrackUnderstandingInput, hiringTracks: [] },
@@ -2973,6 +3069,7 @@ async function compactMatchEvidenceContractSmoke() {
 
 function roleAlignmentEvidenceContractSmoke() {
   const jobUnderstanding = {
+    roleSummary: "企业系统交付",
     responsibilityEvidence: ["JD：负责企业系统前后端交付"],
     coreRequirements: [{
       id: "R1",

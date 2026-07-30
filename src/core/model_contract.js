@@ -476,6 +476,11 @@ function normalizeExpectedRequirement(item, index) {
 }
 
 function selectedTrackContext(value, jobUnderstanding) {
+  if (!jobUnderstanding || typeof jobUnderstanding !== "object" || Array.isArray(jobUnderstanding)
+    || !Array.isArray(jobUnderstanding.coreRequirements)
+    || (!Array.isArray(jobUnderstanding.hiringTracks) && !text(jobUnderstanding.roleSummary))) {
+    throw new ModelContractError("matchJob", "match evidence requires jobUnderstanding with core requirements and role data");
+  }
   const legacySingleTrack = Array.isArray(jobUnderstanding?.hiringTracks)
     && jobUnderstanding.hiringTracks.length === 1
     && jobUnderstanding.hiringTracks[0]?.id === "T1"
@@ -492,6 +497,7 @@ function selectedTrackContext(value, jobUnderstanding) {
   const track = tracks.find((item) => item.id === selectedTrackId);
   if (!track) throw new ModelContractError("matchJob", `selectedTrackId ${selectedTrackId} 不存在`);
   return {
+    trackCount: tracks.length,
     selectedTrackId,
     selectedTrackLabel: track.label,
     roleSummary: track.roleSummary,
@@ -698,6 +704,9 @@ function validateCompactMatchEvidence(value, context = {}) {
     throw new ModelContractError("matchJob", "紧凑匹配证据必须携带本次 jobUnderstanding");
   }
   const selected = selectedTrackContext(value, jobUnderstanding);
+  if (selected.trackCount > 1) {
+    throw new ModelContractError("matchJob", "multi-track matching requires sparse evidence");
+  }
   const requirements = selected.requirements.map(normalizeExpectedRequirement);
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
@@ -1083,6 +1092,9 @@ function validateMatchDecision(value, context = {}) {
   const roleGaps = Array.isArray(value.roleGaps) ? contractStrings(value.roleGaps, 4) : [];
   const jobUnderstanding = context?.jobUnderstanding;
   const selected = selectedTrackContext(value, jobUnderstanding);
+  if (selected.trackCount > 1) {
+    throw new ModelContractError("matchJob", "multi-track matching requires sparse evidence");
+  }
   const requirements = selected.requirements.map(normalizeExpectedRequirement);
   if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
     assertRequirementCoverage(requirements, requirementMatches);
