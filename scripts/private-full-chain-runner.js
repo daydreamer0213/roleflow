@@ -1720,10 +1720,10 @@ function privateContractFailureCategory(value) {
   if (/unknown key|unknown field|unexpected key|\u672a\u77e5\u5b57\u6bb5|\u4e0d\u5141\u8bb8\u5b57\u6bb5/i.test(message)) {
     return "unknown_keys";
   }
-  if (/\u5fc5\u987b\u8fd4\u56de JSON \u5bf9\u8c61|must return a JSON object/i.test(message)) {
-    return "result_shape";
-  }
   const categories = [];
+  if (/\u5fc5\u987b\u8fd4\u56de JSON \u5bf9\u8c61|must return a JSON object/i.test(message)) {
+    categories.push("result_shape");
+  }
   if (/selectedTrackId/.test(message)) categories.push("selected_track");
   if (/roleResumeEvidence/.test(message)) categories.push("role_resume_evidence");
   if (/roleAlignment/.test(message)) categories.push("role_alignment");

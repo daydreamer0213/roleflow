@@ -2049,12 +2049,12 @@ async function injectedLiveFlowSmoke(identityPath) {
         } else {
           logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
-            errorMessage: `selectedTrackId T9 不存在 ${contractDiagnosticSecret}`,
+            errorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "object" }
           });
           logger.warn("model_contract_repair_failed", {
             kind: "matchJob",
-            initialErrorMessage: `selectedTrackId T9 不存在 ${contractDiagnosticSecret}`,
+            initialErrorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
             errorMessage: `mostly_aligned requires roleResumeEvidence ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "array" }
           });
@@ -2089,7 +2089,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
           initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
-          errorMessage: `roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
+          errorMessage: `must return a JSON object; roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
         });
       }
       return {
@@ -2218,7 +2218,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       initial: telemetryResult.rows[1].initialContractFailureCategory,
       repair: telemetryResult.rows[1].repairContractFailureCategory
     },
-    { initial: "selected_track", repair: "role_resume_evidence" },
+    { initial: "result_shape", repair: "role_resume_evidence" },
     "repair telemetry must expose only fixed contract categories"
   );
   assert.deepStrictEqual(
@@ -2226,7 +2226,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       initial: telemetryResult.rows[1].initialContractFailureReason,
       repair: telemetryResult.rows[1].repairContractFailureReason
     },
-    { initial: "selected_track", repair: "aligned_requires_role_resume" },
+    { initial: "result_not_object", repair: "aligned_requires_role_resume" },
     "repair telemetry must expose only validator-owned fixed reasons"
   );
   assert.deepStrictEqual(
