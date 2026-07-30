@@ -340,3 +340,23 @@ candidate evaluated `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`,
 baseline evaluated `d20606192986f40f49db634e6db999f3cd5d576c`, and exactly
 zero-based `--diagnostic-indices '4'`. The result is root-cause evidence only.
 Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`.
+
+## 2026-07-30 契约失败原因码复审检查点
+
+- 类别级单条诊断目录 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-diagnostic-v1-20260730` 保持不可变；其安全字段为 initial/repair category 均为 `other`，不足以定位具体 validator 规则，不能覆盖或复用。
+- 原因码设计与计划扩展提交为 `4434b6d60de47fef8ff8584a4a68cf6c32c13ec9`。初版实现提交为 `2508b9c6f2872a47d1c5b75e712a8cffbb026cc6`；独立复审发现 failed-only initial reason 未对称回填、以及 pure-unknown/multi-template 回归覆盖不足。
+- TDD 修复提交为 `3903b5c0a2a2138033ecd96a46fe7995761df6f5`：先以 failed-only 用例稳定复现 `initial reason = none`，再增加封闭枚举回填；pure unknown 与多模板歧义均固定归为 `other`。复审结论：无 Critical/Important/Moderate/Minor，`Spec PASS`，`Code quality APPROVED`。
+- 候选离线证据：`private_full_chain_runner_smoke` 通过，`job_match_benchmark` 31 fixtures 通过，`npm.cmd test` 47 项通过，`git diff --check` 通过，工作树干净。
+- 基线只机械镜像 `scripts/private-full-chain-runner.js`，提交为 `90606956713c3666fca42a30f4afd3f0a33af133`；31 fixtures、41 项离线检查、`git diff --check` 均通过，工作树干净。
+- 三个共享 Git blob 候选/基线一致：runner `52935822d9b6141ec871b85e2c97cc8719324ef2`，metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`，privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`。
+- 产品提交不变：候选 `87cc68ede886ac0ef3b53f960c38548cce4a831a`，基线 `fb0168afce265cf351f03e80f66d9e0f24015887`；产品提交必须继续是 evaluated commit 的严格祖先。
+- 下一 live 步骤只允许使用全新目录 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v1-20260730`、全新缓存和零基 `--diagnostic-indices '4'`。先核验冻结岗位池 raw SHA；只读取闭合的安全状态/category/reason 字段；完成后立即恢复固定候选原分支 `codex/claude-generic-evidence-matching-live-fix` @ `1fc49dac3670a71c720bfcaed943fa29204d93c5` 并确认干净。
+- 在单条原因码证据支持产品侧根因修复、离线回归与独立复审前，不得重新运行 3 条，也不得创建或运行 20 条目录。
+
+### Evaluated 绑定替换说明
+
+- 本检查点明确 supersede（替换）前一个 category checkpoint 的“下一 live 动作”和 evaluated 绑定；旧 `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2` 及其 category root 只保留为不可变历史证据，不再是 reason live 的允许 HEAD 或允许 next root。
+- 新 candidate evaluated 精确为 `3903b5c0a2a2138033ecd96a46fe7995761df6f5`；新 baseline evaluated 精确为 `90606956713c3666fca42a30f4afd3f0a33af133`。后续 docs-only checkpoint 只记录证据，不替换这两个 evaluated 提交。
+- 创建 reason root 前，临时候选分支 `codex/multi-track-recall-contract-diagnostic-v1` 必须精确指向并检出 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5`；基线分支 `codex/multi-track-recall-private-baseline-v1` 的 HEAD 必须精确为 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，两边工作树都必须干净。
+- reason root 的 manifest 与 v3 proof 必须分别绑定上述 candidate/baseline evaluated；任一 HEAD、绑定或冻结输入哈希不符都立即停止，不运行模型。
+- 已重新验证产品提交的严格祖先关系：candidate product `87cc68ede886ac0ef3b53f960c38548cce4a831a` 是 candidate evaluated 的严格祖先；baseline product `fb0168afce265cf351f03e80f66d9e0f24015887` 是 baseline evaluated 的严格祖先。
