@@ -161,6 +161,10 @@ async function checkMockAnalyzer() {
     job: sample[0],
     candidateProfile
   });
+  assert.deepStrictEqual(
+    Object.keys(rawJobUnderstanding).sort(),
+    ["eligibility", "hiringTracks", "industryContext", "requirements", "riskSignals"]
+  );
   assert.deepStrictEqual(rawJobUnderstanding.hiringTracks.map((track) => track.id), ["T1"]);
   assert(Array.isArray(rawJobUnderstanding.requirements));
   assert(Array.isArray(rawJobUnderstanding.riskSignals));
@@ -169,7 +173,7 @@ async function checkMockAnalyzer() {
     candidateProfile
   });
 
-  const matchDecision = await mockAdapter.matchJob({
+  const matchDecision = await analyzer.matchJob({
     candidateProfile: configs.candidateProfile,
     resumeVersions: configs.resumeVersions,
     jobUnderstanding
