@@ -1695,15 +1695,19 @@ function safeTelemetryInteger(value) {
 function privateContractFailureCategory(value) {
   const message = String(value || "");
   if (!message) return "none";
-  if (/selectedTrackId/.test(message)) return "selected_track";
-  if (/roleResumeEvidence/.test(message)) return "role_resume_evidence";
-  if (/roleAlignment/.test(message)) return "role_alignment";
-  if (/roleGaps/.test(message)) return "role_gaps";
-  if (/\beligibility\b/.test(message)) return "eligibility";
-  if (/\bmatches\b|requirement|coverage/i.test(message)) return "requirement_matches";
   if (/unknown key|unknown field|unexpected key|\u672a\u77e5\u5b57\u6bb5|\u4e0d\u5141\u8bb8\u5b57\u6bb5/i.test(message)) {
     return "unknown_keys";
   }
+  const categories = [];
+  if (/selectedTrackId/.test(message)) categories.push("selected_track");
+  if (/roleResumeEvidence/.test(message)) categories.push("role_resume_evidence");
+  if (/roleAlignment/.test(message)) categories.push("role_alignment");
+  if (/roleGaps/.test(message)) categories.push("role_gaps");
+  if (/\beligibility\b/.test(message)) categories.push("eligibility");
+  if (/\bmatches\b|requirement|coverage/i.test(message)) categories.push("requirement_matches");
+  const distinct = [...new Set(categories)];
+  if (distinct.length === 1) return distinct[0];
+  if (distinct.length > 1) return "other";
   if (/must be (?:an? )?(?:object|array)|\u5fc5\u987b\u662f(?:\u5bf9\u8c61|\u6570\u7ec4)|result shape/i.test(message)) {
     return "result_shape";
   }

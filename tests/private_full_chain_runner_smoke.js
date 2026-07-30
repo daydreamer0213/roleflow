@@ -2037,6 +2037,10 @@ async function injectedLiveFlowSmoke(identityPath) {
           usage: { secret: telemetrySecret }
         });
         if (index === 0) {
+          logger.warn("model_contract_repair_requested", {
+            kind: "matchJob",
+            errorMessage: `matchJob contract roleAlignment invalid ${contractDiagnosticSecret}`
+          });
           logger.warn("model_contract_repair_completed", {
             kind: "matchJob",
             contentLength: 999999,
@@ -2084,12 +2088,12 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_requested_but_not_exact", { kind: "matchJob", raw: telemetrySecret });
         logger.warn("model_contract_repair_requested", {
           kind: "matchJob",
-          errorMessage: contractDiagnosticSecret
+          errorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`
         });
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
-          initialErrorMessage: contractDiagnosticSecret,
-          errorMessage: contractDiagnosticSecret
+          initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
+          errorMessage: `selectedTrackId roleResumeEvidence ${contractDiagnosticSecret}`
         });
       }
       return {
@@ -2201,8 +2205,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     modelAttemptCount: 2,
     emptyResponseAttemptCount: 0,
     modelAttemptLatencyMs: 37000,
-    contractRepairCount: 0,
-    initialContractFailureCategory: "none",
+    contractRepairCount: 1,
+    initialContractFailureCategory: "role_alignment",
     repairContractFailureCategory: "none",
     responseContentChars: 3412
   });
@@ -2243,7 +2247,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       emptyResponseAttemptCount: 0,
       modelAttemptLatencyMs: 0,
       contractRepairCount: 1,
-      initialContractFailureCategory: "other",
+      initialContractFailureCategory: "unknown_keys",
       repairContractFailureCategory: "other",
       responseContentChars: 0
     },
