@@ -138,10 +138,13 @@ const server = http.createServer(async (req, res) => {
     }
   }
   const compactMatchRequest = payload.messages?.[0]?.content?.includes("output only evidence-bearing rows");
+  const selectedTrackRequest = payload.messages?.[1]?.content?.includes("synthetic-t1");
   const content = requests === 2
     ? [{ type: "text", text: sentinelResponseContent }]
-    : compactMatchRequest
-      ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [] })
+    : selectedTrackRequest
+      ? JSON.stringify({ selectedTrackId: "T1", roleAlignment: "mostly_aligned", roleResumeEvidence: ["简历：交付过应用"], roleGaps: [], matches: [], eligibility: [] })
+      : compactMatchRequest
+        ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [] })
       : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
@@ -204,9 +207,30 @@ server.listen(0, "127.0.0.1", async () => {
     const compactNormalized = await retryAdapter.matchJob({
       candidateProfile: {},
       candidateMatchCard: { targetDirections: ["电商运营"] },
-      jobUnderstanding: { coreRequirements: [], eligibilityItems: [], jobQuality: { level: "normal", concerns: [] } }
+      jobUnderstanding: {
+        roleSummary: "运营交付",
+        responsibilityEvidence: ["JD：负责运营交付"],
+        coreRequirements: [],
+        eligibilityItems: [],
+        jobQuality: { level: "normal", concerns: [] }
+      }
     });
     assert.strictEqual(compactNormalized.recommendation, "review", "OpenAI adapter 必须把紧凑传输格式归一化为既有分析格式");
+    const selectedTrackDecision = await retryAdapter.matchJob({
+      candidateProfile: { marker: "synthetic-t1" },
+      jobUnderstanding: {
+        hiringTracks: [{
+          id: "T1",
+          label: "应用开发",
+          roleSummary: "交付应用",
+          responsibilityEvidence: ["JD：负责应用交付"]
+        }],
+        coreRequirements: [],
+        eligibilityItems: [],
+        jobQuality: { level: "normal", concerns: [] }
+      }
+    });
+    assert.strictEqual(selectedTrackDecision.selectedTrackId, "T1", "OpenAI adapter 必须保留模型选择的分支 ID");
     const matchPrompt = payloads.at(-1).messages[0].content;
     for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "matches", "eligibility"]) {
       assert(matchPrompt.includes(field), `matchJob prompt must request ${field}`);
@@ -281,6 +305,31 @@ server.listen(0, "127.0.0.1", async () => {
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
     await retryAdapter.understandJob({ job: { sourceId: "prompt-check", description: "示例 JD" } });
     const understandPrompt = payloads.at(-1).messages[0].content;
+    for (const token of [
+      "hiringTracks[{id,label,roleSummary,responsibilityEvidence}]",
+      "requirements[{label,trackIds,foundation,central,indispensable,evidence}]",
+      "最多四个",
+      "普通 JD",
+      "T1",
+      "不得为了规避要求而虚构分支",
+      "愿望清单",
+      "同一个人承担",
+      "全局要求",
+      "全部分支 ID"
+    ]) {
+      assert(understandPrompt.includes(token), `understandJob prompt 缺少多分支规则：${token}`);
+    }
+    assert(!understandPrompt.includes("只输出且必须输出这六个字段"));
+    assert(
+      matchPrompt.includes("selectedTrackId")
+        && matchPrompt.includes("only the selected track")
+        && matchPrompt.includes("all-track requirement")
+        && matchPrompt.includes("Never match requirements from another track"),
+      "matchJob prompt 必须先选一支，再匹配该支与全局要求"
+    );
+    assert(matchPrompt.includes(
+      '{"selectedTrackId":"T1","roleAlignment":"mostly_aligned"'
+    ));
     assert(
       matchPrompt.includes("roleSummary")
         && matchPrompt.includes("responsibilityEvidence")
@@ -321,7 +370,7 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob 不得把行业、平台或技术栈差异冒充岗位方向差异"
     );
     assert(
-      understandPrompt.includes("requirements[{label,foundation,central,indispensable,evidence}]"),
+      understandPrompt.includes("requirements[{label,trackIds,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"
     );
     assert(

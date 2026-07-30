@@ -169,18 +169,23 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
 }
 
 async function mockResponsibilityEvidenceNormalizationSmoke() {
-  const rawUnderstanding = await new MockModelAdapter().understandJob({
+  const mockAdapter = new MockModelAdapter();
+  const rawUnderstanding = await mockAdapter.understandJob({
     job: {
-      sourceId: "mock-responsibility-evidence",
-      title: "企业系统开发",
-      description: "负责企业业务系统前后端开发、联调与上线。"
+      sourceId: "mock-track",
+      title: "应用开发",
+      description: "负责应用开发与交付"
     }
   });
-  assert(rawUnderstanding.responsibilityEvidence.length > 0, "Mock 必须先输出职责证据");
+  assert.deepStrictEqual(rawUnderstanding.hiringTracks.map((item) => item.id), ["T1"]);
+  assert(rawUnderstanding.requirements.every((item) => item.trackIds.includes("T1")));
 
   const normalized = validateModelResult("understandJob", rawUnderstanding);
-  assert.deepStrictEqual(normalized.responsibilityEvidence, rawUnderstanding.responsibilityEvidence,
-    "Mock 的职责证据必须在历史 JobUnderstanding 归一化后保留");
+  const mockMatch = await mockAdapter.matchJob({
+    jobUnderstanding: normalized,
+    candidateProfile: { skills: [] }
+  });
+  assert.strictEqual(mockMatch.selectedTrackId, "T1");
 }
 
 async function mockRoleAlignmentSmoke() {
@@ -714,9 +719,9 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v14");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v27");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v2");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v15");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v28");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1746,9 +1751,9 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v14",
-    matchJob: "match-decision-v27",
-    decisionRules: "role-direction-requirements-v2",
+    understandJob: "job-understanding-v15",
+    matchJob: "match-decision-v28",
+    decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -1762,6 +1767,17 @@ function staleAnalysisSmoke() {
   );
   assert(contractUpgradeReasons.includes("job_understanding_pipeline_changed"), "理解提示词升级后必须使 v5 持久化分析 stale");
   assert(contractUpgradeReasons.includes("match_pipeline_changed"), "匹配语义升级后必须使 v12 持久化分析 stale");
+  const previousVersions = {
+    understandJob: "job-understanding-v14",
+    matchJob: "match-decision-v27",
+    decisionRules: "role-direction-requirements-v2"
+  };
+  const previousReasons = analysisStaleReasons({
+    revision: { ...oldPipelineRevision, pipelineVersions: { ...PIPELINE_VERSIONS, ...previousVersions } }
+  }, currentPipelineRevision);
+  assert(previousReasons.includes("job_understanding_pipeline_changed"));
+  assert(previousReasons.includes("match_pipeline_changed"));
+  assert(previousReasons.includes("decision_rules_changed"));
 
   const candidate = profile(["Python", "RAG"], ["AI应用开发"]);
   const initialPlan = plan(["AI应用开发"]);

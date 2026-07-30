@@ -1,3 +1,5 @@
+const { requirementsForTrack } = require("../../core/model_contract");
+
 class MockModelAdapter {
   constructor(config = {}) {
     this.provider = "mock";
@@ -93,41 +95,48 @@ class MockModelAdapter {
       .filter((sentence) => /负责|职责|主要工作/.test(sentence))
       .slice(0, 6)
       .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` }));
-    return {
-      jobId: job.sourceId || job.url || "",
-      industryContext: "未明确",
-      roleSummary: clip(sentences.find((sentence) => /负责/.test(sentence)) || sentences[0] || job.title || "", 60),
-      realRoleType: "unknown",
-      businessScenario: "",
-      coreResponsibilities,
-      responsibilityEvidence: coreResponsibilities
+    const responsibilityEvidence = coreResponsibilities
         .map((item) => `JD：${String(item?.evidence || item?.label || "").replace(/^JD：/, "")}`)
         .filter((item) => item !== "JD：")
-        .slice(0, 4),
-      coreRequirements,
-      preferredRequirements: sentences
-        .filter((sentence) => /优先|加分|了解/.test(sentence))
-        .slice(0, 6)
-        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
-      outcomeExpectations: sentences
-        .filter((sentence) => /目标|考核|指标|GMV|转化|产出/.test(sentence))
-        .slice(0, 4)
-        .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` })),
-      senioritySignal: inferSeniority(text),
-      eligibilityConstraints: [],
-      hiddenRisks,
-      jobQuality: concerns.length ? { level: "caution", concerns } : { level: "normal", concerns: [] },
-      isFakeAI: false,
-      isTrainingOrSales: false,
-      evidenceSnippets: [job.title, ...sentences.slice(0, 3)].filter(Boolean).map((item) => clip(item, 120))
+        .slice(0, 4);
+    const roleSummary = clip(sentences.find((sentence) => /负责/.test(sentence)) || sentences[0] || job.title || "未明确主体工作", 60);
+    const directEvidence = responsibilityEvidence.length ? responsibilityEvidence : [`JD：${clip(roleSummary, 80)}`];
+    return {
+      industryContext: "未明确",
+      hiringTracks: [{
+        id: "T1",
+        label: clip(job.title || roleSummary, 24),
+        roleSummary,
+        responsibilityEvidence: directEvidence
+      }],
+      requirements: coreRequirements.map((requirement) => ({ ...requirement, trackIds: ["T1"] })),
+      eligibility: [],
+      riskSignals: [
+        ...concerns.map((concern) => ({ ...concern, severity: "medium", evidence: `JD：${concern.evidence}` })),
+        ...hiddenRisks.map((risk) => ({ ...risk, evidence: `JD：${risk.evidence}` }))
+      ]
     };
   }
 
   async matchJob({ candidateProfile = {}, resumeVersions = {}, jobUnderstanding = {}, candidateMatchCard = null } = {}) {
-    const versions = resumeVersions.versions || resumeVersions || [];
+    const versions = Array.isArray(resumeVersions?.versions)
+      ? resumeVersions.versions
+      : (Array.isArray(resumeVersions) ? resumeVersions : []);
     const version = chooseVersion(versions, jobUnderstanding);
     const resumeFacts = collectResumeFacts(candidateProfile, candidateMatchCard);
-    const requirementMatches = (jobUnderstanding.coreRequirements || []).map((requirement) => {
+    const hiringTracks = jobUnderstanding.hiringTracks?.length ? jobUnderstanding.hiringTracks : [{
+      id: "T1",
+      label: "默认招聘方向",
+      roleSummary: jobUnderstanding.roleSummary || "未明确主体工作",
+      responsibilityEvidence: jobUnderstanding.responsibilityEvidence || []
+    }];
+    const selectedTrack = hiringTracks
+      .find((track) => findSupportingFact(
+        [track.roleSummary, ...track.responsibilityEvidence].join(" "),
+        resumeFacts
+      ))
+      || hiringTracks[0];
+    const requirementMatches = requirementsForTrack({ ...jobUnderstanding, hiringTracks }, selectedTrack.id).map((requirement) => {
       const label = typeof requirement === "string" ? requirement : requirement.label;
       const hit = findSupportingFact(label, resumeFacts);
       return {
@@ -148,13 +157,14 @@ class MockModelAdapter {
       ...unresolvedCore.map((item) => `核心要求「${item.requirement}」缺少候选人直接证据，待确认`)
     ];
     const sufficient = matched.length > 0 && unresolvedCore.length === 0 && requirementMatches.length > 0;
-    const responsibilityEvidence = jobUnderstanding.responsibilityEvidence || [];
+    const responsibilityEvidence = selectedTrack.responsibilityEvidence || [];
     const roleResumeEvidence = matched.map((item) => item.resumeEvidence).filter((item) => item.startsWith("简历：")).slice(0, 4);
     const roleAlignment = responsibilityEvidence.length && roleResumeEvidence.length ? "partially_aligned" : "insufficient_evidence";
     const roleGaps = roleAlignment === "insufficient_evidence"
       ? [responsibilityEvidence.length ? "离线 Mock 未找到可核对的岗位职责简历事实" : "JD 未提供可核对的具体职责"]
       : [];
     return {
+      selectedTrackId: selectedTrack.id,
       roleAlignment,
       roleResumeEvidence,
       roleGaps,
