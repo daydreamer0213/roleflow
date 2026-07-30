@@ -1697,3 +1697,16 @@ the next reviewed root-cause change.
 - 本检查点 supersede 此前 reason v1-v3 的 next-root 与旧 evaluated 绑定；v1-v3 只作 immutable 历史证据。后续 docs-only commit 不替换上述 candidate/baseline evaluated。
 - 唯一允许的下一根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v4-20260730`。临时候选分支与 manifest/proof 必须绑定 candidate evaluated `31e53ef6e728912e19fd207b2b28b4ecf9f6b6d5`，基线 HEAD 与 manifest/proof 必须绑定 baseline evaluated `fb2f6fe17b171f7cc974b75c6a3740d614c2cacd`；重新复制 7 文件、raw SHA、v3 proof、bundle 与所有外层 gates，只运行零基 index `4`，私有日志，最后恢复固定候选。
 - 产品提交保持候选 `87cc68ede886ac0ef3b53f960c38548cce4a831a` 与基线 `fb0168afce265cf351f03e80f66d9e0f24015887`，并继续是对应 evaluated 的严格祖先。v4 确认具体规则前不得做产品修复、3 条或 20 条运行。
+
+## 2026-07-30 matchJob 阶段隔离与 sparse reason 检查点
+
+- reason v4 根 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v4-20260730` 可信退出 0；安全结果仍为 matchJob/contract_repair failed、initial/repair `other/other`，但 `modelCallCount=4`、`contractRepairCount=2`。固定候选恢复原分支/提交并干净，20 根不存在；v4 immutable。
+- 源码对照发现固定 validator 规则 `multi-track matching requires sparse evidence` 未被分类，且旧 collector 混合 understandJob/matchJob repair。该证据只支持分类器候选，不宣称产品根因。
+- 新闭合 reason `multi_track_requires_sparse` 对应 category `result_shape`。新增有界整数 `understandJobContractRepairCount` 与 `matchJobContractRepairCount`；total 统计所有 exact requested，两个子计数只统计已知 kind；四个原因字段只接受 matchJob 事件，unknown kind 只增加 total，failed-only 可回填，逐行 reset。
+- 实现提交 `82ae8477c28dab2cc2863749959f0a03df9dff53`；后续测试加强提交 `269430f3e9aae1705b0503f5ff4e83df7da6c280` 与 `c4418e5314e8694c727f56a55ba5486ff2fb1e69` 分别锁定 unknown 后置不覆盖，以及严格 sparse+roleAlignment 双模板歧义。最终独立复审无 Critical/Important/Moderate/Minor，`Spec PASS`、`Code quality APPROVED`。
+- 新 candidate evaluated 精确为 `c4418e5314e8694c727f56a55ba5486ff2fb1e69`；focused、31 fixtures、47 项离线检查、diff check 通过且 clean。
+- 基线只镜像 runner，提交及新 baseline evaluated 为 `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`；31 fixtures、41 项离线检查、diff check 通过且 clean。
+- 共享 blob 一致：runner `c80e179d9e665b5e75139dfa9704107e95c5300c`，metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`，privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`。
+- 本检查点 supersede reason v1-v4 next-root 与旧 evaluated；v1-v4 immutable。docs-only commit 不替代 candidate/baseline evaluated。
+- 唯一 next root 为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v5-20260730`，全新复制/哈希/manifest/v3 proof/bundle/gates，临时分支和 manifest/proof 精确绑定 candidate evaluated `c4418e5314e8694c727f56a55ba5486ff2fb1e69`，基线绑定 `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`，仅零基 index `4`，私有日志，finally 恢复固定候选。
+- 产品 commits 仍为 candidate `87cc68ede886ac0ef3b53f960c38548cce4a831a`、baseline `fb0168afce265cf351f03e80f66d9e0f24015887` 且为严格祖先。v5 确认前不得产品修复、3 条或 20 条。
