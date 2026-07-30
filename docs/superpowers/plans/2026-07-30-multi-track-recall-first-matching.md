@@ -1669,3 +1669,11 @@ the next reviewed root-cause change.
 - 创建 reason root 前，临时候选分支 `codex/multi-track-recall-contract-diagnostic-v1` 必须精确指向并检出 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5`；基线分支 `codex/multi-track-recall-private-baseline-v1` 的 HEAD 必须精确为 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，两边工作树都必须干净。
 - reason root 的 manifest 与 v3 proof 必须分别绑定上述 candidate/baseline evaluated；任一 HEAD、绑定或冻结输入哈希不符都立即停止，不运行模型。
 - 已重新验证产品提交的严格祖先关系：candidate product `87cc68ede886ac0ef3b53f960c38548cce4a831a` 是 candidate evaluated 的严格祖先；baseline product `fb0168afce265cf351f03e80f66d9e0f24015887` 是 baseline evaluated 的严格祖先。
+
+### Reason v1 建根失败与 v2 替换
+
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v1-20260730` 在建根阶段因 PowerShell 原生重定向报 `path format is not supported` 而中止；固定候选已在 `finally` 中恢复原分支/原提交并确认干净。
+- 安全状态核验：v1 根已有 manifest 与 v3 proof，但没有 `model-cache.sqlite`、没有 `match-result.json`，未发现真实模型运行产物，不能将该根视为已运行或验收证据；该根保持不可变，禁止覆盖、删除、补跑或复用。
+- 本条 supersede 上一节对 reason v1 的 next-root 绑定。新的唯一允许 reason live 根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v2-20260730`；开始前必须不存在，并重新复制 7 个冻结文件、重新核验 raw SHA、重新生成 manifest/v3 proof、重新执行 candidate/baseline 双侧 preflight。
+- v2 继续绑定 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5` 与 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，只运行零基 `--diagnostic-indices '4'`。命令输出只写 v2 私有 reports；改用 `Start-Process` 的 stdout/stderr 重定向，避免重现 shell 重定向错误。
+- v2 live 完成或失败后都必须恢复固定候选 `codex/claude-generic-evidence-matching-live-fix` @ `1fc49dac3670a71c720bfcaed943fa29204d93c5` 并确认干净；3 条和 20 条继续 gated。
