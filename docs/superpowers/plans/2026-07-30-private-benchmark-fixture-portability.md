@@ -244,7 +244,7 @@ Amend the main multi-track implementation plan with:
 - candidate product fixed at `87cc68e`;
 - new candidate/baseline evaluated commits;
 - fresh roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - explicit proof creation argument:
 
@@ -290,6 +290,8 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - Final independent result for `71885b9..9d7d1a4`: **Spec PASS** and **Code quality APPROVED**, with no Critical, Important, or Moderate findings.
 - Candidate verification at `9d7d1a4`: runner smoke passed, benchmark passed with 31 fixtures, `npm.cmd test` passed all 47 offline checks, and `git diff --check` was clean.
 - Baseline mirror commit: `cc5dc6adf158c4c38cfefb808a78a53b4bfdf389`. Its repository-native 41 offline checks and 31 benchmark fixtures passed; the baseline intentionally does not contain the candidate-only `private_full_chain_runner_smoke.js`.
+- The first Task 7 proof preflight in `multi-track-recall-first-3-v3-20260730` stopped before any model call because the plan selected the v2 root `full-chain-v40c-role-industry-boundary-2-20260730` as the source, while portability requires a v1 source manifest and v2 target manifest. Preserve that root as failed preflight evidence.
+- The unique matching v1 source is `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`: its four frozen confirmed-evidence files are byte-identical to the planned source, and its manifest commits match the existing v2 proof source binding. The candidate worktree was restored cleanly before correcting the plan.
 - Candidate/baseline shared blobs are identical:
   - runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`
   - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
@@ -297,7 +299,8 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen docs-only evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
 - The immediate follow-up record commit only fixes and freezes Task 7/8 instructions; live execution must continue to use `97b64b48b7604110ceb35af33d3234c4aaeaa89b`, not the follow-up documentation commit.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
+- Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730` unchanged as failed v1/v2 manifest preflight evidence.
 - Fresh live roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - Preserve zero-based `--diagnostic-indices '4,9,10'` exactly and create v3 proof with `--proof-version confirmed-evidence-portability.v3`.
