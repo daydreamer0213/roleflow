@@ -165,4 +165,4 @@ The calibration-gate test is blocked before test execution because the establish
 
 ### Follow-up commit
 
-Pending.
+`b88097501077edf700511a7db9afc89337af4a18` - `fix: harden guarded message reader`
