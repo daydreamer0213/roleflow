@@ -14,6 +14,7 @@ const {
 const { classifyExperienceFit } = require("../src/core/scoring");
 const boss = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
+const { ensureProgressCard, transitionProgressCard } = require("../src/core/candidate_progress");
 const { handleMarkApi, getDashboardData, renderPlanPage, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
@@ -154,6 +155,32 @@ function queueUiSmoke({ profileId, planId }) {
   assert(/^\d{4}-\d{2}-\d{2}$/.test(mark.body.reviewAt));
   const stored = listReportJobs(db, { planId, limit: 1000 }).find((item) => item.id === newJobId);
   assert.strictEqual(isJobAwaitingAction(stored), false, "7 天后再看必须立即移出当前待处理队列");
+
+  const progressJobId = upsertJob(db, job("progress-waiting", { title: "等待回复岗位" }), latestBatchId);
+  const progressCard = ensureProgressCard(db, {
+    profileId,
+    planId,
+    jobId: progressJobId,
+    source: "boss"
+  });
+  transitionProgressCard(db, {
+    cardId: progressCard.id,
+    expectedStage: "contact_started",
+    stage: "waiting_reply",
+    nextAction: "等待招聘方回复"
+  });
+  const progressPage = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "waiting_reply", scope: "all" })
+  });
+  assert(progressPage.includes("等待回复岗位"));
+  assert(progressPage.includes("已发起沟通"));
+  assert(progressPage.includes("等待招聘方回复"));
+  assert(progressPage.includes("等待回复 1"));
+  assert(progressPage.includes("需要处理 0"));
+  assert(progressPage.includes("面试 0"));
+  assert(!progressPage.includes('name="status" value="applied"'), "有进展卡时不能再显示旧已投按钮");
+  assert(!progressPage.includes('name="status" value="interview"'), "有进展卡时不能再显示旧约面按钮");
 }
 
 function dashboardLatestBatchSmoke({ profileId, planId }) {

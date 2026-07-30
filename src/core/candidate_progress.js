@@ -243,6 +243,59 @@ function recordIncomingMessageClassification(db, input = {}) {
   return getProgressCard(db, cardId);
 }
 
+function recordManualProgressAction(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const stage = legalStage(input.stage);
+  const eventType = shortText(input.eventType, 80);
+  const summary = shortText(input.summary, 240);
+  if (!eventType || !summary) throw progressError("PROGRESS_ACTION_INVALID", "progress action event and summary are required");
+  const scheduledAt = nullableText(input.scheduledAt, 80);
+  if (scheduledAt && !Number.isFinite(Date.parse(scheduledAt))) {
+    throw progressError("PROGRESS_TIME_INVALID", "scheduled time must be ISO-compatible");
+  }
+  const closedReopen = card.stage === "closed"
+    && stage === "needs_user_action"
+    && eventType === "opportunity_reopened";
+  if (card.stage === "closed" && !closedReopen) {
+    throw progressError("PROGRESS_STAGE_TRANSITION_INVALID", "closed progress can only be reopened");
+  }
+  const now = isoText(input.now);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    recordProgressEvent(db, {
+      cardId,
+      type: eventType,
+      actor: "user",
+      summary,
+      metadata: { stage, ...(scheduledAt ? { scheduledAt } : {}) },
+      occurredAt: now
+    });
+    if (closedReopen) {
+      const result = db.prepare(`UPDATE candidate_progress_cards
+        SET stage = 'needs_user_action', next_action = ?, scheduled_at = NULL, updated_at = ?
+        WHERE id = ? AND stage = 'closed'`)
+        .run(shortText(input.nextAction, 240), now, cardId);
+      if (Number(result.changes) !== 1) throw progressError("PROGRESS_STAGE_CONFLICT", "progress stage changed concurrently");
+    } else {
+      transitionProgressCard(db, {
+        cardId,
+        expectedStage: card.stage,
+        stage,
+        nextAction: shortText(input.nextAction, 240),
+        scheduledAt,
+        now
+      });
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return getProgressCard(db, cardId);
+}
+
 function sanitizedMessageSummary(messageCategory, { missingFactKey = "" } = {}) {
   const category = String(messageCategory || "").trim();
   return {
@@ -263,6 +316,10 @@ function getProgressCardForJob(db, input = {}) {
     WHERE profile_id = ? AND job_id = ?`).get(profileId, jobId));
 }
 
+function getProgressCardById(db, cardId) {
+  return getProgressCard(db, positiveInteger(cardId, "cardId"));
+}
+
 function listProgressCards(db, input = {}) {
   const planId = positiveInteger(input.planId, "planId");
   const stages = Array.isArray(input.stages) ? [...new Set(input.stages.map(legalStage))] : [];
@@ -272,6 +329,45 @@ function listProgressCards(db, input = {}) {
     ORDER BY updated_at DESC, id DESC`)
     .all(planId, ...stages)
     .map(mapCard);
+}
+
+function listProgressCardsWithEvents(db, input = {}) {
+  const planId = positiveInteger(input.planId, "planId");
+  const rows = db.prepare(`SELECT
+      cards.*,
+      events.id AS event_id,
+      events.type AS event_type,
+      events.actor AS event_actor,
+      events.summary AS event_summary,
+      events.metadata_json AS event_metadata_json,
+      events.occurred_at AS event_occurred_at,
+      events.created_at AS event_created_at
+    FROM candidate_progress_cards cards
+    LEFT JOIN candidate_progress_events events ON events.card_id = cards.id
+    WHERE cards.plan_id = ?
+    ORDER BY cards.updated_at DESC, cards.id DESC, events.occurred_at ASC, events.id ASC`)
+    .all(planId);
+  const cards = new Map();
+  for (const row of rows) {
+    let card = cards.get(Number(row.id));
+    if (!card) {
+      card = { ...mapCard(row), events: [] };
+      cards.set(card.id, card);
+    }
+    if (row.event_id) {
+      card.events.push(mapEvent({
+        id: row.event_id,
+        card_id: row.id,
+        type: row.event_type,
+        actor: row.event_actor,
+        summary: row.event_summary,
+        metadata_json: row.event_metadata_json,
+        occurred_at: row.event_occurred_at,
+        created_at: row.event_created_at
+      }));
+    }
+  }
+  return [...cards.values()];
 }
 
 function listProgressEvents(db, cardId) {
@@ -384,8 +480,11 @@ module.exports = {
   correctProgressStage,
   recordVerifiedCommunicationStart,
   recordIncomingMessageClassification,
+  recordManualProgressAction,
   sanitizedMessageSummary,
   getProgressCardForJob,
+  getProgressCardById,
   listProgressCards,
+  listProgressCardsWithEvents,
   listProgressEvents
 };

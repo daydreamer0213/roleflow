@@ -149,6 +149,82 @@ let server;
     assert(answeredGapHtml.includes(gapFact));
     assert.strictEqual(listCandidateFacts(db, saved.profileId)[0].source, "user_provided");
 
+    const progressQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=needs_user_action`)).text();
+    assert(progressQueueHtml.includes("回复草稿已就绪"));
+    assert(progressQueueHtml.includes("已手动发送"));
+
+    const sent = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "reply_confirmed_sent"
+    });
+    assert.strictEqual(sent.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "waiting_reply");
+    assert.strictEqual(listProgressEvents(db, progressCard.id).at(-1).type, "reply_confirmed_sent");
+
+    const invited = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "mark_interview_invited"
+    });
+    assert.strictEqual(invited.status, 303);
+    const missingScheduleSummary = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "mark_interview_scheduled",
+      scheduledAt: "2026-08-01T15:00:00.000Z"
+    });
+    assert.strictEqual(missingScheduleSummary.status, 400);
+    const scheduledAt = "2026-08-01T15:00:00.000Z";
+    const scheduled = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "mark_interview_scheduled",
+      scheduledAt,
+      summary: "用户确认周五下午三点面试"
+    });
+    assert.strictEqual(scheduled.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "interview_scheduled");
+    const interviewQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=interview`)).text();
+    assert(interviewQueueHtml.includes("2026-08-01 15:00"));
+
+    const correctionsBefore = listProgressEvents(db, progressCard.id).filter((event) => event.type === "manual_correction").length;
+    const eventCountBeforeCorrection = listProgressEvents(db, progressCard.id).length;
+    const correction = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "correct_stage",
+      targetStage: "resume_submitted",
+      reason: "用户确认已提交简历"
+    });
+    assert.strictEqual(correction.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "resume_submitted");
+    let actionEvents = listProgressEvents(db, progressCard.id);
+    assert.strictEqual(actionEvents.length, eventCountBeforeCorrection + 1);
+    assert.strictEqual(actionEvents.filter((event) => event.type === "manual_correction").length, correctionsBefore + 1);
+    assert.deepStrictEqual(actionEvents.at(-1).metadata, {
+      fromStage: "interview_scheduled",
+      toStage: "resume_submitted"
+    });
+    const rejectedCorrection = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "correct_stage",
+      targetStage: "waiting_reply",
+      reason: ""
+    });
+    assert.strictEqual(rejectedCorrection.status, 400);
+
+    const closed = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "close_opportunity"
+    });
+    assert.strictEqual(closed.status, 303);
+    const reopened = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      action: "reopen_opportunity",
+      summary: "用户重新开启机会"
+    });
+    assert.strictEqual(reopened.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "needs_user_action");
+    assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_cards WHERE profile_id = ? AND job_id = ?").get(saved.profileId, jobId).count, 1);
+    actionEvents = listProgressEvents(db, progressCard.id);
+    assert.strictEqual(actionEvents.at(-1).type, "opportunity_reopened");
+
     await post(base, "/api/mark", { jobId, profileId: saved.profileId, planId: saved.planId, status: "applied" });
     await post(base, "/api/feedback", { jobId, profileId: saved.profileId, planId: saved.planId, reasonCode: "company_mismatch", note: "公司信息不足" });
     assert.strictEqual(listReportJobs(db, { planId: saved.planId, batch: "all", profileId: saved.profileId })[0].applicationStatus, "applied", "推荐反馈不能覆盖投递状态");
