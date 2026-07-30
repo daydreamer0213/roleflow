@@ -333,6 +333,19 @@ server.listen(0, "127.0.0.1", async () => {
       "understandJob 必须把主体行业和主体工作分开"
     );
     assert(
+      understandPrompt.includes("跨行业不变的最低忠实抽象")
+        && understandPrompt.includes("ERP 维护与二次开发")
+        && understandPrompt.includes("业务软件维护、扩展与接口集成")
+        && understandPrompt.includes("量化策略研究与回测"),
+      "roleSummary 必须去掉行业外壳，但保留真正改变工作的领域动作"
+    );
+    assert(
+      matchPrompt.includes("Maintenance, extension, or integration of a named business system")
+        && matchPrompt.includes("same software-delivery family")
+        && matchPrompt.includes("named-system experience as a requirement gap"),
+      "业务系统维护和二次开发不得仅因系统名称不同被判成不同岗位族"
+    );
+    assert(
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
       "通用能力不得冒充岗位主线"
     );

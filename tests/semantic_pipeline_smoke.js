@@ -685,8 +685,8 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v13");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v25");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v14");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v26");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v2");
   const currentRevision = {
     profileVersion: "profile",
@@ -726,6 +726,24 @@ async function pipelineVersionCacheSmoke() {
       }
     }, currentRevision).includes("match_pipeline_changed"),
     "行业边界提示词变更后必须使 v24 岗位匹配缓存失效"
+  );
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v13" }
+      }
+    }, currentRevision).includes("job_understanding_pipeline_changed"),
+    "主体工作抽象层级变更后必须使 v13 岗位理解缓存失效"
+  );
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v25" }
+      }
+    }, currentRevision).includes("match_pipeline_changed"),
+    "业务系统维护边界变更后必须使 v25 岗位匹配缓存失效"
   );
   const configs = configFor(["Python"]);
   let runs = 0;
@@ -1686,8 +1704,8 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v13",
-    matchJob: "match-decision-v25",
+    understandJob: "job-understanding-v14",
+    matchJob: "match-decision-v26",
     decisionRules: "role-direction-requirements-v2",
     communication: "communication-v2"
   });
