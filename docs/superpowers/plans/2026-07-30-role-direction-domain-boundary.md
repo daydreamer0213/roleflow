@@ -335,6 +335,26 @@ git commit -m "fix: keep industry context out of role alignment"
   `workflow_dashboard_smoke.js` exited 0; `git diff --check` was clean.
 - Refinement commit:
   `6412ee6 fix: normalize primary work across industry contexts`.
+- First two-row refinement diagnostic:
+  - sample 1 stayed `misaligned/backup`;
+  - sample 20 stayed `partially_aligned/backup`;
+  - both rows were complete, evidence-bearing, and used two calls/two attempts
+    with zero empty responses, repairs, hard blockers, and safety failures.
+- The second result contained more matched back-end/API requirements, but the
+  match stage still repeated named-system lifecycle, business rules, and domain
+  experience as role-family gaps. This proved that extracting
+  `industryContext` was not enough; the match stage also needed an explicit
+  order of operations.
+- Second refinement red: `model_adapter_smoke.js` failed with
+  `matchJob 必须先剥离行业外壳，再判断主体工作`;
+  `semantic_pipeline_smoke.js` reported actual `match-decision-v26` versus
+  expected `match-decision-v27`.
+- Second refinement green: `model_adapter_smoke.js`,
+  `semantic_pipeline_smoke.js`, `screening_quality_smoke.js`,
+  `workflow_inventory_smoke.js`, and `workflow_dashboard_smoke.js` exited 0;
+  `git diff --check` was clean.
+- Second refinement commit:
+  `e6353cd fix: judge role alignment after removing industry context`.
 
 ---
 
@@ -367,6 +387,13 @@ Record the first five-row result and the evidence-based refinement above, then
 commit a new docs-only evaluated checkpoint whose direct parent is `6412ee6`.
 The first checkpoint `b794d03` remains immutable evidence for the failed
 diagnostic.
+
+- [x] **Step 4: Commit a final checkpoint after the two-row miss**
+
+Record the two-row result and second refinement above, then commit a docs-only
+evaluated checkpoint whose direct parent is `e6353cd`. If the next two-row run
+still leaves sample 20 below `talk`, stop prompt iteration and revisit the
+architecture before making a fourth behavioral attempt.
 
 ---
 
