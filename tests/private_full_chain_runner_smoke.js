@@ -2039,7 +2039,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         if (index === 0) {
           logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
-            errorMessage: `matchJob contract roleAlignment invalid ${contractDiagnosticSecret}`
+            errorMessage: `roleAlignment must be one of aligned/mostly_aligned ${contractDiagnosticSecret}`
           });
           logger.warn("model_contract_repair_completed", {
             kind: "matchJob",
@@ -2049,13 +2049,13 @@ async function injectedLiveFlowSmoke(identityPath) {
         } else {
           logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
-            errorMessage: `matchJob contract selectedTrackId invalid ${contractDiagnosticSecret}`,
+            errorMessage: `selectedTrackId T9 不存在 ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "object" }
           });
           logger.warn("model_contract_repair_failed", {
             kind: "matchJob",
-            initialErrorMessage: `matchJob contract selectedTrackId invalid ${contractDiagnosticSecret}`,
-            errorMessage: `matchJob contract roleResumeEvidence invalid ${contractDiagnosticSecret}`,
+            initialErrorMessage: `selectedTrackId T9 不存在 ${contractDiagnosticSecret}`,
+            errorMessage: `mostly_aligned requires roleResumeEvidence ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "array" }
           });
         }
@@ -2088,12 +2088,12 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_requested_but_not_exact", { kind: "matchJob", raw: telemetrySecret });
         logger.warn("model_contract_repair_requested", {
           kind: "matchJob",
-          errorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`
+          errorMessage: `unknown field selectedTrackIdTypo; misaligned requires responsibility evidence, resume evidence, and a gap ${contractDiagnosticSecret}`
         });
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
-          initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
-          errorMessage: `selectedTrackId roleResumeEvidence ${contractDiagnosticSecret}`
+          initialErrorMessage: `unknown field selectedTrackIdTypo; misaligned requires responsibility evidence, resume evidence, and a gap ${contractDiagnosticSecret}`,
+          errorMessage: `selectedTrackId roleResumeEvidence; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
         });
       }
       return {
@@ -2143,6 +2143,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     "contractRepairCount",
     "initialContractFailureCategory",
     "repairContractFailureCategory",
+    "initialContractFailureReason",
+    "repairContractFailureReason",
     "responseContentChars"
   ];
   const expectedTelemetryRowKeys = [
@@ -2208,6 +2210,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     contractRepairCount: 1,
     initialContractFailureCategory: "role_alignment",
     repairContractFailureCategory: "none",
+    initialContractFailureReason: "role_alignment_enum",
+    repairContractFailureReason: "none",
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
@@ -2220,6 +2224,14 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     { initial: "selected_track", repair: "role_resume_evidence" },
     "repair telemetry must expose only fixed contract categories"
+  );
+  assert.deepStrictEqual(
+    {
+      initial: telemetryResult.rows[1].initialContractFailureReason,
+      repair: telemetryResult.rows[1].repairContractFailureReason
+    },
+    { initial: "selected_track", repair: "aligned_requires_role_resume" },
+    "repair telemetry must expose only validator-owned fixed reasons"
   );
   assert.deepStrictEqual(
     {
@@ -2249,6 +2261,8 @@ async function injectedLiveFlowSmoke(identityPath) {
       contractRepairCount: 1,
       initialContractFailureCategory: "unknown_keys",
       repairContractFailureCategory: "other",
+      initialContractFailureReason: "misaligned_requires_evidence_triplet",
+      repairContractFailureReason: "insufficient_requires_gap",
       responseContentChars: 0
     },
     "invalid enum and numeric telemetry must default safely"
@@ -2273,6 +2287,14 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     { initial: "none", repair: "none" },
     "collector reset must prevent contract categories leaking to the next row"
+  );
+  assert.deepStrictEqual(
+    {
+      initial: telemetryResult.rows[3].initialContractFailureReason,
+      repair: telemetryResult.rows[3].repairContractFailureReason
+    },
+    { initial: "none", repair: "none" },
+    "collector reset must prevent contract reasons leaking to the next row"
   );
   assert.deepStrictEqual({
     selectedTrackId: telemetryResult.rows[3].selectedTrackId,

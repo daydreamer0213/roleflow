@@ -51,6 +51,27 @@ const SAFE_CONTRACT_FAILURE_CATEGORIES = new Set([
   "other",
   "none"
 ]);
+const SAFE_CONTRACT_FAILURE_REASONS = new Set([
+  "selected_track",
+  "context_shape",
+  "role_alignment_enum",
+  "responsibility_requires_insufficient",
+  "aligned_requires_role_resume",
+  "misaligned_requires_evidence_triplet",
+  "insufficient_requires_gap",
+  "matches_shape",
+  "matches_unknown_id",
+  "matches_duplicate_id",
+  "matches_state",
+  "matches_resume_evidence",
+  "eligibility_shape",
+  "eligibility_unknown_id",
+  "eligibility_duplicate_id",
+  "eligibility_state",
+  "eligibility_resume_evidence",
+  "other",
+  "none"
+]);
 const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
 const SAFE_RESPONSE_FAILURE_KINDS = new Set([
   "empty_response",
@@ -1714,6 +1735,32 @@ function privateContractFailureCategory(value) {
   return "other";
 }
 
+function privateContractFailureReason(value) {
+  const message = String(value || "");
+  if (!message) return "none";
+  const reasons = [];
+  const add = (pattern, reason) => {
+    if (pattern.test(message)) reasons.push(reason);
+  };
+  add(/selectedTrackId.*(?:\u4e0d\u5b58\u5728|required|must be|missing)/i, "selected_track");
+  add(/match evidence requires jobUnderstanding|sparse match evidence requires jobUnderstanding|\u7d27\u51d1\u5339\u914d\u8bc1\u636e\u5fc5\u987b\u643a\u5e26\u672c\u6b21 jobUnderstanding/i, "context_shape");
+  add(/roleAlignment must be one of/i, "role_alignment_enum");
+  add(/empty responsibilityEvidence requires insufficient_evidence/i, "responsibility_requires_insufficient");
+  add(/(?:aligned|mostly_aligned|partially_aligned) requires roleResumeEvidence/i, "aligned_requires_role_resume");
+  add(/misaligned requires responsibility evidence, resume evidence, and a gap/i, "misaligned_requires_evidence_triplet");
+  add(/insufficient_evidence requires a concrete gap/i, "insufficient_requires_gap");
+  for (const field of ["matches", "eligibility"]) {
+    const prefix = field === "matches" ? "matches" : "eligibility";
+    add(new RegExp(`${field} (?:must be an array|must contain evidence objects)|${field} \u5fc5\u987b\u662f(?:\u6570\u7ec4|[^\\n]*\u5bf9\u8c61\u6570\u7ec4)`, "i"), `${prefix}_shape`);
+    add(new RegExp(`${field} (?:contains unknown ID|\u5305\u542b\u4e0d\u5b58\u5728\u7684 ID)`, "i"), `${prefix}_unknown_id`);
+    add(new RegExp(`${field} (?:contains duplicate ID|[^\\n]*ID[^\\n]*\u91cd\u590d)`, "i"), `${prefix}_duplicate_id`);
+    add(new RegExp(`${field}\\.state (?:is invalid|\u5fc5\u987b\u662f)`, "i"), `${prefix}_state`);
+    add(new RegExp(`${field}(?:\\.[^\\s]+)?[^\\n]*(?:requires resumeEvidence|\u5fc5\u987b\u63d0\u4f9b resumeEvidence|resumeEvidence \u5fc5\u987b)`, "i"), `${prefix}_resume_evidence`);
+  }
+  const distinct = [...new Set(reasons)];
+  return distinct.length === 1 ? distinct[0] : "other";
+}
+
 function createPrivateTelemetryCollector() {
   let values;
   const reset = () => {
@@ -1727,6 +1774,8 @@ function createPrivateTelemetryCollector() {
       contractRepairCount: 0,
       initialContractFailureCategory: "none",
       repairContractFailureCategory: "none",
+      initialContractFailureReason: "none",
+      repairContractFailureReason: "none",
       responseContentChars: 0
     };
   };
@@ -1736,6 +1785,11 @@ function createPrivateTelemetryCollector() {
       values.initialContractFailureCategory = safeEnum(
         privateContractFailureCategory(data?.errorMessage),
         SAFE_CONTRACT_FAILURE_CATEGORIES,
+        "other"
+      );
+      values.initialContractFailureReason = safeEnum(
+        privateContractFailureReason(data?.errorMessage),
+        SAFE_CONTRACT_FAILURE_REASONS,
         "other"
       );
       return;
@@ -1751,6 +1805,11 @@ function createPrivateTelemetryCollector() {
       values.repairContractFailureCategory = safeEnum(
         privateContractFailureCategory(data?.errorMessage),
         SAFE_CONTRACT_FAILURE_CATEGORIES,
+        "other"
+      );
+      values.repairContractFailureReason = safeEnum(
+        privateContractFailureReason(data?.errorMessage),
+        SAFE_CONTRACT_FAILURE_REASONS,
         "other"
       );
       return;
