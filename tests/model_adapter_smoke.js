@@ -346,6 +346,14 @@ server.listen(0, "127.0.0.1", async () => {
       "业务系统维护和二次开发不得仅因系统名称不同被判成不同岗位族"
     );
     assert(
+      matchPrompt.includes("First remove industryContext and named-system terms")
+        && matchPrompt.includes("concrete back-end, API, integration, or software-system delivery")
+        && matchPrompt.includes("must use mostly_aligned")
+        && matchPrompt.includes("named-system lifecycle, business rules, or domain experience")
+        && matchPrompt.includes("requirement gaps rather than role-family gaps"),
+      "matchJob 必须先剥离行业外壳，再判断主体工作"
+    );
+    assert(
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
       "通用能力不得冒充岗位主线"
     );
