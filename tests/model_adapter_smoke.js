@@ -239,6 +239,12 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
     assert(!matchPrompt.includes("uncertainties") && !matchPrompt.includes("certainty") && !matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt must only request sparse evidence rows");
     assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
+    assert(
+      matchPrompt.includes(
+        "Return exactly these six top-level keys and no others: selectedTrackId, roleAlignment, roleResumeEvidence, roleGaps, matches, eligibility."
+      ),
+      "matchJob prompt 必须声明精确的六键顶层契约"
+    );
     for (const locallyDerived of [
       "requirementMatches",
       "recommendation",
@@ -256,8 +262,9 @@ server.listen(0, "127.0.0.1", async () => {
       "evidence.jd",
       "evidence.resume"
     ]) {
-      assert(!matchPrompt.includes(locallyDerived), `matchJob prompt 不得要求模型重复本地可派生字段 ${locallyDerived}`);
+      assert(matchPrompt.includes(locallyDerived), `matchJob prompt 必须明确禁止本地可派生字段 ${locallyDerived}`);
     }
+    assert(matchPrompt.includes("Forbidden top-level keys"), "matchJob prompt 必须把本地决策字段声明为禁止的顶层键");
     assert(matchPrompt.includes("candidateMatchCard"));
     assert(matchPrompt.includes("searchPreferences"));
     assert(matchPrompt.includes("userNotes"), "matchJob prompt 必须说明用户补充偏好的语义");
@@ -267,6 +274,88 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("output only"), "matchJob prompt must request evidence rows only");
     assert(matchPrompt.includes("non-core explicit gap"), "matchJob prompt must retain evidenced non-core gaps as soft signals");
     assert(matchPrompt.includes("indispensable") && matchPrompt.includes("hard blocker"), "matchJob prompt must reserve hard blocking for explicit indispensable incompatibility");
+    const sparseRepairReason = "matchJob 模型输出不符合契约：multi-track matching requires sparse evidence";
+    const validSparseResult = {
+      selectedTrackId: "T1",
+      roleAlignment: "mostly_aligned",
+      roleResumeEvidence: ["简历：交付过应用"],
+      roleGaps: [],
+      matches: [],
+      eligibility: []
+    };
+    const baseSparseRepairInput = {
+      candidateProfile: { marker: "synthetic-repair" },
+      candidateMatchCard: { targetDirections: ["应用开发"] },
+      searchPreferences: { userNotes: ["优先应用开发"] },
+      jobUnderstanding: {
+        hiringTracks: [{
+          id: "T1",
+          label: "应用开发",
+          roleSummary: "交付应用",
+          responsibilityEvidence: ["JD：负责应用交付"]
+        }],
+        coreRequirements: [],
+        eligibilityItems: [],
+        jobQuality: { level: "normal", concerns: [] }
+      }
+    };
+    async function captureSparseRepairInput(reason) {
+      const adapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://example.invalid",
+        apiKey: "test-key",
+        model: "test"
+      });
+      let capturedInput;
+      adapter.chatJson = async (_prompt, modelInput, { kind }) => {
+        assert.strictEqual(kind, "matchJob");
+        capturedInput = modelInput;
+        return validSparseResult;
+      };
+      const input = {
+        ...baseSparseRepairInput,
+        contractRepair: {
+          reason,
+          instruction: "repair only the named fields",
+          invalidOutput: {
+            recommendation: "apply",
+            fitLevel: "strong"
+          }
+        }
+      };
+      const originalInput = JSON.parse(JSON.stringify(input));
+      await adapter.matchJob(input);
+      assert.deepStrictEqual(input, originalInput, "matchJob repair preparation must not mutate caller input");
+      return { capturedInput, originalInput };
+    }
+    for (const positiveReason of [sparseRepairReason, ` \n${sparseRepairReason}\t `]) {
+      const { capturedInput, originalInput } = await captureSparseRepairInput(positiveReason);
+      assert(
+        !Object.prototype.hasOwnProperty.call(capturedInput.contractRepair, "invalidOutput"),
+        "exact sparse validator repair must omit invalidOutput"
+      );
+      assert(
+        capturedInput.contractRepair.instruction.includes("exactly the six-key sparse JSON object"),
+        "exact sparse validator repair must use the fixed sparse rebuild instruction"
+      );
+      assert.deepStrictEqual(capturedInput.candidateProfile, originalInput.candidateProfile);
+      assert.deepStrictEqual(capturedInput.candidateMatchCard, originalInput.candidateMatchCard);
+      assert.deepStrictEqual(capturedInput.searchPreferences, originalInput.searchPreferences);
+      assert.deepStrictEqual(capturedInput.jobUnderstanding, originalInput.jobUnderstanding);
+    }
+    for (const unchangedReason of [
+      "synthetic contract failure",
+      `prefix: ${sparseRepairReason}`,
+      `${sparseRepairReason} suffix`,
+      `${sparseRepairReason}; another failure`,
+      "matchJob 模型输出不符合契约：multi-track matching requires sparse evidences"
+    ]) {
+      const { capturedInput, originalInput } = await captureSparseRepairInput(unchangedReason);
+      assert.deepStrictEqual(
+        capturedInput,
+        originalInput,
+        "non-exact sparse repair reasons must preserve the existing repair input"
+      );
+    }
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");
