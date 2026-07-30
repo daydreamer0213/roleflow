@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in `D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab` and the existing private baseline worktree; do not modify `D:\Guo\ZhiPing`.
+- Work only on branch `codex/multi-track-recall-continuation` in its isolated worktree and the existing private baseline worktree; do not modify `D:\Guo\ZhiPing`.
 - Do not access BOSS, any recruitment platform, the main `data/jobs.sqlite`, cookies, 8787, or communication actions.
 - Do not read the formal model configuration or run a real model during Tasks 1–2.
 - Never write private resume, profile, matching-card, JD, or label text into Git, logs, reports, tests, or the portability proof.
@@ -35,7 +35,7 @@
 - Consumes: existing `createConfirmedEvidencePortability(options, seam)`, `validatePrivateFullChainRequest`, `privateJobsAndLabels`, `confirmedProfileInput`, `confirmedCardInput`, and injected smoke-test seams.
 - Produces: `--proof-version confirmed-evidence-portability.v3`; a v3 proof with target fixture identity; portability validation that returns `{ proof, profileInput, cardInput, fixture, resume }`.
 
-- [ ] **Step 1: Add failing v3 creation and explicit-opt-in tests**
+- [x] **Step 1: Add failing v3 creation and explicit-opt-in tests**
 
 Next to the existing portability tests, create a target bundle whose four candidate-evidence files are copied unchanged but whose synthetic jobs and recall-first v2 labels are a different valid set. Assert:
 
@@ -72,7 +72,7 @@ assert.deepStrictEqual(Object.keys(proof.consumerCodeBlobs).sort(), [
 
 Also assert the request gate rejects any unknown `proofVersion` and accepts v3 only for `create-portability-proof`.
 
-- [ ] **Step 2: Run the smoke test and verify RED**
+- [x] **Step 2: Run the smoke test and verify RED**
 
 Run:
 
@@ -82,7 +82,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: exit 1 because `proofVersion` is not accepted and changed jobs are still rejected by the legacy byte-equality loop. No model/provider counter may increment.
 
-- [ ] **Step 3: Add failing safety and compatibility tests**
+- [x] **Step 3: Add failing safety and compatibility tests**
 
 Add assertions covering all of these before implementation:
 
@@ -95,7 +95,7 @@ Add assertions covering all of these before implementation:
 7. Appending one byte to target jobs or labels after proof creation fails before settings/provider/SQLite/model counters change.
 8. The serialized proof does not contain any fixture title, description, label rationale, synthetic name, phone, or email.
 
-- [ ] **Step 4: Implement the minimal versioned proof schema**
+- [x] **Step 4: Implement the minimal versioned proof schema**
 
 In `scripts/private-full-chain-runner.js`, add:
 
@@ -138,7 +138,7 @@ In `createConfirmedEvidencePortability`:
 - emit the exact v3 fields from the design, replace raw `profileConfirmationId` / `cardConfirmationId` with `profileConfirmationIdSha256` / `cardConfirmationIdSha256`, and use `PORTABILITY_V3_CONSUMER_FILES`;
 - keep the existing v1/v2 object construction unchanged.
 
-- [ ] **Step 5: Eliminate portability check/use double reads**
+- [x] **Step 5: Eliminate portability check/use double reads**
 
 Refactor `validateConfirmedEvidencePortability` so it reads target profile, card, resume, identity, jobs, and labels exactly once, hashes those buffers, parses those same buffers, and returns:
 
@@ -156,7 +156,7 @@ Pass the existing privacy validator into this function and apply it to `resumeTe
 
 In `runPrivateFullChain`, if `request.portabilityProof` is present, call the validator before creating any separately parsed match-live inputs and use its returned `profileInput`, `cardInput`, `fixture`, and `resume`. For native v2 inputs without a sidecar, preserve the existing path. A supplied invalid/irrelevant sidecar must fail; it must not be silently ignored.
 
-- [ ] **Step 6: Run focused RED→GREEN verification**
+- [x] **Step 6: Run focused RED→GREEN verification**
 
 Run:
 
@@ -168,7 +168,7 @@ git diff --check
 
 Expected: both tests exit 0, the private runner smoke confirms all accesses remain zero on unsafe v3 inputs, and `git diff --check` prints nothing.
 
-- [ ] **Step 7: Run full offline regression and commit**
+- [x] **Step 7: Run full offline regression and commit**
 
 Run:
 
@@ -197,7 +197,7 @@ git commit -m "test: support confirmed fixture portability v3"
 - Consumes: Task 1 runner commit, candidate product `87cc68e`, baseline checkpoint `8544a53`, fixed candidate worktree, frozen 20-job pool.
 - Produces: byte-identical shared runner blobs, a new candidate evaluated commit, a new baseline evaluated commit, and fresh v3 private-root commands for Task 7.
 
-- [ ] **Step 1: Mirror only the shared runner into the baseline**
+- [x] **Step 1: Mirror only the shared runner into the baseline**
 
 Copy the committed candidate `scripts/private-full-chain-runner.js` bytes to:
 
@@ -223,7 +223,7 @@ git add -- scripts/private-full-chain-runner.js
 git commit -m "test: mirror fixture portability v3 harness"
 ```
 
-- [ ] **Step 2: Verify shared blob identity**
+- [x] **Step 2: Verify shared blob identity**
 
 For candidate and baseline, compare Git blobs for:
 
@@ -235,7 +235,7 @@ scripts/lib/private_resume_privacy.js
 
 Expected: all three corresponding blob IDs are exactly equal. Record both evaluated commit hashes in the main plan.
 
-- [ ] **Step 3: Record Task 6.5 evidence and fresh live roots**
+- [x] **Step 3: Record Task 6.5 evidence and fresh live roots**
 
 Amend the main multi-track implementation plan with:
 
@@ -254,7 +254,7 @@ Amend the main multi-track implementation plan with:
 
 - Task 7 must preserve the existing CLI value `--diagnostic-indices '4,9,10'`. These are explicitly zero-based indices under `parseDiagnosticIndices`, corresponding to human-readable fixture rows 5, 10, and 11; do not subtract one again.
 
-- [ ] **Step 4: Commit a docs-only evaluated checkpoint**
+- [x] **Step 4: Commit a docs-only evaluated checkpoint**
 
 Run candidate full verification again:
 
@@ -280,3 +280,24 @@ The new HEAD is the candidate evaluated commit. `87cc68e` remains its strict anc
 Review the Task 1–2 diff for exact v1/v2 compatibility, explicit v3 opt-in, proof privacy, single-read execution, blob identity, commit topology, and zero external access. Fix every Critical or Important issue and re-run the covering tests before Task 7.
 
 Task 7 may start only after the review is clean. Real model authorization is checked again at execution time; this plan itself does not call the model.
+
+## Execution record: 2026-07-30
+
+- Original v3 chain: design `50e23f8`, plan `deb1507`, implementation `d179a84`, threat-model clarification `44a620c`, and SHA-256 confirmation IDs plus tamper coverage `71885b9`.
+- Independent review found two Important gaps and one Moderate issue: runtime evaluated consumer blobs were not bound to the proof, the required check-after-replacement regression was absent, and `preflight.portability = preflight` created a circular object.
+- Fix `07ece938a363bf4725fe928cb5a8f778404a4d47` added runtime consumer binding, the six-file single-read/hash-and-use race regression, and a non-circular portability object.
+- Re-review found that baseline runtime blobs were still resolved in the fixed candidate repository. Fix `9d7d1a4e4865b76073eca3af007250110db18d20` separated proof resolution from runtime resolution and added an independent-baseline-repository positive test plus baseline/candidate negative tests.
+- Final independent result for `71885b9..9d7d1a4`: **Spec PASS** and **Code quality APPROVED**, with no Critical, Important, or Moderate findings.
+- Candidate verification at `9d7d1a4`: runner smoke passed, benchmark passed with 31 fixtures, `npm.cmd test` passed all 47 offline checks, and `git diff --check` was clean.
+- Baseline mirror commit: `cc5dc6adf158c4c38cfefb808a78a53b4bfdf389`. Its repository-native 41 offline checks and 31 benchmark fixtures passed; the baseline intentionally does not contain the candidate-only `private_full_chain_runner_smoke.js`.
+- Candidate/baseline shared blobs are identical:
+  - runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`
+  - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
+  - private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it must be a strict ancestor of the docs-only evaluated checkpoint created from this record.
+- The exact docs-only evaluated commit SHA is written back by the immediate follow-up record commit before any live execution.
+- Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
+- Fresh live roots:
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
+- Preserve zero-based `--diagnostic-indices '4,9,10'` exactly and create v3 proof with `--proof-version confirmed-evidence-portability.v3`.

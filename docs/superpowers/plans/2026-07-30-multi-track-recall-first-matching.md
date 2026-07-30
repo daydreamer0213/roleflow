@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 只在 `D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab` 和验收时固定的候选 worktree 中工作；不得修改 `D:\Guo\ZhiPing` 正式项目。
+- 只在 `codex/multi-track-recall-continuation` 的隔离 worktree、私有 baseline worktree 和验收时固定的候选 worktree 中工作；不得修改 `D:\Guo\ZhiPing` 正式项目。
 - 不增加第三次模型调用，不为每个招聘分支重复调用模型；正常路径仍是一轮 `understandJob` 加一轮 `matchJob`。
 - 不新增职业分类库、行业字典、第三方依赖或可配置规则引擎。
 - 新版 `understandJob` 原始紧凑输出只能包含 `industryContext`、`hiringTracks`、`requirements`、`eligibility`、`riskSignals`。
@@ -1136,13 +1136,49 @@ Expected: all three blobs are exactly equal and both worktrees are clean.
 
 ---
 
+### Task 6.5: Complete v3 portability review and baseline resynchronization
+
+**Completed evidence:**
+
+- [x] v3 implementation chain completed at `71885b9b2811205ea4b04d2731aad2a240648c92`.
+- [x] Independent review identified runtime evaluated consumer binding, check-after-replacement coverage, and circular preflight structure gaps.
+- [x] `07ece938a363bf4725fe928cb5a8f778404a4d47` added v3 runtime consumer binding, six-file single-read/hash-and-use race coverage, and an explicit non-circular portability object.
+- [x] `9d7d1a4e4865b76073eca3af007250110db18d20` bound runtime blob lookup to the actual candidate or independent baseline repository.
+- [x] Independent re-review returned **Spec PASS** and **Code quality APPROVED**, with no Critical, Important, or Moderate findings.
+- [x] Candidate runner smoke, 31 benchmark fixtures, all 47 offline checks, and `git diff --check` passed at `9d7d1a4`.
+- [x] Baseline mirror commit `cc5dc6adf158c4c38cfefb808a78a53b4bfdf389` passed its repository-native 41 offline checks and 31 benchmark fixtures.
+- [x] Candidate and baseline Git blobs are identical for runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`, benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+
+Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`. The docs-only commit produced from this record is the frozen candidate evaluated checkpoint; its exact SHA is written back by the immediate follow-up record commit and must pass:
+
+```powershell
+git merge-base --is-ancestor 87cc68ede886ac0ef3b53f960c38548cce4a831a <evaluated-commit>
+```
+
+Preserve the failed diagnostic root without modifying or deleting it:
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730`.
+
+Use only these fresh roots:
+
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
+
+The frozen pool remains:
+
+- jobs raw SHA-256 `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+- labels raw SHA-256 `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`
+
+Task 7 must use `--proof-version confirmed-evidence-portability.v3` and preserve zero-based `--diagnostic-indices '4,9,10'` exactly.
+
+---
+
 ### Task 7: Run three saved-JD real-model diagnostics
 
 **Files:**
 
 - No repository files.
 - Private input/output root:
-  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730`
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
 - Reuse confirmed evidence from:
   `D:\DevData\RoleFlow-private-benchmark\full-chain-v40c-role-industry-boundary-2-20260730`
 - Reuse frozen jobs/labels from:
@@ -1180,7 +1216,7 @@ Create `input`, `labels`, `runs\candidate`, and `reports` below the new private 
 ```powershell
 $source = 'D:\DevData\RoleFlow-private-benchmark\full-chain-v40c-role-industry-boundary-2-20260730'
 $pool = 'D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730'
-$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730'
+$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730'
 if (Test-Path -LiteralPath $root) { throw "private root already exists: $root" }
 foreach ($directory in @('input', 'labels', 'runs\candidate', 'reports')) {
   New-Item -ItemType Directory -Path (Join-Path $root $directory) | Out-Null
@@ -1309,7 +1345,7 @@ Expected: no output.
 
 - No repository files during the live run.
 - Private root:
-  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-20260730`
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - Modify after the run:
   `docs/superpowers/plans/2026-07-30-multi-track-recall-first-matching.md`
 
@@ -1325,7 +1361,7 @@ Run this complete setup:
 ```powershell
 $source = 'D:\DevData\RoleFlow-private-benchmark\full-chain-v40c-role-industry-boundary-2-20260730'
 $pool = 'D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730'
-$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-20260730'
+$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730'
 $candidate = 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
 $implementation = 'D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab'
 $baseline = 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-multi-track-recall-v1'
