@@ -136,10 +136,31 @@ try {
   const historicalPath = path.join(root, "historical-v4.sqlite");
   db = openDb(historicalPath);
   const history = createFixture(db, "historical", now);
+  const legacySuccess = createFixture(db, "legacy-success", now);
+  const legacyAlready = createFixture(db, "legacy-already", now);
   db.prepare(`INSERT INTO candidate_job_states(
     profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
   ) VALUES (?, ?, ?, 'applied', 'communication_succeeded', '', NULL, ?)`)
     .run(history.profileId, history.jobId, history.planId, now);
+  db.prepare(`INSERT INTO candidate_job_states(
+    profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+  ) VALUES (?, ?, ?, 'applied', 'succeeded', '', NULL, ?)`)
+    .run(legacySuccess.profileId, legacySuccess.jobId, legacySuccess.planId, now);
+  db.prepare(`INSERT INTO candidate_job_states(
+    profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+  ) VALUES (?, ?, NULL, 'applied', 'already_communicated', '', NULL, ?)`)
+    .run(legacyAlready.profileId, legacyAlready.jobId, now);
+  const communicationBatchId = Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, finished_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'edge', 'completed', '{}', ?, ?, ?, ?)`)
+    .run(legacyAlready.profileId, legacyAlready.planId, now, now, now, now).lastInsertRowid);
+  db.prepare(`INSERT INTO communication_batch_items(
+    batch_id, job_id, position, job_url, title_snapshot, status,
+    click_count, finished_at, updated_at
+  ) VALUES (?, ?, 1, 'https://example.test/already', 'Already communicated',
+    'already_communicated', 0, ?, ?)`)
+    .run(communicationBatchId, legacyAlready.jobId, now, now);
   db.exec(`
     DROP TABLE IF EXISTS candidate_progress_events;
     DROP TABLE IF EXISTS candidate_progress_cards;
@@ -164,10 +185,37 @@ try {
   assert.strictEqual(historicalEvents.length, 1);
   assert.strictEqual(historicalEvents[0].actor, "system");
   assert(!JSON.stringify(historicalEvents).includes("HR 原话正文"));
+  assert.strictEqual(
+    getProgressCardForJob(db, {
+      profileId: legacySuccess.profileId,
+      jobId: legacySuccess.jobId
+    }).stage,
+    "waiting_reply"
+  );
+  const alreadyCard = getProgressCardForJob(db, {
+    profileId: legacyAlready.profileId,
+    jobId: legacyAlready.jobId
+  });
+  assert.strictEqual(alreadyCard.planId, legacyAlready.planId);
+  assert.strictEqual(alreadyCard.stage, "waiting_reply");
+  assert.strictEqual(listProgressEvents(db, alreadyCard.id)[0].type, "contact_already_exists");
 
   db.close();
   db = openDb(historicalPath);
-  assert.strictEqual(listProgressCards(db, { planId: history.planId }).length, 1);
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version = 5;
+    PRAGMA user_version = 4;
+  `);
+  db.close();
+  db = openDb(historicalPath);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_cards").get().count,
+    3
+  );
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_events").get().count,
+    3
+  );
   assert.strictEqual(listProgressEvents(db, historicalCard.id).length, 1);
 
   console.log("candidate_progress_storage_smoke ok");

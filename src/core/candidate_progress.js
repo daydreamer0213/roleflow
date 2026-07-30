@@ -57,18 +57,13 @@ function ensureProgressCard(db, input = {}) {
   const job = db.prepare("SELECT source FROM jobs WHERE id = ?").get(jobId);
   if (!job) throw progressError("PROGRESS_JOB_NOT_FOUND", "progress job was not found");
   const now = isoText(input.now);
-  try {
-    const result = db.prepare(`INSERT INTO candidate_progress_cards(
+  const result = db.prepare(`INSERT INTO candidate_progress_cards(
       profile_id, plan_id, job_id, source, stage, last_event_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'contact_started', ?, ?, ?)`)
-      .run(profileId, planId, jobId, source, now, now, now);
-    return getProgressCard(db, Number(result.lastInsertRowid));
-  } catch (error) {
-    if (String(error.code || "").includes("CONSTRAINT_UNIQUE")) {
-      return getProgressCardForJob(db, { profileId, jobId });
-    }
-    throw error;
-  }
+    ) VALUES (?, ?, ?, ?, 'contact_started', ?, ?, ?)
+    ON CONFLICT(profile_id, job_id) DO NOTHING`)
+    .run(profileId, planId, jobId, source, now, now, now);
+  if (Number(result.changes) === 1) return getProgressCard(db, Number(result.lastInsertRowid));
+  return getProgressCardForJob(db, { profileId, jobId });
 }
 
 function recordProgressEvent(db, input = {}) {

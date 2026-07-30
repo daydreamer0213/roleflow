@@ -863,16 +863,35 @@ function backfillHistoricalCommunicationOutcomes(db) {
 }
 
 function backfillHistoricalCandidateProgress(db) {
-  db.prepare(`INSERT OR IGNORE INTO candidate_progress_cards(
+  db.prepare(`WITH historical AS (
+      SELECT states.profile_id, states.job_id, states.updated_at, states.reason_code, jobs.source,
+        COALESCE(
+          states.plan_id,
+          (
+            SELECT batches.plan_id
+            FROM communication_batch_items items
+            JOIN communication_batches batches ON batches.id = items.batch_id
+            WHERE batches.profile_id = states.profile_id
+              AND items.job_id = states.job_id
+              AND items.status IN ('succeeded', 'already_communicated')
+            ORDER BY items.updated_at DESC, items.id DESC
+            LIMIT 1
+          )
+        ) AS plan_id
+      FROM candidate_job_states states
+      JOIN jobs ON jobs.id = states.job_id
+      WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
+    )
+    INSERT INTO candidate_progress_cards(
       profile_id, plan_id, job_id, source, stage, next_action,
       last_event_at, created_at, updated_at
     )
-    SELECT states.profile_id, states.plan_id, states.job_id, jobs.source,
+    SELECT profile_id, plan_id, job_id, source,
       'waiting_reply', '等待招聘方回复',
-      states.updated_at, states.updated_at, states.updated_at
-    FROM candidate_job_states states
-    JOIN jobs ON jobs.id = states.job_id
-    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')`)
+      updated_at, updated_at, updated_at
+    FROM historical
+    WHERE plan_id IS NOT NULL
+    ON CONFLICT(profile_id, job_id) DO NOTHING`)
     .run();
   db.prepare(`INSERT INTO candidate_progress_events(
       card_id, type, actor, summary, metadata_json, occurred_at, created_at
