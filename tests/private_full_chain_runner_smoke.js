@@ -2038,6 +2038,15 @@ async function injectedLiveFlowSmoke(identityPath) {
         });
         if (index === 0) {
           logger.warn("model_contract_repair_requested", {
+            kind: "understandJob",
+            errorMessage: `requirements must be an array ${contractDiagnosticSecret}`
+          });
+          logger.warn("model_contract_repair_completed", {
+            kind: "understandJob",
+            contentLength: 888888,
+            raw: telemetrySecret
+          });
+          logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
             errorMessage: `必须返回 JSON 对象 ${contractDiagnosticSecret}`
           });
@@ -2048,6 +2057,10 @@ async function injectedLiveFlowSmoke(identityPath) {
           });
         } else {
           logger.warn("model_contract_repair_requested", {
+            kind: telemetrySecret,
+            errorMessage: contractDiagnosticSecret
+          });
+          logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
             errorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "object" }
@@ -2055,7 +2068,7 @@ async function injectedLiveFlowSmoke(identityPath) {
           logger.warn("model_contract_repair_failed", {
             kind: "matchJob",
             initialErrorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
-            errorMessage: `mostly_aligned requires roleResumeEvidence ${contractDiagnosticSecret}`,
+            errorMessage: `multi-track matching requires sparse evidence ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "array" }
           });
         }
@@ -2137,6 +2150,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     "emptyResponseAttemptCount",
     "modelAttemptLatencyMs",
     "contractRepairCount",
+    "understandJobContractRepairCount",
+    "matchJobContractRepairCount",
     "initialContractFailureCategory",
     "repairContractFailureCategory",
     "initialContractFailureReason",
@@ -2203,7 +2218,9 @@ async function injectedLiveFlowSmoke(identityPath) {
     modelAttemptCount: 2,
     emptyResponseAttemptCount: 0,
     modelAttemptLatencyMs: 37000,
-    contractRepairCount: 1,
+    contractRepairCount: 2,
+    understandJobContractRepairCount: 1,
+    matchJobContractRepairCount: 1,
     initialContractFailureCategory: "result_shape",
     repairContractFailureCategory: "none",
     initialContractFailureReason: "result_not_object",
@@ -2211,14 +2228,21 @@ async function injectedLiveFlowSmoke(identityPath) {
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
-  assert.strictEqual(telemetryResult.rows[1].contractRepairCount, 1,
-    "only model_contract_repair_requested may increment contractRepairCount");
+  assert.deepStrictEqual({
+    total: telemetryResult.rows[1].contractRepairCount,
+    understandJob: telemetryResult.rows[1].understandJobContractRepairCount,
+    matchJob: telemetryResult.rows[1].matchJobContractRepairCount
+  }, {
+    total: 2,
+    understandJob: 0,
+    matchJob: 1
+  }, "unknown-kind repair requests may increment only the exact total");
   assert.deepStrictEqual(
     {
       initial: telemetryResult.rows[1].initialContractFailureCategory,
       repair: telemetryResult.rows[1].repairContractFailureCategory
     },
-    { initial: "result_shape", repair: "role_resume_evidence" },
+    { initial: "result_shape", repair: "result_shape" },
     "repair telemetry must expose only fixed contract categories"
   );
   assert.deepStrictEqual(
@@ -2226,7 +2250,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       initial: telemetryResult.rows[1].initialContractFailureReason,
       repair: telemetryResult.rows[1].repairContractFailureReason
     },
-    { initial: "result_not_object", repair: "aligned_requires_role_resume" },
+    { initial: "result_not_object", repair: "multi_track_requires_sparse" },
     "repair telemetry must expose only validator-owned fixed reasons"
   );
   assert.deepStrictEqual(
@@ -2255,6 +2279,8 @@ async function injectedLiveFlowSmoke(identityPath) {
       emptyResponseAttemptCount: 0,
       modelAttemptLatencyMs: 0,
       contractRepairCount: 0,
+      understandJobContractRepairCount: 0,
+      matchJobContractRepairCount: 0,
       initialContractFailureCategory: "unknown_keys",
       repairContractFailureCategory: "other",
       initialContractFailureReason: "other",
@@ -2276,6 +2302,15 @@ async function injectedLiveFlowSmoke(identityPath) {
     "the exact row schema must reject an injected extra logger field"
   );
   assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
+  assert.deepStrictEqual({
+    total: telemetryResult.rows[3].contractRepairCount,
+    understandJob: telemetryResult.rows[3].understandJobContractRepairCount,
+    matchJob: telemetryResult.rows[3].matchJobContractRepairCount
+  }, {
+    total: 0,
+    understandJob: 0,
+    matchJob: 0
+  }, "collector reset must clear all contract repair counters");
   assert.deepStrictEqual(
     {
       initial: telemetryResult.rows[3].initialContractFailureCategory,
