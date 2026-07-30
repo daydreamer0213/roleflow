@@ -2320,6 +2320,73 @@ async function compactMatchEvidenceContractSmoke() {
     ["Agent 与 RAG 应用交付", "Python 编程"]
   );
 
+  const selectedT1 = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "aligned",
+    roleResumeEvidence: ["简历：交付过 Agentic RAG 与 Python API"],
+    roleGaps: [],
+    matches: [
+      { id: "R1", state: "matched", resumeEvidence: "简历：交付过 Agentic RAG" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }
+    ],
+    eligibility: []
+  }, { jobUnderstanding: multiTrack });
+  assert.strictEqual(selectedT1.selectedTrackId, "T1");
+  assert.strictEqual(selectedT1.selectedTrackLabel, "大模型应用开发");
+  assert.strictEqual(selectedT1.roleSummary, "使用 Python、Agent 与 RAG 交付 AI 应用");
+  assert.deepStrictEqual(
+    selectedT1.requirementMatches.map((item) => item.requirement),
+    ["Agent 与 RAG 应用交付", "Python 编程"]
+  );
+  assert(!selectedT1.requirementMatches.some((item) =>
+    ["前后端模块开发", "深度学习算法研发"].includes(item.requirement)
+  ));
+
+  for (const invalid of [
+    {
+      selectedTrackId: "T9",
+      roleAlignment: "aligned",
+      roleResumeEvidence: ["简历：交付过 Agent"],
+      roleGaps: [],
+      matches: [],
+      eligibility: []
+    },
+    {
+      selectedTrackId: "T1",
+      roleAlignment: "aligned",
+      roleResumeEvidence: ["简历：交付过 Agent"],
+      roleGaps: [],
+      matches: [{ id: "R3", state: "missing", resumeEvidence: "简历：没有前端经历" }],
+      eligibility: []
+    }
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", invalid, { jobUnderstanding: multiTrack }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID"
+    );
+  }
+
+  const scopedWithEligibility = validateModelResult("understandJob", {
+    ...multiTrackUnderstandingInput,
+    eligibility: ["JD：本科及以上学历"]
+  });
+  const selectedWithUnknowns = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "mostly_aligned",
+    roleResumeEvidence: ["简历：交付过 Agentic RAG"],
+    roleGaps: [],
+    matches: [{ id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }],
+    eligibility: []
+  }, { jobUnderstanding: scopedWithEligibility });
+  assert.strictEqual(
+    selectedWithUnknowns.requirementMatches.find((item) => item.requirement === "Agent 与 RAG 应用交付").state,
+    "unknown"
+  );
+  assert.deepStrictEqual(selectedWithUnknowns.questionsToVerify, [
+    "Agent 与 RAG 应用交付的信息待确认",
+    "JD：本科及以上学历的资格信息待确认"
+  ]);
+
   const singleTrackInput = {
     industryContext: "企业服务",
     hiringTracks: [{

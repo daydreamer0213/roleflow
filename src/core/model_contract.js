@@ -463,6 +463,46 @@ function requirementsForTrack(jobUnderstanding, selectedTrackId) {
   });
 }
 
+function normalizeExpectedRequirement(item, index) {
+  return {
+    id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
+    label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
+    trackIds: Array.isArray(item.trackIds) && item.trackIds.length ? item.trackIds : ["T1"],
+    foundation: Boolean(item.foundation),
+    central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
+    indispensable: Boolean(item.indispensable),
+    evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
+  };
+}
+
+function selectedTrackContext(value, jobUnderstanding) {
+  const legacySingleTrack = Array.isArray(jobUnderstanding?.hiringTracks)
+    && jobUnderstanding.hiringTracks.length === 1
+    && jobUnderstanding.hiringTracks[0]?.id === "T1"
+    && !jobUnderstanding.hiringTracks[0]?.responsibilityEvidence?.length;
+  const useLegacyTrackFallback = legacySingleTrack || !Array.isArray(jobUnderstanding?.hiringTracks);
+  const tracks = normalizeHiringTracks(useLegacyTrackFallback ? undefined : jobUnderstanding?.hiringTracks, {
+    roleSummary: jobUnderstanding?.roleSummary,
+    responsibilityEvidence: jobUnderstanding?.responsibilityEvidence
+  });
+  const fallback = tracks.length === 1 && !Object.prototype.hasOwnProperty.call(value, "selectedTrackId")
+    ? tracks[0].id
+    : value.selectedTrackId;
+  const selectedTrackId = requiredContractString(fallback, "matchJob", "selectedTrackId");
+  const track = tracks.find((item) => item.id === selectedTrackId);
+  if (!track) throw new ModelContractError("matchJob", `selectedTrackId ${selectedTrackId} 不存在`);
+  return {
+    selectedTrackId,
+    selectedTrackLabel: track.label,
+    roleSummary: track.roleSummary,
+    responsibilityEvidence: track.responsibilityEvidence,
+    requirements: requirementsForTrack({
+      ...jobUnderstanding,
+      hiringTracks: useLegacyTrackFallback ? undefined : tracks
+    }, selectedTrackId)
+  };
+}
+
 function requiredCompactString(value, field) {
   if (typeof value !== "string" || !value.trim()) {
     throw new ModelContractError("understandJob", `${field} 必须是非空字符串`);
@@ -504,18 +544,12 @@ function validateSparseMatchEvidence(value, context = {}) {
   if (!jobUnderstanding || !Array.isArray(jobUnderstanding.coreRequirements)) {
     throw new ModelContractError("matchJob", "sparse match evidence requires jobUnderstanding");
   }
-  const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
-    id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
-    label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
-    foundation: Boolean(item.foundation),
-    central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
-    indispensable: Boolean(item.indispensable),
-    evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
-  }));
+  const selected = selectedTrackContext(value, jobUnderstanding);
+  const requirements = selected.requirements.map(normalizeExpectedRequirement);
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
     : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
-  const roleAlignmentEvidence = validateRoleAlignmentEvidence(value, jobUnderstanding);
+  const roleAlignmentEvidence = validateRoleAlignmentEvidence(value, selected);
   const matches = sparseEvidenceItems(value.matches, {
     field: "matches",
     expected: requirements,
@@ -605,6 +639,10 @@ function validateSparseMatchEvidence(value, context = {}) {
     .concat(hardBlockers.filter((item) => item.kind === "eligibility").map((item) => item.jdEvidence), list(jobUnderstanding.hiddenRisks).map((item) => text(item?.evidence)).filter(Boolean), list(jobQuality.concerns).map((item) => text(item?.evidence)).filter(Boolean)).slice(0, 6);
   const resumeEvidence = [...matches, ...normalizedEligibility].map((item) => item.resumeEvidence).filter(Boolean).slice(0, 6);
   return {
+    selectedTrackId: selected.selectedTrackId,
+    selectedTrackLabel: selected.selectedTrackLabel,
+    roleSummary: selected.roleSummary,
+    responsibilityEvidence: selected.responsibilityEvidence,
     ...roleAlignmentEvidence,
     recommendation, fitLevel, confidence, fitReasons, requirementMatches, jobQuality, hardBlockers, softGaps, questionsToVerify,
     missingPoints: softGaps, blockingGaps: hardBlockers.map((item) => item.requirement), riskQuestions: questionsToVerify,
@@ -659,14 +697,8 @@ function validateCompactMatchEvidence(value, context = {}) {
   if (!jobUnderstanding || !Array.isArray(jobUnderstanding.coreRequirements)) {
     throw new ModelContractError("matchJob", "紧凑匹配证据必须携带本次 jobUnderstanding");
   }
-  const requirements = jobUnderstanding.coreRequirements.map((item, index) => ({
-    id: requiredContractString(item.id || `R${index + 1}`, "matchJob", "jobUnderstanding.coreRequirements.id"),
-    label: requiredContractString(item.label, "matchJob", "jobUnderstanding.coreRequirements.label"),
-    foundation: Boolean(item.foundation),
-    central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
-    indispensable: Boolean(item.indispensable),
-    evidence: requiredContractString(item.evidence, "matchJob", "jobUnderstanding.coreRequirements.evidence")
-  }));
+  const selected = selectedTrackContext(value, jobUnderstanding);
+  const requirements = selected.requirements.map(normalizeExpectedRequirement);
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
     : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
@@ -796,6 +828,10 @@ function validateCompactMatchEvidence(value, context = {}) {
     .slice(0, 6);
 
   return {
+    selectedTrackId: selected.selectedTrackId,
+    selectedTrackLabel: selected.selectedTrackLabel,
+    roleSummary: selected.roleSummary,
+    responsibilityEvidence: selected.responsibilityEvidence,
     recommendation,
     fitLevel,
     confidence,
@@ -1046,9 +1082,11 @@ function validateMatchDecision(value, context = {}) {
   const roleResumeEvidence = Array.isArray(value.roleResumeEvidence) ? contractStrings(value.roleResumeEvidence, 4) : [];
   const roleGaps = Array.isArray(value.roleGaps) ? contractStrings(value.roleGaps, 4) : [];
   const jobUnderstanding = context?.jobUnderstanding;
+  const selected = selectedTrackContext(value, jobUnderstanding);
+  const requirements = selected.requirements.map(normalizeExpectedRequirement);
   if (jobUnderstanding && Array.isArray(jobUnderstanding.coreRequirements)) {
-    assertRequirementCoverage(jobUnderstanding.coreRequirements, requirementMatches);
-    const sourceRequirements = new Map(jobUnderstanding.coreRequirements.map((item) => [text(item.label), item]));
+    assertRequirementCoverage(requirements, requirementMatches);
+    const sourceRequirements = new Map(requirements.map((item) => [text(item.label), item]));
     for (const match of requirementMatches) {
       const source = sourceRequirements.get(match.requirement);
       match.foundation = Boolean(source?.foundation);
@@ -1110,6 +1148,10 @@ function validateMatchDecision(value, context = {}) {
   const evidence = normalizeEvidence(value.evidence, "matchJob");
   const fitReasons = contractStrings(value.fitReasons ?? value.fit_reasons ?? value.matchReasons, 8);
   const result = {
+    selectedTrackId: selected.selectedTrackId,
+    selectedTrackLabel: selected.selectedTrackLabel,
+    roleSummary: selected.roleSummary,
+    responsibilityEvidence: selected.responsibilityEvidence,
     roleAlignment,
     roleResumeEvidence,
     roleGaps,
