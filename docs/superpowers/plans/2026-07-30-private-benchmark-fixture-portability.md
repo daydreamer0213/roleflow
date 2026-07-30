@@ -726,6 +726,18 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
   docs-only binding record before private root creation. Candidate product
   `707701e57de9cda25833600e515bf5e9fe1c33cc` must be its strict ancestor.
 
+### Central transfer gap exact evaluated binding
+
+- Candidate evaluated is exactly
+  `02ef98a5f57da16626d9daa2d557b09720535bae`. Candidate product
+  `707701e57de9cda25833600e515bf5e9fe1c33cc` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `02ef98a5f57da16626d9daa2d557b09720535bae` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated/product remain exactly
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
 ## 2026-07-30 local recall tier consistency product checkpoint
 
 - Preserve
