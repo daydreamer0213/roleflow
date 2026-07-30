@@ -464,3 +464,16 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
   the manifest/proof, and restore
   `codex/claude-generic-evidence-matching-live-fix` at
   `1fc49dac3670a71c720bfcaed943fa29204d93c5` with clean status in `finally`.
+
+### Exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e906f6b55c112e89b2a9ec43c9c8168ea74786b9`. Candidate product
+  `9783d0b652ebb4db2233dba6135615494ca2feb9` must be verified as its strict
+  ancestor immediately before root creation.
+- This binding record is documentation-only and does not replace candidate
+  evaluated `e906f6b55c112e89b2a9ec43c9c8168ea74786b9` in the manifest, v3 proof,
+  temporary evaluation branch, or final offline verification.
+- Baseline evaluated remains exactly
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`, with baseline product
+  `fb0168afce265cf351f03e80f66d9e0f24015887` as its strict ancestor.
