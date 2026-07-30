@@ -61,6 +61,12 @@ async function scan(browser) {
   return { reader, scan: await reader.scanUnread() };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
+
 function runGuardedExpression(expression, { innerText, unread = true, snapshotResult }) {
   let clicks = 0;
   const row = {
@@ -139,6 +145,12 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     reason: "row_drifted"
   });
   assert.strictEqual(directDomDrift.clicks, 0, "a forged helper signature must never permit a DOM click");
+  const directDomMatch = runGuardedExpression(expression, {
+    innerText: "  Alex Example  \n\n  Please share availability  ",
+    snapshotResult: forgedHelperResult
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(directDomMatch.result)), guardedSuccess);
+  assert.strictEqual(directDomMatch.clicks, 1, "a matching Task1 signature must click the target row exactly once");
 
   const driftBrowser = fakeBrowser({ snapshots: [snapshot(), { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "row_drifted" }] });
   const drift = await scan(driftBrowser);
@@ -190,6 +202,41 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(lockBrowser.guardedDomClicks, 0);
   releaseGuard(guardedSuccess);
   await firstOpen;
+
+  const scanScanGate = deferred();
+  const scanScanBrowser = fakeBrowser({ snapshots: [snapshot()] });
+  scanScanBrowser.listTabs = async function() {
+    this.calls.push(["listTabs"]);
+    if (this.calls.filter(([name]) => name === "listTabs").length > 1) throw new Error("second scan must not list tabs");
+    await scanScanGate.promise;
+    return [{ id: "chat-tab", url: chatUrl }];
+  };
+  const scanScanReader = createBossMessageReader({ browser: scanScanBrowser, sleepFn: async () => {} });
+  const firstScan = scanScanReader.scanUnread();
+  await assert.rejects(() => scanScanReader.scanUnread(), (error) => error.code === "BOSS_MESSAGE_READER_BUSY");
+  assert.strictEqual(scanScanBrowser.calls.filter(([name]) => name === "listTabs").length, 1);
+  assert.strictEqual(scanScanBrowser.calls.filter(([name]) => name === "evalValue").length, 0);
+  scanScanGate.resolve();
+  await firstScan;
+
+  const scanOpenGate = deferred();
+  const scanOpenBrowser = fakeBrowser({ snapshots: [snapshot(), snapshot()] });
+  const scanOpenReader = createBossMessageReader({ browser: scanOpenBrowser, sleepFn: async () => {} });
+  const savedQueue = await scanOpenReader.scanUnread();
+  scanOpenBrowser.listTabs = async function() {
+    this.calls.push(["listTabs"]);
+    await scanOpenGate.promise;
+    return [{ id: "chat-tab", url: chatUrl }];
+  };
+  const heldScan = scanOpenReader.scanUnread();
+  await assert.rejects(
+    () => scanOpenReader.openQueuedConversation(savedQueue.queue[0]),
+    (error) => error.code === "BOSS_MESSAGE_READER_BUSY"
+  );
+  assert.strictEqual(scanOpenBrowser.calls.filter(([name]) => name === "evalValue").length, 1);
+  assert.strictEqual(scanOpenBrowser.guardedDomClicks, 0);
+  scanOpenGate.resolve();
+  await heldScan;
 
   const provenanceBrowser = fakeBrowser({ snapshots: [snapshot(), snapshot()] });
   const provenanceReader = createBossMessageReader({ browser: provenanceBrowser, sleepFn: async () => {} });

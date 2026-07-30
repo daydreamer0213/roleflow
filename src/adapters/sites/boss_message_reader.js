@@ -106,7 +106,7 @@ function buildGuardedConversationClickExpression(target) {
     const operation = "${GUARDED_OPERATION}";
     const expected = ${expected};
     const fail = (reason) => ({ clicked: false, operation, reason });
-    const normalize = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    const normalize = (value) => String(value == null ? "" : value).replace(/\\s+/g, " ").trim();
     const lines = (value) => String(value == null ? "" : value).split(/\\r?\\n/).map(normalize).filter(Boolean);
     const canonical = (parts) => parts.map((item) => String(item == null ? "" : item).trim()).join("\0");
     const sha256 = (value) => {
@@ -216,32 +216,41 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
   assertBrowser(browser);
   let activeTabId = null;
   let activeTargets = new Set();
-  let openingConversation = false;
+  let readerBusy = false;
+  async function runExclusive(operation) {
+    if (readerBusy) throw codedError("BOSS_MESSAGE_READER_BUSY", "message reader is busy");
+    readerBusy = true;
+    try {
+      return await operation();
+    } finally {
+      readerBusy = false;
+    }
+  }
   return {
     async scanUnread() {
-      const tabs = (await browser.listTabs()).filter((tab) => {
-        try {
-          return new URL(String(tab.url || "")).pathname === CHAT_PATH;
-        } catch {
-          return false;
-        }
+      return runExclusive(async () => {
+        const tabs = (await browser.listTabs()).filter((tab) => {
+          try {
+            return new URL(String(tab.url || "")).pathname === CHAT_PATH;
+          } catch {
+            return false;
+          }
+        });
+        if (tabs.length === 0) throw codedError("BOSS_MESSAGE_TAB_MISSING", "open the fixed BOSS message page");
+        if (tabs.length !== 1) throw codedError("BOSS_MESSAGE_TAB_AMBIGUOUS", "exactly one BOSS message tab is required");
+        const tabId = tabs[0].id;
+        const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
+        const queue = Object.freeze(buildUnreadConversationQueue(snapshot).map((target) => Object.freeze({ ...target, tabId })));
+        activeTabId = tabId;
+        activeTargets = new Set(queue);
+        return { tabId, queue };
       });
-      if (tabs.length === 0) throw codedError("BOSS_MESSAGE_TAB_MISSING", "open the fixed BOSS message page");
-      if (tabs.length !== 1) throw codedError("BOSS_MESSAGE_TAB_AMBIGUOUS", "exactly one BOSS message tab is required");
-      const tabId = tabs[0].id;
-      const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
-      const queue = Object.freeze(buildUnreadConversationQueue(snapshot).map((target) => Object.freeze({ ...target, tabId })));
-      activeTabId = tabId;
-      activeTargets = new Set(queue);
-      return { tabId, queue };
     },
     async openQueuedConversation(target, signal) {
-      if (openingConversation) throw codedError("BOSS_MESSAGE_READER_BUSY", "message reader is already opening a conversation");
-      if (!activeTargets.has(target) || target?.tabId !== activeTabId) {
-        throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active unread queue");
-      }
-      openingConversation = true;
-      try {
+      return runExclusive(async () => {
+        if (!activeTargets.has(target) || target?.tabId !== activeTabId) {
+          throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active unread queue");
+        }
         throwIfAborted(signal);
         const guarded = normalizeGuardedClickResult(await browser.evalValue(target.tabId, buildGuardedConversationClickExpression(target)));
         if (!guarded.clicked) {
@@ -255,9 +264,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
           if (selectedTargetMatches(after, target)) return after;
         }
         throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
-      } finally {
-        openingConversation = false;
-      }
+      });
     }
   };
 }
