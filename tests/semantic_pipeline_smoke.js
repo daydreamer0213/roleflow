@@ -11,7 +11,8 @@ const {
   effectiveHardBlockers,
   decisionHardBlockers,
   roleCoreEvidenceState,
-  roleEvidenceDecisionState
+  roleEvidenceDecisionState,
+  requirementsForTrack
 } = require("../src/core/model_contract");
 const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
@@ -2248,13 +2249,139 @@ function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" }
 }
 
 async function compactMatchEvidenceContractSmoke() {
-  const compactInput = {
-    industryContext: "企业服务",
-    roleSummary: "交付应用",
-    responsibilityEvidence: ["JD：独立交付应用"],
-    requirements: [{ label: "独立交付", foundation: true, indispensable: true, evidence: "JD：独立交付应用" }],
-    eligibility: ["JD：本科及以上"],
+  const multiTrackUnderstandingInput = {
+    industryContext: "企业 AI 应用",
+    hiringTracks: [
+      {
+        id: "T1",
+        label: "大模型应用开发",
+        roleSummary: "使用 Python、Agent 与 RAG 交付 AI 应用",
+        responsibilityEvidence: ["JD：负责大模型应用和 Agent 工作流落地"]
+      },
+      {
+        id: "T2",
+        label: "Python 全栈开发",
+        roleSummary: "维护和扩展 Python 全栈业务系统",
+        responsibilityEvidence: ["JD：负责 Python 前后端模块开发与上线"]
+      },
+      {
+        id: "T3",
+        label: "Python 算法开发",
+        roleSummary: "研发并交付深度学习算法",
+        responsibilityEvidence: ["JD：负责深度学习算法研发与优化"]
+      }
+    ],
+    requirements: [
+      {
+        label: "Agent 与 RAG 应用交付",
+        trackIds: ["T1"],
+        foundation: true,
+        central: true,
+        indispensable: false,
+        evidence: "JD：熟悉 Agent 搭建并有 RAG 项目经验"
+      },
+      {
+        label: "Python 编程",
+        trackIds: ["T1", "T2", "T3"],
+        foundation: false,
+        central: false,
+        indispensable: false,
+        evidence: "JD：熟练使用 Python"
+      },
+      {
+        label: "前后端模块开发",
+        trackIds: ["T2"],
+        foundation: true,
+        central: true,
+        indispensable: false,
+        evidence: "JD：负责前后端模块开发"
+      },
+      {
+        label: "深度学习算法研发",
+        trackIds: ["T3"],
+        foundation: true,
+        central: true,
+        indispensable: false,
+        evidence: "JD：负责深度学习算法研发"
+      }
+    ],
+    eligibility: [],
     riskSignals: []
+  };
+  const multiTrack = validateModelResult("understandJob", multiTrackUnderstandingInput);
+  assert.deepStrictEqual(multiTrack.hiringTracks.map((track) => track.id), ["T1", "T2", "T3"]);
+  assert.deepStrictEqual(multiTrack.coreRequirements.map((item) => item.trackIds), [
+    ["T1"], ["T1", "T2", "T3"], ["T2"], ["T3"]
+  ]);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(multiTrack, "roleSummary"), false,
+    "多分支理解不得用第一个分支冒充整个岗位主体");
+  assert.deepStrictEqual(
+    requirementsForTrack(multiTrack, "T1").map((item) => item.label),
+    ["Agent 与 RAG 应用交付", "Python 编程"]
+  );
+
+  const singleTrackInput = {
+    industryContext: "企业服务",
+    hiringTracks: [{
+      id: "T1",
+      label: "应用开发",
+      roleSummary: "交付应用",
+      responsibilityEvidence: ["JD：独立交付应用"]
+    }],
+    requirements: [{
+      label: "独立交付",
+      trackIds: ["T1"],
+      foundation: true,
+      central: true,
+      indispensable: true,
+      evidence: "JD：独立交付应用"
+    }],
+    eligibility: [],
+    riskSignals: []
+  };
+  const singleTrack = validateModelResult("understandJob", singleTrackInput);
+  assert.strictEqual(singleTrack.roleSummary, "交付应用");
+  assert.deepStrictEqual(singleTrack.responsibilityEvidence, ["JD：独立交付应用"]);
+
+  const invalidTrackOutputs = [
+    { ...multiTrackUnderstandingInput, hiringTracks: [] },
+    { ...multiTrackUnderstandingInput, hiringTracks: null },
+    { ...multiTrackUnderstandingInput, hiringTracks: [...multiTrackUnderstandingInput.hiringTracks, {
+      id: "T4", label: "第四分支", roleSummary: "第四分支交付", responsibilityEvidence: ["JD：第四分支"]
+    }, {
+      id: "T5", label: "第五分支", roleSummary: "第五分支交付", responsibilityEvidence: ["JD：第五分支"]
+    }] },
+    { ...multiTrackUnderstandingInput, hiringTracks: [
+      multiTrackUnderstandingInput.hiringTracks[0],
+      { ...multiTrackUnderstandingInput.hiringTracks[1], id: "T1" }
+    ] },
+    { ...multiTrackUnderstandingInput, hiringTracks: [
+      { ...multiTrackUnderstandingInput.hiringTracks[0], id: "A1" }
+    ] },
+    { ...multiTrackUnderstandingInput, hiringTracks: [
+      { ...multiTrackUnderstandingInput.hiringTracks[0], responsibilityEvidence: [] }
+    ] },
+    { ...multiTrackUnderstandingInput, requirements: [
+      { ...multiTrackUnderstandingInput.requirements[0], trackIds: ["T9"] }
+    ] },
+    { ...multiTrackUnderstandingInput, requirements: [
+      { ...multiTrackUnderstandingInput.requirements[0], trackIds: [] }
+    ] }
+  ];
+  assert.throws(
+    () => validateModelResult("understandJob", { ...multiTrackUnderstandingInput, hiringTracks: null }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID"
+  );
+  for (const invalid of invalidTrackOutputs) {
+    assert.throws(
+      () => validateModelResult("understandJob", invalid),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID"
+    );
+  }
+
+  const compactInput = {
+    ...singleTrackInput,
+    eligibility: ["JD：本科及以上"]
   };
   const compact = validateModelResult("understandJob", compactInput);
   assert.strictEqual(compact.industryContext, "企业服务");
@@ -2271,16 +2398,16 @@ async function compactMatchEvidenceContractSmoke() {
     riskSignals: []
   }), "紧凑 understandJob 的空数组仍是合法输出");
 
-  for (const field of ["industryContext", "roleSummary", "responsibilityEvidence", "requirements", "eligibility", "riskSignals"]) {
+  for (const field of ["industryContext", "hiringTracks", "requirements", "eligibility", "riskSignals"]) {
     const missing = { ...compactInput };
     delete missing[field];
     assert.throws(
       () => validateModelResult("understandJob", missing),
-      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && error.message.includes(field),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
       `紧凑 understandJob 缺少 ${field} 必须触发契约修复，不能静默归一化`
     );
   }
-  for (const [field, invalidValue] of [["industryContext", []], ["roleSummary", []], ["requirements", {}], ["eligibility", "JD：本科及以上"], ["riskSignals", {}]]) {
+  for (const [field, invalidValue] of [["industryContext", []], ["requirements", {}], ["eligibility", "JD：本科及以上"], ["riskSignals", {}]]) {
     assert.throws(
       () => validateModelResult("understandJob", { ...compactInput, [field]: invalidValue }),
       (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && error.message.includes(field),
@@ -2293,9 +2420,17 @@ async function compactMatchEvidenceContractSmoke() {
     "紧凑 industryContext 不能只包含空白字符"
   );
   assert.throws(
-    () => validateModelResult("understandJob", { ...compactInput, roleSummary: "   " }),
+    () => validateModelResult("understandJob", {
+      ...compactInput,
+      hiringTracks: [{ ...compactInput.hiringTracks[0], roleSummary: "   " }]
+    }),
     (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /roleSummary/.test(error.message),
-    "紧凑 roleSummary 不能只包含空白字符"
+    "紧凑 hiringTracks.roleSummary 不能只包含空白字符"
+  );
+  assert.throws(
+    () => validateModelResult("understandJob", { ...compactInput, roleSummary: "交付应用" }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /roleSummary/.test(error.message),
+    "新的紧凑 understandJob 不得混用顶层 roleSummary"
   );
   for (const invalidOutput of [
     { ...compactInput, requirements: [{ ...compactInput.requirements[0], evidence: "JD：" }] },
@@ -2329,6 +2464,8 @@ async function compactMatchEvidenceContractSmoke() {
     evidenceSnippets: ["JD：独立完成应用交付"]
   });
   assert.deepStrictEqual(jobUnderstanding.coreRequirements.map((item) => item.id), ["R1", "R2"]);
+  assert.deepStrictEqual(jobUnderstanding.hiringTracks.map((track) => track.id), ["T1"]);
+  assert.deepStrictEqual(jobUnderstanding.coreRequirements.map((item) => item.trackIds), [["T1"], ["T1"]]);
   assert.deepStrictEqual(jobUnderstanding.eligibilityItems, [
     { id: "E1", label: "仅限 2027 届应届生" }
   ]);

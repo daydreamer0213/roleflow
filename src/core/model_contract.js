@@ -278,18 +278,28 @@ function validateJobUnderstanding(value) {
     return validateCompactJobUnderstanding(value);
   }
   const evidenceSnippets = contractStringArray(value.evidenceSnippets, "understandJob", "evidenceSnippets", 8);
-  const coreRequirements = understandingCoreRequirements(value.coreRequirements)
-    .map((item, index) => ({ id: `R${index + 1}`, ...item }));
   const eligibilityConstraints = contractStringArray(value.eligibilityConstraints, "understandJob", "eligibilityConstraints", 8)
     .filter((item) => !isSoftOnlyEligibilityConstraint(item));
   const responsibilityEvidence = Object.prototype.hasOwnProperty.call(value, "responsibilityEvidence")
     ? responsibilityEvidenceList(value.responsibilityEvidence)
     : [];
-  return {
+  const hiringTracks = normalizeHiringTracks(value.hiringTracks, {
+    roleSummary: value.roleSummary,
+    responsibilityEvidence
+  });
+  const trackIds = new Set(hiringTracks.map((track) => track.id));
+  const coreRequirements = understandingCoreRequirements(value.coreRequirements)
+    .map((item, index) => ({
+      id: `R${index + 1}`,
+      ...item,
+      trackIds: Object.prototype.hasOwnProperty.call(value.coreRequirements?.[index] || {}, "trackIds")
+        ? normalizeRequirementTrackIds(value.coreRequirements[index].trackIds, trackIds, `coreRequirements[${index}]`)
+        : ["T1"]
+    }));
+  const normalized = {
     jobId: text(value.jobId),
     industryContext: text(value.industryContext || value.businessScenario || "未明确"),
-    roleSummary: text(value.roleSummary),
-    responsibilityEvidence,
+    hiringTracks,
     realRoleType: text(value.realRoleType || "unknown"),
     businessScenario: text(value.businessScenario),
     coreResponsibilities: understandingEvidenceList(value.coreResponsibilities, "coreResponsibilities", 12),
@@ -307,12 +317,32 @@ function validateJobUnderstanding(value) {
     isTrainingOrSales: Boolean(value.isTrainingOrSales),
     evidenceSnippets
   };
+  if (hiringTracks.length === 1) {
+    normalized.roleSummary = hiringTracks[0].roleSummary;
+    normalized.responsibilityEvidence = hiringTracks[0].responsibilityEvidence;
+  }
+  return normalized;
 }
 
 function validateCompactJobUnderstanding(value) {
   const industryContext = requiredCompactString(value.industryContext, "industryContext");
-  const roleSummary = requiredCompactString(value.roleSummary, "roleSummary");
-  const responsibilityEvidence = responsibilityEvidenceList(value.responsibilityEvidence);
+  const hasHiringTracks = Object.prototype.hasOwnProperty.call(value, "hiringTracks");
+  if (hasHiringTracks && !Array.isArray(value.hiringTracks)) {
+    throw new ModelContractError("understandJob", "hiringTracks 必须是数组");
+  }
+  if (hasHiringTracks && (Object.prototype.hasOwnProperty.call(value, "roleSummary")
+    || Object.prototype.hasOwnProperty.call(value, "responsibilityEvidence"))) {
+    throw new ModelContractError("understandJob", "hiringTracks 紧凑格式不得包含顶层 roleSummary 或 responsibilityEvidence");
+  }
+  if (!hasHiringTracks) {
+    requiredCompactString(value.roleSummary, "roleSummary");
+    responsibilityEvidenceList(value.responsibilityEvidence);
+  }
+  const hiringTracks = normalizeHiringTracks(value.hiringTracks, {
+    roleSummary: value.roleSummary,
+    responsibilityEvidence: value.responsibilityEvidence
+  });
+  const trackIds = new Set(hiringTracks.map((track) => track.id));
   const requirements = requiredCompactArray(value.requirements, "requirements");
   const eligibility = requiredCompactArray(value.eligibility, "eligibility");
   const riskSignals = requiredCompactArray(value.riskSignals, "riskSignals");
@@ -323,16 +353,21 @@ function validateCompactJobUnderstanding(value) {
     validateCompactEvidence(riskSignal?.evidence, "riskSignals.evidence");
   }
   const coreRequirements = understandingCoreRequirements(requirements, { requireFoundation: true })
-    .map((item, index) => ({ id: `R${index + 1}`, ...item }));
+    .map((item, index) => ({
+      id: `R${index + 1}`,
+      ...item,
+      trackIds: hasHiringTracks
+        ? normalizeRequirementTrackIds(requirements[index]?.trackIds, trackIds, `requirements[${index}]`)
+        : ["T1"]
+    }));
   const eligibilityConstraints = contractStringArray(eligibility, "understandJob", "eligibility", 8)
     .filter((item) => !isSoftOnlyEligibilityConstraint(item));
   const hiddenRisks = understandingHiddenRisks(riskSignals);
   const concerns = hiddenRisks.map(({ type, evidence }) => ({ type, evidence }));
-  return {
+  const normalized = {
     jobId: text(value.jobId),
     industryContext,
-    roleSummary,
-    responsibilityEvidence,
+    hiringTracks,
     realRoleType: "unknown",
     businessScenario: "",
     coreResponsibilities: [],
@@ -353,6 +388,71 @@ function validateCompactJobUnderstanding(value) {
     isTrainingOrSales: false,
     evidenceSnippets: []
   };
+  if (hiringTracks.length === 1) {
+    normalized.roleSummary = hiringTracks[0].roleSummary;
+    normalized.responsibilityEvidence = hiringTracks[0].responsibilityEvidence;
+  }
+  return normalized;
+}
+
+function normalizeHiringTracks(value, legacy = {}) {
+  const hasExplicitTracks = Array.isArray(value);
+  const source = hasExplicitTracks ? value : [{
+    id: "T1",
+    label: "默认招聘方向",
+    roleSummary: legacy.roleSummary || "未明确主体工作",
+    responsibilityEvidence: legacy.responsibilityEvidence || []
+  }];
+  if (!source.length || source.length > 4) {
+    throw new ModelContractError("understandJob", "hiringTracks 必须包含 1-4 个招聘分支");
+  }
+  const seen = new Set();
+  return source.map((item, index) => {
+    const id = requiredContractString(item?.id, "understandJob", `hiringTracks[${index}].id`);
+    if (id !== `T${index + 1}` || seen.has(id)) {
+      throw new ModelContractError("understandJob", "hiringTracks.id 必须按 T1-T4 唯一连续编号");
+    }
+    seen.add(id);
+    const responsibilityEvidence = responsibilityEvidenceList(item?.responsibilityEvidence);
+    if (hasExplicitTracks && !responsibilityEvidence.length) {
+      throw new ModelContractError("understandJob", `hiringTracks[${index}].responsibilityEvidence 必须至少包含一条 JD 证据`);
+    }
+    return {
+      id,
+      label: requiredCompactString(item?.label, `hiringTracks[${index}].label`),
+      roleSummary: requiredCompactString(item?.roleSummary, `hiringTracks[${index}].roleSummary`),
+      responsibilityEvidence
+    };
+  });
+}
+
+function normalizeRequirementTrackIds(value, trackIds, field) {
+  if (!Array.isArray(value) || !value.length) {
+    throw new ModelContractError("understandJob", `${field}.trackIds 必须是非空数组`);
+  }
+  const normalized = [...new Set(value.map((id) =>
+    requiredContractString(id, "understandJob", `${field}.trackIds`)
+  ))];
+  if (normalized.some((id) => !trackIds.has(id))) {
+    throw new ModelContractError("understandJob", `${field}.trackIds 包含不存在的招聘分支`);
+  }
+  return normalized;
+}
+
+function requirementsForTrack(jobUnderstanding, selectedTrackId) {
+  const tracks = normalizeHiringTracks(jobUnderstanding?.hiringTracks, {
+    roleSummary: jobUnderstanding?.roleSummary,
+    responsibilityEvidence: jobUnderstanding?.responsibilityEvidence
+  });
+  const allTrackIds = tracks.map((track) => track.id);
+  if (!allTrackIds.includes(selectedTrackId)) {
+    throw new ModelContractError("matchJob", `selectedTrackId ${selectedTrackId} 不存在`);
+  }
+  return list(jobUnderstanding?.coreRequirements).filter((item) => {
+    const owned = Array.isArray(item.trackIds) && item.trackIds.length ? item.trackIds : ["T1"];
+    return owned.includes(selectedTrackId)
+      || (allTrackIds.every((id) => owned.includes(id)) && owned.length === allTrackIds.length);
+  });
 }
 
 function requiredCompactString(value, field) {
@@ -1239,5 +1339,6 @@ module.exports = {
   decisionHardBlockers,
   roleCoreEvidenceState,
   roleEvidenceDecisionState,
-  hardBlockerText
+  hardBlockerText,
+  requirementsForTrack
 };
