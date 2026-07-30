@@ -145,6 +145,37 @@ async function ambiguousAndFatalStopSmoke() {
   assert.deepStrictEqual(listCommunicationBatchItems(ambiguous.db, ambiguous.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
   ambiguous.close();
 
+  const atomic = createFixture(1);
+  atomic.db.exec(`CREATE TRIGGER fail_progress_event
+    BEFORE INSERT ON candidate_progress_events
+    BEGIN SELECT RAISE(ABORT, 'forced progress failure'); END`);
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: atomic.db,
+      batchId: atomic.batch.id,
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {},
+      randomFn: () => 0
+    }),
+    /forced progress failure/
+  );
+  assert.strictEqual(
+    listCommunicationBatchItems(atomic.db, atomic.batch.id)[0].status,
+    "click_dispatched",
+    "communication success must roll back when progress persistence fails"
+  );
+  assert.strictEqual(
+    atomic.db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_cards").get().count,
+    0,
+    "progress card and success status must commit together"
+  );
+  atomic.db.close();
+
   const fatal = createFixture(2);
   let fatalInspections = 0;
   const fatalError = Object.assign(new Error("detail page disappeared"), { code: "BOSS_DETAIL_PAGE_LOST" });

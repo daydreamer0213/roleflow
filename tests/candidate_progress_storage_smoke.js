@@ -9,6 +9,7 @@ const {
   transitionProgressCard,
   correctProgressStage,
   recordIncomingMessageClassification,
+  recordManualProgressAction,
   getProgressCardForJob,
   listProgressCards,
   listProgressEvents
@@ -31,10 +32,20 @@ try {
     "a profile and job must have exactly one progress card"
   );
   assert.strictEqual(getProgressCardForJob(db, { profileId, jobId }).id, card.id);
-  assert.deepStrictEqual(listProgressCards(db, { planId, stages: ["contact_started"] }).map((item) => item.id), [card.id]);
+  assert.deepStrictEqual(listProgressCards(db, { profileId, stages: ["contact_started"] }).map((item) => item.id), [card.id]);
 
   recordProgressEvent(db, {
     cardId: card.id,
+    idempotencyKey: requestKey(1),
+    type: "incoming_message_classified",
+    actor: "system",
+    summary: "项目事实确认",
+    metadata: { category: "project_fact", factKey: "project_status", jobId },
+    occurredAt: "2026-07-23T08:01:00.000Z"
+  });
+  recordProgressEvent(db, {
+    cardId: card.id,
+    idempotencyKey: requestKey(1),
     type: "incoming_message_classified",
     actor: "system",
     summary: "项目事实确认",
@@ -42,6 +53,29 @@ try {
     occurredAt: "2026-07-23T08:01:00.000Z"
   });
   const initialEvents = listProgressEvents(db, card.id);
+  assert.strictEqual(initialEvents.length, 1, "repeated event writes must be idempotent");
+  assert.throws(
+    () => recordProgressEvent(db, {
+      cardId: card.id,
+      idempotencyKey: "progress:salary-expectation-is-sensitive",
+      type: "incoming_message_classified",
+      actor: "system",
+      summary: "项目事实确认",
+      metadata: { category: "project_fact" }
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_KEY_INVALID"
+  );
+  assert.throws(
+    () => recordProgressEvent(db, {
+      cardId: card.id,
+      idempotencyKey: requestKey(1),
+      type: "incoming_message_classified",
+      actor: "system",
+      summary: "不同操作内容",
+      metadata: { category: "project_fact", factKey: "project_status", jobId }
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT"
+  );
   assert.strictEqual(initialEvents[0].summary, "项目事实确认");
   assert.deepStrictEqual(initialEvents[0].metadata, {
     category: "project_fact",
@@ -58,6 +92,7 @@ try {
   });
   recordIncomingMessageClassification(db, {
     cardId: sanitizedCard.id,
+    idempotencyKey: requestKey(2),
     messageCategory: "project_fact",
     missingFactKey: "project_status",
     progressUpdate: {
@@ -67,7 +102,20 @@ try {
     },
     occurredAt: "2026-07-23T08:01:30.000Z"
   });
+  recordIncomingMessageClassification(db, {
+    cardId: sanitizedCard.id,
+    idempotencyKey: requestKey(2),
+    messageCategory: "project_fact",
+    missingFactKey: "project_status",
+    progressUpdate: {
+      stage: "needs_user_action",
+      nextAction: "请用户确认项目事实",
+      summary: "另一段 HR 原话"
+    },
+    occurredAt: "2026-07-23T08:01:31.000Z"
+  });
   const sanitizedEvents = listProgressEvents(db, sanitizedCard.id);
+  assert.strictEqual(sanitizedEvents.length, 1, "classification retries must not append events");
   assert.strictEqual(sanitizedEvents[0].summary, "项目事实确认");
   assert(!JSON.stringify(sanitizedEvents).includes("HR 原话正文"));
 
@@ -75,6 +123,7 @@ try {
     assert.throws(
       () => recordProgressEvent(db, {
         cardId: card.id,
+        idempotencyKey: requestKey(3),
         type: "incoming_message_classified",
         actor: "system",
         summary: "净化检查",
@@ -84,6 +133,69 @@ try {
     );
   }
   assert.strictEqual(listProgressEvents(db, card.id).length, initialEvents.length);
+
+  transitionProgressCard(db, {
+    cardId: sanitizedCard.id,
+    expectedStage: "needs_user_action",
+    stage: "reply_ready",
+    nextAction: "复制草稿并手动发送",
+    now: "2026-07-23T08:01:40.000Z"
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    recordManualProgressAction(db, {
+      cardId: sanitizedCard.id,
+      idempotencyKey: requestKey(4),
+      eventType: "manual_reply_sent",
+      stage: "waiting_reply",
+      summary: "用户确认已手动发送",
+      nextAction: "等待招聘方回复",
+      now: `2026-07-23T08:01:4${attempt + 1}.000Z`
+    });
+  }
+  assert.strictEqual(
+    listProgressEvents(db, sanitizedCard.id).filter((event) => event.type === "manual_reply_sent").length,
+    1,
+    "manual action retries must not append events"
+  );
+  assert.throws(
+    () => recordManualProgressAction(db, {
+      cardId: sanitizedCard.id,
+      idempotencyKey: requestKey(4),
+      eventType: "opportunity_closed",
+      stage: "closed",
+      summary: "用户关闭机会",
+      nextAction: "",
+      now: "2026-07-23T08:01:45.000Z"
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT"
+  );
+
+  const movedFixture = createFixture(db, "plan-move", now);
+  const movedCard = ensureProgressCard(db, { ...movedFixture, source: "boss", now });
+  const latestPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Latest reliable plan', '{}', NULL, 1, ?, ?)`)
+    .run(movedFixture.profileId, now, now).lastInsertRowid);
+  const reassignedCard = ensureProgressCard(db, {
+    profileId: movedFixture.profileId,
+    planId: latestPlanId,
+    jobId: movedFixture.jobId,
+    source: "boss",
+    now: "2026-07-23T08:01:50.000Z"
+  });
+  assert.strictEqual(reassignedCard.id, movedCard.id, "cross-plan discovery must keep the unique card");
+  assert.strictEqual(reassignedCard.planId, movedFixture.planId, "plan remains source metadata");
+  const delayedOldCall = ensureProgressCard(db, {
+    ...movedFixture,
+    source: "boss",
+    now: "2026-07-23T08:01:40.000Z"
+  });
+  assert.strictEqual(delayedOldCall.planId, movedFixture.planId, "delayed calls cannot move card ownership");
+  assert.deepStrictEqual(
+    listProgressCards(db, { profileId: movedFixture.profileId }).map((item) => item.id),
+    [movedCard.id],
+    "profile progress pool must expose the unique card across plans"
+  );
 
   assert.throws(
     () => transitionProgressCard(db, {
@@ -99,6 +211,7 @@ try {
   assert.throws(
     () => correctProgressStage(db, {
       cardId: card.id,
+      idempotencyKey: requestKey(5),
       expectedStage: "contact_started",
       toStage: "interview_scheduled",
       reason: " ",
@@ -109,6 +222,7 @@ try {
 
   const corrected = correctProgressStage(db, {
     cardId: card.id,
+    idempotencyKey: requestKey(6),
     expectedStage: "contact_started",
     toStage: "interview_scheduled",
     reason: "用户确认阶段应为已安排面试",
@@ -116,6 +230,25 @@ try {
   });
   assert.strictEqual(corrected.id, card.id);
   assert.strictEqual(corrected.stage, "interview_scheduled");
+  assert.strictEqual(correctProgressStage(db, {
+    cardId: card.id,
+    idempotencyKey: requestKey(6),
+    expectedStage: "contact_started",
+    toStage: "interview_scheduled",
+    reason: "用户确认阶段应为已安排面试",
+    now: "2026-07-23T08:02:01.000Z"
+  }).stage, "interview_scheduled", "same correction retry must return current state before stage validation");
+  assert.throws(
+    () => correctProgressStage(db, {
+      cardId: card.id,
+      idempotencyKey: requestKey(6),
+      expectedStage: "contact_started",
+      toStage: "interview_scheduled",
+      reason: "改成不同纠正内容",
+      now: "2026-07-23T08:02:02.000Z"
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT"
+  );
   let events = listProgressEvents(db, card.id);
   assert.strictEqual(events.length, initialEvents.length + 1);
   assert.strictEqual(events.filter((event) => event.type === "manual_correction").length, 1);
@@ -126,6 +259,7 @@ try {
 
   correctProgressStage(db, {
     cardId: card.id,
+    idempotencyKey: requestKey(7),
     expectedStage: "interview_scheduled",
     toStage: "closed",
     reason: "用户主动关闭机会",
@@ -134,6 +268,7 @@ try {
   assert.throws(
     () => correctProgressStage(db, {
       cardId: card.id,
+      idempotencyKey: requestKey(8),
       expectedStage: "closed",
       toStage: "rejected",
       reason: "错误的关闭后纠正",
@@ -143,6 +278,7 @@ try {
   );
   const reopened = correctProgressStage(db, {
     cardId: card.id,
+    idempotencyKey: requestKey(9),
     expectedStage: "closed",
     toStage: "needs_user_action",
     reason: "用户重新开启机会",
@@ -150,7 +286,7 @@ try {
   });
   assert.strictEqual(reopened.id, card.id);
   assert.strictEqual(reopened.stage, "needs_user_action");
-  assert.strictEqual(listProgressCards(db, { planId }).length, 1);
+  assert.strictEqual(listProgressCards(db, { profileId }).length, 1);
   assert.strictEqual(listProgressEvents(db, card.id).length, initialEvents.length + 3);
   db.close();
   db = null;
@@ -225,7 +361,7 @@ try {
   db.close();
   db = openDb(historicalPath);
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = 5;
+    DELETE FROM schema_migrations WHERE version IN (5, 6);
     PRAGMA user_version = 4;
   `);
   db.close();
@@ -257,4 +393,8 @@ function createFixture(database, suffix, now) {
     source, source_id, title, first_seen_at, last_seen_at
   ) VALUES ('boss', ?, ?, ?, ?)`).run(`job-${suffix}`, `Job ${suffix}`, now, now).lastInsertRowid);
   return { profileId, planId, jobId };
+}
+
+function requestKey(sequence) {
+  return `progress:00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 }

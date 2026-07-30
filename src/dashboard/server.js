@@ -1319,6 +1319,7 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
     if (progressCard) {
       recordIncomingMessageClassification(db, {
         cardId: progressCard.id,
+        idempotencyKey: params.idempotencyKey,
         messageCategory: result.messageCategory,
         missingFactKey: result.missingFact?.key || "",
         progressUpdate: result.progressUpdate
@@ -1343,6 +1344,7 @@ async function handleProgress(req, res, db) {
       if (!PROGRESS_STAGES.has(targetStage)) throw appError("PROGRESS_STAGE_INVALID", "目标阶段无效。", { statusCode: 400 });
       correctProgressStage(db, {
         cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
         expectedStage: card.stage,
         toStage: targetStage,
         reason: params.reason
@@ -1363,6 +1365,7 @@ async function handleProgress(req, res, db) {
       }
       recordManualProgressAction(db, {
         cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
         stage: definition.stage,
         eventType: definition.eventType,
         summary: enteredSummary || definition.summary,
@@ -2376,7 +2379,7 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
   const pool = ["focus", "primary", "talk", "backup", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended", "waiting_reply", "needs_user_action", "interview"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
-  const progressCards = listProgressCardsWithEvents(db, { planId: plan.id });
+  const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
   const fullPool = listDecisionPool(db, { planId: plan.id })
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
@@ -2542,7 +2545,7 @@ function renderCompactJobBase(job, filters) {
   const experienceLabel = job.experience || ((job.qualityTags || []).includes("experience_unverified") ? "经验待确认" : "经验未说明");
   const greetingAction = canGenerateGreeting(job) ? `<form class="detail-actions" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="greeting"><button>生成定制招呼语</button></form>` : "";
   const followUpAction = job.applicationStatus === "no_reply" ? `<form class="detail-actions" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="follow_up"><button>生成一次跟进文案</button></form>` : "";
-  const hrReplyAction = `<form class="follow" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="hr_reply"><textarea name="hrMessage" placeholder="粘贴 HR 原话" required></textarea><button>生成 HR 回复</button></form>`;
+  const hrReplyAction = `<form class="follow" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="hr_reply"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><textarea name="hrMessage" placeholder="粘贴 HR 原话" required></textarea><button>生成 HR 回复</button></form>`;
   const feedbackAction = `<form class="follow" method="post" action="/api/feedback${query}">${jobContext}${feedbackReasonSelect("", true)}<input name="note" placeholder="具体哪里推荐错了（可选）"><button>提交推荐反馈</button></form>`;
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body"><div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(job.risks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
@@ -2553,11 +2556,12 @@ function renderProgressPanel(card) {
     .map((event) => `<li>${escapeHtml(compactDateTime(event.occurredAt))} · ${escapeHtml(event.summary)}</li>`)
     .join("");
   const context = `<input type="hidden" name="cardId" value="${card.id}">`;
-  const actionButton = (action, label) => `<form method="post" action="/api/progress">${context}<button name="action" value="${action}">${label}</button></form>`;
+  const requestKey = () => `<input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}">`;
+  const actionButton = (action, label) => `<form method="post" action="/api/progress">${context}${requestKey()}<button name="action" value="${action}">${label}</button></form>`;
   const stageAction = card.stage === "reply_ready"
     ? actionButton("reply_confirmed_sent", "已手动发送")
     : card.stage === "interview_invited"
-      ? `<form class="follow" method="post" action="/api/progress">${context}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
+      ? `<form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
       : "";
   const controls = card.stage === "closed"
     ? actionButton("reopen_opportunity", "重新开启机会")
@@ -2565,7 +2569,11 @@ function renderProgressPanel(card) {
   const correctionOptions = [...PROGRESS_STAGES]
     .map((stage) => `<option value="${stage}">${escapeHtml(progressStageLabel(stage))}</option>`)
     .join("");
-  return `<section class="progress-card" style="margin-top:12px;padding:12px;border:1px solid #86b9ad;border-radius:7px;background:#f3faf8"><strong>${escapeHtml(progressStageLabel(card.stage))}</strong><div class="line">下一步：${escapeHtml(card.nextAction || "等待用户确认")}${card.scheduledAt ? ` · ${escapeHtml(compactDateTime(card.scheduledAt))}` : ""}</div>${eventTimeline ? `<ol>${eventTimeline}</ol>` : ""}<p class="line">所有按钮只更新本地记录，不会自动填写或发送。</p><div class="quick-actions">${controls}</div><details><summary>纠正阶段</summary><form class="follow" method="post" action="/api/progress">${context}<input type="hidden" name="action" value="correct_stage"><select name="targetStage">${correctionOptions}</select><input name="reason" placeholder="纠正原因" required><button>保存纠正</button></form></details></section>`;
+  return `<section class="progress-card" style="margin-top:12px;padding:12px;border:1px solid #86b9ad;border-radius:7px;background:#f3faf8"><strong>${escapeHtml(progressStageLabel(card.stage))}</strong><div class="line">下一步：${escapeHtml(card.nextAction || "等待用户确认")}${card.scheduledAt ? ` · ${escapeHtml(compactDateTime(card.scheduledAt))}` : ""}</div>${eventTimeline ? `<ol>${eventTimeline}</ol>` : ""}<p class="line">所有按钮只更新本地记录，不会自动填写或发送。</p><div class="quick-actions">${controls}</div><details><summary>纠正阶段</summary><form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="correct_stage"><select name="targetStage">${correctionOptions}</select><input name="reason" placeholder="纠正原因" required><button>保存纠正</button></form></details></section>`;
+}
+
+function newProgressRequestKey() {
+  return `progress:${require("node:crypto").randomUUID()}`;
 }
 
 function progressStageLabel(stage) {

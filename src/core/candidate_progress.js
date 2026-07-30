@@ -57,8 +57,6 @@ function ensureProgressCard(db, input = {}) {
   const jobId = positiveInteger(input.jobId, "jobId");
   const source = shortText(input.source, 80);
   if (!source) throw progressError("PROGRESS_SOURCE_REQUIRED", "progress source is required");
-  const existing = getProgressCardForJob(db, { profileId, jobId });
-  if (existing) return existing;
   const owner = db.prepare("SELECT profile_id FROM search_plans WHERE id = ?").get(planId);
   if (!owner || Number(owner.profile_id) !== profileId) {
     throw progressError("PROGRESS_PLAN_PROFILE_MISMATCH", "progress plan does not belong to the profile");
@@ -66,6 +64,8 @@ function ensureProgressCard(db, input = {}) {
   const job = db.prepare("SELECT source FROM jobs WHERE id = ?").get(jobId);
   if (!job) throw progressError("PROGRESS_JOB_NOT_FOUND", "progress job was not found");
   const now = isoText(input.now);
+  const existing = getProgressCardForJob(db, { profileId, jobId });
+  if (existing) return existing;
   const result = db.prepare(`INSERT INTO candidate_progress_cards(
       profile_id, plan_id, job_id, source, stage, last_event_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, 'contact_started', ?, ?, ?)
@@ -76,22 +76,40 @@ function ensureProgressCard(db, input = {}) {
 }
 
 function recordProgressEvent(db, input = {}) {
+  return persistProgressEvent(db, input).event;
+}
+
+function persistProgressEvent(db, input = {}, { keyKind = "external" } = {}) {
   const cardId = positiveInteger(input.cardId, "cardId");
   if (!getProgressCard(db, cardId)) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const idempotencyKey = keyKind === "communication"
+    ? communicationIdempotencyKey(input.idempotencyKey)
+    : progressIdempotencyKey(input.idempotencyKey);
   const type = shortText(input.type, 80);
   const actor = shortText(input.actor, 40);
   if (!type || !actor) throw progressError("PROGRESS_EVENT_INVALID", "progress event type and actor are required");
   const summary = shortText(input.summary, 240);
   const metadata = sanitizeMetadata(input.metadata);
   const occurredAt = isoText(input.occurredAt);
-  const result = db.prepare(`INSERT INTO candidate_progress_events(
-    card_id, type, actor, summary, metadata_json, occurred_at, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(cardId, type, actor, summary, JSON.stringify(metadata), occurredAt, occurredAt);
+  const result = db.prepare(`INSERT OR IGNORE INTO candidate_progress_events(
+    card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(cardId, idempotencyKey, type, actor, summary, JSON.stringify(metadata), occurredAt, occurredAt);
+  if (Number(result.changes) !== 1) {
+    const existing = db.prepare(`SELECT * FROM candidate_progress_events
+      WHERE card_id = ? AND idempotency_key = ?`).get(cardId, idempotencyKey);
+    if (!existing) throw progressError("PROGRESS_EVENT_CONFLICT", "progress event could not be persisted");
+    const event = mapEvent(existing);
+    assertEventIntent(event, { type, actor, summary, metadata });
+    return { event, inserted: false };
+  }
   db.prepare(`UPDATE candidate_progress_cards
     SET last_event_at = ?, updated_at = ? WHERE id = ?`)
     .run(occurredAt, occurredAt, cardId);
-  return mapEvent(db.prepare("SELECT * FROM candidate_progress_events WHERE id = ?").get(Number(result.lastInsertRowid)));
+  return {
+    event: mapEvent(db.prepare("SELECT * FROM candidate_progress_events WHERE id = ?").get(Number(result.lastInsertRowid))),
+    inserted: true
+  };
 }
 
 function transitionProgressCard(db, input = {}) {
@@ -119,10 +137,21 @@ function correctProgressStage(db, input = {}) {
   const reason = shortText(input.reason, 240);
   if (!reason) throw progressError("PROGRESS_CORRECTION_REASON_REQUIRED", "progress correction reason is required");
   const cardId = positiveInteger(input.cardId, "cardId");
+  const idempotencyKey = progressIdempotencyKey(input.idempotencyKey);
   const expectedStage = legalStage(input.expectedStage);
   const toStage = legalStage(input.toStage);
   const card = getProgressCard(db, cardId);
   if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const existingEvent = getProgressEventByKey(db, cardId, idempotencyKey);
+  if (existingEvent) {
+    assertEventIntent(existingEvent, {
+      type: "manual_correction",
+      actor: "user",
+      summary: reason,
+      metadata: { toStage }
+    }, ["toStage"]);
+    return card;
+  }
   if (card.stage !== expectedStage) {
     throw progressError("PROGRESS_STAGE_CONFLICT", `expected ${expectedStage}, found ${card.stage}`);
   }
@@ -132,14 +161,19 @@ function correctProgressStage(db, input = {}) {
   const now = isoText(input.now);
   db.exec("BEGIN IMMEDIATE");
   try {
-    recordProgressEvent(db, {
+    const persisted = persistProgressEvent(db, {
       cardId,
+      idempotencyKey,
       type: "manual_correction",
       actor: "user",
       summary: reason,
       metadata: { fromStage: expectedStage, toStage },
       occurredAt: now
     });
+    if (!persisted.inserted) {
+      db.exec("COMMIT");
+      return getProgressCard(db, cardId);
+    }
     const result = db.prepare(`UPDATE candidate_progress_cards
       SET stage = ?, next_action = '', scheduled_at = NULL, updated_at = ?
       WHERE id = ? AND stage = ?`)
@@ -163,44 +197,48 @@ function recordVerifiedCommunicationStart(db, input = {}) {
   const itemId = positiveInteger(item.id, "item.id");
   const jobId = positiveInteger(item.jobId, "item.jobId");
   const now = isoText(input.now);
-  let card = ensureProgressCard(db, {
-    profileId: batch.profileId,
-    planId: batch.planId,
-    jobId,
-    source: batch.site || "boss",
-    now
-  });
-  const eventType = outcome === "already_communicated" ? "contact_already_exists" : "contact_started";
-  const duplicate = db.prepare(`SELECT id FROM candidate_progress_events
-    WHERE card_id = ? AND type = ?
-      AND json_extract(metadata_json, '$.batchId') = ?
-      AND json_extract(metadata_json, '$.itemId') = ?
-      AND json_extract(metadata_json, '$.outcome') = ?
-    LIMIT 1`).get(card.id, eventType, batchId, itemId, outcome);
-  if (!duplicate) {
-    recordProgressEvent(db, {
+  db.exec("SAVEPOINT candidate_progress_verified");
+  try {
+    let card = ensureProgressCard(db, {
+      profileId: batch.profileId,
+      planId: batch.planId,
+      jobId,
+      source: batch.site || "boss",
+      now
+    });
+    const eventType = outcome === "already_communicated" ? "contact_already_exists" : "contact_started";
+    const persisted = persistProgressEvent(db, {
       cardId: card.id,
+      idempotencyKey: `communication:${batchId}:${itemId}:${outcome}`,
       type: eventType,
       actor: "system",
       summary: outcome === "already_communicated" ? "平台显示已发起沟通" : "已验证发起沟通",
       metadata: { batchId, itemId, jobId, outcome },
       occurredAt: now
-    });
+    }, { keyKind: "communication" });
+    if (persisted.inserted && card.stage === "contact_started") {
+      card = transitionProgressCard(db, {
+        cardId: card.id,
+        expectedStage: "contact_started",
+        stage: "waiting_reply",
+        nextAction: "等待招聘方回复",
+        now
+      });
+    }
+    db.exec("RELEASE candidate_progress_verified");
+    return card;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK TO candidate_progress_verified");
+      db.exec("RELEASE candidate_progress_verified");
+    } catch {}
+    throw error;
   }
-  if (card.stage === "contact_started") {
-    card = transitionProgressCard(db, {
-      cardId: card.id,
-      expectedStage: "contact_started",
-      stage: "waiting_reply",
-      nextAction: "等待招聘方回复",
-      now
-    });
-  }
-  return card;
 }
 
 function recordIncomingMessageClassification(db, input = {}) {
   const cardId = positiveInteger(input.cardId, "cardId");
+  const idempotencyKey = progressIdempotencyKey(input.idempotencyKey);
   const messageCategory = String(input.messageCategory || "").trim();
   if (!MESSAGE_CATEGORIES.has(messageCategory)) {
     throw progressError("PROGRESS_MESSAGE_CATEGORY_INVALID", "message category is invalid");
@@ -213,21 +251,33 @@ function recordIncomingMessageClassification(db, input = {}) {
   const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
   const card = getProgressCard(db, cardId);
   if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
-  const occurredAt = isoText(input.occurredAt);
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    recordProgressEvent(db, {
-      cardId,
+  const classificationMetadata = { messageCategory, missingFactKey, stage };
+  const existingEvent = getProgressEventByKey(db, cardId, idempotencyKey);
+  if (existingEvent) {
+    assertEventIntent(existingEvent, {
       type: "incoming_message_classified",
       actor: "system",
       summary,
-      metadata: {
-        messageCategory,
-        missingFactKey,
-        stage
-      },
+      metadata: classificationMetadata
+    });
+    return card;
+  }
+  const occurredAt = isoText(input.occurredAt);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const persisted = persistProgressEvent(db, {
+      cardId,
+      idempotencyKey,
+      type: "incoming_message_classified",
+      actor: "system",
+      summary,
+      metadata: classificationMetadata,
       occurredAt
     });
+    if (!persisted.inserted) {
+      db.exec("COMMIT");
+      return getProgressCard(db, cardId);
+    }
     transitionProgressCard(db, {
       cardId,
       expectedStage: card.stage,
@@ -245,6 +295,7 @@ function recordIncomingMessageClassification(db, input = {}) {
 
 function recordManualProgressAction(db, input = {}) {
   const cardId = positiveInteger(input.cardId, "cardId");
+  const idempotencyKey = progressIdempotencyKey(input.idempotencyKey);
   const card = getProgressCard(db, cardId);
   if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
   const stage = legalStage(input.stage);
@@ -255,6 +306,17 @@ function recordManualProgressAction(db, input = {}) {
   if (scheduledAt && !Number.isFinite(Date.parse(scheduledAt))) {
     throw progressError("PROGRESS_TIME_INVALID", "scheduled time must be ISO-compatible");
   }
+  const actionMetadata = { stage, ...(scheduledAt ? { scheduledAt } : {}) };
+  const existingEvent = getProgressEventByKey(db, cardId, idempotencyKey);
+  if (existingEvent) {
+    assertEventIntent(existingEvent, {
+      type: eventType,
+      actor: "user",
+      summary,
+      metadata: actionMetadata
+    });
+    return card;
+  }
   const closedReopen = card.stage === "closed"
     && stage === "needs_user_action"
     && eventType === "opportunity_reopened";
@@ -264,14 +326,19 @@ function recordManualProgressAction(db, input = {}) {
   const now = isoText(input.now);
   db.exec("BEGIN IMMEDIATE");
   try {
-    recordProgressEvent(db, {
+    const persisted = persistProgressEvent(db, {
       cardId,
+      idempotencyKey,
       type: eventType,
       actor: "user",
       summary,
-      metadata: { stage, ...(scheduledAt ? { scheduledAt } : {}) },
+      metadata: actionMetadata,
       occurredAt: now
     });
+    if (!persisted.inserted) {
+      db.exec("COMMIT");
+      return getProgressCard(db, cardId);
+    }
     if (closedReopen) {
       const result = db.prepare(`UPDATE candidate_progress_cards
         SET stage = 'needs_user_action', next_action = ?, scheduled_at = NULL, updated_at = ?
@@ -321,18 +388,18 @@ function getProgressCardById(db, cardId) {
 }
 
 function listProgressCards(db, input = {}) {
-  const planId = positiveInteger(input.planId, "planId");
+  const profileId = positiveInteger(input.profileId, "profileId");
   const stages = Array.isArray(input.stages) ? [...new Set(input.stages.map(legalStage))] : [];
   const stageClause = stages.length ? ` AND stage IN (${stages.map(() => "?").join(", ")})` : "";
   return db.prepare(`SELECT * FROM candidate_progress_cards
-    WHERE plan_id = ?${stageClause}
+    WHERE profile_id = ?${stageClause}
     ORDER BY updated_at DESC, id DESC`)
-    .all(planId, ...stages)
+    .all(profileId, ...stages)
     .map(mapCard);
 }
 
 function listProgressCardsWithEvents(db, input = {}) {
-  const planId = positiveInteger(input.planId, "planId");
+  const profileId = positiveInteger(input.profileId, "profileId");
   const rows = db.prepare(`SELECT
       cards.*,
       events.id AS event_id,
@@ -344,9 +411,9 @@ function listProgressCardsWithEvents(db, input = {}) {
       events.created_at AS event_created_at
     FROM candidate_progress_cards cards
     LEFT JOIN candidate_progress_events events ON events.card_id = cards.id
-    WHERE cards.plan_id = ?
+    WHERE cards.profile_id = ?
     ORDER BY cards.updated_at DESC, cards.id DESC, events.occurred_at ASC, events.id ASC`)
-    .all(planId);
+    .all(profileId);
   const cards = new Map();
   for (const row of rows) {
     let card = cards.get(Number(row.id));
@@ -379,6 +446,32 @@ function listProgressEvents(db, cardId) {
 
 function getProgressCard(db, cardId) {
   return mapCard(db.prepare("SELECT * FROM candidate_progress_cards WHERE id = ?").get(cardId));
+}
+
+function getProgressEventByKey(db, cardId, idempotencyKey) {
+  return mapEvent(db.prepare(`SELECT * FROM candidate_progress_events
+    WHERE card_id = ? AND idempotency_key = ?`).get(cardId, idempotencyKey));
+}
+
+function assertEventIntent(event, expected, metadataKeys = null) {
+  const scalarMatch = event.type === expected.type
+    && event.actor === expected.actor
+    && event.summary === expected.summary;
+  const actualMetadata = event.metadata || {};
+  const expectedMetadata = expected.metadata || {};
+  const metadataMatch = metadataKeys
+    ? metadataKeys.every((key) => actualMetadata[key] === expectedMetadata[key])
+    : stableMetadata(actualMetadata) === stableMetadata(expectedMetadata);
+  if (!scalarMatch || !metadataMatch) {
+    throw progressError(
+      "PROGRESS_IDEMPOTENCY_CONFLICT",
+      "progress idempotency key was already used for a different operation"
+    );
+  }
+}
+
+function stableMetadata(value) {
+  return JSON.stringify(Object.fromEntries(Object.entries(value || {}).sort(([left], [right]) => left.localeCompare(right))));
 }
 
 function sanitizeMetadata(value) {
@@ -460,6 +553,22 @@ function shortText(value, maxLength) {
 function nullableText(value, maxLength) {
   const text = shortText(value, maxLength);
   return text || null;
+}
+
+function progressIdempotencyKey(value) {
+  const key = String(value || "").trim();
+  if (!/^progress:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key)) {
+    throw progressError("PROGRESS_IDEMPOTENCY_KEY_INVALID", "progress idempotency key is required");
+  }
+  return key;
+}
+
+function communicationIdempotencyKey(value) {
+  const key = String(value || "").trim();
+  if (!/^communication:[1-9]\d*:[1-9]\d*:(succeeded|already_communicated)$/.test(key)) {
+    throw progressError("PROGRESS_IDEMPOTENCY_KEY_INVALID", "communication idempotency key is invalid");
+  }
+  return key;
 }
 
 function parseJson(value, fallback) {

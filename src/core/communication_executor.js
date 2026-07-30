@@ -111,10 +111,11 @@ async function runCommunicationBatch({
         executionGate
       });
     } else if (state === "already_communicated") {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
-      recordVerifiedCommunicationStart(db, {
+      commitVerifiedCommunication(db, {
         batch: getCommunicationBatch(db, batchId),
         item,
+        expectedStatus: "opening",
+        status: "already_communicated",
         outcome: "already_communicated"
       });
       recordAudit(db, item, "communication_result", "already_communicated");
@@ -197,9 +198,31 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
       logger
     );
   }
-  transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
-  recordVerifiedCommunicationStart(db, { batch, item, outcome: "succeeded" });
+  commitVerifiedCommunication(db, {
+    batch,
+    item,
+    expectedStatus: "click_dispatched",
+    status: "succeeded",
+    outcome: "succeeded"
+  });
   recordAudit(db, item, "communication_result", "succeeded");
+}
+
+function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, outcome }) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      batchId: batch.id,
+      expectedStatus,
+      status
+    });
+    recordVerifiedCommunicationStart(db, { batch, item, outcome });
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
 }
 
 async function paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal }) {

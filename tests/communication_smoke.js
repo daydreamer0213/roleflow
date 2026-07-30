@@ -85,7 +85,10 @@ let server;
     const queueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}`)).text();
     assert(queueHtml.includes("生成定制招呼语"));
 
-    const greeting = await post(base, "/api/communication", { mode: "greeting", jobId, profileId: saved.profileId, planId: saved.planId });
+    const greeting = await post(base, "/api/communication", {
+      mode: "greeting", jobId, profileId: saved.profileId, planId: saved.planId,
+      idempotencyKey: requestKey(1)
+    });
     const greetingHtml = await greeting.text();
     assert.strictEqual(greeting.status, 200, greetingHtml);
     assert(greetingHtml.includes("KnowledgeFlow"));
@@ -97,6 +100,7 @@ let server;
       jobId,
       profileId: saved.profileId,
       planId: saved.planId,
+      idempotencyKey: requestKey(2),
       hrMessage: projectQuestion
     });
     const projectReplyHtml = await projectReply.text();
@@ -115,6 +119,7 @@ let server;
       jobId,
       profileId: saved.profileId,
       planId: saved.planId,
+      idempotencyKey: requestKey(3),
       hrMessage: interviewQuestion
     });
     const interviewReplyHtml = await interviewReply.text();
@@ -126,7 +131,10 @@ let server;
     assert.strictEqual(progressEvents.at(-1).summary, "收到面试邀约");
     assert(!progressStorageText(db).includes(interviewQuestion), "面试原话不能写入进展表");
 
-    const missingGap = await post(base, "/api/communication", { mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId, hrMessage: "为什么中间 GAP 了一年？" });
+    const missingGap = await post(base, "/api/communication", {
+      mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId,
+      idempotencyKey: requestKey(4), hrMessage: "为什么中间 GAP 了一年？"
+    });
     const missingGapHtml = await missingGap.text();
     assert.strictEqual(missingGap.status, 200, missingGapHtml);
     assert(missingGapHtml.includes("这段 GAP 期间你实际在做什么"));
@@ -139,11 +147,15 @@ let server;
       jobId,
       profileId: saved.profileId,
       planId: saved.planId,
+      idempotencyKey: requestKey(5),
       factKey: "gap",
       factValue: gapFact
     });
     assert.strictEqual(savedGap.status, 303);
-    const answeredGap = await post(base, "/api/communication", { mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId, hrMessage: "为什么中间 GAP 了一年？" });
+    const answeredGap = await post(base, "/api/communication", {
+      mode: "hr_reply", jobId, profileId: saved.profileId, planId: saved.planId,
+      idempotencyKey: requestKey(6), hrMessage: "为什么中间 GAP 了一年？"
+    });
     const answeredGapHtml = await answeredGap.text();
     assert.strictEqual(answeredGap.status, 200, answeredGapHtml);
     assert(answeredGapHtml.includes(gapFact));
@@ -155,6 +167,7 @@ let server;
 
     const sent = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(7),
       action: "reply_confirmed_sent"
     });
     assert.strictEqual(sent.status, 303);
@@ -163,11 +176,13 @@ let server;
 
     const invited = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(8),
       action: "mark_interview_invited"
     });
     assert.strictEqual(invited.status, 303);
     const missingScheduleSummary = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(9),
       action: "mark_interview_scheduled",
       scheduledAt: "2026-08-01T15:00:00.000Z"
     });
@@ -175,6 +190,7 @@ let server;
     const scheduledAt = "2026-08-01T15:00:00.000Z";
     const scheduled = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(10),
       action: "mark_interview_scheduled",
       scheduledAt,
       summary: "用户确认周五下午三点面试"
@@ -188,6 +204,7 @@ let server;
     const eventCountBeforeCorrection = listProgressEvents(db, progressCard.id).length;
     const correction = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(11),
       action: "correct_stage",
       targetStage: "resume_submitted",
       reason: "用户确认已提交简历"
@@ -203,6 +220,7 @@ let server;
     });
     const rejectedCorrection = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(12),
       action: "correct_stage",
       targetStage: "waiting_reply",
       reason: ""
@@ -211,11 +229,13 @@ let server;
 
     const closed = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(13),
       action: "close_opportunity"
     });
     assert.strictEqual(closed.status, 303);
     const reopened = await post(base, "/api/progress", {
       cardId: progressCard.id,
+      idempotencyKey: requestKey(14),
       action: "reopen_opportunity",
       summary: "用户重新开启机会"
     });
@@ -234,7 +254,10 @@ let server;
     const noReplyHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=no_reply`)).text();
     assert(noReplyHtml.includes("无回复待跟进"));
     assert(noReplyHtml.includes("生成一次跟进文案"));
-    const followUp = await post(base, "/api/communication", { mode: "follow_up", jobId, profileId: saved.profileId, planId: saved.planId });
+    const followUp = await post(base, "/api/communication", {
+      mode: "follow_up", jobId, profileId: saved.profileId, planId: saved.planId,
+      idempotencyKey: requestKey(15)
+    });
     const followUpHtml = await followUp.text();
     assert.strictEqual(followUp.status, 200, followUpHtml);
     assert(followUpHtml.includes("KnowledgeFlow"));
@@ -307,4 +330,8 @@ function progressStorageText(database) {
     events: database.prepare("SELECT * FROM candidate_progress_events ORDER BY id").all(),
     legacyEvents: database.prepare("SELECT event_type, payload_json FROM candidate_job_events ORDER BY id").all()
   });
+}
+
+function requestKey(sequence) {
+  return `progress:00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 }

@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS candidate_progress_cards (
 CREATE TABLE IF NOT EXISTS candidate_progress_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   card_id INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
   type TEXT NOT NULL,
   actor TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
@@ -532,6 +533,13 @@ const MIGRATIONS = [
       db.exec(CANDIDATE_PROGRESS_SCHEMA);
       backfillHistoricalCandidateProgress(db);
     }
+  },
+  {
+    version: 6,
+    name: "candidate_progress_event_idempotency",
+    apply(db) {
+      migrateCandidateProgressEventIdempotency(db);
+    }
   }
 ];
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -894,9 +902,10 @@ function backfillHistoricalCandidateProgress(db) {
     ON CONFLICT(profile_id, job_id) DO NOTHING`)
     .run();
   db.prepare(`INSERT INTO candidate_progress_events(
-      card_id, type, actor, summary, metadata_json, occurred_at, created_at
+      card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
     )
     SELECT cards.id,
+      'migration:candidate-state:' || cards.id || ':' || states.reason_code,
       CASE states.reason_code
         WHEN 'already_communicated' THEN 'contact_already_exists'
         ELSE 'contact_started'
@@ -916,6 +925,26 @@ function backfillHistoricalCandidateProgress(db) {
           AND events.type IN ('contact_started', 'contact_already_exists')
       )`)
     .run();
+}
+
+function migrateCandidateProgressEventIdempotency(db) {
+  const columns = db.prepare("PRAGMA table_info(candidate_progress_events)").all();
+  if (!columns.some((column) => column.name === "idempotency_key")) {
+    db.exec("ALTER TABLE candidate_progress_events ADD COLUMN idempotency_key TEXT");
+  }
+  db.prepare(`UPDATE candidate_progress_events
+    SET idempotency_key = 'legacy:event:' || id
+    WHERE idempotency_key IS NULL OR trim(idempotency_key) = ''`).run();
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_progress_events_idempotency
+      ON candidate_progress_events(card_id, idempotency_key);
+    CREATE TRIGGER IF NOT EXISTS candidate_progress_events_require_idempotency
+    BEFORE INSERT ON candidate_progress_events
+    WHEN NEW.idempotency_key IS NULL OR trim(NEW.idempotency_key) = ''
+    BEGIN
+      SELECT RAISE(ABORT, 'candidate progress idempotency key is required');
+    END;
+  `);
 }
 
 function createWorkflowRun(db, input = {}) {

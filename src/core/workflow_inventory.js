@@ -179,7 +179,9 @@ function reconcileCommunicationOutcome(db, {
 }
 
 function progressStagesByJob(db, planId) {
-  return new Map(listProgressCards(db, { planId })
+  const profileId = getSearchPlan(db, planId)?.profileId;
+  if (!profileId) return new Map();
+  return new Map(listProgressCards(db, { profileId })
     .map((card) => [Number(card.jobId), card.stage]));
 }
 
