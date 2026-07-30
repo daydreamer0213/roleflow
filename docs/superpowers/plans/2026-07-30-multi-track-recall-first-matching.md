@@ -1710,3 +1710,63 @@ the next reviewed root-cause change.
 - 本检查点 supersede reason v1-v4 next-root 与旧 evaluated；v1-v4 immutable。docs-only commit 不替代 candidate/baseline evaluated。
 - 唯一 next root 为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v5-20260730`，全新复制/哈希/manifest/v3 proof/bundle/gates，临时分支和 manifest/proof 精确绑定 candidate evaluated `c4418e5314e8694c727f56a55ba5486ff2fb1e69`，基线绑定 `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`，仅零基 index `4`，私有日志，finally 恢复固定候选。
 - 产品 commits 仍为 candidate `87cc68ede886ac0ef3b53f960c38548cce4a831a`、baseline `fb0168afce265cf351f03e80f66d9e0f24015887` 且为严格祖先。v5 确认前不得产品修复、3 条或 20 条。
+
+## 2026-07-30 multi-track sparse repair product checkpoint
+
+- This checkpoint supersedes the prior reason-v5 next action and product
+  binding. All earlier diagnostic roots remain immutable historical evidence.
+- Reason v5 at
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v5-20260730`
+  exited `0` for exact zero-based index `4`. Its private-safe result was one
+  failed row at `matchJob` contract repair: initial and repair category
+  `result_shape`, reason `multi_track_requires_sparse`, one match repair, zero
+  understand-job repairs, no selected track, and incomplete evidence. The raw
+  response shape was neither persisted nor inspected; this proves the repeated
+  strict sparse-validator failure, not any particular raw legacy key.
+- Reviewed design checkpoint `ce3a6f1ae1dc30c6fa2f9a1d9b471ce92a17216c`
+  chose exact-key prompt reinforcement plus narrowly targeted repair
+  de-anchoring. Product commit
+  `9783d0b652ebb4db2233dba6135615494ca2feb9` implements it without weakening
+  the validator, adding a repair, changing DeepSeek thinking policy, mutating
+  caller input, or changing unrelated repair inputs.
+- The TDD regression failed first on the absent exact six-key contract. After
+  implementation, `model_adapter_smoke`, `semantic_pipeline_smoke`, all 31
+  benchmark fixtures, all 47 candidate offline checks, and `git diff --check`
+  passed from a clean product commit. Independent review found no Critical,
+  Important, Moderate, or Minor findings and concluded `Spec PASS` and
+  `Code quality APPROVED`.
+- The docs-only commit produced by this checkpoint is the new candidate
+  evaluated commit. A direct descendant docs-only binding record must add its
+  exact SHA before any private root is created; that later record does not
+  replace the evaluated commit. Candidate product `9783d0b652ebb4db2233dba6135615494ca2feb9`
+  must be its strict ancestor.
+- Baseline product remains
+  `fb0168afce265cf351f03e80f66d9e0f24015887`; baseline evaluated remains
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`. No shared harness file changed,
+  so the reviewed candidate/baseline blobs remain runner
+  `c80e179d9e665b5e75139dfa9704107e95c5300c`, metrics
+  `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and privacy
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Recheck the frozen pool before every live root: jobs raw SHA-256
+  `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+  and labels raw SHA-256
+  `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`.
+- Preserve the existing
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`
+  unchanged. The only permitted three-row acceptance root is the initially
+  absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-sparse-repair-v1-20260730`.
+  Create/copy/hash all seven frozen files, generate and verify manifest plus
+  v3 proof, confirm cache/result/output absence, then run exact zero-based
+  `--diagnostic-indices '4,9,10'` with a fresh cache.
+- The 20-row root
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
+  must remain absent until all three rows are structurally complete and pass
+  their expected bucket/recommendation and safety gates. The 20-row run must
+  rebuild its own root, manifest, v3 proof, and fresh cache.
+- Every live attempt must stage
+  `codex/multi-track-recall-contract-diagnostic-v1` at the exact candidate
+  evaluated commit, bind candidate/baseline product and evaluated commits in
+  the manifest/proof, and restore
+  `codex/claude-generic-evidence-matching-live-fix` at
+  `1fc49dac3670a71c720bfcaed943fa29204d93c5` with clean status in `finally`.
