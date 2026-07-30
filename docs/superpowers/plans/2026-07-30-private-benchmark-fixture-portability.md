@@ -559,3 +559,16 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
   outputs, and fresh cache; run exact zero-based `4,9,10`; restore the fixed
   candidate in `finally`. Do not create the 20-row root until all three rows
   pass exact, structural, recall, and safety gates.
+
+### Validation-idempotence exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e28333c0e1410fb6d784aa6f0dc93cb3b695eacb`. Candidate product
+  `099a71331f74d0b21a149b835908744e74962794` must be verified as its strict
+  ancestor immediately before root creation.
+- This docs-only binding record does not replace candidate evaluated
+  `e28333c0e1410fb6d784aa6f0dc93cb3b695eacb` in the manifest, v3 proof,
+  temporary evaluation branch, or final offline verification.
+- Baseline evaluated/product remain exactly
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
