@@ -61,6 +61,7 @@ const SAFE_CONTRACT_FAILURE_REASONS = new Set([
   "aligned_requires_role_resume",
   "misaligned_requires_evidence_triplet",
   "insufficient_requires_gap",
+  "central_transferable_requires_gap",
   "matches_shape",
   "matches_unknown_id",
   "matches_duplicate_id",
@@ -1731,7 +1732,7 @@ function privateContractFailureCategory(value) {
   if (/selectedTrackId/.test(message)) categories.push("selected_track");
   if (/roleResumeEvidence/.test(message)) categories.push("role_resume_evidence");
   if (/roleAlignment/.test(message)) categories.push("role_alignment");
-  if (/roleGaps/.test(message)) categories.push("role_gaps");
+  if (/roleGaps?/i.test(message)) categories.push("role_gaps");
   if (/\beligibility\b/.test(message)) categories.push("eligibility");
   if (/\bmatches\b|requirement|coverage/i.test(message)) categories.push("requirement_matches");
   const distinct = [...new Set(categories)];
@@ -1759,6 +1760,7 @@ function privateContractFailureReason(value) {
   add(/(?:aligned|mostly_aligned|partially_aligned) requires roleResumeEvidence/i, "aligned_requires_role_resume");
   add(/misaligned requires responsibility evidence, resume evidence, and a gap/i, "misaligned_requires_evidence_triplet");
   add(/insufficient_evidence requires a concrete gap/i, "insufficient_requires_gap");
+  add(/central transferable requires a concrete roleGap/i, "central_transferable_requires_gap");
   for (const field of ["matches", "eligibility"]) {
     const prefix = field === "matches" ? "matches" : "eligibility";
     add(new RegExp(`${field} (?:must be an array|must contain evidence objects)|${field} \u5fc5\u987b\u662f(?:\u6570\u7ec4|[^\\n]*\u5bf9\u8c61\u6570\u7ec4)`, "i"), `${prefix}_shape`);

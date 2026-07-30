@@ -2102,7 +2102,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
           initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
-          errorMessage: `multi-track matching requires sparse evidence; roleAlignment must be one of aligned/mostly_aligned ${contractDiagnosticSecret}`
+          errorMessage: `central transferable requires a concrete roleGap ${contractDiagnosticSecret}`
         });
       }
       return {
@@ -2282,12 +2282,12 @@ async function injectedLiveFlowSmoke(identityPath) {
       understandJobContractRepairCount: 0,
       matchJobContractRepairCount: 0,
       initialContractFailureCategory: "unknown_keys",
-      repairContractFailureCategory: "other",
+      repairContractFailureCategory: "role_gaps",
       initialContractFailureReason: "other",
-      repairContractFailureReason: "other",
+      repairContractFailureReason: "central_transferable_requires_gap",
       responseContentChars: 0
     },
-    "failed-only telemetry must backfill safely and ambiguous reasons must become other"
+    "failed-only telemetry must backfill safely and expose only the fixed central-transfer gap reason"
   );
   for (const row of telemetryResult.rows) assertExactTelemetryRowSchema(row);
   const maliciousTelemetryRow = { ...telemetryResult.rows[0], raw: telemetrySecret };
