@@ -2102,7 +2102,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
           initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
-          errorMessage: `multi-track matching requires sparse evidence; must return a JSON object; roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
+          errorMessage: `multi-track matching requires sparse evidence; roleAlignment must be one of aligned/mostly_aligned ${contractDiagnosticSecret}`
         });
       }
       return {
