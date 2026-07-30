@@ -1,0 +1,512 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const {
+  openDb,
+  saveProfileAnalysis,
+  createBatch,
+  upsertJob,
+  acquireSiteScanLease,
+  releaseSiteScanLease
+} = require("../src/core/storage");
+const {
+  ensureProgressCard,
+  transitionProgressCard
+} = require("../src/core/candidate_progress");
+const { createDashboardServer } = require("../src/dashboard/server");
+
+const PRIVATE_BODY = "脱敏测试问题";
+const PRIVATE_PREVIEW = "脱敏会话预览";
+const PRIVATE_RECRUITER = "脱敏招聘方";
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-dashboard-messages-"));
+const dbPath = path.join(root, "dashboard-messages.sqlite");
+const db = openDb(dbPath);
+const logs = [];
+const logger = {
+  info(event, fields) { logs.push([event, fields]); },
+  warn(event, fields) { logs.push([event, fields]); },
+  error(event, fields) { logs.push([event, fields]); },
+  requestId() { return "dashboard-message-discovery-smoke"; },
+  listRecent() { return []; }
+};
+let server;
+
+main().catch((error) => {
+  console.error(error.stack || error.message);
+  process.exitCode = 1;
+}).finally(async () => {
+  if (server) await new Promise((resolve) => server.close(resolve));
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+async function main() {
+  const fixture = createFixture();
+  const scenarios = [];
+  const browser = { kind: "fake-browser" };
+  const readerCalls = [];
+  const reader = {
+    async scanUnread() {
+      readerCalls.push("scan");
+      return { queue: Object.freeze([{ rowIndex: 0 }, { rowIndex: 1 }]) };
+    },
+    async openQueuedConversation(target, signal) {
+      throwIfAborted(signal);
+      readerCalls.push(`open:${target.rowIndex}`);
+      return { rowIndex: target.rowIndex };
+    }
+  };
+  let browserCreations = 0;
+  let nowMs = Date.parse("2026-07-31T01:00:00.000Z");
+  server = createDashboardServer({
+    db,
+    root,
+    dbPath,
+    forceMock: true,
+    logger,
+    messageDiscoveryDependencies: {
+      createBrowser() {
+        browserCreations += 1;
+        return browser;
+      },
+      createReader(input) {
+        assert.strictEqual(input.browser, browser);
+        return reader;
+      },
+      async runDiscovery(context) {
+        const scenario = scenarios.shift();
+        assert(scenario, "an injected discovery scenario is required");
+        return scenario(context);
+      },
+      leaseHeartbeatMs: 5,
+      now: () => new Date(nowMs)
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const page = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert.strictEqual(page.status, 200);
+  assert(page.body.includes("开始只读发现"));
+  assert(page.body.includes("人工粘贴"));
+  assert(!page.body.includes("自动发送"));
+  assert(!page.body.includes(".chat-input"));
+  assert(!page.body.includes(".btn-send"));
+  assert(!page.body.includes('name="hrMessage"'));
+
+  acquireSiteScanLease(db, {
+    site: "boss",
+    owner: "external-scan",
+    command: "daily",
+    planId: fixture.planId
+  });
+  let response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 409);
+  assert.strictEqual(browserCreations, 0, "lease conflict must stop before browser creation");
+  releaseSiteScanLease(db, { site: "boss", owner: "external-scan" });
+
+  db.exec(`
+    CREATE TEMP TABLE lease_renew_audit(value INTEGER);
+    CREATE TEMP TRIGGER lease_renew_audit_trigger
+    AFTER UPDATE ON site_scan_leases
+    BEGIN
+      INSERT INTO lease_renew_audit(value) VALUES (1);
+    END
+  `);
+  const firstPending = controlledPendingRun();
+  scenarios.push(firstPending.run);
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await firstPending.started;
+  assert.strictEqual(
+    db.prepare("SELECT command FROM site_scan_leases WHERE site = 'boss'").get().command,
+    "discover-messages"
+  );
+  await waitFor(() => db.prepare("SELECT COUNT(*) AS count FROM lease_renew_audit").get().count > 0);
+
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 409);
+  assert.strictEqual(browserCreations, 1, "duplicate run must stop before browser creation");
+
+  response = await postJson(base, "/api/message-discovery", {
+    action: "stop",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await waitForStatus(base, fixture.profileId, "stopped");
+  assert.deepStrictEqual(readerCalls, ["scan", "open:0"], "stop must abort before the next click");
+  await waitForLeaseRelease();
+
+  scenarios.push(completedRun({
+    fixture,
+    drafts: ["脱敏草稿一"],
+    callModel: true
+  }));
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  let status = await waitForStatus(base, fixture.profileId, "completed");
+  assert.deepStrictEqual(status.results[0].messages, ["脱敏草稿一"]);
+  assert.deepStrictEqual(Object.keys(status).sort(), [
+    "expiresAt",
+    "processed",
+    "profileId",
+    "queued",
+    "reasonCode",
+    "results",
+    "startedAt",
+    "status",
+    "updatedAt"
+  ]);
+  assert.deepStrictEqual(Object.keys(status.results[0]).sort(), [
+    "cardId",
+    "jobId",
+    "messageCategory",
+    "messages",
+    "missingFactKey",
+    "stage"
+  ]);
+  assertNoPrivateData(status);
+  await waitForLeaseRelease();
+
+  const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert.strictEqual(completedPage.status, 200);
+  assert(completedPage.body.includes("脱敏草稿一"));
+  assertNoPrivateData(completedPage.body);
+
+  response = await postJson(base, "/api/message-discovery", {
+    action: "dismiss",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 200);
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "dismissed");
+  assert.deepStrictEqual(status.results, []);
+
+  scenarios.push(completedRun({
+    fixture,
+    drafts: ["旧草稿一", "旧草稿二", "不应返回的第三条"]
+  }));
+  await startAndWait(base, fixture.profileId, "completed");
+  status = await getStatus(base, fixture.profileId);
+  assert.deepStrictEqual(status.results[0].messages, ["旧草稿一", "旧草稿二"]);
+  await waitForLeaseRelease();
+
+  const secondPending = controlledPendingRun();
+  scenarios.push(secondPending.run);
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await secondPending.started;
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "running");
+  assert.deepStrictEqual(status.results, [], "a new run must clear old drafts");
+  assert(!JSON.stringify(status).includes("旧草稿"));
+  await postJson(base, "/api/message-discovery", {
+    action: "stop",
+    profileId: fixture.profileId
+  });
+  await waitForStatus(base, fixture.profileId, "stopped");
+  await waitForLeaseRelease();
+
+  scenarios.push(completedRun({ fixture, drafts: ["即将过期的草稿"] }));
+  status = await startAndWait(base, fixture.profileId, "completed");
+  assert(status.expiresAt);
+  await waitForLeaseRelease();
+  nowMs += 30 * 60 * 1000 + 1;
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "idle");
+  assert.deepStrictEqual(status.results, []);
+
+  scenarios.push(completedRun({ fixture, drafts: ["待手动发送草稿"] }));
+  await startAndWait(base, fixture.profileId, "completed");
+  await waitForLeaseRelease();
+  transitionProgressCard(db, {
+    cardId: fixture.card.id,
+    expectedStage: "contact_started",
+    stage: "reply_ready",
+    nextAction: "请用户复制后手动发送"
+  });
+  response = await postForm(base, "/api/progress", {
+    cardId: fixture.card.id,
+    idempotencyKey: requestKey(1),
+    action: "reply_confirmed_sent"
+  });
+  assert.strictEqual(response.status, 303);
+  status = await getStatus(base, fixture.profileId);
+  assert.deepStrictEqual(status.results, [], "manual sent progress must clear the matching draft");
+
+  response = await postForm(base, "/api/communication", {
+    mode: "hr_reply",
+    jobId: fixture.jobId,
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    idempotencyKey: requestKey(2),
+    hrMessage: "你有 Python 和 RAG 项目经验吗？"
+  });
+  const manualHtml = await response.text();
+  assert.strictEqual(response.status, 200, manualHtml);
+  assert(manualHtml.includes('id="communication-0"'), "manual paste must still return a draft");
+  assert(!manualHtml.includes("你有 Python 和 RAG 项目经验吗？"));
+
+  assertNoPrivateData(logs);
+  console.log("dashboard_message_discovery_smoke ok");
+}
+
+function createFixture() {
+  const saved = saveProfileAnalysis(db, {
+    profile: {
+      candidate: {
+        name: "测试候选人",
+        city: "广州",
+        targetTitles: ["AI应用开发工程师"],
+        expectedSalary: "10-18K"
+      },
+      education: [{ school: "测试大学", degree: "本科", major: "电子信息" }],
+      experiences: [],
+      skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
+      projects: [{ name: "KnowledgeFlow", roleBoundary: "独立项目", canSay: ["RAG 应用开发"] }],
+      credentials: [],
+      strengths: [],
+      riskMessaging: PRIVATE_BODY
+    },
+    document: {
+      originalFileName: "resume.txt",
+      format: "text",
+      contentHash: "dashboard-message-discovery-resume",
+      text: "教育经历 测试大学 本科。项目经历 KnowledgeFlow，使用 Python 和 RAG 完成应用开发。".repeat(5),
+      diagnostics: {}
+    },
+    searchPlan: {
+      name: "广州 AI",
+      cities: ["广州"],
+      directions: ["AI应用开发"],
+      keywords: [{ word: "AI应用开发", priority: "A" }],
+      experience: ["1-3年"],
+      jobTypes: ["全职"],
+      bossActiveDays: 3
+    }
+  });
+  const batchId = createBatch(db, "boss", "AI应用开发", "dashboard messages", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    filterSnapshot: { execution: { scanKind: "daily" } }
+  });
+  const jobId = upsertJob(db, {
+    source: "boss",
+    sourceId: "dashboard-message-job",
+    keyword: "AI应用开发",
+    title: "AI应用开发工程师",
+    company: "测试公司",
+    location: "广州",
+    salary: "10-18K",
+    experience: "1-3年",
+    education: "本科",
+    bossActiveText: "今日活跃",
+    bossActiveDays: 0,
+    url: "https://www.zhipin.com/job_detail/dashboard-message.html",
+    tags: ["Python", "RAG"],
+    description: "负责企业知识库 RAG 与 Agent 应用开发，需要 Python 项目经验。".repeat(5),
+    score: 20,
+    level: "优先",
+    matches: ["Python", "RAG"],
+    risks: [],
+    qualityTags: ["work_schedule_double"],
+    analysis: {
+      provider: "mock",
+      model: "offline-structured-mock",
+      semanticStatus: "complete",
+      decisionSource: "model",
+      recommendation: "apply",
+      fitLevel: "A",
+      confidence: 0.9,
+      realRoleType: "ai_application",
+      businessScenario: "企业知识库 RAG",
+      coreRequirements: ["Python", "RAG"],
+      coreStack: ["Python", "RAG"],
+      hiddenRisks: [],
+      primaryProjects: ["KnowledgeFlow"],
+      recommendedResumeVersion: "main",
+      fitReasons: ["项目证据匹配"],
+      missingPoints: [],
+      blockingGaps: [],
+      riskQuestions: [],
+      evidence: {
+        jd: ["负责企业知识库 RAG 与 Agent 应用开发"],
+        resume: ["KnowledgeFlow 使用 Python 与 RAG"]
+      }
+    }
+  }, batchId);
+  const card = ensureProgressCard(db, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    jobId,
+    source: "boss"
+  });
+  return { profileId: saved.profileId, planId: saved.planId, jobId, card };
+}
+
+function controlledPendingRun() {
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  return {
+    started,
+    async run({ reader, signal, onStatus }) {
+      onStatus({ status: "running", queued: 2, processed: 0, reasonCode: "", results: [] });
+      const { queue } = await reader.scanUnread();
+      await reader.openQueuedConversation(queue[0], signal);
+      markStarted();
+      await waitForAbort(signal);
+      await reader.openQueuedConversation(queue[1], signal);
+      throw new Error("the second click must be unreachable");
+    }
+  };
+}
+
+function completedRun({ fixture, drafts, callModel = false }) {
+  return async ({ classifyMessage, onStatus }) => {
+    onStatus({
+      status: "running",
+      queued: 1,
+      processed: 0,
+      reasonCode: "",
+      results: []
+    });
+    if (callModel) {
+      const modelResult = await classifyMessage({
+        card: {
+          id: fixture.card.id,
+          profileId: fixture.profileId,
+          planId: fixture.planId,
+          jobId: fixture.jobId,
+          source: "boss",
+          stage: "contact_started",
+          threadKey: ""
+        },
+        job: { id: fixture.jobId, title: "AI应用开发工程师" },
+        hrMessage: PRIVATE_BODY
+      });
+      assert.strictEqual(modelResult.kind, "hr_reply");
+    }
+    const summary = {
+      status: "completed",
+      queued: 1,
+      processed: 1,
+      reasonCode: "",
+      privateBody: PRIVATE_BODY,
+      results: [{
+        cardId: fixture.card.id,
+        jobId: fixture.jobId,
+        stage: "reply_ready",
+        messageCategory: "qualification",
+        missingFactKey: "",
+        messages: drafts,
+        hrMessage: PRIVATE_BODY,
+        previewText: PRIVATE_PREVIEW,
+        recruiterLabel: PRIVATE_RECRUITER,
+        url: "https://www.zhipin.com/web/geek/chat"
+      }]
+    };
+    onStatus(summary);
+    return summary;
+  };
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason || new Error("aborted");
+}
+
+function waitForAbort(signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason || new Error("aborted")), { once: true });
+  });
+}
+
+async function request(base, route) {
+  const response = await fetch(base + route);
+  return { status: response.status, body: await response.text() };
+}
+
+function postJson(base, route, body) {
+  return fetch(base + route, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    redirect: "manual"
+  });
+}
+
+function postForm(base, route, values) {
+  return fetch(base + route, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)])).toString(),
+    redirect: "manual"
+  });
+}
+
+async function getStatus(base, profileId) {
+  const response = await fetch(`${base}/api/message-discovery-status?profileId=${profileId}`);
+  assert.strictEqual(response.status, 200);
+  return response.json();
+}
+
+async function waitForStatus(base, profileId, expected) {
+  let latest;
+  await waitFor(async () => {
+    latest = await getStatus(base, profileId);
+    return latest.status === expected;
+  });
+  return latest;
+}
+
+async function startAndWait(base, profileId, expected) {
+  const response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId
+  });
+  assert.strictEqual(response.status, 202);
+  return waitForStatus(base, profileId, expected);
+}
+
+async function waitForLeaseRelease() {
+  await waitFor(() => !db.prepare("SELECT 1 AS found FROM site_scan_leases WHERE site = 'boss'").get());
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out waiting for condition");
+}
+
+function assertNoPrivateData(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  for (const forbidden of [PRIVATE_BODY, PRIVATE_PREVIEW, PRIVATE_RECRUITER]) {
+    assert(!text.includes(forbidden), `${forbidden} must not leave the discovery callback`);
+  }
+}
+
+function requestKey(sequence) {
+  return `progress:00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
+}

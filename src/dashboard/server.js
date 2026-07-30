@@ -23,6 +23,9 @@ const {
   getPlatformFilterCatalog,
   getSiteRuntimeState,
   getSiteScanLease,
+  acquireSiteScanLease,
+  renewSiteScanLease,
+  releaseSiteScanLease,
   listSiteAccessEvents,
   createScanRun,
   createWorkflowRun,
@@ -101,6 +104,9 @@ const {
   listProgressCardsWithEvents,
   recordManualProgressAction
 } = require("../core/candidate_progress");
+const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
+const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
+const { runBossMessageDiscovery } = require("../core/message_discovery");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
@@ -114,8 +120,9 @@ const PROGRESS_ACTIONS = Object.freeze({
   reopen_opportunity: { stage: "needs_user_action", eventType: "opportunity_reopened", summary: "用户重新开启机会", nextAction: "请用户确认下一步" }
 });
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, messageDiscoveryDependencies = {} }) {
   const scanRuns = new Map();
+  const messageDiscoveryRuns = new Map();
   const recovery = recoverWorkflowRuns(db, {
     site: "boss",
     orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
@@ -132,7 +139,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
   const getPublicModelSettings = () => forceMock ? offlineMockState : loadModelSettings({ root, fallbackModelConfig: modelConfig });
   const getRuntimeModelConfig = () => forceMock ? offlineMockState.modelConfig : resolveRuntimeModelConfig({ root, fallbackModelConfig: modelConfig }).modelConfig;
   const modelReady = () => allowOfflineMock || isModelReady(getPublicModelSettings());
-  return http.createServer(async (req, res) => {
+  const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();
     let url;
@@ -148,6 +155,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({ db, searchParams: url.searchParams, messageDiscoveryRuns, dependencies: messageDiscoveryDependencies }));
+      if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscoveryRuns, url.searchParams.get("profileId"), messageDiscoveryDependencies);
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
@@ -163,7 +172,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, { messageDiscoveryRuns });
+      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, { db, logger, messageDiscoveryRuns, getRuntimeModelConfig, dependencies: messageDiscoveryDependencies });
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
@@ -182,6 +192,15 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       respondUnexpectedError(res, error, requestId, url?.pathname || req.url);
     }
   });
+  dashboardServer.on("close", () => {
+    for (const run of messageDiscoveryRuns.values()) {
+      if (run.status === "running") {
+        run.abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_SERVER_STOPPED", "dashboard server stopped"));
+      }
+    }
+    messageDiscoveryRuns.clear();
+  });
+  return dashboardServer;
 }
 
 function handleResumeFile(_req, res, { db, root, searchParams }) {
@@ -1295,26 +1314,14 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
         })
       : null;
 
-    const analysis = job.analysis || {};
-    const { riskMessaging: _ignoredRiskMessaging, ...candidateFacts } = profile.profile || {};
-    const analyzer = createLlmAnalyzer({ modelConfig, logger });
-    const result = await analyzer.draftCommunication({
+    const result = await draftCommunicationWithContext({
+      db,
+      modelConfig,
+      logger,
+      profile,
+      job,
       mode,
-      candidateProfile: candidateFacts,
-      resumeVersions: listCandidateResumeVersions(db, profile.id).filter((item) => item.isActive),
-      jobUnderstanding: {
-        jobId: job.sourceId || String(job.id),
-        realRoleType: analysis.realRoleType || "unknown",
-        businessScenario: analysis.businessScenario || "",
-        coreRequirements: analysis.coreRequirements || [],
-        coreStack: analysis.coreStack || [],
-        hiddenRisks: analysis.hiddenRisks || [],
-        evidenceSnippets: analysis.evidence?.jd || []
-      },
-      matchDecision: analysis,
-      jobEvidence: { title: job.title, company: job.company, description: job.description, salary: job.salary, experience: job.experience },
-      hrMessage: String(params.hrMessage || "").trim(),
-      userProvidedFacts: listCandidateFacts(db, profile.id)
+      hrMessage: String(params.hrMessage || "").trim()
     });
     if (progressCard) {
       recordIncomingMessageClassification(db, {
@@ -1333,7 +1340,37 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
   }
 }
 
-async function handleProgress(req, res, db) {
+function draftCommunicationWithContext({ db, modelConfig, logger, profile, job, mode, hrMessage }) {
+  const analysis = job.analysis || {};
+  const { riskMessaging: _ignoredRiskMessaging, ...candidateFacts } = profile.profile || {};
+  const analyzer = createLlmAnalyzer({ modelConfig, logger });
+  return analyzer.draftCommunication({
+    mode,
+    candidateProfile: candidateFacts,
+    resumeVersions: listCandidateResumeVersions(db, profile.id).filter((item) => item.isActive),
+    jobUnderstanding: {
+      jobId: job.sourceId || String(job.id),
+      realRoleType: analysis.realRoleType || "unknown",
+      businessScenario: analysis.businessScenario || "",
+      coreRequirements: analysis.coreRequirements || [],
+      coreStack: analysis.coreStack || [],
+      hiddenRisks: analysis.hiddenRisks || [],
+      evidenceSnippets: analysis.evidence?.jd || []
+    },
+    matchDecision: analysis,
+    jobEvidence: {
+      title: job.title,
+      company: job.company,
+      description: job.description,
+      salary: job.salary,
+      experience: job.experience
+    },
+    hrMessage,
+    userProvidedFacts: listCandidateFacts(db, profile.id)
+  });
+}
+
+async function handleProgress(req, res, db, { messageDiscoveryRuns = null } = {}) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const card = getProgressCardById(db, params.cardId);
@@ -1372,6 +1409,9 @@ async function handleProgress(req, res, db) {
         nextAction: definition.nextAction,
         scheduledAt
       });
+      if (action === "reply_confirmed_sent") {
+        clearMessageDiscoveryDraft(messageDiscoveryRuns, card.profileId, card.id);
+      }
     }
     redirect(res, `/queue?planId=${card.planId}`);
   } catch (error) {
@@ -1381,6 +1421,322 @@ async function handleProgress(req, res, db) {
       : 400;
     sendJson(res, statusCode, { error: issue.message, errorCode: issue.code });
   }
+}
+
+async function handleMessageDiscovery(req, res, {
+  db,
+  logger,
+  messageDiscoveryRuns,
+  getRuntimeModelConfig,
+  dependencies = {}
+}) {
+  let params;
+  try {
+    params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const profileId = messageDiscoveryProfileId(params.profileId);
+    const action = String(params.action || "").trim();
+    clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, dependencies);
+    if (action === "start") {
+      return startMessageDiscovery(res, {
+        db,
+        logger,
+        profileId,
+        messageDiscoveryRuns,
+        getRuntimeModelConfig,
+        dependencies
+      });
+    }
+    const run = messageDiscoveryRuns.get(profileId);
+    if (!run) throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_FOUND", "message discovery run was not found", 404);
+    if (action === "stop") {
+      if (run.status !== "running") {
+        throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_RUNNING", "message discovery is not running", 409);
+      }
+      run.abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_STOPPED", "message discovery stopped"));
+      return sendJson(res, 202, publicMessageDiscoveryRun(run));
+    }
+    if (action === "dismiss") {
+      if (run.status === "running") {
+        throw messageDiscoveryError("MESSAGE_DISCOVERY_RUNNING", "stop message discovery before dismissing drafts", 409);
+      }
+      run.results = [];
+      run.status = "dismissed";
+      run.reasonCode = "";
+      run.updatedAt = messageDiscoveryNow(dependencies).toISOString();
+      return sendJson(res, 200, publicMessageDiscoveryRun(run));
+    }
+    throw messageDiscoveryError("MESSAGE_DISCOVERY_ACTION_INVALID", "message discovery action is invalid", 400);
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || (error?.code === "SCAN_ALREADY_RUNNING" ? 409 : 400);
+    sendJson(res, statusCode, {
+      error: messageDiscoveryPublicError(error),
+      errorCode: messageDiscoveryErrorCode(error)
+    });
+  }
+}
+
+function startMessageDiscovery(res, {
+  db,
+  logger,
+  profileId,
+  messageDiscoveryRuns,
+  getRuntimeModelConfig,
+  dependencies
+}) {
+  if (!getCandidateProfile(db, profileId)) {
+    throw messageDiscoveryError("MESSAGE_DISCOVERY_PROFILE_NOT_FOUND", "candidate profile was not found", 404);
+  }
+  if (messageDiscoveryRuns.get(profileId)?.status === "running") {
+    throw messageDiscoveryError("MESSAGE_DISCOVERY_ALREADY_RUNNING", "message discovery is already running", 409);
+  }
+  const owner = randomUUID();
+  try {
+    acquireSiteScanLease(db, {
+      site: "boss",
+      owner,
+      command: "discover-messages",
+      planId: null
+    });
+  } catch (error) {
+    if (error?.code === "SCAN_ALREADY_RUNNING") {
+      throw messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_BUSY", "BOSS is already in use", 409);
+    }
+    throw error;
+  }
+
+  const startedAt = messageDiscoveryNow(dependencies);
+  const abortController = new AbortController();
+  const run = {
+    profileId,
+    status: "running",
+    queued: 0,
+    processed: 0,
+    reasonCode: "",
+    results: [],
+    startedAt: startedAt.toISOString(),
+    updatedAt: startedAt.toISOString(),
+    expiresAt: "",
+    abortController
+  };
+  messageDiscoveryRuns.set(profileId, run);
+  const heartbeatMs = Math.max(1, Number(dependencies.leaseHeartbeatMs) || 30_000);
+  const heartbeat = setInterval(() => {
+    try {
+      renewSiteScanLease(db, { site: "boss", owner });
+    } catch {
+      abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_LOST", "BOSS lease was lost"));
+    }
+  }, heartbeatMs);
+
+  Promise.resolve().then(async () => {
+    const browser = typeof dependencies.createBrowser === "function"
+      ? dependencies.createBrowser()
+      : new EdgeControlAdapter();
+    const reader = typeof dependencies.createReader === "function"
+      ? dependencies.createReader({ browser })
+      : createBossMessageReader({ browser });
+    const runDiscovery = typeof dependencies.runDiscovery === "function"
+      ? dependencies.runDiscovery
+      : runBossMessageDiscovery;
+    const summary = await runDiscovery({
+      db,
+      profileId,
+      reader,
+      signal: abortController.signal,
+      logger,
+      classifyMessage: ({ card, job, hrMessage }) => draftDiscoveredMessage({
+        db,
+        modelConfig: getRuntimeModelConfig(),
+        logger,
+        card,
+        job,
+        hrMessage
+      }),
+      onStatus: (status) => updateMessageDiscoveryRun(run, status, dependencies)
+    });
+    updateMessageDiscoveryRun(run, summary, dependencies);
+  }).catch((error) => {
+    if (messageDiscoveryRuns.get(profileId) !== run) return;
+    const code = messageDiscoveryErrorCode(error);
+    updateMessageDiscoveryRun(run, {
+      status: code === "MESSAGE_DISCOVERY_LEASE_LOST" ? "needs_user_action" : "stopped",
+      queued: run.queued,
+      processed: run.processed,
+      reasonCode: code,
+      results: run.results
+    }, dependencies);
+    logger.warn("message_discovery_stopped", {
+      profileId,
+      queued: run.queued,
+      processed: run.processed,
+      status: run.status,
+      reasonCode: code
+    });
+  }).finally(() => {
+    clearInterval(heartbeat);
+    try {
+      releaseSiteScanLease(db, { site: "boss", owner });
+    } catch {
+      logger.warn("message_discovery_lease_release_failed", {
+        profileId,
+        status: run.status,
+        reasonCode: "MESSAGE_DISCOVERY_LEASE_RELEASE_FAILED"
+      });
+    }
+  });
+
+  sendJson(res, 202, publicMessageDiscoveryRun(run));
+}
+
+function draftDiscoveredMessage({ db, modelConfig, logger, card, job, hrMessage }) {
+  const plan = getSearchPlan(db, card?.planId);
+  const profile = getCandidateProfile(db, card?.profileId);
+  const selectedJob = plan
+    ? listDecisionPool(db, { planId: plan.id }).find((item) => Number(item.id) === Number(card?.jobId))
+    : null;
+  if (!plan || !profile || Number(plan.profileId) !== Number(profile.id) || !selectedJob
+    || Number(job?.id) !== Number(selectedJob.id)) {
+    throw messageDiscoveryError("MESSAGE_DISCOVERY_CONTEXT_INVALID", "message discovery context is invalid");
+  }
+  return draftCommunicationWithContext({
+    db,
+    modelConfig,
+    logger,
+    profile,
+    job: selectedJob,
+    mode: "hr_reply",
+    hrMessage
+  });
+}
+
+function handleMessageDiscoveryStatus(res, messageDiscoveryRuns, profileIdValue, dependencies = {}) {
+  try {
+    const profileId = messageDiscoveryProfileId(profileIdValue);
+    clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, dependencies);
+    const run = messageDiscoveryRuns.get(profileId);
+    sendJson(res, 200, run ? publicMessageDiscoveryRun(run) : emptyMessageDiscoveryStatus(profileId));
+  } catch (error) {
+    sendJson(res, 400, {
+      error: messageDiscoveryPublicError(error),
+      errorCode: messageDiscoveryErrorCode(error)
+    });
+  }
+}
+
+function updateMessageDiscoveryRun(run, status, dependencies = {}) {
+  if (!run || !status || typeof status !== "object") return;
+  const now = messageDiscoveryNow(dependencies);
+  const allowedStatuses = new Set(["running", "completed", "needs_user_action", "stopped"]);
+  run.status = allowedStatuses.has(status.status) ? status.status : "needs_user_action";
+  run.queued = Math.max(0, Number(status.queued) || 0);
+  run.processed = Math.max(0, Number(status.processed) || 0);
+  run.reasonCode = safeMessageDiscoveryCode(status.reasonCode);
+  run.results = sanitizeMessageDiscoveryResults(status.results);
+  run.updatedAt = now.toISOString();
+  run.expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+}
+
+function sanitizeMessageDiscoveryResults(results) {
+  if (!Array.isArray(results)) return [];
+  return results.map((item) => ({
+    cardId: Math.max(0, Number(item?.cardId) || 0),
+    jobId: Math.max(0, Number(item?.jobId) || 0),
+    stage: String(item?.stage || "").slice(0, 80),
+    messageCategory: String(item?.messageCategory || "").slice(0, 80),
+    missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
+    messages: Array.isArray(item?.messages)
+      ? item.messages.slice(0, 2).map((message) => String(message))
+      : []
+  }));
+}
+
+function publicMessageDiscoveryRun(run) {
+  return {
+    profileId: run.profileId,
+    status: run.status,
+    queued: run.queued,
+    processed: run.processed,
+    reasonCode: run.reasonCode,
+    results: sanitizeMessageDiscoveryResults(run.results),
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    expiresAt: run.expiresAt
+  };
+}
+
+function emptyMessageDiscoveryStatus(profileId) {
+  return {
+    profileId,
+    status: "idle",
+    queued: 0,
+    processed: 0,
+    reasonCode: "",
+    results: [],
+    startedAt: "",
+    updatedAt: "",
+    expiresAt: ""
+  };
+}
+
+function clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, dependencies = {}) {
+  const run = messageDiscoveryRuns.get(profileId);
+  if (!run || run.status === "running" || !run.expiresAt) return;
+  if (Date.parse(run.expiresAt) <= messageDiscoveryNow(dependencies).getTime()) {
+    run.results = [];
+    messageDiscoveryRuns.delete(profileId);
+  }
+}
+
+function clearMessageDiscoveryDraft(messageDiscoveryRuns, profileIdValue, cardIdValue) {
+  if (!(messageDiscoveryRuns instanceof Map)) return;
+  const profileId = Number(profileIdValue);
+  const cardId = Number(cardIdValue);
+  const run = messageDiscoveryRuns.get(profileId);
+  if (!run) return;
+  run.results = run.results.filter((item) => Number(item.cardId) !== cardId);
+}
+
+function messageDiscoveryProfileId(value) {
+  const profileId = Number(value);
+  if (!Number.isSafeInteger(profileId) || profileId <= 0) {
+    throw messageDiscoveryError("MESSAGE_DISCOVERY_PROFILE_INVALID", "profileId must be a positive integer", 400);
+  }
+  return profileId;
+}
+
+function messageDiscoveryNow(dependencies = {}) {
+  const value = typeof dependencies.now === "function" ? dependencies.now() : new Date();
+  const now = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(now.getTime()) ? now : new Date();
+}
+
+function safeMessageDiscoveryCode(value) {
+  const code = String(value || "");
+  return /^[A-Z][A-Z0-9_]{2,80}$/.test(code) ? code : "";
+}
+
+function messageDiscoveryErrorCode(error) {
+  return safeMessageDiscoveryCode(error?.code) || "MESSAGE_DISCOVERY_FAILED";
+}
+
+function messageDiscoveryPublicError(error) {
+  return {
+    MESSAGE_DISCOVERY_PROFILE_INVALID: "profileId 无效。",
+    MESSAGE_DISCOVERY_PROFILE_NOT_FOUND: "候选人画像不存在。",
+    MESSAGE_DISCOVERY_ALREADY_RUNNING: "该候选人的消息发现正在运行。",
+    MESSAGE_DISCOVERY_LEASE_BUSY: "BOSS 当前有其他任务运行。",
+    MESSAGE_DISCOVERY_NOT_FOUND: "没有可操作的消息发现任务。",
+    MESSAGE_DISCOVERY_NOT_RUNNING: "消息发现当前未运行。",
+    MESSAGE_DISCOVERY_RUNNING: "请先安全停止，再放弃草稿。",
+    MESSAGE_DISCOVERY_ACTION_INVALID: "消息发现操作无效。"
+  }[messageDiscoveryErrorCode(error)] || "消息发现操作失败。";
+}
+
+function messageDiscoveryError(code, message, statusCode = 500) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
 }
 
 function canGenerateGreeting(job) {
@@ -2311,6 +2667,67 @@ function renderFeedbackInsight(feedback = {}) {
     keywordRows.length ? `待排查的关键词：${keywordRows.join("、")}` : ""
   ].filter(Boolean);
   return `<div class="line profile-diff"><strong>历史反馈：</strong>${escapeHtml(sections.join("。"))}。仅用于诊断，不自动调整筛选或排序。</div>`;
+}
+
+function renderMessageDiscoveryPage({ db, searchParams, messageDiscoveryRuns, dependencies = {} }) {
+  let profileId;
+  try {
+    profileId = messageDiscoveryProfileId(searchParams.get("profileId"));
+  } catch {
+    return renderErrorPage("profileId 无效。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_INVALID" });
+  }
+  const profile = getCandidateProfile(db, profileId);
+  if (!profile) return renderErrorPage("候选人画像不存在。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_NOT_FOUND" });
+  clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, dependencies);
+  const status = messageDiscoveryRuns.has(profileId)
+    ? publicMessageDiscoveryRun(messageDiscoveryRuns.get(profileId))
+    : emptyMessageDiscoveryStatus(profileId);
+  const plan = db.prepare(`SELECT id FROM search_plans
+    WHERE profile_id = ?
+    ORDER BY is_active DESC, updated_at DESC, id DESC
+    LIMIT 1`).get(profileId);
+  const manualPath = plan?.id ? `/queue?planId=${plan.id}` : "/queue";
+  const statusLabel = {
+    idle: "尚未开始",
+    running: "正在只读发现",
+    completed: "本次发现已完成",
+    needs_user_action: "需要人工处理",
+    stopped: "已安全停止",
+    dismissed: "本次草稿已放弃"
+  }[status.status] || "需要人工处理";
+  const reason = messageDiscoveryReasonText(status.reasonCode);
+  const resultSections = status.results.map((result, resultIndex) => {
+    const drafts = result.messages.map((message, messageIndex) => {
+      const id = `message-draft-${resultIndex}-${messageIndex}`;
+      return `<div class="message-draft"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}" readonly>${escapeHtml(message)}</textarea><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button></div>`;
+    }).join("");
+    if (!drafts) return "";
+    return `<section class="panel message-result"><h2>本地草稿</h2><p class="line">阶段：${escapeHtml(progressStageLabel(result.stage))} · 分类：${escapeHtml(result.messageCategory || "待确认")}</p>${drafts}<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form></section>`;
+  }).join("");
+  const controls = `<div class="message-controls">
+    <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
+    <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
+    <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button${status.status !== "running" && status.results.some((item) => item.messages.length) ? "" : " disabled"}>放弃本次草稿</button></form>
+  </div>`;
+  const scriptStatus = JSON.stringify({ profileId, status: status.status });
+  return renderPage("BOSS 消息只读发现", `<style>
+    .message-layout{max-width:820px}.message-controls{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.message-controls form{margin:0}.message-state{border-left:4px solid #317166}.message-draft{display:grid;gap:7px;margin:12px 0}.message-draft textarea{width:100%;box-sizing:border-box;background:#f7faf9}.message-result form{margin-top:14px}@media(max-width:760px){.message-controls{display:grid}.message-controls button{width:100%}}
+  </style><main class="message-layout"><nav>${navLinks(plan?.id ? `/plan?planId=${plan.id}` : "/onboarding")}</nav><h1>BOSS 消息只读发现</h1><p class="hint">只读取未读会话并在本机生成草稿。请复制草稿后到平台人工粘贴；本页不填写平台输入框。</p>${controls}<section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">排队 ${status.queued} · 已处理 ${status.processed}</p>${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${resultSections || '<section class="panel"><p class="line">当前没有可复制的草稿。</p></section>'}<p><a href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main><script>(function(){const initial=${scriptStatus};for(const form of document.querySelectorAll("[data-discovery-form]"))form.addEventListener("submit",async(event)=>{event.preventDefault();const body=new URLSearchParams(new FormData(form));await fetch(form.action,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body});location.reload()});for(const button of document.querySelectorAll("[data-copy-draft]"))button.addEventListener("click",async()=>{const field=document.getElementById(button.dataset.copyDraft);await navigator.clipboard.writeText(field.value)});if(initial.status!=="running")return;const poll=async()=>{const response=await fetch("/api/message-discovery-status?profileId="+encodeURIComponent(initial.profileId));const value=await response.json();if(value.status==="running")setTimeout(poll,2000);else location.reload()};setTimeout(poll,2000)}());</script>`);
+}
+
+function messageDiscoveryReasonText(code) {
+  return {
+    MESSAGE_DISCOVERY_STOPPED: "已按你的操作安全停止。",
+    MESSAGE_DISCOVERY_LEASE_LOST: "BOSS 任务租约已丢失，本次发现已停止。",
+    BOSS_MESSAGE_TAB_MISSING: "请保留一个已登录的 BOSS 消息页。",
+    BOSS_MESSAGE_TAB_AMBIGUOUS: "检测到多个 BOSS 消息页，请只保留一个。",
+    BOSS_RISK_CONTROL: "检测到平台安全验证，本次发现已停止。",
+    BOSS_LOGIN_REQUIRED: "BOSS 登录状态不可用，本次发现已停止。",
+    BOSS_MESSAGE_PAGE_LOST: "BOSS 消息页已离开，本次发现已停止。",
+    BOSS_MESSAGE_CARD_NOT_FOUND: "未找到唯一匹配的本地岗位进展卡。",
+    BOSS_MESSAGE_CARD_AMBIGUOUS: "找到多个同名岗位，请先人工确认。",
+    BOSS_MESSAGE_MULTIPLE_UNPROCESSED: "同一会话有多条未处理消息，请改用人工粘贴。"
+  }[String(code || "")] || (code ? "本次发现已停止，请查看本地进展后再继续。" : "");
 }
 
 function renderPage(title, body) {
