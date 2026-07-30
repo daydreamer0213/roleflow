@@ -224,3 +224,22 @@ Run only zero-based index `4` with a new cache after candidate/baseline review
 and synchronization. Inspect only the two categories, two reasons, and existing
 safe status fields. The result remains diagnostic evidence rather than
 acceptance.
+
+## 2026-07-30 顶层非对象原因码扩展
+
+### 证据与边界
+
+- reason v3 单条诊断可信退出 0，但 initial/repair category 与 reason 均为 `other`；未读取或持久化原始错误、模型输出或 `outputShape`。
+- 静态源码对照显示，已知字段级错误都会命中 category，context 错误也已有 reason；`validateModelResult` 的顶层 `必须返回 JSON 对象` 规则同时漏过现有 category/reason classifier。故当前只将其视为高置信“诊断分类器缺口”，尚不宣称产品根因。
+
+### 安全扩展
+
+- 在 `SAFE_CONTRACT_FAILURE_REASONS` 增加唯一闭合值 `result_not_object`。
+- 仅当错误消息匹配 validator 自有静态模板 `必须返回 JSON 对象` 或等价固定英文 `must return a JSON object` 时，category 返回 `result_shape`、reason 返回 `result_not_object`。
+- 不输出 raw message、regex capture、动态字段、对象 key、数组长度、模型内容或 `outputShape`；零命中/多命中继续返回 `other`。
+- TDD 必须覆盖 requested+completed 流程：initial 精确归类为 `result_shape/result_not_object`，repair 保持 `none/none`；现有 failed-only、unknown、multi-template、reset 回归继续保留。
+- 工具通过完整离线门禁与独立复审后，基线仍只机械镜像 runner；新的单条确认必须使用全新根，旧 v1/v2/v3 均 immutable。
+
+### Supersede 条款
+
+本增量明确 supersede 本文此前所有 reason v1 live/new-root 指令及实施计划旧 Step 6；这些旧条目只保留为历史记录，不得执行。reason v1、v2、v3 均为 immutable，唯一允许的下一诊断根是 reason v4。

@@ -774,3 +774,17 @@ safe counts/status, the two categories, and the two reasons. Restore the fixed
 candidate worktree immediately. Preserve the root and use the reason evidence
 to choose the product-side red-green fix without starting the three-row or
 20-row acceptance.
+
+## 2026-07-30 `result_not_object` 实施增量
+
+1. 先修改 `tests/private_full_chain_runner_smoke.js`，把 repair-success 的 initial validator 消息改为顶层非对象静态模板，并精确断言 `result_shape/result_not_object`；运行 focused smoke，必须先因新 reason 缺失而失败。
+2. 最小修改 `scripts/private-full-chain-runner.js`：扩展闭合 reason 集合，并在 category/reason classifier 中匹配 validator 固定模板；禁止保存原始消息、捕获内容或 shape。
+3. focused smoke 转绿后提交；从干净提交运行 31 fixtures、47 项离线检查、diff check，独立复审到无 Critical/Important/Moderate、`Spec PASS`、`Code quality APPROVED`。
+4. 基线仅机械镜像 runner，提交后运行 31 fixtures、41 项离线检查、diff check，并核验 runner/metrics/privacy 三个 blob 一致。
+5. 更新权威计划与 evaluated 绑定。reason v1（shell 重定向失败）、v2（不存在的 CLI preflight）、v3（安全结果 other/other）全部保留不可变。
+6. 新建唯一 v4 根 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v4-20260730`，全新复制、哈希、manifest、v3 proof、bundle verification、外层 gates，仅运行零基 index `4`，完成后恢复固定候选。
+7. 只有 v4 安全 reason 证据确认具体 validator 规则后，才设计产品侧根因修复；3 条和 20 条此前继续 gated。
+
+### Supersede 条款
+
+本增量明确 supersede 本文此前所有 reason v1 live/new-root 指令及实施计划旧 Step 6；这些旧条目只保留为历史记录，不得执行。reason v1、v2、v3 均为 immutable，唯一允许的下一诊断根是 reason v4。
