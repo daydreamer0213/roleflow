@@ -1812,3 +1812,56 @@ the next reviewed root-cause change.
 - All other gates remain unchanged: exact raw hashes, identical shared blobs,
   zero-based `4,9,10`, fresh cache/output absence, no 20-row root, private log
   redirection, and fixed-candidate restoration in `finally`.
+
+## 2026-07-30 multi-track validation idempotence product checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-sparse-repair-v2-20260730`
+  unchanged. Its live process exited `0`: indices `9` and `10` were exact and
+  structurally complete, while zero-based index `4` failed after one
+  `matchJob` repair with initial/repair category `result_shape`, reason
+  `multi_track_requires_sparse`, empty selected track, and incomplete evidence.
+  The private-safe aggregate was two of three exact, with no false hard
+  exclusion, primary-without-evidence, hard false placement, or missed obvious
+  exclusion. The fixed candidate was restored cleanly and the 20-row root
+  remained absent.
+- Static control-flow inspection, not raw model-output inspection, established
+  the product root cause. `validateSparseMatchEvidence` derived a full local
+  decision but discarded its validated `matches` and `eligibility`; subsequent
+  analyzer/cache validation therefore routed the normalized multi-track value
+  through the forbidden legacy full-decision path. The v2 result does not prove
+  that DeepSeek returned a legacy shape.
+- Reviewed design commit
+  `9ca6ddf391a208635711ff6cff3992c0179b4d75` selected validation idempotence:
+  retain only the two already normalized sparse arrays in the internal
+  decision, keep every validation layer, and increment the match pipeline from
+  v28 to v29.
+- Product commit
+  `099a71331f74d0b21a149b835908744e74962794` implements that design. The focused
+  regression first failed because normalized `matches` was absent, then passed
+  multi-/single-track repeat validation, JSON cache round-trip, raw extra-key
+  and privacy-sentinel removal, injected-adapter validation, legacy boundary
+  checks, and v28 stale behavior.
+- Candidate verification passed `model_adapter_smoke`,
+  `semantic_pipeline_smoke`, all 31 benchmark fixtures, all 47 offline checks,
+  and `git diff --check` from a clean product commit. Independent review found
+  no Critical, Important, Moderate, or Minor finding and concluded
+  `Spec PASS` and `Code quality APPROVED`.
+- The docs-only commit produced by this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record before private root creation. Candidate product
+  `099a71331f74d0b21a149b835908744e74962794` must be its strict ancestor.
+- Baseline product/evaluated remain
+  `fb0168afce265cf351f03e80f66d9e0f24015887` /
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`; no shared harness file changed,
+  so runner/metrics/privacy blobs remain
+  `c80e179d9e665b5e75139dfa9704107e95c5300c`,
+  `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Preserve both sparse-repair v1/v2 roots. The only permitted next three-row
+  root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-validation-idempotence-v1-20260730`.
+  Rebuild all seven frozen files, exact hashes, manifest, v3 proof, verifier
+  outputs, and fresh cache; run exact zero-based `4,9,10`; restore the fixed
+  candidate in `finally`. Do not create the 20-row root until all three rows
+  pass exact, structural, recall, and safety gates.
