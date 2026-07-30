@@ -786,6 +786,151 @@ async function injectedLiveFlowSmoke(identityPath) {
     rehashCardDraft(cardValue);
     fs.writeFileSync(cardFile, JSON.stringify(cardValue, null, 2), "utf8");
   });
+  const changedTargetRoot = privatePath("portability-target-v3-changed-fixture");
+  fs.cpSync(targetPortabilityRoot, changedTargetRoot, { recursive: true });
+  const changedJobsPath = path.join(changedTargetRoot, "input", "jobs.private.json");
+  const changedLabelsPath = path.join(changedTargetRoot, "labels", "jobs.reviewed.json");
+  const changedProofPath = path.join(changedTargetRoot, "input", "confirmed-evidence-portability.json");
+  const changedJobs = JSON.parse(fs.readFileSync(changedJobsPath, "utf8")).map((job, index) => {
+    const changed = {
+      ...job,
+      id: `changed-fixture-${index + 1}`,
+      sourceId: `changed-fixture-${index + 1}`,
+      title: `${job.title}（独立确认岗位池）`,
+      description: `${job.description} 独立确认岗位夹具 ${index + 1}`
+    };
+    return { ...changed, sourceContentHash: sourceContentHash(changed) };
+  });
+  const changedLabels = asRecallFirstLabels({
+    ...JSON.parse(fs.readFileSync(changedLabelsPath, "utf8")),
+    jobsSha256: valueSha256(changedJobs),
+    rows: JSON.parse(fs.readFileSync(changedLabelsPath, "utf8")).rows.map((label, index) => ({
+      ...label,
+      id: changedJobs[index].id,
+      rationale: `独立确认标签 ${index + 1}`
+    }))
+  });
+  fs.writeFileSync(changedJobsPath, JSON.stringify(changedJobs, null, 2), "utf8");
+  fs.writeFileSync(changedLabelsPath, JSON.stringify(changedLabels, null, 2), "utf8");
+  assert.throws(
+    () => runner.createConfirmedEvidencePortability({
+      sourcePrivateRoot: sourcePortabilityRoot,
+      privateRoot: changedTargetRoot,
+      output: changedProofPath
+    }, portabilitySeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+    "changed fixtures must not silently upgrade a legacy proof"
+  );
+  const v3Proof = runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot,
+    privateRoot: changedTargetRoot,
+    output: changedProofPath,
+    proofVersion: "confirmed-evidence-portability.v3"
+  }, portabilitySeam);
+  assert.strictEqual(v3Proof.proofVersion, "confirmed-evidence-portability.v3");
+  assert.strictEqual(v3Proof.targetFixtureTotal, changedJobs.length);
+  assert.match(v3Proof.targetJobsFileSha256, /^[0-9a-f]{64}$/);
+  assert.match(v3Proof.targetLabelsFileSha256, /^[0-9a-f]{64}$/);
+  assert.strictEqual(v3Proof.targetLabelsVersion, "private-real-jd-labels.v2");
+  assert.strictEqual(v3Proof.targetEvaluationPolicy, "recall-first.v1");
+  assert.strictEqual(v3Proof.targetLabelsConfirmedAt, changedLabels.confirmedAt);
+  assert.deepStrictEqual(Object.keys(v3Proof.consumerCodeBlobs).sort(), [
+    "cardCreationBlobId",
+    "profileConsumptionBlobId",
+    "profileCreationBlobId"
+  ]);
+  const expectV3CreateReject = (name, mutateSource = null, mutateTarget = null, seam = portabilitySeam) => {
+    const sourceRoot = privatePath(`portability-v3-${name}-source`);
+    const targetRoot = privatePath(`portability-v3-${name}-target`);
+    fs.cpSync(sourcePortabilityRoot, sourceRoot, { recursive: true });
+    fs.cpSync(changedTargetRoot, targetRoot, { recursive: true });
+    const output = path.join(targetRoot, "input", "confirmed-evidence-portability.json");
+    fs.rmSync(output);
+    if (mutateSource) mutateSource(sourceRoot);
+    if (mutateTarget) mutateTarget(targetRoot);
+    assert.throws(
+      () => runner.createConfirmedEvidencePortability({
+        sourcePrivateRoot: sourceRoot, privateRoot: targetRoot, output,
+        proofVersion: "confirmed-evidence-portability.v3"
+      }, seam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+  };
+  for (const [name, file] of [
+    ["profile-bytes", "confirmed-profile.private.json"],
+    ["card-bytes", "confirmed-card.private.json"],
+    ["resume-bytes", "resume.redacted.txt"],
+    ["identity-bytes", "identity.private.json"]
+  ]) {
+    expectV3CreateReject(name, null, (root) => fs.appendFileSync(path.join(root, "input", file), " "));
+  }
+  expectV3CreateReject("unconfirmed-labels", null, (root) => {
+    const file = path.join(root, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.userConfirmed = false;
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  expectV3CreateReject("invalid-label-date", null, (root) => {
+    const file = path.join(root, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.confirmedAt = "not-a-date";
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  expectV3CreateReject("wrong-label-policy", null, (root) => {
+    const file = path.join(root, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.evaluationPolicy = "exact.v1";
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  expectV3CreateReject("source-jobs-hash", null, (root) => {
+    const file = path.join(root, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.jobsSha256 = valueSha256(jobs);
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  expectV3CreateReject("mismatched-ids", null, (root) => {
+    const file = path.join(root, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.rows[0].id = "missing-target-id";
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  const changedBlobSeam = (file) => ({
+    ...portabilitySeam,
+    blobResolver: (commit, candidateFile) => {
+      if (candidateFile === file && commit === manifest.candidateProductCommit) return "f".repeat(40);
+      return portabilityBlobIds.get(candidateFile);
+    }
+  });
+  for (const file of ["src/core/profile_onboarding.js", "src/core/matching_card.js", "src/core/search_plan.js"]) {
+    expectV3CreateReject(`consumer-${path.basename(file)}`, null, null, changedBlobSeam(file));
+  }
+  const llmChangeRoot = privatePath("portability-v3-llm-change-target");
+  fs.cpSync(changedTargetRoot, llmChangeRoot, { recursive: true });
+  const llmChangeProof = path.join(llmChangeRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(llmChangeProof);
+  assert.strictEqual(runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot, privateRoot: llmChangeRoot, output: llmChangeProof,
+    proofVersion: "confirmed-evidence-portability.v3"
+  }, changedBlobSeam("src/core/llm_analyzer.js")).proofVersion, "confirmed-evidence-portability.v3");
+  expectGate(
+    "PRIVATE_FULL_CHAIN_MODE_REQUIRED",
+    liveOptions("match-live", "candidate", { proofVersion: "confirmed-evidence-portability.v3" })
+  );
+  expectGate(
+    "PRIVATE_FULL_CHAIN_MODE_REQUIRED",
+    gateOptions({ mode: "prepare", proofVersion: "unknown-proof-version" })
+  );
+  assert.strictEqual(
+    expectGateOk({
+      mode: "create-portability-proof",
+      privateRoot: changedTargetRoot,
+      sourcePrivateRoot: sourcePortabilityRoot,
+      output: changedProofPath,
+      proofVersion: "confirmed-evidence-portability.v3"
+    }).request.proofVersion,
+    "confirmed-evidence-portability.v3"
+  );
   const portabilityProof = runner.createConfirmedEvidencePortability({
     sourcePrivateRoot: sourcePortabilityRoot,
     privateRoot: targetPortabilityRoot,
@@ -1052,6 +1197,78 @@ async function injectedLiveFlowSmoke(identityPath) {
       modules: { ...value.modules, openDb }
     };
   };
+  const v3Result = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: changedTargetRoot,
+    output: path.join(changedTargetRoot, "runs", "candidate"),
+    profile: path.join(changedTargetRoot, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(changedTargetRoot, "input", "confirmed-card.private.json"),
+    jobs: changedJobsPath,
+    labels: changedLabelsPath,
+    portabilityProof: changedProofPath
+  }), authorizedEnv(), portableRunSeam("candidate"));
+  assert.strictEqual(v3Result.confirmedEvidencePortabilitySha256, v3Proof.proofSha256);
+  assert.deepStrictEqual(v3Result.rows.map((row) => row.id), changedJobs.map((job) => job.id));
+  const serializedV3Proof = JSON.stringify(v3Proof);
+  for (const forbidden of [
+    changedJobs[0].title, changedJobs[0].description, changedLabels.rows[0].rationale,
+    "Synthetic Candidate", "13800138000", "candidate@example.com"
+  ]) {
+    assert(!serializedV3Proof.includes(forbidden), `v3 portability proof must not contain ${forbidden}`);
+  }
+  const v3PortabilityRun = async (name, mutate) => {
+    const root = privatePath(`portability-v3-run-${name}`);
+    fs.cpSync(changedTargetRoot, root, { recursive: true });
+    fs.rmSync(path.join(root, "runs"), { recursive: true });
+    const state = {
+      root,
+      proof: path.join(root, "input", "confirmed-evidence-portability.json"),
+      jobs: path.join(root, "input", "jobs.private.json"),
+      labels: path.join(root, "labels", "jobs.reviewed.json")
+    };
+    mutate(state);
+    await assert.rejects(
+      () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+        privateRoot: root,
+        output: path.join(root, "runs", "candidate"),
+        profile: path.join(root, "input", "confirmed-profile.private.json"),
+        matchingCard: path.join(root, "input", "confirmed-card.private.json"),
+        jobs: state.jobs,
+        labels: state.labels,
+        portabilityProof: state.proof
+      }), authorizedEnv(), portabilityPreflightSeam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+    assert.deepStrictEqual(portabilityPreflightCounts, {
+      loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
+    }, `${name} must fail before settings, provider, SQLite, or model access`);
+  };
+  await v3PortabilityRun("target-jobs-bytes", ({ jobs: file }) => fs.appendFileSync(file, " "));
+  await v3PortabilityRun("target-labels-bytes", ({ labels: file }) => fs.appendFileSync(file, " "));
+  await v3PortabilityRun("extra-proof-field", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.unexpected = true;
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("missing-proof-field", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    delete value.targetFixtureTotal;
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("v1-shape", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.proofVersion = "confirmed-evidence-portability.v1";
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
+  await v3PortabilityRun("fixture-total", ({ proof: file }) => {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.targetFixtureTotal += 1;
+    value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
+    fs.writeFileSync(file, JSON.stringify(value), "utf8");
+  });
   const portableBaseline = await runner.runPrivateFullChain(portabilityMatchOptions("baseline", {
     portabilityProof: portabilityProofPath
   }), authorizedEnv(), portableRunSeam("baseline"));
