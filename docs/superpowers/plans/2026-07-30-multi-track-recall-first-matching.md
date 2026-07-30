@@ -528,6 +528,8 @@ for (const token of [
   "普通 JD",
   "T1",
   "不得为了规避要求而虚构分支",
+  "愿望清单",
+  "同一个人承担",
   "全局要求",
   "全部分支 ID"
 ]) {
@@ -601,6 +603,7 @@ Add these rules:
 
 ```js
 "只有 JD 明确同时招聘相互独立的对象，例如“第一类/第二类/第三类”或岗位 A/岗位 B，才拆分 hiringTracks；不得为了规避要求而虚构分支。普通 JD 只输出一个 T1。hiringTracks 最多四个，按 T1、T2、T3、T4 连续编号；每个分支都必须有一条直接 JD 职责证据。",
+"职责很多、技术栈很多、要求像愿望清单，或同一个人被要求承担前端、后端、沟通、文档、稳定性等多项任务，都不等于多个招聘分支，仍只输出一个 T1。只有 JD 明确允许不同候选人分别承担不同工作时才能拆分。",
 "requirements 保持一张扁平清单。trackIds 必须引用既有分支；只属于一个分支的要求只写该 ID；对整份招聘都有效的全局要求写入全部分支 ID。不得把其他分支的前端、算法、运维或领域要求并入当前分支。",
 ```
 
@@ -1256,8 +1259,9 @@ node $runner --match-live `
 Acceptance:
 
 - index 4 selects the large-model application branch, returns `primary/apply`, and does not contain front-end or deep-learning branch requirements;
-- index 9 remains `backup/review`; AI coding-tool use cannot turn pure UI/visual front-end delivery into an adjacent AI-application role;
-- index 10 returns at least `talk/caution`; generic stability, communication, solution-design, learning, or documentation gaps cannot alone push it to `backup`;
+- index 9 remains one `T1` and returns `backup/review`; AI coding-tool use cannot turn pure UI/visual front-end delivery into an adjacent AI-application role;
+- index 10 remains one `T1` and returns at least `talk/caution`; generic stability, communication, solution-design, learning, or documentation gaps cannot alone push it to `backup`;
+- only index 4 may contain more than one hiring track; a long responsibility list or wish-list requirement stack must not make indices 9 or 10 split;
 - every row has non-empty `selectedTrackId`, `selectedTrackLabel`, role summary, JD evidence, and resume evidence;
 - every normal row has `modelCallCount === 2`;
 - no row is failed, stale, pending, partial, hard blocked, or empty-response;
