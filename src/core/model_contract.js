@@ -671,6 +671,8 @@ function validateSparseMatchEvidence(value, context = {}) {
     roleSummary: selected.roleSummary,
     responsibilityEvidence: selected.responsibilityEvidence,
     ...roleAlignmentEvidence,
+    matches,
+    eligibility,
     recommendation, fitLevel, confidence, fitReasons, requirementMatches, jobQuality, hardBlockers, softGaps, questionsToVerify,
     missingPoints: softGaps, blockingGaps: hardBlockers.map((item) => item.requirement), riskQuestions: questionsToVerify,
     recommendedResumeVersion: "", primaryProjects: [], greetingAngle: "", evidence: { jd: jdEvidence, resume: resumeEvidence }, hrPrep: {}

@@ -65,6 +65,7 @@ const db = openDb(dbPath);
   try {
     await stableUnderstandingAndCandidateMatchSmoke();
     await contractRepairAndFailureSmoke();
+    await multiTrackValidationIdempotenceSmoke();
     await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
     await compactRoleEvidencePersistenceSmoke();
@@ -720,7 +721,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v15");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v28");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v29");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1089,6 +1090,136 @@ function matchUnderstandingAlignmentSmoke() {
     evidence: { jd: [], resume: [] }
   }, { jobUnderstanding: { roleSummary: "未知岗位", responsibilityEvidence: [], coreRequirements: [] } });
   assert.strictEqual(reviewNoCore.recommendation, "review", "没有核心要求时 review 是合法结论");
+}
+
+async function multiTrackValidationIdempotenceSmoke() {
+  const privacySentinel = "PRIVATE_SPARSE_EXTRA_SENTINEL";
+  const multiTrackUnderstanding = {
+    hiringTracks: [{
+      id: "T1",
+      label: "应用开发",
+      roleSummary: "交付业务应用",
+      responsibilityEvidence: ["JD：负责业务应用交付"]
+    }, {
+      id: "T2",
+      label: "界面开发",
+      roleSummary: "交付界面组件",
+      responsibilityEvidence: ["JD：负责界面组件交付"]
+    }],
+    coreRequirements: [{
+      id: "R1",
+      label: "业务应用交付",
+      trackIds: ["T1"],
+      foundation: true,
+      central: true,
+      indispensable: false,
+      evidence: "JD：负责业务应用交付"
+    }, {
+      id: "R2",
+      label: "界面组件交付",
+      trackIds: ["T2"],
+      foundation: true,
+      central: true,
+      indispensable: false,
+      evidence: "JD：负责界面组件交付"
+    }],
+    eligibilityItems: [],
+    jobQuality: { level: "normal", concerns: [] }
+  };
+  const sparseResult = {
+    selectedTrackId: "T1",
+    roleAlignment: "mostly_aligned",
+    roleResumeEvidence: ["简历：交付过业务应用"],
+    roleGaps: [],
+    matches: [{
+      id: "R1",
+      state: "matched",
+      resumeEvidence: "简历：交付过业务应用"
+    }],
+    eligibility: [],
+    unexpectedPrivateField: privacySentinel
+  };
+  const context = { jobUnderstanding: multiTrackUnderstanding };
+  const normalized = validateModelResultRaw("matchJob", sparseResult, context);
+  assert.deepStrictEqual(normalized.matches, [{
+    id: "R1",
+    state: "matched",
+    resumeEvidence: "简历：交付过业务应用"
+  }], "normalized multi-track decision must retain only validated sparse requirement rows");
+  assert.deepStrictEqual(normalized.eligibility, [], "normalized multi-track decision must retain validated sparse eligibility rows");
+  assert(!Object.prototype.hasOwnProperty.call(normalized, "unexpectedPrivateField"),
+    "normalized decision must not retain unrecognized raw model keys");
+  assert(!JSON.stringify(normalized).includes(privacySentinel),
+    "normalized decision and cache payload must not retain raw privacy sentinels");
+  assert.deepStrictEqual(
+    validateModelResultRaw("matchJob", normalized, context),
+    normalized,
+    "multi-track sparse normalization must be idempotent"
+  );
+  const cacheRoundTrip = JSON.parse(JSON.stringify(normalized));
+  assert.deepStrictEqual(
+    validateModelResultRaw("matchJob", cacheRoundTrip, context),
+    normalized,
+    "persisted normalized multi-track decisions must remain revalidatable"
+  );
+
+  const singleTrackUnderstanding = {
+    ...multiTrackUnderstanding,
+    hiringTracks: [multiTrackUnderstanding.hiringTracks[0]],
+    coreRequirements: [multiTrackUnderstanding.coreRequirements[0]]
+  };
+  const singleContext = { jobUnderstanding: singleTrackUnderstanding };
+  const singleNormalized = validateModelResultRaw("matchJob", sparseResult, singleContext);
+  assert.deepStrictEqual(
+    validateModelResultRaw("matchJob", singleNormalized, singleContext),
+    singleNormalized,
+    "single-track sparse normalization must remain idempotent"
+  );
+  const legacySingleTrack = { ...singleNormalized };
+  delete legacySingleTrack.matches;
+  delete legacySingleTrack.eligibility;
+  assert.strictEqual(
+    validateModelResultRaw("matchJob", legacySingleTrack, singleContext).recommendation,
+    singleNormalized.recommendation,
+    "legacy single-track full decisions must remain compatible"
+  );
+  const legacyMultiTrack = { ...normalized };
+  delete legacyMultiTrack.matches;
+  delete legacyMultiTrack.eligibility;
+  assert.throws(
+    () => validateModelResultRaw("matchJob", legacyMultiTrack, context),
+    (error) => error.code === "MODEL_CONTRACT_INVALID"
+      && /multi-track matching requires sparse evidence/.test(error.message),
+    "legacy multi-track full decisions must remain rejected"
+  );
+
+  const injectedAnalyzer = createLlmAnalyzer({
+    adapter: { matchJob: async () => sparseResult }
+  });
+  const analyzerResult = await injectedAnalyzer.matchJob({ jobUnderstanding: multiTrackUnderstanding });
+  assert.deepStrictEqual(analyzerResult, normalized,
+    "createLlmAnalyzer must return the same revalidatable normalized decision");
+  assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
+    "analyzer wrapper must not preserve raw extra values");
+
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v29",
+    "idempotent normalized match results must invalidate v28 caches");
+  const currentRevision = {
+    profileVersion: "profile",
+    searchPlanVersion: "plan",
+    matchingCardVersion: "card",
+    sourceContentHash: "job",
+    pipelineVersions: PIPELINE_VERSIONS
+  };
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v28" }
+      }
+    }, currentRevision).includes("match_pipeline_changed"),
+    "v28 match analyses must become stale after the idempotence fix"
+  );
 }
 
 async function ruleGuardSmoke() {
@@ -1764,7 +1895,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v15",
-    matchJob: "match-decision-v28",
+    matchJob: "match-decision-v29",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
