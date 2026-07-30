@@ -721,7 +721,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v15");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v29");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v30");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1202,8 +1202,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v29",
-    "idempotent normalized match results must invalidate v28 caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v30",
+    "broad direct-instance classification must invalidate v29 caches");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1215,10 +1215,10 @@ async function multiTrackValidationIdempotenceSmoke() {
     analysisStaleReasons({
       revision: {
         ...currentRevision,
-        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v28" }
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v29" }
       }
     }, currentRevision).includes("match_pipeline_changed"),
-    "v28 match analyses must become stale after the idempotence fix"
+    "v29 match analyses must become stale after the direct-instance prompt fix"
   );
 }
 
@@ -1895,7 +1895,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v15",
-    matchJob: "match-decision-v29",
+    matchJob: "match-decision-v30",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });

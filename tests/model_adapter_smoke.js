@@ -370,6 +370,16 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob prompt 必须允许具体简历事实证明更宽泛的岗位要求"
     );
     assert(
+      matchPrompt.includes("broad capability without naming a domain, platform, tool, or specialist workflow")
+        && matchPrompt.includes("must use matched, not transferable"),
+      "宽泛且未绑定领域、平台、工具或专业流程的要求，必须把具体直接实例判为 matched"
+    );
+    assert(
+      matchPrompt.includes("explicitly names an unproven domain, platform, tool, specialist workflow, work object, action, or deliverable")
+        && matchPrompt.includes("use transferable"),
+      "明确但未证明的领域、平台、工具、专业流程或工作交付差异必须保留 transferable 边界"
+    );
+    assert(
       matchPrompt.includes("Do not reverse this relation")
         && matchPrompt.includes("named platform")
         && matchPrompt.includes("specialist workflow")
