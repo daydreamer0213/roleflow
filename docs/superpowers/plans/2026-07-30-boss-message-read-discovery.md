@@ -12,7 +12,7 @@
 
 - 只使用一个已经打开的 `/web/geek/chat` 标签页；不得创建标签页、导航或调用 `bringToFront`。
 - 只扫描 `.notice-badge`，首次快照生成不可变队列，串行 guarded click。
-- 只允许 `listTabs`、`evalValue` 和对目标会话行的一次 `clickAt`；永不触碰 `.chat-input`、`.btn-send`。
+- 只允许 `listTabs` 和 `evalValue`；会话行点击必须发生在单次同步 guarded expression 内，`clickAt` 调用次数必须为 0。
 - 禁止重放 `getGeekFriendList.json`、`getBossData`、`historyMsg`，禁止读取 Cookie/localStorage。
 - 只有唯一匹配当前 profile 的现有非终态进展卡时才分类；映射不可靠立即停止且不生成草稿。
 - HR 正文只在内存中传入现有模型流程，禁止日志和数据库；模型草稿也禁止持久化。
@@ -32,7 +32,7 @@
 **Create:**
 
 - `src/adapters/sites/boss_message_dom.js`：纯 DOM 快照、规范化、安全摘要和不可变未读队列。
-- `src/adapters/sites/boss_message_reader.js`：查找固定消息标签页、点击前后 guard、后台单次点击。
+- `src/adapters/sites/boss_message_reader.js`：查找固定消息标签页、构建页面内原子 guarded expression、点击后独立复核。
 - `src/core/message_discovery.js`：串行执行、唯一岗位关联、模型调用、停止策略。
 - `tests/fixtures/boss_message_dom_fixture.js`：脱敏的 document-like DOM fixture。
 - `tests/boss_message_dom_smoke.js`：选择器、方向、消息 ID、队列纯逻辑测试。
@@ -73,6 +73,7 @@
 - Produces: `buildUnreadConversationQueue(snapshot) -> ReadonlyArray<UnreadQueueItem>`
 - Produces: `safeDigest(parts) -> "sha256:<64 hex>"`
 - Produces: `messageKey({ platform, threadKey, messageId }) -> "sha256:<64 hex>"`
+- Produces: `BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION -> string`
 - Produces: `BOSS_MESSAGE_SNAPSHOT_EXPRESSION -> string`
 - Consumes: only the confirmed selectors from the design spec.
 
@@ -194,14 +195,12 @@ function snapshotBossMessagePage(documentLike, locationHref) {
     throw codedError("BOSS_MESSAGE_PAGE_LOST", "fixed BOSS message page is not available");
   }
   const rows = [...documentLike.querySelectorAll(SELECTORS.row)].map((row, rowIndex) => {
-    const rect = row.getBoundingClientRect();
     return {
       rowIndex,
       unread: Boolean(row.querySelector(SELECTORS.unread)),
       selected: row.matches(SELECTORS.selected) || Boolean(row.querySelector(SELECTORS.selected)),
       recruiterLabel: visibleLines(row.innerText)[0] || "",
-      previewText: visibleLines(row.innerText).at(-1) || "",
-      point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+      previewText: visibleLines(row.innerText).at(-1) || ""
     };
   });
   const messages = [...documentLike.querySelectorAll(SELECTORS.message)].map((item) => ({
@@ -218,6 +217,8 @@ function snapshotBossMessagePage(documentLike, locationHref) {
     positionName: normalizedText(documentLike.querySelector(SELECTORS.position)?.textContent),
     salary: normalizedText(documentLike.querySelector(SELECTORS.salary)?.textContent),
     city: normalizedText(documentLike.querySelector(SELECTORS.city)?.textContent),
+    risk: readExistingBossRiskSignal(documentLike),
+    login: readExistingBossLoginSignal(documentLike, path),
     messages,
     writeTargetsPresent: {
       editor: Boolean(documentLike.querySelector(SELECTORS.editor)),
@@ -227,11 +228,13 @@ function snapshotBossMessagePage(documentLike, locationHref) {
 }
 ```
 
-`buildUnreadConversationQueue` must compute `transientSignature` and `previewDigest` in Node, keep raw recruiter/preview only in memory, filter only `unread === true`, and deep-freeze the result. Do not export selectors for write actions as callable helpers.
+`buildUnreadConversationQueue` must compute an exact synchronous `transientSignature` from `rowIndex`, the first/last non-empty visible row lines and unread state. Keep that signature only in memory, filter only `unread === true`, and deep-freeze the result. The same synchronous canonicalization function must be embedded in the guarded browser expression so no asynchronous digest creates a gap before click. Do not export selectors for write actions as callable helpers.
 
 Do not invent unconfirmed `data-recruiter`, `data-preview` or hidden application-state attributes.
 
-Build `BOSS_MESSAGE_SNAPSHOT_EXPRESSION` from a self-contained browser function that returns the same plain object. It may read `.chat-input` and `.btn-send` only as boolean sentinels; it must not focus, click, assign, dispatch events or return element references.
+Build `BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION` by reusing the already-tested BOSS risk/login detection rules from `src/adapters/sites/boss.js`. It installs `window.__bossMessageSnapshot` as a synchronous read-only function returning the same plain snapshot shape, including boolean `risk` and `login`. `BOSS_MESSAGE_SNAPSHOT_EXPRESSION` installs the helper when absent and then invokes it. It may read `.chat-input` and `.btn-send` only as boolean sentinels; it must not focus, click, assign, dispatch events or return element references.
+
+If navigation or reload removes the helper between the initial scan and guarded selection, the guarded expression must return `snapshot_helper_missing` and perform zero clicks. Do not silently reinstall the helper inside the guarded click expression, because that would combine structure setup with the write boundary.
 
 - [ ] **Step 4: Run Task 1 GREEN and regressions**
 
@@ -266,7 +269,8 @@ git commit -m "feat: parse unread BOSS message DOM"
 **Interfaces:**
 
 - Consumes: `BOSS_MESSAGE_SNAPSHOT_EXPRESSION`, `buildUnreadConversationQueue`, `safeDigest`.
-- Consumes browser methods: `listTabs`, `evalValue`, `clickAt`.
+- Consumes browser methods: `listTabs`, `evalValue`.
+- Produces: `buildGuardedConversationClickExpression(target) -> string`.
 - Produces: `createBossMessageReader({ browser, sleepFn })`.
 - Produces: `reader.scanUnread() -> { tabId, queue }`.
 - Produces: `reader.openQueuedConversation(target, signal) -> SelectedConversationSnapshot`.
@@ -278,21 +282,24 @@ Use a fake browser that records every method:
 ```js
 const browser = {
   calls: [],
-  snapshots: [initialSnapshot, preClickSnapshot, selectedSnapshot],
+  snapshots: [initialSnapshot, guardedSuccess, selectedSnapshot],
+  guardedDomClicks: 0,
   async listTabs() {
     this.calls.push(["listTabs"]);
     return [{ id: "chat-tab", url: "https://www.zhipin.com/web/geek/chat" }];
   },
   async evalValue(tabId) {
     this.calls.push(["evalValue", tabId]);
-    return this.snapshots.shift();
+    const result = this.snapshots.shift();
+    if (result?.operation === "__bossGuardedMessageConversationClick" && result.clicked) {
+      this.guardedDomClicks += 1;
+    }
+    return result;
   },
-  async clickAt(tabId, point) {
-    this.calls.push(["clickAt", tabId, point]);
-  },
-  async navigate() { throw new Error("navigate must never be called"); },
-  async createTab() { throw new Error("createTab must never be called"); },
-  async bringToFront() { throw new Error("bringToFront must never be called"); }
+  async clickAt() { this.calls.push(["clickAt"]); throw new Error("clickAt must never be called"); },
+  async navigate() { this.calls.push(["navigate"]); throw new Error("navigate must never be called"); },
+  async createTab() { this.calls.push(["createTab"]); throw new Error("createTab must never be called"); },
+  async bringToFront() { this.calls.push(["bringToFront"]); throw new Error("bringToFront must never be called"); }
 };
 ```
 
@@ -306,15 +313,18 @@ assert(Object.isFrozen(scan.queue));
 
 const selected = await reader.openQueuedConversation(scan.queue[0]);
 assert.strictEqual(selected.positionName, "Java Engineer");
-assert.strictEqual(browser.calls.filter(([name]) => name === "clickAt").length, 1);
-assert.strictEqual(browser.calls.some(([name]) => ["navigate", "createTab", "bringToFront"].includes(name)), false);
+assert.strictEqual(browser.guardedDomClicks, 1);
+for (const forbidden of ["clickAt", "navigate", "createTab", "bringToFront"]) {
+  assert.strictEqual(browser.calls.filter(([name]) => name === forbidden).length, 0);
+}
 ```
 
 Add cases proving:
 
 - Zero chat tabs throws `BOSS_MESSAGE_TAB_MISSING`.
 - Two chat tabs throws `BOSS_MESSAGE_TAB_AMBIGUOUS`.
-- Row reorder/signature drift throws `BOSS_MESSAGE_ROW_DRIFTED` before click.
+- Guarded expression contains path, risk, login, row index, transient signature and `.notice-badge` rechecks before its only `.click()`.
+- Row reorder/signature drift returns `BOSS_MESSAGE_ROW_DRIFTED` with `guardedDomClicks === 0`.
 - Badge disappears before click returns `skipped` without clicking.
 - Wrong selected row/header after click throws `BOSS_MESSAGE_TARGET_MISMATCH`.
 - Risk/login/page-loss snapshot throws before any further queue item.
@@ -348,14 +358,16 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
     },
     async openQueuedConversation(target, signal) {
       throwIfAborted(signal);
-      const before = normalizeBrowserSnapshot(await browser.evalValue(target.tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION));
-      const row = before.rows[target.rowIndex];
-      if (!row?.unread) return { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" };
-      if (conversationSignature(row) !== target.transientSignature) {
-        throw codedError("BOSS_MESSAGE_ROW_DRIFTED", "conversation row changed before selection");
+      const guardedExpression = buildGuardedConversationClickExpression(target);
+      const guarded = normalizeGuardedClickResult(
+        await browser.evalValue(target.tabId, guardedExpression)
+      );
+      if (!guarded.clicked) {
+        if (guarded.reason === "no_longer_unread") {
+          return { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" };
+        }
+        throw guardedResultError(guarded.reason);
       }
-      throwIfAborted(signal);
-      await browser.clickAt(target.tabId, row.point);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (attempt) await sleepFn(250, signal);
         const after = normalizeBrowserSnapshot(await browser.evalValue(target.tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION));
@@ -367,7 +379,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
 }
 
 function assertBrowser(browser) {
-  for (const name of ["listTabs", "evalValue", "clickAt"]) {
+  for (const name of ["listTabs", "evalValue"]) {
     if (typeof browser?.[name] !== "function") {
       throw codedError("BOSS_MESSAGE_BROWSER_INVALID", `browser.${name} is required`);
     }
@@ -375,10 +387,10 @@ function assertBrowser(browser) {
 }
 
 function conversationSignature(row) {
-  return safeDigest([
+  return JSON.stringify([
     row.rowIndex,
-    row.recruiterLabel,
-    row.previewText,
+    normalizedText(row.recruiterLabel),
+    normalizedText(row.previewText),
     row.unread ? "unread" : "read"
   ]);
 }
@@ -412,7 +424,74 @@ function sleep(ms, signal) {
 
 When `scanUnread` builds the queue, attach `tabId` by creating a new frozen object; do not mutate Task 1 output. `selectedTargetMatches` must require selected row index/signature plus non-empty header and position. It must validate all message IDs before returning.
 
-`normalizeBrowserSnapshot` must call the same field validators used by Task 1 and reject unknown paths, non-array rows/messages, non-finite click coordinates and invalid directions with `BOSS_MESSAGE_STRUCTURE_CHANGED`. It must return a newly created plain object and must never log the rejected raw value.
+Implement `buildGuardedConversationClickExpression` by following the existing `__bossGuardedCommunicationClick` structure:
+
+```js
+function buildGuardedConversationClickExpression(target) {
+  const expected = JSON.stringify({
+    rowIndex: target.rowIndex,
+    transientSignature: target.transientSignature
+  });
+  return `(() => {
+    const operation = "__bossGuardedMessageConversationClick";
+    const expected = ${expected};
+    const fail = (reason) => ({ clicked: false, operation, reason });
+    const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+    const lines = (value) => String(value || "").split(/\\r?\\n/).map(normalize).filter(Boolean);
+    const signature = (row, rowIndex, unread) => {
+      const visible = lines(row?.innerText || "");
+      return JSON.stringify([
+        rowIndex,
+        normalize(visible[0] || ""),
+        normalize(visible[visible.length - 1] || ""),
+        unread ? "unread" : "read"
+      ]);
+    };
+    if (location.pathname !== "/web/geek/chat") return fail("page_lost");
+    if (typeof window.__bossMessageSnapshot !== "function") return fail("snapshot_helper_missing");
+    const snapshot = window.__bossMessageSnapshot();
+    if (snapshot.risk === true) return fail("risk_control");
+    if (snapshot.login === true) return fail("login_required");
+    const rows = Array.from(document.querySelectorAll(".friend-content-warp"));
+    const row = rows[expected.rowIndex];
+    if (!row || !row.isConnected) return fail("row_drifted");
+    const unread = Boolean(row.querySelector(".notice-badge"));
+    if (!unread) return fail("no_longer_unread");
+    if (signature(row, expected.rowIndex, unread) !== expected.transientSignature) {
+      return fail("row_drifted");
+    }
+    const rect = row.getBoundingClientRect();
+    const style = getComputedStyle(row);
+    if (rect.width <= 0 || rect.height <= 0
+      || style.display === "none"
+      || style.visibility === "hidden"
+      || style.opacity === "0"
+      || style.pointerEvents === "none") return fail("row_not_clickable");
+    row.click();
+    return { clicked: true, operation, rowIndex: expected.rowIndex };
+  })()`;
+}
+```
+
+This expression must remain synchronous: no `await`, Promise, timer, observer or callback may appear between revalidation and `row.click()`. It must never query or click `.chat-input`, `.btn-send`, buttons, links or any element outside the one indexed `.friend-content-warp`.
+
+`normalizeGuardedClickResult` accepts only the fixed operation, boolean `clicked`, integer `rowIndex` on success, and a reason from:
+
+```js
+new Set([
+  "page_lost",
+  "snapshot_helper_missing",
+  "risk_control",
+  "login_required",
+  "row_drifted",
+  "no_longer_unread",
+  "row_not_clickable"
+])
+```
+
+Unknown shapes become `BOSS_MESSAGE_GUARD_RESULT_INVALID`. `guardedResultError` maps fixed reasons to fixed application error codes and never includes browser-returned text.
+
+`normalizeBrowserSnapshot` must call the same field validators used by Task 1 and reject unknown paths, non-array rows/messages and invalid directions with `BOSS_MESSAGE_STRUCTURE_CHANGED`. It must return a newly created plain object and must never log the rejected raw value.
 
 Do not import or call `BossSiteAdapter.prepareCommunicationTab`; that method may create or navigate tabs and violates this design.
 
@@ -1065,9 +1144,10 @@ Expected:
 
 Give a fresh reviewer the base commit and current HEAD. Require review of:
 
-- Every path that can call `clickAt`.
-- Proof that `navigate`, `createTab`, `bringToFront`, `.chat-input` and `.btn-send` are unreachable.
-- Queue immutability and click-before/click-after identity checks.
+- Proof that `clickAt`, `navigate`, `createTab` and `bringToFront` all have zero call paths.
+- Proof that the guarded expression can only click the indexed `.friend-content-warp`, and `.chat-input`/`.btn-send` are unreachable.
+- Queue immutability, synchronous in-expression revalidation and independent post-click identity checks.
+- Drift, unread loss, risk, login loss and page loss all produce zero guarded DOM clicks.
 - Unique profile/card/job association.
 - Thread/message digest validation and event idempotency.
 - Transaction rollback for thread binding + event + stage.
@@ -1124,7 +1204,8 @@ Expected: clean status. Report:
 - [ ] Every design requirement maps to a task and concrete test.
 - [ ] No task reads Cookie/localStorage or replays internal APIs.
 - [ ] No task creates, navigates or foregrounds a BOSS tab.
-- [ ] Every browser click has a pre-click and post-click identity guard.
+- [ ] Every browser click is inside one synchronous guarded expression, followed by an independent post-click identity snapshot.
+- [ ] `clickAt`, `createTab`, `navigate` and `bringToFront` are asserted at zero calls.
 - [ ] HR text is absent from persistence, logs and status output.
 - [ ] Message idempotency and thread binding are one transaction.
 - [ ] Dashboard drafts are memory-only and expire.

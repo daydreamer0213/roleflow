@@ -88,7 +88,7 @@ boss_message_dom.js
           |
           v
 boss_message_reader.js
-  单标签页发现、点击前后 guard、后台 clickAt
+  单标签页发现、页面内原子 guarded click、点击后独立复核
           |
           v
 message_discovery.js
@@ -103,7 +103,7 @@ candidate_progress.js + dashboard/server.js
 
 `src/adapters/sites/boss_message_dom.js` 负责：
 
-- 从 DOM 提取页面路径、会话行、选中状态、未读状态、可点击坐标和顶部岗位信息。
+- 从 DOM 提取页面路径、会话行、选中状态、未读状态、风险/登录信号和顶部岗位信息。
 - 从消息区只提取方向、15 位 `data-mid` 和正文。
 - 检测 `.chat-input` 与 `.btn-send` 是否存在，但不返回元素引用，不执行任何操作。
 - 在 Node 侧用 `node:crypto` 生成瞬时签名和安全摘要。
@@ -114,13 +114,11 @@ candidate_progress.js + dashboard/server.js
 ```js
 {
   rowIndex,
-  transientSignature,
-  recruiterLabel,
-  previewDigest
+  transientSignature
 }
 ```
 
-招聘方名称和预览只用于当次点击前核验，不进入日志或数据库。由于本次校准没有确认更细的子选择器，行内招聘方和预览只从 `.friend-content-warp` 的可见文本行提取：第一条非空行作为瞬时招聘方标签，最后一条非空行作为瞬时预览。它们只用于判断同一行在点击前是否漂移，不用于岗位持久关联。
+招聘方名称和预览只用于当次点击前核验，不进入日志或数据库。由于本次校准没有确认更细的子选择器，瞬时签名由 `rowIndex`、`.friend-content-warp` 第一条非空可见文本、最后一条非空可见文本和未读状态组成。签名只停留在本轮内存和单次浏览器命令参数中，用于同步判断同一行是否漂移，不用于岗位持久关联。
 
 ### 4.2 线程与消息安全标识
 
@@ -153,24 +151,36 @@ SHA-256("boss" + NUL + threadKey + NUL + data-mid)
 
 - `browser.listTabs()`
 - `browser.evalValue(tabId, expression)`
-- `browser.clickAt(tabId, { x, y })`
 
 它明确不得调用：
 
+- `browser.clickAt`
 - `browser.createTab`
 - `browser.navigate`
 - `browser.bringToFront`
 
 每一条队列项按以下顺序处理：
 
-1. 重新读取页面，确认仍是同一个 `/web/geek/chat` 标签页。
-2. 按 `rowIndex` 找到会话行。
-3. 重新计算招聘方、预览和未读状态组成的瞬时签名。
-4. 只有签名完全一致且仍未读时，才点击该行当前坐标中心。
-5. 点击后轮询只读快照，最多 3 次，每次间隔 250 毫秒。
-6. 确认目标行进入 `.selected` 或 `.friend-top`。
-7. 确认顶部招聘方、岗位和线程摘要存在。
-8. 确认消息区能找到合法的 15 位 `data-mid`。
+1. Node 根据不可变队列项生成一次 `guardedExpression`。
+2. 通过单次 `browser.evalValue(tabId, guardedExpression)` 在页面侧执行同步函数。
+3. 该函数确认路径仍是 `/web/geek/chat`，且无风险提示、无登录丢失。
+4. 该函数按 `rowIndex` 重新定位 `.friend-content-warp`。
+5. 该函数从当前行可见文本和未读状态同步复算瞬时签名。
+6. 该函数确认签名完全一致、`.notice-badge` 仍存在、行唯一且可见可点击。
+7. 所有条件满足后，该函数只执行该会话行的 `.click()`，返回固定安全结果；否则返回固定失败原因且零点击。
+8. `evalValue` 返回后，reader 使用独立的只读快照轮询，最多 3 次，每次间隔 250 毫秒。
+9. 确认目标行进入 `.selected` 或 `.friend-top`。
+10. 确认顶部招聘方、岗位和线程摘要存在。
+11. 确认消息区能找到合法的 15 位 `data-mid`。
+
+步骤 3 至 7 必须位于同一个不含 `await`、定时器或外部回调的页面侧同步函数中。这样 DOM 无法在校验与 `.click()` 之间插入重排。该函数沿用现有 `__bossGuardedCommunicationClick` 模式，操作名固定为 `__bossGuardedMessageConversationClick`，只能返回：
+
+```js
+{ clicked: true, operation: "__bossGuardedMessageConversationClick", rowIndex }
+{ clicked: false, operation: "__bossGuardedMessageConversationClick", reason }
+```
+
+`reason` 只能是预定义代码，不得包含招聘方、预览、消息正文、URL 或 DOM 内容。表达式只能对经全部守卫确认的一个 `.friend-content-warp` 元素调用 `.click()`，不能查找或点击编辑器、发送按钮及其他元素。
 
 任何一步失败都停止整轮，不继续点击下一条。这避免列表刷新、排序变化或页面漂移后点错人。
 
@@ -372,8 +382,10 @@ GET  /api/message-discovery-status?profileId=<id>
 - 只扫描 `.notice-badge`。
 - 不可变队列。
 - 列表重排后不点击。
-- 每个会话最多一次 `clickAt`。
-- 从不调用 `navigate`、`createTab`、`bringToFront`。
+- 每个会话最多一次页面内原子 guarded click。
+- `clickAt`、`navigate`、`createTab`、`bringToFront` 调用次数均为 0。
+- guarded expression 在同一同步函数内完成路径、风险、登录、行索引、瞬时签名和 `.notice-badge` 重校验。
+- DOM 漂移时 guarded expression 返回固定失败结果且点击次数为 0。
 - 从不查询或触碰 `.chat-input`、`.btn-send` 的交互方法。
 - 点击后身份复核。
 - 唯一岗位关联。
@@ -391,7 +403,7 @@ GET  /api/message-discovery-status?profileId=<id>
 
 - 用户无需逐条手动点开未读会话。
 - 系统只在后台操作一个已存在的消息标签页。
-- 每次点击都有点击前和点击后身份验证。
+- 每次点击都在页面内原子重校验后执行，并在返回后独立复核身份。
 - 任何不可靠映射都不会生成可发送草稿。
 - HR 正文和模型草稿不持久化、不写日志。
 - 面试邀请不生成草稿。
