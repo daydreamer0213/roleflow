@@ -118,10 +118,16 @@
 
 ```json
 {
-  "kind": "greeting",
+  "kind": "hr_reply",
   "jobId": "boss:job-id",
   "messages": ["您好，我在 KnowledgeFlow 中……"],
   "missingFact": null,
+  "messageCategory": "project_fact",
+  "progressUpdate": {
+    "stage": "reply_ready",
+    "nextAction": "复制草稿并手动发送",
+    "summary": "项目事实确认"
+  },
   "evidence": {
     "jd": ["岗位具体要求"],
     "resume": ["候选人具体项目证据"]
@@ -130,7 +136,7 @@
 }
 ```
 
-`kind` 只允许 `greeting/hr_reply/follow_up`，文案最多 2 条。招呼语和跟进必须有 JD 与简历双证据。
+`kind` 只允许 `greeting/hr_reply/follow_up`，文案最多 2 条。`messageCategory` 只允许 `project_fact/qualification/salary/availability/interview_invitation/other/identity_uncertain`。`progressUpdate` 必须包含合法进展阶段、下一步和固定短摘要；摘要不得复制 HR 原话或回复正文。招呼语和跟进必须有 JD 与简历双证据。
 
 缺少敏感事实时返回：
 
@@ -142,12 +148,20 @@
     "key": "gap",
     "question": "这段 GAP 期间你实际在做什么？"
   },
+  "messageCategory": "other",
+  "progressUpdate": {
+    "stage": "needs_user_action",
+    "nextAction": "请用户确认 GAP 事实",
+    "summary": "需要补充用户确认事实"
+  },
   "evidence": { "jd": [], "resume": [] },
   "tone": "自然、稳健、不夸大"
 }
 ```
 
 `missingFact` 与 `messages` 不能同时存在。用户回答以 `user_provided` 保存后才重新生成。
+
+面试邀约必须返回 `messageCategory=interview_invitation`、`messages=[]`、`missingFact=null` 和 `progressUpdate.stage=interview_invited`。模型不得生成“先确认安排”、接受、推迟或改期建议。岗位或线程不确定时同样返回空 `messages`，并停在 `needs_user_action`。
 
 ## 失败、修复和缓存
 
@@ -161,4 +175,4 @@
 
 真实适配器使用 OpenAI-compatible `/chat/completions`，支持 JSON mode；不支持时自动回退普通 JSON 提示。仅对短暂 5xx/网络错误做有限重试，不对鉴权、余额和模型名错误盲目重试。
 
-每个逻辑调用记录：kind、provider、model、缓存命中、延迟、尝试次数、HTTP 状态和 token 用量。日志不得包含 system prompt、输入、输出、简历、JD 或 Key。
+每个逻辑调用记录：kind、provider、model、缓存命中、延迟、尝试次数、HTTP 状态和 token 用量。日志不得包含 system prompt、输入、输出、简历、JD、HR 消息、回复草稿或 Key。用户粘贴的消息只存在于当前请求，不写入模型缓存、进展事件或隐藏字段。
