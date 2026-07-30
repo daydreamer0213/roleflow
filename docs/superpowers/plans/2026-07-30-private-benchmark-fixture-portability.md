@@ -18,7 +18,7 @@
 - `confirmed-evidence-portability.v3` must be explicit opt-in through `--proof-version confirmed-evidence-portability.v3`; a failed v1/v2 proof must never auto-upgrade.
 - v1/v2 proof creation and validation retain their existing exact fields, four consumer blobs, same-job requirement, and label-transition behavior.
 - v3 requires byte-identical confirmed profile, confirmed card, redacted resume, and identity manifest.
-- v3 target labels must be `private-real-jd-labels.v2`, `recall-first.v1`, `userConfirmed === true`, time-valid, and bound to the target jobs through the existing `privateJobsAndLabels` contract.
+- v3 target labels must be either the exact legacy-compatible `private-real-jd-labels.v2` / `recall-first.v1` identity or the exact frozen-pool `private-user-confirmed.v2` / `resume-centered-recall-first.v2` identity. Both remain `userConfirmed === true`, time-valid, and strictly bound to the target jobs through `privateJobsAndLabels`; the frozen-pool identity additionally requires its complete labeling policy, non-empty user label, raw-file jobs SHA-256, and `keep/discard` disposition contract.
 - The model must consume the profile, card, jobs, and labels parsed from the same raw bytes that passed v3 hash validation.
 - The self-hash prevents accidental or incomplete mutation; a local administrator maliciously reauthoring the complete proof, manifest, and all hashes is outside the existing threat model and must not trigger a new same-directory HMAC design.
 - The product commit remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; harness/documentation commits are evaluated-checkpoint changes only.
@@ -244,7 +244,7 @@ Amend the main multi-track implementation plan with:
 - candidate product fixed at `87cc68e`;
 - new candidate/baseline evaluated commits;
 - fresh roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - explicit proof creation argument:
 
@@ -292,15 +292,18 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - Baseline mirror commit: `cc5dc6adf158c4c38cfefb808a78a53b4bfdf389`. Its repository-native 41 offline checks and 31 benchmark fixtures passed; the baseline intentionally does not contain the candidate-only `private_full_chain_runner_smoke.js`.
 - The first Task 7 proof preflight in `multi-track-recall-first-3-v3-20260730` stopped before any model call because the plan selected the v2 root `full-chain-v40c-role-industry-boundary-2-20260730` as the source, while portability requires a v1 source manifest and v2 target manifest. Preserve that root as failed preflight evidence.
 - The unique matching v1 source is `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`: its four frozen confirmed-evidence files are byte-identical to the planned source, and its manifest commits match the existing v2 proof source binding. The candidate worktree was restored cleanly before correcting the plan.
+- The corrected-source preflight in `multi-track-recall-first-3-v3-v1-source-20260730` then stopped before any model call because the frozen labels use the exact `private-user-confirmed.v2` / `resume-centered-recall-first.v2` envelope, raw-file jobs SHA-256, `userLabel`, and `keep/discard` contract that the synthetic v3 fixture had not covered. Preserve that root as failed fixture-schema evidence.
+- The runner regression uses only synthetic values and requires proof creation, full match-live consumption, internal `discard` to `exclude` normalization, comparison identity preservation, and fail-closed rejection of malformed user-confirmed envelopes.
 - Candidate/baseline shared blobs are identical:
   - runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`
   - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
   - private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`
-- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen docs-only evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
-- The immediate follow-up record commit only fixes and freezes Task 7/8 instructions; live execution must continue to use `97b64b48b7604110ceb35af33d3234c4aaeaa89b`, not the follow-up documentation commit.
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of the historical docs-only evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
+- Live execution must not resume until the frozen-pool envelope fix passes independent review, is mirrored to baseline, and a new evaluated commit is recorded.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730` unchanged as failed v1/v2 manifest preflight evidence.
+- Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730` unchanged as failed frozen-label-schema preflight evidence.
 - Fresh live roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - Preserve zero-based `--diagnostic-indices '4,9,10'` exactly and create v3 proof with `--proof-version confirmed-evidence-portability.v3`.

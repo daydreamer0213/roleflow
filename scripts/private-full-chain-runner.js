@@ -57,12 +57,35 @@ const PRIVATE_JOB_KEYS = [
 ];
 const PRIVATE_LABEL_V1_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
 const PRIVATE_LABEL_V2_KEYS = [...PRIVATE_LABEL_V1_KEYS, "expectedDisposition"];
+const PRIVATE_USER_CONFIRMED_LABEL_KEYS = [...PRIVATE_LABEL_V2_KEYS, "userLabel"];
+const PRIVATE_USER_CONFIRMED_LABELING_POLICY_KEYS = [
+  "roleDirectionSource", "requirementMatchingSource", "adjacencyBasis", "industryTreatment",
+  "genericDutyWeight", "multiBranchJd", "falseNegativeCost"
+];
 const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
 const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
 const PRIVATE_ACTUAL_BUCKETS = new Set([...PRIVATE_BUCKETS, "analysis_pending", "refresh"]);
 const PRIVATE_LABEL_PAIRS = new Set(["apply/primary", "caution/talk", "review/talk", "review/backup", "skip/not_recommended"]);
 const PRIVATE_DISPOSITIONS = new Set(["keep", "exclude"]);
+const PRIVATE_USER_DISPOSITIONS = new Set(["keep", "discard"]);
 const RECALL_FIRST_POLICY = "recall-first.v1";
+const PRIVATE_USER_CONFIRMED_LABELS_VERSION = "private-user-confirmed.v2";
+const PRIVATE_USER_CONFIRMED_POLICY = "resume-centered-recall-first.v2";
+const RECALL_FIRST_POLICIES = new Set([RECALL_FIRST_POLICY, PRIVATE_USER_CONFIRMED_POLICY]);
+
+function isRecallFirstPolicy(value) {
+  return RECALL_FIRST_POLICIES.has(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isV3TargetLabelIdentity(labelsVersion, evaluationPolicy) {
+  return (labelsVersion === "private-real-jd-labels.v2" && evaluationPolicy === RECALL_FIRST_POLICY)
+    || (labelsVersion === PRIVATE_USER_CONFIRMED_LABELS_VERSION
+      && evaluationPolicy === PRIVATE_USER_CONFIRMED_POLICY);
+}
 const SAFE_ERROR_CODES = new Set([
   "CANDIDATE_PROFILE_REQUIRED",
   "MODEL_ANALYSIS_FAILED",
@@ -1076,11 +1099,13 @@ function createConfirmedEvidencePortability(options, seam = null) {
   try {
     sourceFixture = privateJobsAndLabels(
       JSON.parse(source.bytes.jobs.toString("utf8")),
-      JSON.parse(source.bytes.labels.toString("utf8"))
+      JSON.parse(source.bytes.labels.toString("utf8")),
+      source.bytes.jobs
     );
     targetFixture = privateJobsAndLabels(
       JSON.parse(target.bytes.jobs.toString("utf8")),
-      JSON.parse(target.bytes.labels.toString("utf8"))
+      JSON.parse(target.bytes.labels.toString("utf8")),
+      target.bytes.jobs
     );
   } catch {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Source and target labels must both be confirmed valid fixtures.");
@@ -1090,8 +1115,10 @@ function createConfirmedEvidencePortability(options, seam = null) {
     && sourceFixture.labelsVersion === "private-real-jd-labels.v1"
     && targetFixture.labelsVersion === "private-real-jd-labels.v2"
     && targetFixture.evaluationPolicy === RECALL_FIRST_POLICY;
-  if (fixtureTransition && (targetFixture.labelsVersion !== "private-real-jd-labels.v2"
-    || targetFixture.evaluationPolicy !== RECALL_FIRST_POLICY)) {
+  if (fixtureTransition && !isV3TargetLabelIdentity(
+    targetFixture.labelsVersion,
+    targetFixture.evaluationPolicy
+  )) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Fixture portability requires confirmed recall-first v2 target labels.");
   }
   if (!fixtureTransition && !labelsIdentical && !labelPolicyTransition) {
@@ -1231,8 +1258,7 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
       !/^[0-9a-f]{64}$/.test(String(proof.targetJobsFileSha256 || ""))
       || !/^[0-9a-f]{64}$/.test(String(proof.targetLabelsFileSha256 || ""))
       || !Number.isSafeInteger(proof.targetFixtureTotal) || proof.targetFixtureTotal < 1
-      || proof.targetLabelsVersion !== "private-real-jd-labels.v2"
-      || proof.targetEvaluationPolicy !== RECALL_FIRST_POLICY
+      || !isV3TargetLabelIdentity(proof.targetLabelsVersion, proof.targetEvaluationPolicy)
       || !Number.isFinite(Date.parse(proof.targetLabelsConfirmedAt))
       || !/^[0-9a-f]{64}$/.test(String(proof.profileConfirmationIdSha256 || ""))
       || !/^[0-9a-f]{64}$/.test(String(proof.cardConfirmationIdSha256 || ""))
@@ -1284,7 +1310,7 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
   }
   let targetFixture;
   try {
-    targetFixture = privateJobsAndLabels(target.jobsValue, target.labelsValue);
+    targetFixture = privateJobsAndLabels(target.jobsValue, target.labelsValue, target.jobsRaw);
   } catch {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The target recall-first labels are invalid.");
   }
@@ -1383,18 +1409,27 @@ function frozenJobSourceContentHash(job) {
   }));
 }
 
-function privateJobsAndLabels(jobsValue, labelsValue) {
+function privateJobsAndLabels(jobsValue, labelsValue, jobsRaw = null) {
   const jobs = Array.isArray(jobsValue) ? jobsValue : jobsValue?.rows;
-  const labels = labelsValue?.rows;
+  const rawLabels = labelsValue?.rows;
   const isV1 = labelsValue?.labelsVersion === "private-real-jd-labels.v1";
   const isV2 = labelsValue?.labelsVersion === "private-real-jd-labels.v2";
-  const labelEnvelopeKeys = isV2
-    ? ["labelsVersion", "evaluationPolicy", "userConfirmed", "confirmedAt", "jobsSha256", "rows"]
-    : ["labelsVersion", "userConfirmed", "confirmedAt", "jobsSha256", "rows"];
-  if (!Array.isArray(jobs) || !jobs.length || !Array.isArray(labels)
+  const isUserV2 = labelsValue?.labelsVersion === PRIVATE_USER_CONFIRMED_LABELS_VERSION;
+  const isRecallV2 = isV2 || isUserV2;
+  const labelEnvelopeKeys = isUserV2
+    ? ["labelsVersion", "evaluationPolicy", "labelingPolicy", "userConfirmed", "confirmedAt", "jobsSha256", "rows"]
+    : isV2
+      ? ["labelsVersion", "evaluationPolicy", "userConfirmed", "confirmedAt", "jobsSha256", "rows"]
+      : ["labelsVersion", "userConfirmed", "confirmedAt", "jobsSha256", "rows"];
+  const labelingPolicy = labelsValue?.labelingPolicy;
+  if (!Array.isArray(jobs) || !jobs.length || !Array.isArray(rawLabels)
     || !sameKeys(labelsValue, labelEnvelopeKeys)
-    || (!isV1 && !isV2)
+    || (!isV1 && !isRecallV2)
     || (isV2 && labelsValue.evaluationPolicy !== RECALL_FIRST_POLICY)
+    || (isUserV2 && (labelsValue.evaluationPolicy !== PRIVATE_USER_CONFIRMED_POLICY
+      || !labelingPolicy || typeof labelingPolicy !== "object" || Array.isArray(labelingPolicy)
+      || !sameKeys(labelingPolicy, PRIVATE_USER_CONFIRMED_LABELING_POLICY_KEYS)
+      || Object.values(labelingPolicy).some((value) => !isNonEmptyString(value))))
     || labelsValue.userConfirmed !== true
     || !String(labelsValue.confirmedAt || "").trim()
     || !Number.isFinite(Date.parse(labelsValue.confirmedAt))) {
@@ -1411,31 +1446,47 @@ function privateJobsAndLabels(jobsValue, labelsValue) {
     }
   }
   const jobIds = jobs.map((job) => String(job?.id || "").trim());
-  const labelIds = labels.map((label) => String(label?.id || "").trim());
+  const labelIds = rawLabels.map((label) => String(label?.id || "").trim());
   if (jobIds.some((id) => !id) || labelIds.some((id) => !id)
     || new Set(jobIds).size !== jobIds.length || new Set(labelIds).size !== labelIds.length
     || JSON.stringify([...jobIds].sort()) !== JSON.stringify([...labelIds].sort())
-    || labels.some((label) => !sameKeys(label, isV2 ? PRIVATE_LABEL_V2_KEYS : PRIVATE_LABEL_V1_KEYS)
+    || rawLabels.some((label) => {
+      const disposition = isUserV2 && label.expectedDisposition === "discard"
+        ? "exclude"
+        : label.expectedDisposition;
+      return !sameKeys(label, isUserV2
+        ? PRIVATE_USER_CONFIRMED_LABEL_KEYS
+        : isV2 ? PRIVATE_LABEL_V2_KEYS : PRIVATE_LABEL_V1_KEYS)
+      || (isUserV2 && !isNonEmptyString(label.userLabel))
       || !String(label.rationale || "").trim()
       || !PRIVATE_RECOMMENDATIONS.has(label.expectedRecommendation)
       || !PRIVATE_BUCKETS.has(label.expectedBucket)
       || !PRIVATE_LABEL_PAIRS.has(`${label.expectedRecommendation}/${label.expectedBucket}`)
-      || (isV2 && (!PRIVATE_DISPOSITIONS.has(label.expectedDisposition)
-        || (label.expectedDisposition === "exclude"
+      || (isRecallV2 && (!(isUserV2 ? PRIVATE_USER_DISPOSITIONS : PRIVATE_DISPOSITIONS).has(label.expectedDisposition)
+        || (disposition === "exclude"
           ? label.expectedRecommendation !== "skip" || label.expectedBucket !== "not_recommended"
-          : label.expectedBucket === "not_recommended"))))) {
+          : label.expectedBucket === "not_recommended")));
+    })) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Job and label IDs must be unique, complete, and exactly equal.");
   }
-  const jobsSha256 = valueSha256(jobs);
+  const jobsSha256 = isUserV2
+    ? (Buffer.isBuffer(jobsRaw) ? sha256(jobsRaw) : "")
+    : valueSha256(jobs);
   if (!/^[0-9a-f]{64}$/.test(String(labelsValue.jobsSha256 || ""))
     || labelsValue.jobsSha256 !== jobsSha256) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "The frozen label set does not match the frozen job set.");
   }
+  const labels = isUserV2
+    ? rawLabels.map((label) => ({
+      ...label,
+      expectedDisposition: label.expectedDisposition === "discard" ? "exclude" : label.expectedDisposition
+    }))
+    : rawLabels;
   return {
     jobs,
     labels,
     labelsVersion: labelsValue.labelsVersion,
-    evaluationPolicy: isV2 ? RECALL_FIRST_POLICY : "exact.v1",
+    evaluationPolicy: isRecallV2 ? labelsValue.evaluationPolicy : "exact.v1",
     jobsSha256,
     labelsSha256: valueSha256(labelsValue),
     labelById: new Map(labels.map((label) => [String(label.id), label]))
@@ -1870,7 +1921,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       return {
         id: String(job.id),
         expectedRecommendation: label.expectedRecommendation,
-        ...(fixture.evaluationPolicy === RECALL_FIRST_POLICY
+        ...(isRecallFirstPolicy(fixture.evaluationPolicy)
           ? { expectedDisposition: label.expectedDisposition }
           : {}),
         actualRecommendation,
@@ -1936,7 +1987,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   }
   const derived = deriveBenchmarkMetrics(rows);
   if (!derived.ok) throw runnerError(derived.code, derived.message);
-  const recallDerived = fixture.evaluationPolicy === RECALL_FIRST_POLICY
+  const recallDerived = isRecallFirstPolicy(fixture.evaluationPolicy)
     ? deriveRecallFirstMetrics(rows)
     : null;
   if (recallDerived && !recallDerived.ok) throw runnerError(recallDerived.code, recallDerived.message);
@@ -2180,15 +2231,15 @@ function comparePrivateFullChainResults(baseline, candidate) {
       return fail("BENCHMARK_COMPARE_METRICS", "Private comparison rows must record a boolean hard-blocker state.");
     }
   }
-  const recallMode = baseline.evaluationPolicy === RECALL_FIRST_POLICY
-    && candidate.evaluationPolicy === RECALL_FIRST_POLICY;
+  const recallMode = isV3TargetLabelIdentity(baseline.labelsVersion, baseline.evaluationPolicy)
+    && isV3TargetLabelIdentity(candidate.labelsVersion, candidate.evaluationPolicy);
   const hasVersionedPolicy = Boolean(baseline.evaluationPolicy || candidate.evaluationPolicy
     || baseline.labelsVersion || candidate.labelsVersion);
   const hasRecallRows = [baseline, candidate].some((value) => value.rows.some((row) =>
     Object.prototype.hasOwnProperty.call(row, "expectedDisposition")));
   if ((hasVersionedPolicy || hasRecallRows) && (!recallMode
-    || baseline.labelsVersion !== "private-real-jd-labels.v2"
-    || candidate.labelsVersion !== "private-real-jd-labels.v2")) {
+    || baseline.labelsVersion !== candidate.labelsVersion
+    || baseline.evaluationPolicy !== candidate.evaluationPolicy)) {
     return fail("PRIVATE_FULL_CHAIN_COMPARE_IDENTITY", "Private comparison label policy identity does not match.");
   }
   const fullCompared = compareBenchmarkResults(
@@ -2259,7 +2310,8 @@ function comparePrivateFullChainResults(baseline, candidate) {
       status,
       failureReasons,
       ...(recallMode ? {
-        evaluationPolicy: RECALL_FIRST_POLICY,
+        labelsVersion: candidate.labelsVersion,
+        evaluationPolicy: candidate.evaluationPolicy,
         recall: recallMetrics,
         pairedRecall: projected.pairedRecall
       } : {}),
@@ -2330,10 +2382,11 @@ function renderPrivateCompareMarkdown(report) {
     `- Portability proof: ${report.portability.proofSha256 || "native-v2"}`,
     `- Failure reasons: ${report.failureReasons.length ? report.failureReasons.join("; ") : "none"}`
   ];
-  if (report.evaluationPolicy === RECALL_FIRST_POLICY) {
+  if (isRecallFirstPolicy(report.evaluationPolicy)) {
     const recall = report.pairedRecall?.candidate || report.recall.candidate;
     lines.push(
-      `- Evaluation policy: ${RECALL_FIRST_POLICY}`,
+      `- Labels version: ${report.labelsVersion}`,
+      `- Evaluation policy: ${report.evaluationPolicy}`,
       `- Opportunities retained: ${recall.retainedOpportunity}/${recall.expectedKeep}`,
       `- False hard exclusions: ${recall.falseHardExclusion}`,
       `- Obvious mismatches excluded: ${recall.obviousMismatchExcluded}/${recall.expectedExclude}`,

@@ -839,6 +839,101 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(v3Proof.targetLabelsVersion, "private-real-jd-labels.v2");
   assert.strictEqual(v3Proof.targetEvaluationPolicy, "recall-first.v1");
   assert.strictEqual(v3Proof.targetLabelsConfirmedAt, changedLabels.confirmedAt);
+  const userConfirmedTargetRoot = privatePath("portability-target-v3-user-confirmed");
+  fs.cpSync(changedTargetRoot, userConfirmedTargetRoot, { recursive: true });
+  const userConfirmedJobsPath = path.join(userConfirmedTargetRoot, "input", "jobs.private.json");
+  const userConfirmedLabelsPath = path.join(userConfirmedTargetRoot, "labels", "jobs.reviewed.json");
+  const userConfirmedProofPath = path.join(userConfirmedTargetRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(userConfirmedProofPath);
+  const userConfirmedLabels = {
+    labelsVersion: "private-user-confirmed.v2",
+    evaluationPolicy: "resume-centered-recall-first.v2",
+    labelingPolicy: {
+      roleDirectionSource: "synthetic",
+      requirementMatchingSource: "synthetic",
+      adjacencyBasis: "synthetic",
+      industryTreatment: "synthetic",
+      genericDutyWeight: "synthetic",
+      multiBranchJd: "synthetic",
+      falseNegativeCost: "synthetic"
+    },
+    userConfirmed: true,
+    confirmedAt: changedLabels.confirmedAt,
+    jobsSha256: crypto.createHash("sha256").update(fs.readFileSync(userConfirmedJobsPath)).digest("hex"),
+    rows: changedLabels.rows.map((row) => ({
+      ...row,
+      userLabel: row.expectedDisposition === "exclude" ? "discard" : "keep",
+      expectedDisposition: row.expectedDisposition === "exclude" ? "discard" : "keep"
+    }))
+  };
+  fs.writeFileSync(userConfirmedLabelsPath, JSON.stringify(userConfirmedLabels, null, 2), "utf8");
+  const userConfirmedProof = runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot,
+    privateRoot: userConfirmedTargetRoot,
+    output: userConfirmedProofPath,
+    proofVersion: "confirmed-evidence-portability.v3"
+  }, portabilitySeam);
+  assert.strictEqual(userConfirmedProof.targetLabelsVersion, "private-user-confirmed.v2");
+  assert.strictEqual(userConfirmedProof.targetEvaluationPolicy, "resume-centered-recall-first.v2");
+  const userConfirmedRunSeam = seamFor("candidate");
+  const userConfirmedResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: userConfirmedTargetRoot,
+    output: path.join(userConfirmedTargetRoot, "runs", "candidate"),
+    profile: path.join(userConfirmedTargetRoot, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(userConfirmedTargetRoot, "input", "confirmed-card.private.json"),
+    jobs: userConfirmedJobsPath,
+    labels: userConfirmedLabelsPath,
+    portabilityProof: userConfirmedProofPath
+  }), authorizedEnv(), {
+    ...userConfirmedRunSeam,
+    ...portabilitySeam,
+    modules: { ...userConfirmedRunSeam.modules, openDb }
+  });
+  assert.strictEqual(userConfirmedResult.labelsVersion, "private-user-confirmed.v2");
+  assert.strictEqual(userConfirmedResult.evaluationPolicy, "resume-centered-recall-first.v2");
+  assert(userConfirmedResult.rows.every((row) => ["keep", "exclude"].includes(row.expectedDisposition)));
+  const expectUserConfirmedCreateReject = (name, mutate) => {
+    const targetRoot = privatePath(`portability-v3-user-confirmed-${name}`);
+    fs.cpSync(userConfirmedTargetRoot, targetRoot, { recursive: true });
+    const output = path.join(targetRoot, "input", "confirmed-evidence-portability.json");
+    fs.rmSync(output);
+    const jobsFile = path.join(targetRoot, "input", "jobs.private.json");
+    const labelsFile = path.join(targetRoot, "labels", "jobs.reviewed.json");
+    const value = JSON.parse(fs.readFileSync(labelsFile, "utf8"));
+    mutate(value, jobsFile);
+    fs.writeFileSync(labelsFile, JSON.stringify(value, null, 2), "utf8");
+    assert.throws(
+      () => runner.createConfirmedEvidencePortability({
+        sourcePrivateRoot: sourcePortabilityRoot,
+        privateRoot: targetRoot,
+        output,
+        proofVersion: "confirmed-evidence-portability.v3"
+      }, portabilitySeam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+  };
+  expectUserConfirmedCreateReject("canonical-instead-of-raw-jobs-hash", (value) => {
+    value.jobsSha256 = valueSha256(changedJobs);
+  });
+  expectUserConfirmedCreateReject("missing-labeling-policy", (value) => {
+    delete value.labelingPolicy;
+  });
+  expectUserConfirmedCreateReject("non-string-labeling-policy", (value) => {
+    value.labelingPolicy.roleDirectionSource = {};
+  });
+  expectUserConfirmedCreateReject("wrong-evaluation-policy", (value) => {
+    value.evaluationPolicy = "recall-first.v1";
+  });
+  expectUserConfirmedCreateReject("invalid-disposition", (value) => {
+    value.rows[0].expectedDisposition = "exclude";
+  });
+  expectUserConfirmedCreateReject("missing-user-label", (value) => {
+    value.rows[0].userLabel = "";
+  });
+  expectUserConfirmedCreateReject("non-string-user-label", (value) => {
+    value.rows[0].userLabel = 1;
+  });
   for (const confirmationId of [portableEvidence.profile.id, portableEvidence.card.id]) {
     assert(!JSON.stringify(v3Proof).includes(confirmationId), `v3 portability proof must not contain confirmation ID ${confirmationId}`);
   }
@@ -2616,6 +2711,33 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(retainedCompared.ok, true);
   assert.strictEqual(retainedCompared.report.accepted, true, "精确档位变化但机会仍保留时，recall-first 验收必须通过");
   assert.strictEqual(retainedCompared.report.evaluationPolicy, "recall-first.v1");
+  const userConfirmedCompared = runner.comparePrivateFullChainResults(
+    {
+      ...structuredClone(recallBaseline),
+      labelsVersion: "private-user-confirmed.v2",
+      evaluationPolicy: "resume-centered-recall-first.v2"
+    },
+    {
+      ...asRecallFirstResult(exactChangedButRetained),
+      labelsVersion: "private-user-confirmed.v2",
+      evaluationPolicy: "resume-centered-recall-first.v2"
+    }
+  );
+  assert.strictEqual(userConfirmedCompared.ok, true);
+  assert.strictEqual(userConfirmedCompared.report.accepted, true);
+  assert.strictEqual(userConfirmedCompared.report.labelsVersion, "private-user-confirmed.v2");
+  assert.strictEqual(userConfirmedCompared.report.evaluationPolicy, "resume-centered-recall-first.v2");
+  assert.strictEqual(
+    runner.comparePrivateFullChainResults(
+      {
+        ...structuredClone(recallBaseline),
+        labelsVersion: "private-user-confirmed.v2",
+        evaluationPolicy: "resume-centered-recall-first.v2"
+      },
+      asRecallFirstResult(exactChangedButRetained)
+    ).code,
+    "PRIVATE_FULL_CHAIN_COMPARE_IDENTITY"
+  );
 
   const baselineEmpty = asEmptyEnvelopeFailure(recallBaseline, 0);
   const baselineEmptyCompared = runner.comparePrivateFullChainResults(baselineEmpty, recallCandidate);
@@ -2815,6 +2937,33 @@ async function injectedLiveFlowSmoke(identityPath) {
   for (const row of recallBaseline.rows) {
     assert(!recallMarkdown.includes(row.id), "recall Markdown must contain aggregates, not private row IDs");
   }
+  const userRecallCliBundle = privatePath("cli-user-confirmed-recall-accepted");
+  const userRecallCliBaseline = path.join(userRecallCliBundle, "runs", "baseline", "match-result.json");
+  const userRecallCliCandidate = path.join(userRecallCliBundle, "runs", "candidate", "match-result.json");
+  const userRecallCliReport = path.join(userRecallCliBundle, "reports", "full-chain-compare.json");
+  fs.mkdirSync(path.dirname(userRecallCliBaseline), { recursive: true });
+  fs.mkdirSync(path.dirname(userRecallCliCandidate), { recursive: true });
+  fs.writeFileSync(userRecallCliBaseline, JSON.stringify({
+    ...recallBaseline,
+    labelsVersion: "private-user-confirmed.v2",
+    evaluationPolicy: "resume-centered-recall-first.v2"
+  }), "utf8");
+  fs.writeFileSync(userRecallCliCandidate, JSON.stringify({
+    ...asRecallFirstResult(exactChangedButRetained),
+    labelsVersion: "private-user-confirmed.v2",
+    evaluationPolicy: "resume-centered-recall-first.v2"
+  }), "utf8");
+  const userRecallCliRun = require("node:child_process").spawnSync(process.execPath, [
+    path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"),
+    "--compare", "--baseline", userRecallCliBaseline, "--candidate", userRecallCliCandidate, "--report", userRecallCliReport
+  ], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", env: { ...process.env, ALLOW_LIVE_MODEL_BENCHMARK: "" } });
+  assert.strictEqual(userRecallCliRun.status, 0, userRecallCliRun.stderr);
+  const userRecallReport = JSON.parse(fs.readFileSync(userRecallCliReport, "utf8"));
+  assert.strictEqual(userRecallReport.labelsVersion, "private-user-confirmed.v2");
+  assert.strictEqual(userRecallReport.evaluationPolicy, "resume-centered-recall-first.v2");
+  const userRecallMarkdown = fs.readFileSync(userRecallCliReport.replace(/\.json$/i, ".md"), "utf8");
+  assert.match(userRecallMarkdown, /Labels version: private-user-confirmed\.v2/);
+  assert.match(userRecallMarkdown, /Evaluation policy: resume-centered-recall-first\.v2/);
 
   const overlapBundle = privatePath("cli-recall-incomplete-overlap");
   const overlapBaseline = path.join(overlapBundle, "runs", "baseline", "match-result.json");

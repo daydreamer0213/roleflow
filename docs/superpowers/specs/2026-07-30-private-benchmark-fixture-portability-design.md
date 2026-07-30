@@ -37,16 +37,25 @@ v3 把“候选人证据身份”和“目标岗位夹具身份”分开证明�
 
 ### 可以变化但必须独立确认的岗位夹具
 
-源岗位与源标签按自身文件解析；目标岗位与目标标签必须另行解析，不能用源岗位对象验证目标标签。目标夹具必须通过现有 `privateJobsAndLabels` 全部校验，并满足：
+源岗位与源标签按自身文件解析；目标岗位与目标标签必须另行解析，不能用源岗位对象验证目标标签。目标夹具必须通过现有 `privateJobsAndLabels` 全部校验。v3 只接受以下两个精确身份之一：
 
-- `labelsVersion === "private-real-jd-labels.v2"`；
-- `evaluationPolicy === "recall-first.v1"`；
+- runner 原生兼容格式：`labelsVersion === "private-real-jd-labels.v2"` 且 `evaluationPolicy === "recall-first.v1"`；
+- 冻结人工确认格式：`labelsVersion === "private-user-confirmed.v2"` 且 `evaluationPolicy === "resume-centered-recall-first.v2"`。
+
+人工确认格式还必须满足：
+
+- `labelingPolicy` 的七个固定字段完整且都是非空字符串；
+- 每行具有非空 `userLabel`，并使用 `keep/discard`；runner 仅在内存中把 `discard` 规范化为既有指标使用的 `exclude`；
+- `jobsSha256` 等于目标岗位文件的原始字节 SHA-256，而不是重新序列化后的对象哈希。
+
+两个格式都必须满足：
+
 - `userConfirmed === true` 且 `confirmedAt` 是有效时间；
 - 岗位 ID 与标签 ID 唯一且集合完全一致；
 - 每条岗位的冻结结构、JD 长度和 `sourceContentHash` 合法；
 - 标签的 `jobsSha256` 精确绑定目标岗位数组。
 
-v3 只迁移候选人证据，不把源岗位池误当成目标岗位池的来源。证明记录 `targetJobsFileSha256`、`targetLabelsFileSha256`、`targetFixtureTotal`、`targetLabelsVersion`、`targetEvaluationPolicy` 和 `targetLabelsConfirmedAt`。目标岗位和标签的原始文件哈希负责冻结准确字节，标签内的 `jobsSha256` 继续负责绑定规范化岗位数组。证明生成后，目标岗位或标签的任一字节变化都必须在模型初始化前失败。
+v3 只迁移候选人证据，不把源岗位池误当成目标岗位池的来源。证明记录 `targetJobsFileSha256`、`targetLabelsFileSha256`、`targetFixtureTotal`、`targetLabelsVersion`、`targetEvaluationPolicy` 和 `targetLabelsConfirmedAt`。目标岗位和标签的原始文件哈希负责冻结准确字节；标签内的 `jobsSha256` 按其精确 schema 绑定规范化岗位数组或原始岗位文件。证明生成后，目标岗位或标签的任一字节变化都必须在模型初始化前失败。
 
 ### 代码来源绑定
 

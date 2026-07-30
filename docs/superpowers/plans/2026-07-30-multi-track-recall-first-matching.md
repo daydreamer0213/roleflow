@@ -1162,7 +1162,7 @@ Preserve the failed diagnostic root without modifying or deleting it:
 
 Use only these fresh roots:
 
-- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730`
 - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 
 The frozen pool remains:
@@ -1180,7 +1180,7 @@ Task 7 must use `--proof-version confirmed-evidence-portability.v3` and preserve
 
 - No repository files.
 - Private input/output root:
-  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730`
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730`
 - Reuse confirmed evidence from:
   `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`
 - Reuse frozen jobs/labels from:
@@ -1218,7 +1218,7 @@ Create `input`, `labels`, `runs\candidate`, and `reports` below the new private 
 ```powershell
 $source = 'D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $pool = 'D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730'
-$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730'
+$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730'
 if (Test-Path -LiteralPath $root) { throw "private root already exists: $root" }
 foreach ($directory in @('input', 'labels', 'runs\candidate', 'reports')) {
   New-Item -ItemType Directory -Path (Join-Path $root $directory) | Out-Null
