@@ -173,3 +173,54 @@ the one-row result is inspected.
 - The one-row result exposes both fixed categories without private text.
 - The failed three-row root remains unchanged.
 - The 20-row root remains absent.
+## 2026-07-30 Reason-Code Extension
+
+The first reviewed category-only diagnostic reproduced index `4` with both
+categories equal to `other`. That proves the failure is not safely attributable
+to one field category, but it still combines several validator-owned outcomes.
+The category diagnostic root must remain unchanged:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-diagnostic-v1-20260730`
+
+Extend the same private telemetry boundary with two additional closed-enum
+fields:
+
+- `initialContractFailureReason`;
+- `repairContractFailureReason`.
+
+Allowed reasons are:
+
+- `selected_track`;
+- `context_shape`;
+- `role_alignment_enum`;
+- `responsibility_requires_insufficient`;
+- `aligned_requires_role_resume`;
+- `misaligned_requires_evidence_triplet`;
+- `insufficient_requires_gap`;
+- `matches_shape`;
+- `matches_unknown_id`;
+- `matches_duplicate_id`;
+- `matches_state`;
+- `matches_resume_evidence`;
+- `eligibility_shape`;
+- `eligibility_unknown_id`;
+- `eligibility_duplicate_id`;
+- `eligibility_state`;
+- `eligibility_resume_evidence`;
+- `other`;
+- `none`.
+
+The classifier may match only literal templates owned by
+`src/core/model_contract.js`. It must not return message fragments, IDs,
+requirement names, evidence, arbitrary keys, or captures. An absent error maps
+to `none`; an unknown or ambiguous template maps to `other`.
+
+Tests must cover repair success, repair failure, unknown text, row reset, exact
+schema, and the existing sensitive marker. The new live root is:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v1-20260730`
+
+Run only zero-based index `4` with a new cache after candidate/baseline review
+and synchronization. Inspect only the two categories, two reasons, and existing
+safe status fields. The result remains diagnostic evidence rather than
+acceptance.

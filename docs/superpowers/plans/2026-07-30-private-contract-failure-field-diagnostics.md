@@ -684,3 +684,93 @@ if (git -C $candidate status --porcelain) { throw 'candidate dirty after restore
 Preserve the one-row diagnostic root. Do not rerun index `4`, do not run the
 three-row acceptance, and do not create the 20-row root until the safe category
 identifies the next change and that change receives its own red-green review.
+---
+
+### Task 6: Extend the diagnostic with validator-owned reason codes
+
+This task supersedes Task 5 Step 8 after the category-only run returned
+`initial=other` and `repair=other`.
+
+**Files:**
+- Modify: `tests/private_full_chain_runner_smoke.js`
+- Modify: `scripts/private-full-chain-runner.js`
+- Mirror: `D:\DevData\RoleFlow-private-benchmark\baseline-worktree-multi-track-recall-v1\scripts\private-full-chain-runner.js`
+- Modify: `docs/superpowers/plans/2026-07-30-private-benchmark-fixture-portability.md`
+- Modify: `docs/superpowers/plans/2026-07-30-multi-track-recall-first-matching.md`
+
+**Interfaces:**
+- Consumes: validator-owned static error templates already emitted through the
+  existing private logger boundary.
+- Produces: `initialContractFailureReason` and
+  `repairContractFailureReason`, each restricted to the spec's closed enum.
+
+- [ ] **Step 1: Add a failing exact-schema privacy test**
+
+Add both reason fields to `telemetryFields`. Use the existing fake events to
+assert:
+
+```js
+{ initial: "role_alignment_enum", repair: "none" }
+{ initial: "misaligned_requires_evidence_triplet", repair: "insufficient_requires_gap" }
+{ initial: "other", repair: "other" }
+```
+
+Keep the sensitive-marker, arbitrary-output-shape, exact-schema, and reset
+assertions. Run `node tests/private_full_chain_runner_smoke.js` and require a
+failure because the two fields are absent.
+
+- [ ] **Step 2: Implement a literal-template classifier**
+
+Add a closed reason set and a helper that returns only literals. Match exact
+validator-owned phrases for selected track, context shape, role-alignment
+evidence rules, and sparse `matches`/`eligibility` shape, ID, state, and resume
+evidence rules. Unknown or multi-template text returns `other`; empty input
+returns `none`.
+
+Reset both fields to `none`. Populate the initial reason on
+`model_contract_repair_requested` and the repair reason on
+`model_contract_repair_failed`. Do not persist any source message or capture.
+
+- [ ] **Step 3: Run red-green and full candidate verification**
+
+Run:
+
+```powershell
+node tests/private_full_chain_runner_smoke.js
+git diff --check
+git add -- scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js
+git commit -m "test: expose private contract failure reasons"
+node tests/private_full_chain_runner_smoke.js
+node tests/job_match_benchmark.js
+npm.cmd test
+git diff --check
+```
+
+Require focused PASS, 31 fixtures, 47 offline checks, clean status, and an
+independent `Spec PASS` / `Code quality APPROVED`.
+
+- [ ] **Step 4: Mirror and verify baseline**
+
+Mechanically copy only `scripts/private-full-chain-runner.js`, verify byte
+identity, commit `test: mirror private contract failure reasons`, then run 31
+fixtures and all 41 baseline offline checks. Verify the runner, metrics, and
+privacy Git blobs match candidate.
+
+- [ ] **Step 5: Record and review the new checkpoints**
+
+Update both authoritative execution plans with the candidate/baseline evaluated
+commits, immutable category-only root, new reason root, exact index `4`, tests,
+blob IDs, and independent review. Commit and push the continuation checkpoint.
+
+- [ ] **Step 6: Run the new reason-only diagnostic**
+
+Create:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v1-20260730`
+
+Use the same frozen hashes, v1 evidence, v3 proof, reviewed runner gate, and a
+new empty cache. Run only zero-based `--diagnostic-indices '4'`. Print only
+safe counts/status, the two categories, and the two reasons. Restore the fixed
+candidate worktree immediately. Preserve the root and use the reason evidence
+to choose the product-side red-green fix without starting the three-row or
+20-row acceptance.
