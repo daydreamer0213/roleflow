@@ -368,3 +368,11 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - 本条 supersede 上一节对 reason v1 的 next-root 绑定。新的唯一允许 reason live 根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v2-20260730`；开始前必须不存在，并重新复制 7 个冻结文件、重新核验 raw SHA、重新生成 manifest/v3 proof、重新执行 candidate/baseline 双侧 preflight。
 - v2 继续绑定 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5` 与 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，只运行零基 `--diagnostic-indices '4'`。命令输出只写 v2 私有 reports；改用 `Start-Process` 的 stdout/stderr 重定向，避免重现 shell 重定向错误。
 - v2 live 完成或失败后都必须恢复固定候选 `codex/claude-generic-evidence-matching-live-fix` @ `1fc49dac3670a71c720bfcaed943fa29204d93c5` 并确认干净；3 条和 20 条继续 gated。
+
+### Reason v2 CLI 根因与 v3 替换
+
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v2-20260730` 在 candidate `--preflight` 命令处以 CLI argument 错误停止；runner 的实际 `MODES` 集合不包含 `preflight`，因此不存在可单独调用的 `--preflight` 模式。v2 没有 cache/result，保持不可变并禁止补跑、覆盖或复用。
+- 旧成功 category 诊断根只有 `match-live` 私有日志，也佐证此前“preflight 通过”指 live 前的编排门禁与 `match-live` 内部 preflight，不是一个独立 CLI 命令。
+- 本条 supersede reason v2 的 next-root 绑定。新的唯一允许根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v3-20260730`；必须全新复制 7 个冻结文件并核验 raw SHA，全新生成 manifest/v3 proof，重新 verify-private-bundle，并在 live 前显式核验 candidate/baseline HEAD、clean、产品提交严格祖先、三个共享 blob、固定分支、输出不存在。
+- 不再调用不存在的 `--preflight`。候选 `--match-live` 会在模型配置解析与模型调用前执行 runner 内部 manifest、proof、隐私、fixture、diagnostic-index 等 preflight；任一失败都会在 live 产物中止并由外层 `finally` 恢复固定候选。
+- v3 继续精确绑定 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5` 与 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，只运行零基 `--diagnostic-indices '4'`，所有 stdout/stderr 只写 v3 私有 reports。3 条和 20 条继续 gated。
