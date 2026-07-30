@@ -721,7 +721,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v32");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v33");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1162,6 +1162,45 @@ async function multiTrackValidationIdempotenceSmoke() {
     normalized,
     "persisted normalized multi-track decisions must remain revalidatable"
   );
+  const baseRequirement = multiTrackUnderstanding.coreRequirements[0];
+  const confidenceUnderstanding = {
+    ...multiTrackUnderstanding,
+    hiringTracks: [multiTrackUnderstanding.hiringTracks[0]],
+    coreRequirements: [
+      { ...baseRequirement, id: "R1", trackIds: ["T1"], foundation: true, central: true, indispensable: true },
+      { ...baseRequirement, id: "R2", trackIds: ["T1"], foundation: false, central: true, indispensable: false },
+      { ...baseRequirement, id: "R3", trackIds: ["T1"], foundation: false, central: false, indispensable: false }
+    ],
+    eligibilityItems: []
+  };
+  const confidenceSparse = {
+    selectedTrackId: "T1",
+    roleAlignment: "mostly_aligned",
+    roleResumeEvidence: ["简历：具备同类交付事实"],
+    roleGaps: ["尚未证明指定工具差异"],
+    matches: [
+      { id: "R1", state: "transferable", resumeEvidence: "简历：具备同类基础交付事实" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：具备直接中心交付事实" }
+    ],
+    eligibility: []
+  };
+  const nonCoreUnknown = validateModelResultRaw("matchJob", confidenceSparse, {
+    jobUnderstanding: confidenceUnderstanding
+  });
+  assert.strictEqual(nonCoreUnknown.recommendation, "caution");
+  assert.strictEqual(nonCoreUnknown.confidence, 0.72,
+    "omitted non-core requirements must not create false low confidence");
+  const decisionUnknown = validateModelResultRaw("matchJob", confidenceSparse, {
+    jobUnderstanding: {
+      ...confidenceUnderstanding,
+      coreRequirements: confidenceUnderstanding.coreRequirements.map((item) => (
+        item.id === "R3" ? { ...item, central: true } : item
+      ))
+    }
+  });
+  assert.strictEqual(decisionUnknown.recommendation, "review");
+  assert.strictEqual(decisionUnknown.confidence, 0.45,
+    "omitted decision-bearing requirements must preserve low confidence");
 
   const singleTrackUnderstanding = {
     ...multiTrackUnderstanding,
@@ -1202,8 +1241,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v32",
-    "cross-track sprawl classification must invalidate v30 caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v33",
+    "local recall tier consistency must invalidate v32 caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17",
     "cross-track sprawl classification must invalidate v15 understandings");
   const currentRevision = {
@@ -1217,10 +1256,10 @@ async function multiTrackValidationIdempotenceSmoke() {
     analysisStaleReasons({
       revision: {
         ...currentRevision,
-        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v31" }
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v32" }
       }
     }, currentRevision).includes("match_pipeline_changed"),
-    "v30 match analyses must become stale after the cross-track sprawl fix"
+    "v32 match analyses must become stale after the local recall tier fix"
   );
   assert(
     analysisStaleReasons({
@@ -1906,7 +1945,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v17",
-    matchJob: "match-decision-v32",
+    matchJob: "match-decision-v33",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
@@ -2298,7 +2337,8 @@ function roleEvidenceDecisionStateSmoke() {
     ["aligned", ["matched", "unknown"], "talk"],
     ["aligned", ["transferable", "matched"], "talk"],
     ["aligned", ["unknown", "missing"], "backup"],
-    ["mostly_aligned", ["matched", "matched"], "talk"],
+    ["mostly_aligned", ["matched", "matched"], "primary"],
+    ["mostly_aligned", ["transferable", "matched"], "talk"],
     ["mostly_aligned", ["matched", "unknown"], "talk"],
     ["mostly_aligned", ["unknown", "missing"], "backup"],
     ["partially_aligned", ["matched"], "backup"],
@@ -2312,6 +2352,22 @@ function roleEvidenceDecisionStateSmoke() {
       `${alignment} + ${states.join("/")} should have ${expected} ceiling`
     );
   }
+
+  const transferableCentral = layeredRoleAnalysis("mostly_aligned", ["matched", "matched"]);
+  transferableCentral.requirementMatches.push({
+    requirement: "Named delivery difference",
+    state: "transferable",
+    foundation: false,
+    central: true,
+    indispensable: false,
+    jdEvidence: "JD: named delivery difference required",
+    resumeEvidence: "Resume: adjacent delivery evidence"
+  });
+  assert.strictEqual(
+    roleEvidenceDecisionState(transferableCentral).bucketCeiling,
+    "talk",
+    "transferable central evidence must retain the conversation ceiling"
+  );
 
   assert.deepStrictEqual(
     roleEvidenceDecisionState(layeredRoleAnalysis("mostly_aligned", ["matched", "unknown", "matched"])),

@@ -646,7 +646,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   else if (!requirementMatches.length || !hasPositiveEvidence || decisionUnknownRequirements.length || unknownEligibility.length || jobQuality.level === "risk") recommendation = "review";
   else if (decisionTransferable.length || decisionSoftMissing.length || jobQuality.level === "caution") recommendation = "caution";
   else recommendation = "apply";
-  const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !unknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
+  const confidence = completeDirect ? 0.9 : hasPositiveEvidence && !decisionUnknownRequirements.length && !unknownEligibility.length ? 0.72 : 0.45;
   const fitLevel = recommendation === "skip" ? "D" : recommendation === "review" ? "C" : recommendation === "caution" ? "B" : "A";
   const fitReasons = [
     ...requirementMatches.filter((item) => ["matched", "transferable"].includes(item.state))
@@ -1298,13 +1298,20 @@ function roleEvidenceDecisionState(analysis = {}) {
         ? "complete"
         : "partial";
   const hasTransferableFoundation = foundation.some((item) => item.state === "transferable");
+  const hasTransferableCentral = matches.some((item) => item?.central === true && item.state === "transferable");
   const hasConcreteFoundationGap = matches.some((item) => (
     item?.state === "missing" && (item?.central === true || item?.foundation === true)
   ));
 
   let bucketCeiling = "backup";
   let bucketFloor = null;
-  if (analysis.roleAlignment === "aligned" && foundationState === "complete" && !hasTransferableFoundation) {
+  if (
+    ["aligned", "mostly_aligned"].includes(analysis.roleAlignment)
+    && foundationState === "complete"
+    && !hasTransferableFoundation
+    && !hasTransferableCentral
+    && !hasConcreteFoundationGap
+  ) {
     bucketCeiling = "primary";
     bucketFloor = "talk";
   } else if (["aligned", "mostly_aligned"].includes(analysis.roleAlignment) && !hasConcreteFoundationGap) {
