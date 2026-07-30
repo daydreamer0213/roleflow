@@ -2250,6 +2250,41 @@ function roleEvidenceDecisionStateSmoke() {
     { roleAlignment: "mostly_aligned", foundationState: "partial", bucket: "talk" }
   );
 
+  const centralOnlyCoreGap = layeredRoleAnalysis("mostly_aligned", ["matched"], { recommendation: "review" });
+  centralOnlyCoreGap.requirementMatches.push({
+    requirement: "独立交付 Java 企业后端",
+    state: "missing",
+    foundation: false,
+    central: true,
+    indispensable: false,
+    jdEvidence: "JD：独立负责 Java 企业后端交付",
+    resumeEvidence: "简历：仅有 Python/FastAPI 交付"
+  });
+  const centralOnlyCoreState = roleEvidenceDecisionState(centralOnlyCoreGap);
+  assert.strictEqual(centralOnlyCoreState.bucketFloor, null, "中心职责缺口不得触发召回底线");
+  assert.strictEqual(centralOnlyCoreState.bucketCeiling, "backup", "中心职责缺口必须维持慎投上限");
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("central-only-core-gap"), analysis: applyRuleGuard(centralOnlyCoreGap, completeJob("central-only-core-gap")) }),
+    "backup",
+    "中心职责缺口不得由召回底线提升为可投"
+  );
+
+  const mediumRiskReview = {
+    ...layeredRoleAnalysis("mostly_aligned", ["matched"], { recommendation: "review" }),
+    hiddenRisks: [{ severity: "medium", evidence: "JD：需确认关键交付风险" }]
+  };
+  const mediumRiskGuarded = applyRuleGuard(mediumRiskReview, completeJob("medium-risk-review"));
+  assert.strictEqual(mediumRiskGuarded.recommendation, "review", "中高风险岗位不得由召回底线提升为可投");
+  assert.strictEqual(mediumRiskGuarded.decisionSource, "semantic_risk_guard", "中高风险岗位必须保留风险守卫来源");
+  assert.match(mediumRiskGuarded.fitReasons[0], /关键交付风险/, "中高风险岗位必须保留风险理由");
+  const missingEvidenceReview = {
+    ...layeredRoleAnalysis("mostly_aligned", ["matched"], { recommendation: "review" }),
+    evidence: { jd: [], resume: [] }
+  };
+  const missingEvidenceGuarded = applyRuleGuard(missingEvidenceReview, completeJob("missing-evidence-review"));
+  assert.strictEqual(missingEvidenceGuarded.recommendation, "review", "缺少双侧总证据的岗位不得由召回底线提升为可投");
+  assert.strictEqual(missingEvidenceGuarded.decisionSource, "model_evidence_gap", "缺少双侧总证据必须保留证据守卫来源");
+
   const genericDutyGap = layeredRoleAnalysis("mostly_aligned", ["matched", "matched"], { recommendation: "review" });
   genericDutyGap.requirementMatches.push({
     requirement: "客户沟通与文档意识",

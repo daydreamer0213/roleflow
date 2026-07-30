@@ -324,16 +324,18 @@ function applyRuleGuard(analysis, job) {
   if (analysis.recommendation === "skip") {
     guarded = addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
   }
-  if (["apply", "caution"].includes(analysis.recommendation) && missingEitherSideEvidence(analysis)) {
+  if (["apply", "caution", "review"].includes(analysis.recommendation) && missingEitherSideEvidence(analysis)) {
     return addGuard(analysis, "review", analysis.fitLevel || "C", "模型结论缺少可核对的双侧证据，需要人工复核 JD 与简历。", analysis.semanticStatus, "model_evidence_gap");
   }
   if (analysis.recommendation === "apply" && (hasTransferableCore(analysis) || analysis.jobQuality?.level === "caution")) {
     guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "核心要求仅有可迁移证据或岗位质量需关注，建议先沟通确认再投递。", analysis.semanticStatus, "evidence_quality_guard");
   }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
-  if (guarded === analysis && analysis.recommendation === "apply" && materialRisk) {
+  if (guarded === analysis && materialRisk) {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
-    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
+    const recommendation = analysis.recommendation === "apply" ? "caution" : analysis.recommendation;
+    const fitLevel = analysis.recommendation === "apply" && analysis.fitLevel === "A" ? "B" : analysis.fitLevel;
+    guarded = addGuard(analysis, recommendation, fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
   }
   if (guarded === analysis && analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
     guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");

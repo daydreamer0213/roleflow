@@ -1296,7 +1296,9 @@ function roleEvidenceDecisionState(analysis = {}) {
         ? "complete"
         : "partial";
   const hasTransferableFoundation = foundation.some((item) => item.state === "transferable");
-  const hasConcreteFoundationGap = foundation.some((item) => item.state === "missing");
+  const hasConcreteFoundationGap = matches.some((item) => (
+    item?.state === "missing" && (item?.central === true || item?.foundation === true)
+  ));
 
   let bucketCeiling = "backup";
   let bucketFloor = null;
