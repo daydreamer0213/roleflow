@@ -244,7 +244,7 @@ Amend the main multi-track implementation plan with:
 - candidate product fixed at `87cc68e`;
 - new candidate/baseline evaluated commits;
 - fresh roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - explicit proof creation argument:
 
@@ -311,6 +311,13 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730` unchanged as failed frozen-label-schema preflight evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-user-confirmed-20260730` unchanged as failed frozen-job-schema preflight evidence.
 - Fresh live roots:
-  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 - Preserve zero-based `--diagnostic-indices '4,9,10'` exactly and create v3 proof with `--proof-version confirmed-evidence-portability.v3`.
+
+## 2026-07-30 live-shell interruption checkpoint
+
+- Preserve `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730` unchanged as shell-orchestration interruption evidence.
+- The evaluated fixture-portability preflight completed before the live wrapper was interrupted by PowerShell promoting Node's SQLite experimental stderr warning to a terminating error.
+- Read-only inspection found no match result, zero-byte redirected logs, zero model-cache rows, and no application/model/state rows. No live acceptance conclusion may be drawn from this root.
+- The next 3-row run must use the initially absent root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`; the evaluated candidate and baseline commits remain `cebe59f5aae78abdde873adfe211f296d3322519` and `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`.

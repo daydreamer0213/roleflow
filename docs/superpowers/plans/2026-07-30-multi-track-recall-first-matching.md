@@ -1171,7 +1171,7 @@ Preserve the failed diagnostic root without modifying or deleting it:
 
 Use only these fresh roots:
 
-- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730`
+- `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`
 - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`
 
 The frozen pool remains:
@@ -1189,7 +1189,7 @@ Task 7 must use `--proof-version confirmed-evidence-portability.v3` and preserve
 
 - No repository files.
 - Private input/output root:
-  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730`
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`
 - Reuse confirmed evidence from:
   `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`
 - Reuse frozen jobs/labels from:
@@ -1227,7 +1227,7 @@ Create `input`, `labels`, `runs\candidate`, and `reports` below the new private 
 ```powershell
 $source = 'D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725'
 $pool = 'D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730'
-$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730'
+$root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730'
 if (Test-Path -LiteralPath $root) { throw "private root already exists: $root" }
 foreach ($directory in @('input', 'labels', 'runs\candidate', 'reports')) {
   New-Item -ItemType Directory -Path (Join-Path $root $directory) | Out-Null
@@ -1330,17 +1330,34 @@ Every command must exit 0 before a model call.
 Run:
 
 ```powershell
-node $runner --match-live `
-  --private-root $root `
-  --side candidate `
-  --profile (Join-Path $root 'input\confirmed-profile.private.json') `
-  --matching-card (Join-Path $root 'input\confirmed-card.private.json') `
-  --jobs (Join-Path $root 'input\jobs.private.json') `
-  --labels (Join-Path $root 'labels\jobs.reviewed.json') `
-  --portability-proof (Join-Path $root 'input\confirmed-evidence-portability.json') `
-  --model-settings-root 'D:\Guo\ZhiPing' `
-  --diagnostic-indices '4,9,10' `
-  --output (Join-Path $root 'runs\candidate')
+$stdout = Join-Path $root 'reports\match-live.stdout.log'
+$stderr = Join-Path $root 'reports\match-live.stderr.log'
+$arguments = @(
+  $runner
+  '--match-live'
+  '--private-root', $root
+  '--side', 'candidate'
+  '--profile', (Join-Path $root 'input\confirmed-profile.private.json')
+  '--matching-card', (Join-Path $root 'input\confirmed-card.private.json')
+  '--jobs', (Join-Path $root 'input\jobs.private.json')
+  '--labels', (Join-Path $root 'labels\jobs.reviewed.json')
+  '--portability-proof', (Join-Path $root 'input\confirmed-evidence-portability.json')
+  '--model-settings-root', 'D:\Guo\ZhiPing'
+  '--diagnostic-indices', '4,9,10'
+  '--output', (Join-Path $root 'runs\candidate')
+)
+$node = (Get-Command node -ErrorAction Stop).Source
+$process = Start-Process `
+  -FilePath $node `
+  -ArgumentList $arguments `
+  -Wait `
+  -PassThru `
+  -NoNewWindow `
+  -RedirectStandardOutput $stdout `
+  -RedirectStandardError $stderr
+if ($process.ExitCode -ne 0) {
+  throw "live match failed with exit code $($process.ExitCode); inspect the private logs under $root"
+}
 ```
 
 Acceptance:
@@ -1591,3 +1608,12 @@ git -C $docsWorktree commit -m "docs: record multi-track recall acceptance"
 Expected: the acceptance record commit is a descendant of the frozen evaluated checkpoint; it is documentation only and never replaces `cebe59f5aae78abdde873adfe211f296d3322519` in the private manifest.
 
 Do not merge to `main`, do not modify the formal project, and do not push until the user has reviewed the result.
+
+## 2026-07-30 live-shell interruption checkpoint
+
+- Preserve `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-job-schema-20260730` unchanged as shell-orchestration interruption evidence.
+- The live wrapper used PowerShell with `$ErrorActionPreference = 'Stop'`. Node wrote the SQLite experimental warning to stderr, and PowerShell terminated the wrapper before it captured a trustworthy native exit code.
+- Read-only inspection found no `runs\candidate\match-result.json`, zero-byte redirected stdout and stderr logs, zero model-cache rows, and no application/model/state rows. This is not evidence of a completed model result and must not be treated as a 3-row acceptance outcome.
+- Do not rerun in that root. Use the fresh, initially absent root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`.
+- Keep evaluated candidate `cebe59f5aae78abdde873adfe211f296d3322519`, evaluated baseline `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`, zero-based `--diagnostic-indices '4,9,10'`, and the v1 source evidence unchanged.
+- For the next live invocation, use a native-process wrapper that redirects stdout/stderr without promoting warnings to terminating PowerShell errors, and capture the process exit code directly.
