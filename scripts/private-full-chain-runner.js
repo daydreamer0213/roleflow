@@ -1013,6 +1013,15 @@ function portabilityBlobResolver(seam) {
   }).trim().toLowerCase();
 }
 
+function runtimePortabilityBlobResolver(seam) {
+  if (typeof seam?.runtimeBlobResolver === "function") return seam.runtimeBlobResolver;
+  return (commit, file) => execFileSync("git", ["rev-parse", `${commit}:${file}`], {
+    cwd: canonicalRuntimeWorktree,
+    encoding: "utf8",
+    windowsHide: true
+  }).trim().toLowerCase();
+}
+
 function resolvePortabilityBlobs(sourceCommit, targetCommit, seam, files = PORTABILITY_CONSUMER_FILES) {
   const resolveBlob = portabilityBlobResolver(seam);
   try {
@@ -1339,7 +1348,7 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
   if (fixtureTransition) {
     let runtimeConsumerCodeBlobs;
     try {
-      const resolveBlob = portabilityBlobResolver(seam);
+      const resolveBlob = runtimePortabilityBlobResolver(seam);
       runtimeConsumerCodeBlobs = Object.fromEntries(Object.entries(PORTABILITY_V3_CONSUMER_FILES).map(([name, file]) => {
         const blob = String(resolveBlob(context.evaluatedCommit, file) || "").toLowerCase();
         if (!/^[0-9a-f]{40,64}$/.test(blob)) throw new Error("runtime blob invalid");

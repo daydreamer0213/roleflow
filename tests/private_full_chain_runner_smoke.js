@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 const runner = require("../scripts/private-full-chain-runner");
 const { createJobAnalysisRunner } = require("../src/core/job_analysis");
@@ -700,6 +701,10 @@ async function injectedLiveFlowSmoke(identityPath) {
     blobResolver: (commit, file) => {
       assert([sourceManifest.candidateEvaluatedCommit, manifest.candidateProductCommit].includes(commit));
       return portabilityBlobIds.get(file);
+    },
+    runtimeBlobResolver: (commit, file) => {
+      assert([manifest.baselineEvaluatedCommit, manifest.candidateEvaluatedCommit].includes(commit));
+      return portabilityBlobIds.get(file);
     }
   };
   const portabilityMatchOptions = (side, overrides = {}) => liveOptions("match-live", side, {
@@ -1211,6 +1216,78 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), portableRunSeam("candidate"));
   assert.strictEqual(v3Result.confirmedEvidencePortabilitySha256, v3Proof.proofSha256);
   assert.deepStrictEqual(v3Result.rows.map((row) => row.id), changedJobs.map((job) => job.id));
+  const independentBaselineRepo = privatePath("portability-v3-independent-baseline-repo");
+  fs.mkdirSync(path.join(independentBaselineRepo, "src", "core"), { recursive: true });
+  fs.cpSync(path.resolve(__dirname, "..", "scripts"), path.join(independentBaselineRepo, "scripts"), { recursive: true });
+  for (const file of ["profile_onboarding.js", "matching_card.js", "search_plan.js"]) {
+    fs.writeFileSync(path.join(independentBaselineRepo, "src", "core", file), `module.exports = ${JSON.stringify(file)};\n`, "utf8");
+  }
+  const baselineGit = (...args) => execFileSync("git", args, {
+    cwd: independentBaselineRepo, encoding: "utf8", windowsHide: true
+  }).trim();
+  baselineGit("init");
+  baselineGit("config", "user.email", "synthetic@example.invalid");
+  baselineGit("config", "user.name", "Synthetic Baseline");
+  baselineGit("add", ".");
+  baselineGit("commit", "-m", "synthetic baseline runtime");
+  const independentBaselineCommit = baselineGit("rev-parse", "HEAD");
+  const independentBaselineBlobs = Object.fromEntries([
+    ["profileCreationBlobId", "src/core/profile_onboarding.js"],
+    ["cardCreationBlobId", "src/core/matching_card.js"],
+    ["profileConsumptionBlobId", "src/core/search_plan.js"]
+  ].map(([name, file]) => [name, baselineGit("rev-parse", `HEAD:${file}`)]));
+  const independentBaselineRoot = privatePath("portability-v3-independent-baseline-fixture");
+  fs.cpSync(changedTargetRoot, independentBaselineRoot, { recursive: true });
+  fs.rmSync(path.join(independentBaselineRoot, "runs"), { recursive: true });
+  const independentBaselineManifestPath = path.join(independentBaselineRoot, "run-manifest.json");
+  const independentBaselineManifest = JSON.parse(fs.readFileSync(independentBaselineManifestPath, "utf8"));
+  independentBaselineManifest.baselineEvaluatedCommit = independentBaselineCommit;
+  fs.writeFileSync(independentBaselineManifestPath, JSON.stringify(independentBaselineManifest, null, 2), "utf8");
+  const independentBaselineProofPath = path.join(independentBaselineRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(independentBaselineProofPath);
+  const independentBaselineRunner = require(path.join(independentBaselineRepo, "scripts", "private-full-chain-runner.js"));
+  const proofOnlyBlobResolver = (commit, file) => {
+    assert([sourceManifest.candidateEvaluatedCommit, independentBaselineManifest.candidateProductCommit].includes(commit));
+    const name = Object.entries({
+      profileCreationBlobId: "src/core/profile_onboarding.js",
+      cardCreationBlobId: "src/core/matching_card.js",
+      profileConsumptionBlobId: "src/core/search_plan.js"
+    }).find(([, candidateFile]) => candidateFile === file)?.[0];
+    assert(name, `unexpected portability proof file ${file}`);
+    return independentBaselineBlobs[name];
+  };
+  const independentBaselineProof = independentBaselineRunner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot,
+    privateRoot: independentBaselineRoot,
+    output: independentBaselineProofPath,
+    proofVersion: "confirmed-evidence-portability.v3"
+  }, {
+    targetCommits: {
+      productCommit: independentBaselineManifest.candidateProductCommit,
+      evaluatedCommit: independentBaselineManifest.candidateEvaluatedCommit
+    },
+    sourceProductResolver: portabilitySeam.sourceProductResolver,
+    blobResolver: proofOnlyBlobResolver
+  });
+  const independentBaselineResult = await independentBaselineRunner.runPrivateFullChain(liveOptions("match-live", "baseline", {
+    privateRoot: independentBaselineRoot,
+    output: path.join(independentBaselineRoot, "runs", "baseline"),
+    profile: path.join(independentBaselineRoot, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(independentBaselineRoot, "input", "confirmed-card.private.json"),
+    jobs: path.join(independentBaselineRoot, "input", "jobs.private.json"),
+    labels: path.join(independentBaselineRoot, "labels", "jobs.reviewed.json"),
+    portabilityProof: independentBaselineProofPath,
+    gitProof: { clean: true, commit: independentBaselineCommit }
+  }), authorizedEnv(), {
+    ...portableRunSeam("baseline"),
+    targetCommits: {
+      productCommit: independentBaselineManifest.candidateProductCommit,
+      evaluatedCommit: independentBaselineManifest.candidateEvaluatedCommit
+    },
+    blobResolver: proofOnlyBlobResolver,
+    runtimeBlobResolver: undefined
+  });
+  assert.strictEqual(independentBaselineResult.confirmedEvidencePortabilitySha256, independentBaselineProof.proofSha256);
   const hashAndUseRoot = privatePath("portability-v3-hash-and-use");
   fs.cpSync(changedTargetRoot, hashAndUseRoot, { recursive: true });
   fs.rmSync(path.join(hashAndUseRoot, "runs"), { recursive: true });
@@ -1372,9 +1449,9 @@ async function injectedLiveFlowSmoke(identityPath) {
   });
   const runtimeEvaluatedBlobSeam = {
     ...portabilityPreflightSeam,
-    blobResolver: (commit, file) => {
+    runtimeBlobResolver: (commit, file) => {
       if (commit === manifest.baselineEvaluatedCommit && file === "src/core/profile_onboarding.js") return "f".repeat(40);
-      assert([sourceManifest.candidateEvaluatedCommit, manifest.candidateProductCommit, manifest.baselineEvaluatedCommit].includes(commit));
+      assert.strictEqual(commit, manifest.baselineEvaluatedCommit);
       return portabilityBlobIds.get(file);
     }
   };
@@ -1394,6 +1471,29 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.deepStrictEqual(portabilityPreflightCounts, {
     loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
   }, "runtime evaluated blob mismatch must fail before settings, provider, SQLite, or model access");
+  const candidateRuntimeBlobSeam = {
+    ...portabilityPreflightSeam,
+    runtimeBlobResolver: (commit, file) => {
+      assert.strictEqual(commit, manifest.candidateEvaluatedCommit);
+      return file === "src/core/search_plan.js" ? "f".repeat(40) : portabilityBlobIds.get(file);
+    }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: changedTargetRoot,
+      output: path.join(changedTargetRoot, "runs", "candidate"),
+      profile: path.join(changedTargetRoot, "input", "confirmed-profile.private.json"),
+      matchingCard: path.join(changedTargetRoot, "input", "confirmed-card.private.json"),
+      jobs: changedJobsPath,
+      labels: changedLabelsPath,
+      portabilityProof: changedProofPath
+    }), authorizedEnv(), candidateRuntimeBlobSeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+    "v3 candidate runtime evaluated consumer blobs must match the portability proof before runtime setup"
+  );
+  assert.deepStrictEqual(portabilityPreflightCounts, {
+    loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
+  }, "candidate runtime evaluated blob mismatch must fail before settings, provider, SQLite, or model access");
   const portableBaseline = await runner.runPrivateFullChain(portabilityMatchOptions("baseline", {
     portabilityProof: portabilityProofPath
   }), authorizedEnv(), portableRunSeam("baseline"));
