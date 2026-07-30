@@ -1923,3 +1923,16 @@ the next reviewed root-cause change.
   Rebuild the seven frozen files, exact hashes, manifest, v3 proof, verifier
   outputs, and fresh cache; run zero-based `4,9,10`; restore the fixed
   candidate in `finally`. Keep the 20-row root absent unless all three pass.
+
+### Direct-instance exact evaluated binding
+
+- Candidate evaluated is exactly
+  `4845fb37d5c19f9741a17ea074f906c61269a924`. Candidate product
+  `2ef0798bea0c33ae267d0fee8649ff673e9665b4` must be verified as its strict
+  ancestor before root creation.
+- This docs-only binding record does not replace candidate evaluated
+  `4845fb37d5c19f9741a17ea074f906c61269a924` in the manifest, v3 proof,
+  temporary evaluation branch, or final verification.
+- Baseline evaluated/product remain
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
