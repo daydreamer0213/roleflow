@@ -172,7 +172,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, { messageDiscoveryRuns });
+      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, { messageDiscoveryRuns, dependencies: messageDiscoveryDependencies });
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, { db, logger, messageDiscoveryRuns, getRuntimeModelConfig, dependencies: messageDiscoveryDependencies });
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
@@ -194,6 +194,9 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
   });
   dashboardServer.on("close", () => {
     for (const run of messageDiscoveryRuns.values()) {
+      clearMessageDiscoveryTimer(run, messageDiscoveryDependencies);
+      run.results = [];
+      run.closed = true;
       if (run.status === "running") {
         run.abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_SERVER_STOPPED", "dashboard server stopped"));
       }
@@ -1370,7 +1373,7 @@ function draftCommunicationWithContext({ db, modelConfig, logger, profile, job, 
   });
 }
 
-async function handleProgress(req, res, db, { messageDiscoveryRuns = null } = {}) {
+async function handleProgress(req, res, db, { messageDiscoveryRuns = null, dependencies = {} } = {}) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const card = getProgressCardById(db, params.cardId);
@@ -1410,7 +1413,7 @@ async function handleProgress(req, res, db, { messageDiscoveryRuns = null } = {}
         scheduledAt
       });
       if (action === "reply_confirmed_sent") {
-        clearMessageDiscoveryDraft(messageDiscoveryRuns, card.profileId, card.id);
+        clearMessageDiscoveryDraft(messageDiscoveryRuns, card.profileId, card.id, dependencies);
       }
     }
     redirect(res, `/queue?planId=${card.planId}`);
@@ -1459,10 +1462,13 @@ async function handleMessageDiscovery(req, res, {
       if (run.status === "running") {
         throw messageDiscoveryError("MESSAGE_DISCOVERY_RUNNING", "stop message discovery before dismissing drafts", 409);
       }
+      clearMessageDiscoveryTimer(run, dependencies);
       run.results = [];
       run.status = "dismissed";
       run.reasonCode = "";
+      run.expiresAt = "";
       run.updatedAt = messageDiscoveryNow(dependencies).toISOString();
+      run.closed = true;
       return sendJson(res, 200, publicMessageDiscoveryRun(run));
     }
     throw messageDiscoveryError("MESSAGE_DISCOVERY_ACTION_INVALID", "message discovery action is invalid", 400);
@@ -1486,7 +1492,8 @@ function startMessageDiscovery(res, {
   if (!getCandidateProfile(db, profileId)) {
     throw messageDiscoveryError("MESSAGE_DISCOVERY_PROFILE_NOT_FOUND", "candidate profile was not found", 404);
   }
-  if (messageDiscoveryRuns.get(profileId)?.status === "running") {
+  const previousRun = messageDiscoveryRuns.get(profileId);
+  if (previousRun?.status === "running") {
     throw messageDiscoveryError("MESSAGE_DISCOVERY_ALREADY_RUNNING", "message discovery is already running", 409);
   }
   const owner = randomUUID();
@@ -1503,6 +1510,11 @@ function startMessageDiscovery(res, {
     }
     throw error;
   }
+  if (previousRun) {
+    clearMessageDiscoveryTimer(previousRun, dependencies);
+    previousRun.results = [];
+    previousRun.closed = true;
+  }
 
   const startedAt = messageDiscoveryNow(dependencies);
   const abortController = new AbortController();
@@ -1516,7 +1528,10 @@ function startMessageDiscovery(res, {
     startedAt: startedAt.toISOString(),
     updatedAt: startedAt.toISOString(),
     expiresAt: "",
-    abortController
+    abortController,
+    cleanupTimer: null,
+    clearedCardIds: new Set(),
+    closed: false
   };
   messageDiscoveryRuns.set(profileId, run);
   const heartbeatMs = Math.max(1, Number(dependencies.leaseHeartbeatMs) || 30_000);
@@ -1552,13 +1567,13 @@ function startMessageDiscovery(res, {
         job,
         hrMessage
       }),
-      onStatus: (status) => updateMessageDiscoveryRun(run, status, dependencies)
+      onStatus: (status) => updateMessageDiscoveryRun(messageDiscoveryRuns, run, status, dependencies)
     });
-    updateMessageDiscoveryRun(run, summary, dependencies);
+    updateMessageDiscoveryRun(messageDiscoveryRuns, run, summary, dependencies);
   }).catch((error) => {
     if (messageDiscoveryRuns.get(profileId) !== run) return;
     const code = messageDiscoveryErrorCode(error);
-    updateMessageDiscoveryRun(run, {
+    updateMessageDiscoveryRun(messageDiscoveryRuns, run, {
       status: code === "MESSAGE_DISCOVERY_LEASE_LOST" ? "needs_user_action" : "stopped",
       queued: run.queued,
       processed: run.processed,
@@ -1623,31 +1638,47 @@ function handleMessageDiscoveryStatus(res, messageDiscoveryRuns, profileIdValue,
   }
 }
 
-function updateMessageDiscoveryRun(run, status, dependencies = {}) {
-  if (!run || !status || typeof status !== "object") return;
+function updateMessageDiscoveryRun(messageDiscoveryRuns, run, status, dependencies = {}) {
+  if (!run || run.closed || messageDiscoveryRuns.get(run.profileId) !== run
+    || !status || typeof status !== "object") return;
   const now = messageDiscoveryNow(dependencies);
   const allowedStatuses = new Set(["running", "completed", "needs_user_action", "stopped"]);
   run.status = allowedStatuses.has(status.status) ? status.status : "needs_user_action";
   run.queued = Math.max(0, Number(status.queued) || 0);
   run.processed = Math.max(0, Number(status.processed) || 0);
   run.reasonCode = safeMessageDiscoveryCode(status.reasonCode);
-  run.results = sanitizeMessageDiscoveryResults(status.results);
+  run.results = sanitizeMessageDiscoveryResults(
+    Array.isArray(status.results)
+      ? status.results.filter((item) => !run.clearedCardIds.has(Number(item?.cardId)))
+      : []
+  );
   run.updatedAt = now.toISOString();
+  if (run.status === "running") {
+    run.expiresAt = "";
+    return;
+  }
+  run.closed = true;
   run.expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+  scheduleMessageDiscoveryCleanup(messageDiscoveryRuns, run, dependencies);
 }
 
 function sanitizeMessageDiscoveryResults(results) {
   if (!Array.isArray(results)) return [];
-  return results.map((item) => ({
-    cardId: Math.max(0, Number(item?.cardId) || 0),
-    jobId: Math.max(0, Number(item?.jobId) || 0),
-    stage: String(item?.stage || "").slice(0, 80),
-    messageCategory: String(item?.messageCategory || "").slice(0, 80),
-    missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
-    messages: Array.isArray(item?.messages)
-      ? item.messages.slice(0, 2).map((message) => String(message))
-      : []
-  }));
+  let remainingMessages = 2;
+  return results.map((item) => {
+    const messages = Array.isArray(item?.messages)
+      ? item.messages.slice(0, remainingMessages).map((message) => String(message))
+      : [];
+    remainingMessages -= messages.length;
+    return {
+      cardId: Math.max(0, Number(item?.cardId) || 0),
+      jobId: Math.max(0, Number(item?.jobId) || 0),
+      stage: String(item?.stage || "").slice(0, 80),
+      messageCategory: String(item?.messageCategory || "").slice(0, 80),
+      missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
+      messages
+    };
+  });
 }
 
 function publicMessageDiscoveryRun(run) {
@@ -1682,18 +1713,53 @@ function clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, depend
   const run = messageDiscoveryRuns.get(profileId);
   if (!run || run.status === "running" || !run.expiresAt) return;
   if (Date.parse(run.expiresAt) <= messageDiscoveryNow(dependencies).getTime()) {
+    clearMessageDiscoveryTimer(run, dependencies);
     run.results = [];
+    run.closed = true;
     messageDiscoveryRuns.delete(profileId);
   }
 }
 
-function clearMessageDiscoveryDraft(messageDiscoveryRuns, profileIdValue, cardIdValue) {
+function clearMessageDiscoveryDraft(messageDiscoveryRuns, profileIdValue, cardIdValue, dependencies = {}) {
   if (!(messageDiscoveryRuns instanceof Map)) return;
   const profileId = Number(profileIdValue);
   const cardId = Number(cardIdValue);
   const run = messageDiscoveryRuns.get(profileId);
   if (!run) return;
+  const before = run.results.length;
+  run.clearedCardIds.add(cardId);
   run.results = run.results.filter((item) => Number(item.cardId) !== cardId);
+  if (run.results.length === before) return;
+  clearMessageDiscoveryTimer(run, dependencies);
+  if (!run.results.some((item) => item.messages.length)) {
+    run.expiresAt = "";
+    return;
+  }
+  scheduleMessageDiscoveryCleanup(messageDiscoveryRuns, run, dependencies);
+}
+
+function scheduleMessageDiscoveryCleanup(messageDiscoveryRuns, run, dependencies = {}) {
+  clearMessageDiscoveryTimer(run, dependencies);
+  const setTimer = typeof dependencies.setTimeout === "function" ? dependencies.setTimeout : setTimeout;
+  const expiresAt = Date.parse(run.expiresAt);
+  const delay = Number.isFinite(expiresAt)
+    ? Math.max(0, expiresAt - messageDiscoveryNow(dependencies).getTime())
+    : 30 * 60 * 1000;
+  const timer = setTimer(() => {
+    if (messageDiscoveryRuns.get(run.profileId) !== run || run.cleanupTimer !== timer) return;
+    run.cleanupTimer = null;
+    run.results = [];
+    run.closed = true;
+    messageDiscoveryRuns.delete(run.profileId);
+  }, delay);
+  run.cleanupTimer = timer;
+}
+
+function clearMessageDiscoveryTimer(run, dependencies = {}) {
+  if (!run || run.cleanupTimer === null || run.cleanupTimer === undefined) return;
+  const clearTimer = typeof dependencies.clearTimeout === "function" ? dependencies.clearTimeout : clearTimeout;
+  clearTimer(run.cleanupTimer);
+  run.cleanupTimer = null;
 }
 
 function messageDiscoveryProfileId(value) {

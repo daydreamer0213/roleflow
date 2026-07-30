@@ -44,6 +44,7 @@ main().catch((error) => {
 async function main() {
   const fixture = createFixture();
   const scenarios = [];
+  const cleanupTimers = controllableTimers();
   const browser = { kind: "fake-browser" };
   const readerCalls = [];
   const reader = {
@@ -80,7 +81,9 @@ async function main() {
         return scenario(context);
       },
       leaseHeartbeatMs: 5,
-      now: () => new Date(nowMs)
+      now: () => new Date(nowMs),
+      setTimeout: cleanupTimers.setTimeout,
+      clearTimeout: cleanupTimers.clearTimeout
     }
   });
   await new Promise((resolve, reject) => {
@@ -162,6 +165,8 @@ async function main() {
   assert.strictEqual(response.status, 202);
   let status = await waitForStatus(base, fixture.profileId, "completed");
   assert.deepStrictEqual(status.results[0].messages, ["脱敏草稿一"]);
+  assert.strictEqual(cleanupTimers.activeCount(), 1);
+  assert.strictEqual(cleanupTimers.latest().delay, 30 * 60 * 1000);
   assert.deepStrictEqual(Object.keys(status).sort(), [
     "expiresAt",
     "processed",
@@ -197,14 +202,17 @@ async function main() {
   status = await getStatus(base, fixture.profileId);
   assert.strictEqual(status.status, "dismissed");
   assert.deepStrictEqual(status.results, []);
+  assert.strictEqual(cleanupTimers.activeCount(), 0, "dismiss must clear the cleanup timer");
 
-  scenarios.push(completedRun({
-    fixture,
-    drafts: ["旧草稿一", "旧草稿二", "不应返回的第三条"]
-  }));
+  scenarios.push(multiResultCompletedRun(fixture));
   await startAndWait(base, fixture.profileId, "completed");
   status = await getStatus(base, fixture.profileId);
-  assert.deepStrictEqual(status.results[0].messages, ["旧草稿一", "旧草稿二"]);
+  assert.deepStrictEqual(
+    status.results.flatMap((item) => item.messages),
+    ["运行额度草稿一", "运行额度草稿二"],
+    "all results in one run must share a two-message budget"
+  );
+  const staleTimerId = cleanupTimers.latest().id;
   await waitForLeaseRelease();
 
   const secondPending = controlledPendingRun();
@@ -218,7 +226,10 @@ async function main() {
   status = await getStatus(base, fixture.profileId);
   assert.strictEqual(status.status, "running");
   assert.deepStrictEqual(status.results, [], "a new run must clear old drafts");
-  assert(!JSON.stringify(status).includes("旧草稿"));
+  assert.strictEqual(cleanupTimers.activeCount(), 0, "a new run must clear the old timer");
+  cleanupTimers.fireEvenIfCleared(staleTimerId);
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "running", "an old timer must not delete a new run");
   await postJson(base, "/api/message-discovery", {
     action: "stop",
     profileId: fixture.profileId
@@ -230,7 +241,8 @@ async function main() {
   status = await startAndWait(base, fixture.profileId, "completed");
   assert(status.expiresAt);
   await waitForLeaseRelease();
-  nowMs += 30 * 60 * 1000 + 1;
+  const expiryTimerId = cleanupTimers.latest().id;
+  cleanupTimers.fire(expiryTimerId);
   status = await getStatus(base, fixture.profileId);
   assert.strictEqual(status.status, "idle");
   assert.deepStrictEqual(status.results, []);
@@ -252,6 +264,7 @@ async function main() {
   assert.strictEqual(response.status, 303);
   status = await getStatus(base, fixture.profileId);
   assert.deepStrictEqual(status.results, [], "manual sent progress must clear the matching draft");
+  assert.strictEqual(cleanupTimers.activeCount(), 0, "manual sent must clear the cleanup timer");
 
   response = await postForm(base, "/api/communication", {
     mode: "hr_reply",
@@ -265,6 +278,26 @@ async function main() {
   assert.strictEqual(response.status, 200, manualHtml);
   assert(manualHtml.includes('id="communication-0"'), "manual paste must still return a draft");
   assert(!manualHtml.includes("你有 Python 和 RAG 项目经验吗？"));
+
+  const closeRace = closeRaceRun(fixture);
+  scenarios.push(closeRace.run);
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await closeRace.started;
+  const scheduledBeforeClose = cleanupTimers.scheduledCount();
+  await new Promise((resolve) => server.close(resolve));
+  await closeRace.aborted;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(cleanupTimers.activeCount(), 0, "server close must clear every cleanup timer");
+  assert.strictEqual(
+    cleanupTimers.scheduledCount(),
+    scheduledBeforeClose,
+    "late onStatus and success summary after close must not schedule a timer"
+  );
+  server = null;
 
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
@@ -426,6 +459,123 @@ function completedRun({ fixture, drafts, callModel = false }) {
     };
     onStatus(summary);
     return summary;
+  };
+}
+
+function multiResultCompletedRun(fixture) {
+  return async ({ onStatus }) => {
+    const summary = {
+      status: "completed",
+      queued: 2,
+      processed: 2,
+      reasonCode: "",
+      results: [{
+        cardId: fixture.card.id,
+        jobId: fixture.jobId,
+        stage: "reply_ready",
+        messageCategory: "qualification",
+        missingFactKey: "",
+        messages: ["运行额度草稿一"]
+      }, {
+        cardId: fixture.card.id + 1,
+        jobId: fixture.jobId + 1,
+        stage: "reply_ready",
+        messageCategory: "qualification",
+        missingFactKey: "",
+        messages: ["运行额度草稿二", "不应返回的第三条"]
+      }]
+    };
+    onStatus(summary);
+    return summary;
+  };
+}
+
+function closeRaceRun(fixture) {
+  let markStarted;
+  let markAborted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const aborted = new Promise((resolve) => { markAborted = resolve; });
+  const lateSummary = {
+    status: "completed",
+    queued: 1,
+    processed: 1,
+    reasonCode: "",
+    results: [{
+      cardId: fixture.card.id,
+      jobId: fixture.jobId,
+      stage: "reply_ready",
+      messageCategory: "qualification",
+      missingFactKey: "",
+      messages: ["关闭后不得回写"]
+    }]
+  };
+  return {
+    started,
+    aborted,
+    async run({ signal, onStatus }) {
+      onStatus({
+        status: "running",
+        queued: 1,
+        processed: 1,
+        reasonCode: "",
+        results: [{
+          cardId: fixture.card.id,
+          jobId: fixture.jobId,
+          stage: "reply_ready",
+          messageCategory: "qualification",
+          missingFactKey: "",
+          messages: ["关闭前应主动清空"]
+        }]
+      });
+      markStarted();
+      await new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          onStatus(lateSummary);
+          markAborted();
+          resolve();
+        }, { once: true });
+      });
+      return lateSummary;
+    }
+  };
+}
+
+function controllableTimers() {
+  let nextId = 1;
+  const active = new Map();
+  const scheduled = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = nextId++;
+      const timer = { id, callback, delay };
+      active.set(id, timer);
+      scheduled.set(id, timer);
+      return id;
+    },
+    clearTimeout(id) {
+      active.delete(id);
+    },
+    activeCount() {
+      return active.size;
+    },
+    scheduledCount() {
+      return scheduled.size;
+    },
+    latest() {
+      return scheduled.get(nextId - 1);
+    },
+    fire(id) {
+      const timer = active.get(id);
+      assert(timer, `timer ${id} must be active`);
+      active.delete(id);
+      timer.callback();
+    },
+    fireEvenIfCleared(id) {
+      const timer = scheduled.get(id);
+      assert(timer, `timer ${id} must have been scheduled`);
+      active.delete(id);
+      timer.callback();
+    }
   };
 }
 
