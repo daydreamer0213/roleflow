@@ -685,7 +685,7 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v12");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v13");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v24");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "role-direction-requirements-v2");
   const currentRevision = {
@@ -708,6 +708,15 @@ async function pipelineVersionCacheSmoke() {
     }, currentRevision),
     ["match_pipeline_changed", "decision_rules_changed"],
     "岗位族提示词与要求权重变化必须使旧匹配缓存和旧分析结论失效"
+  );
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v12" }
+      }
+    }, currentRevision).includes("job_understanding_pipeline_changed"),
+    "主体行业与主体工作分离后必须使 v12 岗位理解缓存失效"
   );
   const configs = configFor(["Python"]);
   let runs = 0;
@@ -802,6 +811,7 @@ function understandingContractSmoke() {
 
 function compactResponsibilityFoundationContractSmoke() {
   const validCompactUnderstanding = {
+    industryContext: "企业服务",
     roleSummary: "企业业务系统全栈交付",
     responsibilityEvidence: ["JD：完成企业业务系统前后端开发、联调与上线"],
     requirements: [{
@@ -817,6 +827,7 @@ function compactResponsibilityFoundationContractSmoke() {
 
   assert.throws(
     () => validateModelResult("understandJob", {
+      industryContext: validCompactUnderstanding.industryContext,
       roleSummary: validCompactUnderstanding.roleSummary,
       requirements: [],
       eligibility: [],
@@ -1620,6 +1631,7 @@ async function compactRoleEvidencePersistenceSmoke() {
   const compact = compactAnalysis(configs, { job: completeJob("persist-role-evidence"), jobUnderstanding, matchDecision, revision: {} });
   assert.deepStrictEqual(
     {
+      industryContext: compact.industryContext,
       roleSummary: compact.roleSummary,
       responsibilityEvidence: compact.responsibilityEvidence,
       roleAlignment: compact.roleAlignment,
@@ -1628,6 +1640,7 @@ async function compactRoleEvidencePersistenceSmoke() {
       requirementMatches: compact.requirementMatches
     },
     {
+      industryContext: jobUnderstanding.industryContext,
       roleSummary: jobUnderstanding.roleSummary,
       responsibilityEvidence: jobUnderstanding.responsibilityEvidence,
       roleAlignment: matchDecision.roleAlignment,
@@ -1642,6 +1655,7 @@ async function compactRoleEvidencePersistenceSmoke() {
   const ruleOnly = createRuleOnlyAnalysis(configs, completeJob("rule-only-role-evidence"), {}, {});
   const failed = await createJobAnalysisRunner({ ...configs, candidateProfile: null }, [], { analyzer: {} })(completeJob("failed-role-evidence"));
   for (const analysis of [ruleOnly, failed]) {
+    assert.strictEqual(analysis.industryContext, "");
     assert.strictEqual(analysis.roleSummary, "");
     assert.strictEqual(analysis.roleAlignment, "");
     assert.deepStrictEqual(analysis.responsibilityEvidence, []);
@@ -1663,7 +1677,7 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v12",
+    understandJob: "job-understanding-v13",
     matchJob: "match-decision-v24",
     decisionRules: "role-direction-requirements-v2",
     communication: "communication-v2"
@@ -1806,6 +1820,7 @@ async function understandingContractRepairSmoke() {
   assert.strictEqual(result.semanticStatus, "complete");
 
   const incompleteCompactUnderstanding = {
+    industryContext: "通用软件",
     roleSummary: "交付应用",
     responsibilityEvidence: ["JD：负责交付应用"],
     requirements: [
@@ -1882,6 +1897,7 @@ async function understandingContractRepairSmoke() {
 
 function compactCentralRequirementSmoke() {
   const understanding = validateModelResult("understandJob", {
+    industryContext: "基础设施",
     roleSummary: "负责大模型推理部署与硬件性能优化",
     responsibilityEvidence: ["JD：负责推理框架部署与硬件性能优化"],
     requirements: [
@@ -1907,6 +1923,7 @@ function compactCentralRequirementSmoke() {
   assert.strictEqual(understanding.coreRequirements[1].central, false);
 
   const legacy = validateModelResult("understandJob", {
+    industryContext: "通用软件",
     roleSummary: "负责通用应用开发",
     responsibilityEvidence: ["JD：负责通用应用开发"],
     requirements: [{
@@ -2196,6 +2213,7 @@ function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" }
 
 async function compactMatchEvidenceContractSmoke() {
   const compactInput = {
+    industryContext: "企业服务",
     roleSummary: "交付应用",
     responsibilityEvidence: ["JD：独立交付应用"],
     requirements: [{ label: "独立交付", foundation: true, indispensable: true, evidence: "JD：独立交付应用" }],
@@ -2203,11 +2221,13 @@ async function compactMatchEvidenceContractSmoke() {
     riskSignals: []
   };
   const compact = validateModelResult("understandJob", compactInput);
+  assert.strictEqual(compact.industryContext, "企业服务");
   assert.strictEqual(compact.coreRequirements[0].id, "R1");
   assert.strictEqual(compact.eligibilityItems[0].id, "E1");
   assert.deepStrictEqual(compact.preferredRequirements, []);
   assert.deepStrictEqual(compact.jobQuality, { level: "normal", concerns: [] });
   assert.doesNotThrow(() => validateModelResult("understandJob", {
+    industryContext: "未明确",
     roleSummary: "交付应用",
     responsibilityEvidence: [],
     requirements: [],
@@ -2215,7 +2235,7 @@ async function compactMatchEvidenceContractSmoke() {
     riskSignals: []
   }), "紧凑 understandJob 的空数组仍是合法输出");
 
-  for (const field of ["roleSummary", "responsibilityEvidence", "requirements", "eligibility", "riskSignals"]) {
+  for (const field of ["industryContext", "roleSummary", "responsibilityEvidence", "requirements", "eligibility", "riskSignals"]) {
     const missing = { ...compactInput };
     delete missing[field];
     assert.throws(
@@ -2224,13 +2244,18 @@ async function compactMatchEvidenceContractSmoke() {
       `紧凑 understandJob 缺少 ${field} 必须触发契约修复，不能静默归一化`
     );
   }
-  for (const [field, invalidValue] of [["roleSummary", []], ["requirements", {}], ["eligibility", "JD：本科及以上"], ["riskSignals", {}]]) {
+  for (const [field, invalidValue] of [["industryContext", []], ["roleSummary", []], ["requirements", {}], ["eligibility", "JD：本科及以上"], ["riskSignals", {}]]) {
     assert.throws(
       () => validateModelResult("understandJob", { ...compactInput, [field]: invalidValue }),
       (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && error.message.includes(field),
       `紧凑 understandJob 的 ${field} 必须使用正确类型`
     );
   }
+  assert.throws(
+    () => validateModelResult("understandJob", { ...compactInput, industryContext: "   " }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /industryContext/.test(error.message),
+    "紧凑 industryContext 不能只包含空白字符"
+  );
   assert.throws(
     () => validateModelResult("understandJob", { ...compactInput, roleSummary: "   " }),
     (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID" && /roleSummary/.test(error.message),
@@ -2786,6 +2811,7 @@ function roleAlignmentEvidenceContractSmoke() {
 function understanding(jobId) {
   return {
     jobId,
+    industryContext: "企业服务",
     realRoleType: "ai_application",
     roleSummary: "Enterprise knowledge-base application development",
     responsibilityEvidence: ["JD：负责 RAG 知识库与 Agent 应用开发"],

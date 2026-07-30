@@ -91,7 +91,8 @@ class OpenAICompatibleAdapter {
   async understandJob(input) {
     const prompt = [
       "你是中文求职岗位筛选助手。请只基于输入的完整 JD，输出 JobUnderstanding JSON，不推测 JD 之外的信息。",
-      "只输出且必须输出这五个字段：roleSummary、responsibilityEvidence、requirements[{label,foundation,central,indispensable,evidence}]、eligibility[非空字符串]、riskSignals[{type,severity,evidence}]。数组无内容时输出 []，不要输出其他字段。",
+      "只输出且必须输出这六个字段：industryContext、roleSummary、responsibilityEvidence、requirements[{label,foundation,central,indispensable,evidence}]、eligibility[非空字符串]、riskSignals[{type,severity,evidence}]。数组无内容时输出 []，不要输出其他字段。",
+      "先分开提取主体行业和主体工作。industryContext 只用一个短语概括 JD 明确写出的主体行业或业务环境；未明确时写“未明确”，不得根据公司名或常识猜测。roleSummary 只描述主体工作，必须写明工作对象、主要动作和交付结果，不得用“电商岗位”“金融科技岗位”等行业名称代替工作内容。行业经验、指定平台、框架和技术栈继续拆入 requirements。",
       "roleSummary 必须同时写明工作对象、主要动作和交付结果。responsibilityEvidence 最多四项，每项必须是以“JD：”开头的直接 JD 短句；不得复制完整 JD。先通读完整 JD：章节标题不可靠，必须按语义拆分。",
       "requirements 的复合要求必须拆开：前端、后端、数据库/API 能力是分别的要求；但“Python 或 Node.js”这类替代项可以保持为一项。foundation=true 仅用于直接支撑主要交付结果的要求；AI 或工具词本身不定义岗位工作主体或 foundation。不得引入第三方推断。",
       "roleSummary 用一句话概括岗位真实主线。requirements 只收 JD 明确写出的任职要求；central=true 表示该要求直接定义岗位持续承担的主要工作，并能区分相邻岗位。基础开发、编程语言、操作系统、数据库、办公工具、通用数据清洗、基础 AI 概念、学习、沟通、责任心或通用排错等跨岗位能力不能单独标成 central=true；只有要求同时写明岗位特有的工作动作或交付结果（例如模型训练、图像处理、目标检测、Agent 交付或 RAG 工作流交付）时，才可以把整项要求标成 central=true。“优先、熟悉、了解”不妨碍一项岗位特有要求成为 central=true。indispensable=true 仍只表示 JD 明确表达的不可替代硬条件；经验年限不得 indispensable=true。每项 label 控制在 4-24 字，evidence 必须引用 JD 原文短句并以“JD：”开头。信息不充分时 requirements 留空，不得把关键词命中写成事实。",

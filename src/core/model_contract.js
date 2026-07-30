@@ -287,6 +287,7 @@ function validateJobUnderstanding(value) {
     : [];
   return {
     jobId: text(value.jobId),
+    industryContext: text(value.industryContext || value.businessScenario || "未明确"),
     roleSummary: text(value.roleSummary),
     responsibilityEvidence,
     realRoleType: text(value.realRoleType || "unknown"),
@@ -309,6 +310,7 @@ function validateJobUnderstanding(value) {
 }
 
 function validateCompactJobUnderstanding(value) {
+  const industryContext = requiredCompactString(value.industryContext, "industryContext");
   const roleSummary = requiredCompactString(value.roleSummary, "roleSummary");
   const responsibilityEvidence = responsibilityEvidenceList(value.responsibilityEvidence);
   const requirements = requiredCompactArray(value.requirements, "requirements");
@@ -328,6 +330,7 @@ function validateCompactJobUnderstanding(value) {
   const concerns = hiddenRisks.map(({ type, evidence }) => ({ type, evidence }));
   return {
     jobId: text(value.jobId),
+    industryContext,
     roleSummary,
     responsibilityEvidence,
     realRoleType: "unknown",

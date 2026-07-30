@@ -95,6 +95,7 @@ class MockModelAdapter {
       .map((sentence) => ({ label: clip(sentence, 24), evidence: `JD：${clip(sentence, 80)}` }));
     return {
       jobId: job.sourceId || job.url || "",
+      industryContext: "未明确",
       roleSummary: clip(sentences.find((sentence) => /负责/.test(sentence)) || sentences[0] || job.title || "", 60),
       realRoleType: "unknown",
       businessScenario: "",

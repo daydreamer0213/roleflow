@@ -316,6 +316,14 @@ server.listen(0, "127.0.0.1", async () => {
       "understandJob prompt 必须保留 foundation 与 central 标记"
     );
     assert(
+      understandPrompt.includes("industryContext")
+        && understandPrompt.includes("主体行业")
+        && understandPrompt.includes("roleSummary 只描述主体工作")
+        && understandPrompt.includes("工作对象、主要动作和交付结果")
+        && understandPrompt.includes("不得根据公司名或常识猜测"),
+      "understandJob 必须把主体行业和主体工作分开"
+    );
+    assert(
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),
       "通用能力不得冒充岗位主线"
     );

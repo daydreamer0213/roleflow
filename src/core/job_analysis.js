@@ -69,6 +69,7 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
     error: "",
     errorCode: "",
     realRoleType: "",
+    industryContext: "",
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
@@ -195,6 +196,7 @@ function compactAnalysis(configs, parts) {
     error: "",
     errorCode: "",
     realRoleType: understanding.realRoleType || "unknown",
+    industryContext: understanding.industryContext || "未明确",
     roleSummary: understanding.roleSummary || "",
     responsibilityEvidence: understanding.responsibilityEvidence || [],
     businessScenario: understanding.businessScenario || "",
@@ -265,6 +267,7 @@ function failedAnalysis(configs, job, revision, error) {
       ? error.responseHadUtf8Bom
       : null,
     realRoleType: "",
+    industryContext: "",
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
