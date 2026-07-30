@@ -2374,6 +2374,24 @@ async function compactMatchEvidenceContractSmoke() {
     ["前后端模块开发", "深度学习算法研发"].includes(item.requirement)
   ));
 
+  const selectedT1RoleEvidence = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "misaligned",
+    roleResumeEvidence: ["简历：有前后端模块开发经历"],
+    roleGaps: ["前后端模块开发职责尚未匹配"],
+    matches: [
+      { id: "R1", state: "missing", resumeEvidence: "简历：没有 Agentic RAG 项目经历" },
+      { id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }
+    ],
+    eligibility: []
+  }, { jobUnderstanding: multiTrack });
+  assert.deepStrictEqual(selectedT1RoleEvidence.roleResumeEvidence, [
+    "简历：没有 Agentic RAG 项目经历",
+    "简历：使用 Python 开发 API"
+  ]);
+  assert.deepStrictEqual(selectedT1RoleEvidence.roleGaps, ["Agent 与 RAG 应用交付缺少直接简历证据"]);
+  assert(!JSON.stringify(selectedT1RoleEvidence).includes("前后端模块开发"));
+
   for (const invalid of [
     {
       selectedTrackId: "T9",

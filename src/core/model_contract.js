@@ -555,13 +555,34 @@ function validateSparseMatchEvidence(value, context = {}) {
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
     : list(jobUnderstanding.eligibilityConstraints).map((label, index) => ({ id: `E${index + 1}`, label }));
-  const roleAlignmentEvidence = validateRoleAlignmentEvidence(value, selected);
   const matches = sparseEvidenceItems(value.matches, {
     field: "matches",
     expected: requirements,
     states: REQUIREMENT_MATCH_STATES,
     evidenceStates: ["matched", "transferable", "missing"]
   });
+  const derivedRoleEvidence = selected.trackCount > 1
+    ? {
+      roleResumeEvidence: [...new Set(matches
+        .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
+        .map((item) => item.resumeEvidence)
+        .filter(Boolean))].slice(0, 4),
+      roleGaps: matches
+        .filter((item) => item.state === "missing")
+        .map((item) => requirements.find((requirement) => requirement.id === item.id))
+        .filter(Boolean)
+        .map((requirement) => `${requirement.label}缺少直接简历证据`)
+        .slice(0, 4)
+    }
+    : null;
+  if (derivedRoleEvidence && ["misaligned", "insufficient_evidence"].includes(value.roleAlignment)
+    && !derivedRoleEvidence.roleGaps.length) {
+    derivedRoleEvidence.roleGaps.push("所选招聘方向的职责匹配信息待确认");
+  }
+  const roleAlignmentEvidence = validateRoleAlignmentEvidence(
+    derivedRoleEvidence ? { ...value, ...derivedRoleEvidence } : value,
+    selected
+  );
   const eligibility = sparseEvidenceItems(value.eligibility, {
     field: "eligibility",
     expected: eligibilityItems,
