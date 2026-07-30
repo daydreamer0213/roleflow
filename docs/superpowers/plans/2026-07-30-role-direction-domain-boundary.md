@@ -42,7 +42,7 @@
 - Consumes: compact `understandJob` JSON.
 - Produces: normalized `JobUnderstanding.industryContext:string`, persisted `analysis.industryContext:string`, and cache version `job-understanding-v13`.
 
-- [ ] **Step 1: Write failing compact-contract and persistence tests**
+- [x] **Step 1: Write failing compact-contract and persistence tests**
 
 Add `industryContext: "企业服务"` to canonical compact understanding fixtures. Add:
 
@@ -81,7 +81,7 @@ for (const analysis of [ruleOnly, failed]) {
 
 Legacy full-contract fixtures remain compatible and may normalize a missing industry context to `"未明确"`.
 
-- [ ] **Step 2: Write failing prompt and version tests**
+- [x] **Step 2: Write failing prompt and version tests**
 
 Add:
 
@@ -115,7 +115,7 @@ assert(
 );
 ```
 
-- [ ] **Step 3: Run tests and verify intended red failures**
+- [x] **Step 3: Run tests and verify intended red failures**
 
 ```powershell
 node tests/semantic_pipeline_smoke.js
@@ -124,7 +124,7 @@ node tests/model_adapter_smoke.js
 
 Expected: semantic smoke fails because the field is not validated/persisted and the version remains v12; adapter smoke fails because the prompt does not request the field.
 
-- [ ] **Step 4: Implement the flat contract and persistence**
+- [x] **Step 4: Implement the flat contract and persistence**
 
 In `validateCompactJobUnderstanding`:
 
@@ -162,7 +162,7 @@ In `compactAnalysis`:
 industryContext: understanding.industryContext || "未明确",
 ```
 
-- [ ] **Step 5: Update the compact understanding prompt and cache version**
+- [x] **Step 5: Update the compact understanding prompt and cache version**
 
 Use six exact fields:
 
@@ -182,7 +182,7 @@ Advance only:
 understandJob: "job-understanding-v13",
 ```
 
-- [ ] **Step 6: Run the task gate**
+- [x] **Step 6: Run the task gate**
 
 ```powershell
 node tests/semantic_pipeline_smoke.js
@@ -193,7 +193,7 @@ git diff --check
 
 Expected: every command exits 0.
 
-- [ ] **Step 7: Commit the industry-context contract**
+- [x] **Step 7: Commit the industry-context contract**
 
 ```powershell
 git add -- tests/semantic_pipeline_smoke.js tests/model_adapter_smoke.js src/core/model_contract.js src/adapters/models/mock.js src/adapters/models/openai_compatible.js src/core/job_analysis.js src/core/analysis_revision.js
@@ -216,7 +216,7 @@ git commit -m "feat: extract industry context separately from primary work"
 - Consumes: `jobUnderstanding.industryContext`, `roleSummary`, and `responsibilityEvidence`.
 - Produces: unchanged sparse match JSON with cache version `match-decision-v25`.
 
-- [ ] **Step 1: Write the failing match-prompt test**
+- [x] **Step 1: Write the failing match-prompt test**
 
 ```js
 assert(
@@ -230,7 +230,7 @@ assert(
 );
 ```
 
-- [ ] **Step 2: Write the failing match-version test**
+- [x] **Step 2: Write the failing match-version test**
 
 Change:
 
@@ -251,7 +251,7 @@ assert(
 );
 ```
 
-- [ ] **Step 3: Run both tests and verify red failures**
+- [x] **Step 3: Run both tests and verify red failures**
 
 ```powershell
 node tests/model_adapter_smoke.js
@@ -260,7 +260,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: adapter smoke fails at the new match-prompt assertion; semantic smoke fails because the current match version remains v24.
 
-- [ ] **Step 4: Add the minimum generic match instruction**
+- [x] **Step 4: Add the minimum generic match instruction**
 
 After the existing main-role-family instruction, add:
 
@@ -270,7 +270,7 @@ After the existing main-role-family instruction, add:
 
 Do not remove the existing reverse-inference rule for missing front-end, platform, specialist workflow, stack, or business-system evidence. Do not change the compact output shape.
 
-- [ ] **Step 5: Advance only the match version**
+- [x] **Step 5: Advance only the match version**
 
 ```js
 matchJob: "match-decision-v25",
@@ -278,7 +278,7 @@ matchJob: "match-decision-v25",
 
 Keep `understandJob` at `job-understanding-v13`, `decisionRules` at `role-direction-requirements-v2`, and `communication` at `communication-v2`.
 
-- [ ] **Step 6: Run the product gate**
+- [x] **Step 6: Run the product gate**
 
 ```powershell
 node tests/model_adapter_smoke.js
@@ -291,12 +291,30 @@ git diff --check
 
 Expected: every command exits 0.
 
-- [ ] **Step 7: Commit the product change**
+- [x] **Step 7: Commit the product change**
 
 ```powershell
 git add -- tests/model_adapter_smoke.js tests/semantic_pipeline_smoke.js src/adapters/models/openai_compatible.js src/core/analysis_revision.js
 git commit -m "fix: keep industry context out of role alignment"
 ```
+
+### Tasks 1-2 evidence
+
+- Task 1 red: `model_adapter_smoke.js` failed with
+  `understandJob 必须把主体行业和主体工作分开`; `semantic_pipeline_smoke.js`
+  reported actual `job-understanding-v12` versus expected
+  `job-understanding-v13`.
+- Task 1 green: `model_adapter_smoke.js`, `semantic_pipeline_smoke.js`, and
+  `workflow_dashboard_smoke.js` exited 0; `git diff --check` was clean.
+- Task 1 commit: `d78980c feat: extract industry context separately from primary work`.
+- Task 2 red: `model_adapter_smoke.js` failed with
+  `matchJob 不得把行业、平台或技术栈差异冒充岗位方向差异`;
+  `semantic_pipeline_smoke.js` reported actual `match-decision-v24` versus
+  expected `match-decision-v25`.
+- Task 2 green: `model_adapter_smoke.js`, `semantic_pipeline_smoke.js`,
+  `screening_quality_smoke.js`, `workflow_inventory_smoke.js`, and
+  `workflow_dashboard_smoke.js` exited 0; `git diff --check` was clean.
+- Task 2 commit: `d8f515f fix: keep industry context out of role alignment`.
 
 ---
 
@@ -310,7 +328,7 @@ git commit -m "fix: keep industry context out of role alignment"
 
 - Produces: one docs-only evaluated commit whose parent contains both product commits.
 
-- [ ] **Step 1: Record Tasks 1-2 red/green evidence and commits**
+- [x] **Step 1: Record Tasks 1-2 red/green evidence and commits**
 
 Mark Tasks 1-2 complete and append exact failing assertion messages, green commands, and both product commit hashes. Do not change product files.
 
