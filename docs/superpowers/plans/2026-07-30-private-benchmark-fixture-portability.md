@@ -275,7 +275,7 @@ git commit -m "docs: prepare fixture portability live acceptance"
 
 The new HEAD is the candidate evaluated commit. `87cc68e` remains its strict ancestor and declared product commit.
 
-- [ ] **Step 5: Independent review gate**
+- [x] **Step 5: Independent review gate**
 
 Review the Task 1–2 diff for exact v1/v2 compatibility, explicit v3 opt-in, proof privacy, single-read execution, blob identity, commit topology, and zero external access. Fix every Critical or Important issue and re-run the covering tests before Task 7.
 
@@ -294,8 +294,8 @@ Task 7 may start only after the review is clean. Real model authorization is che
   - runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`
   - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
   - private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`
-- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it must be a strict ancestor of the docs-only evaluated checkpoint created from this record.
-- The exact docs-only evaluated commit SHA is written back by the immediate follow-up record commit before any live execution.
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen docs-only evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
+- The immediate follow-up record commit only fixes and freezes Task 7/8 instructions; live execution must continue to use `97b64b48b7604110ceb35af33d3234c4aaeaa89b`, not the follow-up documentation commit.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
 - Fresh live roots:
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730`

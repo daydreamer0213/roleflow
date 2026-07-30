@@ -1149,11 +1149,13 @@ Expected: all three blobs are exactly equal and both worktrees are clean.
 - [x] Baseline mirror commit `cc5dc6adf158c4c38cfefb808a78a53b4bfdf389` passed its repository-native 41 offline checks and 31 benchmark fixtures.
 - [x] Candidate and baseline Git blobs are identical for runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`, benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
 
-Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`. The docs-only commit produced from this record is the frozen candidate evaluated checkpoint; its exact SHA is written back by the immediate follow-up record commit and must pass:
+Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`. Frozen docs-only candidate evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b` must pass:
 
 ```powershell
-git merge-base --is-ancestor 87cc68ede886ac0ef3b53f960c38548cce4a831a <evaluated-commit>
+git merge-base --is-ancestor 87cc68ede886ac0ef3b53f960c38548cce4a831a 97b64b48b7604110ceb35af33d3234c4aaeaa89b
 ```
+
+The follow-up documentation record is not a new evaluated checkpoint. Task 7 and Task 8 must continue to run `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
 
 Preserve the failed diagnostic root without modifying or deleting it:
 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730`.
@@ -1236,8 +1238,9 @@ This is a local private copy, never a Git addition.
 
 Record the current branch and commit of:
 `D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix`.
-Require it to be clean. Fetch the implementation branch locally, then create a temporary branch named
-`codex/multi-track-recall-first-live-eval` at the Task 6 evaluated commit.
+Require it to be clean. Verify the frozen commit locally, then use the temporary branch
+`codex/multi-track-recall-first-live-eval-97b64b4` at the Task 6 evaluated commit. If that
+branch already exists, reuse it only when it points exactly to the frozen commit.
 
 Do not detach the active optimization worktree and do not weaken
 `FIXED_CANDIDATE_WORKTREE`.
@@ -1246,13 +1249,27 @@ Use:
 
 ```powershell
 $candidate = 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
-$implementation = 'D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab'
+$evaluated = '97b64b48b7604110ceb35af33d3234c4aaeaa89b'
 $originalBranch = git -C $candidate branch --show-current
 $originalCommit = git -C $candidate rev-parse HEAD
 $dirty = git -C $candidate status --porcelain
 if ($dirty) { throw 'fixed candidate worktree is dirty' }
-$evaluated = git -C $implementation rev-parse HEAD
-git -C $candidate switch -c codex/multi-track-recall-first-live-eval $evaluated
+$evaluationBranch = 'codex/multi-track-recall-first-live-eval-97b64b4'
+$reviewedTooling = '9d7d1a4e4865b76073eca3af007250110db18d20'
+git -C $candidate cat-file -e "$evaluated^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'frozen evaluated commit is missing from candidate repository' }
+git -C $candidate merge-base --is-ancestor $reviewedTooling $evaluated
+if ($LASTEXITCODE -ne 0) { throw 'frozen evaluated commit is not descended from reviewed tooling checkpoint' }
+$existingEvaluationBranch = git -C $candidate branch --list $evaluationBranch
+if ($existingEvaluationBranch) {
+  if ((git -C $candidate rev-parse $evaluationBranch) -ne $evaluated) {
+    throw 'existing evaluation branch points to the wrong commit'
+  }
+  git -C $candidate switch $evaluationBranch
+} else {
+  git -C $candidate switch -c $evaluationBranch $evaluated
+}
+if ((git -C $candidate rev-parse HEAD) -ne $evaluated) { throw 'candidate is not at the frozen evaluated commit' }
 ```
 
 - [ ] **Step 4: Initialize and verify the manifest**
@@ -1266,7 +1283,15 @@ $runner = 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-f
 $candidate = 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
 $baseline = 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-multi-track-recall-v1'
 $baselineProduct = 'fb0168afce265cf351f03e80f66d9e0f24015887'
-$candidateProduct = git -C $candidate rev-parse HEAD^
+$baselineEvaluated = 'cc5dc6adf158c4c38cfefb808a78a53b4bfdf389'
+$candidateProduct = '87cc68ede886ac0ef3b53f960c38548cce4a831a'
+$evaluated = '97b64b48b7604110ceb35af33d3234c4aaeaa89b'
+if ((git -C $baseline rev-parse HEAD) -ne $baselineEvaluated) { throw 'baseline evaluated checkpoint drifted' }
+if ((git -C $candidate rev-parse HEAD) -ne $evaluated) { throw 'candidate evaluated checkpoint drifted' }
+git -C $baseline merge-base --is-ancestor $baselineProduct $baselineEvaluated
+if ($LASTEXITCODE -ne 0) { throw 'baseline product is not a strict ancestor of evaluated checkpoint' }
+git -C $candidate merge-base --is-ancestor $candidateProduct $evaluated
+if ($LASTEXITCODE -ne 0) { throw 'candidate product is not a strict ancestor of evaluated checkpoint' }
 
 node $runner --init-manifest `
   --private-root $root `
@@ -1279,6 +1304,7 @@ node $runner --init-manifest `
 node $runner --create-portability-proof `
   --source-private-root $source `
   --private-root $root `
+  --proof-version confirmed-evidence-portability.v3 `
   --output (Join-Path $root 'input\confirmed-evidence-portability.json')
 
 node $runner --verify-private-bundle `
@@ -1363,9 +1389,12 @@ $source = 'D:\DevData\RoleFlow-private-benchmark\full-chain-v40c-role-industry-b
 $pool = 'D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730'
 $root = 'D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730'
 $candidate = 'D:\DevData\RoleFlow-worktrees\claude-generic-evidence-matching-live-fix'
-$implementation = 'D:\DevData\RoleFlow-worktrees\deepseek-match-nonthinking-ab'
 $baseline = 'D:\DevData\RoleFlow-private-benchmark\baseline-worktree-multi-track-recall-v1'
 $runner = Join-Path $candidate 'scripts\private-full-chain-runner.js'
+$evaluated = '97b64b48b7604110ceb35af33d3234c4aaeaa89b'
+$candidateProduct = '87cc68ede886ac0ef3b53f960c38548cce4a831a'
+$baselineProduct = 'fb0168afce265cf351f03e80f66d9e0f24015887'
+$baselineEvaluated = 'cc5dc6adf158c4c38cfefb808a78a53b4bfdf389'
 
 $jobsHash = (Get-FileHash -Algorithm SHA256 (Join-Path $pool 'input\jobs.private.json')).Hash.ToLower()
 $labelsHash = (Get-FileHash -Algorithm SHA256 (Join-Path $pool 'labels\jobs.reviewed.json')).Hash.ToLower()
@@ -1394,9 +1423,14 @@ Copy-Item -LiteralPath (Join-Path $pool 'labels\jobs.reviewed.json') -Destinatio
 $originalBranch = git -C $candidate branch --show-current
 $originalCommit = git -C $candidate rev-parse HEAD
 if (git -C $candidate status --porcelain) { throw 'fixed candidate worktree is dirty' }
-$evaluated = git -C $implementation rev-parse HEAD
-git -C $candidate switch codex/multi-track-recall-first-live-eval
+$evaluationBranch = 'codex/multi-track-recall-first-live-eval-97b64b4'
+git -C $candidate switch $evaluationBranch
 if ((git -C $candidate rev-parse HEAD) -ne $evaluated) { throw 'evaluation branch is not at the approved checkpoint' }
+if ((git -C $baseline rev-parse HEAD) -ne $baselineEvaluated) { throw 'baseline evaluated checkpoint drifted' }
+git -C $baseline merge-base --is-ancestor $baselineProduct $baselineEvaluated
+if ($LASTEXITCODE -ne 0) { throw 'baseline product is not a strict ancestor of evaluated checkpoint' }
+git -C $candidate merge-base --is-ancestor $candidateProduct $evaluated
+if ($LASTEXITCODE -ne 0) { throw 'candidate product is not a strict ancestor of evaluated checkpoint' }
 
 $env:ALLOW_PRIVATE_RESUME_BENCHMARK='YES'
 $env:ALLOW_LIVE_MODEL_BENCHMARK='YES'
@@ -1404,12 +1438,13 @@ node $runner --init-manifest `
   --private-root $root `
   --baseline-worktree $baseline `
   --candidate-worktree $candidate `
-  --baseline-product-commit 'fb0168afce265cf351f03e80f66d9e0f24015887' `
-  --candidate-product-commit (git -C $candidate rev-parse HEAD^) `
+  --baseline-product-commit $baselineProduct `
+  --candidate-product-commit $candidateProduct `
   --output (Join-Path $root 'run-manifest.json')
 node $runner --create-portability-proof `
   --source-private-root $source `
   --private-root $root `
+  --proof-version confirmed-evidence-portability.v3 `
   --output (Join-Path $root 'input\confirmed-evidence-portability.json')
 node $runner --verify-private-bundle `
   --private-root $root `
@@ -1480,7 +1515,26 @@ Do not paste company name, URL, full JD, full resume evidence, endpoint, or cred
 
 If exact result is 18/20 or 19/20, show every miss to the user and ask whether the remaining difference is acceptable. If below 18/20, return to the first wrong row for root-cause analysis; do not repeatedly run all 20.
 
-- [ ] **Step 5: Restore the fixed worktree**
+- [ ] **Step 5: Run final offline verification on the frozen evaluated worktree**
+
+Run:
+
+```powershell
+if ((git -C $candidate rev-parse HEAD) -ne $evaluated) {
+  throw 'candidate left the frozen evaluated commit before final verification'
+}
+node (Join-Path $candidate 'tests\semantic_pipeline_smoke.js')
+node (Join-Path $candidate 'tests\model_adapter_smoke.js')
+node (Join-Path $candidate 'tests\screening_quality_smoke.js')
+node (Join-Path $candidate 'tests\workflow_inventory_smoke.js')
+node (Join-Path $candidate 'tests\workflow_dashboard_smoke.js')
+node (Join-Path $candidate 'tests\private_full_chain_runner_smoke.js')
+npm.cmd --prefix $candidate test
+```
+
+All tests must pass while the fixed candidate worktree is still exactly at `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
+
+- [ ] **Step 6: Restore the fixed worktree**
 
 Run:
 
@@ -1494,7 +1548,7 @@ if (git -C $candidate status --porcelain) {
 }
 ```
 
-- [ ] **Step 6: Record only private-safe results**
+- [ ] **Step 7: Record only private-safe results**
 
 Update this plan with:
 
@@ -1507,27 +1561,24 @@ Update this plan with:
 - selected track ID for sample 5;
 - user acceptance decision for an 18/20 or 19/20 result.
 
-- [ ] **Step 7: Run final offline verification**
+- [ ] **Step 8: Commit the acceptance record from the explicit docs worktree**
 
 ```powershell
-node tests/semantic_pipeline_smoke.js
-node tests/model_adapter_smoke.js
-node tests/screening_quality_smoke.js
-node tests/workflow_inventory_smoke.js
-node tests/workflow_dashboard_smoke.js
-node tests/private_full_chain_runner_smoke.js
-npm.cmd test
-git diff --check
-git status --short
+$docsWorktree = 'C:\Users\Administrator\.codex\worktrees\e843\ZhiPing'
+if ((git -C $docsWorktree branch --show-current) -ne 'codex/multi-track-recall-continuation') {
+  throw 'acceptance record worktree is on the wrong branch'
+}
+git -C $docsWorktree merge-base --is-ancestor $evaluated HEAD
+if ($LASTEXITCODE -ne 0) { throw 'docs worktree does not contain the frozen evaluated checkpoint' }
+git -C $docsWorktree diff --check
+$docsStatus = git -C $docsWorktree status --short
+if (($docsStatus | Where-Object { $_ -notmatch '2026-07-30-multi-track-recall-first-matching\.md$' })) {
+  throw 'unexpected docs worktree changes'
+}
+git -C $docsWorktree add -- docs/superpowers/plans/2026-07-30-multi-track-recall-first-matching.md
+git -C $docsWorktree commit -m "docs: record multi-track recall acceptance"
 ```
 
-Expected: all tests pass; only this plan result is uncommitted.
-
-- [ ] **Step 8: Commit the acceptance record**
-
-```powershell
-git add -- docs/superpowers/plans/2026-07-30-multi-track-recall-first-matching.md
-git commit -m "docs: record multi-track recall acceptance"
-```
+Expected: the acceptance record commit is a descendant of the frozen evaluated checkpoint; it is documentation only and never replaces `97b64b48b7604110ceb35af33d3234c4aaeaa89b` in the private manifest.
 
 Do not merge to `main`, do not modify the formal project, and do not push until the user has reviewed the result.
