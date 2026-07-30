@@ -1936,3 +1936,43 @@ the next reviewed root-cause change.
 - Baseline evaluated/product remain
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-07-30 cross-track responsibility sprawl product checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-direct-instance-v1-20260730`
+  unchanged. Its live process exited `0`; zero-based indices `9` and `10`
+  matched their confirmed bucket/recommendation exactly, while index `4`
+  remained `caution/talk` instead of `apply/primary`. All three rows were
+  structurally complete with evidence, selected tracks, and no hard blocker,
+  contract failure, or empty response. The fixed candidate was restored cleanly
+  and the 20-row root remained absent.
+- The direct-instance change worked on the first wrong row: its non-central
+  foundation/indispensable R3 moved from `transferable` to `matched`. The
+  remaining downgrade was the job-quality `responsibility_sprawl` signal even
+  though `understandJob` had separated multiple explicit independent hiring
+  tracks. This isolates the next root cause to combining duties across tracks
+  when evaluating sprawl, rather than match evidence or local recommendation
+  policy.
+- Design commit `66357ac1621971607ffc233291c227cfc2062c81` requires
+  `responsibility_sprawl` to be evaluated inside each independent hiring track
+  while preserving the existing signal for a single track that itself mixes
+  unrelated duties.
+- Product commit `6cc09c9ef2603ac24e1a7c3928ce05f996c74214` adds only that
+  prompt boundary and increments `understandJob` from v15 to v16 and `matchJob`
+  from v30 to v31. The two focused regressions failed first for the absent
+  boundary and stale versions, then passed after the minimal implementation.
+- Fresh verification passed `model_adapter_smoke`, `semantic_pipeline_smoke`,
+  all six generic evidence fixtures, all 31 benchmark fixtures, all 47 offline
+  checks, and `git diff --check`. Independent reviewer capacity remains
+  exhausted; no independent approval is claimed.
+- Baseline product/evaluated and the three shared harness blobs remain
+  unchanged. The only permitted next three-row root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-cross-track-sprawl-v1-20260730`,
+  using a fresh manifest, v3 proof, cache, output, and exact zero-based
+  `4,9,10`. The 20-row root must remain absent until this three-row gate is
+  exact and safe.
+- The docs-only commit containing this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record before private root creation. Candidate product
+  `6cc09c9ef2603ac24e1a7c3928ce05f996c74214` must be its strict ancestor.
