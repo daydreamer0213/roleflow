@@ -49,7 +49,7 @@
   `normalizeHiringTracks(value, legacy = {})`,
   `requirementsForTrack(jobUnderstanding, selectedTrackId)`.
 
-- [ ] **Step 1: Add a canonical three-track failing fixture**
+- [x] **Step 1: Add a canonical three-track failing fixture**
 
 Add this fixture near `compactMatchEvidenceContractSmoke()`:
 
@@ -157,7 +157,7 @@ assert.strictEqual(singleTrack.roleSummary, "交付应用");
 assert.deepStrictEqual(singleTrack.responsibilityEvidence, ["JD：独立交付应用"]);
 ```
 
-- [ ] **Step 2: Add failing boundary tests**
+- [x] **Step 2: Add failing boundary tests**
 
 Add explicit `MODEL_CONTRACT_INVALID` assertions for:
 
@@ -196,7 +196,7 @@ for (const invalid of invalidTrackOutputs) {
 
 Also keep a true legacy full-contract fixture without `hiringTracks`, then assert it becomes one `T1` whose requirements all own `["T1"]`.
 
-- [ ] **Step 3: Run the semantic test and confirm the red state**
+- [x] **Step 3: Run the semantic test and confirm the red state**
 
 Run:
 
@@ -206,7 +206,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: exit 1 because `hiringTracks`, `trackIds`, or `requirementsForTrack` is not implemented; the failure must occur before any model or network call.
 
-- [ ] **Step 4: Implement the smallest shared normalization**
+- [x] **Step 4: Implement the smallest shared normalization**
 
 In `src/core/model_contract.js`, add these helpers beside the existing compact validators:
 
@@ -287,7 +287,7 @@ and give every old requirement `trackIds: ["T1"]` when no explicit ownership exi
 
 Export `requirementsForTrack` for the smoke test and later match validators. Do not create a new module.
 
-- [ ] **Step 5: Run the task gate**
+- [x] **Step 5: Run the task gate**
 
 Run:
 
@@ -298,7 +298,7 @@ git diff --check
 
 Expected: both commands exit 0.
 
-- [ ] **Step 6: Commit the contract normalization**
+- [x] **Step 6: Commit the contract normalization**
 
 ```powershell
 git add -- src/core/model_contract.js tests/semantic_pipeline_smoke.js
@@ -319,7 +319,7 @@ git commit -m "feat: normalize multi-track job understanding"
 - Consumes: `value.selectedTrackId` and Task 1 normalized `jobUnderstanding`.
 - Produces: validated `matchDecision.selectedTrackId`, `selectedTrackLabel`, selected track `roleSummary`, selected track `responsibilityEvidence`, and `requirementMatches` containing only selected/global requirements.
 
-- [ ] **Step 1: Write the failing selected-track success test**
+- [x] **Step 1: Write the failing selected-track success test**
 
 Using `multiTrack` from Task 1:
 
@@ -348,7 +348,7 @@ assert(!selectedT1.requirementMatches.some((item) =>
 ));
 ```
 
-- [ ] **Step 2: Write failing leakage and ID tests**
+- [x] **Step 2: Write failing leakage and ID tests**
 
 Add:
 
@@ -405,7 +405,7 @@ assert.deepStrictEqual(selectedWithUnknowns.questionsToVerify, [
 ]);
 ```
 
-- [ ] **Step 3: Run the semantic test and confirm the red state**
+- [x] **Step 3: Run the semantic test and confirm the red state**
 
 Run:
 
@@ -415,7 +415,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: exit 1 because current sparse/compact match validators still inspect all requirements and do not validate `selectedTrackId`.
 
-- [ ] **Step 4: Route all match paths through the selected scope**
+- [x] **Step 4: Route all match paths through the selected scope**
 
 Add one shared resolver in `src/core/model_contract.js`:
 
@@ -476,7 +476,7 @@ Return:
 
 Compatibility rule: omission of `selectedTrackId` is accepted only for normalized single-track legacy data and resolves to `T1`; omission on multi-track data is a contract error.
 
-- [ ] **Step 5: Run the task gate**
+- [x] **Step 5: Run the task gate**
 
 Run:
 
@@ -488,7 +488,7 @@ git diff --check
 
 Expected: all commands exit 0; existing hard eligibility/blocker tests remain green.
 
-- [ ] **Step 6: Commit the selected-scope contract**
+- [x] **Step 6: Commit the selected-scope contract**
 
 ```powershell
 git add -- src/core/model_contract.js tests/semantic_pipeline_smoke.js
@@ -516,7 +516,7 @@ git commit -m "feat: match only the selected hiring track"
   `match-decision-v28`,
   `multi-track-recall-v1`.
 
-- [ ] **Step 1: Write failing prompt-shape tests**
+- [x] **Step 1: Write failing prompt-shape tests**
 
 In `tests/model_adapter_smoke.js`, assert:
 
@@ -550,7 +550,7 @@ assert(matchPrompt.includes(
 
 Keep the existing assertions that prohibit copied JD, local decision fields, invented IDs, user notes as evidence, and reverse inference.
 
-- [ ] **Step 2: Write failing adapter and version tests**
+- [x] **Step 2: Write failing adapter and version tests**
 
 Feed `OpenAICompatibleAdapter.matchJob()` a synthetic `T1` response and assert the returned decision preserves `selectedTrackId`.
 
@@ -580,7 +580,7 @@ assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
 
 Add stale-reason checks for all three previous versions.
 
-- [ ] **Step 3: Run tests and confirm red failures**
+- [x] **Step 3: Run tests and confirm red failures**
 
 Run:
 
@@ -591,7 +591,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: prompt, mock-shape, and exact-version assertions fail; no network is used.
 
-- [ ] **Step 4: Replace the understanding prompt without adding a call**
+- [x] **Step 4: Replace the understanding prompt without adding a call**
 
 Change the compact shape line to:
 
@@ -609,7 +609,7 @@ Add these rules:
 
 Keep the current responsibility-versus-requirement, industry boundary, evidence prefix, length limit, risk, and contract-repair rules.
 
-- [ ] **Step 5: Replace the match prompt output shape**
+- [x] **Step 5: Replace the match prompt output shape**
 
 Change the selection and output instructions to:
 
@@ -621,7 +621,7 @@ Change the selection and output instructions to:
 
 Keep the adapter’s single `chatJson` call and existing one-time contract repair behavior unchanged.
 
-- [ ] **Step 6: Update the mock and versions**
+- [x] **Step 6: Update the mock and versions**
 
 Make mock understanding always emit one `T1`, attach `trackIds: ["T1"]` to requirements, and make mock matching select the first track with a supporting candidate fact without another call. Reuse the existing `findSupportingFact()` helper and fall back to the first track:
 
@@ -647,7 +647,7 @@ const PIPELINE_VERSIONS = Object.freeze({
 });
 ```
 
-- [ ] **Step 7: Run the task gate**
+- [x] **Step 7: Run the task gate**
 
 Run:
 
@@ -660,7 +660,7 @@ git diff --check
 
 Expected: all commands exit 0. Inspect model-call tests and confirm no new call kind or retry loop was added.
 
-- [ ] **Step 8: Commit the adapter contract**
+- [x] **Step 8: Commit the adapter contract**
 
 ```powershell
 git add -- src/adapters/models/openai_compatible.js src/adapters/models/mock.js src/core/analysis_revision.js tests/model_adapter_smoke.js tests/semantic_pipeline_smoke.js
@@ -689,7 +689,7 @@ git commit -m "feat: select one hiring track in the model pipeline"
   selected `responsibilityEvidence`.
 - Produces a local ceiling/floor decision that preserves hard blocks but keeps aligned/mostly-aligned opportunities at least `talk` unless a concrete central/foundation gap justifies `backup`.
 
-- [ ] **Step 1: Write failing persistence and dashboard tests**
+- [x] **Step 1: Write failing persistence and dashboard tests**
 
 Extend `compactRoleEvidencePersistenceSmoke()`:
 
@@ -720,7 +720,7 @@ for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "�
 }
 ```
 
-- [ ] **Step 2: Write failing recall-floor tests**
+- [x] **Step 2: Write failing recall-floor tests**
 
 Add explicit decision cases:
 
@@ -764,7 +764,7 @@ Keep and rerun current tests proving:
 - AI-assisted pure front-end cannot become `primary` from AI keyword overlap;
 - risk-quality jobs do not get promoted.
 
-- [ ] **Step 3: Run tests and confirm the red state**
+- [x] **Step 3: Run tests and confirm the red state**
 
 Run:
 
@@ -775,7 +775,7 @@ node tests/workflow_dashboard_smoke.js
 
 Expected: selected-track persistence/display assertions fail; the generic-duty case remains too low before the recall-floor change.
 
-- [ ] **Step 4: Persist only the selected branch**
+- [x] **Step 4: Persist only the selected branch**
 
 In `compactAnalysis`, source the role fields from `matchDecision`, not from the whole understanding:
 
@@ -788,7 +788,7 @@ responsibilityEvidence: matchDecision.responsibilityEvidence || [],
 
 Add empty strings to rule-only and failed analysis shapes. Do not persist all branch descriptions in the public compact analysis; `jobUnderstanding` already remains in the model cache.
 
-- [ ] **Step 5: Apply the minimal recall rule**
+- [x] **Step 5: Apply the minimal recall rule**
 
 Keep `roleEvidenceDecisionState` as the shared boundary. Change only its aligned/mostly-aligned floor semantics:
 
@@ -843,7 +843,7 @@ hasConcreteFoundationGap: false,
 
 and add the same two fields to all exact expected objects returned by this helper.
 
-- [ ] **Step 6: Show the chosen branch**
+- [x] **Step 6: Show the chosen branch**
 
 Change `compactRoleEvidenceSummary()` to render:
 
@@ -856,7 +856,7 @@ return `${track}岗位主体：${escapeHtml(analysis.roleSummary)} · 主体匹�
 
 Legacy rows without a selected label must render exactly as before.
 
-- [ ] **Step 7: Run the task gate**
+- [x] **Step 7: Run the task gate**
 
 Run:
 
@@ -870,7 +870,7 @@ git diff --check
 
 Expected: all commands exit 0; hard-block and front-end negative-control assertions remain green.
 
-- [ ] **Step 8: Commit persistence and recall behavior**
+- [x] **Step 8: Commit persistence and recall behavior**
 
 ```powershell
 git add -- src/core/job_analysis.js src/core/model_contract.js src/dashboard/server.js tests/semantic_pipeline_smoke.js tests/workflow_dashboard_smoke.js
@@ -899,7 +899,7 @@ git commit -m "feat: persist selected tracks and protect viable opportunities"
   `roleGapCount`.
 - Does not add JD text, company, URL, resume text, model endpoint, or secrets to committed fixtures.
 
-- [ ] **Step 1: Write the failing private-row test**
+- [x] **Step 1: Write the failing private-row test**
 
 In the existing injected `match-live` seam, return:
 
@@ -939,7 +939,7 @@ assert.deepStrictEqual({
 
 Add a failed-analysis case and require empty strings/counts instead of throwing.
 
-- [ ] **Step 2: Run the runner smoke and confirm the red state**
+- [x] **Step 2: Run the runner smoke and confirm the red state**
 
 Run:
 
@@ -949,7 +949,7 @@ node tests/private_full_chain_runner_smoke.js
 
 Expected: exit 1 because the current row does not expose selected-track evidence.
 
-- [ ] **Step 3: Add bounded private diagnostics**
+- [x] **Step 3: Add bounded private diagnostics**
 
 Add only these fields to the row built in `runPrivateFullChain()`:
 
@@ -963,7 +963,7 @@ roleGapCount: Array.isArray(analysis.roleGaps) ? analysis.roleGaps.length : 0,
 
 These fields remain only under the private benchmark root. Do not add evidence text arrays to public reports.
 
-- [ ] **Step 4: Document the user-visible workflow**
+- [x] **Step 4: Document the user-visible workflow**
 
 In `docs/product_spec.md`, state:
 
@@ -987,7 +987,7 @@ rg -n '"private_full_chain_runner_smoke.js"' tests/run_all.js
 
 Expected: exactly one match.
 
-- [ ] **Step 5: Run the complete offline gate**
+- [x] **Step 5: Run the complete offline gate**
 
 Run:
 
@@ -1005,12 +1005,28 @@ git status --short
 
 Expected: all focused tests pass, the complete offline suite passes, `git diff --check` has no output, and only Task 5 files are uncommitted.
 
-- [ ] **Step 6: Commit runner diagnostics and docs**
+- [x] **Step 6: Commit runner diagnostics and docs**
 
 ```powershell
 git add -- scripts/private-full-chain-runner.js tests/private_full_chain_runner_smoke.js docs/product_spec.md docs/daily_workflow.md
 git commit -m "docs: expose selected hiring tracks in matching results"
 ```
+
+#### Tasks 1-5 implementation evidence (sanitized)
+
+All evidence below is offline-only. It records contract and test identifiers only;
+it intentionally omits any private job description, resume content, company,
+URL, endpoint, or credential.
+
+| Task | Red regression observed before its fix | Green verification | Product commits |
+| --- | --- | --- | --- |
+| 1 | `semantic_pipeline_smoke` rejected the new compact multi-track shape for missing legacy top-level role fields; a 17th requirement was silently truncated. | `node tests/semantic_pipeline_smoke.js` and `git diff --check` exited 0; explicit-null tracks, invalid ownership, unknown IDs, and over-limit inputs fail closed. | `ea5115b`, `642f177` |
+| 2 | `semantic_pipeline_smoke` used absent multi-track top-level responsibility evidence; later regressions accepted free text from an unselected track. | `node tests/semantic_pipeline_smoke.js`, `node tests/screening_quality_smoke.js`, and `git diff --check` exited 0; selection accepts only the selected/global requirement scope. | `5b456ea`, `0feb463`, `4902735` |
+| 3 | `model_adapter_smoke` reported the missing `hiringTracks` prompt contract; the mock had no tracks. | `node tests/model_adapter_smoke.js`, `node tests/semantic_pipeline_smoke.js`, and `node tests/profile_quality_smoke.js` exited 0; prompt, mock, and production analyzer validation use the compact selected-track contract without adding a model call. | `42f457d`, `0b3286e`, `87cc68e` |
+| 4 | `semantic_pipeline_smoke` had no persisted selected-track fields; `workflow_dashboard_smoke` had no matching-track rendering. | `node tests/semantic_pipeline_smoke.js`, `node tests/screening_quality_smoke.js`, `node tests/workflow_inventory_smoke.js`, `node tests/workflow_dashboard_smoke.js`, and `git diff --check` exited 0; generic gaps keep the recall floor while concrete core gaps, blockers, risk, and evidence guards retain priority. | `c2d4ea0`, `a88aebd` |
+| 5 | `private_full_chain_runner_smoke` reported that private rows did not expose the five bounded selected-track diagnostics. | `node tests/private_full_chain_runner_smoke.js` and the focused Task 3-5 smokes exited 0; the row contains bounded IDs/labels/counts only. | `bf6abce` |
+
+Final offline gate after Task 5: `npm.cmd test` exited 0 with **All 47 offline checks passed**. `git diff --check` exited 0 with no output. The candidate product commit for this evaluated checkpoint is `87cc68ede886ac0ef3b53f960c38548cce4a831a`.
 
 ---
 
