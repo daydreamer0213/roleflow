@@ -1,0 +1,175 @@
+# Private Contract-Failure Field Diagnostics Design
+
+**Date:** 2026-07-30
+
+## Context
+
+The first fresh three-row live diagnostic completed with a trustworthy native
+exit code and preserved all three logical rows. Frozen index `4` failed during
+`matchJob` after one contract-repair attempt:
+
+- `errorCode = MODEL_CONTRACT_INVALID`;
+- `failureStage = matchJob`;
+- `failurePhase = contract_repair`;
+- `actualBucket = analysis_pending`;
+- no selected track, role summary, or complete evidence was produced.
+
+Indices `9` and `10` completed structurally, but the acceptance plan requires
+stopping at the first failed row. The 20-row run therefore remains prohibited.
+
+The existing private runner deliberately drops model error text. That protects
+private data, but it also drops the fixed contract field name needed to
+distinguish a prompt-shape failure from a validator defect. The failed live root
+must remain unchanged and must not be rerun.
+
+## Goal
+
+Add the smallest private-runner-only diagnostic that identifies the contract
+field category for the initial validation failure and the failed repair without
+persisting or printing model text, prompt text, JD text, resume text, arbitrary
+object keys, provider metadata, or configuration.
+
+This change is acceptance tooling only. It must not change matching behavior,
+model prompts, model settings, model calls, retry counts, product code, or
+product commits.
+
+## Considered Approaches
+
+### 1. Fixed allowlist categories in the private telemetry collector
+
+Map the existing in-memory contract error message to a closed enum, discard the
+message, and emit only the enum in the private result row.
+
+This is the selected approach. It reuses the current logger boundary, requires
+no provider or product changes, and makes privacy testable.
+
+### 2. Preserve a hash or raw contract error
+
+A hash is not actionable without an external lookup. Raw error text can contain
+model-provided values and would expand the private-output threat surface.
+
+Rejected.
+
+### 3. Guess a prompt or validator fix from `MODEL_CONTRACT_INVALID`
+
+The current signal cannot identify which side is wrong. A guessed fix could
+weaken validation or hide a real model failure.
+
+Rejected.
+
+## Design
+
+### Closed diagnostic enum
+
+Add a private-runner helper that returns exactly one of:
+
+- `selected_track`;
+- `role_alignment`;
+- `role_resume_evidence`;
+- `role_gaps`;
+- `requirement_matches`;
+- `eligibility`;
+- `unknown_keys`;
+- `result_shape`;
+- `other`;
+- `none`.
+
+The helper may inspect an in-memory error message only for literal,
+implementation-owned contract tokens. It must never return a substring from the
+message. Unknown or ambiguous text maps to `other`; an absent failure maps to
+`none`.
+
+### Telemetry flow
+
+The existing private telemetry collector will:
+
+1. On `model_contract_repair_requested`, increment the existing repair count and
+   store the allowlisted initial category.
+2. On `model_contract_repair_failed`, store allowlisted initial and repair
+   categories.
+3. On reset, clear both categories to `none`.
+4. On snapshot, return only the two enum values with the existing safe numeric
+   telemetry.
+
+The private result row will add:
+
+- `initialContractFailureCategory`;
+- `repairContractFailureCategory`.
+
+Normal rows must contain `none` for both fields. A repair success may contain an
+initial category and `none` for the repair category.
+
+### Privacy boundary
+
+The implementation must not persist or expose:
+
+- `errorMessage` or `initialErrorMessage`;
+- `outputShape` or arbitrary model-generated keys;
+- invalid or repaired model output;
+- prompt, JD, resume, identity, title, company, URL, provider, model, base URL,
+  API key, or model configuration;
+- any new log file.
+
+Tests must include a deliberately sensitive fake error message and prove that
+neither the sensitive marker nor the original message appears in the result.
+
+### Compatibility
+
+The new fields are additive private telemetry. Existing v1/v2/v3 fixture,
+manifest, proof, comparison, and acceptance semantics remain unchanged. The
+candidate and baseline copies of `scripts/private-full-chain-runner.js` must
+remain byte-identical after the mechanical mirror.
+
+Candidate product commit remains
+`87cc68ede886ac0ef3b53f960c38548cce4a831a`. Baseline product commit remains
+`fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## Test-First Implementation
+
+Add one focused regression to `tests/private_full_chain_runner_smoke.js` before
+changing the runner. The red test must prove:
+
+- initial and repair events become the expected allowlisted categories;
+- unknown text becomes `other`;
+- reset prevents one row's failure from leaking into the next row;
+- normal rows report `none`;
+- fake sensitive message text and arbitrary output-shape keys are absent.
+
+Run the focused smoke test and confirm it fails because the two fields do not
+exist. Then implement the minimum collector and row changes, rerun the focused
+test, run the 31-fixture benchmark, and run the full offline suite.
+
+After candidate verification, mechanically mirror only
+`scripts/private-full-chain-runner.js` to the baseline worktree, run the
+baseline offline checks, commit both evaluated checkpoints, verify the three
+shared Git blobs, update the two execution plans, obtain independent review,
+and push the continuation checkpoint.
+
+## Live Diagnostic Boundary
+
+Preserve this failed root unchanged:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`
+
+After the reviewed tooling checkpoint, create a new private root:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-diagnostic-v1-20260730`
+
+Use the same frozen pool, v1 confirmed evidence, v3 portability proof, formal
+runner gate, and a new empty cache. Run only zero-based diagnostic index `4`.
+Do not run indices `9`, `10`, or the 20-row acceptance during this diagnostic.
+
+The result is diagnostic evidence, not acceptance. Use the two safe categories
+to determine whether the next root-cause change belongs in the prompt, contract
+validator, or neither. Restore the fixed candidate worktree immediately after
+the one-row result is inspected.
+
+## Success Criteria
+
+- Focused red-green evidence exists.
+- All candidate and baseline offline checks pass.
+- Candidate and baseline runner blobs are identical.
+- Independent review reports no Critical, Important, or Moderate finding.
+- The one-row result exposes both fixed categories without private text.
+- The failed three-row root remains unchanged.
+- The 20-row root remains absent.
