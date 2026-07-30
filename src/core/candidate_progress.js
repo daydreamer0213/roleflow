@@ -37,7 +37,10 @@ const ALLOWED_METADATA_KEYS = new Set([
   "scheduledAt",
   "outcome",
   "reasonCode",
-  "source"
+  "source",
+  "platform",
+  "threadKey",
+  "messageKey"
 ]);
 const TRANSITIONS = new Map([
   ["contact_started", new Set(["waiting_reply", "needs_user_action", "reply_ready", "interview_invited", "closed"])],
@@ -84,7 +87,9 @@ function persistProgressEvent(db, input = {}, { keyKind = "external" } = {}) {
   if (!getProgressCard(db, cardId)) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
   const idempotencyKey = keyKind === "communication"
     ? communicationIdempotencyKey(input.idempotencyKey)
-    : progressIdempotencyKey(input.idempotencyKey);
+    : keyKind === "message"
+      ? messageIdempotencyKey(input.platform, input.messageKey)
+      : progressIdempotencyKey(input.idempotencyKey);
   const type = shortText(input.type, 80);
   const actor = shortText(input.actor, 40);
   if (!type || !actor) throw progressError("PROGRESS_EVENT_INVALID", "progress event type and actor are required");
@@ -293,6 +298,84 @@ function recordIncomingMessageClassification(db, input = {}) {
   return getProgressCard(db, cardId);
 }
 
+function recordDiscoveredMessageClassification(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const platform = String(input.platform || "").trim().toLowerCase();
+  const threadKey = safeDigestKey(input.threadKey, "threadKey");
+  const messageKey = safeDigestKey(input.messageKey, "messageKey");
+  const idempotencyKey = messageIdempotencyKey(platform, messageKey);
+  const messageCategory = String(input.messageCategory || "").trim();
+  if (!MESSAGE_CATEGORIES.has(messageCategory)) {
+    throw progressError("PROGRESS_MESSAGE_CATEGORY_INVALID", "message category is invalid");
+  }
+  const progressUpdate = input.progressUpdate && typeof input.progressUpdate === "object"
+    ? input.progressUpdate
+    : {};
+  const stage = legalStage(progressUpdate.stage);
+  const missingFactKey = shortText(input.missingFactKey, 80);
+  const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
+  const classificationMetadata = {
+    platform,
+    threadKey,
+    messageKey,
+    messageCategory,
+    missingFactKey,
+    stage
+  };
+  const existingEvent = getProgressEventByKey(db, cardId, idempotencyKey);
+  if (existingEvent) {
+    assertEventIntent(existingEvent, {
+      type: "incoming_message_classified",
+      actor: "system",
+      summary,
+      metadata: classificationMetadata
+    });
+    return getProgressCard(db, cardId);
+  }
+  const occurredAt = isoText(input.occurredAt);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const binding = db.prepare(`UPDATE candidate_progress_cards
+      SET thread_key = ?, updated_at = ?
+      WHERE id = ? AND thread_key = ''`)
+      .run(threadKey, occurredAt, cardId);
+    if (Number(binding.changes) !== 1) {
+      const current = getProgressCard(db, cardId);
+      if (!current || current.threadKey !== threadKey) {
+        throw progressError("PROGRESS_THREAD_CONFLICT", "progress card is bound to a different thread");
+      }
+    }
+    const persisted = persistProgressEvent(db, {
+      cardId,
+      platform,
+      messageKey,
+      type: "incoming_message_classified",
+      actor: "system",
+      summary,
+      metadata: classificationMetadata,
+      occurredAt
+    }, { keyKind: "message" });
+    if (!persisted.inserted) {
+      db.exec("COMMIT");
+      return getProgressCard(db, cardId);
+    }
+    transitionProgressCard(db, {
+      cardId,
+      expectedStage: card.stage,
+      stage,
+      nextAction: shortText(progressUpdate.nextAction, 240),
+      now: occurredAt
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return getProgressCard(db, cardId);
+}
+
 function recordManualProgressAction(db, input = {}) {
   const cardId = positiveInteger(input.cardId, "cardId");
   const idempotencyKey = progressIdempotencyKey(input.idempotencyKey);
@@ -396,6 +479,28 @@ function listProgressCards(db, input = {}) {
     ORDER BY updated_at DESC, id DESC`)
     .all(profileId, ...stages)
     .map(mapCard);
+}
+
+function listMessageDiscoveryCandidates(db, { profileId } = {}) {
+  return db.prepare(`SELECT
+      cards.id AS card_id,
+      cards.job_id,
+      cards.plan_id,
+      cards.source,
+      cards.stage,
+      cards.thread_key,
+      jobs.title,
+      jobs.company,
+      jobs.salary,
+      jobs.location AS city
+    FROM candidate_progress_cards cards
+    JOIN jobs ON jobs.id = cards.job_id
+    WHERE cards.profile_id = ?
+      AND cards.source = 'boss'
+      AND cards.stage NOT IN ('rejected', 'closed')
+    ORDER BY cards.updated_at DESC, cards.id DESC`)
+    .all(positiveInteger(profileId, "profileId"))
+    .map(mapDiscoveryCandidate);
 }
 
 function listProgressCardsWithEvents(db, input = {}) {
@@ -526,6 +631,21 @@ function mapEvent(row) {
   } : null;
 }
 
+function mapDiscoveryCandidate(row) {
+  return {
+    cardId: Number(row.card_id),
+    jobId: Number(row.job_id),
+    planId: Number(row.plan_id),
+    source: row.source,
+    stage: row.stage,
+    threadKey: row.thread_key || "",
+    title: row.title || "",
+    company: row.company || "",
+    salary: row.salary || "",
+    city: row.city || ""
+  };
+}
+
 function legalStage(value) {
   const stage = String(value || "").trim();
   if (!PROGRESS_STAGES.has(stage)) throw progressError("PROGRESS_STAGE_INVALID", `unknown progress stage ${stage}`);
@@ -571,6 +691,21 @@ function communicationIdempotencyKey(value) {
   return key;
 }
 
+function safeDigestKey(value, name) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!/^sha256:[a-f0-9]{64}$/.test(normalized)) {
+    throw progressError("PROGRESS_SAFE_IDENTIFIER_INVALID", `${name} must be a SHA-256 digest`);
+  }
+  return normalized;
+}
+
+function messageIdempotencyKey(platform, messageKey) {
+  if (platform !== "boss") {
+    throw progressError("PROGRESS_PLATFORM_INVALID", "message platform is invalid");
+  }
+  return `message:boss:${safeDigestKey(messageKey, "messageKey").slice(7)}`;
+}
+
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
@@ -589,10 +724,12 @@ module.exports = {
   correctProgressStage,
   recordVerifiedCommunicationStart,
   recordIncomingMessageClassification,
+  recordDiscoveredMessageClassification,
   recordManualProgressAction,
   sanitizedMessageSummary,
   getProgressCardForJob,
   getProgressCardById,
+  listMessageDiscoveryCandidates,
   listProgressCards,
   listProgressCardsWithEvents,
   listProgressEvents

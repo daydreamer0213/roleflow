@@ -9,8 +9,10 @@ const {
   transitionProgressCard,
   correctProgressStage,
   recordIncomingMessageClassification,
+  recordDiscoveredMessageClassification,
   recordManualProgressAction,
   getProgressCardForJob,
+  listMessageDiscoveryCandidates,
   listProgressCards,
   listProgressEvents
 } = require("../src/core/candidate_progress");
@@ -33,6 +35,61 @@ try {
   );
   assert.strictEqual(getProgressCardForJob(db, { profileId, jobId }).id, card.id);
   assert.deepStrictEqual(listProgressCards(db, { profileId, stages: ["contact_started"] }).map((item) => item.id), [card.id]);
+
+  const discoveryFixture = createFixture(db, "message-discovery", now);
+  db.prepare("UPDATE jobs SET title = 'Java Engineer' WHERE id = ?").run(discoveryFixture.jobId);
+  const discoveryCard = ensureProgressCard(db, { ...discoveryFixture, source: "boss", now });
+  const discoveryCandidates = listMessageDiscoveryCandidates(db, { profileId: discoveryFixture.profileId });
+  assert.deepStrictEqual(discoveryCandidates.map((item) => item.cardId), [discoveryCard.id]);
+  assert.strictEqual(discoveryCandidates[0].title, "Java Engineer");
+
+  const discoveredInput = {
+    cardId: discoveryCard.id,
+    platform: "boss",
+    threadKey: `sha256:${"a".repeat(64)}`,
+    messageKey: `sha256:${"b".repeat(64)}`,
+    messageCategory: "qualification",
+    missingFactKey: "",
+    progressUpdate: { stage: "reply_ready", nextAction: "Copy after user review" },
+    occurredAt: "2026-07-30T01:00:00.000Z"
+  };
+  const discovered = recordDiscoveredMessageClassification(db, discoveredInput);
+  assert.strictEqual(discovered.stage, "reply_ready");
+  assert.strictEqual(discovered.threadKey, `sha256:${"a".repeat(64)}`);
+  assert.strictEqual(recordDiscoveredMessageClassification(db, discoveredInput).stage, "reply_ready");
+  assert.strictEqual(
+    listProgressEvents(db, discoveryCard.id).filter((event) => event.type === "incoming_message_classified").length,
+    1,
+    "the same discovered message must create one event"
+  );
+  assert.throws(
+    () => recordDiscoveredMessageClassification(db, {
+      ...discoveredInput,
+      messageCategory: "salary"
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT"
+  );
+
+  const rollbackFixture = createFixture(db, "discovery-rollback", now);
+  const rollbackCard = ensureProgressCard(db, { ...rollbackFixture, source: "boss", now });
+  assert.throws(
+    () => recordDiscoveredMessageClassification(db, {
+      cardId: rollbackCard.id,
+      platform: "boss",
+      threadKey: `sha256:${"c".repeat(64)}`,
+      messageKey: `sha256:${"d".repeat(64)}`,
+      messageCategory: "qualification",
+      missingFactKey: "",
+      progressUpdate: { stage: "interview_scheduled", nextAction: "" },
+      occurredAt: "2026-07-30T01:01:00.000Z"
+    }),
+    (error) => error.code === "PROGRESS_STAGE_TRANSITION_INVALID"
+  );
+  assert.strictEqual(getProgressCardForJob(db, {
+    profileId: rollbackFixture.profileId,
+    jobId: rollbackFixture.jobId
+  }).threadKey, "");
+  assert.strictEqual(listProgressEvents(db, rollbackCard.id).length, 0);
 
   recordProgressEvent(db, {
     cardId: card.id,
