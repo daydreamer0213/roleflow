@@ -44,6 +44,8 @@ v3 把“候选人证据身份”和“目标岗位夹具身份”分开证明�
 
 人工确认格式还必须满足：
 
+- 岗位使用固定 13 字段结构，显式保留 `experience` 和 `education`；这两个字段可以为空，其余身份、来源和 JD 字段必须非空；
+- 每条岗位的 `sourceContentHash` 等于 `description` 原始字符串的 SHA-256；
 - `labelingPolicy` 的七个固定字段完整且都是非空字符串；
 - 每行具有非空 `userLabel`，并使用 `keep/discard`；runner 仅在内存中把 `discard` 规范化为既有指标使用的 `exclude`；
 - `jobsSha256` 等于目标岗位文件的原始字节 SHA-256，而不是重新序列化后的对象哈希。

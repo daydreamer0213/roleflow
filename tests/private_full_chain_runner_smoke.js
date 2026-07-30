@@ -845,6 +845,13 @@ async function injectedLiveFlowSmoke(identityPath) {
   const userConfirmedLabelsPath = path.join(userConfirmedTargetRoot, "labels", "jobs.reviewed.json");
   const userConfirmedProofPath = path.join(userConfirmedTargetRoot, "input", "confirmed-evidence-portability.json");
   fs.rmSync(userConfirmedProofPath);
+  const userConfirmedJobs = changedJobs.map((job, index) => ({
+    ...job,
+    experience: index === 0 ? "" : "synthetic",
+    education: index === 0 ? "" : "synthetic",
+    sourceContentHash: crypto.createHash("sha256").update(job.description).digest("hex")
+  }));
+  fs.writeFileSync(userConfirmedJobsPath, JSON.stringify(userConfirmedJobs, null, 2), "utf8");
   const userConfirmedLabels = {
     labelsVersion: "private-user-confirmed.v2",
     evaluationPolicy: "resume-centered-recall-first.v2",
@@ -933,6 +940,42 @@ async function injectedLiveFlowSmoke(identityPath) {
   });
   expectUserConfirmedCreateReject("non-string-user-label", (value) => {
     value.rows[0].userLabel = 1;
+  });
+  const expectUserConfirmedJobReject = (name, mutate) => {
+    const targetRoot = privatePath(`portability-v3-user-confirmed-job-${name}`);
+    fs.cpSync(userConfirmedTargetRoot, targetRoot, { recursive: true });
+    const output = path.join(targetRoot, "input", "confirmed-evidence-portability.json");
+    fs.rmSync(output);
+    const jobsFile = path.join(targetRoot, "input", "jobs.private.json");
+    const labelsFile = path.join(targetRoot, "labels", "jobs.reviewed.json");
+    const jobsValue = JSON.parse(fs.readFileSync(jobsFile, "utf8"));
+    mutate(jobsValue);
+    fs.writeFileSync(jobsFile, JSON.stringify(jobsValue, null, 2), "utf8");
+    const labelsValue = JSON.parse(fs.readFileSync(labelsFile, "utf8"));
+    labelsValue.jobsSha256 = crypto.createHash("sha256").update(fs.readFileSync(jobsFile)).digest("hex");
+    fs.writeFileSync(labelsFile, JSON.stringify(labelsValue, null, 2), "utf8");
+    assert.throws(
+      () => runner.createConfirmedEvidencePortability({
+        sourcePrivateRoot: sourcePortabilityRoot,
+        privateRoot: targetRoot,
+        output,
+        proofVersion: "confirmed-evidence-portability.v3"
+      }, portabilitySeam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+  };
+  expectUserConfirmedJobReject("description-hash", (jobsValue) => {
+    jobsValue[0].sourceContentHash = "0".repeat(64);
+  });
+  expectUserConfirmedJobReject("extra-key", (jobsValue) => {
+    jobsValue[0].tags = [];
+  });
+  expectUserConfirmedJobReject("required-field-type", (jobsValue) => {
+    jobsValue[0].keyword = {};
+  });
+  expectUserConfirmedJobReject("optional-field-type", (jobsValue) => {
+    jobsValue[0].experience = null;
   });
   for (const confirmationId of [portableEvidence.profile.id, portableEvidence.card.id]) {
     assert(!JSON.stringify(v3Proof).includes(confirmationId), `v3 portability proof must not contain confirmation ID ${confirmationId}`);
