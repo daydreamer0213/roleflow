@@ -14,11 +14,13 @@
 - Do not access BOSS, any recruitment platform, the main `data/jobs.sqlite`, cookies, 8787, or communication actions.
 - Do not read the formal model configuration or run a real model during Tasks 1–2.
 - Never write private resume, profile, matching-card, JD, or label text into Git, logs, reports, tests, or the portability proof.
+- v3 stores SHA-256 values for profile/card confirmation IDs, never the raw IDs. Legacy v1/v2 raw-ID fields remain unchanged only for backward compatibility.
 - `confirmed-evidence-portability.v3` must be explicit opt-in through `--proof-version confirmed-evidence-portability.v3`; a failed v1/v2 proof must never auto-upgrade.
 - v1/v2 proof creation and validation retain their existing exact fields, four consumer blobs, same-job requirement, and label-transition behavior.
 - v3 requires byte-identical confirmed profile, confirmed card, redacted resume, and identity manifest.
 - v3 target labels must be `private-real-jd-labels.v2`, `recall-first.v1`, `userConfirmed === true`, time-valid, and bound to the target jobs through the existing `privateJobsAndLabels` contract.
 - The model must consume the profile, card, jobs, and labels parsed from the same raw bytes that passed v3 hash validation.
+- The self-hash prevents accidental or incomplete mutation; a local administrator maliciously reauthoring the complete proof, manifest, and all hashes is outside the existing threat model and must not trigger a new same-directory HMAC design.
 - The product commit remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; harness/documentation commits are evaluated-checkpoint changes only.
 
 ---
@@ -89,7 +91,7 @@ Add assertions covering all of these before implementation:
 3. v3 rejects target labels with `userConfirmed:false`, invalid `confirmedAt`, non-recall policy, source-pool `jobsSha256`, mismatched IDs, or count inconsistent with `targetFixtureTotal`.
 4. v3 permits a different injected blob for `src/core/llm_analyzer.js`.
 5. v3 rejects a different blob for each of `profile_onboarding.js`, `matching_card.js`, and `search_plan.js`.
-6. Removing or adding a v3 proof field, rewriting it into a v1/v2 shape, changing commits, or changing `proofSha256` fails.
+6. Removing or adding a v3 proof field, changing only its version/shape, changing commits, changing confirmation-ID hashes, or changing `proofSha256` fails. Complete malicious reauthoring of every proof/manifest/hash field by the local administrator is outside the established threat model.
 7. Appending one byte to target jobs or labels after proof creation fails before settings/provider/SQLite/model counters change.
 8. The serialized proof does not contain any fixture title, description, label rationale, synthetic name, phone, or email.
 
@@ -133,7 +135,7 @@ In `createConfirmedEvidencePortability`:
 - parse source jobs with source labels and target jobs with target labels;
 - require explicit v3 when the target fixture differs;
 - require target v2 recall-first confirmation for v3;
-- emit the exact v3 fields from the design and use `PORTABILITY_V3_CONSUMER_FILES`;
+- emit the exact v3 fields from the design, replace raw `profileConfirmationId` / `cardConfirmationId` with `profileConfirmationIdSha256` / `cardConfirmationIdSha256`, and use `PORTABILITY_V3_CONSUMER_FILES`;
 - keep the existing v1/v2 object construction unchanged.
 
 - [ ] **Step 5: Eliminate portability check/use double reads**
