@@ -2039,7 +2039,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         if (index === 0) {
           logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
-            errorMessage: `roleAlignment must be one of aligned/mostly_aligned ${contractDiagnosticSecret}`
+            errorMessage: `必须返回 JSON 对象 ${contractDiagnosticSecret}`
           });
           logger.warn("model_contract_repair_completed", {
             kind: "matchJob",
@@ -2204,9 +2204,9 @@ async function injectedLiveFlowSmoke(identityPath) {
     emptyResponseAttemptCount: 0,
     modelAttemptLatencyMs: 37000,
     contractRepairCount: 1,
-    initialContractFailureCategory: "role_alignment",
+    initialContractFailureCategory: "result_shape",
     repairContractFailureCategory: "none",
-    initialContractFailureReason: "role_alignment_enum",
+    initialContractFailureReason: "result_not_object",
     repairContractFailureReason: "none",
     responseContentChars: 3412
   });
