@@ -42,7 +42,9 @@ try {
   const discoveryCandidates = listMessageDiscoveryCandidates(db, { profileId: discoveryFixture.profileId });
   assert.deepStrictEqual(discoveryCandidates.map((item) => item.cardId), [discoveryCard.id]);
   assert.strictEqual(discoveryCandidates[0].title, "Java Engineer");
+  assert.strictEqual(discoveryCandidates[0].profileId, discoveryFixture.profileId);
 
+  const unsafeModelEcho = "PRIVATE_HR_BODY PRIVATE_RECRUITER_NAME PRIVATE_REPLY_DRAFT";
   const discoveredInput = {
     cardId: discoveryCard.id,
     platform: "boss",
@@ -50,12 +52,13 @@ try {
     messageKey: `sha256:${"b".repeat(64)}`,
     messageCategory: "qualification",
     missingFactKey: "",
-    progressUpdate: { stage: "reply_ready", nextAction: "Copy after user review" },
+    progressUpdate: { stage: "reply_ready", nextAction: unsafeModelEcho },
     occurredAt: "2026-07-30T01:00:00.000Z"
   };
   const discovered = recordDiscoveredMessageClassification(db, discoveredInput);
   assert.strictEqual(discovered.stage, "reply_ready");
   assert.strictEqual(discovered.threadKey, `sha256:${"a".repeat(64)}`);
+  assert.strictEqual(discovered.nextAction, "Review draft before manual send");
   assert.strictEqual(recordDiscoveredMessageClassification(db, discoveredInput).stage, "reply_ready");
   assert.strictEqual(
     listProgressEvents(db, discoveryCard.id).filter((event) => event.type === "incoming_message_classified").length,
@@ -69,6 +72,36 @@ try {
     }),
     (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT"
   );
+  assert(!JSON.stringify(db.prepare(
+    "SELECT * FROM candidate_progress_cards WHERE id = ?"
+  ).get(discoveryCard.id)).includes(unsafeModelEcho));
+  assert(!JSON.stringify(db.prepare(
+    "SELECT * FROM candidate_progress_events WHERE card_id = ?"
+  ).all(discoveryCard.id)).includes(unsafeModelEcho));
+
+  const invalidFactFixture = createFixture(db, "invalid-discovery-fact", now);
+  const invalidFactCard = ensureProgressCard(db, { ...invalidFactFixture, source: "boss", now });
+  assert.throws(
+    () => recordDiscoveredMessageClassification(db, {
+      cardId: invalidFactCard.id,
+      platform: "boss",
+      threadKey: `sha256:${"e".repeat(64)}`,
+      messageKey: `sha256:${"f".repeat(64)}`,
+      messageCategory: "qualification",
+      missingFactKey: unsafeModelEcho,
+      progressUpdate: { stage: "needs_user_action", nextAction: unsafeModelEcho },
+      occurredAt: "2026-07-30T01:00:30.000Z"
+    }),
+    (error) => error.code === "PROGRESS_MISSING_FACT_KEY_INVALID"
+  );
+  assert.strictEqual(getProgressCardForJob(db, {
+    profileId: invalidFactFixture.profileId,
+    jobId: invalidFactFixture.jobId
+  }).threadKey, "");
+  assert.strictEqual(listProgressEvents(db, invalidFactCard.id).length, 0);
+  assert(!JSON.stringify(db.prepare(
+    "SELECT * FROM candidate_progress_cards WHERE id = ?"
+  ).get(invalidFactCard.id)).includes(unsafeModelEcho));
 
   const rollbackFixture = createFixture(db, "discovery-rollback", now);
   const rollbackCard = ensureProgressCard(db, { ...rollbackFixture, source: "boss", now });

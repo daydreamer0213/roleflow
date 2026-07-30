@@ -314,7 +314,7 @@ function recordDiscoveredMessageClassification(db, input = {}) {
     ? input.progressUpdate
     : {};
   const stage = legalStage(progressUpdate.stage);
-  const missingFactKey = shortText(input.missingFactKey, 80);
+  const missingFactKey = safeMissingFactKey(input.missingFactKey);
   const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
   const classificationMetadata = {
     platform,
@@ -365,7 +365,7 @@ function recordDiscoveredMessageClassification(db, input = {}) {
       cardId,
       expectedStage: card.stage,
       stage,
-      nextAction: shortText(progressUpdate.nextAction, 240),
+      nextAction: safeDiscoveredNextAction(stage),
       now: occurredAt
     });
     db.exec("COMMIT");
@@ -484,6 +484,7 @@ function listProgressCards(db, input = {}) {
 function listMessageDiscoveryCandidates(db, { profileId } = {}) {
   return db.prepare(`SELECT
       cards.id AS card_id,
+      cards.profile_id,
       cards.job_id,
       cards.plan_id,
       cards.source,
@@ -634,6 +635,7 @@ function mapEvent(row) {
 function mapDiscoveryCandidate(row) {
   return {
     cardId: Number(row.card_id),
+    profileId: Number(row.profile_id),
     jobId: Number(row.job_id),
     planId: Number(row.plan_id),
     source: row.source,
@@ -697,6 +699,31 @@ function safeDigestKey(value, name) {
     throw progressError("PROGRESS_SAFE_IDENTIFIER_INVALID", `${name} must be a SHA-256 digest`);
   }
   return normalized;
+}
+
+function safeMissingFactKey(value) {
+  const key = String(value || "").trim();
+  if (key && !/^[a-z][a-z0-9_]{0,63}$/.test(key)) {
+    throw progressError(
+      "PROGRESS_MISSING_FACT_KEY_INVALID",
+      "missing fact key must be a safe identifier"
+    );
+  }
+  return key;
+}
+
+function safeDiscoveredNextAction(stage) {
+  return {
+    contact_started: "Review communication status",
+    waiting_reply: "Wait for recruiter reply",
+    needs_user_action: "Provide required information",
+    reply_ready: "Review draft before manual send",
+    interview_invited: "Review interview invitation",
+    interview_scheduled: "Review interview schedule",
+    resume_submitted: "Wait for recruiter reply",
+    rejected: "Opportunity rejected",
+    closed: "Opportunity closed"
+  }[stage];
 }
 
 function messageIdempotencyKey(platform, messageKey) {

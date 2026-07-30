@@ -30,10 +30,12 @@ main().catch((error) => {
 async function main() {
   db = openDb(path.join(root, "message-discovery.sqlite"));
   await uniqueCandidateAndPrivacySmoke();
+  await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
   await messageSelectionSmoke();
   await classificationOutcomeSmoke();
   await readerStopSmoke();
+  await abortAfterClassificationSmoke();
   await pacingAndInterruptSmoke();
   console.log("message_discovery_smoke ok");
 }
@@ -50,13 +52,16 @@ async function uniqueCandidateAndPrivacySmoke() {
     classifyMessage: async ({ card, job, hrMessage }) => {
       modelCalls += 1;
       assert.strictEqual(card.id, fixture.card.id);
+      assert.strictEqual(card.profileId, fixture.profileId);
       assert.strictEqual(job.title, "Java Engineer");
       assert.strictEqual(hrMessage, PRIVATE_BODY);
-      return classification({
+      const result = classification({
         messageCategory: "qualification",
         stage: "reply_ready",
         messages: [PRIVATE_DRAFT]
       });
+      result.progressUpdate.nextAction = `${PRIVATE_BODY} ${PRIVATE_RECRUITER} ${PRIVATE_DRAFT}`;
+      return result;
     },
     logger: { info: (...args) => logs.push(args) },
     now: () => NOW,
@@ -67,6 +72,10 @@ async function uniqueCandidateAndPrivacySmoke() {
   assert.strictEqual(summary.processed, 1);
   assert.deepStrictEqual(summary.results[0].messages, [PRIVATE_DRAFT]);
   assert.strictEqual(summary.results[0].stage, "reply_ready");
+  assert.strictEqual(
+    db.prepare("SELECT next_action FROM candidate_progress_cards WHERE id = ?").get(fixture.card.id).next_action,
+    "Review draft before manual send"
+  );
 
   const persisted = [
     allText(db, "candidate_progress_cards"),
@@ -96,6 +105,52 @@ async function uniqueCandidateAndPrivacySmoke() {
   assert.strictEqual(repeat.status, "completed");
   assert.strictEqual(repeat.processed, 0);
   assert.strictEqual(listProgressEvents(db, fixture.card.id).length, 1);
+}
+
+async function unsafeModelPersistenceSmoke() {
+  const fixture = createFixture({ suffix: "unsafe-model", title: "Unsafe Model Engineer" });
+  const logs = [];
+  await assert.rejects(
+    () => runBossMessageDiscovery({
+      db,
+      profileId: fixture.profileId,
+      reader: fakeReader([selectedConversation({
+        title: fixture.title,
+        messageId: "123456789012346"
+      })]),
+      classifyMessage: async () => ({
+        ...classification({ stage: "needs_user_action", messages: [] }),
+        missingFact: {
+          key: `${PRIVATE_BODY} ${PRIVATE_RECRUITER} ${PRIVATE_DRAFT}`,
+          question: "redacted"
+        },
+        progressUpdate: {
+          stage: "needs_user_action",
+          nextAction: `${PRIVATE_BODY} ${PRIVATE_RECRUITER} ${PRIVATE_DRAFT}`,
+          summary: "sanitized"
+        }
+      }),
+      logger: { info: (...args) => logs.push(args) }
+    }),
+    (error) => error.code === "PROGRESS_MISSING_FACT_KEY_INVALID"
+  );
+  const card = db.prepare(`SELECT thread_key, stage, next_action
+    FROM candidate_progress_cards WHERE id = ?`).get(fixture.card.id);
+  assert.deepStrictEqual({ ...card }, {
+    thread_key: "",
+    stage: "contact_started",
+    next_action: ""
+  });
+  assert.strictEqual(listProgressEvents(db, fixture.card.id).length, 0);
+  const persisted = [
+    allText(db, "candidate_progress_cards"),
+    allText(db, "candidate_progress_events")
+  ].join("\n");
+  const logged = JSON.stringify(logs);
+  for (const forbidden of [PRIVATE_BODY, PRIVATE_RECRUITER, PRIVATE_DRAFT]) {
+    assert(!persisted.includes(forbidden), `${forbidden} must not be persisted`);
+    assert(!logged.includes(forbidden), `${forbidden} must not be logged`);
+  }
 }
 
 async function identityStopsSmoke() {
@@ -245,6 +300,56 @@ async function readerStopSmoke() {
   }
 }
 
+async function abortAfterClassificationSmoke() {
+  for (const [suffix, code] of [
+    ["classification-abort", "MESSAGE_DISCOVERY_STOPPED"],
+    ["classification-lease", "MESSAGE_DISCOVERY_LEASE_LOST"]
+  ]) {
+    const fixture = createFixture({ suffix, title: `${suffix} Engineer` });
+    const controller = new AbortController();
+    const reason = Object.assign(new Error(code), { code });
+    const statuses = [];
+    let releaseClassification;
+    let markClassificationStarted;
+    const classificationStarted = new Promise((resolve) => {
+      markClassificationStarted = resolve;
+    });
+    const pendingClassification = new Promise((resolve) => {
+      releaseClassification = resolve;
+    });
+    const run = runBossMessageDiscovery({
+      db,
+      profileId: fixture.profileId,
+      reader: fakeReader([selectedConversation({
+        title: fixture.title,
+        messageId: code === "MESSAGE_DISCOVERY_STOPPED"
+          ? "123456789012370"
+          : "123456789012371"
+      })]),
+      classifyMessage: async () => {
+        markClassificationStarted();
+        return pendingClassification;
+      },
+      signal: controller.signal,
+      onStatus: (status) => statuses.push(status)
+    });
+    const rejected = assert.rejects(run, (error) => error === reason);
+    await classificationStarted;
+    controller.abort(reason);
+    releaseClassification(classification());
+    await rejected;
+    const card = db.prepare(`SELECT thread_key, stage, next_action
+      FROM candidate_progress_cards WHERE id = ?`).get(fixture.card.id);
+    assert.deepStrictEqual({ ...card }, {
+      thread_key: "",
+      stage: "contact_started",
+      next_action: ""
+    });
+    assert.strictEqual(listProgressEvents(db, fixture.card.id).length, 0);
+    assert(!statuses.some((status) => status.status === "completed"));
+  }
+}
+
 async function pacingAndInterruptSmoke() {
   const pacing = createFixture({ suffix: "pacing", title: "Pacing Engineer" });
   const conversations = Array.from({ length: 11 }, (_, index) => selectedConversation({
@@ -262,6 +367,38 @@ async function pacingAndInterruptSmoke() {
   });
   assert.strictEqual(summary.processed, 11);
   assert.deepStrictEqual(waits, [
+    1500, 1500, 1500, 1500, 1500,
+    1500, 1500, 1500, 1500, 1500,
+    15000
+  ]);
+
+  const mixed = createFixture({ suffix: "mixed-pacing", title: "Mixed Pacing Engineer" });
+  const duplicateId = "123456789012380";
+  const mixedConversations = [
+    selectedConversation({ title: mixed.title, messageId: duplicateId }),
+    selectedConversation({ title: mixed.title, messageId: duplicateId }),
+    { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" },
+    ...Array.from({ length: 8 }, (_, index) => selectedConversation({
+      title: mixed.title,
+      messageId: String(300000000000000 + index)
+    }))
+  ];
+  const mixedWaits = [];
+  let mixedModelCalls = 0;
+  const mixedSummary = await runBossMessageDiscovery({
+    db,
+    profileId: mixed.profileId,
+    reader: fakeReader(mixedConversations),
+    classifyMessage: async () => {
+      mixedModelCalls += 1;
+      return classification();
+    },
+    sleepFn: async (ms) => mixedWaits.push(ms),
+    randomFn: () => 0
+  });
+  assert.strictEqual(mixedSummary.processed, 9);
+  assert.strictEqual(mixedModelCalls, 9);
+  assert.deepStrictEqual(mixedWaits, [
     1500, 1500, 1500, 1500, 1500,
     1500, 1500, 1500, 1500, 1500,
     15000

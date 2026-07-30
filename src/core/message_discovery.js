@@ -30,17 +30,30 @@ async function runBossMessageDiscovery({
   }
 
   const results = [];
+  let openedCount = 0;
   emitStatus(safeStatus("running", { queued: queue.length }), logger, onStatus);
-  for (const target of queue) {
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const target = queue[queueIndex];
     throwIfAborted(signal);
     let selected;
     try {
+      openedCount += 1;
       selected = await reader.openQueuedConversation(target, signal);
     } catch (error) {
       if (shouldInterrupt(error, signal)) throw error;
       return emitStopped(errorCode(error), queue.length, results, logger, onStatus);
     }
-    if (selected?.skipped) continue;
+    if (selected?.skipped) {
+      await paceBeforeNext({
+        queueIndex,
+        queueLength: queue.length,
+        openedCount,
+        sleepFn,
+        randomFn,
+        signal
+      });
+      continue;
+    }
 
     const resolved = resolveUniqueCandidate(candidates, selected);
     if (!resolved.ok) {
@@ -62,7 +75,17 @@ async function runBossMessageDiscovery({
     clearSelectedIdentity(selected);
     if (!incoming.ok) {
       clearSelectedSnapshot(selected);
-      if (incoming.skipped) continue;
+      if (incoming.skipped) {
+        await paceBeforeNext({
+          queueIndex,
+          queueLength: queue.length,
+          openedCount,
+          sleepFn,
+          randomFn,
+          signal
+        });
+        continue;
+      }
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus);
     }
 
@@ -77,6 +100,7 @@ async function runBossMessageDiscovery({
       incoming.text = "";
       clearSelectedSnapshot(selected);
     }
+    throwIfAborted(signal);
     const card = recordDiscoveredMessageClassification(db, {
       cardId: resolved.cardId,
       platform: "boss",
@@ -93,10 +117,14 @@ async function runBossMessageDiscovery({
       logger,
       onStatus
     );
-    if (results.length < queue.length) {
-      await sleepFn(randomBetween(1500, 2500, randomFn), signal);
-      if (results.length % 10 === 0) await sleepFn(15_000, signal);
-    }
+    await paceBeforeNext({
+      queueIndex,
+      queueLength: queue.length,
+      openedCount,
+      sleepFn,
+      randomFn,
+      signal
+    });
   }
   const completed = safeStatus("completed", {
     queued: queue.length,
@@ -105,6 +133,19 @@ async function runBossMessageDiscovery({
   });
   emitStatus(completed, logger, onStatus);
   return completed;
+}
+
+async function paceBeforeNext({
+  queueIndex,
+  queueLength,
+  openedCount,
+  sleepFn,
+  randomFn,
+  signal
+}) {
+  if (queueIndex + 1 >= queueLength) return;
+  await sleepFn(randomBetween(1500, 2500, randomFn), signal);
+  if (openedCount % 10 === 0) await sleepFn(15_000, signal);
 }
 
 function resolveUniqueCandidate(candidates, selected) {
@@ -129,7 +170,7 @@ function resolveUniqueCandidate(candidates, selected) {
     threadKey,
     card: {
       id: candidate.cardId,
-      profileId: null,
+      profileId: candidate.profileId,
       planId: candidate.planId,
       jobId: candidate.jobId,
       source: candidate.source,
