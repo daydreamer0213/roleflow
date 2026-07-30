@@ -128,6 +128,45 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_daily
   ON workflow_runs(profile_id, local_day, sequence);
 `;
 
+const CANDIDATE_PROGRESS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_progress_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  recruiter_name TEXT NOT NULL DEFAULT '',
+  thread_key TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL,
+  next_action TEXT NOT NULL DEFAULT '',
+  scheduled_at TEXT,
+  last_event_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, job_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS candidate_progress_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_progress_cards_plan
+  ON candidate_progress_cards(plan_id, stage, updated_at);
+CREATE INDEX IF NOT EXISTS idx_candidate_progress_events_card
+  ON candidate_progress_events(card_id, occurred_at);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -452,6 +491,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs(status, heartbeat_a
 CREATE INDEX IF NOT EXISTS idx_job_refresh_attempts_job ON job_refresh_attempts(job_id, created_at);
 ${COMMUNICATION_SCHEMA}
 ${WORKFLOW_SCHEMA}
+${CANDIDATE_PROGRESS_SCHEMA}
 `;
 
 const MIGRATIONS = [
@@ -483,6 +523,14 @@ const MIGRATIONS = [
     name: "workflow_runs_three_slots",
     apply(db) {
       migrateWorkflowRunSlots(db);
+    }
+  },
+  {
+    version: 5,
+    name: "candidate_progress_v1",
+    apply(db) {
+      db.exec(CANDIDATE_PROGRESS_SCHEMA);
+      backfillHistoricalCandidateProgress(db);
     }
   }
 ];
@@ -812,6 +860,43 @@ function backfillHistoricalCommunicationOutcomes(db) {
       updated_at
     FROM ranked WHERE rank = 1`).run();
   return Number(result.changes || 0);
+}
+
+function backfillHistoricalCandidateProgress(db) {
+  db.prepare(`INSERT OR IGNORE INTO candidate_progress_cards(
+      profile_id, plan_id, job_id, source, stage, next_action,
+      last_event_at, created_at, updated_at
+    )
+    SELECT states.profile_id, states.plan_id, states.job_id, jobs.source,
+      'waiting_reply', '等待招聘方回复',
+      states.updated_at, states.updated_at, states.updated_at
+    FROM candidate_job_states states
+    JOIN jobs ON jobs.id = states.job_id
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')`)
+    .run();
+  db.prepare(`INSERT INTO candidate_progress_events(
+      card_id, type, actor, summary, metadata_json, occurred_at, created_at
+    )
+    SELECT cards.id,
+      CASE states.reason_code
+        WHEN 'already_communicated' THEN 'contact_already_exists'
+        ELSE 'contact_started'
+      END,
+      'system',
+      '历史沟通状态迁移',
+      json_object('reasonCode', states.reason_code),
+      states.updated_at,
+      states.updated_at
+    FROM candidate_progress_cards cards
+    JOIN candidate_job_states states
+      ON states.profile_id = cards.profile_id AND states.job_id = cards.job_id
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
+      AND NOT EXISTS (
+        SELECT 1 FROM candidate_progress_events events
+        WHERE events.card_id = cards.id
+          AND events.type IN ('contact_started', 'contact_already_exists')
+      )`)
+    .run();
 }
 
 function createWorkflowRun(db, input = {}) {

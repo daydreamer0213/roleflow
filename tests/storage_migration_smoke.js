@@ -18,7 +18,8 @@ try {
       { version: 1, name: "stable_scan_runtime", backup_path: null },
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
-      { version: 4, name: "workflow_runs_three_slots", backup_path: null }
+      { version: 4, name: "workflow_runs_three_slots", backup_path: null },
+      { version: 5, name: "candidate_progress_v1", backup_path: null }
     ]
   );
   assert.strictEqual(
@@ -33,7 +34,15 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
     1
   );
-  assert(SCHEMA_VERSION >= 3);
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
+    1
+  );
+  assert(SCHEMA_VERSION >= 5);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -59,7 +68,8 @@ try {
       { version: 1, name: "stable_scan_runtime" },
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
-      { version: 4, name: "workflow_runs_three_slots" }
+      { version: 4, name: "workflow_runs_three_slots" },
+      { version: 5, name: "candidate_progress_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -73,6 +83,14 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
     1
   );
   db.close();
