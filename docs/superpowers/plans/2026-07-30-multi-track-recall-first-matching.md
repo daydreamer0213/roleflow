@@ -1617,3 +1617,35 @@ Do not merge to `main`, do not modify the formal project, and do not push until 
 - Do not rerun in that root. Use the fresh, initially absent root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`.
 - Keep evaluated candidate `cebe59f5aae78abdde873adfe211f296d3322519`, evaluated baseline `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`, zero-based `--diagnostic-indices '4,9,10'`, and the v1 source evidence unchanged.
 - For the next live invocation, use a native-process wrapper that redirects stdout/stderr without promoting warnings to terminating PowerShell errors, and capture the process exit code directly.
+## 2026-07-30 private contract-failure diagnostic checkpoint
+
+This checkpoint supersedes Task 7's next-action instructions. Do not execute
+the three-row live command in Task 7 again.
+
+- The fresh root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730` completed with native exit code `0` and produced three logical rows.
+- Zero-based index `4` failed after `matchJob` contract repair with `MODEL_CONTRACT_INVALID`, `semanticStatus=failed`, and `actualBucket=analysis_pending`. Its selected track, role summary, and complete evidence were absent.
+- Zero-based indices `9` and `10` were structurally complete, but the three-row run is not accepted because the first row failed.
+- Preserve that root unchanged. Do not rerun it and do not use its cache for another run.
+- The 20-row root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730` must remain absent.
+- Privacy-safe field diagnostics were added with red-green evidence in candidate commits `7de5d8d9b29cb1f6ea4b6d1a9f4b74d9b0f2db26` and `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`.
+- The final reviewed candidate evaluated commit is `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`.
+- The mechanically mirrored baseline evaluated commit is `d20606192986f40f49db634e6db999f3cd5d576c`.
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; baseline product remains `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Candidate verification passed the private runner smoke, 31 benchmark fixtures, all 47 offline checks, and diff check.
+- Baseline verification passed 31 benchmark fixtures, all 41 native offline checks, and diff check.
+- Shared blobs match: runner `f45d50450ccd294917db5cc5d995c34eac403c50`, metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Independent review found no Critical, Important, or Moderate issue and concluded `Spec PASS` and `Code quality APPROVED`.
+
+The only permitted next live root is:
+
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-diagnostic-v1-20260730`
+
+Create it from the unchanged v1 confirmed evidence and frozen pool, use a new
+empty cache and v3 portability proof, stage candidate branch
+`codex/multi-track-recall-contract-diagnostic-v1` at
+`4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`, and run exactly zero-based
+`--diagnostic-indices '4'`. Inspect only the two fixed contract-failure
+categories and existing safe status fields. This one-row result is diagnostic
+evidence, not acceptance. Restore the fixed candidate worktree immediately and
+do not start the three-row or 20-row acceptance until the category identifies
+the next reviewed root-cause change.

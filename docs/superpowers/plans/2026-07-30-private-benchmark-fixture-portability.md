@@ -321,3 +321,22 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - The evaluated fixture-portability preflight completed before the live wrapper was interrupted by PowerShell promoting Node's SQLite experimental stderr warning to a terminating error.
 - Read-only inspection found no match result, zero-byte redirected logs, zero model-cache rows, and no application/model/state rows. No live acceptance conclusion may be drawn from this root.
 - The next 3-row run must use the initially absent root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730`; the evaluated candidate and baseline commits remain `cebe59f5aae78abdde873adfe211f296d3322519` and `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`.
+## 2026-07-30 private contract-failure diagnostic checkpoint
+
+- The fresh three-row root `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-live-run-20260730` exited `0` but is not accepted: zero-based index `4` ended in `MODEL_CONTRACT_INVALID` after `matchJob` contract repair and entered `analysis_pending`.
+- Preserve that root unchanged. Indices `9` and `10` being structurally complete does not permit the 20-row run.
+- The candidate privacy-safe diagnostic implementation is commits `7de5d8d9b29cb1f6ea4b6d1a9f4b74d9b0f2db26` and `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`; the final candidate evaluated commit is `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`.
+- The mechanically mirrored baseline evaluated commit is `d20606192986f40f49db634e6db999f3cd5d576c`.
+- Product commits remain candidate `87cc68ede886ac0ef3b53f960c38548cce4a831a` and baseline `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Candidate verification passed the focused private runner smoke, 31 fixtures, 47 offline checks, and diff check. Baseline verification passed 31 fixtures, 41 native offline checks, and diff check.
+- Candidate/baseline shared blobs are runner `f45d50450ccd294917db5cc5d995c34eac403c50`, metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`, and privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Independent review concluded `Spec PASS` and `Code quality APPROVED` with no Critical, Important, or Moderate finding.
+- The new fields are closed-enum private telemetry only. They do not persist error text, arbitrary output-shape keys, model output, prompts, private evidence, provider metadata, or model configuration.
+
+The next and only permitted live diagnostic root is
+`D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-diagnostic-v1-20260730`.
+It must use an empty cache, v1 source evidence, the frozen jobs/labels, v3 proof,
+candidate evaluated `4416d295f10bedf1f6774a5b0dc37dd4836ac0b2`,
+baseline evaluated `d20606192986f40f49db634e6db999f3cd5d576c`, and exactly
+zero-based `--diagnostic-indices '4'`. The result is root-cause evidence only.
+Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20-v3-20260730`.
