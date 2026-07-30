@@ -1211,6 +1211,81 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), portableRunSeam("candidate"));
   assert.strictEqual(v3Result.confirmedEvidencePortabilitySha256, v3Proof.proofSha256);
   assert.deepStrictEqual(v3Result.rows.map((row) => row.id), changedJobs.map((job) => job.id));
+  const hashAndUseRoot = privatePath("portability-v3-hash-and-use");
+  fs.cpSync(changedTargetRoot, hashAndUseRoot, { recursive: true });
+  fs.rmSync(path.join(hashAndUseRoot, "runs"), { recursive: true });
+  const hashAndUsePaths = {
+    profile: path.join(hashAndUseRoot, "input", "confirmed-profile.private.json"),
+    card: path.join(hashAndUseRoot, "input", "confirmed-card.private.json"),
+    resume: path.join(hashAndUseRoot, "input", "resume.redacted.txt"),
+    identity: path.join(hashAndUseRoot, "input", "identity.private.json"),
+    jobs: path.join(hashAndUseRoot, "input", "jobs.private.json"),
+    labels: path.join(hashAndUseRoot, "labels", "jobs.reviewed.json")
+  };
+  const originalHashAndUseBytes = Object.fromEntries(Object.entries(hashAndUsePaths).map(([name, file]) => [name, fs.readFileSync(file)]));
+  const hashAndUseReads = Object.fromEntries(Object.keys(hashAndUsePaths).map((name) => [name, 0]));
+  const originalReadFileSync = fs.readFileSync;
+  let hashAndUseResult;
+  fs.readFileSync = (target, ...args) => {
+    const file = path.resolve(String(target));
+    const name = Object.keys(hashAndUsePaths).find((key) => path.resolve(hashAndUsePaths[key]) === file);
+    if (!name) return originalReadFileSync(target, ...args);
+    hashAndUseReads[name] += 1;
+    const firstBytes = originalReadFileSync(target, ...args);
+    if (hashAndUseReads[name] === 1) fs.writeFileSync(file, "invalid replacement after first read", "utf8");
+    return firstBytes;
+  };
+  try {
+    hashAndUseResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: hashAndUseRoot,
+      output: path.join(hashAndUseRoot, "runs", "candidate"),
+      profile: hashAndUsePaths.profile,
+      matchingCard: hashAndUsePaths.card,
+      jobs: hashAndUsePaths.jobs,
+      labels: hashAndUsePaths.labels,
+      portabilityProof: path.join(hashAndUseRoot, "input", "confirmed-evidence-portability.json")
+    }), authorizedEnv(), portableRunSeam("candidate"));
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+  assert.deepStrictEqual(hashAndUseReads, {
+    profile: 1, card: 1, resume: 1, identity: 1, jobs: 1, labels: 1
+  }, "v3 preflight must read each hashed target file exactly once");
+  assert.strictEqual(
+    hashAndUseResult.fixtureProfileSha256,
+    JSON.parse(originalHashAndUseBytes.profile.toString("utf8")).profileSha256,
+    "match result must consume the original profile bytes"
+  );
+  assert.strictEqual(
+    hashAndUseResult.fixtureMatchingCardSha256,
+    JSON.parse(originalHashAndUseBytes.card.toString("utf8")).cardSha256,
+    "match result must consume the original card bytes"
+  );
+  assert.deepStrictEqual(
+    hashAndUseResult.rows.map((row) => row.id),
+    JSON.parse(originalHashAndUseBytes.jobs.toString("utf8")).map((job) => job.id),
+    "match result must consume the original jobs bytes"
+  );
+  const observerRoot = privatePath("portability-v3-preflight-observer");
+  fs.cpSync(changedTargetRoot, observerRoot, { recursive: true });
+  fs.rmSync(path.join(observerRoot, "runs"), { recursive: true });
+  let observedPreflight = null;
+  await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+    privateRoot: observerRoot,
+    output: path.join(observerRoot, "runs", "candidate"),
+    profile: path.join(observerRoot, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(observerRoot, "input", "confirmed-card.private.json"),
+    jobs: path.join(observerRoot, "input", "jobs.private.json"),
+    labels: path.join(observerRoot, "labels", "jobs.reviewed.json"),
+    portabilityProof: path.join(observerRoot, "input", "confirmed-evidence-portability.json")
+  }), authorizedEnv(), {
+    ...portableRunSeam("candidate"),
+    onMatchPreflight: (preflight) => { observedPreflight = preflight; }
+  });
+  assert(observedPreflight, "match preflight observer must receive the completed preflight");
+  assert.doesNotThrow(() => JSON.stringify(observedPreflight), "match preflight must be JSON serializable");
+  assert.notStrictEqual(observedPreflight.portability, observedPreflight, "portability must not refer to its enclosing preflight");
+  assert.strictEqual(observedPreflight.portability.proof.proofSha256, v3Proof.proofSha256);
   const serializedV3Proof = JSON.stringify(v3Proof);
   for (const forbidden of [
     changedJobs[0].title, changedJobs[0].description, changedLabels.rows[0].rationale,
@@ -1295,6 +1370,30 @@ async function injectedLiveFlowSmoke(identityPath) {
     value.proofSha256 = valueSha256({ ...value, proofSha256: undefined });
     fs.writeFileSync(file, JSON.stringify(value), "utf8");
   });
+  const runtimeEvaluatedBlobSeam = {
+    ...portabilityPreflightSeam,
+    blobResolver: (commit, file) => {
+      if (commit === manifest.baselineEvaluatedCommit && file === "src/core/profile_onboarding.js") return "f".repeat(40);
+      assert([sourceManifest.candidateEvaluatedCommit, manifest.candidateProductCommit, manifest.baselineEvaluatedCommit].includes(commit));
+      return portabilityBlobIds.get(file);
+    }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "baseline", {
+      privateRoot: changedTargetRoot,
+      output: path.join(changedTargetRoot, "runs", "baseline"),
+      profile: path.join(changedTargetRoot, "input", "confirmed-profile.private.json"),
+      matchingCard: path.join(changedTargetRoot, "input", "confirmed-card.private.json"),
+      jobs: changedJobsPath,
+      labels: changedLabelsPath,
+      portabilityProof: changedProofPath
+    }), authorizedEnv(), runtimeEvaluatedBlobSeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+    "v3 runtime evaluated consumer blobs must match the portability proof before runtime setup"
+  );
+  assert.deepStrictEqual(portabilityPreflightCounts, {
+    loadConfigs: 0, resolveRuntimeModelConfig: 0, provider: 0, openDb: 0, model: 0
+  }, "runtime evaluated blob mismatch must fail before settings, provider, SQLite, or model access");
   const portableBaseline = await runner.runPrivateFullChain(portabilityMatchOptions("baseline", {
     portabilityProof: portabilityProofPath
   }), authorizedEnv(), portableRunSeam("baseline"));

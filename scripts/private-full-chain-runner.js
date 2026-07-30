@@ -1336,6 +1336,22 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
       !== JSON.stringify(proof.consumerCodeBlobs)) {
     throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof bindings are invalid.");
   }
+  if (fixtureTransition) {
+    let runtimeConsumerCodeBlobs;
+    try {
+      const resolveBlob = portabilityBlobResolver(seam);
+      runtimeConsumerCodeBlobs = Object.fromEntries(Object.entries(PORTABILITY_V3_CONSUMER_FILES).map(([name, file]) => {
+        const blob = String(resolveBlob(context.evaluatedCommit, file) || "").toLowerCase();
+        if (!/^[0-9a-f]{40,64}$/.test(blob)) throw new Error("runtime blob invalid");
+        return [name, blob];
+      }));
+    } catch {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof bindings are invalid.");
+    }
+    if (JSON.stringify(runtimeConsumerCodeBlobs) !== JSON.stringify(proof.consumerCodeBlobs)) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof bindings are invalid.");
+    }
+  }
   return {
     proof,
     profileInput,
@@ -1702,7 +1718,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       };
   if (request.mode === "match-live") {
     if (request.portabilityProof) {
-      preflight.portability = preflight;
+      preflight.portability = { proof: preflight.proof };
     } else if (preflight.profileValue?.benchmarkHarnessVersion === PORTABLE_SOURCE_HARNESS_VERSION) {
       if (!request.portabilityProof) {
         throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "V1 confirmed evidence requires an explicit portability proof.");
@@ -1710,12 +1726,6 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     } else {
       preflight.profileInput = confirmedProfileInput(preflight.profileValue, provenanceContext);
       preflight.cardInput = confirmedCardInput(preflight.cardValue, preflight.profileInput, provenanceContext);
-    }
-    if (preflight.portability) {
-      preflight.profileInput = preflight.portability.profileInput;
-      preflight.cardInput = preflight.portability.cardInput;
-      preflight.fixture = preflight.portability.fixture;
-      preflight.resume = preflight.portability.resume;
     }
     if (preflight.profileInput.envelope.resumeContentSha256 !== sha256(preflight.resume.resumeText)
       || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
@@ -1728,6 +1738,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     preflight.selectedJobs = request.diagnosticIndices
       ? request.diagnosticIndices.map((index) => preflight.fixture.jobs[index])
       : preflight.fixture.jobs;
+    if (typeof testSeam?.onMatchPreflight === "function") testSeam.onMatchPreflight(preflight);
   }
   if (request.mode === "card-live" && request.side !== "candidate") {
     throw runnerError("PRIVATE_FULL_CHAIN_CARD_UNSUPPORTED", "The baseline product does not support matching-card generation.");
