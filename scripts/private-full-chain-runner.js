@@ -54,6 +54,7 @@ const SAFE_CONTRACT_FAILURE_CATEGORIES = new Set([
 const SAFE_CONTRACT_FAILURE_REASONS = new Set([
   "selected_track",
   "context_shape",
+  "result_not_object",
   "role_alignment_enum",
   "responsibility_requires_insufficient",
   "aligned_requires_role_resume",
@@ -1720,6 +1721,9 @@ function privateContractFailureCategory(value) {
     return "unknown_keys";
   }
   const categories = [];
+  if (/\u5fc5\u987b\u8fd4\u56de JSON \u5bf9\u8c61|must return a JSON object/i.test(message)) {
+    categories.push("result_shape");
+  }
   if (/selectedTrackId/.test(message)) categories.push("selected_track");
   if (/roleResumeEvidence/.test(message)) categories.push("role_resume_evidence");
   if (/roleAlignment/.test(message)) categories.push("role_alignment");
@@ -1744,6 +1748,7 @@ function privateContractFailureReason(value) {
   };
   add(/selectedTrackId.*(?:\u4e0d\u5b58\u5728|required|must be|missing)/i, "selected_track");
   add(/match evidence requires jobUnderstanding|sparse match evidence requires jobUnderstanding|\u7d27\u51d1\u5339\u914d\u8bc1\u636e\u5fc5\u987b\u643a\u5e26\u672c\u6b21 jobUnderstanding/i, "context_shape");
+  add(/\u5fc5\u987b\u8fd4\u56de JSON \u5bf9\u8c61|must return a JSON object/i, "result_not_object");
   add(/roleAlignment must be one of/i, "role_alignment_enum");
   add(/empty responsibilityEvidence requires insufficient_evidence/i, "responsibility_requires_insufficient");
   add(/(?:aligned|mostly_aligned|partially_aligned) requires roleResumeEvidence/i, "aligned_requires_role_resume");
