@@ -39,6 +39,18 @@ const SAFE_ROLE_ALIGNMENTS = new Set([
 ]);
 const SAFE_FOUNDATION_STATES = new Set(["none", "unproven", "partial", "complete"]);
 const MAX_SAFE_TELEMETRY_INTEGER = 10000000;
+const SAFE_CONTRACT_FAILURE_CATEGORIES = new Set([
+  "selected_track",
+  "role_alignment",
+  "role_resume_evidence",
+  "role_gaps",
+  "requirement_matches",
+  "eligibility",
+  "unknown_keys",
+  "result_shape",
+  "other",
+  "none"
+]);
 const SAFE_FAILURE_PHASES = new Set(["initial", "contract_repair"]);
 const SAFE_RESPONSE_FAILURE_KINDS = new Set([
   "empty_response",
@@ -1680,6 +1692,24 @@ function safeTelemetryInteger(value) {
   return Number.isInteger(value) && value >= 0 && value <= MAX_SAFE_TELEMETRY_INTEGER ? value : 0;
 }
 
+function privateContractFailureCategory(value) {
+  const message = String(value || "");
+  if (!message) return "none";
+  if (/selectedTrackId/.test(message)) return "selected_track";
+  if (/roleResumeEvidence/.test(message)) return "role_resume_evidence";
+  if (/roleAlignment/.test(message)) return "role_alignment";
+  if (/roleGaps/.test(message)) return "role_gaps";
+  if (/\beligibility\b/.test(message)) return "eligibility";
+  if (/\bmatches\b|requirement|coverage/i.test(message)) return "requirement_matches";
+  if (/unknown key|unknown field|unexpected key|\u672a\u77e5\u5b57\u6bb5|\u4e0d\u5141\u8bb8\u5b57\u6bb5/i.test(message)) {
+    return "unknown_keys";
+  }
+  if (/must be (?:an? )?(?:object|array)|\u5fc5\u987b\u662f(?:\u5bf9\u8c61|\u6570\u7ec4)|result shape/i.test(message)) {
+    return "result_shape";
+  }
+  return "other";
+}
+
 function createPrivateTelemetryCollector() {
   let values;
   const reset = () => {
@@ -1691,12 +1721,34 @@ function createPrivateTelemetryCollector() {
       emptyResponseAttemptCount: 0,
       modelAttemptLatencyMs: 0,
       contractRepairCount: 0,
+      initialContractFailureCategory: "none",
+      repairContractFailureCategory: "none",
       responseContentChars: 0
     };
   };
   const collect = (event, data) => {
     if (event === "model_contract_repair_requested") {
       values.contractRepairCount = Math.min(MAX_SAFE_TELEMETRY_INTEGER, values.contractRepairCount + 1);
+      values.initialContractFailureCategory = safeEnum(
+        privateContractFailureCategory(data?.errorMessage),
+        SAFE_CONTRACT_FAILURE_CATEGORIES,
+        "other"
+      );
+      return;
+    }
+    if (event === "model_contract_repair_failed") {
+      if (values.initialContractFailureCategory === "none") {
+        values.initialContractFailureCategory = safeEnum(
+          privateContractFailureCategory(data?.initialErrorMessage),
+          SAFE_CONTRACT_FAILURE_CATEGORIES,
+          "other"
+        );
+      }
+      values.repairContractFailureCategory = safeEnum(
+        privateContractFailureCategory(data?.errorMessage),
+        SAFE_CONTRACT_FAILURE_CATEGORIES,
+        "other"
+      );
       return;
     }
     if (event === "model_call_attempt_completed" || event === "model_call_attempt_failed") {

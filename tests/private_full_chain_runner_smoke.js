@@ -1970,6 +1970,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   const telemetryProbe = createMatchProbeBundle("safe-row-telemetry-probe");
   const telemetrySeam = seamFor("candidate");
   const telemetrySecret = "private telemetry payload sentinel";
+  const contractDiagnosticSecret = "PRIVATE_CONTRACT_DIAGNOSTIC_MUST_NOT_LEAK";
   telemetrySeam.modules = {
     ...telemetrySeam.modules,
     createJobAnalysisRunner: (_configs, _keywords, { logger = { info() {}, warn() {} } }) => async (job) => {
@@ -2035,11 +2036,25 @@ async function injectedLiveFlowSmoke(identityPath) {
           providerRequestId: telemetrySecret,
           usage: { secret: telemetrySecret }
         });
-        logger.warn(index === 0 ? "model_contract_repair_completed" : "model_contract_repair_requested", {
-          kind: "matchJob",
-          contentLength: 999999,
-          raw: telemetrySecret
-        });
+        if (index === 0) {
+          logger.warn("model_contract_repair_completed", {
+            kind: "matchJob",
+            contentLength: 999999,
+            raw: telemetrySecret
+          });
+        } else {
+          logger.warn("model_contract_repair_requested", {
+            kind: "matchJob",
+            errorMessage: `matchJob contract selectedTrackId invalid ${contractDiagnosticSecret}`,
+            outputShape: { [contractDiagnosticSecret]: "object" }
+          });
+          logger.warn("model_contract_repair_failed", {
+            kind: "matchJob",
+            initialErrorMessage: `matchJob contract selectedTrackId invalid ${contractDiagnosticSecret}`,
+            errorMessage: `matchJob contract roleResumeEvidence invalid ${contractDiagnosticSecret}`,
+            outputShape: { [contractDiagnosticSecret]: "array" }
+          });
+        }
       } else if (index === 2) {
         logger.info("model_call_attempt_completed", {
           kind: telemetrySecret,
@@ -2067,6 +2082,15 @@ async function injectedLiveFlowSmoke(identityPath) {
           raw: telemetrySecret
         });
         logger.warn("model_contract_repair_requested_but_not_exact", { kind: "matchJob", raw: telemetrySecret });
+        logger.warn("model_contract_repair_requested", {
+          kind: "matchJob",
+          errorMessage: contractDiagnosticSecret
+        });
+        logger.warn("model_contract_repair_failed", {
+          kind: "matchJob",
+          initialErrorMessage: contractDiagnosticSecret,
+          errorMessage: contractDiagnosticSecret
+        });
       }
       return {
         provider: telemetrySecret,
@@ -2113,6 +2137,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     "emptyResponseAttemptCount",
     "modelAttemptLatencyMs",
     "contractRepairCount",
+    "initialContractFailureCategory",
+    "repairContractFailureCategory",
     "responseContentChars"
   ];
   const expectedTelemetryRowKeys = [
@@ -2176,11 +2202,21 @@ async function injectedLiveFlowSmoke(identityPath) {
     emptyResponseAttemptCount: 0,
     modelAttemptLatencyMs: 37000,
     contractRepairCount: 0,
+    initialContractFailureCategory: "none",
+    repairContractFailureCategory: "none",
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
   assert.strictEqual(telemetryResult.rows[1].contractRepairCount, 1,
     "only model_contract_repair_requested may increment contractRepairCount");
+  assert.deepStrictEqual(
+    {
+      initial: telemetryResult.rows[1].initialContractFailureCategory,
+      repair: telemetryResult.rows[1].repairContractFailureCategory
+    },
+    { initial: "selected_track", repair: "role_resume_evidence" },
+    "repair telemetry must expose only fixed contract categories"
+  );
   assert.deepStrictEqual(
     {
       modelAttemptCount: telemetryResult.rows[1].modelAttemptCount,
@@ -2206,7 +2242,9 @@ async function injectedLiveFlowSmoke(identityPath) {
       modelAttemptCount: 0,
       emptyResponseAttemptCount: 0,
       modelAttemptLatencyMs: 0,
-      contractRepairCount: 0,
+      contractRepairCount: 1,
+      initialContractFailureCategory: "other",
+      repairContractFailureCategory: "other",
       responseContentChars: 0
     },
     "invalid enum and numeric telemetry must default safely"
@@ -2224,6 +2262,14 @@ async function injectedLiveFlowSmoke(identityPath) {
     "the exact row schema must reject an injected extra logger field"
   );
   assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
+  assert.deepStrictEqual(
+    {
+      initial: telemetryResult.rows[3].initialContractFailureCategory,
+      repair: telemetryResult.rows[3].repairContractFailureCategory
+    },
+    { initial: "none", repair: "none" },
+    "collector reset must prevent contract categories leaking to the next row"
+  );
   assert.deepStrictEqual({
     selectedTrackId: telemetryResult.rows[3].selectedTrackId,
     selectedTrackLabel: telemetryResult.rows[3].selectedTrackLabel,
@@ -2248,6 +2294,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   );
   const serializedTelemetryRows = JSON.stringify(telemetryResult.rows);
   assert(!serializedTelemetryRows.includes(telemetrySecret), "private telemetry rows must not persist event or analysis payload text");
+  assert(!serializedTelemetryRows.includes(contractDiagnosticSecret),
+    "private telemetry rows must not persist contract error text or arbitrary output-shape keys");
   const telemetryKeys = new Set();
   JSON.parse(serializedTelemetryRows, (key, value) => {
     if (key) telemetryKeys.add(key);
