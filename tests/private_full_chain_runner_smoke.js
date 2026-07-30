@@ -2057,10 +2057,6 @@ async function injectedLiveFlowSmoke(identityPath) {
           });
         } else {
           logger.warn("model_contract_repair_requested", {
-            kind: telemetrySecret,
-            errorMessage: contractDiagnosticSecret
-          });
-          logger.warn("model_contract_repair_requested", {
             kind: "matchJob",
             errorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "object" }
@@ -2070,6 +2066,10 @@ async function injectedLiveFlowSmoke(identityPath) {
             initialErrorMessage: `must return a JSON object ${contractDiagnosticSecret}`,
             errorMessage: `multi-track matching requires sparse evidence ${contractDiagnosticSecret}`,
             outputShape: { [contractDiagnosticSecret]: "array" }
+          });
+          logger.warn("model_contract_repair_requested", {
+            kind: telemetrySecret,
+            errorMessage: contractDiagnosticSecret
           });
         }
       } else if (index === 2) {
@@ -2102,7 +2102,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
           initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
-          errorMessage: `must return a JSON object; roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
+          errorMessage: `multi-track matching requires sparse evidence; must return a JSON object; roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
         });
       }
       return {
