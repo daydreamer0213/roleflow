@@ -243,3 +243,20 @@ acceptance.
 ### Supersede 条款
 
 本增量明确 supersede 本文此前所有 reason v1 live/new-root 指令及实施计划旧 Step 6；这些旧条目只保留为历史记录，不得执行。reason v1、v2、v3 均为 immutable，唯一允许的下一诊断根是 reason v4。
+
+## 2026-07-30 多分支 sparse 形状与阶段隔离扩展
+
+### v4 新证据
+
+- reason v4 可信退出 0，仍为 matchJob/contract_repair 的 `other/other`；同时 `modelCallCount=4`、`contractRepairCount=2`。
+- 源码静态对照发现 `validateMatchDecision` 的固定规则 `multi-track matching requires sparse evidence` 未被现有 category/reason classifier 覆盖；该规则只在多分支结果走入旧式完整决策验证、而不是 sparse evidence 验证时触发，符合当前安全现象，但在 v5 证实前仍只作为分类器根因候选。
+- collector 当前对所有 `model_contract_repair_*` 事件不区分 `kind`，总数会混合 understandJob 与 matchJob，且 generic category/reason 可能被非 matchJob 事件污染。
+
+### 安全设计
+
+- 新增闭合 reason `multi_track_requires_sparse`，仅匹配 validator 固定模板；category 记为 `result_shape`。
+- 新增安全整数 `understandJobContractRepairCount` 与 `matchJobContractRepairCount`；`contractRepairCount` 定义为所有精确 `model_contract_repair_requested` 事件总数，两个阶段字段只是已知 `kind` 的子计数，因此总数允许大于两个子计数之和。
+- initial/repair category 与 reason 明确只记录 `data.kind === "matchJob"`；understandJob 事件只增加对应阶段计数，不能写入 matchJob 原因字段。unknown kind 只影响总数，不生成原因。
+- failed-only matchJob 仍可从 failed 事件回填；每行 reset 三个计数与四个 category/reason 字段。
+- 所有输出仍是闭合枚举或有界整数，不保存 raw、capture、动态 ID、字段值、shape、模型文本或配置。
+- TDD 必须覆盖：同一行先 understandJob requested/completed、再 matchJob requested/completed，计数为 total 2 / understand 1 / match 1，原因只来自 matchJob；unknown-kind 的精确 requested 只把 total 加一，两个子计数与四个原因字段不变；requested+failed；failed-only 无 requested 时三个计数均为零；下一行 reset；固定 sparse 模板正向和歧义回归。

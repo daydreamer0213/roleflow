@@ -788,3 +788,16 @@ to choose the product-side red-green fix without starting the three-row or
 ### Supersede 条款
 
 本增量明确 supersede 本文此前所有 reason v1 live/new-root 指令及实施计划旧 Step 6；这些旧条目只保留为历史记录，不得执行。reason v1、v2、v3 均为 immutable，唯一允许的下一诊断根是 reason v4。
+
+## 2026-07-30 multi-track sparse reason 实施增量
+
+1. 先扩展 focused smoke 的 telemetry schema/断言：增加两阶段 repair 计数；在 repair-success 行先注入 understandJob repair，再注入 matchJob repair，要求原因只取 matchJob；把一条 matchJob 固定错误改为 `multi-track matching requires sparse evidence` 并期望 `result_shape/multi_track_requires_sparse`；加入与另一模板并存时 `other`；unknown-kind requested 只增加 total、不改变子计数或原因，failed-only 三计数为零。运行 focused smoke，必须先失败。
+2. 最小修改 runner：新增闭合 reason；category/reason 固定模板；requested 事件按 kind 增加阶段计数，只有 matchJob 写原因；failed 事件只有 matchJob 回填/写 repair 原因；保留总数和每行 reset。
+3. focused 绿后提交，从干净提交运行 31 fixtures、47 项离线检查、diff check，独立复审到无 Critical/Important/Moderate、Spec PASS、APPROVED。
+4. 基线只镜像 runner，运行 31/41 与三 blob 核验，更新两份权威计划和新 evaluated 绑定。
+5. reason v1-v4 均 immutable。唯一下一根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v5-20260730`，全新复制/哈希/manifest/v3 proof/bundle/gates，仅零基 index `4`，完成后恢复固定候选。
+6. v5 确认具体 matchJob reason 后才设计产品修复；3 条和 20 条继续 gated。
+
+### Supersede 条款
+
+本增量 supersede 此前 reason v4 next-root 指令；v1-v4 仅作 immutable 历史，唯一下一诊断根为 reason v5。
