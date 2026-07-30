@@ -22,7 +22,7 @@
 - The model must consume the profile, card, jobs, and labels parsed from the same raw bytes that passed v3 hash validation.
 - The self-hash prevents accidental or incomplete mutation; a local administrator maliciously reauthoring the complete proof, manifest, and all hashes is outside the existing threat model and must not trigger a new same-directory HMAC design.
 - The candidate product commit for the next acceptance is
-  `6cc09c9ef2603ac24e1a7c3928ce05f996c74214`; the earlier
+  `03609837937a53a3e6e31f74bac56ad19d6d1ecb`; the earlier
   `87cc68ede886ac0ef3b53f960c38548cce4a831a` remains historical evidence.
   Harness/documentation commits remain evaluated-checkpoint changes only.
 
@@ -682,3 +682,49 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Baseline evaluated/product remain exactly
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-07-30 cross-field evidence consistency product checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-cross-track-sprawl-v1-20260730`
+  unchanged. Manifest, v3 proof, bundle verification, and live execution all
+  exited `0`. All three rows were complete and evidence-bearing with no failed,
+  stale, pending, partial, empty-response, contract-repair, false-hard-exclusion,
+  hard-false-placement, unresolved-disposition, or primary-without-evidence
+  result. The fixed candidate was restored cleanly and the 20-row root remained
+  absent.
+- The safe exact result was one of three: index `9` was exact; index `4` was
+  `caution/talk` instead of `apply/primary`; index `10` was `review/talk`
+  instead of `caution/talk`.
+- The cross-track sprawl change worked: index `4` moved to normal job quality
+  with zero concerns and zero role gaps. Its remaining drift was one central,
+  indispensable, non-foundation requirement marked `transferable` without a
+  corresponding role gap. Index `10` drifted by splitting eligibility into an
+  additional item and marking it `conflict`. Comparison with the prior
+  immutable cache showed that requirement and eligibility decomposition varied
+  across otherwise frozen inputs.
+- Design and plan commit
+  `2c31fc1d3dd037f46f923a2a8a6759d3269b8ac3` selected prompt-level cross-field
+  consistency instead of local promotion, ignored conflicts, or sampling
+  changes. Central `transferable` evidence must identify a concrete named
+  difference in `roleGaps`; eligibility normalization must preserve logical
+  alternatives and only emit independently mandatory gates.
+- Product commit `03609837937a53a3e6e31f74bac56ad19d6d1ecb` adds those
+  generic constraints and increments `understandJob` from v16 to v17 and
+  `matchJob` from v31 to v32. It does not change validators, local decision
+  policy, hard-blocker checks, temperature, thinking, retries, or call count.
+- The adapter and semantic tests failed first on the missing rules and stale
+  versions. Fresh verification then passed both focused tests, all six generic
+  evidence fixtures, all 31 benchmark fixtures, all 47 offline checks, and
+  `git diff --check`. Independent reviewer capacity remains exhausted; no
+  independent approval is claimed.
+- Baseline product/evaluated and all three shared harness blobs remain
+  unchanged. The only permitted next three-row root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-cross-field-consistency-v1-20260730`.
+  Rebuild all seven files, manifest, v3 proof, bundle verification, and cache,
+  then run exact zero-based `4,9,10`. Keep the 20-row root absent unless all
+  three are exact and safe.
+- The docs-only commit containing this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record before private root creation. Candidate product
+  `03609837937a53a3e6e31f74bac56ad19d6d1ecb` must be its strict ancestor.
