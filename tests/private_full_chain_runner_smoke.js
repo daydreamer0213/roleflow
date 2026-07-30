@@ -2086,14 +2086,10 @@ async function injectedLiveFlowSmoke(identityPath) {
           raw: telemetrySecret
         });
         logger.warn("model_contract_repair_requested_but_not_exact", { kind: "matchJob", raw: telemetrySecret });
-        logger.warn("model_contract_repair_requested", {
-          kind: "matchJob",
-          errorMessage: `unknown field selectedTrackIdTypo; misaligned requires responsibility evidence, resume evidence, and a gap ${contractDiagnosticSecret}`
-        });
         logger.warn("model_contract_repair_failed", {
           kind: "matchJob",
-          initialErrorMessage: `unknown field selectedTrackIdTypo; misaligned requires responsibility evidence, resume evidence, and a gap ${contractDiagnosticSecret}`,
-          errorMessage: `selectedTrackId roleResumeEvidence; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
+          initialErrorMessage: `unknown field selectedTrackIdTypo ${contractDiagnosticSecret}`,
+          errorMessage: `roleResumeEvidence roleGaps; roleAlignment must be one of aligned/mostly_aligned; insufficient_evidence requires a concrete gap ${contractDiagnosticSecret}`
         });
       }
       return {
@@ -2258,14 +2254,14 @@ async function injectedLiveFlowSmoke(identityPath) {
       modelAttemptCount: 0,
       emptyResponseAttemptCount: 0,
       modelAttemptLatencyMs: 0,
-      contractRepairCount: 1,
+      contractRepairCount: 0,
       initialContractFailureCategory: "unknown_keys",
       repairContractFailureCategory: "other",
-      initialContractFailureReason: "misaligned_requires_evidence_triplet",
-      repairContractFailureReason: "insufficient_requires_gap",
+      initialContractFailureReason: "other",
+      repairContractFailureReason: "other",
       responseContentChars: 0
     },
-    "invalid enum and numeric telemetry must default safely"
+    "failed-only telemetry must backfill safely and ambiguous reasons must become other"
   );
   for (const row of telemetryResult.rows) assertExactTelemetryRowSchema(row);
   const maliciousTelemetryRow = { ...telemetryResult.rows[0], raw: telemetrySecret };

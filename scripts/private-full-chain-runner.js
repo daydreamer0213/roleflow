@@ -1802,6 +1802,13 @@ function createPrivateTelemetryCollector() {
           "other"
         );
       }
+      if (values.initialContractFailureReason === "none") {
+        values.initialContractFailureReason = safeEnum(
+          privateContractFailureReason(data?.initialErrorMessage),
+          SAFE_CONTRACT_FAILURE_REASONS,
+          "other"
+        );
+      }
       values.repairContractFailureCategory = safeEnum(
         privateContractFailureCategory(data?.errorMessage),
         SAFE_CONTRACT_FAILURE_CATEGORIES,
