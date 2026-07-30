@@ -606,6 +606,12 @@ function validateSparseMatchEvidence(value, context = {}) {
       resumeEvidence: match.resumeEvidence
     };
   });
+  if (
+    requirementMatches.some((item) => item.central === true && item.state === "transferable")
+    && !roleAlignmentEvidence.roleGaps.length
+  ) {
+    throw new ModelContractError("matchJob", "central transferable requires a concrete roleGap");
+  }
   const normalizedEligibility = eligibilityItems.map((item, index) => {
     const id = requiredContractString(item.id || `E${index + 1}`, "matchJob", "jobUnderstanding.eligibilityItems.id");
     const label = requiredContractString(item.label, "matchJob", "jobUnderstanding.eligibilityItems.label");

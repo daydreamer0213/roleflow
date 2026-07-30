@@ -721,7 +721,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v33");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v34");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1184,6 +1184,36 @@ async function multiTrackValidationIdempotenceSmoke() {
     ],
     eligibility: []
   };
+  assert.throws(
+    () => validateModelResultRaw("matchJob", { ...confidenceSparse, roleGaps: [] }, {
+      jobUnderstanding: confidenceUnderstanding
+    }),
+    (error) => error.code === "MODEL_CONTRACT_INVALID"
+      && /central transferable requires a concrete roleGap/.test(error.message),
+    "central transferable evidence without a role gap must fail closed"
+  );
+  const nonCentralTransfer = validateModelResultRaw("matchJob", {
+    ...confidenceSparse,
+    roleGaps: []
+  }, {
+    jobUnderstanding: {
+      ...confidenceUnderstanding,
+      coreRequirements: confidenceUnderstanding.coreRequirements.map((item) => (
+        item.id === "R1" ? { ...item, central: false } : item
+      ))
+    }
+  });
+  assert.strictEqual(nonCentralTransfer.recommendation, "caution",
+    "non-central transferable evidence remains valid without a role gap");
+  const directCentral = validateModelResultRaw("matchJob", {
+    ...confidenceSparse,
+    roleGaps: [],
+    matches: confidenceSparse.matches.map((item) => (
+      item.id === "R1" ? { ...item, state: "matched" } : item
+    ))
+  }, { jobUnderstanding: confidenceUnderstanding });
+  assert.strictEqual(directCentral.recommendation, "apply",
+    "matched central evidence remains valid without a role gap");
   const nonCoreUnknown = validateModelResultRaw("matchJob", confidenceSparse, {
     jobUnderstanding: confidenceUnderstanding
   });
@@ -1241,8 +1271,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v33",
-    "local recall tier consistency must invalidate v32 caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v34",
+    "central transfer gap contract must invalidate v33 caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17",
     "cross-track sprawl classification must invalidate v15 understandings");
   const currentRevision = {
@@ -1256,10 +1286,10 @@ async function multiTrackValidationIdempotenceSmoke() {
     analysisStaleReasons({
       revision: {
         ...currentRevision,
-        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v32" }
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v33" }
       }
     }, currentRevision).includes("match_pipeline_changed"),
-    "v32 match analyses must become stale after the local recall tier fix"
+    "v33 match analyses must become stale after the central transfer gap contract"
   );
   assert(
     analysisStaleReasons({
@@ -1945,7 +1975,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v17",
-    matchJob: "match-decision-v33",
+    matchJob: "match-decision-v34",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
