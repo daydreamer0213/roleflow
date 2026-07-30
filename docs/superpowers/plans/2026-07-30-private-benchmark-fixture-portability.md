@@ -477,3 +477,32 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Baseline evaluated remains exactly
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5`, with baseline product
   `fb0168afce265cf351f03e80f66d9e0f24015887` as its strict ancestor.
+
+### Sparse-repair three-row v1 orchestration failure and v2 replacement
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-sparse-repair-v1-20260730`
+  unchanged. Manifest initialization, v3 proof creation, and bundle
+  verification each exited `0`, but an extra outer assertion incorrectly
+  required the v3 portability proof to contain the baseline evaluated commit.
+  The failure occurred before `match-live`; no model cache, match result, or
+  match-live stdout/stderr file exists. The fixed candidate was restored to
+  `codex/claude-generic-evidence-matching-live-fix` at
+  `1fc49dac3670a71c720bfcaed943fa29204d93c5` with clean status.
+- The runner-owned schemas are authoritative: `run-manifest.json` binds both
+  candidate and baseline product/evaluated commits. The v3 portability proof
+  separately binds its historical source product/evaluated commits and current
+  target candidate product/evaluated commits plus the three consumer blobs; it
+  does not carry a baseline evaluated field. The successful bundle verifier
+  validates this division of responsibility.
+- The only permitted replacement root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-sparse-repair-v2-20260730`.
+  Rebuild all seven frozen files, manifest, v3 proof, and verifier outputs.
+  Require the manifest to bind all four candidate/baseline commits; require the
+  proof to bind target product
+  `9783d0b652ebb4db2233dba6135615494ca2feb9` and target evaluated
+  `e906f6b55c112e89b2a9ec43c9c8168ea74786b9`. Do not add a synthetic baseline
+  field requirement to the proof.
+- All other gates remain unchanged: exact raw hashes, identical shared blobs,
+  zero-based `4,9,10`, fresh cache/output absence, no 20-row root, private log
+  redirection, and fixed-candidate restoration in `finally`.
