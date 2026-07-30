@@ -22,7 +22,7 @@
 - The model must consume the profile, card, jobs, and labels parsed from the same raw bytes that passed v3 hash validation.
 - The self-hash prevents accidental or incomplete mutation; a local administrator maliciously reauthoring the complete proof, manifest, and all hashes is outside the existing threat model and must not trigger a new same-directory HMAC design.
 - The candidate product commit for the next acceptance is
-  `099a71331f74d0b21a149b835908744e74962794`; the earlier
+  `2ef0798bea0c33ae267d0fee8649ff673e9665b4`; the earlier
   `87cc68ede886ac0ef3b53f960c38548cce4a831a` remains historical evidence.
   Harness/documentation commits remain evaluated-checkpoint changes only.
 
@@ -572,3 +572,48 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Baseline evaluated/product remain exactly
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-07-30 broad requirement direct-instance product checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-validation-idempotence-v1-20260730`
+  unchanged. All three rows were structurally complete with selected tracks,
+  evidence, no hard blockers, and no contract/empty-response failure. Index
+  `9` was exact. Index `4` was `caution/talk` instead of confirmed
+  `apply/primary`; index `10` was `review/talk` instead of confirmed
+  `caution/talk`. The 20-row root remained absent and the fixed candidate was
+  restored cleanly.
+- The first wrong row's private-safe state isolated its false caution: every
+  central requirement was `matched`; two non-core rows were `missing`; one
+  non-central foundation/indispensable row was `transferable`. Local policy
+  therefore behaved consistently, but the evidence classification did not
+  meet the confirmed label.
+- Public synthetic fixtures prove that globally promoting transferable
+  indispensable evidence would break valid cross-domain caution behavior.
+  Reviewed locally, design commit
+  `5fcf7399f4d40464f3de2d9f7b7a63a3e95d0304` therefore keeps local policy
+  unchanged and strengthens only the generic prompt boundary: a concrete
+  direct instance of a broad unqualified capability is `matched`, while an
+  explicitly named but unproved domain/platform/tool/work difference remains
+  `transferable`.
+- Product commit
+  `2ef0798bea0c33ae267d0fee8649ff673e9665b4` adds that symmetric prompt rule
+  without private examples and increments the match pipeline from v29 to v30.
+  The prompt assertion failed before implementation, then adapter, semantic
+  pipeline, all six generic evidence fixtures, all 31 benchmark fixtures, all
+  47 offline checks, and `git diff --check` passed from a clean commit.
+- Independent reviewer capacity was exhausted during this checkpoint. No
+  independent approval is claimed. The change is limited to prompt text,
+  version invalidation, and tests; the next immutable three-row live result is
+  an additional required gate. A later independent review must still be
+  attempted if capacity returns.
+- The docs-only commit produced by this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record. Candidate product
+  `2ef0798bea0c33ae267d0fee8649ff673e9665b4` must be its strict ancestor.
+- Baseline product/evaluated and all three shared harness blobs remain
+  unchanged. The only permitted next three-row root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-direct-instance-v1-20260730`.
+  Rebuild the seven frozen files, exact hashes, manifest, v3 proof, verifier
+  outputs, and fresh cache; run zero-based `4,9,10`; restore the fixed
+  candidate in `finally`. Keep the 20-row root absent unless all three pass.
