@@ -312,6 +312,15 @@ server.listen(0, "127.0.0.1", async () => {
       "full-stack roles must stay in the same role family when a substantial delivery lane is proven"
     );
     assert(
+      matchPrompt.includes("jobUnderstanding.industryContext")
+        && matchPrompt.includes("does not by itself define the role family")
+        && matchPrompt.includes("same primary work")
+        && matchPrompt.includes("mostly_aligned")
+        && matchPrompt.includes("requirement gap")
+        && matchPrompt.includes("actual work pattern or deliverable differs"),
+      "matchJob 不得把行业、平台或技术栈差异冒充岗位方向差异"
+    );
+    assert(
       understandPrompt.includes("requirements[{label,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"
     );
