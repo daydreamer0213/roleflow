@@ -62,12 +62,6 @@ function isVisible(element) {
   return rect.width > 0 && rect.height > 0 && style?.display !== "none" && style?.visibility !== "hidden";
 }
 
-function required(documentLike, selector) {
-  const element = documentLike.querySelector(selector);
-  if (!element) throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", `missing ${selector}`);
-  return element;
-}
-
 function transientSignature(row) {
   return safeDigest([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]);
 }
@@ -103,10 +97,10 @@ function snapshotBossMessagePage(documentLike, locationHref) {
     return {
       path,
       rows,
-      headerText: visibleLines(required(documentLike, SELECTORS.header).innerText)[0] || "",
-      positionName: normalizedText(required(documentLike, SELECTORS.position).textContent),
-      salary: normalizedText(required(documentLike, SELECTORS.salary).textContent),
-      city: normalizedText(required(documentLike, SELECTORS.city).textContent),
+      headerText: visibleLines(documentLike.querySelector(SELECTORS.header)?.innerText)[0] || "",
+      positionName: normalizedText(documentLike.querySelector(SELECTORS.position)?.textContent),
+      salary: normalizedText(documentLike.querySelector(SELECTORS.salary)?.textContent),
+      city: normalizedText(documentLike.querySelector(SELECTORS.city)?.textContent),
       risk: readExistingBossRiskSignal(documentLike, `${path}${url.search}`),
       login: readExistingBossLoginSignal(documentLike, path),
       messages,
@@ -120,7 +114,7 @@ function snapshotBossMessagePage(documentLike, locationHref) {
 
 function buildUnreadConversationQueue(snapshot) {
   return Object.freeze((snapshot?.rows || []).filter((row) => row.unread === true)
-    .map((row) => Object.freeze({ rowIndex: row.rowIndex, transientSignature: row.transientSignature || transientSignature(row) })));
+    .map((row) => Object.freeze({ rowIndex: row.rowIndex, transientSignature: transientSignature(row) })));
 }
 
 const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
@@ -129,7 +123,6 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
   const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
   const lines = (value) => String(value == null ? "" : value).split(/\r?\n/).map(text).filter(Boolean);
   const canonical = (parts) => parts.map((item) => String(item == null ? "" : item).trim()).join("\0");
-  const rotate = (value, amount) => (value >>> amount) | (value << (32 - amount));
   const sha256 = (value) => {
     const mask = 0xffffffffn, word = (number) => BigInt.asUintN(32, BigInt(number)), rotateRight = (number, amount) => ((number >> BigInt(amount)) | (number << BigInt(32 - amount))) & mask;
     const constants = [1116352408, 1899447441, -1245643825, -373957723, 961987163, 1508970993, -1841331548, -1424204075, -670586216, 310598401, 607225278, 1426881987, 1925078388, -2132889090, -1680079193, -1046744716, -459576895, -272742522, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, -1740746414, -1473132947, -1341970488, -1084653625, -958395405, -710438585, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, -2117940946, -1838011259, -1564481375, -1474664885, -1035236496, -949202525, -778901479, -694614492, -200395387, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, -1538233109, -1090935817, -965641998].map(word);
@@ -154,7 +147,6 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     return hash.map((number) => number.toString(16).padStart(8, "0")).join("");
   };
   const signature = (row) => "sha256:" + sha256(canonical([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]));
-  const required = (selector) => { const element = document.querySelector(selector); if (!element) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message page structure changed"); return element; };
   const visible = (element) => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; };
   window.__bossMessageSnapshot = function() {
     const path = location.pathname;
@@ -165,7 +157,7 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       const login = /\/web\/user\//i.test(path) || Array.from(document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")).some(visible) || /\u6ca1\u6709\u66f4\u591a\u804c\u4f4d.{0,20}\u767b\u5f55\u67e5\u770b\u5168\u90e8\u804c\u4f4d|\u767b\u5f55\u540e\u53ef\u67e5\u770b/.test(bodyText);
       const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel: rowLines[0] || "", previewText: rowLines.at(-1) || "" }; return { ...value, transientSignature: signature(value) }; });
       const messages = Array.from(document.querySelectorAll(selectors.message)).map((item) => { const messageId = String(item.getAttribute("data-mid") == null ? "" : item.getAttribute("data-mid")); if (!/^\d{15}$/.test(messageId)) throw coded("BOSS_MESSAGE_ID_INVALID", "message id is invalid"); return { direction: item.matches(".item-friend") ? "friend" : item.matches(".item-myself") ? "myself" : "system", messageId, text: text(item.textContent) }; });
-      return { path, rows, headerText: lines(required(selectors.header).innerText)[0] || "", positionName: text(required(selectors.position).textContent), salary: text(required(selectors.salary).textContent), city: text(required(selectors.city).textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
+      return { path, rows, headerText: lines(document.querySelector(selectors.header)?.innerText)[0] || "", positionName: text(document.querySelector(selectors.position)?.textContent), salary: text(document.querySelector(selectors.salary)?.textContent), city: text(document.querySelector(selectors.city)?.textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
     } catch (error) {
       if (error && (error.code === "BOSS_MESSAGE_ID_INVALID" || error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED")) throw error;
       throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message page structure changed");

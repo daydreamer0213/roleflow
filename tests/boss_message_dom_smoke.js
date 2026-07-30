@@ -30,6 +30,14 @@ assert.deepStrictEqual(queue.map((item) => item.rowIndex), [0, 2]);
 assert(Object.isFrozen(queue));
 assert(queue.every(Object.isFrozen));
 assert.throws(() => queue.push({}), TypeError);
+const forgedQueue = buildUnreadConversationQueue({
+  rows: [{ ...snapshot.rows[0], transientSignature: `sha256:${"f".repeat(64)}` }]
+});
+assert.strictEqual(forgedQueue[0].transientSignature, safeDigest([0, "Alex Example", "Please share availability", true]));
+const staleQueue = buildUnreadConversationQueue({
+  rows: [{ ...snapshot.rows[2], previewText: "Changed preview", transientSignature: snapshot.rows[2].transientSignature }]
+});
+assert.strictEqual(staleQueue[0].transientSignature, safeDigest([2, "Casey Example", "Changed preview", true]));
 assert.match(safeDigest([" fake ", "value"]), /^sha256:[a-f0-9]{64}$/);
 assert.strictEqual(
   safeDigest([0, false]),
@@ -65,19 +73,29 @@ assert.strictEqual(snapshotBossMessagePage(riskDocument, "https://www.zhipin.com
 const loginDocument = createBossMessageDomFixture();
 loginDocument.body.innerText = "\u767b\u5f55\u540e\u53ef\u67e5\u770b";
 assert.strictEqual(snapshotBossMessagePage(loginDocument, "https://www.zhipin.com/web/geek/chat").login, true);
-const missingHeaderDocument = createBossMessageDomFixture();
-const originalQuerySelector = missingHeaderDocument.querySelector;
-missingHeaderDocument.querySelector = (selector) => selector === ".top-info-content" ? null : originalQuerySelector.call(missingHeaderDocument, selector);
-assert.throws(
-  () => snapshotBossMessagePage(missingHeaderDocument, "https://www.zhipin.com/web/geek/chat"),
-  (error) => error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED"
-);
 const brokenQueryDocument = createBossMessageDomFixture();
 brokenQueryDocument.querySelectorAll = () => { throw new Error("fixture selector failure"); };
 assert.throws(
   () => snapshotBossMessagePage(brokenQueryDocument, "https://www.zhipin.com/web/geek/chat"),
   (error) => error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED"
 );
+const noSelectionDocument = createBossMessageDomFixture();
+noSelectionDocument.querySelectorAll(".friend-content-warp")[1].classes.delete("selected");
+const optionalQuerySelector = noSelectionDocument.querySelector;
+noSelectionDocument.querySelector = (selector) => [
+  ".top-info-content",
+  ".chat-position-content .position-name",
+  ".salary",
+  ".city"
+].includes(selector) ? null : optionalQuerySelector.call(noSelectionDocument, selector);
+const noSelectionSnapshot = snapshotBossMessagePage(noSelectionDocument, "https://www.zhipin.com/web/geek/chat");
+assert(noSelectionSnapshot.rows.every((row) => row.selected === false));
+assert.deepStrictEqual({
+  headerText: noSelectionSnapshot.headerText,
+  positionName: noSelectionSnapshot.positionName,
+  salary: noSelectionSnapshot.salary,
+  city: noSelectionSnapshot.city
+}, { headerText: "", positionName: "", salary: "", city: "" });
 assert.match(BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION, /__bossMessageSnapshot/);
 assert.match(BOSS_MESSAGE_SNAPSHOT_EXPRESSION, /snapshot_helper_missing/);
 assert.doesNotMatch(`${BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION}\n${BOSS_MESSAGE_SNAPSHOT_EXPRESSION}`, /click|focus|dispatchEvent|createTab|navigate|bringToFront/i);
