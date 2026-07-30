@@ -2034,3 +2034,15 @@ the next reviewed root-cause change.
   evaluated commit. Its exact SHA must be recorded by an immediate descendant
   docs-only binding record before private root creation. Candidate product
   `03609837937a53a3e6e31f74bac56ad19d6d1ecb` must be its strict ancestor.
+
+### Cross-field consistency exact evaluated binding
+
+- Candidate evaluated is exactly
+  `f2412c82db52b540702b335099e575dc748f58bb`. Candidate product
+  `03609837937a53a3e6e31f74bac56ad19d6d1ecb` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `f2412c82db52b540702b335099e575dc748f58bb` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated/product remain exactly
+  `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
