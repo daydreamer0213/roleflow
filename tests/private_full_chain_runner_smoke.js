@@ -1491,9 +1491,16 @@ async function injectedLiveFlowSmoke(identityPath) {
       return {
         provider: telemetrySecret,
         model: telemetrySecret,
-        semanticStatus: "complete",
+        semanticStatus: index === 3 ? "failed" : "complete",
         decisionSource: "model",
         recommendation: "review",
+        ...(index === 0 ? {
+          selectedTrackId: "T1",
+          selectedTrackLabel: "大模型应用开发",
+          roleSummary: "使用 Python、Agent 与 RAG 交付 AI 应用",
+          roleResumeEvidence: ["简历：交付过 Agentic RAG"],
+          roleGaps: ["未证明指定平台经验"]
+        } : {}),
         roleAlignment: index === 2 ? telemetrySecret : "mostly_aligned",
         foundationStateForTest: index === 2 ? telemetrySecret : "partial",
         evidence: { jd: [telemetrySecret], resume: [telemetrySecret] },
@@ -1534,6 +1541,11 @@ async function injectedLiveFlowSmoke(identityPath) {
     "actualRecommendation",
     "expectedBucket",
     "actualBucket",
+    "selectedTrackId",
+    "selectedTrackLabel",
+    "roleSummary",
+    "roleResumeEvidenceCount",
+    "roleGapCount",
     ...telemetryFields,
     "semanticStatus",
     "evidenceComplete",
@@ -1560,6 +1572,19 @@ async function injectedLiveFlowSmoke(identityPath) {
     "private result row must contain exactly the approved v1 row schema"
   );
   const firstTelemetry = Object.fromEntries(telemetryFields.map((field) => [field, telemetryResult.rows[0][field]]));
+  assert.deepStrictEqual({
+    selectedTrackId: telemetryResult.rows[0].selectedTrackId,
+    selectedTrackLabel: telemetryResult.rows[0].selectedTrackLabel,
+    roleSummary: telemetryResult.rows[0].roleSummary,
+    roleResumeEvidenceCount: telemetryResult.rows[0].roleResumeEvidenceCount,
+    roleGapCount: telemetryResult.rows[0].roleGapCount
+  }, {
+    selectedTrackId: "T1",
+    selectedTrackLabel: "大模型应用开发",
+    roleSummary: "使用 Python、Agent 与 RAG 交付 AI 应用",
+    roleResumeEvidenceCount: 1,
+    roleGapCount: 1
+  });
   assert.deepStrictEqual(firstTelemetry, {
     roleAlignment: "mostly_aligned",
     foundationState: "partial",
@@ -1619,6 +1644,19 @@ async function injectedLiveFlowSmoke(identityPath) {
     "the exact row schema must reject an injected extra logger field"
   );
   assert.strictEqual(telemetryResult.rows[3].modelCallCount, 0, "per-row telemetry must reset before each serial analysis");
+  assert.deepStrictEqual({
+    selectedTrackId: telemetryResult.rows[3].selectedTrackId,
+    selectedTrackLabel: telemetryResult.rows[3].selectedTrackLabel,
+    roleSummary: telemetryResult.rows[3].roleSummary,
+    roleResumeEvidenceCount: telemetryResult.rows[3].roleResumeEvidenceCount,
+    roleGapCount: telemetryResult.rows[3].roleGapCount
+  }, {
+    selectedTrackId: "",
+    selectedTrackLabel: "",
+    roleSummary: "",
+    roleResumeEvidenceCount: 0,
+    roleGapCount: 0
+  }, "failed analysis must emit empty bounded selected-track diagnostics");
   assert.deepStrictEqual(
     {
       modelAttemptCount: telemetryResult.rows[3].modelAttemptCount,

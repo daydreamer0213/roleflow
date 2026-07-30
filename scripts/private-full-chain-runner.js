@@ -1775,6 +1775,11 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         actualRecommendation,
         expectedBucket: label.expectedBucket,
         actualBucket,
+        selectedTrackId: String(analysis.selectedTrackId || "").slice(0, 8),
+        selectedTrackLabel: String(analysis.selectedTrackLabel || "").slice(0, 80),
+        roleSummary: String(analysis.roleSummary || "").slice(0, 160),
+        roleResumeEvidenceCount: Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0,
+        roleGapCount: Array.isArray(analysis.roleGaps) ? analysis.roleGaps.length : 0,
         roleAlignment: safeEnum(analysis.roleAlignment, SAFE_ROLE_ALIGNMENTS, "insufficient_evidence"),
         foundationState: safeEnum(
           modules.roleEvidenceDecisionState(analysis).foundationState,
