@@ -298,12 +298,14 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - The synthetic regression now mirrors that job schema and rejects an incorrect description hash or any extra job field.
 - Candidate fix `6152d70cd584531604db867d9a73747c41a75994` passed independent review with **Spec PASS** and **Code quality APPROVED**, runner smoke, 31 benchmark fixtures, all 47 offline checks, and `git diff --check`.
 - Baseline mirror `c47992259c6c206887b4bb13cf82765e4af68e3b` passed its repository-native 41 offline checks and 31 benchmark fixtures.
+- Candidate frozen-job fix `cebe59f5aae78abdde873adfe211f296d3322519` passed independent review with **Spec PASS** and **Code quality APPROVED**, runner smoke, 31 benchmark fixtures, all 47 offline checks, and `git diff --check`.
+- Baseline mirror `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6` passed its repository-native 41 offline checks and 31 benchmark fixtures.
 - Candidate/baseline shared blobs are identical:
-  - runner `ece3b6aa097b545b4e41eaf4955c24c9468766f1`
+  - runner `d3cdc259675005dce1370adbd6f0746e423a305f`
   - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
   - private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`
-- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen evaluated commit `6152d70cd584531604db867d9a73747c41a75994`. Baseline product `fb0168afce265cf351f03e80f66d9e0f24015887` is a strict ancestor of baseline evaluated commit `c47992259c6c206887b4bb13cf82765e4af68e3b`.
-- Live execution must not resume until the frozen-job-schema fix passes independent review, is mirrored to baseline, and new candidate/baseline evaluated commits are recorded.
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen evaluated commit `cebe59f5aae78abdde873adfe211f296d3322519`. Baseline product `fb0168afce265cf351f03e80f66d9e0f24015887` is a strict ancestor of baseline evaluated commit `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`.
+- Live execution must use candidate evaluated `cebe59f5aae78abdde873adfe211f296d3322519` and baseline evaluated `63c2ac393aa6cc8a7728fea6f0944d5f4db9cad6`; later docs-only records do not replace either manifest binding.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730` unchanged as failed v1/v2 manifest preflight evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730` unchanged as failed frozen-label-schema preflight evidence.
