@@ -294,12 +294,14 @@ Task 7 may start only after the review is clean. Real model authorization is che
 - The unique matching v1 source is `D:\DevData\RoleFlow-private-benchmark\full-chain-v1-20260725`: its four frozen confirmed-evidence files are byte-identical to the planned source, and its manifest commits match the existing v2 proof source binding. The candidate worktree was restored cleanly before correcting the plan.
 - The corrected-source preflight in `multi-track-recall-first-3-v3-v1-source-20260730` then stopped before any model call because the frozen labels use the exact `private-user-confirmed.v2` / `resume-centered-recall-first.v2` envelope, raw-file jobs SHA-256, `userLabel`, and `keep/discard` contract that the synthetic v3 fixture had not covered. Preserve that root as failed fixture-schema evidence.
 - The runner regression uses only synthetic values and requires proof creation, full match-live consumption, internal `discard` to `exclude` normalization, comparison identity preservation, and fail-closed rejection of malformed user-confirmed envelopes.
+- Candidate fix `6152d70cd584531604db867d9a73747c41a75994` passed independent review with **Spec PASS** and **Code quality APPROVED**, runner smoke, 31 benchmark fixtures, all 47 offline checks, and `git diff --check`.
+- Baseline mirror `c47992259c6c206887b4bb13cf82765e4af68e3b` passed its repository-native 41 offline checks and 31 benchmark fixtures.
 - Candidate/baseline shared blobs are identical:
-  - runner `b2729d697bb6d5da8ce9a60aa80ec4015dfc1b35`
+  - runner `ece3b6aa097b545b4e41eaf4955c24c9468766f1`
   - benchmark metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`
   - private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`
-- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of the historical docs-only evaluated commit `97b64b48b7604110ceb35af33d3234c4aaeaa89b`.
-- Live execution must not resume until the frozen-pool envelope fix passes independent review, is mirrored to baseline, and a new evaluated commit is recorded.
+- Candidate product remains `87cc68ede886ac0ef3b53f960c38548cce4a831a`; it is a strict ancestor of frozen evaluated commit `6152d70cd584531604db867d9a73747c41a75994`. Baseline product `fb0168afce265cf351f03e80f66d9e0f24015887` is a strict ancestor of baseline evaluated commit `c47992259c6c206887b4bb13cf82765e4af68e3b`.
+- Live execution must use candidate evaluated `6152d70cd584531604db867d9a73747c41a75994` and baseline evaluated `c47992259c6c206887b4bb13cf82765e4af68e3b`; later docs-only records do not replace either manifest binding.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-20260730` unchanged as failed diagnostic evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-20260730` unchanged as failed v1/v2 manifest preflight evidence.
 - Keep `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-v3-v1-source-20260730` unchanged as failed frozen-label-schema preflight evidence.
