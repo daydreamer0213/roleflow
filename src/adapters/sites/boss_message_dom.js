@@ -39,10 +39,10 @@ function codedError(code, message) {
   return error;
 }
 
-function readExistingBossRiskSignal(documentLike, path) {
+function readExistingBossRiskSignal(documentLike, path, search) {
   const bodyText = normalizedText(documentLike.body.innerText).slice(0, 3000);
   return /\/web\/passport\/zp\/(?:verify|403)/i.test(path)
-    || /\?[^#]*\bcode=32(?:&|$)/i.test(String(documentLike.location?.search || ""))
+    || new URLSearchParams(search).get("code") === "32"
     || /\u5b89\u5168\u9a8c\u8bc1|\u8bbf\u95ee\u5f02\u5e38|\u884c\u4e3a\u9a8c\u8bc1|\u8bbf\u95ee\u53d7\u9650/.test(documentLike.title || "")
     || /\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a|\u6682\u65f6\u65e0\u6cd5\u8bbf\u95ee\u6b64\u9875\u9762|\u8bf7\u52ff\u9891\u7e41\u63d0\u4ea4\u5237\u65b0\u8bf7\u6c42/.test(bodyText);
 }
@@ -101,7 +101,7 @@ function snapshotBossMessagePage(documentLike, locationHref) {
       positionName: normalizedText(documentLike.querySelector(SELECTORS.position)?.textContent),
       salary: normalizedText(documentLike.querySelector(SELECTORS.salary)?.textContent),
       city: normalizedText(documentLike.querySelector(SELECTORS.city)?.textContent),
-      risk: readExistingBossRiskSignal(documentLike, `${path}${url.search}`),
+      risk: readExistingBossRiskSignal(documentLike, path, url.search),
       login: readExistingBossLoginSignal(documentLike, path),
       messages,
       writeTargetsPresent: { editor: Boolean(documentLike.querySelector(SELECTORS.editor)), send: Boolean(documentLike.querySelector(SELECTORS.send)) }

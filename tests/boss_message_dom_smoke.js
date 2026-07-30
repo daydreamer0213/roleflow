@@ -70,6 +70,12 @@ for (const invalidMessageId of [undefined, "not-digits", "12345678901234", "1234
 const riskDocument = createBossMessageDomFixture();
 riskDocument.title = "\u5b89\u5168\u9a8c\u8bc1";
 assert.strictEqual(snapshotBossMessagePage(riskDocument, "https://www.zhipin.com/web/geek/chat").risk, true);
+const queryRiskDocument = createBossMessageDomFixture();
+assert.strictEqual(
+  snapshotBossMessagePage(queryRiskDocument, "https://www.zhipin.com/web/geek/chat?code=32").risk,
+  true,
+  "code=32 must be read from the supplied locationHref, not documentLike.location"
+);
 const loginDocument = createBossMessageDomFixture();
 loginDocument.body.innerText = "\u767b\u5f55\u540e\u53ef\u67e5\u770b";
 assert.strictEqual(snapshotBossMessagePage(loginDocument, "https://www.zhipin.com/web/geek/chat").login, true);
