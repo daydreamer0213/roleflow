@@ -22,7 +22,7 @@
 - The model must consume the profile, card, jobs, and labels parsed from the same raw bytes that passed v3 hash validation.
 - The self-hash prevents accidental or incomplete mutation; a local administrator maliciously reauthoring the complete proof, manifest, and all hashes is outside the existing threat model and must not trigger a new same-directory HMAC design.
 - The candidate product commit for the next acceptance is
-  `03609837937a53a3e6e31f74bac56ad19d6d1ecb`; the earlier
+  `9b93034a0a7ccef1a478383cd67d11da51168657`; the earlier
   `87cc68ede886ac0ef3b53f960c38548cce4a831a` remains historical evidence.
   Harness/documentation commits remain evaluated-checkpoint changes only.
 
@@ -682,6 +682,52 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Baseline evaluated/product remain exactly
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-07-30 local recall tier consistency product checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-cross-field-consistency-v1-20260730`
+  unchanged. Manifest, v3 proof, bundle verification, and live execution exited
+  `0`. The safe result was one of three exact: index `9` was exact; index `4`
+  remained `caution/talk` instead of `apply/primary`; index `10` remained
+  `review/talk` instead of `caution/talk`. All rows were complete and
+  evidence-bearing with no failed, stale, pending, partial, empty-response,
+  false-hard-exclusion, hard-false-placement, unresolved-disposition, or
+  primary-without-evidence result. The fixed candidate was restored cleanly and
+  the 20-row root remained absent.
+- Safe cache evidence isolated deterministic local demotion. Index `4` had
+  normal job quality, no hard blocker, all selected-track foundation and
+  central requirements `matched`, cached recommendation `apply`, and confidence
+  `0.9`; the blanket `mostly_aligned` talk ceiling changed the final result.
+  Index `10` had satisfied eligibility and cached recommendation `caution`, but
+  omitted non-core requirements reduced confidence to `0.45`, activating the
+  low-confidence review guard.
+- Design and plan commit
+  `c62018d5f8d21de3705a6f4cf401be40a2e80cb2` selected two narrow local fixes.
+  Sparse confidence now uses unknown decision-bearing requirements. A
+  `mostly_aligned` role may retain a primary ceiling only when foundation
+  evidence is complete and direct, no central evidence is transferable, and no
+  central or foundation item is missing.
+- Product commit `9b93034a0a7ccef1a478383cd67d11da51168657` implements those
+  rules and increments only `matchJob` from v32 to v33. It does not change
+  prompts, validators, eligibility or hard-blocker checks, model settings,
+  fixtures, or confirmed labels.
+- TDD first proved non-core omissions produced false confidence `0.45`. Fresh
+  verification passed the semantic test, all six generic evidence fixtures,
+  all 31 benchmark fixtures, all 47 offline checks, and `git diff --check`.
+  Explicit tests keep transferable foundation, transferable central, and
+  missing central evidence below primary. Independent reviewer capacity remains
+  exhausted; no independent approval is claimed.
+- Baseline product/evaluated and all three shared harness blobs remain
+  unchanged. The only permitted next root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-local-decision-consistency-v1-20260730`.
+  Rebuild all seven files, manifest, v3 proof, bundle verification, and cache,
+  then run exact zero-based `4,9,10`. Keep the 20-row root absent unless all
+  three are exact and safe.
+- The docs-only commit containing this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record before private root creation. Candidate product
+  `9b93034a0a7ccef1a478383cd67d11da51168657` must be its strict ancestor.
 
 ## 2026-07-30 cross-field evidence consistency product checkpoint
 
