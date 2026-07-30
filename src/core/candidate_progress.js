@@ -144,6 +144,52 @@ function correctProgressStage(db, input = {}) {
   return getProgressCard(db, cardId);
 }
 
+function recordVerifiedCommunicationStart(db, input = {}) {
+  const { batch = {}, item = {} } = input;
+  const outcome = String(input.outcome || input.status || "").trim();
+  if (!["succeeded", "already_communicated"].includes(outcome)) {
+    throw progressError("PROGRESS_COMMUNICATION_OUTCOME_INVALID", "verified communication outcome is required");
+  }
+  const batchId = positiveInteger(batch.id, "batch.id");
+  const itemId = positiveInteger(item.id, "item.id");
+  const jobId = positiveInteger(item.jobId, "item.jobId");
+  const now = isoText(input.now);
+  let card = ensureProgressCard(db, {
+    profileId: batch.profileId,
+    planId: batch.planId,
+    jobId,
+    source: batch.site || "boss",
+    now
+  });
+  const eventType = outcome === "already_communicated" ? "contact_already_exists" : "contact_started";
+  const duplicate = db.prepare(`SELECT id FROM candidate_progress_events
+    WHERE card_id = ? AND type = ?
+      AND json_extract(metadata_json, '$.batchId') = ?
+      AND json_extract(metadata_json, '$.itemId') = ?
+      AND json_extract(metadata_json, '$.outcome') = ?
+    LIMIT 1`).get(card.id, eventType, batchId, itemId, outcome);
+  if (!duplicate) {
+    recordProgressEvent(db, {
+      cardId: card.id,
+      type: eventType,
+      actor: "system",
+      summary: outcome === "already_communicated" ? "平台显示已发起沟通" : "已验证发起沟通",
+      metadata: { batchId, itemId, jobId, outcome },
+      occurredAt: now
+    });
+  }
+  if (card.stage === "contact_started") {
+    card = transitionProgressCard(db, {
+      cardId: card.id,
+      expectedStage: "contact_started",
+      stage: "waiting_reply",
+      nextAction: "等待招聘方回复",
+      now
+    });
+  }
+  return card;
+}
+
 function getProgressCardForJob(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const jobId = positiveInteger(input.jobId, "jobId");
@@ -269,6 +315,7 @@ module.exports = {
   recordProgressEvent,
   transitionProgressCard,
   correctProgressStage,
+  recordVerifiedCommunicationStart,
   getProgressCardForJob,
   listProgressCards,
   listProgressEvents

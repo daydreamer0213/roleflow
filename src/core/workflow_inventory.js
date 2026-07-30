@@ -7,6 +7,7 @@ const {
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
+const { TERMINAL_PROGRESS_STAGES, listProgressCards } = require("./candidate_progress");
 
 const MAX_ACTIVE_DAYS = 3;
 const MIN_DETAIL_LENGTH = 80;
@@ -35,6 +36,10 @@ function workflowEligibility(job = {}, context = {}) {
   const status = String(job.applicationStatus || "").trim();
   if (status && !(status === "later" && retryDue(job.reviewAt, now))) {
     return ineligible("WORKFLOW_CANDIDATE_STATE_EXISTS");
+  }
+  const progressStage = String(context.progressStage || "").trim();
+  if (progressStage && !TERMINAL_PROGRESS_STAGES.has(progressStage)) {
+    return ineligible("WORKFLOW_PROGRESS_ACTIVE");
   }
   if (BLOCKING_COMMUNICATION_STATUSES.has(String(context.communicationStatus || "").trim())) {
     return ineligible("WORKFLOW_COMMUNICATION_STATE_BLOCKED");
@@ -76,11 +81,13 @@ function workflowEligibility(job = {}, context = {}) {
 
 function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = {}) {
   const communicationStates = latestCommunicationStates(db, getSearchPlan(db, planId)?.profileId);
+  const progressStages = progressStagesByJob(db, planId);
   return listDecisionPool(db, { planId })
     .map((job) => {
       const result = workflowEligibility(job, {
         now,
-        communicationStatus: communicationStates.get(Number(job.id)) || ""
+        communicationStatus: communicationStates.get(Number(job.id)) || "",
+        progressStage: progressStages.get(Number(job.id)) || ""
       });
       return { ...job, workflowEligibility: result, workflowTier: result.tier || "" };
     })
@@ -94,11 +101,13 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   const workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) throw inventoryError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
   const communicationStates = latestCommunicationStates(db, workflow.profileId);
+  const progressStages = progressStagesByJob(db, workflow.planId);
   const candidates = listDecisionPool(db, { planId: workflow.planId })
     .map((job) => {
       const result = workflowEligibility(job, {
         now,
-        communicationStatus: communicationStates.get(Number(job.id)) || ""
+        communicationStatus: communicationStates.get(Number(job.id)) || "",
+        progressStage: progressStages.get(Number(job.id)) || ""
       });
       const tags = new Set(job.qualityTags || []);
       const highSalaryBackup = !result.eligible
@@ -145,8 +154,6 @@ function reconcileCommunicationOutcome(db, {
 } = {}) {
   const outcome = String(status || "").trim();
   const mapping = {
-    succeeded: { candidateStatus: "applied", reasonCode: "communication_succeeded" },
-    already_communicated: { candidateStatus: "applied", reasonCode: "already_communicated" },
     job_unavailable: { candidateStatus: "invalid", reasonCode: "job_unavailable" },
     target_mismatch: { candidateStatus: "review", reasonCode: "target_mismatch" },
     action_unavailable: { candidateStatus: "later", reasonCode: "action_unavailable", retryHours: 24 }
@@ -169,6 +176,11 @@ function reconcileCommunicationOutcome(db, {
     note: String(note || `RoleFlow communication batch #${batch.id}: ${outcome}`)
   });
   return { reconciled: true, status: mapping.candidateStatus, reviewAt };
+}
+
+function progressStagesByJob(db, planId) {
+  return new Map(listProgressCards(db, { planId })
+    .map((card) => [Number(card.jobId), card.stage]));
 }
 
 function latestCommunicationStates(db, profileId) {

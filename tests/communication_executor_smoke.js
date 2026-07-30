@@ -13,6 +13,11 @@ const {
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
+const {
+  getProgressCardForJob,
+  listProgressEvents,
+  recordVerifiedCommunicationStart
+} = require("../src/core/candidate_progress");
 
 function runPermittedBatch(input) {
   return runCommunicationBatch({ ...input, executionGate: () => true });
@@ -42,12 +47,12 @@ async function successFlowSmoke() {
   ]);
   assert.strictEqual(summary.batchStatus, "completed");
   assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.clickCount), [1, 1]);
-  assert.deepStrictEqual(candidateStatuses(fixture), ["applied", "applied"]);
-  assert.deepStrictEqual(
-    fixture.db.prepare("SELECT payload_json FROM candidate_job_events WHERE event_type = 'applied' ORDER BY id").all()
-      .map((event) => JSON.parse(event.payload_json).note),
-    [`RoleFlow batch #${fixture.batch.id}`, `RoleFlow batch #${fixture.batch.id}`]
-  );
+  assert.deepStrictEqual(candidateStatuses(fixture), ["", ""]);
+  for (const jobId of fixture.jobIds) {
+    const card = getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId });
+    assert.strictEqual(card.stage, "waiting_reply");
+    assert.deepStrictEqual(listProgressEvents(fixture.db, card.id).map((event) => event.type), ["contact_started"]);
+  }
   fixture.close();
 }
 
@@ -66,8 +71,26 @@ async function alreadyCommunicatedSmoke() {
     sleepFn: async () => {}
   });
   assert.strictEqual(dispatches, 0);
-  assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "already_communicated");
-  assert.deepStrictEqual(candidateStatuses(fixture), ["applied"]);
+  const item = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  assert.strictEqual(item.status, "already_communicated");
+  assert.deepStrictEqual(candidateStatuses(fixture), [""]);
+  const card = getProgressCardForJob(fixture.db, {
+    profileId: fixture.profileId,
+    jobId: fixture.jobIds[0]
+  });
+  assert.strictEqual(card.stage, "waiting_reply");
+  assert.deepStrictEqual(listProgressEvents(fixture.db, card.id).map((event) => event.type), ["contact_already_exists"]);
+  recordVerifiedCommunicationStart(fixture.db, {
+    batch: fixture.batch,
+    item,
+    outcome: "already_communicated"
+  });
+  recordVerifiedCommunicationStart(fixture.db, {
+    batch: fixture.batch,
+    item,
+    outcome: "already_communicated"
+  });
+  assert.deepStrictEqual(listProgressEvents(fixture.db, card.id).map((event) => event.type), ["contact_already_exists"]);
   fixture.close();
 }
 
@@ -96,7 +119,7 @@ async function unavailableAndMismatchContinueSmoke() {
   assert.deepStrictEqual(items[0].evidence, {
     inspection: { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" }
   });
-  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", "applied"]);
+  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", ""]);
   fixture.close();
 }
 

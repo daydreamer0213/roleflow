@@ -21,6 +21,7 @@ const {
   communicationBatchSummary,
   communicationQuotaSnapshot
 } = require("../src/core/communication_batches");
+const { getProgressCardForJob, listProgressEvents } = require("../src/core/candidate_progress");
 
 const db = openDb(":memory:");
 
@@ -167,8 +168,10 @@ try {
     note: successNote
   });
   const resolvedState = db.prepare("SELECT status, note FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(profileId, talkId);
-  assert.strictEqual(resolvedState.status, "applied");
-  assert.strictEqual(resolvedState.note, `RoleFlow 批量沟通 #${selected.id}`);
+  assert.strictEqual(resolvedState, undefined);
+  const resolvedCard = getProgressCardForJob(db, { profileId, jobId: talkId });
+  assert.strictEqual(resolvedCard.stage, "waiting_reply");
+  assert.deepStrictEqual(listProgressEvents(db, resolvedCard.id).map((event) => event.type), ["contact_started"]);
 
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: backupItem.id, expectedStatus: "opening", status: "verified" });

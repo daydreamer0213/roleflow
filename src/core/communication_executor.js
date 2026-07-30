@@ -1,5 +1,6 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { reconcileCommunicationOutcome } = require("./workflow_inventory");
+const { recordVerifiedCommunicationStart } = require("./candidate_progress");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
 const { getWorkflowRunByCommunicationBatch, transitionWorkflowRun } = require("./storage");
 const { communicationWorkflowMetrics } = require("./workflow_run");
@@ -111,8 +112,10 @@ async function runCommunicationBatch({
       });
     } else if (state === "already_communicated") {
       transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
-      reconcileCommunicationOutcome(db, {
-        batch: getCommunicationBatch(db, batchId), item, status: "already_communicated", note: `RoleFlow batch #${batchId}`
+      recordVerifiedCommunicationStart(db, {
+        batch: getCommunicationBatch(db, batchId),
+        item,
+        outcome: "already_communicated"
       });
       recordAudit(db, item, "communication_result", "already_communicated");
     } else {
@@ -195,7 +198,7 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     );
   }
   transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
-  reconcileCommunicationOutcome(db, { batch, item, status: "succeeded", note: `RoleFlow batch #${batch.id}` });
+  recordVerifiedCommunicationStart(db, { batch, item, outcome: "succeeded" });
   recordAudit(db, item, "communication_result", "succeeded");
 }
 
