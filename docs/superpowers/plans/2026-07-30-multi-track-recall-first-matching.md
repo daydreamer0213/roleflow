@@ -1989,6 +1989,49 @@ the next reviewed root-cause change.
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 
+## 2026-07-30 central transferable gap contract checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-local-decision-consistency-v1-20260730`
+  unchanged. Manifest, v3 proof, bundle verification, and live execution exited
+  `0`. The safe result improved to two of three exact: indices `9` and `10`
+  were exact; index `4` remained `caution/talk` instead of `apply/primary`.
+  All rows were complete and evidence-bearing with no failed, stale, pending,
+  partial, empty-response, contract-repair, false-hard-exclusion,
+  hard-false-placement, unresolved-disposition, or primary-without-evidence
+  result. The fixed candidate was restored cleanly and the 20-row root remained
+  absent.
+- The local confidence correction fixed index `10`. The only remaining row had
+  normal quality, complete foundation evidence, zero role gaps, no hard
+  blocker, and one non-foundation central requirement marked `transferable`.
+  That output contradicts the existing prompt rule that central transferable
+  evidence must identify a concrete named difference in `roleGaps`.
+- Design and plan commit
+  `1994939abde6291d521d143aac50197bc0a00782` chose fail-closed contract repair
+  instead of silently promoting contradictory evidence. Sparse validation now
+  rejects central transferable evidence when `roleGaps` is empty using a
+  generic error with no private text.
+- Product commit `707701e57de9cda25833600e515bf5e9fe1c33cc` adds that
+  invariant and increments only `matchJob` from v33 to v34. Transferable
+  central evidence with a concrete gap, transferable non-central evidence, and
+  matched central evidence remain valid. Prompts, local decision policy, hard
+  blockers, eligibility, and model settings are unchanged.
+- TDD first proved the contradictory sparse output was accepted. Fresh
+  verification passed semantic and model-adapter tests, all six generic
+  evidence fixtures, all 31 benchmark fixtures, all 47 offline checks, and
+  `git diff --check`. Independent reviewer capacity remains exhausted; no
+  independent approval is claimed.
+- Baseline product/evaluated and all three shared harness blobs remain
+  unchanged. The only permitted next root is the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-3-transfer-gap-contract-v1-20260730`.
+  Rebuild all seven files, manifest, v3 proof, bundle verification, and cache,
+  then run exact zero-based `4,9,10`. Keep the 20-row root absent unless all
+  three are exact and safe.
+- The docs-only commit containing this checkpoint is the next candidate
+  evaluated commit. Its exact SHA must be recorded by an immediate descendant
+  docs-only binding record before private root creation. Candidate product
+  `707701e57de9cda25833600e515bf5e9fe1c33cc` must be its strict ancestor.
+
 ## 2026-07-30 local recall tier consistency product checkpoint
 
 - Preserve
