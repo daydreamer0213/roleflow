@@ -376,3 +376,15 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - 本条 supersede reason v2 的 next-root 绑定。新的唯一允许根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v3-20260730`；必须全新复制 7 个冻结文件并核验 raw SHA，全新生成 manifest/v3 proof，重新 verify-private-bundle，并在 live 前显式核验 candidate/baseline HEAD、clean、产品提交严格祖先、三个共享 blob、固定分支、输出不存在。
 - 不再调用不存在的 `--preflight`。候选 `--match-live` 会在模型配置解析与模型调用前执行 runner 内部 manifest、proof、隐私、fixture、diagnostic-index 等 preflight；任一失败都会在 live 产物中止并由外层 `finally` 恢复固定候选。
 - v3 继续精确绑定 candidate evaluated `3903b5c0a2a2138033ecd96a46fe7995761df6f5` 与 baseline evaluated `90606956713c3666fca42a30f4afd3f0a33af133`，只运行零基 `--diagnostic-indices '4'`，所有 stdout/stderr 只写 v3 私有 reports。3 条和 20 条继续 gated。
+
+## 2026-07-30 `result_not_object` evaluated 检查点
+
+- reason v3 根 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v3-20260730` 已以冻结 raw SHA 和零基 index `4` 可信退出 0；安全结果为 total 1、failed 1、`MODEL_CONTRACT_INVALID`、matchJob/contract_repair，initial/repair category 与 reason 均为 `other`，未持久化原始错误或 shape。固定候选已恢复原分支/原提交并干净，20 条根仍不存在。v3 保持 immutable。
+- 静态 validator 对照将该结果限定为分类器缺口推断；新增闭合 reason `result_not_object` 只匹配固定“必须返回 JSON 对象”或 `must return a JSON object`，category 为 `result_shape`，不保存 raw/capture/key/length/`outputShape`。
+- 初版 TDD 提交 `43950770a3e373b98b2f6273317a269eebffbd10`；独立复审指出 category 提前返回会绕过歧义去重、英文模板缺独立覆盖。修复提交 `31e53ef6e728912e19fd207b2b28b4ecf9f6b6d5` 已把 result-shape 纳入统一去重，并锁定中文单模板、英文单模板与混合模板。最终复审无 Critical/Important/Moderate/Minor，`Spec PASS`、`Code quality APPROVED`。
+- 新 candidate evaluated 精确为 `31e53ef6e728912e19fd207b2b28b4ecf9f6b6d5`；候选 focused smoke、31 fixtures、47 项离线检查、diff check 全通过，工作树干净。
+- 基线仅机械镜像 runner，提交 `fb2f6fe17b171f7cc974b75c6a3740d614c2cacd`；31 fixtures、41 项离线检查、diff check 全通过，工作树干净。新 baseline evaluated 精确为该提交。
+- 三项共享 blob 一致：runner `630d958d6de81e0ed2e57ad9d72231919b917b70`，metrics `0edda7c2449639f3fecdee394fa60cc2f0447c05`，privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`。
+- 本检查点 supersede 此前 reason v1-v3 的 next-root 与旧 evaluated 绑定；v1-v3 只作 immutable 历史证据。后续 docs-only commit 不替换上述 candidate/baseline evaluated。
+- 唯一允许的下一根为 `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-index-4-contract-reason-v4-20260730`。临时候选分支与 manifest/proof 必须绑定 candidate evaluated `31e53ef6e728912e19fd207b2b28b4ecf9f6b6d5`，基线 HEAD 与 manifest/proof 必须绑定 baseline evaluated `fb2f6fe17b171f7cc974b75c6a3740d614c2cacd`；重新复制 7 文件、raw SHA、v3 proof、bundle 与所有外层 gates，只运行零基 index `4`，私有日志，最后恢复固定候选。
+- 产品提交保持候选 `87cc68ede886ac0ef3b53f960c38548cce4a831a` 与基线 `fb0168afce265cf351f03e80f66d9e0f24015887`，并继续是对应 evaluated 的严格祖先。v4 确认具体规则前不得做产品修复、3 条或 20 条运行。
