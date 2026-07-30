@@ -375,6 +375,15 @@ server.listen(0, "127.0.0.1", async () => {
       "宽泛且未绑定领域、平台、工具或专业流程的要求，必须把具体直接实例判为 matched"
     );
     assert(
+      matchPrompt.includes("A central transferable requirement must have a corresponding concrete named difference in roleGaps.")
+        && matchPrompt.includes("Do not invent a roleGap to justify transferable."),
+      "matchJob prompt 必须让中心 transferable 与具体 roleGap 保持一致"
+    );
+    assert(
+      matchPrompt.includes("An eligibility conflict requires an explicit candidate fact that fails every accepted alternative in that eligibility item."),
+      "matchJob prompt 必须只在候选人明确不满足全部可接受资格分支时输出 conflict"
+    );
+    assert(
       matchPrompt.includes("explicitly names an unproven domain, platform, tool, specialist workflow, work object, action, or deliverable")
         && matchPrompt.includes("use transferable"),
       "明确但未证明的领域、平台、工具、专业流程或工作交付差异必须保留 transferable 边界"
@@ -550,6 +559,11 @@ server.listen(0, "127.0.0.1", async () => {
       understandPrompt.includes("Evaluate responsibility_sprawl within each independent hiring track")
         && understandPrompt.includes("Do not combine duties across independent tracks"),
       "understandJob prompt 必须在分支内判断职责发散，禁止跨独立招聘分支合并职责"
+    );
+    assert(
+      understandPrompt.includes("Preserve logical alternatives and scope when normalizing eligibility.")
+        && understandPrompt.includes("Only emit separate eligibility items when each condition is independently mandatory."),
+      "understandJob prompt 必须保留资格条件的逻辑替代关系，禁止把非独立硬门槛拆开"
     );
     assert(understandPrompt.includes("收费、诈骗、安全或合规") && understandPrompt.includes("high"), "收费、诈骗、安全或合规必须作为高风险信号");
     assert(understandPrompt.includes("每段 evidence 最多 120 个字符"), "understandJob prompt 必须限制每段证据摘录最多 120 字符");

@@ -720,8 +720,8 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v16");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v31");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v32");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1202,9 +1202,9 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v31",
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v32",
     "cross-track sprawl classification must invalidate v30 caches");
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v16",
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v17",
     "cross-track sprawl classification must invalidate v15 understandings");
   const currentRevision = {
     profileVersion: "profile",
@@ -1217,7 +1217,7 @@ async function multiTrackValidationIdempotenceSmoke() {
     analysisStaleReasons({
       revision: {
         ...currentRevision,
-        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v30" }
+        pipelineVersions: { ...PIPELINE_VERSIONS, matchJob: "match-decision-v31" }
       }
     }, currentRevision).includes("match_pipeline_changed"),
     "v30 match analyses must become stale after the cross-track sprawl fix"
@@ -1226,7 +1226,7 @@ async function multiTrackValidationIdempotenceSmoke() {
     analysisStaleReasons({
       revision: {
         ...currentRevision,
-        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v15" }
+        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v16" }
       }
     }, currentRevision).includes("job_understanding_pipeline_changed"),
     "v15 understandings must become stale after the cross-track sprawl fix"
@@ -1905,8 +1905,8 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v16",
-    matchJob: "match-decision-v31",
+    understandJob: "job-understanding-v17",
+    matchJob: "match-decision-v32",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
