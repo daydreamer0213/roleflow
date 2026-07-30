@@ -546,6 +546,11 @@ server.listen(0, "127.0.0.1", async () => {
     }
     assert(/年限[^\n]*不得[^\n]*indispensable=true|indispensable=true[^\n]*不得用于[^\n]*年限/.test(understandPrompt), "understandJob prompt 必须禁止把经验年限标为 indispensable=true");
     assert(understandPrompt.includes("责任发散") && understandPrompt.includes("low 或 medium"), "职责发散必须作为低或中风险信号");
+    assert(
+      understandPrompt.includes("Evaluate responsibility_sprawl within each independent hiring track")
+        && understandPrompt.includes("Do not combine duties across independent tracks"),
+      "understandJob prompt 必须在分支内判断职责发散，禁止跨独立招聘分支合并职责"
+    );
     assert(understandPrompt.includes("收费、诈骗、安全或合规") && understandPrompt.includes("high"), "收费、诈骗、安全或合规必须作为高风险信号");
     assert(understandPrompt.includes("每段 evidence 最多 120 个字符"), "understandJob prompt 必须限制每段证据摘录最多 120 字符");
     assert(understandPrompt.includes("requirements 最多 16 项") && understandPrompt.includes("eligibility 和 riskSignals 各最多 8 项"), "understandJob prompt 必须显式限制紧凑数组");
