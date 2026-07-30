@@ -70,6 +70,8 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
     errorCode: "",
     realRoleType: "",
     industryContext: "",
+    selectedTrackId: "",
+    selectedTrackLabel: "",
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
@@ -197,8 +199,10 @@ function compactAnalysis(configs, parts) {
     errorCode: "",
     realRoleType: understanding.realRoleType || "unknown",
     industryContext: understanding.industryContext || "未明确",
-    roleSummary: understanding.roleSummary || "",
-    responsibilityEvidence: understanding.responsibilityEvidence || [],
+    selectedTrackId: decision.selectedTrackId || "",
+    selectedTrackLabel: decision.selectedTrackLabel || "",
+    roleSummary: decision.roleSummary || "",
+    responsibilityEvidence: decision.responsibilityEvidence || [],
     businessScenario: understanding.businessScenario || "",
     coreResponsibilities: understanding.coreResponsibilities || [],
     coreRequirements: (understanding.coreRequirements || []).map((item) => typeof item === "string" ? item : item.label).filter(Boolean),
@@ -268,6 +272,8 @@ function failedAnalysis(configs, job, revision, error) {
       : null,
     realRoleType: "",
     industryContext: "",
+    selectedTrackId: "",
+    selectedTrackLabel: "",
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
@@ -341,6 +347,9 @@ function applyRuleGuard(analysis, job) {
   }
   if (roleEvidence.bucketCeiling === "talk" && guarded.recommendation === "apply") {
     return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_talk_guard");
+  }
+  if (roleEvidence.bucketFloor === "talk" && guarded === analysis && analysis.recommendation === "review") {
+    return addGuard(analysis, "caution", "B", roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_alignment_floor");
   }
   if (guarded !== analysis) return guarded;
   return analysis;

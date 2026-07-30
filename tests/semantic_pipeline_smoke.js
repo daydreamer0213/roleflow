@@ -1701,11 +1701,19 @@ function genericPolicySmoke() {
 async function compactRoleEvidencePersistenceSmoke() {
   const configs = { model: { provider: "test", providers: { test: { model: "test-model" } } }, resumeVersions: { versions: [] } };
   const jobUnderstanding = understanding("persist-role-evidence");
-  const matchDecision = decision("apply", "A", "Python");
+  const matchDecision = {
+    ...decision("apply", "A", "Python"),
+    selectedTrackId: "T1",
+    selectedTrackLabel: "大模型应用开发",
+    roleSummary: "使用 Python、Agent 与 RAG 交付 AI 应用",
+    responsibilityEvidence: ["JD：负责大模型应用和 Agent 工作流落地"]
+  };
   const compact = compactAnalysis(configs, { job: completeJob("persist-role-evidence"), jobUnderstanding, matchDecision, revision: {} });
   assert.deepStrictEqual(
     {
       industryContext: compact.industryContext,
+      selectedTrackId: compact.selectedTrackId,
+      selectedTrackLabel: compact.selectedTrackLabel,
       roleSummary: compact.roleSummary,
       responsibilityEvidence: compact.responsibilityEvidence,
       roleAlignment: compact.roleAlignment,
@@ -1715,8 +1723,10 @@ async function compactRoleEvidencePersistenceSmoke() {
     },
     {
       industryContext: jobUnderstanding.industryContext,
-      roleSummary: jobUnderstanding.roleSummary,
-      responsibilityEvidence: jobUnderstanding.responsibilityEvidence,
+      selectedTrackId: "T1",
+      selectedTrackLabel: "大模型应用开发",
+      roleSummary: matchDecision.roleSummary,
+      responsibilityEvidence: matchDecision.responsibilityEvidence,
       roleAlignment: matchDecision.roleAlignment,
       roleResumeEvidence: matchDecision.roleResumeEvidence,
       roleGaps: matchDecision.roleGaps,
@@ -1730,6 +1740,8 @@ async function compactRoleEvidencePersistenceSmoke() {
   const failed = await createJobAnalysisRunner({ ...configs, candidateProfile: null }, [], { analyzer: {} })(completeJob("failed-role-evidence"));
   for (const analysis of [ruleOnly, failed]) {
     assert.strictEqual(analysis.industryContext, "");
+    assert.strictEqual(analysis.selectedTrackId, "");
+    assert.strictEqual(analysis.selectedTrackLabel, "");
     assert.strictEqual(analysis.roleSummary, "");
     assert.strictEqual(analysis.roleAlignment, "");
     assert.deepStrictEqual(analysis.responsibilityEvidence, []);
@@ -2168,16 +2180,18 @@ function roleEvidenceDecisionStateSmoke() {
       foundationRequirementCount: 3,
       foundationPositiveCount: 2,
       hasTransferableFoundation: false,
+      hasConcreteFoundationGap: false,
       bucketCeiling: "talk",
+      bucketFloor: "talk",
       reasonCode: "role_mostly_aligned"
     }
   );
   const noFoundation = layeredRoleAnalysis("aligned", []);
-  assert.strictEqual(roleEvidenceDecisionState(noFoundation).bucketCeiling, "backup");
+  assert.strictEqual(roleEvidenceDecisionState(noFoundation).bucketCeiling, "talk");
   assert.strictEqual(
     decisionBucket({ ...completeJob("role-no-foundation"), analysis: noFoundation }),
-    "backup",
-    "new layered analyses without foundation requirements must stay backup"
+    "talk",
+    "主体一致且 JD 未声明根基要求时至少保留为可投"
   );
 
   const misaligned = layeredRoleAnalysis("misaligned", ["matched"]);
@@ -2236,12 +2250,43 @@ function roleEvidenceDecisionStateSmoke() {
     { roleAlignment: "mostly_aligned", foundationState: "partial", bucket: "talk" }
   );
 
-  for (const recommendation of ["review", "caution"]) {
+  const genericDutyGap = layeredRoleAnalysis("mostly_aligned", ["matched", "matched"], { recommendation: "review" });
+  genericDutyGap.requirementMatches.push({
+    requirement: "客户沟通与文档意识",
+    state: "missing",
+    foundation: false,
+    central: false,
+    indispensable: false,
+    jdEvidence: "JD：具备良好的沟通和文档意识",
+    resumeEvidence: "简历：未单独列出该表述"
+  });
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("generic-duty-gap"), analysis: applyRuleGuard(genericDutyGap, completeJob("generic-duty-gap")) }),
+    "talk",
+    "主体基本一致时，宽泛附带职责不得单独降为慎投"
+  );
+
+  const concreteCoreGap = layeredRoleAnalysis("mostly_aligned", ["matched", "missing"]);
+  concreteCoreGap.requirementMatches[1] = {
+    ...concreteCoreGap.requirementMatches[1],
+    requirement: "独立交付 Java 企业后端",
+    central: true,
+    foundation: true,
+    jdEvidence: "JD：独立负责 Java 企业后端交付",
+    resumeEvidence: "简历：仅有 Python/FastAPI 交付"
+  };
+  assert.strictEqual(
+    decisionBucket({ ...completeJob("core-delivery-gap"), analysis: applyRuleGuard(concreteCoreGap, completeJob("core-delivery-gap")) }),
+    "backup",
+    "明确的主体根基交付缺口仍必须慎投"
+  );
+
+  for (const [recommendation, expected] of [["review", "caution"], ["caution", "caution"]]) {
     const original = layeredRoleAnalysis("mostly_aligned", ["matched", "unknown"], { recommendation });
     assert.strictEqual(
       applyRuleGuard(original, completeJob(`role-no-promotion-${recommendation}`)).recommendation,
-      recommendation,
-      "the shared ceiling must not promote an existing recommendation"
+      expected,
+      "主体基本一致时仅将 review 提升为 caution，其他结论不变"
     );
   }
 

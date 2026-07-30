@@ -115,7 +115,7 @@ let server;
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
   assert.match(reviewPage.body, /有效候选\s*<strong>7/);
   assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 7);
-  for (const label of ["岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基", "慎投"]) {
+  for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基", "慎投"]) {
     assert.match(reviewPage.body, new RegExp(label));
   }
   assert.match(reviewPage.body, /硬性限制：岗位方向需谨慎/);
@@ -126,7 +126,7 @@ let server;
     assert.doesNotMatch(reviewPage.body, new RegExp(internalValue));
   }
   const jobsPage = await getText(baseUrl, `/jobs?planId=${saved.planId}&batch=latest`);
-  for (const label of ["岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
+  for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
     assert.match(jobsPage.body, new RegExp(label));
   }
   assert.doesNotMatch(jobsPage.body, /简历：完成 RAG 应用交付/);
@@ -298,6 +298,8 @@ function layeredTalkJob() {
     ...job("layered-talk"),
     analysis: {
       ...job("layered-talk").analysis,
+      selectedTrackId: "T1",
+      selectedTrackLabel: "大模型应用开发",
       roleSummary: "负责 RAG 应用交付与持续优化",
       responsibilityEvidence: ["JD：负责 RAG 应用交付"],
       roleAlignment: "mostly_aligned",

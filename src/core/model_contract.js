@@ -1280,7 +1280,9 @@ function roleEvidenceDecisionState(analysis = {}) {
       foundationRequirementCount: 0,
       foundationPositiveCount: 0,
       hasTransferableFoundation: false,
+      hasConcreteFoundationGap: false,
       bucketCeiling: legacy.unproven ? "backup" : "primary",
+      bucketFloor: null,
       reasonCode: legacy.unproven ? "legacy_role_core_unproven" : ""
     };
   }
@@ -1294,13 +1296,20 @@ function roleEvidenceDecisionState(analysis = {}) {
         ? "complete"
         : "partial";
   const hasTransferableFoundation = foundation.some((item) => item.state === "transferable");
+  const hasConcreteFoundationGap = foundation.some((item) => item.state === "missing");
 
   let bucketCeiling = "backup";
+  let bucketFloor = null;
   if (analysis.roleAlignment === "aligned" && foundationState === "complete" && !hasTransferableFoundation) {
     bucketCeiling = "primary";
+    bucketFloor = "talk";
+  } else if (["aligned", "mostly_aligned"].includes(analysis.roleAlignment) && !hasConcreteFoundationGap) {
+    bucketCeiling = "talk";
+    bucketFloor = "talk";
   } else if (
-    (analysis.roleAlignment === "aligned" && ["complete", "partial"].includes(foundationState))
-    || (analysis.roleAlignment === "mostly_aligned" && ["complete", "partial"].includes(foundationState))
+    !hasConcreteFoundationGap
+    && ((analysis.roleAlignment === "aligned" && ["complete", "partial"].includes(foundationState))
+      || (analysis.roleAlignment === "mostly_aligned" && ["complete", "partial"].includes(foundationState)))
   ) {
     bucketCeiling = "talk";
   }
@@ -1312,7 +1321,9 @@ function roleEvidenceDecisionState(analysis = {}) {
     foundationRequirementCount: foundation.length,
     foundationPositiveCount: positive.length,
     hasTransferableFoundation,
+    hasConcreteFoundationGap,
     bucketCeiling,
+    bucketFloor,
     reasonCode: roleEvidenceReasonCode(analysis.roleAlignment, foundationState)
   };
 }

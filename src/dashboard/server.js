@@ -2361,11 +2361,14 @@ function hardBlockerLabels(analysis = {}) {
 
 function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "span") {
   const foundation = foundationEvidenceLists(analysis);
+  const track = analysis.selectedTrackLabel
+    ? `匹配分支：${escapeHtml(analysis.selectedTrackLabel)} · `
+    : "";
   const roleSummary = String(analysis.roleSummary || "岗位主体待确认");
   const evidenceCount = Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0;
   const covered = foundation.covered.filter(Boolean).join("、") || "暂无";
   const unresolved = foundation.unresolved.filter(Boolean).join("、") || "暂无";
-  return `<${tag} class="${escapeAttr(className)}">岗位主体：${escapeHtml(roleSummary)} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${evidenceCount} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
+  return `<${tag} class="${escapeAttr(className)}">${track}岗位主体：${escapeHtml(roleSummary)} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${evidenceCount} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
 }
 
 function shouldPollWorkflow(workflow, communication) {
