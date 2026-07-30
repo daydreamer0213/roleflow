@@ -8,6 +8,7 @@ const { createGreeting } = require("../src/core/llm");
 const { buildKeywordPlan, resolvePlannedKeywords } = require("../src/core/keyword_planner");
 const { explainJobMatch } = require("../src/core/match_explainer");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
+const { MockModelAdapter } = require("../src/adapters/models/mock");
 const { ModelContractError } = require("../src/core/model_contract");
 const { createJobAnalysisRunner } = require("../src/core/job_analysis");
 const { parseResumeUpload } = require("../src/core/resume_parser");
@@ -147,6 +148,7 @@ async function checkMockAnalyzer() {
   assert.strictEqual(peakConcurrency, 3);
 
   assert.strictEqual(configs.model.provider, "mock");
+  const mockAdapter = new MockModelAdapter();
   const analyzer = createLlmAnalyzer({ modelConfig: configs.model });
   const candidateProfile = await analyzer.analyzeResume({
     resumeText: "",
@@ -155,20 +157,25 @@ async function checkMockAnalyzer() {
   assert.strictEqual(candidateProfile.candidate.name, configs.candidateProfile.candidate.name);
   assert(Array.isArray(candidateProfile.skills));
 
+  const rawJobUnderstanding = await mockAdapter.understandJob({
+    job: sample[0],
+    candidateProfile
+  });
+  assert.deepStrictEqual(rawJobUnderstanding.hiringTracks.map((track) => track.id), ["T1"]);
+  assert(Array.isArray(rawJobUnderstanding.requirements));
+  assert(Array.isArray(rawJobUnderstanding.riskSignals));
   const jobUnderstanding = await analyzer.understandJob({
     job: sample[0],
     candidateProfile
   });
-  assert(jobUnderstanding.jobId);
-  assert(Array.isArray(jobUnderstanding.coreRequirements));
-  assert(Array.isArray(jobUnderstanding.hiddenRisks));
 
-  const matchDecision = await analyzer.matchJob({
+  const matchDecision = await mockAdapter.matchJob({
     candidateProfile: configs.candidateProfile,
     resumeVersions: configs.resumeVersions,
     jobUnderstanding
   });
-  assert(["apply", "caution", "skip"].includes(matchDecision.recommendation));
+  assert.strictEqual(matchDecision.selectedTrackId, "T1");
+  assert(["apply", "caution", "review", "skip"].includes(matchDecision.recommendation));
   assert(matchDecision.recommendedResumeVersion);
   assert(Array.isArray(matchDecision.primaryProjects));
 
