@@ -55,6 +55,10 @@ const PRIVATE_JOB_KEYS = [
   "id", "sourceId", "keyword", "title", "company", "location", "salary",
   "url", "description", "sourceContentHash", "capturedAt"
 ];
+const PRIVATE_USER_CONFIRMED_JOB_KEYS = [
+  "id", "sourceId", "keyword", "title", "company", "location", "salary",
+  "experience", "education", "url", "description", "sourceContentHash", "capturedAt"
+];
 const PRIVATE_LABEL_V1_KEYS = ["id", "expectedRecommendation", "expectedBucket", "rationale"];
 const PRIVATE_LABEL_V2_KEYS = [...PRIVATE_LABEL_V1_KEYS, "expectedDisposition"];
 const PRIVATE_USER_CONFIRMED_LABEL_KEYS = [...PRIVATE_LABEL_V2_KEYS, "userLabel"];
@@ -1396,7 +1400,8 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
   };
 }
 
-function frozenJobSourceContentHash(job) {
+function frozenJobSourceContentHash(job, userConfirmed = false) {
+  if (userConfirmed) return sha256(job.description || "");
   return sha256(JSON.stringify({
     title: job.title || "",
     company: job.company || "",
@@ -1436,11 +1441,19 @@ function privateJobsAndLabels(jobsValue, labelsValue, jobsRaw = null) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Match live requires non-empty jobs and user-confirmed labels.");
   }
   for (const job of jobs) {
-    if (!sameKeys(job, PRIVATE_JOB_KEYS)
-      || PRIVATE_JOB_KEYS.filter((field) => field !== "sourceContentHash").some((field) => !String(job[field] ?? "").trim())
+    const jobKeys = isUserV2 ? PRIVATE_USER_CONFIRMED_JOB_KEYS : PRIVATE_JOB_KEYS;
+    const optionalJobFields = isUserV2 ? new Set(["experience", "education"]) : new Set();
+    const invalidJobFields = isUserV2
+      ? jobKeys.some((field) => typeof job[field] !== "string")
+        || jobKeys.filter((field) => field !== "sourceContentHash" && !optionalJobFields.has(field))
+          .some((field) => !isNonEmptyString(job[field]))
+      : jobKeys.filter((field) => field !== "sourceContentHash")
+        .some((field) => !String(job[field] ?? "").trim());
+    if (!sameKeys(job, jobKeys)
+      || invalidJobFields
       || String(job.description).trim().length < 120
       || !/^[0-9a-f]{64}$/.test(String(job.sourceContentHash || ""))
-      || job.sourceContentHash !== frozenJobSourceContentHash(job)
+      || job.sourceContentHash !== frozenJobSourceContentHash(job, isUserV2)
       || !Number.isFinite(Date.parse(job.capturedAt))) {
       throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Every frozen job must match the canonical JD schema, analysis length, and source content hash.");
     }
