@@ -75,14 +75,7 @@ function deriveBenchmarkMetrics(rows) {
     if (typeof row.evidenceComplete !== "boolean") {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 evidenceComplete 必须是 boolean。`);
     }
-    // 推荐等级数值化：apply=4, caution=3, review=2, skip=1
-    // 系统给得比标注好（数值更高）也算通过，只有给低了才算未通过
-    const recRank = { apply: 4, caution: 3, review: 2, skip: 1 };
-    const recommendationAcceptable = (recRank[row.actualRecommendation] || 0) >= (recRank[row.expectedRecommendation] || 0);
-    const derivedPass = recommendationAcceptable
-      && (row.expectedDisposition === "discard" || row.expectedDisposition === "exclude"
-        ? row.actualRecommendation === "skip"
-        : row.actualRecommendation !== "skip");
+    const derivedPass = row.actualRecommendation === row.expectedRecommendation && row.actualBucket === row.expectedBucket;
     if (row.pass !== derivedPass) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass=${row.pass} 与 recommendation/bucket 复算结果 ${derivedPass} 不一致。`);
     }
