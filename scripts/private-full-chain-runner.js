@@ -1954,7 +1954,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
       throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
     }
-    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue);
+    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue, require("fs").readFileSync(request.jobs));
     if (request.diagnosticIndices?.some((index) => index >= preflight.fixture.jobs.length)) {
       throw runnerError("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "A diagnostic index is outside the frozen fixture.");
     }
