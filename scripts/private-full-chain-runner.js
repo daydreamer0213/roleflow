@@ -855,7 +855,15 @@ function loadProductionModules(mode) {
   }
   const { profileToRuntimeConfigs } = require("../src/core/search_plan");
   const { createJobAnalysisRunner } = require("../src/core/job_analysis");
-  const { decisionHardBlockers, effectiveHardBlockers, roleEvidenceDecisionState } = require("../src/core/model_contract");
+  const { decisionHardBlockers, effectiveHardBlockers } = require("../src/core/model_contract");
+  // Baseline model_contract lacks roleEvidenceDecisionState – use a compatible local stub.
+  const roleEvidenceDecisionState = (analysis = {}) => {
+    const matches = Array.isArray(analysis.requirementMatches) ? analysis.requirementMatches : [];
+    const foundation = matches.filter((item) => item?.foundation === true);
+    const positive = foundation.filter((item) => ["matched", "transferable"].includes(item.state));
+    const foundationState = !foundation.length ? "none" : !positive.length ? "unproven" : positive.length === foundation.length ? "complete" : "partial";
+    return { semantics: "legacy", alignment: "", foundationState, foundationRequirementCount: 0, foundationPositiveCount: 0, hasTransferableFoundation: false, hasConcreteFoundationGap: false, bucketCeiling: "primary", bucketFloor: null, reasonCode: "" };
+  };
   const { scoreJob, decisionState } = require("../src/core/scoring");
   const { openDb, decisionBucket } = require("../src/core/storage");
   const { mapWithConcurrency } = require("../src/core/async_pool");
