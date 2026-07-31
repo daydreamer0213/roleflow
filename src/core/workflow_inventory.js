@@ -7,7 +7,7 @@ const {
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
-const { roleEvidenceDecisionState } = require("./model_contract");
+const { decisionHardBlockers } = require("./model_contract");
 
 const MAX_ACTIVE_DAYS = 3;
 const MIN_DETAIL_LENGTH = 80;
@@ -63,11 +63,10 @@ function workflowEligibility(job = {}, context = {}) {
     return { eligible: true, tier: bucket, reasonCode: "" };
   }
   if (bucket !== "backup") return ineligible("WORKFLOW_DECISION_INELIGIBLE");
-  const roleEvidence = roleEvidenceDecisionState(job.analysis);
-  if (roleEvidence.bucketCeiling === "backup" && !tags.has("salary_target_high")) {
-    return ineligible(roleEvidence.semantics === "layered"
-      ? "WORKFLOW_ROLE_EVIDENCE_BACKUP"
-      : "WORKFLOW_ROLE_CORE_UNPROVEN");
+  // 新判定表: backup bucket 的岗如果 recommendation=review 仍可进入备选队列
+  const recommendation = (job.analysis || {}).recommendation || "";
+  if (recommendation === "review" && !tags.has("salary_target_high")) {
+    return ineligible("WORKFLOW_ROLE_EVIDENCE_BACKUP");
   }
   if (!tags.has("salary_target_core") || !tags.has("experience_salary_overlap")
     || [...LOW_RISK_BACKUP_BLOCKERS].some((tag) => tags.has(tag))) {

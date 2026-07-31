@@ -1464,13 +1464,68 @@ function contractListItem(value) {
   return text(value.reason || value.gap || value.description || value.message || value.issue || value.value);
 }
 
+// === 新判定表 ===
+// 替代旧的 roleEvidenceDecisionState 通道计算。
+// 根据方向匹配度 + 核心要求符合度，直接从判定表查出四档建议。
+
+const RECOMMENDATION_RANK = { apply: 4, caution: 3, review: 2, skip: 1 };
+
+function computeCoreRequirementScore(requirementMatches = []) {
+  const central = requirementMatches.filter((item) => item?.central === true);
+  if (!central.length) return { score: 0, total: 0, level: "none" };
+  let points = 0;
+  for (const item of central) {
+    if (item.state === "matched") points += 1;
+    else if (item.state === "transferable") points += 0.5;
+  }
+  const ratio = points / central.length;
+  let level;
+  if (ratio >= 0.8) level = "符合";         // ≥80%
+  else if (ratio >= 0.5) level = "大部分符合"; // ≥50%
+  else if (ratio > 0) level = "部分符合";    // >0  <50%
+  else level = "不符合";                    // =0
+  return { score: points, total: central.length, ratio, level };
+}
+
+function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
+  const { level } = computeCoreRequirementScore(requirementMatches);
+  const aligned = roleAlignment === "aligned";
+  const mostlyAligned = roleAlignment === "mostly_aligned";
+  const partial = roleAlignment === "partially_aligned";
+  const misaligned = roleAlignment === "misaligned";
+
+  if (misaligned) {
+    if (level === "符合" || level === "大部分符合") return "review"; // 方向不匹配但核心对口 → 慎投
+    return "skip"; // 方向不匹配且核心大面积对不上 → 不推荐
+  }
+
+  if (partial) return "review"; // 部分匹配 → 始终慎投
+
+  if (level === "不符合") return "review"; // 方向匹配但无核心证据 → 保守慎投
+
+  if (level === "符合") return "apply";    // 匹配/大部分匹配 + 符合 → 主投
+
+  if (mostlyAligned && level === "部分符合") return "caution";
+  if (aligned && level === "部分符合") return "caution";
+
+  // 大部分符合 + 匹配 → 主投, 大部分符合 + 大部分匹配 → 可投
+  if (level === "大部分符合") {
+    if (aligned) return "apply";
+    return "caution"; // mostly_aligned
+  }
+
+  return "review"; // 兜底
+}
+
 module.exports = {
   ModelContractError,
   validateModelResult,
   effectiveHardBlockers,
   decisionHardBlockers,
   roleCoreEvidenceState,
-  roleEvidenceDecisionState,
+  roleEvidenceDecisionState, // 保留向后兼容，后续会话移除
   hardBlockerText,
-  requirementsForTrack
+  requirementsForTrack,
+  computeCoreRequirementScore,
+  computeDecisionFromMatrix
 };

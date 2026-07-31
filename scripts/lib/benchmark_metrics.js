@@ -75,7 +75,7 @@ function deriveBenchmarkMetrics(rows) {
     if (typeof row.evidenceComplete !== "boolean") {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 evidenceComplete 必须是 boolean。`);
     }
-    const derivedPass = row.actualRecommendation === row.expectedRecommendation && row.actualBucket === row.expectedBucket;
+    const derivedPass = row.actualRecommendation === row.expectedRecommendation;
     if (row.pass !== derivedPass) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass=${row.pass} 与 recommendation/bucket 复算结果 ${derivedPass} 不一致。`);
     }

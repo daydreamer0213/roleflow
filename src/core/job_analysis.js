@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -307,12 +307,10 @@ function failedAnalysis(configs, job, revision, error) {
 function applyRuleGuard(analysis, job) {
   const gate = decisionState(job);
   const qualityTags = new Set(job.qualityTags || []);
+
+  // === 一、强制不推荐 ===
   if (gate === "blocked") return addGuard(analysis, "skip", "D", "已确认的基础条件不满足。", "blocked", "hard_boundary");
-  if (gate === "refresh") return addGuard(analysis, "review", analysis.fitLevel || "C", "岗位来源信息需要刷新后再判断。", "refresh", "source_refresh");
-  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) return { ...analysis, recommendation: "review", decisionSource: "analysis_pending" };
-  if (analysis.semanticStatus === "partial") {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "当前只有卡片级信息，完整 JD 补齐前不进入主投。", "partial", "model_partial");
-  }
+
   const hardBlockers = decisionHardBlockers(analysis);
   if (hardBlockers.length) {
     return addGuard({ ...analysis, hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`, analysis.semanticStatus, "hard_blocker_guard");
@@ -320,41 +318,57 @@ function applyRuleGuard(analysis, job) {
   if (analysis.jobQuality?.level === "risk") {
     return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
   }
-  let guarded = analysis;
-  if (analysis.recommendation === "skip") {
-    guarded = addGuard({ ...analysis, hardBlockers: [], blockingGaps: [] }, "caution", analysis.fitLevel === "D" ? "C" : analysis.fitLevel, "当前只识别到可沟通差距，不作为直接淘汰依据。", analysis.semanticStatus, "soft_gap_guard");
+
+  // 方向不匹配(misaligned) → 不推荐or慎投，交给判定表处理
+
+  // === 二、信息残缺 → 不参与四档判定 ===
+  if (gate === "refresh") {
+    return { ...analysis, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["岗位信息需要刷新后重新分析。"], ruleAdjusted: true };
   }
-  if (["apply", "caution", "review"].includes(analysis.recommendation) && missingEitherSideEvidence(analysis)) {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型结论缺少可核对的双侧证据，需要人工复核 JD 与简历。", analysis.semanticStatus, "model_evidence_gap");
+  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) {
+    return { ...analysis, recommendation: "review", decisionSource: "needs_retry" };
   }
-  if (analysis.recommendation === "apply" && (hasTransferableCore(analysis) || analysis.jobQuality?.level === "caution")) {
-    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "核心要求仅有可迁移证据或岗位质量需关注，建议先沟通确认再投递。", analysis.semanticStatus, "evidence_quality_guard");
+  if (analysis.semanticStatus === "partial") {
+    return { ...analysis, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["当前只有卡片级信息，完整 JD 补齐前不进入判定。"], ruleAdjusted: true };
   }
-  const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
-  if (guarded === analysis && materialRisk) {
-    const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
-    const recommendation = analysis.recommendation === "apply" ? "caution" : analysis.recommendation;
-    const fitLevel = analysis.recommendation === "apply" && analysis.fitLevel === "A" ? "B" : analysis.fitLevel;
-    guarded = addGuard(analysis, recommendation, fitLevel, `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
+
+  // === 三、查判定表 → 初步建议 ===
+  const matrixRec = computeDecisionFromMatrix(analysis.roleAlignment, analysis.requirementMatches);
+  let guarded = { ...analysis, recommendation: matrixRec, decisionSource: "decision_matrix" };
+
+  // === 四、降级修正 ===
+
+  // 4a. 低置信度 → 最高慎投
+  if (Number(analysis.confidence ?? 0) < 0.62 && matrixRec === "apply") {
+    guarded = addGuard({ ...analysis }, "caution", "B", "模型置信度较低，需要先沟通确认。", analysis.semanticStatus, "model_low_confidence");
   }
-  if (guarded === analysis && analysis.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
-    guarded = addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
+  // 还检查 review 之上
+  if (Number(analysis.confidence ?? 0) < 0.62 && matrixRec === "caution") {
+    guarded = addGuard({ ...analysis }, "review", "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
   }
-  const roleEvidence = roleEvidenceDecisionState(analysis);
-  if (roleEvidence.bucketCeiling === "backup") {
-    return addGuard(guarded, "review", guarded.fitLevel || "C", roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_backup_guard");
+
+  // 4b. 年限偏高 → 主投降可投
+  if (guarded.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
+    guarded = addGuard({ ...analysis }, "caution", "B", "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
   }
-  if (guarded === analysis && Number(analysis.confidence ?? 0) < 0.62) {
-    return addGuard(analysis, "review", analysis.fitLevel || "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
+
+  // 4c. 存在 indispensable（硬性）要求且只有可显著推导证据 → 主投降可投
+  if (guarded.recommendation === "apply" && hasTransferableIndispensable(analysis)) {
+    guarded = addGuard({ ...analysis }, "caution", "B", "核心硬性要求仅有可迁移证据，建议先沟通确认再投递。", analysis.semanticStatus, "indispensable_transferable_guard");
   }
-  if (roleEvidence.bucketCeiling === "talk" && guarded.recommendation === "apply") {
-    return addGuard(analysis, "caution", analysis.fitLevel === "A" ? "B" : analysis.fitLevel, roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_evidence_talk_guard");
+
+  // === 五、缺证据 → 待重试 ===
+  if (["apply", "caution", "review"].includes(guarded.recommendation) && missingEitherSideEvidence(guarded)) {
+    return { ...guarded, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["模型结论缺少可核对的双侧证据，标记待重试。", ...(guarded.fitReasons || [])], ruleAdjusted: true };
   }
-  if (roleEvidence.bucketFloor === "talk" && guarded === analysis && analysis.recommendation === "review") {
-    return addGuard(analysis, "caution", "B", roleEvidenceGuardReason(roleEvidence), analysis.semanticStatus, "role_alignment_floor");
-  }
-  if (guarded !== analysis) return guarded;
-  return analysis;
+
+  return guarded;
+}
+
+function hasTransferableIndispensable(analysis) {
+  return (analysis.requirementMatches || []).some((item) => (
+    item?.state === "transferable" && item?.indispensable === true
+  ));
 }
 
 function roleEvidenceGuardReason(roleEvidence) {
@@ -368,10 +382,6 @@ function roleEvidenceGuardReason(roleEvidence) {
 function missingEitherSideEvidence(analysis) {
   const evidence = analysis.evidence || {};
   return !(evidence.jd || []).length || !(evidence.resume || []).length;
-}
-
-function hasTransferableCore(analysis) {
-  return (analysis.requirementMatches || []).some((item) => item?.state === "transferable" && item?.indispensable);
 }
 
 function addGuard(analysis, recommendation, fitLevel, reason, semanticStatus = analysis.semanticStatus, decisionSource = analysis.decisionSource) {

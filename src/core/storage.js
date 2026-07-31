@@ -7,7 +7,7 @@ const { parseBossActivityText } = require("./activity_status");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
-const { decisionHardBlockers, roleEvidenceDecisionState } = require("./model_contract");
+const { decisionHardBlockers } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 
@@ -3318,21 +3318,20 @@ function decisionBucket(job) {
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
     if (tags.has("experience_salary_overlap")) return "backup";
-    const roleEvidence = roleEvidenceDecisionState(analysis);
-    if (roleEvidence.bucketCeiling === "backup") return "backup";
-    if (roleEvidence.bucketCeiling === "talk" && recommendation === "apply") return "talk";
-    if (recommendation === "skip") return "talk";
+    // 新判定表: 基于recommendation推算bucket用于排序展示
+    // skip但有有效hardBlocker → not_recommended; skip但无有效hardBlocker → talk
+    if (recommendation === "skip") {
+      return decisionHardBlockers(analysis).length ? "not_recommended" : "talk";
+    }
     if (recommendation === "apply") {
-      const evidence = analysis.evidence || {};
-      const qualityLevel = analysis.jobQuality?.level || "normal";
-      const needsConversation = qualityLevel !== "normal"
-        || tags.has("salary_target_stretch")
+      const needsConversation = tags.has("salary_target_stretch")
         || tags.has("experience_stretch")
         || tags.has("experience_overrange")
         || (analysis.hiddenRisks || []).some((risk) => ["medium", "high"].includes(risk?.severity));
-      return !needsConversation && Number(analysis.confidence || 0) >= 0.62 && (evidence.jd || []).length && (evidence.resume || []).length ? "primary" : "talk";
+      return !needsConversation && Number(analysis.confidence || 0) >= 0.62 ? "primary" : "talk";
     }
-    if (recommendation === "caution" || recommendation === "review") return "talk";
+    if (recommendation === "caution") return "talk";
+    if (recommendation === "review") return "backup";
     return "analysis_pending";
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
