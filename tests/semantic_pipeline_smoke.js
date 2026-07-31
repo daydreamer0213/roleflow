@@ -2373,7 +2373,7 @@ function roleEvidenceDecisionStateSmoke() {
     ["mostly_aligned", ["unknown", "missing"], "backup"],
     ["partially_aligned", ["matched"], "backup"],
     ["misaligned", ["matched"], "backup"],
-    ["insufficient_evidence", ["matched"], "backup"]
+    ["insufficient_evidence", ["matched"], "talk"]
   ];
   for (const [alignment, states, expected] of matrix) {
     assert.strictEqual(

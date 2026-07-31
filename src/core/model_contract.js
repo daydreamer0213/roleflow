@@ -1280,6 +1280,7 @@ function roleEvidenceDecisionState(analysis = {}) {
   const foundation = matches.filter((item) => item?.foundation === true);
 
   if (!hasLayeredSemantics) {
+    // Legacy analyses without roleAlignment get the old safe fallback.
     const legacy = roleCoreEvidenceState(analysis);
     return {
       semantics: "legacy",
@@ -1292,6 +1293,26 @@ function roleEvidenceDecisionState(analysis = {}) {
       bucketCeiling: legacy.unproven ? "backup" : "primary",
       bucketFloor: null,
       reasonCode: legacy.unproven ? "legacy_role_core_unproven" : ""
+    };
+  }
+
+  // insufficient_evidence means the model honestly reports it cannot judge alignment
+  // from the available information.  That is NOT the same as misaligned.
+  // We treat insufficient_evidence like review: keep the opportunity alive but
+  // flag it for human triage rather than automatically capping to backup.
+  if (analysis.roleAlignment === "insufficient_evidence") {
+    const legacy = roleCoreEvidenceState(analysis);
+    return {
+      semantics: "layered",
+      alignment: "insufficient_evidence",
+      foundationState: legacy.unproven ? "unproven" : "none",
+      foundationRequirementCount: 0,
+      foundationPositiveCount: 0,
+      hasTransferableFoundation: false,
+      hasConcreteFoundationGap: false,
+      bucketCeiling: "talk",
+      bucketFloor: null,
+      reasonCode: "role_insufficient_evidence"
     };
   }
 
