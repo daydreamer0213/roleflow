@@ -7,7 +7,7 @@ const { compareBenchmarkResults, deriveBenchmarkMetrics } = require("./lib/bench
 const { checkIdentityManifestShape, assertResumeIdentityRedacted } = require("./lib/private_resume_privacy");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
-const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
+const FIXED_CANDIDATE_WORKTREE = "C:\\Users\\Administrator\\.codex\\worktrees\\e843\\ZhiPing";
 const MODES = new Set(["init-manifest", "prepare", "verify-private-bundle", "create-portability-proof", "profile-live", "card-live", "match-live", "compare"]);
 const LIVE_MODES = new Set(["profile-live", "card-live", "match-live"]);
 const PRIVATE_HARNESS_VERSION = "private-full-chain-harness.v2";
