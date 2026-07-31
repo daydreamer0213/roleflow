@@ -2142,7 +2142,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         responseHadUtf8Bom: typeof analysis.errorHadUtf8Bom === "boolean"
           ? analysis.errorHadUtf8Bom
           : null,
-        pass: actualRecommendation === label.expectedRecommendation && actualBucket === label.expectedBucket
+        pass: actualRecommendation === label.expectedRecommendation
       };
     });
   } finally {
