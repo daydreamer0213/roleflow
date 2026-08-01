@@ -640,3 +640,14 @@ before initializing the v3r2 manifest and proof.
 The docs-only commit containing this section is the next candidate evaluated
 checkpoint. Record its exact SHA in an immediate descendant binding before
 initializing the v3r3 diagnostic manifest and proof.
+
+### bounded-requirements exact evaluated binding
+
+- Candidate evaluated/product are exactly
+  `f4c2d0e073b6df6d902d3462f26d65bc0dd8b8da` /
+  `cf1793a79877c8150385317853ff19e6994a2f00`.
+- Baseline evaluated/product are exactly
+  `54876927dd8b9ef9f9adb52ed7fc5f2488d3abac` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- The binding commit itself must not replace candidate evaluated in private
+  artifacts or live execution.

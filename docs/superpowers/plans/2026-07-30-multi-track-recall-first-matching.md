@@ -2339,6 +2339,17 @@ The docs-only commit containing this section is the next candidate evaluated
 checkpoint. Candidate product remains `cf1793a...` and must be its strict
 ancestor. Record the evaluated SHA in an immediate descendant binding before
 creating the diagnostic root.
+
+### Recall-first bounded-requirements exact evaluated binding
+
+- Candidate evaluated is exactly
+  `f4c2d0e073b6df6d902d3462f26d65bc0dd8b8da`; candidate product
+  `cf1793a79877c8150385317853ff19e6994a2f00` is its strict ancestor.
+- Baseline evaluated/product are exactly
+  `54876927dd8b9ef9f9adb52ed7fc5f2488d3abac` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Use `f4c2d0e...`, not this binding commit, in the v3r3 manifest, proof,
+  temporary evaluation branch, and live diagnostic.
 - Candidate and baseline Git blobs were rechecked and are identical:
   runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
   benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,
