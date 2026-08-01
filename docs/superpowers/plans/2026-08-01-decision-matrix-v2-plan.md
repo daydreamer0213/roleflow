@@ -725,3 +725,15 @@ checkpoint. Candidate product `2e030481b34f3cdee97ab3d404f76f084451bb7c`
 must be its strict ancestor. Bind the evaluated SHA in one immediate docs-only
 descendant before private setup, and use evaluated rather than the binding
 commit in every private artifact and live verification.
+
+### repaired matching exact evaluated binding
+
+- Candidate evaluated/product:
+  `ffd9872df3235879c4d009e5c959498029841d06` /
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c`.
+- Baseline evaluated/product:
+  `8387a92f3978d57c72418e1c65205643c2291c51` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- This immediate docs-only binding commit must not replace candidate evaluated
+  `ffd9872df3235879c4d009e5c959498029841d06` in private artifacts or live
+  execution.

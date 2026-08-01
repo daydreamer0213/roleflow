@@ -2311,6 +2311,18 @@ descendant docs-only binding before creating either v4 private root. The
 binding commit must not replace evaluated in the manifest, v3 proof, temporary
 evaluation branch, or live verification.
 
+### Recall-first repaired matching exact evaluated binding
+
+- Candidate evaluated/product are exactly
+  `ffd9872df3235879c4d009e5c959498029841d06` /
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c`; product is the immediate
+  parent and therefore a strict ancestor of evaluated.
+- Baseline evaluated/product remain exactly
+  `8387a92f3978d57c72418e1c65205643c2291c51` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Use candidate evaluated `ffd9872...`, not this immediate binding commit, in
+  the v4 manifest, proof, temporary evaluation branch, and live verification.
+
 ### Recall-first v3 structural-diagnostic checkpoint (2026-08-01)
 
 - The first v3 live diagnostic root is now immutable:
