@@ -853,3 +853,39 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Baseline evaluated/product remain exactly
   `7b3375b29a8f63ce9cbeb587ef965e77aa3355d5` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+### Decision-matrix continuation audited checkpoint (2026-08-01)
+
+- This section supersedes earlier evaluated bindings for the next private run.
+  Preserve every old root unchanged; in particular,
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-fullchain-v1-20260731`
+  is diagnostic-only because its result is not bound to its current manifest and
+  its product/shared-file provenance is stale.
+- Candidate product is exactly
+  `175e9567fbfaedbfa4d3d92b55fcb5a4289c5a55`. It restores the fixed candidate
+  path and implements the audited decision semantics, risk/evidence guards,
+  runtime bucket ceiling, workflow review tiers, optional-item filtering, and
+  restored test integrity. The missing threshold remains `3`; it must not be
+  changed to `5` without fresh 20-row evidence.
+- Independent read-only review completed with `Spec PASS` and
+  `Code quality APPROVED`. Fresh candidate verification passed all 47 offline
+  checks and all 31 benchmark fixtures.
+- Baseline harness commit is exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`. Fresh baseline verification passed
+  all 41 available offline checks and all 31 benchmark fixtures.
+- Candidate and baseline Git blobs are identical for
+  `scripts/private-full-chain-runner.js`, `scripts/lib/benchmark_metrics.js`,
+  and `scripts/lib/private_resume_privacy.js`.
+- Frozen jobs and labels were re-hashed and match exactly
+  `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b` and
+  `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`.
+- The only permitted next roots are the initially absent
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v2-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v2-full-20-20260801`.
+  Run exact zero-based `4,9,10` first; create the 20-row root with a fresh cache
+  only after the three-row run is exact and safe.
+- The docs-only commit containing this section is the next candidate evaluated
+  commit. Record its exact SHA in an immediate descendant docs-only binding
+  before creating either private root. Candidate product `175e956...` must be a
+  strict ancestor of that evaluated commit.
