@@ -412,7 +412,7 @@ async function checkMockAnalyzer() {
   const calls = { analyzeResume: 0, understandJob: 0, matchJob: 0, draftCommunication: 0 };
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
-    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", roleSummary: "Python application development", responsibilityEvidence: [`JD：${job.title}`], coreRequirements: [{ label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
+    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", roleSummary: "Python application development", responsibilityEvidence: [`JD：${job.title}`], coreRequirements: [{ label: "Python", foundation: true, indispensable: true, evidence: "JD：必须熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
     matchJob: async (input) => {
       calls.matchJob += 1;
       for (const field of ["candidateProfile", "candidateMatchCard", "jobUnderstanding", "searchPreferences"]) {
@@ -421,7 +421,7 @@ async function checkMockAnalyzer() {
       for (const field of ["resumeVersions", "jobEvidence", "job", "ruleMatch"]) {
         assert.strictEqual(Object.hasOwn(input, field), false, `matchJob input must omit ${field}`);
       }
-      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, roleAlignment: "aligned", roleResumeEvidence: ["简历：Python 项目经验"], roleGaps: [], primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
+      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, roleAlignment: "aligned", roleResumeEvidence: ["简历：Python 项目经验"], roleGaps: [], primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
     },
     draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
@@ -440,8 +440,8 @@ async function checkMockAnalyzer() {
     db,
     analyzer: {
       analyzeResume: async () => ({ candidate: { name: "Fallback Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }),
-      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: ["Python"] }),
-      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }),
+      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：必须熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: ["Python"] }),
+      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }),
       draftCommunication: async () => { throw new Error("communication contract failed"); }
     }
   });

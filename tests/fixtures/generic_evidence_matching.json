@@ -39,7 +39,7 @@
       "tags": ["电商运营", "淘宝"],
       "salary": "9-14K",
       "experience": "1-3年",
-      "description": "负责淘宝店铺日常经营：策划并执行店铺活动，跟进活动节奏与页面调整；独立完成投放 ROI 复盘，按月输出经营分析并调整预算分配；与设计、客服协同提升店铺转化。任职要求：必须具备店铺活动运营经验，能独立完成投放 ROI 复盘；熟悉淘宝平台规则者优先。"
+      "description": "负责淘宝店铺日常经营：策划并执行店铺活动，跟进活动节奏与页面调整；独立完成投放 ROI 复盘，按月输出经营分析并调整预算分配；与设计、客服协同提升店铺转化。任职要求：必须具备店铺活动运营经验，必须能独立完成投放 ROI 复盘；熟悉淘宝平台规则者优先。"
     },
     "jobUnderstanding": {
       "roleSummary": "负责淘宝店铺经营、活动策划与投放复盘",
@@ -49,7 +49,7 @@
       ],
       "coreRequirements": [
         { "label": "店铺活动运营", "indispensable": true, "evidence": "JD：必须具备店铺活动运营经验" },
-        { "label": "投放 ROI 复盘", "indispensable": true, "evidence": "JD：能独立完成投放 ROI 复盘" }
+        { "label": "投放 ROI 复盘", "indispensable": true, "evidence": "JD：必须能独立完成投放 ROI 复盘" }
       ],
       "preferredRequirements": [{ "label": "熟悉淘宝平台规则", "evidence": "JD：熟悉淘宝平台规则者优先" }],
       "outcomeExpectations": [{ "label": "月度经营分析", "evidence": "JD：按月输出经营分析" }],
@@ -64,7 +64,7 @@
       "fitReasons": ["店铺活动运营与投放 ROI 复盘两项核心要求均有简历直接证据"],
       "requirementMatches": [
         { "requirement": "店铺活动运营", "state": "matched", "indispensable": true, "jdEvidence": "JD：必须具备店铺活动运营经验", "resumeEvidence": "简历：负责淘宝店铺日常经营与活动复盘" },
-        { "requirement": "投放 ROI 复盘", "state": "matched", "indispensable": true, "jdEvidence": "JD：能独立完成投放 ROI 复盘", "resumeEvidence": "简历：独立完成投放 ROI 复盘并调整预算" }
+        { "requirement": "投放 ROI 复盘", "state": "matched", "indispensable": true, "jdEvidence": "JD：必须能独立完成投放 ROI 复盘", "resumeEvidence": "简历：独立完成投放 ROI 复盘并调整预算" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
       "hardBlockers": [],

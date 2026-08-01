@@ -962,16 +962,82 @@ function understandingCoreRequirements(value, { requireFoundation = false } = {}
     if (requireFoundation && typeof item.foundation !== "boolean") {
       throw new ModelContractError("understandJob", `coreRequirements「${label}」的 foundation 必须是 boolean`);
     }
+    const foundation = requireFoundation ? item.foundation : Boolean(item.foundation);
+    const central = typeof item.central === "boolean" ? item.central : false;
     return {
       label,
-      foundation: requireFoundation ? item.foundation : Boolean(item.foundation),
-      central: typeof item.central === "boolean" ? item.central : Boolean(item.indispensable),
-      indispensable: item.indispensable,
+      foundation,
+      central,
+      indispensable: validateIndispensableRequirement({ ...item, label, evidence }),
       evidence
     };
   }).slice(0, 16);
   assertUniqueCoreRequirements(requirements, "understandJob");
   return requirements;
+}
+
+const HARD_REQUIREMENT_PATTERN = /(?:必须|必需|必备|硬性|不可或缺|任职必要条件|必要条件|入职前提|作为.{0,12}前提|仅限|只招|仅招|只接受|仅接受|限定|须(?:要)?(?:熟练)?(?:掌握|具备|拥有|持有)|需(?:要)?(?:熟练)?(?:掌握|具备|拥有|持有)|不接受|不招|不得|禁止|未取得|未持有|满足.{0,20}方可|方可上岗|不予录用|没有.+(?:不能|不可)|无.+(?:不能|不可|不予)|\b(?:must|required|requires?|mandatory|essential|prerequisite)\b|\bwill not be considered\b|\bnot eligible\b|\bineligible\b)/i;
+const HARD_REJECTION_PATTERN = /(?:不予录用|不得(?:上岗|录用|入职)|不接受|不招|禁止|\bwill not be considered\b|\bnot eligible\b|\bineligible\b|\bcannot be hired\b)/i;
+const NEGATED_HARD_REQUIREMENT_PATTERN = /(?:(?:不是|并非|不属于|不作为|不构成|不算|非).{0,12}(?:必须|必需|必备|硬性|不可或缺|必要条件|入职前提|前提|限定)|(?:无需|无须|不要求|无|没有|不设).{0,12}(?:硬性|必要条件|入职前提|前提|限定|要求)|(?:不能|不应|不宜).{0,8}作为.{0,12}(?:入职前提|必要条件|硬性要求|前提)|不限定(?:专业|学历|学位|经验|年限|技能|方向|行业)?|\bnot (?:required|mandatory|essential|a prerequisite)\b|\bno hard requirements?\b)/i;
+
+function hasExplicitHardBoundaryEvidence(value) {
+  const source = String(value || "").replace(/^JD[：:]\s*/i, "");
+  return source.split(/[，,；;。、\n]|并且|同时|而且|以及|但|且|和|与/).some((rawClause) => {
+    const clause = rawClause.trim();
+    if (!clause) return false;
+    if (HARD_REJECTION_PATTERN.test(clause)) return true;
+    if (NEGATED_HARD_REQUIREMENT_PATTERN.test(clause)) return false;
+    return HARD_REQUIREMENT_PATTERN.test(clause);
+  });
+}
+
+function validateIndispensableRequirement(item = {}) {
+  const requirement = item.label || item.requirement || "";
+  const jdEvidence = item.evidence || item.jdEvidence || "";
+  const indispensable = item?.indispensable === true;
+  const source = String(jdEvidence || requirement).replace(/^JD[：:]\s*/i, "");
+  const clauses = source.split(/[，,；;。、\n]|并且|同时|而且|以及|但|且|和|与/).map((value) => value.trim()).filter(Boolean);
+  let hasHardOnlyClause = false;
+  let hasHardExperienceClause = false;
+  let hasOptionalClause = false;
+  let hasExperienceClause = false;
+  for (const clause of clauses.length ? clauses : [source]) {
+    const hasHardRejection = HARD_REJECTION_PATTERN.test(clause);
+    const negatesHard = !hasHardRejection && NEGATED_HARD_REQUIREMENT_PATTERN.test(clause);
+    const experience = isExperienceYearsRequirement({ requirement: clause, jdEvidence: clause });
+    const optional = negatesHard || isExplicitlyOptionalRequirement({ requirement: clause, jdEvidence: clause });
+    const hard = !negatesHard && HARD_REQUIREMENT_PATTERN.test(clause);
+    hasHardOnlyClause ||= hard && !experience;
+    hasHardExperienceClause ||= hard && experience;
+    hasOptionalClause ||= optional;
+    hasExperienceClause ||= experience;
+  }
+  if ((hasHardOnlyClause || hasHardExperienceClause) && hasOptionalClause) {
+    throw new ModelContractError(
+      "understandJob",
+      `coreRequirements「${requirement}」混合硬条件与优先或经验年限条件，必须拆成独立 requirements`
+    );
+  }
+  if (hasHardOnlyClause && hasExperienceClause) {
+    throw new ModelContractError(
+      "understandJob",
+      `coreRequirements「${requirement}」混合独立硬条件与经验年限条件，必须拆成独立 requirements`
+    );
+  }
+  if (hasHardExperienceClause) return indispensable;
+  if (hasOptionalClause || hasExperienceClause) {
+    if (indispensable) {
+      throw new ModelContractError("understandJob", `coreRequirements「${requirement}」写成优先、加分、可选或经验年限条件，indispensable 必须为 false`);
+    }
+    return false;
+  }
+  if (hasHardOnlyClause) {
+    if (!indispensable) {
+      throw new ModelContractError("understandJob", `coreRequirements「${requirement}」包含明确不可替代的 JD 硬条件，indispensable 必须为 true`);
+    }
+    return true;
+  }
+  return indispensable;
 }
 
 function understandingHiddenRisks(value) {
@@ -1146,6 +1212,9 @@ function validateMatchDecision(value, context = {}) {
     if (match.state !== "missing" || !match.indispensable) {
       throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」只能对应 state=missing 且 indispensable=true 的核心要求`);
     }
+    if (!hasExplicitHardBoundaryEvidence(blocker.jdEvidence)) {
+      throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」必须包含明确的 JD 硬边界`);
+    }
     if (!hasExplicitCoreIncompatibilityEvidence(blocker.resumeEvidence)) {
       throw new ModelContractError("matchJob", `indispensable_core 硬性阻断「${blocker.requirement}」必须包含候选人明确不兼容的事实`);
     }
@@ -1162,19 +1231,28 @@ function validateMatchDecision(value, context = {}) {
   for (const match of requirementMatches) {
     if (match.indispensable
       && match.state === "missing"
+      && hasExplicitHardBoundaryEvidence(match.jdEvidence)
       && !isExperienceYearsRequirement(match)
       && !hardBlockers.some((blocker) => blocker.kind === "indispensable_core" && blocker.requirement === match.requirement)) {
       const applyDetail = value.recommendation === "apply" ? "，recommendation 不能为 apply" : "";
       throw new ModelContractError("matchJob", `缺少 indispensable_core 硬性阻断：核心必备要求「${match.requirement}」状态为 missing${applyDetail}`);
     }
   }
-  const transferableCore = requirementMatches.some((item) => item.state === "transferable" && item.indispensable);
+  const transferableCore = requirementMatches.some((item) => (
+    item.state === "transferable"
+      && item.indispensable
+      && hasExplicitHardBoundaryEvidence(item.jdEvidence)
+  ));
   if (value.recommendation === "apply") {
     // apply 要求每一条核心必备项都有直接证据；仅可迁移证据自动降 caution，其余未决状态一律触发契约修复。
     if (!requirementMatches.length) {
       throw new ModelContractError("matchJob", "没有可核对的核心要求时 recommendation 不能为 apply，应使用 review");
     }
-    const unresolvedCore = requirementMatches.find((item) => item.indispensable && !["matched", "transferable"].includes(item.state));
+    const unresolvedCore = requirementMatches.find((item) => (
+      item.indispensable
+        && hasExplicitHardBoundaryEvidence(item.jdEvidence)
+        && !["matched", "transferable"].includes(item.state)
+    ));
     if (unresolvedCore) {
       throw new ModelContractError("matchJob", `核心必备要求「${unresolvedCore.requirement}」状态为 ${unresolvedCore.state}，recommendation 不能为 apply`);
     }
@@ -1217,10 +1295,6 @@ function validateMatchDecision(value, context = {}) {
   if (hardBlockers.length && recommendation !== "skip") throw new ModelContractError("matchJob", "已识别硬性阻断时 recommendation 必须为 skip");
   if (recommendation === "skip" && !hardBlockers.length) throw new ModelContractError("matchJob", "skip 必须包含至少一条可核对的结构化 hardBlockers");
   if (recommendation === "apply" && !["A", "B"].includes(result.fitLevel)) throw new ModelContractError("matchJob", "apply 的 fitLevel 必须为 A 或 B");
-  if (recommendation === "apply") {
-    const lackingEvidence = requirementMatches.some((item) => ["matched", "transferable"].includes(item.state) && (!item.jdEvidence || !item.resumeEvidence));
-    if (lackingEvidence) throw new ModelContractError("matchJob", "apply 的逐项匹配必须同时具备 JD 与候选人证据");
-  }
   if (["apply", "caution"].includes(recommendation)) {
     if (!result.fitReasons.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条具体匹配理由");
     if (!result.evidence.jd.length) throw new ModelContractError("matchJob", "apply/caution 至少需要一条 JD 证据");
@@ -1246,7 +1320,10 @@ function isDecisionHardBlocker(item) {
     && typeof item.jdEvidence === "string" && Boolean(item.jdEvidence.trim())
     && typeof item.resumeEvidence === "string" && Boolean(item.resumeEvidence.trim());
   if (!structured) return false;
-  if (item.kind === "indispensable_core") return hasExplicitCoreIncompatibilityEvidence(item.resumeEvidence);
+  if (item.kind === "indispensable_core") {
+    return hasExplicitHardBoundaryEvidence(item.jdEvidence)
+      && hasExplicitCoreIncompatibilityEvidence(item.resumeEvidence);
+  }
   if (item.kind === "eligibility") {
     return hasExplicitEligibilityConflictEvidence(item.requirement, item.jdEvidence, item.resumeEvidence);
   }
@@ -1389,8 +1466,8 @@ function hardBlockerText(value) {
 
 function isPolicySoftGap(value) {
   const gap = text(value);
-  if (/C\+\+|Golang|Go语言|\bGo\b|Spring|CUDA|模型训练|模型微调|算法训练|深度学习训练|(?:^|[^A-Za-z])Java(?:$|[^A-Za-z])|不符合.{0,12}(?:届别|在校|硬性资格)/i.test(gap)) return false;
-  return /(?:经验|年限).{0,20}(?:不足|未达到|较少|不满)|(?:3\s*[-~至]\s*5|\d+\s*年以上).{0,12}(?:经验|要求)|仅有.{0,12}实习|学历|本科|硕士|博士|985|211|RPA|MySQL|JavaScript|前端|未提及|未提供|无法确认|待确认/i.test(gap);
+  if (/不符合.{0,16}(?:届别|在校|明确硬性资格)|不予录用|不得(?:上岗|录用|入职)/i.test(gap)) return false;
+  return /(?:经验|年限).{0,20}(?:不足|未达到|较少|不满)|(?:3\s*[-~至]\s*5|\d+\s*年以上).{0,12}(?:经验|要求)|仅有.{0,12}实习|学历|本科|硕士|博士|完全缺少.{0,24}(?:经历|经验|技能|技术栈|能力)|未提及|未提供|无法确认|待确认/i.test(gap);
 }
 
 function validateCommunication(value) {
@@ -1492,6 +1569,25 @@ function computeCoreRequirementScore(requirementMatches = []) {
   return { score: points, total: core.length, ratio, level };
 }
 
+function hasStrongDirectCoreEvidence(requirementMatches = []) {
+  const core = requirementMatches.filter((item) => (
+    item?.foundation === true || item?.central === true || item?.indispensable === true
+  ));
+  if (!core.length) return false;
+  if (core.some((item) => (
+    item?.indispensable === true
+      && hasExplicitHardBoundaryEvidence(item?.jdEvidence)
+      && item?.state !== "matched"
+  ))) return false;
+  const { ratio } = computeCoreRequirementScore(core);
+  if (ratio === null || ratio < 0.8) return false;
+  return core.some((item) => (
+    item?.state === "matched"
+      && String(item?.jdEvidence || "").trim()
+      && String(item?.resumeEvidence || "").trim()
+  ));
+}
+
 function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   const { level } = computeCoreRequirementScore(requirementMatches);
 
@@ -1499,7 +1595,7 @@ function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   if (level === "信息不足") return "review";
 
   if (roleAlignment === "misaligned") {
-    if (level === "符合" || level === "大部分符合") return "review";
+    if (level !== "不符合") return "review";
     return "skip";
   }
 
@@ -1523,7 +1619,7 @@ function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
 }
 
 // 统计非核心且非明确可选的 missing 要求条目数。
-// 用于非核心缺口降级规则：可选/加分项不参与，普通非核心 missing ≥ 3 → 降一级。
+// 用于非核心缺口降级规则：可选/加分项不参与，普通非核心 missing ≥ 5 → 降一级。
 function countNonCentralMissing(requirementMatches = []) {
   return requirementMatches.filter((item) => (
     item?.central !== true
@@ -1541,7 +1637,7 @@ function isExplicitlyOptionalRequirement(item = {}) {
   if (!content) return false;
   return /(?:^|[：:；;，,\s（(])(?:加分项|加分条件)(?:[：:；;，,\s）)]|$)/i.test(content)
     || /(?:非必须|非必需|不作硬性要求|不是硬性要求|可选项?|nice[\s-]*to[\s-]*have|preferred|bonus)/i.test(content)
-    || /(?:有|具有|具备|拥有|熟悉|了解|掌握|使用|经验|能力|技能|背景).{0,48}(?:者)?优先(?:考虑|录用)?[。；;，,！!）)]*\s*$/i.test(content);
+    || /(?:有|具有|具备|拥有|熟悉|了解|掌握|精通|擅长|使用|会|能够|持有|经验|能力|技能|背景).{0,48}(?:者)?优先(?:考虑|录用)?[。；;，,！!）)]*\s*$/i.test(content);
 }
 
 module.exports = {
@@ -1553,7 +1649,9 @@ module.exports = {
   roleEvidenceDecisionState, // 保留向后兼容，后续会话移除
   hardBlockerText,
   requirementsForTrack,
+  validateIndispensableRequirement,
   computeCoreRequirementScore,
+  hasStrongDirectCoreEvidence,
   computeDecisionFromMatrix,
   countNonCentralMissing
 };

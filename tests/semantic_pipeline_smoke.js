@@ -314,10 +314,12 @@ function matchGenericContractSmoke() {
   assert.strictEqual(applyValidated.recommendation, "apply");
   assert.strictEqual(applyValidated.requirementMatches[0].state, "matched");
 
-  assert.throws(() => validateModelResult("matchJob", {
+  const aggregateEvidenceApply = validateModelResult("matchJob", {
     ...validApply,
     requirementMatches: [{ ...validApply.requirementMatches[0], jdEvidence: "" }]
-  }), (error) => error instanceof ModelContractError && /候选人证据|JD 与候选人证据|双侧证据|逐项匹配/.test(error.message));
+  });
+  assert.strictEqual(aggregateEvidenceApply.recommendation, "apply",
+    "apply 只要求总体双侧证据，不得因单个正向条目缺少重复证据字段而触发修复");
 
   assert.throws(() => validateModelResult("matchJob", {
     ...validApply,
@@ -423,9 +425,8 @@ function matchGenericContractSmoke() {
     hardBlockers: [],
     evidence: { jd: ["JD: requires core platform development"], resume: ["Resume: no related experience"] }
   };
-  assert.throws(() => validateModelResult("matchJob", missingIndispensableWithoutBlocker),
-    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
-    "missing indispensable core requirement must have an indispensable_core blocker");
+  assert.doesNotThrow(() => validateModelResult("matchJob", missingIndispensableWithoutBlocker),
+    "模型标为 indispensable 但 JD 没有明确硬边界时，不得强制制造 hard blocker");
 
   const repairedMissingIndispensable = validateModelResult("matchJob", {
     ...missingIndispensableWithoutBlocker,
@@ -588,8 +589,8 @@ async function contractRepairAndFailureSmoke() {
     confidence: 0.9,
     fitReasons: [],
     requirementMatches: [
-      { requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: "简历：德勤 AI 实习使用 Python" },
-      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：负责 RAG 知识库建设", resumeEvidence: "简历：负责企业知识库项目" }
+      { requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: "简历：德勤 AI 实习使用 Python" },
+      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：必须具备 RAG 知识库建设能力", resumeEvidence: "简历：负责企业知识库项目" }
     ],
     jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
@@ -1794,7 +1795,10 @@ function matchBoundaryContractSmoke() {
   // 历史字符串 blocker 仅用于展示旧分析；effectiveHardBlockers 保持展示兼容读取，但绝不参与新决策。
   assert.deepStrictEqual(effectiveHardBlockers({ hardBlockers: ["岗位要求 3-5 年经验，候选人经验不足"] }), []);
   assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["3-5年经验不足", "学历偏好为 985", "未提供 RPA 经验"] }), []);
-  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), ["完全缺少岗位核心 Java/Spring 经历"], "展示兼容仍保留历史硬缺口字符串");
+  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["完全缺少岗位核心 Java/Spring 经历"] }), [],
+    "技术栈名称本身不得让历史字符串升级为硬缺口");
+  assert.deepStrictEqual(effectiveHardBlockers({ blockingGaps: ["不符合明确硬性资格"] }), ["不符合明确硬性资格"],
+    "展示兼容只保留包含通用明确硬边界的历史字符串");
   assert.deepStrictEqual(
     effectiveHardBlockers({ hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }] }).map((item) => item.requirement || item),
     ["收费培训"]
@@ -1824,6 +1828,12 @@ function matchBoundaryContractSmoke() {
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
     kind: "indispensable_core", requirement: "独立交付", jdEvidence: "JD：必须独立交付", resumeEvidence: "简历：候选人仅参与过项目中的接口开发"
   }] }), [], "历史职责边界也不得被当成明确拒绝或不能");
+  assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "indispensable_core", requirement: "客户沟通", jdEvidence: "JD：负责客户沟通", resumeEvidence: "简历：候选人明确不接受客户沟通职责"
+  }] }), [], "只有模型布尔值和简历冲突、但 JD 没有明确硬边界时，不得进入 skip");
+  assert.strictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "indispensable_core", requirement: "客户沟通", jdEvidence: "JD：必须承担客户沟通", resumeEvidence: "简历：候选人明确不接受客户沟通职责"
+  }] }).length, 1, "模型判断、JD 明确硬边界与简历明确冲突同时成立时才允许硬阻断");
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
     kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence: "简历：未提供学历信息"
   }] }), [], "资格信息缺失不得进入历史决策路径");
@@ -2134,8 +2144,8 @@ async function understandingContractRepairSmoke() {
     roleSummary: "交付应用",
     responsibilityEvidence: ["JD：负责交付应用"],
     requirements: [
-      { label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" },
-      { label: "RAG", foundation: true, indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
+      { label: "Python", foundation: true, indispensable: true, evidence: "JD：必须熟练使用 Python" },
+      { label: "RAG", foundation: true, indispensable: true, evidence: "JD：必须具备 RAG 知识库建设能力" }
     ],
     eligibility: []
   };
@@ -2222,7 +2232,7 @@ function compactCentralRequirementSmoke() {
         label: "基础开发能力",
         foundation: false,
         central: false,
-        indispensable: true,
+        indispensable: false,
         evidence: "JD：具备一定基础开发能力"
       }
     ],
@@ -2239,13 +2249,14 @@ function compactCentralRequirementSmoke() {
     requirements: [{
       label: "基础开发能力",
       foundation: true,
-      indispensable: true,
+      indispensable: false,
       evidence: "JD：具备基础开发能力"
     }],
     eligibility: [],
     riskSignals: []
   });
-  assert.strictEqual(legacy.coreRequirements[0].central, true);
+  assert.strictEqual(legacy.coreRequirements[0].central, false,
+    "central 缺失时不得再由 indispensable 或 foundation 反向推导");
 
   const decision = validateModelResult("matchJob", {
     roleAlignment: "partially_aligned",
@@ -2615,7 +2626,12 @@ function roleEvidenceDecisionStateSmoke() {
 }
 
 function coreRequirementScoreSmoke() {
-  const { computeCoreRequirementScore, computeDecisionFromMatrix } = require("../src/core/model_contract");
+  const {
+    computeCoreRequirementScore,
+    computeDecisionFromMatrix,
+    hasStrongDirectCoreEvidence,
+    validateIndispensableRequirement
+  } = require("../src/core/model_contract");
 
   // transferable 是可迁移证据，不得与直接匹配等价。
   const t2 = computeCoreRequirementScore([
@@ -2676,6 +2692,181 @@ function coreRequirementScoreSmoke() {
   assert.strictEqual(mixed.score, 1.5, "混合: 1+0.5+0+0 = 1.5");
   assert.strictEqual(mixed.level, "部分符合", "1.5/4=37.5% → 部分符合");
 
+  const strongDirect = [
+    { requirement: "R1", state: "matched", foundation: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" },
+    { requirement: "R2", state: "matched", central: true, jdEvidence: "JD: R2", resumeEvidence: "Resume: R2" },
+    { requirement: "R3", state: "matched", indispensable: true, jdEvidence: "JD: R3", resumeEvidence: "Resume: R3" },
+    { requirement: "R4", state: "transferable", jdEvidence: "JD: R4", resumeEvidence: "Resume: R4" },
+    { requirement: "R5", state: "unknown", jdEvidence: "JD: R5", resumeEvidence: "" }
+  ];
+  assert.strictEqual(hasStrongDirectCoreEvidence(strongDirect), true,
+    "至少 3 条核心直接匹配、所有核心均已解决且逐项证据完整，应识别为强直接证据");
+  assert.strictEqual(computeCoreRequirementScore(strongDirect).level, "符合");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" },
+    { requirement: "R2", state: "transferable", indispensable: true, jdEvidence: "JD：必须具备 R2", resumeEvidence: "Resume: R2" },
+    { requirement: "R3", state: "matched", central: true, jdEvidence: "JD: R3", resumeEvidence: "Resume: R3" },
+    { requirement: "R4", state: "matched", central: true, jdEvidence: "JD: R4", resumeEvidence: "Resume: R4" }
+  ]), false, "未直接匹配的 indispensable 不得使用强直接证据例外");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" },
+    { requirement: "R2", state: "transferable", indispensable: true, jdEvidence: "JD：负责 R2", resumeEvidence: "Resume: R2" },
+    { requirement: "R3", state: "matched", central: true, jdEvidence: "JD: R3", resumeEvidence: "Resume: R3" },
+    { requirement: "R4", state: "matched", central: true, jdEvidence: "JD: R4", resumeEvidence: "Resume: R4" }
+  ]), true, "模型布尔值没有 JD 明确硬边界时，可迁移证据不得被机械当成硬阻断");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "" },
+    { requirement: "R2", state: "matched", central: true, jdEvidence: "JD: R2", resumeEvidence: "Resume: R2" },
+    { requirement: "R3", state: "matched", central: true, jdEvidence: "JD: R3", resumeEvidence: "Resume: R3" }
+  ]), true, "已有充分总体正向证据时，单个条目缺少重复证据字段不得阻止召回例外");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" }
+  ]), true, "只有一个明确核心要求的通用岗位也可以形成充分正向证据");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "", resumeEvidence: "" }
+  ]), false, "完全没有可核对证据的正向状态仍不得使用召回例外");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" },
+    { requirement: "R2", state: "matched", central: true, jdEvidence: "JD: R2", resumeEvidence: "Resume: R2" },
+    { requirement: "R3", state: "matched", central: true, jdEvidence: "JD: R3", resumeEvidence: "Resume: R3" },
+    { requirement: "R4", state: "matched", central: true, jdEvidence: "JD: R4", resumeEvidence: "Resume: R4" },
+    { requirement: "R5", state: "unknown", central: true, jdEvidence: "JD: R5", resumeEvidence: "" }
+  ]), true, "80% 核心正向证据已满足主线时，单个 unknown 不应机械封顶慎投");
+  assert.strictEqual(hasStrongDirectCoreEvidence([
+    { requirement: "R1", state: "matched", central: true, jdEvidence: "JD: R1", resumeEvidence: "Resume: R1" },
+    { requirement: "R2", state: "transferable", central: true, jdEvidence: "JD: R2", resumeEvidence: "Resume: R2" }
+  ]), false, "只有一条直接核心证据不构成强直接证据");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: true,
+    label: "独立开发基础前后端程序",
+    evidence: "JD：能够独立开发基础前后端程序"
+  }), true, "含糊普通要求由模型做语义判断，程序不得仅因关键词不足覆盖模型布尔值");
+  assert.throws(() => validateIndispensableRequirement({
+    indispensable: true,
+    label: "熟悉 Agent 平台者优先",
+    evidence: "JD：熟悉 Agent 平台者优先"
+  }), ModelContractError, "显式可选条件不得因主线或模型布尔值升级为硬门槛");
+  assert.throws(() => validateIndispensableRequirement({
+    indispensable: true,
+    label: "精通 Java 者优先",
+    evidence: "JD：精通 Java 者优先"
+  }), ModelContractError, "与硬技能词重叠的优先表达仍必须判为可选");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "精通 Java 者优先",
+    evidence: "JD：精通 Java 者优先"
+  }), false);
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: true,
+    label: "核心必备：生产部署",
+    evidence: "JD：核心必备能力"
+  }), true, "JD 明确写成核心必备时必须保留 indispensable");
+  for (const evidence of [
+    "JD：仅限持有安全证书人员",
+    "JD：需持有专业资格证书",
+    "JD：不接受无生产部署经验者",
+    "JD：未取得执业资格不得上岗",
+    "JD：任职必要条件是持有安全证书",
+    "JD：持证作为入职前提",
+    "JD：满足资质要求方可上岗",
+    "JD：无安全证书不予录用",
+    "JD：需熟练掌握生产部署工具"
+  ]) {
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: true,
+      label: "明确硬条件",
+      evidence
+    }), true, `明确硬约束必须保留 indispensable：${evidence}`);
+  }
+  assert.throws(() => validateIndispensableRequirement({
+    indispensable: false,
+    label: "安全证书",
+    evidence: "JD：必须持有安全证书"
+  }), ModelContractError, "明确硬条件不得接受 indispensable=false");
+  for (const evidence of [
+    "JD：必须掌握 Python，精通 Go 者优先",
+    "JD：3 年以上经验，并且必须持有安全证书"
+  ]) {
+    for (const indispensable of [false, true]) {
+      assert.throws(() => validateIndispensableRequirement({
+        indispensable,
+        label: "复合要求",
+        evidence
+      }), ModelContractError, `混合硬条件必须要求拆分：${evidence}`);
+    }
+  }
+  for (const evidence of [
+    "JD：必须拥有 3 年以上经验和 PMP 证书",
+    "JD：3 年以上经验需持有安全证书",
+    "JD：3 年以上项目管理经验 PMP 必备",
+    "JD：3 年以上护理经验 急诊轮班能力必须具备"
+  ]) {
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: true,
+      label: "同句复杂要求",
+      evidence
+    }), true, `无法可靠拆句时应有限度信任模型的 hard 判断：${evidence}`);
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: false,
+      label: "同句复杂要求",
+      evidence
+    }), false, `无法可靠拆句时应有限度信任模型的 soft 判断：${evidence}`);
+  }
+  for (const evidence of [
+    "JD：这不是必要条件",
+    "JD：不作为入职前提",
+    "JD：不限定专业",
+    "JD：该能力并非必须",
+    "JD：非必要条件",
+    "JD：非入职前提",
+    "JD：无硬性要求",
+    "JD：没有硬性要求",
+    "JD：不设硬性要求",
+    "JD：不能作为入职前提",
+    "JD：不应作为入职前提"
+  ]) {
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: false,
+      label: "明确非硬条件",
+      evidence
+    }), false, `否定 hard 的表述必须保持非硬：${evidence}`);
+    assert.throws(() => validateIndispensableRequirement({
+      indispensable: true,
+      label: "明确非硬条件",
+      evidence
+    }), ModelContractError);
+  }
+  for (const evidence of [
+    "JD：不满足必要条件者不予录用",
+    "JD：不符合入职前提者不得上岗"
+  ]) {
+    assert.throws(() => validateIndispensableRequirement({
+      indispensable: false,
+      label: "明确淘汰条件",
+      evidence
+    }), ModelContractError, `明确淘汰后果不得接受 indispensable=false：${evidence}`);
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: true,
+      label: "明确淘汰条件",
+      evidence
+    }), true, `明确淘汰后果必须保留 indispensable：${evidence}`);
+  }
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "普通主线能力",
+    evidence: "JD：负责主线交付"
+  }), false, "foundation/central 不得反向推导 indispensable");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "良好沟通能力",
+    evidence: "JD：核心要求：良好沟通能力"
+  }), false, "核心要求字样本身不得自动成为不可替代硬门槛");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "协作能力",
+    evidence: "JD：要求具备良好协作能力"
+  }), false, "要求具备字样本身不得自动成为不可替代硬门槛");
+
   console.log("coreRequirementScoreSmoke ok");
 }
 
@@ -2725,8 +2916,8 @@ function decisionMatrixSmoke() {
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","matched"])), "review");
   // misaligned + 大部分符合 → 慎投（不变）
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing"])), "review");
-  // misaligned + 部分符合 → 不推荐（不变）
-  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing","missing"])), "skip");
+  // misaligned + 部分符合 → 慎投（召回优先：仍有核心证据且无硬阻断）
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing","missing"])), "review");
   // misaligned + 不符合 → 不推荐（不变）
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["missing"])), "skip");
 
@@ -2762,7 +2953,7 @@ function nonCentralMissingGuardSmoke() {
   ]), 2, "职责动词和优先级术语不得被误判成可选条件");
 
   // applyRuleGuard 降级测试
-  // 构造一个 mostly_aligned + 3条核心 matched + 3条非核心 missing 的分析
+  // 构造一个 mostly_aligned + 2条核心 matched + 5条非核心 missing 的分析
   const base = {
     semanticStatus: "complete",
     recommendation: "apply",
@@ -2773,7 +2964,9 @@ function nonCentralMissingGuardSmoke() {
       { requirement: "核心2", state: "matched", central: true },
       { requirement: "非核心1", state: "missing", central: false },
       { requirement: "非核心2", state: "missing", central: false },
-      { requirement: "非核心3", state: "missing", central: false }
+      { requirement: "非核心3", state: "missing", central: false },
+      { requirement: "非核心4", state: "missing", central: false },
+      { requirement: "非核心5", state: "missing", central: false }
     ],
     jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
@@ -2793,14 +2986,75 @@ function nonCentralMissingGuardSmoke() {
 
   const guarded = applyRuleGuard(base, job);
   assert.strictEqual(guarded.recommendation, "caution",
-    "大部分匹配+符合 → 判定表给主投，非核心 missing=3 → 降为可投");
+    "大部分匹配+符合 → 判定表给主投，非核心 missing=5 → 降为可投");
   assert.strictEqual(guarded.decisionSource, "non_central_gap_guard");
 
-  // 非核心 missing < 3 → 不触发降级
-  const base2 = { ...base, requirementMatches: base.requirementMatches.slice(0, 4) }; // 只有 2 条非核心 missing
+  // 非核心 missing < 5 → 不触发降级
+  const base2 = { ...base, requirementMatches: base.requirementMatches.slice(0, 6) }; // 只有 4 条非核心 missing
   const guarded2 = applyRuleGuard(base2, job);
   assert.strictEqual(guarded2.recommendation, "apply",
-    "非核心 missing=2 < 3 → 不触发降级，判定表本身给主投");
+    "非核心 missing=4 < 5 → 不触发降级，判定表本身给主投");
+
+  const reviewWithFiveNonCentral = applyRuleGuard({
+    ...base,
+    roleAlignment: "misaligned",
+    requirementMatches: [
+      { requirement: "核心1", state: "matched", central: true },
+      { requirement: "核心2", state: "missing", central: true },
+      { requirement: "核心3", state: "missing", central: true },
+      { requirement: "非核心1", state: "missing", central: false },
+      { requirement: "非核心2", state: "missing", central: false },
+      { requirement: "非核心3", state: "missing", central: false },
+      { requirement: "非核心4", state: "missing", central: false },
+      { requirement: "非核心5", state: "missing", central: false }
+    ]
+  }, job);
+  assert.strictEqual(reviewWithFiveNonCentral.recommendation, "review",
+    "非核心缺口守卫最低停在 review，不得单独制造 skip");
+
+  const ordinaryLowConfidence = applyRuleGuard({
+    ...base,
+    confidence: 0.45,
+    requirementMatches: [
+      { requirement: "核心1", state: "matched", central: true, jdEvidence: "JD: core 1", resumeEvidence: "Resume: core 1" },
+      { requirement: "核心2", state: "matched", central: true, jdEvidence: "JD: core 2", resumeEvidence: "Resume: core 2" }
+    ]
+  }, job);
+  assert.strictEqual(ordinaryLowConfidence.recommendation, "apply",
+    "全部核心要求都有直接正向事实时，不得仅因模型自评置信度低而机械降到 review");
+  assert.strictEqual(ordinaryLowConfidence.decisionSource, "decision_matrix");
+
+  const strongDirectLowConfidence = applyRuleGuard({
+    ...base,
+    confidence: 0.45,
+    requirementMatches: [
+      { requirement: "核心1", state: "matched", foundation: true, central: true, indispensable: true, jdEvidence: "JD: core 1", resumeEvidence: "Resume: core 1" },
+      { requirement: "核心2", state: "matched", foundation: true, central: true, indispensable: true, jdEvidence: "JD: core 2", resumeEvidence: "Resume: core 2" },
+      { requirement: "核心3", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD: core 3", resumeEvidence: "Resume: core 3" },
+      { requirement: "普通可迁移", state: "transferable", indispensable: false },
+      { requirement: "普通未知", state: "unknown", indispensable: false },
+      { requirement: "普通要求", state: "missing", central: false }
+    ]
+  }, job);
+  assert.strictEqual(strongDirectLowConfidence.recommendation, "apply",
+    "强直接核心证据不得被低置信度与 transferable 硬性项重复降级");
+  assert.strictEqual(strongDirectLowConfidence.decisionSource, "decision_matrix");
+
+  const strongWithMaterialRisk = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    hiddenRisks: [{ severity: "medium", evidence: "JD: confirm delivery risk" }]
+  }, job);
+  assert.strictEqual(strongWithMaterialRisk.recommendation, "review",
+    "强直接证据不得绕过中高语义风险");
+  assert.strictEqual(strongWithMaterialRisk.decisionSource, "semantic_risk_guard");
+
+  const strongWithoutResumeEvidence = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    evidence: { jd: ["JD"], resume: [] }
+  }, job);
+  assert.strictEqual(strongWithoutResumeEvidence.recommendation, "review",
+    "强直接证据不得绕过总证据门禁");
+  assert.strictEqual(strongWithoutResumeEvidence.decisionSource, "model_evidence_gap");
 
   console.log("nonCentralMissingGuardSmoke ok");
 }
@@ -3042,7 +3296,7 @@ async function compactMatchEvidenceContractSmoke() {
       foundation: true,
       central: true,
       indispensable: true,
-      evidence: "JD：独立交付应用"
+      evidence: "JD：必须独立交付应用"
     }],
     eligibility: [],
     riskSignals: []
@@ -3063,7 +3317,7 @@ async function compactMatchEvidenceContractSmoke() {
     fitLevel: "A",
     confidence: 0.9,
     fitReasons: ["独立交付已有简历证据"],
-    requirementMatches: [{ requirement: "独立交付", state: "matched", indispensable: true, jdEvidence: "JD：独立交付应用", resumeEvidence: "简历：独立交付过应用" }],
+    requirementMatches: [{ requirement: "独立交付", state: "matched", indispensable: true, jdEvidence: "JD：必须独立交付应用", resumeEvidence: "简历：独立交付过应用" }],
     jobQuality: { level: "normal", concerns: [] },
     hardBlockers: [],
     softGaps: [],
@@ -3200,7 +3454,7 @@ async function compactMatchEvidenceContractSmoke() {
     coreResponsibilities: [],
     responsibilityEvidence: ["JD：负责应用交付"],
     coreRequirements: [
-      { label: "独立交付应用", indispensable: true, evidence: "JD：独立完成应用交付" },
+      { label: "独立交付应用", indispensable: true, evidence: "JD：必须独立完成应用交付" },
       { label: "客户需求沟通", indispensable: false, evidence: "JD：与客户确认需求" }
     ],
     preferredRequirements: [],
@@ -3235,9 +3489,9 @@ async function compactMatchEvidenceContractSmoke() {
   assert.strictEqual(direct.confidence, 0.9);
   assert.deepStrictEqual(direct.jobQuality, jobUnderstanding.jobQuality);
   assert.strictEqual(direct.requirementMatches[0].requirement, "独立交付应用");
-  assert.strictEqual(direct.requirementMatches[0].jdEvidence, "JD：独立完成应用交付");
+  assert.strictEqual(direct.requirementMatches[0].jdEvidence, "JD：必须独立完成应用交付");
   assert.deepStrictEqual(direct.hardBlockers, []);
-  assert(direct.evidence.jd.includes("JD：独立完成应用交付"));
+  assert(direct.evidence.jd.includes("JD：必须独立完成应用交付"));
   assert(direct.evidence.resume.includes("简历：独立交付过知识库应用"));
   const compactNonCoreGap = validateModelResult("matchJob", {
     ...compactDirectPayload,
@@ -3575,7 +3829,7 @@ async function compactMatchEvidenceContractSmoke() {
 
   const tenureUnderstanding = validateModelResult("understandJob", {
     ...jobUnderstanding,
-    coreRequirements: [{ label: "3 年以上相关经验", indispensable: true, evidence: "JD：要求 3 年以上相关经验" }],
+    coreRequirements: [{ label: "3 年以上相关经验", indispensable: false, evidence: "JD：要求 3 年以上相关经验" }],
     eligibilityConstraints: []
   });
   const tenureGap = validateModelResult("matchJob", {
@@ -3604,7 +3858,7 @@ async function compactMatchEvidenceContractSmoke() {
 
   const workHistoryUnderstanding = validateModelResult("understandJob", {
     ...jobUnderstanding,
-    coreRequirements: [{ label: "3 年以上相关工作经历", indispensable: true, evidence: "JD：要求 3 年以上相关工作经历" }],
+    coreRequirements: [{ label: "3 年以上相关工作经历", indispensable: false, evidence: "JD：要求 3 年以上相关工作经历" }],
     eligibilityConstraints: []
   });
   const workHistoryGap = validateModelResult("matchJob", {
@@ -3619,7 +3873,7 @@ async function compactMatchEvidenceContractSmoke() {
 
   const chineseYearsUnderstanding = validateModelResult("understandJob", {
     ...jobUnderstanding,
-    coreRequirements: [{ label: "两年以上工作经验", indispensable: true, evidence: "JD：要求两年以上工作经验" }],
+    coreRequirements: [{ label: "两年以上工作经验", indispensable: false, evidence: "JD：要求两年以上工作经验" }],
     eligibilityConstraints: []
   });
   const chineseYearsGap = validateModelResult("matchJob", {
@@ -3739,8 +3993,8 @@ function understanding(jobId) {
     businessScenario: "企业知识库",
     coreResponsibilities: [{ label: "企业知识库应用开发", evidence: "JD：负责 RAG 知识库和 Agent 应用开发" }],
     coreRequirements: [
-      { label: "Python", foundation: true, indispensable: true, evidence: "JD：熟练使用 Python" },
-      { label: "RAG", indispensable: true, evidence: "JD：负责 RAG 知识库建设" }
+      { label: "Python", foundation: true, indispensable: true, evidence: "JD：必须熟练使用 Python" },
+      { label: "RAG", indispensable: true, evidence: "JD：必须具备 RAG 知识库建设能力" }
     ],
     preferredRequirements: [],
     outcomeExpectations: [],
@@ -3762,8 +4016,8 @@ function decision(recommendation, fitLevel, resumeEvidence) {
     confidence: 0.88,
     fitReasons: ["岗位核心职责与候选人的 Python/RAG 项目经验对应"],
     requirementMatches: [
-      { requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：熟练使用 Python", resumeEvidence: `简历：${resumeEvidence}` },
-      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：负责 RAG 知识库建设", resumeEvidence: `简历：${resumeEvidence}` }
+      { requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: `简历：${resumeEvidence}` },
+      { requirement: "RAG", state: "matched", indispensable: true, jdEvidence: "JD：必须具备 RAG 知识库建设能力", resumeEvidence: `简历：${resumeEvidence}` }
     ],
     jobQuality: { level: "normal", concerns: [] },
     missingPoints: [],

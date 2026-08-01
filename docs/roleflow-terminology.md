@@ -10,8 +10,11 @@ metadata:
 
 ## 岗位要求分类
 
-- **基础要求**（foundation）：JD 里提到的关键能力或经验，比如"Python精通""熟悉 LangChain"
-- **硬性要求**（indispensable，不可或缺）：没它就不行的要求，比如 Python 岗不会 Python
+- **基础要求**（foundation）：直接支撑岗位主要交付结果的能力或经验，例如
+  客户开发、账务结算、设备操作或业务系统交付
+- **硬性要求**（indispensable，不可或缺）：模型判断为不可协商的要求。
+  这个布尔值可以参与核心排序，但只有 JD 明确硬边界和简历明确冲突同时存在时
+  才能形成硬性阻断
 - **核心要求**：`foundation || central || indispensable` 任一字段为 true 即计入核心集合
 
 ## 四档建议
@@ -34,7 +37,9 @@ metadata:
 ## 逐条要求匹配状态（requirementMatches.state）
 
 - **直接对上**（matched）：简历有直接证据
-- **可显著推导**（transferable，可迁移）：没有直接证据，但相关能力可以显著迁移。推导关系必须紧密，比如"熟悉 LangGraph 开发 Agent"可以推导出"有 Agent 架构设计能力"。不能宽松推导（如"会用 ChatGPT"不能推导出"会训练大模型"）
+- **可显著推导**（transferable，可迁移）：没有直接证据，但底层能力可以紧密
+  迁移到不同工具、行业或工作对象。宽泛相似、只共享一个关键词或只有通用能力
+  不能算可迁移
 - **对不上**（missing）：简历没有相关证据
 - **未知**（unknown）：信息不足无法判断
 
@@ -57,9 +62,12 @@ metadata:
 ## 其他
 
 - **通道**（bucket）：运行时展示与工作流安全上限，分主投（primary）、沟通（talk）、备选（backup）；benchmark pass 不比较 bucket
-- **证据**（evidence）：简历中对某条要求的具体证明，必须以"简历："开头引用原文
+- **证据**（evidence）：可核对的 JD 或简历事实。正向推荐必须同时有总体 JD
+  与简历证据；不要求每个正向条目重复填写同一事实
 - **缺口**（gap）：核心要求对不上或可推导的情况
-- **硬性阻断**（hardBlocker）：经过核实的、不可沟通的排除理由，必须是 indispensable 且 state=missing 且有明确的拒绝证据
+- **硬性阻断**（hardBlocker）：经过核实的不可沟通排除理由。核心要求阻断必须
+  同时满足 `indispensable=true`、JD 有明确不可协商边界、`state=missing`，
+  且简历有明确不兼容事实
 
 ## 兼容概念
 

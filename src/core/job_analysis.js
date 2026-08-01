@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix, countNonCentralMissing } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix, hasStrongDirectCoreEvidence, countNonCentralMissing } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -335,12 +335,13 @@ function applyRuleGuard(analysis, job) {
   // === 三、查判定表 → 初步建议 ===
   const matrixRec = computeDecisionFromMatrix(analysis.roleAlignment, analysis.requirementMatches);
   let guarded = { ...analysis, recommendation: matrixRec, decisionSource: "decision_matrix" };
+  const strongDirectCoreEvidence = hasStrongDirectCoreEvidence(analysis.requirementMatches);
 
   // === 三-B、非核心缺口降级 ===
   const nonCentralMissing = countNonCentralMissing(analysis.requirementMatches);
-  if (nonCentralMissing >= 3 && ["apply", "caution", "review"].includes(guarded.recommendation)) {
-    const downgradeMap = { apply: "caution", caution: "review", review: "skip" };
-    const levelHint = { apply: "B", caution: "C", review: "D" };
+  if (nonCentralMissing >= 5 && ["apply", "caution"].includes(guarded.recommendation)) {
+    const downgradeMap = { apply: "caution", caution: "review" };
+    const levelHint = { apply: "B", caution: "C" };
     guarded = addGuard(
       { ...analysis },
       downgradeMap[guarded.recommendation],
@@ -354,11 +355,11 @@ function applyRuleGuard(analysis, job) {
   // === 四、降级修正 ===
 
   // 4a. 低置信度 → 最高慎投
-  if (Number(analysis.confidence ?? 0) < 0.62 && matrixRec === "apply") {
-    guarded = addGuard({ ...analysis }, "caution", "B", "模型置信度较低，需要先沟通确认。", analysis.semanticStatus, "model_low_confidence");
-  }
-  // 还检查 review 之上
-  if (Number(analysis.confidence ?? 0) < 0.62 && matrixRec === "caution") {
+  if (
+    Number(analysis.confidence ?? 0) < 0.62
+    && ["apply", "caution"].includes(matrixRec)
+    && !strongDirectCoreEvidence
+  ) {
     guarded = addGuard({ ...analysis }, "review", "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
   }
 
@@ -368,7 +369,7 @@ function applyRuleGuard(analysis, job) {
   }
 
   // 4c. 存在 indispensable（硬性）要求且只有可显著推导证据 → 主投降可投
-  if (guarded.recommendation === "apply" && hasTransferableIndispensable(analysis)) {
+  if (guarded.recommendation === "apply" && hasTransferableIndispensable(analysis) && !strongDirectCoreEvidence) {
     guarded = addGuard({ ...analysis }, "caution", "B", "核心硬性要求仅有可迁移证据，建议先沟通确认再投递。", analysis.semanticStatus, "indispensable_transferable_guard");
   }
 
