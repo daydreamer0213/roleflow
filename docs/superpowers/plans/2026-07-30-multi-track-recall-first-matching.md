@@ -2323,6 +2323,32 @@ evaluation branch, or live verification.
 - Use candidate evaluated `ffd9872...`, not this immediate binding commit, in
   the v4 manifest, proof, temporary evaluation branch, and live verification.
 
+### Recall-first v4 wrapper-only attempt and v4r2 replacement root
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4-first-3-20260801`
+  unchanged. PowerShell treated Node's SQLite experimental warning as a
+  terminating native stderr record before the wrapper could retain the child
+  exit code. The runner created only a fresh SQLite schema: there is no
+  `match-result.json`, every application/model-cache/business table count is
+  zero, and no model call occurred. The fixed candidate worktree was restored
+  to its original branch and clean commit.
+- Do not reuse or overwrite that root. No product, runner, fixture, prompt, or
+  acceptance policy changes are required. Capture the next child process exit
+  code without promoting stderr warnings to PowerShell exceptions.
+- The replacement roots, both confirmed absent before this amendment, are
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-full-20-20260801`.
+  All prior v4 gates and exact zero-based diagnostic indices `4,9,10` remain
+  unchanged.
+
+The docs-only commit containing this amendment is the replacement candidate
+evaluated checkpoint. Candidate product
+`2e030481b34f3cdee97ab3d404f76f084451bb7c` remains its strict ancestor.
+Record the evaluated SHA in one immediate docs-only binding and use evaluated,
+not the binding, in the v4r2 manifest/proof/live branch.
+
 ### Recall-first v3 structural-diagnostic checkpoint (2026-08-01)
 
 - The first v3 live diagnostic root is now immutable:

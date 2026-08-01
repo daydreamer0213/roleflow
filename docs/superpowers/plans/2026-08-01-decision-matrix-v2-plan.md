@@ -737,3 +737,22 @@ commit in every private artifact and live verification.
 - This immediate docs-only binding commit must not replace candidate evaluated
   `ffd9872df3235879c4d009e5c959498029841d06` in private artifacts or live
   execution.
+
+### v4 wrapper-only attempt and v4r2 root
+
+- Preserve the v4 three-row root. A PowerShell stderr-handling mistake stopped
+  the wrapper on Node's SQLite experimental warning. The private cache contains
+  only five schema migrations, zero model-cache/business rows, and no match
+  result; therefore no model call or product judgment occurred.
+- Product, harness, frozen inputs, prompts, and gates remain unchanged. Use the
+  absent replacement roots
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-full-20-20260801`.
+  The three-row command still uses zero-based `4,9,10`.
+
+The docs-only commit containing this amendment is the replacement candidate
+evaluated checkpoint. Product
+`2e030481b34f3cdee97ab3d404f76f084451bb7c` remains its strict ancestor.
+Bind the evaluated SHA immediately, and use evaluated rather than the binding
+commit in all v4r2 private artifacts and live execution.
