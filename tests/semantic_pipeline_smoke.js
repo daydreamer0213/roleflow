@@ -91,6 +91,7 @@ const db = openDb(dbPath);
     roleAlignmentEvidenceContractSmoke();
     await understandingContractRepairSmoke();
     coreRequirementScoreSmoke();
+    decisionMatrixSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -2624,6 +2625,60 @@ function coreRequirementScoreSmoke() {
   assert.strictEqual(mixed.level, "大部分符合", "2.5/4=62.5% → 大部分符合");
 
   console.log("coreRequirementScoreSmoke ok");
+}
+
+function decisionMatrixSmoke() {
+  const { computeDecisionFromMatrix } = require("../src/core/model_contract");
+
+  // 辅助函数：创建指定状态的 requirementMatches
+  function reqs(states) {
+    return states.map((s, i) => ({ requirement: `R${i+1}`, state: s, central: true }));
+  }
+
+  // === 匹配(aligned) 列 ===
+  // aligned + 符合 → 主投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["matched","matched"])), "apply");
+  // aligned + 大部分符合 → 主投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["matched","missing"])), "apply");
+  // aligned + 部分符合 → 可投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["unknown","missing"])), "caution");
+  // aligned + 不符合 → 慎投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["missing"])), "review");
+
+  // === 大部分匹配(mostly_aligned) 列 ===
+  // mostly_aligned + 符合 → 可投（旧:主投） ★变化
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","matched"])), "caution",
+    "大部分匹配+符合 → 可投（方向不完全对口，先沟通确认）");
+  // mostly_aligned + 大部分符合 → 可投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","missing"])), "caution");
+  // mostly_aligned + 部分符合 → 可投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["unknown","missing"])), "caution");
+  // mostly_aligned + 不符合 → 慎投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["missing"])), "review");
+
+  // === 部分匹配(partially_aligned) 列 ===
+  // partially_aligned + 符合 → 可投（旧:慎投） ★变化
+  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["matched","matched"])), "caution",
+    "部分匹配+核心符合 → 可投（方向偏但核心对得上）");
+  // partially_aligned + 大部分符合 → 慎投（旧:慎投，但区分于符合） ★变化
+  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["matched","missing"])), "review");
+  // partially_aligned + 部分符合 → 慎投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["unknown","missing"])), "review");
+  // partially_aligned + 不符合 → 不推荐（旧:慎投） ★变化
+  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["missing"])), "skip",
+    "部分匹配+核心不符合 → 不推荐");
+
+  // === 不匹配(misaligned) 列 ===
+  // misaligned + 符合 → 慎投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","matched"])), "review");
+  // misaligned + 大部分符合 → 慎投（不变）
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing"])), "review");
+  // misaligned + 部分符合 → 不推荐（不变）
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["unknown","missing"])), "skip");
+  // misaligned + 不符合 → 不推荐（不变）
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["missing"])), "skip");
+
+  console.log("decisionMatrixSmoke ok");
 }
 
 function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" } = {}) {

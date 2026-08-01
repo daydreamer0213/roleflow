@@ -1490,32 +1490,29 @@ function computeCoreRequirementScore(requirementMatches = []) {
 
 function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   const { level } = computeCoreRequirementScore(requirementMatches);
-  const aligned = roleAlignment === "aligned";
-  const mostlyAligned = roleAlignment === "mostly_aligned";
-  const partial = roleAlignment === "partially_aligned";
-  const misaligned = roleAlignment === "misaligned";
 
-  if (misaligned) {
-    if (level === "符合" || level === "大部分符合") return "review"; // 方向不匹配但核心对口 → 慎投
-    return "skip"; // 方向不匹配且核心大面积对不上 → 不推荐
+  if (roleAlignment === "misaligned") {
+    if (level === "符合" || level === "大部分符合") return "review";
+    return "skip";
   }
 
-  if (partial) return "review"; // 部分匹配 → 始终慎投
-
-  if (level === "不符合") return "review"; // 方向匹配但无核心证据 → 保守慎投
-
-  if (level === "符合") return "apply";    // 匹配/大部分匹配 + 符合 → 主投
-
-  if (mostlyAligned && level === "部分符合") return "caution";
-  if (aligned && level === "部分符合") return "caution";
-
-  // 大部分符合 + 匹配 → 主投, 大部分符合 + 大部分匹配 → 可投
-  if (level === "大部分符合") {
-    if (aligned) return "apply";
-    return "caution"; // mostly_aligned
+  if (roleAlignment === "partially_aligned") {
+    if (level === "符合") return "caution";
+    if (level === "大部分符合" || level === "部分符合") return "review";
+    return "skip"; // 不符合 → 不推荐
   }
 
-  return "review"; // 兜底
+  // aligned / mostly_aligned
+  if (level === "不符合") return "review";
+
+  if (roleAlignment === "mostly_aligned" && level === "符合") return "caution";
+  if (roleAlignment === "aligned" && level === "符合") return "apply";
+
+  if (level === "部分符合") return "caution";
+
+  // 大部分符合
+  if (roleAlignment === "aligned") return "apply";
+  return "caution"; // mostly_aligned + 大部分符合
 }
 
 module.exports = {
