@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix, countNonCentralMissing } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
@@ -335,6 +335,21 @@ function applyRuleGuard(analysis, job) {
   // === 三、查判定表 → 初步建议 ===
   const matrixRec = computeDecisionFromMatrix(analysis.roleAlignment, analysis.requirementMatches);
   let guarded = { ...analysis, recommendation: matrixRec, decisionSource: "decision_matrix" };
+
+  // === 三-B、非核心缺口降级 ===
+  const nonCentralMissing = countNonCentralMissing(analysis.requirementMatches);
+  if (nonCentralMissing >= 3 && ["apply", "caution", "review"].includes(guarded.recommendation)) {
+    const downgradeMap = { apply: "caution", caution: "review", review: "skip" };
+    const levelHint = { apply: "B", caution: "C", review: "D" };
+    guarded = addGuard(
+      { ...analysis },
+      downgradeMap[guarded.recommendation],
+      levelHint[guarded.recommendation],
+      `存在 ${nonCentralMissing} 条非核心硬技能缺失，建议降级处理。`,
+      analysis.semanticStatus,
+      "non_central_gap_guard"
+    );
+  }
 
   // === 四、降级修正 ===
 

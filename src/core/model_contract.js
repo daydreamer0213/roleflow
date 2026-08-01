@@ -1515,6 +1515,14 @@ function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   return "caution"; // mostly_aligned + 大部分符合
 }
 
+// 统计非核心（central !== true）且状态为 missing 的要求条目数。
+// 用于非核心缺口降级规则：非核心 missing ≥ 3 → 降一级。
+function countNonCentralMissing(requirementMatches = []) {
+  return requirementMatches.filter((item) => (
+    item?.central !== true && item?.state === "missing"
+  )).length;
+}
+
 module.exports = {
   ModelContractError,
   validateModelResult,
@@ -1525,5 +1533,6 @@ module.exports = {
   hardBlockerText,
   requirementsForTrack,
   computeCoreRequirementScore,
-  computeDecisionFromMatrix
+  computeDecisionFromMatrix,
+  countNonCentralMissing
 };

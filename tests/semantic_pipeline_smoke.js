@@ -92,6 +92,7 @@ const db = openDb(dbPath);
     await understandingContractRepairSmoke();
     coreRequirementScoreSmoke();
     decisionMatrixSmoke();
+    nonCentralMissingGuardSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -2679,6 +2680,67 @@ function decisionMatrixSmoke() {
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["missing"])), "skip");
 
   console.log("decisionMatrixSmoke ok");
+}
+
+function nonCentralMissingGuardSmoke() {
+  const { countNonCentralMissing } = require("../src/core/model_contract");
+
+  // 计数函数测试
+  assert.strictEqual(countNonCentralMissing([]), 0, "空数组 → 0");
+  assert.strictEqual(countNonCentralMissing([
+    { state: "missing", central: false },
+    { state: "missing", central: false },
+    { state: "matched", central: false }
+  ]), 2, "2 条非核心 missing");
+  assert.strictEqual(countNonCentralMissing([
+    { state: "missing", central: true },   // 核心的不计
+    { state: "missing", central: false },
+    { state: "missing", central: false },
+    { state: "missing", central: false }
+  ]), 3, "3 条非核心 missing（忽略核心）");
+
+  // applyRuleGuard 降级测试
+  // 构造一个 mostly_aligned + 3条核心 matched + 3条非核心 missing 的分析
+  const base = {
+    semanticStatus: "complete",
+    recommendation: "apply",
+    confidence: 0.9,
+    roleAlignment: "mostly_aligned",
+    requirementMatches: [
+      { requirement: "核心1", state: "matched", central: true },
+      { requirement: "核心2", state: "matched", central: true },
+      { requirement: "非核心1", state: "missing", central: false },
+      { requirement: "非核心2", state: "missing", central: false },
+      { requirement: "非核心3", state: "missing", central: false }
+    ],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    evidence: { jd: ["JD"], resume: ["Resume"] }
+  };
+
+  const job = {
+    source: "boss",
+    sourceId: "non-central-missing-test",
+    score: 20,
+    level: "优先",
+    tags: [],
+    matches: [],
+    risks: [],
+    qualityTags: []
+  };
+
+  const guarded = applyRuleGuard(base, job);
+  assert.strictEqual(guarded.recommendation, "review",
+    "大部分匹配+符合 → 判定表给可投，非核心 missing=3 → 降为慎投");
+  assert.strictEqual(guarded.decisionSource, "non_central_gap_guard");
+
+  // 非核心 missing < 3 → 不触发降级
+  const base2 = { ...base, requirementMatches: base.requirementMatches.slice(0, 4) }; // 只有 2 条非核心 missing
+  const guarded2 = applyRuleGuard(base2, job);
+  assert.strictEqual(guarded2.recommendation, "caution",
+    "非核心 missing=2 < 3 → 不触发降级，判定表本身给可投");
+
+  console.log("nonCentralMissingGuardSmoke ok");
 }
 
 function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" } = {}) {
