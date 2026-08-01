@@ -2577,3 +2577,27 @@ the manifest, v3 proof, temporary evaluation branch, or live verification.
 - Deferred, non-blocking task after product stability: inventory and slim the model prompts, then A/B test latency, output stability, safety gates, keep retention, and obvious-mismatch exclusion before adopting any shorter prompt. The deterministic checkpoint does not change prompt length.
 
 Evaluated checkpoint binding: `3503d28e7ceadf6eceb169de485f55c82acb7c38`; evaluated product ancestor: `ddb8535e3b5798fe3a576610736b134d82557a1b`.
+
+## 2026-08-01 v5 live result and role-direction repair
+
+- Preserved v5 diagnostic root: `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-first-3-20260801`.
+  - Recommendation `3/3`, bucket `2/3`, all semantic rows complete, no failed/stale/pending/partial output, and no hard false exclusion.
+- Preserved v5 full root: `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-full-20-20260801`.
+  - Live process and all structural/privacy gates passed with a fresh cache.
+  - Recommendation exactness improved to `10/20`; keep retention remained `15/15`; false hard exclusion remained `0`.
+  - Obvious-mismatch exclusion was still `0/5`; all five exclude rows remained in `backup`, so v5 is a product-policy failure and is not accepted.
+- Root cause after deterministic sampling:
+  - Local `computeDecisionFromMatrix` promoted `misaligned` rows back to review when generic requirement overlap existed.
+  - `decisionBucket` promoted a non-eligibility `skip` back to a communicable bucket, and salary/experience soft tags could return `backup` before the direction boundary.
+  - Multi-track placeholder role gaps and zero-requirement evidence-envelope behavior required explicit contract closure before `misaligned` could safely become an exclusion boundary.
+- Product repair commit: `c073cf376c244ee5bb3c6ef01da95706bc322dc6`.
+  - `partially_aligned` remains the adjacent-role human-review path.
+  - `misaligned` now means a different primary work object/action/deliverable and derives `skip`; a complete `misaligned` result maps to `not_recommended` before salary/experience soft sorting.
+  - The match prompt removes the prior IT-specific example lists and uses provider/domain-neutral primary-delivery semantics. No model field or model call was added.
+  - Multi-track fallback without a foundation/central missing requirement uses closed selected-track bindings: `D<n>|work_object`, `D<n>|main_action`, or `D<n>|deliverable`. Invalid, mixed, out-of-range, or oversized bindings fail the contract. Verified selected-track JD and resume direction evidence enter the common evidence envelope.
+  - Match cache version is `match-decision-v36`.
+- Verification: targeted semantic/screening/adapter tests and all `47` offline checks passed; `git diff --check` passed. Final independent review reported Critical `0`, Important `0`, `Spec PASS`, and `Code quality APPROVED`.
+- Fresh next roots, with no cache reuse:
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v6-first-3-20260801`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v6-full-20-20260801`
+- Acceptance remains outcome-based: disclose fine-tier differences, retain all confirmed keep opportunities, exclude all five confirmed obvious primary-direction mismatches, keep false hard exclusions at zero, and pass every structural/privacy gate.

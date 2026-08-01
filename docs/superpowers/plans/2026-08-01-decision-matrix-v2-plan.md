@@ -778,3 +778,11 @@ The next acceptance run must use fresh v5 directories and caches. Fine-tier appl
 Prompt simplification is intentionally deferred until this suite is stable. That later task must start with a prompt inventory and controlled A/B measurement; no prompt should be shortened merely on intuition, and no longer prompt should be added during the current determinism experiment.
 
 Evaluated checkpoint binding: `3503d28e7ceadf6eceb169de485f55c82acb7c38`; evaluated product ancestor: `ddb8535e3b5798fe3a576610736b134d82557a1b`.
+
+## 2026-08-01 v5 result and closed primary-direction boundary
+
+The v5 diagnostic completed `3/3` recommendations with one allowed display-bucket difference. The fresh v5 full run remained structurally complete and retained `15/15` useful opportunities, but excluded `0/5` confirmed obvious direction mismatches; recommendation exactness was `10/20`. The root is preserved and rejected for product policy, not for transport, privacy, empty output, or cache failure.
+
+Product commit `c073cf376c244ee5bb3c6ef01da95706bc322dc6` makes `misaligned` a verified primary-direction exclusion while preserving `partially_aligned` for adjacent-role review. It closes soft-tag ordering, multi-track evidence binding, contract repair, and zero-requirement evidence-envelope gaps. The match prompt is shorter and removes the previous IT-suite example lists; it adds no field or call. Multi-track fallback uses only closed selected-track `D<n>|dimension` bindings and match cache version `match-decision-v36`.
+
+All 47 offline checks and diff validation passed. Final independent review: Critical 0, Important 0, Spec PASS, Code quality APPROVED. The next live runs must use fresh v6 roots and caches, diagnostic indices `4,9,10` first, followed by all 20 only if the diagnostic is structurally healthy.
