@@ -167,13 +167,31 @@ server.listen(0, "127.0.0.1", async () => {
       { ok: true, marker: PRIVATE_RESPONSE_CONTENT_SENTINEL }
     );
     assert.strictEqual(requests, 2);
-    assert.strictEqual(payloads[1].temperature, 0.1);
+    assert.strictEqual(payloads[1].temperature, 0,
+      "understandJob evidence extraction must use deterministic temperature");
     assert.strictEqual(payloads[1].max_tokens, 4096);
 
     const retryAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", jsonMode: false, maxRetries: 1, logger });
     assert.deepStrictEqual(await retryAdapter.chatJson("return json", { test: true }, { kind: "matchJob" }), { retried: true });
     assert.strictEqual(requests, 4);
     assert.deepStrictEqual(payloads.slice(2, 4).map((payload) => payload.max_tokens), [4096, 4096]);
+    assert.deepStrictEqual(payloads.slice(2, 4).map((payload) => payload.temperature), [0, 0],
+      "every matchJob retry must keep deterministic temperature");
+    const generativeAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "test",
+      temperature: 0.37,
+      jsonMode: false,
+      maxRetries: 0,
+      logger
+    });
+    assert.deepStrictEqual(
+      await generativeAdapter.chatJson("return json", { test: true }, { kind: "draftCommunication" }),
+      { retried: true }
+    );
+    assert.strictEqual(payloads.at(-1).temperature, 0.37,
+      "non-evidence generation must preserve its configured temperature");
     assert.deepStrictEqual(parseJsonContent("prefix {\"value\":1} suffix"), { value: 1 });
     const understandCompletedMetric = metrics.find((metric) =>
       metric.event === "model_call_completed" && metric.data.kind === "understandJob");

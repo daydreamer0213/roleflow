@@ -2,6 +2,7 @@ const { validateModelResult } = require("../../core/model_contract");
 
 const MAX_ADAPTIVE_RESPONSE_TOKENS = 8192;
 const DEEPSEEK_V4_MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
+const DETERMINISTIC_EVIDENCE_KINDS = new Set(["understandJob", "matchJob"]);
 const EXPANDABLE_RESPONSE_ERRORS = new Set([
   "MODEL_OUTPUT_TRUNCATED",
   "MODEL_INVALID_JSON",
@@ -292,7 +293,7 @@ class OpenAICompatibleAdapter {
     try {
       const body = {
         model: this.model,
-        temperature: this.temperature,
+        temperature: DETERMINISTIC_EVIDENCE_KINDS.has(kind) ? 0 : this.temperature,
         max_tokens: maxTokens,
         messages: [
           { role: "system", content: `${systemPrompt} 只输出 JSON，不要输出 Markdown。` },
