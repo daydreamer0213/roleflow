@@ -2617,3 +2617,9 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Offline verification: 47/47 checks passed and `git diff --check` passed. Independent review: Critical 0, Important 0, Spec PASS, Code quality APPROVED.
 - Fresh v7 roots are reserved as `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v7-first-3-20260801` and `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v7-full-20-20260801`. No earlier cache or result will be reused.
 - After the matching policy is stable, run a separate prompt-compaction A/B focused on latency, variance, and boundary accuracy. This is intentionally non-blocking for v7 acceptance.
+
+### Evaluated checkpoint binding
+
+- Candidate product commit: `d342ecc89c1f1fa4ad92b7a36de18abf850abbe8`.
+- Candidate evaluated commit: `9c2e32abc324d46c2b0f5932a516b59d7ee6ade8`.
+- The product commit is required to remain a strict ancestor of the evaluated checkpoint and all later binding-only documentation commits.
