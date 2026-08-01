@@ -668,3 +668,13 @@ initializing the v3r3 diagnostic manifest and proof.
 
 The docs-only commit containing this section is the next candidate evaluated
 checkpoint. Record it in an immediate descendant binding before v3r4 setup.
+
+### complete requirements-diagnostic exact binding
+
+- Candidate evaluated/product:
+  `b188c20751cc180e79eb5e5d3070c09b90d8217d` /
+  `cf1793a79877c8150385317853ff19e6994a2f00`.
+- Baseline evaluated/product:
+  `8387a92f3978d57c72418e1c65205643c2291c51` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- The binding commit is not the evaluated commit for private artifacts.
