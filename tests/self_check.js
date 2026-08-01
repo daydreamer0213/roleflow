@@ -448,7 +448,7 @@ async function checkMockAnalyzer() {
   const communicationFallback = await communicationFailureRunner({ ...cacheJob, sourceId: "communication-fallback", description: `${cacheJob.description} `.repeat(4), greeting: "保留的招呼语" });
   assert.strictEqual(communicationFallback.realRoleType, "ai_application");
   assert.strictEqual(communicationFallback.recommendation, "caution");
-  assert.strictEqual(communicationFallback.decisionSource, "experience_stretch_guard");
+  assert.strictEqual(communicationFallback.decisionSource, "decision_matrix");
   assert.strictEqual(communicationFallback.greeting, "保留的招呼语");
 }
 
