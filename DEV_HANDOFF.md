@@ -102,7 +102,7 @@
 
 - **工作树位置**：`C:\Users\Administrator\.codex\worktrees\e843\ZhiPing`
 - **当前 HEAD**：`3baf931`（"放宽 screening_quality_smoke 中 bucket 断言"）
-- **总 commits**：320+，领先 origin 17 commits
+- **总 commits**：领先 origin 17 commits（含第一轮 7 commits + 第二轮 10 commits）
 - **改动文件**：
   - `src/core/model_contract.js`：判定表函数 + 分值调整 + countNonCentralMissing
   - `src/core/job_analysis.js`：重写 applyRuleGuard + 非核心降级
