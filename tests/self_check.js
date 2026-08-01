@@ -20,6 +20,7 @@ const { parseBossActivityText, normalizeBossUrl, bossSourceId } = require("../sr
 const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { mapWithConcurrency } = require("../src/core/async_pool");
+require("./four_tier_decision_smoke");
 
 const root = path.resolve(__dirname, "..");
 const selfCheckDir = path.join(root, ".runtime", "self-check");
