@@ -2234,6 +2234,59 @@ the next reviewed root-cause change.
 - Baseline evaluated remains exactly
   `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
   user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+### Recall-first v3 structural-diagnostic checkpoint (2026-08-01)
+
+- The first v3 live diagnostic root is now immutable:
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3-first-3-20260801`.
+  Its three recommendation labels were exact (`apply`, `review`, `caution`),
+  and the two completed rows also matched their expected buckets. It did not
+  pass acceptance because the middle row ended with semantic status `failed`,
+  bucket `analysis_pending`, and error `MODEL_CONTRACT_INVALID` during the
+  `understandJob` contract-repair phase. A fallback `review` that happens to
+  match the label is not a valid structural pass.
+- The failed row made two non-empty model attempts and one contract-repair
+  request. HTTP, empty-response, response-envelope, and UTF-8 diagnostics did
+  not identify a transport failure. The private cache contains only the two
+  completed rows, so it is not a valid source for reconstructing the rejected
+  model output and must not be reused.
+- Root cause in the harness was independently reproduced: the telemetry
+  collector counted `understandJob` repair requests but returned before
+  classifying their initial error, and it rejected `understandJob` repair-failed
+  events entirely. This left all four bounded failure category/reason fields at
+  `none`, preventing privacy-safe diagnosis.
+- Candidate harness checkpoint is exactly
+  `d55f395bcddd1693658cea4c66ac9cbef98cefdc`. The TDD regression emits an
+  `understandJob` requested-plus-failed pair and proves that only approved fixed
+  enums reach the private result. Candidate verification passed all 47 offline
+  checks and `git diff --check`.
+- Baseline harness checkpoint is exactly
+  `56369670008b187d6259bf37c9dba9117223543f`. Its 41 available offline checks
+  passed. Candidate and baseline runner blobs are identical at
+  `e05094234f3c599c3e34088b2bd2c2088dc7f31e`; benchmark metrics and privacy
+  blobs remain
+  `4eea3267ec86aaa236af323562c52eea601320b8` and
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Independent read-only review of the telemetry fix returned **Critical 0**,
+  **Important 0**, **Minor 0**, **Spec PASS**, and
+  **Code quality APPROVED**. Raw error messages remain classifier input only
+  and cannot enter the bounded result schema.
+- Candidate product remains exactly
+  `cf1793a79877c8150385317853ff19e6994a2f00`; baseline product remains exactly
+  `fb0168afce265cf351f03e80f66d9e0f24015887`. The telemetry-only commits do
+  not change recommendation semantics.
+- The only permitted next roots, after confirming they are absent, are
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r2-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r2-full-20-20260801`.
+  Rebuild the bundle, manifest, v3 proof, and cache from scratch. Run exact
+  zero-based indices `4,9,10`; do not create the 20-row root until all three
+  rows are exact, structurally complete, and safe.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product `cf1793a...` must be its strict ancestor. Record
+the complete evaluated SHA in an immediate descendant docs-only binding before
+creating the v3r2 private root.
 - Candidate and baseline Git blobs were rechecked and are identical:
   runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
   benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,

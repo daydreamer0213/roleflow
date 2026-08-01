@@ -572,3 +572,35 @@ binding 提交记录 evaluated 的完整 SHA。binding 提交本身不得替代 
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - This immediate docs-only binding record does not replace candidate evaluated
   in the manifest, v3 proof, temporary evaluation branch, or live verification.
+
+### v3 structural diagnostic and telemetry correction
+
+- The immutable v3 three-row run matched all three expected recommendation
+  labels, but acceptance failed because the middle row had
+  `semanticStatus=failed`, `actualBucket=analysis_pending`, and
+  `MODEL_CONTRACT_INVALID` in `understandJob/contract_repair`. A coincidental
+  fallback-label match does not satisfy the structure gate.
+- The harness defect was diagnostic rather than a decision-rule regression:
+  `understandJob` repair events incremented counters but did not populate the
+  bounded failure category/reason fields.
+- Candidate harness commit
+  `d55f395bcddd1693658cea4c66ac9cbef98cefdc` and baseline harness commit
+  `56369670008b187d6259bf37c9dba9117223543f` fix and mirror that telemetry
+  path. Their runner blob is exactly
+  `e05094234f3c599c3e34088b2bd2c2088dc7f31e`.
+- Candidate verification passed 47/47 offline checks; baseline verification
+  passed its 41/41 available checks. Independent review returned
+  `Critical 0`, `Important 0`, `Minor 0`, `Spec PASS`, and
+  `Code quality APPROVED`.
+- Product commits remain unchanged:
+  candidate `cf1793a79877c8150385317853ff19e6994a2f00` and baseline
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Preserve the failed v3 root without edits or cache reuse. The next clean
+  three-row and twenty-row roots are
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r2-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r2-full-20-20260801`.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Record its exact SHA in an immediate descendant binding commit
+before initializing the v3r2 manifest and proof.
