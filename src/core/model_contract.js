@@ -1476,7 +1476,8 @@ function computeCoreRequirementScore(requirementMatches = []) {
   let points = 0;
   for (const item of central) {
     if (item.state === "matched") points += 1;
-    else if (item.state === "transferable") points += 0.5;
+    else if (item.state === "transferable") points += 1;   // 0.5 → 1
+    else if (item.state === "unknown") points += 0.5;       // 新增：unknown 计 0.5
   }
   const ratio = points / central.length;
   let level;

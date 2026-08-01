@@ -90,6 +90,7 @@ const db = openDb(dbPath);
     await compactMatchEvidenceContractSmoke();
     roleAlignmentEvidenceContractSmoke();
     await understandingContractRepairSmoke();
+    coreRequirementScoreSmoke();
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
@@ -2578,6 +2579,51 @@ function roleEvidenceDecisionStateSmoke() {
     assert.strictEqual(guarded.recommendation, "review", "回退场景保持慎投");
     assert.strictEqual(typeof guarded.decisionSource, "string");
   }
+}
+
+function coreRequirementScoreSmoke() {
+  const { computeCoreRequirementScore } = require("../src/core/model_contract");
+
+  // transferable 现在计 1 分
+  const t2 = computeCoreRequirementScore([
+    { requirement: "熟悉OpenAI SDK或LangChain", state: "transferable", central: true },
+    { requirement: "深刻理解Prompt Engineering", state: "transferable", central: true }
+  ]);
+  assert.strictEqual(t2.score, 2, "2 条 transferable 核心应得 2 分（每条 1 分）");
+  assert.strictEqual(t2.level, "符合", "2/2 transferable → 符合(≥80%)");
+
+  // unknown 计 0.5 分
+  const u1 = computeCoreRequirementScore([
+    { requirement: "熟练使用AI编程辅助工具", state: "unknown", central: true }
+  ]);
+  assert.strictEqual(u1.score, 0.5, "1 条 unknown 核心应得 0.5 分");
+  assert.strictEqual(u1.level, "大部分符合", "0.5/1 unknown → 大部分符合(≥50%)");
+
+  // missing 仍计 0 分
+  const m1 = computeCoreRequirementScore([
+    { requirement: "熟悉常见AI生成模型框架", state: "missing", central: true }
+  ]);
+  assert.strictEqual(m1.score, 0, "1 条 missing 核心应得 0 分");
+  assert.strictEqual(m1.level, "不符合", "0/1 missing → 不符合(=0)");
+
+  // matched 不变
+  const matched = computeCoreRequirementScore([
+    { requirement: "Python编程", state: "matched", central: true }
+  ]);
+  assert.strictEqual(matched.score, 1, "1 条 matched 核心应得 1 分");
+  assert.strictEqual(matched.level, "符合", "1/1 matched → 符合");
+
+  // 混合：1 matched + 1 transferable + 1 unknown + 1 missing = 1+1+0.5+0 = 2.5/4 = 62.5% → 大部分符合
+  const mixed = computeCoreRequirementScore([
+    { requirement: "R1", state: "matched", central: true },
+    { requirement: "R2", state: "transferable", central: true },
+    { requirement: "R3", state: "unknown", central: true },
+    { requirement: "R4", state: "missing", central: true }
+  ]);
+  assert.strictEqual(mixed.score, 2.5, "混合: 1+1+0.5+0 = 2.5");
+  assert.strictEqual(mixed.level, "大部分符合", "2.5/4=62.5% → 大部分符合");
+
+  console.log("coreRequirementScoreSmoke ok");
 }
 
 function layeredRoleAnalysis(roleAlignment, states, { recommendation = "apply" } = {}) {
