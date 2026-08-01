@@ -2350,6 +2350,31 @@ creating the diagnostic root.
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - Use `f4c2d0e...`, not this binding commit, in the v3r3 manifest, proof,
   temporary evaluation branch, and live diagnostic.
+
+### Recall-first complete requirements-diagnostic checkpoint (2026-08-01)
+
+- Preserve the diagnostic-only root
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r3-index-9-20260801`.
+  Index 9 again failed after one `understandJob` repair; both bounded reasons
+  remained `other`. This rules out the previously covered root array, limit,
+  track-ID, compact evidence, and compact label forms and points to the
+  normalized `coreRequirements` semantic validators.
+- Candidate harness checkpoint is exactly
+  `2420cabbc2312de3bb4f6b450a567c137c30ec3f`; baseline harness checkpoint is
+  exactly `8387a92f3978d57c72418e1c65205643c2291c51`; their runner blob is
+  `15fcaaed3a53f8ee38e4a265fec0619232edfbef`.
+- The pure bounded classifier now has table-driven coverage for root shape,
+  track IDs including the prior overlap, limit, flags, compound hard-plus-years
+  requirements, evidence, and label. Candidate 47/47 and baseline 41/41
+  offline checks passed. Independent review returned **Critical 0**,
+  **Important 0**, **Spec PASS**, and **Code quality APPROVED**.
+- The next and final requirements root-cause probe is
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r4-index-9-20260801`.
+  Run only zero-based index `9` with a fresh cache. Do not create a 20-row root.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product remains `cf1793a...` and must be its strict
+ancestor. Record the exact evaluated SHA in an immediate descendant binding.
 - Candidate and baseline Git blobs were rechecked and are identical:
   runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
   benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,

@@ -651,3 +651,20 @@ initializing the v3r3 diagnostic manifest and proof.
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - The binding commit itself must not replace candidate evaluated in private
   artifacts or live execution.
+
+### complete bounded requirements diagnosis
+
+- The immutable v3r3 index-9 probe still returned `other/other`, ruling out the
+  previously covered compact root, limit, track-ID, evidence, and label forms.
+- Candidate/baseline harness commits are
+  `2420cabbc2312de3bb4f6b450a567c137c30ec3f` /
+  `8387a92f3978d57c72418e1c65205643c2291c51`, with identical runner blob
+  `15fcaaed3a53f8ee38e4a265fec0619232edfbef`.
+- Candidate 47/47 and baseline 41/41 checks passed; review returned
+  `Critical 0`, `Important 0`, `Spec PASS`, and `Code quality APPROVED`.
+- Run one final fresh-cache root-cause probe at
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r4-index-9-20260801`
+  using only zero-based index `9`. This is not acceptance and cannot unlock 20.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Record it in an immediate descendant binding before v3r4 setup.
