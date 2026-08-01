@@ -1831,6 +1831,34 @@ function matchBoundaryContractSmoke() {
   assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
     kind: "indispensable_core", requirement: "客户沟通", jdEvidence: "JD：负责客户沟通", resumeEvidence: "简历：候选人明确不接受客户沟通职责"
   }] }), [], "只有模型布尔值和简历冲突、但 JD 没有明确硬边界时，不得进入 skip");
+  for (const jdEvidence of [
+    "JD：无需持有专业资格证",
+    "JD：不需要具备特定行业背景"
+  ]) {
+    assert.deepStrictEqual(decisionHardBlockers({ hardBlockers: [{
+      kind: "indispensable_core",
+      requirement: "资格条件",
+      jdEvidence,
+      resumeEvidence: "简历：候选人明确无法提供该资格"
+    }] }), [], `否定“持有/具备”的 JD 不得因内部硬词子串进入 hard blocker：${jdEvidence}`);
+  }
+  assert.strictEqual(decisionHardBlockers({ hardBlockers: [{
+    kind: "indispensable_core",
+    requirement: "B 证书",
+    jdEvidence: "JD：无需持有 A 证书必须持有 B 证书",
+    resumeEvidence: "简历：候选人明确无法提供 B 证书"
+  }] }).length, 1, "被否定的 A 条件不得吞掉同句后续独立的 B 硬边界");
+  for (const jdEvidence of [
+    "JD：无需相关经验必须持有执业资格",
+    "JD：不需要额外培训必须掌握核心系统"
+  ]) {
+    assert.strictEqual(decisionHardBlockers({ hardBlockers: [{
+      kind: "indispensable_core",
+      requirement: "后续硬条件",
+      jdEvidence,
+      resumeEvidence: "简历：候选人明确无法满足后续硬条件"
+    }] }).length, 1, `否定前缀不得跨越独立 hard 标记并吞掉后续边界：${jdEvidence}`);
+  }
   assert.strictEqual(decisionHardBlockers({ hardBlockers: [{
     kind: "indispensable_core", requirement: "客户沟通", jdEvidence: "JD：必须承担客户沟通", resumeEvidence: "简历：候选人明确不接受客户沟通职责"
   }] }).length, 1, "模型判断、JD 明确硬边界与简历明确冲突同时成立时才允许硬阻断");
@@ -2741,16 +2769,16 @@ function coreRequirementScoreSmoke() {
     label: "独立开发基础前后端程序",
     evidence: "JD：能够独立开发基础前后端程序"
   }), true, "含糊普通要求由模型做语义判断，程序不得仅因关键词不足覆盖模型布尔值");
-  assert.throws(() => validateIndispensableRequirement({
+  assert.strictEqual(validateIndispensableRequirement({
     indispensable: true,
     label: "熟悉 Agent 平台者优先",
     evidence: "JD：熟悉 Agent 平台者优先"
-  }), ModelContractError, "显式可选条件不得因主线或模型布尔值升级为硬门槛");
-  assert.throws(() => validateIndispensableRequirement({
+  }), false, "显式可选条件必须由本地边界归一为非硬门槛");
+  assert.strictEqual(validateIndispensableRequirement({
     indispensable: true,
     label: "精通 Java 者优先",
     evidence: "JD：精通 Java 者优先"
-  }), ModelContractError, "与硬技能词重叠的优先表达仍必须判为可选");
+  }), false, "与硬技能词重叠的优先表达仍必须由本地边界归一为可选");
   assert.strictEqual(validateIndispensableRequirement({
     indispensable: false,
     label: "精通 Java 者优先",
@@ -2778,14 +2806,48 @@ function coreRequirementScoreSmoke() {
       evidence
     }), true, `明确硬约束必须保留 indispensable：${evidence}`);
   }
-  assert.throws(() => validateIndispensableRequirement({
+  assert.strictEqual(validateIndispensableRequirement({
     indispensable: false,
     label: "安全证书",
     evidence: "JD：必须持有安全证书"
-  }), ModelContractError, "明确硬条件不得接受 indispensable=false");
+  }), true, "明确硬条件必须由本地边界归一为 indispensable=true");
+  for (const evidence of [
+    "JD：无需持有专业资格证",
+    "JD：不需要具备特定行业背景"
+  ]) {
+    assert.strictEqual(validateIndispensableRequirement({
+      indispensable: true,
+      label: "明确非硬条件",
+      evidence
+    }), false, `否定“持有/具备”的表达不得被内部硬词子串误判：${evidence}`);
+  }
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: true,
+    label: "相关经验",
+    evidence: "JD：3 年以上相关经验"
+  }), true, "没有显式强弱措辞的年限要求应保留模型 indispensable=true");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "相关经验",
+    evidence: "JD：3 年以上相关经验"
+  }), false, "没有显式强弱措辞的年限要求应保留模型 indispensable=false");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: false,
+    label: "相关经验",
+    evidence: "JD：必须具备 3 年以上相关经验"
+  }), true, "明确必须的年限要求应归一为 indispensable=true");
+  assert.strictEqual(validateIndispensableRequirement({
+    indispensable: true,
+    label: "相关经验",
+    evidence: "JD：3 年以上相关经验者优先"
+  }), false, "明确优先的年限要求应归一为 indispensable=false");
   for (const evidence of [
     "JD：必须掌握 Python，精通 Go 者优先",
-    "JD：3 年以上经验，并且必须持有安全证书"
+    "JD：3 年以上经验，并且必须持有安全证书",
+    "JD：无需持有 A 证书必须持有 B 证书",
+    "JD：不需要具备行业经验必须持有执业资格",
+    "JD：无需相关经验必须持有执业资格",
+    "JD：不需要额外培训必须掌握核心系统"
   ]) {
     for (const indispensable of [false, true]) {
       assert.throws(() => validateIndispensableRequirement({
@@ -2830,21 +2892,21 @@ function coreRequirementScoreSmoke() {
       label: "明确非硬条件",
       evidence
     }), false, `否定 hard 的表述必须保持非硬：${evidence}`);
-    assert.throws(() => validateIndispensableRequirement({
+    assert.strictEqual(validateIndispensableRequirement({
       indispensable: true,
       label: "明确非硬条件",
       evidence
-    }), ModelContractError);
+    }), false, `明确否定 hard 的表述必须覆盖模型 indispensable=true：${evidence}`);
   }
   for (const evidence of [
     "JD：不满足必要条件者不予录用",
     "JD：不符合入职前提者不得上岗"
   ]) {
-    assert.throws(() => validateIndispensableRequirement({
+    assert.strictEqual(validateIndispensableRequirement({
       indispensable: false,
       label: "明确淘汰条件",
       evidence
-    }), ModelContractError, `明确淘汰后果不得接受 indispensable=false：${evidence}`);
+    }), true, `明确淘汰后果必须覆盖模型 indispensable=false：${evidence}`);
     assert.strictEqual(validateIndispensableRequirement({
       indispensable: true,
       label: "明确淘汰条件",
@@ -3047,6 +3109,34 @@ function nonCentralMissingGuardSmoke() {
   assert.strictEqual(strongWithMaterialRisk.recommendation, "review",
     "强直接证据不得绕过中高语义风险");
   assert.strictEqual(strongWithMaterialRisk.decisionSource, "semantic_risk_guard");
+
+  const strongWithResponsibilitySprawl = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    hiddenRisks: [{
+      type: "responsibility_sprawl",
+      severity: "medium",
+      evidence: "JD: one track includes several responsibilities"
+    }]
+  }, job);
+  assert.strictEqual(strongWithResponsibilitySprawl.recommendation, "apply",
+    "责任范围偏宽是岗位质量提示，不得把证据充分的同方向岗位强降为待复核");
+  assert.strictEqual(strongWithResponsibilitySprawl.decisionSource, "decision_matrix");
+
+  const strongWithSprawlAndMaterialRisk = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    hiddenRisks: [{
+      type: "responsibility_sprawl",
+      severity: "medium",
+      evidence: "JD: one track includes several responsibilities"
+    }, {
+      type: "delivery_dependency",
+      severity: "medium",
+      evidence: "JD: delivery depends on an unconfirmed external team"
+    }]
+  }, job);
+  assert.strictEqual(strongWithSprawlAndMaterialRisk.recommendation, "review",
+    "职责偏宽不得掩盖同时存在的其他中高等级语义风险");
+  assert.strictEqual(strongWithSprawlAndMaterialRisk.decisionSource, "semantic_risk_guard");
 
   const strongWithoutResumeEvidence = applyRuleGuard({
     ...strongDirectLowConfidence,

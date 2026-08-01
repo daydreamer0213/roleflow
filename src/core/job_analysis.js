@@ -374,7 +374,10 @@ function applyRuleGuard(analysis, job) {
   }
 
   // 4d. 中高语义风险 → 最高慎投，且不得被召回规则反向提升
-  const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
+  const materialRisk = (analysis.hiddenRisks || []).find((risk) => (
+    risk?.type !== "responsibility_sprawl"
+      && ["medium", "high"].includes(risk?.severity)
+  ));
   if (materialRisk && guarded.recommendation !== "skip") {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
     guarded = addGuard(guarded, "review", "C", `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");

@@ -980,14 +980,37 @@ const HARD_REQUIREMENT_PATTERN = /(?:必须|必需|必备|硬性|不可或缺|�
 const HARD_REJECTION_PATTERN = /(?:不予录用|不得(?:上岗|录用|入职)|不接受|不招|禁止|\bwill not be considered\b|\bnot eligible\b|\bineligible\b|\bcannot be hired\b)/i;
 const NEGATED_HARD_REQUIREMENT_PATTERN = /(?:(?:不是|并非|不属于|不作为|不构成|不算|非).{0,12}(?:必须|必需|必备|硬性|不可或缺|必要条件|入职前提|前提|限定)|(?:无需|无须|不要求|无|没有|不设).{0,12}(?:硬性|必要条件|入职前提|前提|限定|要求)|(?:不能|不应|不宜).{0,8}作为.{0,12}(?:入职前提|必要条件|硬性要求|前提)|不限定(?:专业|学历|学位|经验|年限|技能|方向|行业)?|\bnot (?:required|mandatory|essential|a prerequisite)\b|\bno hard requirements?\b)/i;
 
+const NEGATED_POSSESSION_REQUIREMENT_PATTERN = /(?:无需|无须|不需(?:要)?|不必).{0,8}?(?:掌握|具备|拥有|持有)/i;
+
+function stripNegatedPossessionRequirements(value) {
+  let source = String(value || "");
+  let hasNegatedPossession = false;
+  while (true) {
+    const match = source.match(NEGATED_POSSESSION_REQUIREMENT_PATTERN);
+    if (!match) break;
+    hasNegatedPossession = true;
+    const prefix = match[0].match(/^(?:无需|无须|不需(?:要)?|不必)/i)?.[0] || "";
+    const between = match[0]
+      .slice(prefix.length)
+      .replace(/(?:掌握|具备|拥有|持有)$/i, "");
+    if (HARD_REQUIREMENT_PATTERN.test(between)) break;
+    const index = match.index || 0;
+    const next = `${source.slice(0, index)} ${source.slice(index + match[0].length)}`;
+    if (next === source) break;
+    source = next;
+  }
+  return { source, hasNegatedPossession };
+}
+
 function hasExplicitHardBoundaryEvidence(value) {
   const source = String(value || "").replace(/^JD[：:]\s*/i, "");
   return source.split(/[，,；;。、\n]|并且|同时|而且|以及|但|且|和|与/).some((rawClause) => {
     const clause = rawClause.trim();
     if (!clause) return false;
-    if (HARD_REJECTION_PATTERN.test(clause)) return true;
-    if (NEGATED_HARD_REQUIREMENT_PATTERN.test(clause)) return false;
-    return HARD_REQUIREMENT_PATTERN.test(clause);
+    const hardSource = stripNegatedPossessionRequirements(clause).source;
+    if (HARD_REJECTION_PATTERN.test(hardSource)) return true;
+    if (NEGATED_HARD_REQUIREMENT_PATTERN.test(hardSource)) return false;
+    return HARD_REQUIREMENT_PATTERN.test(hardSource);
   });
 }
 
@@ -1001,12 +1024,22 @@ function validateIndispensableRequirement(item = {}) {
   let hasHardExperienceClause = false;
   let hasOptionalClause = false;
   let hasExperienceClause = false;
+  let hasAmbiguousHardExperienceClause = false;
   for (const clause of clauses.length ? clauses : [source]) {
-    const hasHardRejection = HARD_REJECTION_PATTERN.test(clause);
-    const negatesHard = !hasHardRejection && NEGATED_HARD_REQUIREMENT_PATTERN.test(clause);
+    const strippedPossession = stripNegatedPossessionRequirements(clause);
+    const hardSource = strippedPossession.source;
+    const hasHardRejection = HARD_REJECTION_PATTERN.test(hardSource);
+    const negatesHard = !hasHardRejection && NEGATED_HARD_REQUIREMENT_PATTERN.test(hardSource);
     const experience = isExperienceYearsRequirement({ requirement: clause, jdEvidence: clause });
-    const optional = negatesHard || isExplicitlyOptionalRequirement({ requirement: clause, jdEvidence: clause });
-    const hard = !negatesHard && HARD_REQUIREMENT_PATTERN.test(clause);
+    const optional = strippedPossession.hasNegatedPossession || negatesHard
+      || isExplicitlyOptionalRequirement({ requirement: clause, jdEvidence: clause });
+    const hard = !negatesHard && HARD_REQUIREMENT_PATTERN.test(hardSource);
+    if (hard && experience) {
+      const hardIndex = clause.search(HARD_REQUIREMENT_PATTERN);
+      const experienceIndex = clause.search(/(?:\d+(?:\.\d+)?|[一二三四五六七八九十两]+)\s*(?:年|years?)/i);
+      hasAmbiguousHardExperienceClause ||= clauses.length > 1
+        || (hardIndex >= 0 && experienceIndex >= 0 && hardIndex > experienceIndex);
+    }
     hasHardOnlyClause ||= hard && !experience;
     hasHardExperienceClause ||= hard && experience;
     hasOptionalClause ||= optional;
@@ -1024,17 +1057,9 @@ function validateIndispensableRequirement(item = {}) {
       `coreRequirements「${requirement}」混合独立硬条件与经验年限条件，必须拆成独立 requirements`
     );
   }
-  if (hasHardExperienceClause) return indispensable;
-  if (hasOptionalClause || hasExperienceClause) {
-    if (indispensable) {
-      throw new ModelContractError("understandJob", `coreRequirements「${requirement}」写成优先、加分、可选或经验年限条件，indispensable 必须为 false`);
-    }
-    return false;
-  }
-  if (hasHardOnlyClause) {
-    if (!indispensable) {
-      throw new ModelContractError("understandJob", `coreRequirements「${requirement}」包含明确不可替代的 JD 硬条件，indispensable 必须为 true`);
-    }
+  if (hasOptionalClause) return false;
+  if (hasAmbiguousHardExperienceClause) return indispensable;
+  if (hasHardOnlyClause || hasHardExperienceClause) {
     return true;
   }
   return indispensable;
