@@ -128,3 +128,4 @@ JD 未声明任何核心要求时不套用百分比，返回可投；核心要�
 - 完整语义分析给出 `misaligned` 时，判定矩阵返回 `skip`，最终桶为 `not_recommended`。这不是学历、薪资等资格硬门槛，而是“明显不合适岗位应被排除”的产品边界。
 - 匹配提示词已删除成串的 AI、前端、ERP、数据平台等 IT 专例，改为职业无关的“主工作对象/动作/交付”定义。没有增加模型字段、模型调用或重试；`matchJob` 缓存版本升级为 `match-decision-v36`。
 - 多分支岗位若没有可派生的主线 requirement gap，`misaligned` 只能使用封闭的 `D1|work_object`、`D1|main_action` 或 `D1|deliverable` 绑定选中分支职责；非法索引、混合非法项、未知维度和超量数组都会触发契约修复。已验证的选中职责和候选主方向证据会进入统一 evidence 信封，避免零 requirement 场景被错误降回 review。
+- `adjacent_misaligned` 表示主要交付不同，但岗位与候选方向仍属于同一交付物类别、同一职业交付生命周期中的相邻层或渠道。不存在其他硬门禁时，它固定进入 `review/backup`，不视为直接匹配，也不因方向本身硬排除。不同交付物类别或不同专业学科仍为 `misaligned`。该状态复用既有六键契约与双侧方向证据，`matchJob` 缓存版本为 `match-decision-v37`。

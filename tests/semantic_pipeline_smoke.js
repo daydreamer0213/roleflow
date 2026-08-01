@@ -727,7 +727,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v36");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v37");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1277,8 +1277,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v36",
-    "role-direction boundary changes must invalidate v35 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v37",
+    "adjacent direction semantics must invalidate v36 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -2015,7 +2015,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v36",
+    matchJob: "match-decision-v37",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
@@ -2973,6 +2973,12 @@ function decisionMatrixSmoke() {
   assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["missing"])), "skip",
     "部分匹配+核心不符合 → 不推荐");
 
+  // === 相邻但主线不同(adjacent_misaligned) 列 ===
+  // 同一交付物类别/职业生命周期中的相邻层只进入人工复核，不按核心分数硬排除。
+  assert.strictEqual(computeDecisionFromMatrix("adjacent_misaligned", reqs(["matched","matched"])), "review");
+  assert.strictEqual(computeDecisionFromMatrix("adjacent_misaligned", reqs(["matched","missing"])), "review");
+  assert.strictEqual(computeDecisionFromMatrix("adjacent_misaligned", reqs(["missing"])), "review");
+
   // === 不匹配(misaligned) 列 ===
   // misaligned 表示主工作方向不同；通用技能或次要职责重叠不得抬回推荐池。
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","matched"])), "skip");
@@ -3308,6 +3314,47 @@ async function compactMatchEvidenceContractSmoke() {
     boundDirectionEvidence.roleResumeEvidence,
     ["简历：持续交付另一类软件产品"],
     "D-gap 路径必须保留候选主方向证据，普通 requirement evidence 不得覆盖它"
+  );
+  const adjacentDirectionEvidence = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "adjacent_misaligned",
+    roleResumeEvidence: ["简历：持续交付同类产品的相邻层"],
+    roleGaps: ["D1|main_action"],
+    matches: [],
+    eligibility: []
+  }, { jobUnderstanding: multiTrack });
+  assert.strictEqual(adjacentDirectionEvidence.roleAlignment, "adjacent_misaligned");
+  assert.strictEqual(adjacentDirectionEvidence.recommendation, "review");
+  const adjacentWithOrdinaryMissing = {
+    ...multiTrack,
+    coreRequirements: multiTrack.coreRequirements.map((requirement) => (
+      requirement.id === "R2"
+        ? { ...requirement, foundation: false, central: false }
+        : requirement
+    ))
+  };
+  assert.throws(
+    () => validateModelResult("matchJob", {
+      selectedTrackId: "T1",
+      roleAlignment: "adjacent_misaligned",
+      roleResumeEvidence: ["简历：持续交付同类产品的相邻层"],
+      roleGaps: ["岗位主线需要确认"],
+      matches: [
+        { id: "R2", state: "missing", resumeEvidence: "简历：仅证明普通可迁移能力" }
+      ],
+      eligibility: []
+    }, { jobUnderstanding: adjacentWithOrdinaryMissing }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "adjacent_misaligned 不得用普通非核心 missing 绕过选中分支 D-gap 绑定"
+  );
+  const legacyAdjacent = decision("review", "C", "通用能力");
+  legacyAdjacent.roleAlignment = "adjacent_misaligned";
+  legacyAdjacent.roleResumeEvidence = ["简历：持续交付同类产品的相邻层"];
+  legacyAdjacent.roleGaps = ["相邻层职责不同"];
+  assert.throws(
+    () => validateModelResult("matchJob", legacyAdjacent),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "adjacent_misaligned 只允许当前 sparse evidence 契约生成，legacy 完整结果入口必须拒绝"
   );
   const zeroRequirementDirectionEvidence = validateModelResult("matchJob", {
     selectedTrackId: "T1",

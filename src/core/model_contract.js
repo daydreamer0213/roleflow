@@ -13,6 +13,7 @@ const ROLE_ALIGNMENT_STATES = Object.freeze([
   "aligned",
   "mostly_aligned",
   "partially_aligned",
+  "adjacent_misaligned",
   "misaligned",
   "insufficient_evidence"
 ]);
@@ -571,7 +572,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     .filter((requirement) => (
       requirement
       && (
-        value.roleAlignment !== "misaligned"
+        !["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
         || requirement.foundation === true
         || requirement.central === true
       )
@@ -579,7 +580,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     .map((requirement) => `${requirement.label}缺少直接简历证据`)
     .slice(0, 4);
   const selectedTrackDirectionEvidence = selected.trackCount > 1
-    && value.roleAlignment === "misaligned"
+    && ["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
     && !derivedRequirementRoleGaps.length
     ? selectedTrackBoundRoleEvidence(value, selected)
     : null;
@@ -727,8 +728,9 @@ function validateRoleAlignmentEvidence(value, jobUnderstanding) {
   if (["aligned", "mostly_aligned", "partially_aligned"].includes(value.roleAlignment) && !roleResumeEvidence.length) {
     throw new ModelContractError("matchJob", `${value.roleAlignment} requires roleResumeEvidence`);
   }
-  if (value.roleAlignment === "misaligned" && (!responsibilityEvidence.length || !roleResumeEvidence.length || !roleGaps.length)) {
-    throw new ModelContractError("matchJob", "misaligned requires responsibility evidence, resume evidence, and a gap");
+  if (["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
+    && (!responsibilityEvidence.length || !roleResumeEvidence.length || !roleGaps.length)) {
+    throw new ModelContractError("matchJob", `${value.roleAlignment} requires responsibility evidence, resume evidence, and a gap`);
   }
   if (value.roleAlignment === "insufficient_evidence" && !roleGaps.length) {
     throw new ModelContractError("matchJob", "insufficient_evidence requires a concrete gap");
@@ -741,14 +743,14 @@ function selectedTrackBoundRoleEvidence(value, selected) {
     ? selected.responsibilityEvidence
     : [];
   if (!Array.isArray(value.roleGaps) || value.roleGaps.length < 1 || value.roleGaps.length > 4) {
-    throw new ModelContractError("matchJob", "multi-track misaligned roleGaps must contain 1-4 direction bindings");
+    throw new ModelContractError("matchJob", "multi-track direction-mismatch roleGaps must contain 1-4 direction bindings");
   }
   const rawRoleGaps = contractStringsStrict(value.roleGaps, "matchJob", "roleGaps", {
     limit: 4,
     maxLength: 32
   });
   if (!rawRoleGaps.length) {
-    throw new ModelContractError("matchJob", "multi-track misaligned requires a selected-track direction binding");
+    throw new ModelContractError("matchJob", "multi-track direction mismatch requires a selected-track direction binding");
   }
   const roleResumeEvidence = contractStringsStrict(
     value.roleResumeEvidence,
@@ -757,7 +759,7 @@ function selectedTrackBoundRoleEvidence(value, selected) {
     { prefix: "简历：", limit: 4, maxLength: 120 }
   );
   if (!roleResumeEvidence.length) {
-    throw new ModelContractError("matchJob", "multi-track misaligned requires candidate direction evidence");
+    throw new ModelContractError("matchJob", "multi-track direction mismatch requires candidate direction evidence");
   }
   const dimensionLabels = {
     work_object: "主要工作对象",
@@ -767,13 +769,13 @@ function selectedTrackBoundRoleEvidence(value, selected) {
   const roleGaps = rawRoleGaps.map((raw) => {
     const match = raw.match(/^D([1-4])\|(work_object|main_action|deliverable)$/);
     if (!match) {
-      throw new ModelContractError("matchJob", "multi-track misaligned roleGaps must use selected-track D<n>|dimension bindings");
+      throw new ModelContractError("matchJob", "multi-track direction-mismatch roleGaps must use selected-track D<n>|dimension bindings");
     }
     const responsibility = String(responsibilities[Number(match[1]) - 1] || "")
       .replace(/^JD：/, "")
       .trim();
     if (!responsibility) {
-      throw new ModelContractError("matchJob", "multi-track misaligned roleGap references a missing selected-track responsibility");
+      throw new ModelContractError("matchJob", "multi-track direction-mismatch roleGap references a missing selected-track responsibility");
     }
     const suffix = `（候选${dimensionLabels[match[2]]}不同）`;
     return `${responsibility.slice(0, Math.max(1, 120 - suffix.length))}${suffix}`;
@@ -1280,6 +1282,9 @@ function validateMatchDecision(value, context = {}) {
   const jobQuality = normalizeJobQuality(value.jobQuality, "matchJob");
   const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
   const roleAlignment = ROLE_ALIGNMENT_STATES.includes(value.roleAlignment) ? value.roleAlignment : "";
+  if (roleAlignment === "adjacent_misaligned") {
+    throw new ModelContractError("matchJob", "adjacent_misaligned requires the sparse evidence contract");
+  }
   const roleResumeEvidence = Array.isArray(value.roleResumeEvidence) ? contractStrings(value.roleResumeEvidence, 4) : [];
   const roleGaps = Array.isArray(value.roleGaps) ? contractStrings(value.roleGaps, 4) : [];
   const jobUnderstanding = context?.jobUnderstanding;
@@ -1687,6 +1692,10 @@ function hasStrongDirectCoreEvidence(requirementMatches = []) {
 
 function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   const { level } = computeCoreRequirementScore(requirementMatches);
+
+  // Adjacent lanes share an artifact class and delivery lifecycle, but are not
+  // direct fits. Keep them available for human review without hard exclusion.
+  if (roleAlignment === "adjacent_misaligned") return "review";
 
   // misaligned is reserved for a different primary work direction. Requirement
   // overlap can describe transferable skills, but cannot make that role a fit.

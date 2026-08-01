@@ -80,6 +80,12 @@ assert.strictEqual(adjacentRoleGuard.recommendation, "caution");
 assert.strictEqual(adjacentRoleGuard.decisionSource, "decision_matrix");
 assert.strictEqual(decisionBucket({ ...job(), analysis: adjacentRoleGuard }), "backup");
 
+const neighboringDeliveryLane = layeredDecisionAnalysis("adjacent_misaligned", ["matched"]);
+const neighboringDeliveryLaneGuard = applyRuleGuard(neighboringDeliveryLane, job());
+assert.strictEqual(neighboringDeliveryLaneGuard.recommendation, "review");
+assert.strictEqual(neighboringDeliveryLaneGuard.decisionSource, "decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: neighboringDeliveryLaneGuard }), "backup");
+
 const obviousDirectionMismatch = layeredDecisionAnalysis("misaligned", ["matched"]);
 const obviousDirectionMismatchGuard = applyRuleGuard(obviousDirectionMismatch, job());
 assert.strictEqual(obviousDirectionMismatchGuard.recommendation, "skip");

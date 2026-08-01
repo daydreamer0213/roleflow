@@ -465,13 +465,20 @@ server.listen(0, "127.0.0.1", async () => {
       "partially_aligned 必须要求相邻职业和实质主线证据同时成立"
     );
     assert(
+      matchPrompt.includes("Use adjacent_misaligned")
+        && matchPrompt.includes("same primary artifact class and professional delivery lifecycle")
+        && matchPrompt.includes("neighboring layer or channel")
+        && matchPrompt.includes("human review, not a fit"),
+      "adjacent_misaligned 必须是职业无关的相邻交付通道复核状态"
+    );
+    assert(
       matchPrompt.includes("Use misaligned when the primary delivery differs")
         && matchPrompt.includes("generic capabilities, tools, technologies, industry context, or secondary duties")
         && matchPrompt.includes("A compatible secondary duty cannot redefine the job's primary direction"),
       "misaligned 必须表达主方向不同，不能被工具或次要职责重叠抬升"
     );
     assert(
-      matchPrompt.includes("For multi-track misaligned results without a missing foundation or central requirement")
+      matchPrompt.includes("For multi-track adjacent_misaligned or misaligned results without a missing foundation or central requirement")
         && matchPrompt.includes("D<n>|work_object, D<n>|main_action, or D<n>|deliverable")
         && matchPrompt.includes("D1 means the first responsibilityEvidence string of the selected track"),
       "无主线 requirement 的多分支 misaligned gap 必须绑定选中分支职责证据"
