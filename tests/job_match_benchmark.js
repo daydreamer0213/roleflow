@@ -143,8 +143,8 @@ function validateFixtures() {
   for (const item of fixtures) {
     assert(item.title && item.description.length >= 80, `${item.id} 缺少可分析 JD`);
     assert(item.category, `${item.id} 缺少人工分类 category`);
-    assert(["apply", "caution", "review", "skip"].includes(item.expectedRecommendation), `${item.id} recommendation 无效`);
-    assert(["primary", "talk", "backup", "not_recommended"].includes(item.expectedBucket), `${item.id} bucket 无效`);
+    assert(["primary", "apply", "caution", "not_recommended"].includes(item.expectedRecommendation), `${item.id} recommendation 无效`);
+    assert(["primary", "apply", "caution", "not_recommended"].includes(item.expectedBucket), `${item.id} bucket 无效`);
     assert(item.rationale, `${item.id} 缺少人工标注理由`);
   }
 }
@@ -517,7 +517,7 @@ async function runLive() {
       const gate = decisionState(scored);
       const analysis = gate === "ready"
         ? await analyze({ ...raw, ...scored })
-        : { provider: "rule-gate", semanticStatus: "blocked", decisionSource: "hard_boundary", recommendation: "skip", fitLevel: "D", confidence: null, evidence: { jd: [fixture.description.slice(0, 120)], resume: [] } };
+        : { provider: "rule-gate", semanticStatus: "blocked", decisionSource: "hard_boundary", recommendation: "not_recommended", recommendationSchemaVersion: 2, fitLevel: "no_fit", confidence: null, evidence: { jd: [fixture.description.slice(0, 120)], resume: [] } };
       const bucket = decisionBucket({ ...raw, ...scored, analysis });
       const row = {
         id: fixture.id,

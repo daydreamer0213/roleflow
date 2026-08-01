@@ -280,7 +280,7 @@ function asEmptyEnvelopeFailure(result, rowIndex = 0, classification = "legacy")
   const changed = structuredClone(result);
   changed.rows[rowIndex] = {
     ...changed.rows[rowIndex],
-    actualRecommendation: "review",
+    actualRecommendation: null,
     actualBucket: "analysis_pending",
     semanticStatus: "failed",
     evidenceComplete: false,
@@ -316,7 +316,7 @@ function asRecallFirstLabels(labels) {
 }
 
 async function injectedLiveFlowSmoke(identityPath) {
-  const selected = [genericFixtures[0], genericFixtures[1], genericFixtures[3], genericFixtures[4]];
+  const selected = [genericFixtures[0], genericFixtures[1], genericFixtures[3], genericFixtures[5]];
   const confirmedProfile = {
     ...selected[0].candidateProfile,
     education: [],
@@ -1945,7 +1945,8 @@ async function injectedLiveFlowSmoke(identityPath) {
           provider: "synthetic-provider",
           semanticStatus: "completed",
           decisionSource: "model",
-          recommendation: "review",
+          recommendation: "caution",
+          recommendationSchemaVersion: 2,
           evidence: { jd: [], resume: [] },
           fitReasons: [],
           softGaps: ["信息不足"],
@@ -1958,7 +1959,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     openDb,
     decisionState: () => "ready",
-    decisionBucket: () => "talk"
+    decisionBucket: () => "caution"
   };
   const concurrencyResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: concurrencyProbe.root,
@@ -2105,7 +2106,8 @@ async function injectedLiveFlowSmoke(identityPath) {
         model: telemetrySecret,
         semanticStatus: index === 3 ? "failed" : "complete",
         decisionSource: "model",
-        recommendation: "review",
+        recommendation: index === 3 ? null : "caution",
+        recommendationSchemaVersion: 2,
         ...(index === 0 ? {
           selectedTrackId: "T1",
           selectedTrackLabel: "大模型应用开发",
@@ -2124,7 +2126,7 @@ async function injectedLiveFlowSmoke(identityPath) {
     },
     roleEvidenceDecisionState: (analysis) => ({ foundationState: analysis.foundationStateForTest }),
     decisionState: () => "ready",
-    decisionBucket: () => "talk"
+    decisionBucket: (jobWithAnalysis) => jobWithAnalysis.analysis?.recommendation ? "caution" : "analysis_pending"
   };
   const telemetryResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: telemetryProbe.root,
@@ -2511,7 +2513,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       provider: "synthetic-provider",
       semanticStatus: unsafeText,
       decisionSource: unsafeText,
-      recommendation: "review",
+      recommendation: null,
       evidence: { jd: [], resume: [] },
       fitReasons: [],
       missingPoints: [],
@@ -2528,7 +2530,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       errorHadUtf8Bom: "true"
     }),
     decisionState: () => "ready",
-    decisionBucket: () => "talk"
+    decisionBucket: () => "analysis_pending"
   };
   const safeRowsResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: stringProbe.root,
@@ -2589,7 +2591,7 @@ async function injectedLiveFlowSmoke(identityPath) {
         provider: "synthetic-provider",
         semanticStatus: "failed",
         decisionSource: "analysis_pending",
-        recommendation: "review",
+        recommendation: null,
         evidence: { jd: [], resume: [] },
         fitReasons: [],
         missingPoints: [],
@@ -2611,7 +2613,7 @@ async function injectedLiveFlowSmoke(identityPath) {
       };
     },
     decisionState: () => "ready",
-    decisionBucket: () => "talk"
+    decisionBucket: () => "analysis_pending"
   };
   const stableFailureResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: stableFailureProbe.root,
@@ -2645,7 +2647,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   unsafeStateSeam.modules = {
     ...unsafeStateSeam.modules,
     decisionState: () => unsafeText,
-    decisionBucket: () => "talk"
+    decisionBucket: () => "caution"
   };
   const safeStateResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: stateProbe.root,
@@ -2689,7 +2691,8 @@ async function injectedLiveFlowSmoke(identityPath) {
       provider: "synthetic-provider",
       semanticStatus: "complete",
       decisionSource: "model",
-      recommendation: "skip",
+      recommendation: "not_recommended",
+      recommendationSchemaVersion: 2,
       evidence: { jd: ["jd"], resume: ["resume"] },
       fitReasons: [],
       missingPoints: [],
@@ -2718,14 +2721,14 @@ async function injectedLiveFlowSmoke(identityPath) {
       provider: "synthetic-provider",
       semanticStatus: "complete",
       decisionSource: "model",
-      recommendation: "review",
+      recommendation: null,
       evidence: { jd: [], resume: [] },
       fitReasons: [],
       missingPoints: [],
       hardBlockers: ["legacy unstructured blocker"],
       errorCode: ""
     }),
-    decisionBucket: () => "talk"
+    decisionBucket: () => "analysis_pending"
   };
   const invalidBlockerResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: invalidBlockerProbe.root,
@@ -2866,14 +2869,18 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert(retainedReference, "recall fixture requires one evidence-complete keep row");
   const exactChangedButRetained = structuredClone(recallCandidate);
   exactChangedButRetained.rows = exactChangedButRetained.rows.map((row) => row.id === retainedReference.id
-    ? { ...row, actualRecommendation: "caution", actualBucket: "talk", pass: false }
+    ? { ...row, actualRecommendation: "caution", actualBucket: "caution", pass: false }
     : row);
   const retainedCompared = runner.comparePrivateFullChainResults(
     recallBaseline,
     asRecallFirstResult(exactChangedButRetained)
   );
   assert.strictEqual(retainedCompared.ok, true);
-  assert.strictEqual(retainedCompared.report.accepted, true, "精确档位变化但机会仍保留时，recall-first 验收必须通过");
+  assert.strictEqual(
+    retainedCompared.report.accepted,
+    true,
+    `精确档位变化但机会仍保留时，recall-first 验收必须通过：${JSON.stringify(retainedCompared.report.failureReasons)}`
+  );
   assert.strictEqual(retainedCompared.report.evaluationPolicy, "recall-first.v1");
   const userConfirmedCompared = runner.comparePrivateFullChainResults(
     {
@@ -2982,7 +2989,7 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const wronglyExcluded = structuredClone(recallCandidate);
   wronglyExcluded.rows = wronglyExcluded.rows.map((row) => row.id === retainedReference.id
-    ? { ...row, actualRecommendation: "skip", actualBucket: "not_recommended", pass: false }
+    ? { ...row, actualRecommendation: "not_recommended", actualBucket: "not_recommended", pass: false }
     : row);
   const wronglyExcludedCompared = runner.comparePrivateFullChainResults(
     recallBaseline,
@@ -3007,9 +3014,9 @@ async function injectedLiveFlowSmoke(identityPath) {
   for (const value of [explicitExcludeBaseline, explicitExcludeCandidate]) {
     value.rows[0] = {
       ...value.rows[0],
-      expectedRecommendation: "skip",
+      expectedRecommendation: "not_recommended",
       expectedBucket: "not_recommended",
-      actualRecommendation: "skip",
+      actualRecommendation: "not_recommended",
       actualBucket: "not_recommended",
       pass: true
     };
@@ -3019,7 +3026,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   const excludedReference = recallExcludeCandidate.rows[0];
   const missedExclusion = structuredClone(recallExcludeCandidate);
   missedExclusion.rows = missedExclusion.rows.map((row) => row.id === excludedReference.id
-    ? { ...row, actualRecommendation: "review", actualBucket: "talk", pass: false }
+    ? { ...row, actualRecommendation: "apply", actualBucket: "apply", pass: false }
     : row);
   const missedExclusionCompared = runner.comparePrivateFullChainResults(
     recallExcludeBaseline,
@@ -3030,7 +3037,7 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const unresolvedRecall = structuredClone(recallCandidate);
   unresolvedRecall.rows = unresolvedRecall.rows.map((row) => row.id === retainedReference.id
-    ? { ...row, actualRecommendation: "review", actualBucket: "analysis_pending", pass: false }
+    ? { ...row, actualRecommendation: null, actualBucket: "analysis_pending", pass: false }
     : row);
   const unresolvedCompared = runner.comparePrivateFullChainResults(
     recallBaseline,
@@ -3041,7 +3048,7 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const primaryWithoutEvidence = structuredClone(recallCandidate);
   primaryWithoutEvidence.rows = primaryWithoutEvidence.rows.map((row) => row.id === retainedReference.id
-    ? { ...row, actualRecommendation: "apply", actualBucket: "primary", evidenceComplete: false, pass: row.expectedRecommendation === "apply" && row.expectedBucket === "primary" }
+    ? { ...row, actualRecommendation: "apply", actualBucket: "apply", evidenceComplete: false, pass: row.expectedRecommendation === "apply" && row.expectedBucket === "apply" }
     : row);
   const primaryWithoutEvidenceCompared = runner.comparePrivateFullChainResults(
     recallBaseline,
@@ -3052,14 +3059,14 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const partialPrimary = structuredClone(recallCandidate);
   partialPrimary.rows = partialPrimary.rows.map((row) => row.id === retainedReference.id
-    ? { ...row, actualRecommendation: "apply", actualBucket: "primary", semanticStatus: "partial", pass: row.expectedRecommendation === "apply" && row.expectedBucket === "primary" }
+    ? { ...row, actualRecommendation: "apply", actualBucket: "apply", semanticStatus: "partial", pass: row.expectedRecommendation === "apply" && row.expectedBucket === "apply" }
     : row);
   const partialPrimaryCompared = runner.comparePrivateFullChainResults(
     recallBaseline,
     asRecallFirstResult(partialPrimary)
   );
   assert.strictEqual(partialPrimaryCompared.report.accepted, false);
-  assert.match(partialPrimaryCompared.report.failureReasons.join("\n"), /partial -> primary/);
+  assert.match(partialPrimaryCompared.report.failureReasons.join("\n"), /partial -> primary\/apply/);
 
   const tamperedDisposition = structuredClone(recallCandidate);
   tamperedDisposition.rows[0].expectedDisposition = tamperedDisposition.rows[0].expectedDisposition === "keep" ? "exclude" : "keep";
@@ -3220,8 +3227,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   const tamperedLabels = structuredClone(candidate);
   tamperedLabels.rows[0].expectedRecommendation = "caution";
   tamperedLabels.rows[0].actualRecommendation = "caution";
-  tamperedLabels.rows[0].expectedBucket = "talk";
-  tamperedLabels.rows[0].actualBucket = "talk";
+  tamperedLabels.rows[0].expectedBucket = "caution";
+  tamperedLabels.rows[0].actualBucket = "caution";
   tamperedLabels.rows[0].pass = true;
   Object.assign(tamperedLabels, deriveBenchmarkMetrics(tamperedLabels.rows).metrics);
   assert.strictEqual(runner.comparePrivateFullChainResults(baseline, tamperedLabels).code, "BENCHMARK_COMPARE_FIXTURE_SET");
@@ -3337,7 +3344,7 @@ async function injectedLiveFlowSmoke(identityPath) {
 
   const rejectedCandidate = structuredClone(candidate);
   Object.assign(rejectedCandidate.rows[0], {
-    actualRecommendation: rejectedCandidate.rows[0].expectedRecommendation === "skip" ? "apply" : "skip",
+    actualRecommendation: rejectedCandidate.rows[0].expectedRecommendation === "not_recommended" ? "apply" : "not_recommended",
     actualBucket: rejectedCandidate.rows[0].expectedBucket === "not_recommended" ? "primary" : "not_recommended",
     pass: false
   });
@@ -3371,9 +3378,9 @@ async function injectedLiveFlowSmoke(identityPath) {
 
 function recallFirstMetricSmoke() {
   const derived = runner.deriveRecallFirstMetrics([
-    { id: "keep-talk", expectedDisposition: "keep", actualBucket: "talk" },
-    { id: "keep-primary", expectedDisposition: "keep", actualBucket: "primary" },
-    { id: "exclude", expectedDisposition: "exclude", actualBucket: "not_recommended" }
+    { id: "keep-apply", expectedDisposition: "keep", expectedBucket: "apply", actualBucket: "apply" },
+    { id: "keep-primary", expectedDisposition: "keep", expectedBucket: "primary", actualBucket: "primary" },
+    { id: "exclude", expectedDisposition: "exclude", expectedBucket: "not_recommended", actualBucket: "not_recommended" }
   ]);
   assert.strictEqual(derived.ok, true);
   assert.deepStrictEqual(derived.metrics, {
@@ -3392,8 +3399,8 @@ function recallFirstMetricSmoke() {
   });
 
   const noExplicitExclusions = runner.deriveRecallFirstMetrics([
-    { id: "keep-talk", expectedDisposition: "keep", actualBucket: "talk" },
-    { id: "keep-backup", expectedDisposition: "keep", actualBucket: "backup" }
+    { id: "keep-apply", expectedDisposition: "keep", expectedBucket: "apply", actualBucket: "apply" },
+    { id: "keep-caution", expectedDisposition: "keep", expectedBucket: "caution", actualBucket: "caution" }
   ]);
   assert.strictEqual(noExplicitExclusions.ok, true);
   assert.strictEqual(noExplicitExclusions.metrics.expectedKeep, 2);
@@ -3403,10 +3410,12 @@ function recallFirstMetricSmoke() {
     "真实样本没有明确排除项时应视为无漏拦，不能因分母为零使验收失败");
 
   const failures = runner.deriveRecallFirstMetrics([
-    { id: "keep-excluded", expectedDisposition: "keep", actualBucket: "not_recommended" },
-    { id: "exclude-missed", expectedDisposition: "exclude", actualBucket: "talk" },
-    { id: "pending", expectedDisposition: "keep", actualBucket: "analysis_pending" },
-    { id: "refresh", expectedDisposition: "keep", actualBucket: "refresh" }
+    { id: "keep-excluded", expectedDisposition: "keep", expectedBucket: "apply", actualBucket: "not_recommended" },
+    { id: "keep-caution-excluded", expectedDisposition: "keep", expectedBucket: "caution", actualBucket: "not_recommended" },
+    { id: "exclude-missed", expectedDisposition: "exclude", expectedBucket: "not_recommended", actualBucket: "apply" },
+    { id: "exclude-caution", expectedDisposition: "exclude", expectedBucket: "not_recommended", actualBucket: "caution" },
+    { id: "pending", expectedDisposition: "keep", expectedBucket: "apply", actualBucket: "analysis_pending" },
+    { id: "refresh", expectedDisposition: "keep", expectedBucket: "apply", actualBucket: "refresh" }
   ]);
   assert.strictEqual(failures.ok, true);
   assert.deepStrictEqual(failures.metrics.falseHardExclusionIds, ["keep-excluded"]);
@@ -3417,12 +3426,12 @@ function recallFirstMetricSmoke() {
 
   for (const rows of [
     [],
-    [{ id: "", expectedDisposition: "keep", actualBucket: "talk" }],
+    [{ id: "", expectedDisposition: "keep", actualBucket: "apply" }],
     [
-      { id: "duplicate", expectedDisposition: "keep", actualBucket: "talk" },
+      { id: "duplicate", expectedDisposition: "keep", actualBucket: "apply" },
       { id: "duplicate", expectedDisposition: "keep", actualBucket: "primary" }
     ],
-    [{ id: "bad-disposition", expectedDisposition: "maybe", actualBucket: "talk" }],
+    [{ id: "bad-disposition", expectedDisposition: "maybe", actualBucket: "apply" }],
     [{ id: "bad-bucket", expectedDisposition: "keep", actualBucket: "unknown" }]
   ]) {
     assert.strictEqual(runner.deriveRecallFirstMetrics(rows).code, "BENCHMARK_COMPARE_METRICS");

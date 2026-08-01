@@ -36,10 +36,11 @@ function sameSha256(baseline, candidate, field) {
   return /^[0-9a-f]{64}$/.test(left) && left === right;
 }
 
-const VALID_ROW_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
+const VALID_ROW_RECOMMENDATIONS = new Set(["primary", "apply", "caution", "not_recommended"]);
 // expectedBucket 只收人工 fixture 标签；actualBucket 允许 decisionBucket() 的全部运行时返回值。
-const VALID_EXPECTED_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
-const VALID_ACTUAL_BUCKETS = new Set(["primary", "talk", "backup", "analysis_pending", "refresh", "not_recommended"]);
+const VALID_EXPECTED_BUCKETS = new Set(["primary", "apply", "caution", "not_recommended"]);
+const VALID_ACTUAL_BUCKETS = new Set([...VALID_EXPECTED_BUCKETS, "analysis_pending", "refresh"]);
+const TECHNICAL_ACTUAL_BUCKETS = new Set(["analysis_pending", "refresh"]);
 
 // 逐行指标派生：不信任任何汇总字段。rows 必须非空、row.id 非空且唯一、
 // 关键字段必须是合法枚举/类型（缺失字段的 undefined===undefined 不得冒充通过）、
@@ -57,7 +58,7 @@ function deriveBenchmarkMetrics(rows) {
     if (ids.has(id)) return failCompare("BENCHMARK_COMPARE_METRICS", `row.id 重复：${id}，fixture 集合不得被重复 ID 冒充。`);
     ids.add(id);
     if (!VALID_ROW_RECOMMENDATIONS.has(row.expectedRecommendation)
-      || !VALID_ROW_RECOMMENDATIONS.has(row.actualRecommendation)) {
+      || (row.actualRecommendation !== null && !VALID_ROW_RECOMMENDATIONS.has(row.actualRecommendation))) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 recommendation 必须是 ${[...VALID_ROW_RECOMMENDATIONS].join("/")} 之一。`);
     }
     if (!VALID_EXPECTED_BUCKETS.has(row.expectedBucket)) {
@@ -65,6 +66,9 @@ function deriveBenchmarkMetrics(rows) {
     }
     if (!VALID_ACTUAL_BUCKETS.has(row.actualBucket)) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 actualBucket 必须是运行时桶 ${[...VALID_ACTUAL_BUCKETS].join("/")} 之一。`);
+    }
+    if (row.actualRecommendation === null && !TECHNICAL_ACTUAL_BUCKETS.has(row.actualBucket)) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的空 actualRecommendation 只允许用于技术待处理桶。`);
     }
     if (typeof row.pass !== "boolean") {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass 必须是 boolean。`);
@@ -81,11 +85,11 @@ function deriveBenchmarkMetrics(rows) {
     }
   }
   const hardFalsePlacementIds = rows
-    .filter((row) => row.expectedBucket === "not_recommended" && row.actualBucket !== "not_recommended")
+    .filter((row) => row.expectedBucket === "not_recommended" && ["primary", "apply"].includes(row.actualBucket))
     .map((row) => row.id)
     .sort();
   const falseHardExclusionIds = rows
-    .filter((row) => row.expectedBucket !== "not_recommended" && row.actualBucket === "not_recommended")
+    .filter((row) => ["primary", "apply"].includes(row.expectedBucket) && row.actualBucket === "not_recommended")
     .map((row) => row.id)
     .sort();
   const total = rows.length;
@@ -104,7 +108,8 @@ function deriveBenchmarkMetrics(rows) {
       stale: rows.filter((row) => row.semanticStatus === "stale").length,
       pending: rows.filter((row) => row.semanticStatus === "pending").length,
       partial: rows.filter((row) => row.semanticStatus === "partial").length,
-      primaryWithoutEvidence: rows.filter((row) => row.actualBucket === "primary" && !row.evidenceComplete).length,
+      // 字段名为兼容既有报告保留；语义覆盖两个默认沟通档 primary/apply。
+      primaryWithoutEvidence: rows.filter((row) => ["primary", "apply"].includes(row.actualBucket) && !row.evidenceComplete).length,
       hardFalsePlacement: hardFalsePlacementIds.length,
       hardFalsePlacementIds,
       falseHardExclusion: falseHardExclusionIds.length,

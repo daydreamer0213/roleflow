@@ -46,7 +46,10 @@ function validateGenericFixtures() {
     assert(fixture.job?.title && fixture.job?.description?.length >= 40, `${fixture.id} 缺少完整 JD`);
     assert(Array.isArray(fixture.jobUnderstanding?.coreRequirements), `${fixture.id} 缺少假模型 JobUnderstanding`);
     assert(fixture.matchDecision?.recommendation && fixture.matchDecision?.evidence, `${fixture.id} 缺少假模型 MatchDecision`);
-    assert(fixture.expected?.recommendation && fixture.expected?.bucket, `${fixture.id} 缺少唯一预期`);
+    assert(
+      Object.prototype.hasOwnProperty.call(fixture.expected || {}, "recommendation") && fixture.expected?.bucket,
+      `${fixture.id} 缺少唯一预期`
+    );
   }
 }
 
@@ -85,12 +88,14 @@ async function runGenericFixture(db, fixture) {
   };
   const result = await createJobAnalysisRunner(configs, [], { db, analyzer })(job);
   const expected = fixture.expected;
-  assert.strictEqual(result.semanticStatus, "complete", `${fixture.id} 应保持完整语义状态`);
-  if (result.decisionStatus === "needs_retry") {
-    assert.strictEqual(result.recommendation, null, `${fixture.id} 技术未决状态不得伪装成产品档位`);
-    assert(expected.requireUnknown, `${fixture.id} 只有证据不足夹具允许进入 needs_retry`);
-  } else {
-    assert(["primary", "apply", "caution", "not_recommended"].includes(result.recommendation), `${fixture.id} recommendation 非法`);
+  assert.strictEqual(
+    result.semanticStatus,
+    "complete",
+    `${fixture.id} 应保持完整语义状态：${result.errorCode || ""}/${result.errorStage || ""}/${result.errorPhase || ""}`
+  );
+  assert.strictEqual(result.recommendation, expected.recommendation, `${fixture.id} recommendation 不符`);
+  if (expected.decisionStatus) {
+    assert.strictEqual(result.decisionStatus, expected.decisionStatus, `${fixture.id} decisionStatus 不符`);
   }
   if (expected.jobQualityLevel) {
     assert.strictEqual(result.jobQuality?.level, expected.jobQualityLevel, `${fixture.id} jobQuality 不符`);
@@ -114,7 +119,7 @@ async function runGenericFixture(db, fixture) {
     const hasUnknown = (result.requirementMatches || []).some((item) => item.state === "unknown");
     const hasPendingReason = [...(result.softGaps || []), ...(result.questionsToVerify || [])]
       .some((item) => /待确认|未说明|无法确认|缺少/.test(item));
-    assert(hasUnknown || hasPendingReason, `${fixture.id} review 必须带 unknown 或待确认理由`);
+    assert(hasUnknown || hasPendingReason, `${fixture.id} 慎投必须带 unknown 或待确认理由`);
     assert.strictEqual(fixture.matchDecision.fitReasons.length, 0, `${fixture.id} 信息不足时假模型不得虚构匹配理由`);
   }
   const bucket = decisionBucket({ ...job, analysis: result, qualityTags: [], risks: [] });
@@ -163,12 +168,12 @@ function liveResult(commit, overrides = {}) {
     falseHardExclusionIds: [],
     primaryWithoutEvidence: 0,
     rows: [
-      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
-      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
-      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
-      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
-      { id: "insufficient-evidence", pass: true, expectedRecommendation: "review", actualRecommendation: "review", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false },
-      { id: "java-core-missing", pass: false, expectedRecommendation: "skip", actualRecommendation: "review", expectedBucket: "not_recommended", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false }
+      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "primary", actualRecommendation: "primary", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "apply", actualBucket: "apply", semanticStatus: "complete", evidenceComplete: true },
+      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "caution", actualBucket: "caution", semanticStatus: "complete", evidenceComplete: true },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "not_recommended", actualRecommendation: "not_recommended", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
+      { id: "insufficient-evidence", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "caution", actualBucket: "caution", semanticStatus: "complete", evidenceComplete: false },
+      { id: "java-core-missing", pass: false, expectedRecommendation: "not_recommended", actualRecommendation: "apply", expectedBucket: "not_recommended", actualBucket: "apply", semanticStatus: "complete", evidenceComplete: true }
     ],
     ...overrides
   };
@@ -185,12 +190,12 @@ function validResultPair() {
     hardFalsePlacement: 0,
     hardFalsePlacementIds: [],
     rows: [
-      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
-      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
-      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: true },
-      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
-      { id: "insufficient-evidence", pass: true, expectedRecommendation: "review", actualRecommendation: "review", expectedBucket: "talk", actualBucket: "talk", semanticStatus: "complete", evidenceComplete: false },
-      { id: "java-core-missing", pass: true, expectedRecommendation: "skip", actualRecommendation: "skip", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true }
+      { id: "ecommerce-core-match", pass: true, expectedRecommendation: "primary", actualRecommendation: "primary", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
+      { id: "ecommerce-wishlist-sprawl", pass: true, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "apply", actualBucket: "apply", semanticStatus: "complete", evidenceComplete: true },
+      { id: "content-to-user-transfer", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "caution", actualBucket: "caution", semanticStatus: "complete", evidenceComplete: true },
+      { id: "user-ops-vs-pure-sales", pass: true, expectedRecommendation: "not_recommended", actualRecommendation: "not_recommended", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true },
+      { id: "insufficient-evidence", pass: true, expectedRecommendation: "caution", actualRecommendation: "caution", expectedBucket: "caution", actualBucket: "caution", semanticStatus: "complete", evidenceComplete: false },
+      { id: "java-core-missing", pass: true, expectedRecommendation: "not_recommended", actualRecommendation: "not_recommended", expectedBucket: "not_recommended", actualBucket: "not_recommended", semanticStatus: "complete", evidenceComplete: true }
     ]
   });
   return { baseline, candidate };
@@ -249,7 +254,7 @@ function comparatorSmoke() {
       candidate: {
         ...candidate,
         rows: candidate.rows.map((row) => row.id === "java-core-missing"
-          ? { ...row, actualRecommendation: "review", pass: false }
+          ? { ...row, actualRecommendation: "apply", actualBucket: "apply", pass: false }
           : row)
       },
       code: "BENCHMARK_COMPARE_METRICS"
@@ -272,7 +277,7 @@ function comparatorSmoke() {
       candidate: {
         ...candidate,
         rows: candidate.rows.map((row) => row.id === "java-core-missing"
-          ? { ...row, actualRecommendation: "review", pass: true }
+          ? { ...row, actualRecommendation: "apply", actualBucket: "apply", pass: true }
           : row)
       },
       code: "BENCHMARK_COMPARE_METRICS"
@@ -400,7 +405,7 @@ function comparatorSmoke() {
       candidate: {
         ...candidate,
         rows: candidate.rows.map((row) => row.id === "java-core-missing"
-          ? { ...row, expectedRecommendation: "apply", actualRecommendation: "apply", expectedBucket: "primary", actualBucket: "primary", pass: true, evidenceComplete: true }
+          ? { ...row, expectedRecommendation: "primary", actualRecommendation: "primary", expectedBucket: "primary", actualBucket: "primary", pass: true, evidenceComplete: true }
           : row)
       },
       code: "BENCHMARK_COMPARE_FIXTURE_SET"
@@ -430,7 +435,7 @@ function comparatorSmoke() {
         bucketAccuracy: 5 / 6,
         failed: 1,
         rows: c.rows.map((row) => row.id === "insufficient-evidence"
-          ? { ...row, semanticStatus: "failed", actualRecommendation: "caution", actualBucket: "talk", pass: false }
+          ? { ...row, semanticStatus: "failed", actualRecommendation: null, actualBucket: "analysis_pending", pass: false }
           : row)
       }),
       reason: /failed=1/
@@ -445,7 +450,7 @@ function comparatorSmoke() {
         bucketAccuracy: 5 / 6,
         stale: 1,
         rows: c.rows.map((row) => row.id === "insufficient-evidence"
-          ? { ...row, semanticStatus: "stale", actualRecommendation: "caution", actualBucket: "talk", pass: false }
+          ? { ...row, semanticStatus: "stale", actualRecommendation: null, actualBucket: "analysis_pending", pass: false }
           : row)
       }),
       reason: /stale=1/
@@ -460,7 +465,7 @@ function comparatorSmoke() {
         bucketAccuracy: 4 / 6,
         pending: 2,
         rows: c.rows.map((row) => ["insufficient-evidence", "content-to-user-transfer"].includes(row.id)
-          ? { ...row, semanticStatus: "pending", actualRecommendation: "caution", actualBucket: "talk", pass: false }
+          ? { ...row, semanticStatus: "pending", actualRecommendation: null, actualBucket: "analysis_pending", pass: false }
           : row)
       }),
       reason: /pending=2/
@@ -475,7 +480,7 @@ function comparatorSmoke() {
         recommendationAccuracy: 5 / 6,
         bucketAccuracy: 4 / 6,
         rows: c.rows.map((row) => ["content-to-user-transfer", "insufficient-evidence"].includes(row.id)
-          ? { ...row, semanticStatus: "refresh", actualRecommendation: "review", actualBucket: "refresh", pass: false }
+          ? { ...row, semanticStatus: "refresh", actualRecommendation: null, actualBucket: "refresh", pass: false }
           : row)
       }),
       reason: /bucketAccuracy 回退/
@@ -507,7 +512,7 @@ function comparatorSmoke() {
         recommendationAccuracy: 3 / 6,
         bucketAccuracy: 3 / 6,
         rows: c.rows.map((row, index) => index < 3
-          ? { ...row, actualRecommendation: "review", actualBucket: "backup", pass: false }
+          ? { ...row, actualRecommendation: "not_recommended", actualBucket: "not_recommended", pass: false }
           : row)
       }),
       reason: /recommendationAccuracy 回退/
@@ -520,7 +525,7 @@ function comparatorSmoke() {
         accuracy: 3 / 6,
         bucketAccuracy: 3 / 6,
         rows: c.rows.map((row, index) => index < 3
-          ? { ...row, actualBucket: "backup", pass: false }
+          ? { ...row, actualBucket: ["apply", "caution", "primary"][index], pass: false }
           : row)
       }),
       reason: /bucketAccuracy 回退/
@@ -535,7 +540,7 @@ function comparatorSmoke() {
         hardFalsePlacement: 2,
         hardFalsePlacementIds: ["java-core-missing", "user-ops-vs-pure-sales"],
         rows: c.rows.map((row) => ["java-core-missing", "user-ops-vs-pure-sales"].includes(row.id)
-          ? { ...row, actualBucket: "talk", pass: false }
+          ? { ...row, actualRecommendation: "apply", actualBucket: "apply", pass: false }
           : row)
       }),
       reason: /hardFalsePlacement 增加/
@@ -550,7 +555,7 @@ function comparatorSmoke() {
         hardFalsePlacement: 1,
         hardFalsePlacementIds: ["user-ops-vs-pure-sales"],
         rows: c.rows.map((row) => row.id === "user-ops-vs-pure-sales"
-          ? { ...row, actualBucket: "talk", pass: false }
+          ? { ...row, actualRecommendation: "apply", actualBucket: "apply", pass: false }
           : row)
       }),
       reason: /新增硬排除漏拦/
@@ -566,7 +571,7 @@ function comparatorSmoke() {
         falseHardExclusion: 1,
         falseHardExclusionIds: ["ecommerce-core-match"],
         rows: c.rows.map((row) => row.id === "ecommerce-core-match"
-          ? { ...row, actualRecommendation: "review", actualBucket: "not_recommended", pass: false }
+          ? { ...row, actualRecommendation: "not_recommended", actualBucket: "not_recommended", pass: false }
           : row)
       }),
       reason: /新增错误硬排除/
@@ -599,7 +604,10 @@ function sharedBenchmarkMetricsSmoke() {
   ];
   // 新pass规则: pass只看recommendation, 但rec匹配+hardFalsePlacement正确即可
   assert.strictEqual(typeof result.ok, "boolean");
-  assert(result.ok, "shared benchmark metrics compare must succeed before result.report can be inspected");
+  assert(
+    result.ok,
+    `shared benchmark metrics compare must succeed before result.report can be inspected: ${result.code || ""}/${result.message || ""}`
+  );
   assert(result.report && typeof result.report === "object", "shared benchmark metrics must return a report object");
   assert.deepStrictEqual(Object.keys(result.report).sort(), expectedReportKeys.sort());
   assert.deepStrictEqual(result, compareBenchmarkResults(baseline, candidate));

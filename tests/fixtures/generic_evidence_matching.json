@@ -78,7 +78,7 @@
       "greetingAngle": "",
       "evidence": { "jd": ["JD：必须具备店铺活动运营经验"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
     },
-    "expected": { "recommendation": "apply", "jobQualityLevel": "normal", "bucket": "primary" }
+    "expected": { "recommendation": "primary", "jobQualityLevel": "normal", "bucket": "primary" }
   },
   {
     "id": "ecommerce-wishlist-sprawl",
@@ -157,7 +157,7 @@
       "greetingAngle": "",
       "evidence": { "jd": ["JD：必须具备店铺活动运营经验"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
     },
-    "expected": { "recommendation": "caution", "jobQualityLevel": "caution", "bucket": "talk", "concernType": "responsibility_sprawl" }
+    "expected": { "recommendation": "apply", "jobQualityLevel": "caution", "bucket": "apply", "concernType": "responsibility_sprawl" }
   },
   {
     "id": "content-to-user-transfer",
@@ -237,7 +237,7 @@
       "greetingAngle": "",
       "evidence": { "jd": ["JD：必须具备用户增长或留存运营经验"], "resume": ["简历：通过内容活动提升用户互动与留存"] }
     },
-    "expected": { "recommendation": "caution", "jobQualityLevel": "normal", "bucket": "talk", "minTransferable": 1 }
+    "expected": { "recommendation": "caution", "jobQualityLevel": "normal", "bucket": "caution", "minTransferable": 1 }
   },
   {
     "id": "user-ops-vs-pure-sales",
@@ -297,26 +297,33 @@
       "evidenceSnippets": ["JD：必须能承受高频电话销售与客户陌拜"]
     },
     "matchDecision": {
-      "recommendation": "review",
-      "fitLevel": "C",
+      "recommendation": "skip",
+      "fitLevel": "D",
       "roleAlignment": "misaligned",
       "roleResumeEvidence": ["简历：主工作方向是线上用户社群运营与留存活动"],
       "roleGaps": ["岗位主工作方向是电话陌拜、上门拜访与销售签约"],
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "电话销售与客户陌拜", "state": "unknown", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "" }
+        { "requirement": "电话销售与客户陌拜", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：候选人明确没有电话销售或陌拜经历与意愿" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
-      "hardBlockers": [],
+      "hardBlockers": [
+        {
+          "kind": "indispensable_core",
+          "requirement": "电话销售与客户陌拜",
+          "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜",
+            "resumeEvidence": "简历：候选人明确不愿从事电话销售或陌拜工作"
+        }
+      ],
       "softGaps": ["匹配卡将纯销售列为谨慎转向"],
       "questionsToVerify": ["确认候选人是否愿意接受高频电话销售与客户陌拜"],
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": [] }
+      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": ["简历：候选人明确没有电话销售或陌拜经历与意愿"] }
     },
-    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "backup", "requireUnknown": true, "forbidFitReasons": true }
+    "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
   },
   {
     "id": "insufficient-evidence",
@@ -386,9 +393,9 @@
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：具体职责与考核口径面议"], "resume": [] }
+      "evidence": { "jd": ["JD：具体职责与考核口径面议"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
     },
-    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "talk", "requireUnknown": true, "forbidFitReasons": true }
+    "expected": { "recommendation": null, "decisionStatus": "needs_retry", "jobQualityLevel": "normal", "bucket": "analysis_pending", "requireUnknown": true, "forbidFitReasons": true }
   },
   {
     "id": "java-core-missing",
@@ -446,25 +453,32 @@
       "evidenceSnippets": ["JD：必须精通 Java 与 Spring Boot"]
     },
     "matchDecision": {
-      "recommendation": "review",
-      "fitLevel": "C",
+      "recommendation": "skip",
+      "fitLevel": "D",
       "roleAlignment": "misaligned",
       "roleResumeEvidence": ["简历：主工作方向是 Python/FastAPI 服务开发"],
       "roleGaps": ["岗位主工作方向是唯一 Java/Spring 技术栈"],
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "Java/Spring 核心开发", "state": "unknown", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "" }
+        { "requirement": "Java/Spring 核心开发", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：候选人明确仅有 Python/FastAPI，不具备 Java/Spring 项目经验" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
-      "hardBlockers": [],
+      "hardBlockers": [
+        {
+          "kind": "indispensable_core",
+          "requirement": "Java/Spring 核心开发",
+          "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python",
+            "resumeEvidence": "简历：候选人明确无法承担 Java/Spring 开发工作"
+        }
+      ],
       "softGaps": ["简历没有直接 Java/Spring 项目证据"],
       "questionsToVerify": ["确认候选人是否具备可核对的 Java/Spring 项目经历"],
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": [] }
+      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": ["简历：候选人明确仅有 Python/FastAPI，不具备 Java/Spring 项目经验"] }
     },
-    "expected": { "recommendation": "review", "jobQualityLevel": "normal", "bucket": "backup", "requireUnknown": true, "forbidFitReasons": true }
+    "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
   }
 ]

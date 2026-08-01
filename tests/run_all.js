@@ -40,6 +40,7 @@ const tests = [
   "semantic_pipeline_smoke.js",
   "four_tier_pipeline_smoke.js",
   "four_tier_product_surface_smoke.js",
+  "four_tier_benchmark_metrics_smoke.js",
   "generic_evidence_matching_smoke.js",
   "source_acquisition_smoke.js",
   "boss_communication_page_smoke.js",
