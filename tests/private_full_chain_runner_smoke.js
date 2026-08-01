@@ -2048,7 +2048,7 @@ async function injectedLiveFlowSmoke(identityPath) {
           logger.warn("model_contract_repair_failed", {
             kind: "understandJob",
             initialErrorMessage: `requirements must be an array ${contractDiagnosticSecret}`,
-            errorMessage: `requirements contains unknown ID ${contractDiagnosticSecret}`
+            errorMessage: `requirements[0].trackIds must be an array ${contractDiagnosticSecret}`
           });
         } else {
           logger.warn("model_contract_repair_requested", {
@@ -2218,8 +2218,8 @@ async function injectedLiveFlowSmoke(identityPath) {
     matchJobContractRepairCount: 0,
     initialContractFailureCategory: "requirement_matches",
     repairContractFailureCategory: "requirement_matches",
-    initialContractFailureReason: "other",
-    repairContractFailureReason: "other",
+    initialContractFailureReason: "requirements_shape",
+    repairContractFailureReason: "requirements_track_ids",
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);
