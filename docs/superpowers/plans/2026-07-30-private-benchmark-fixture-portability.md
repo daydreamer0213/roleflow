@@ -917,3 +917,9 @@ Do not create `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-first-20
 - Do not access BOSS, jobs.sqlite, cookies, or port 8787 during model acceptance. Model settings may be resolved only through the runner gate from `D:\Guo\ZhiPing`, without printing or copying configuration contents.
 
 The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.
+
+### Four-tier weighted exact evaluated binding
+
+- Candidate evaluated is exactly `bae89bbc807126585701892311731c7f84e99e93`; candidate product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` is its strict ancestor.
+- Baseline evaluated/harness is exactly `c1d32641bca2ccd4c82128f48f3cfac996310dfb`; baseline product remains `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Use candidate evaluated `bae89bbc807126585701892311731c7f84e99e93`, not the immediate descendant binding commit containing this paragraph, in the run manifest, v3 portability proof, temporary evaluation branch, and live verification.
