@@ -2603,3 +2603,17 @@ Evaluated checkpoint binding: `3503d28e7ceadf6eceb169de485f55c82acb7c38`; evalua
 - Acceptance remains outcome-based: disclose fine-tier differences, retain all confirmed keep opportunities, exclude all five confirmed obvious primary-direction mismatches, keep false hard exclusions at zero, and pass every structural/privacy gate.
 
 Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evaluated product ancestor: `c073cf376c244ee5bb3c6ef01da95706bc322dc6`.
+
+## 2026-08-01 adjacent role review checkpoint
+
+- Product commit: `d342ecc89c1f1fa4ad92b7a36de18abf850abbe8`.
+- v6 first-3 stopped before the 20-job run because zero-based index 9 was hard-excluded as `misaligned`, producing one false hard exclusion.
+- The attempted six-row diagnostic was rejected by preflight because diagnostic selection accepts at most five rows; no model request was made and the failed directory remains preserved.
+- The isolated v6 obvious-mismatch five-row diagnostic passed 5/5 recommendation and bucket expectations. This confirms that the hard `misaligned -> skip/not_recommended` boundary is working for clearly unsuitable roles.
+- Index 9 and one true-negative row have the same anonymous count shape, so another numeric threshold would overfit the current AI sample and weaken portability.
+- The generic fix adds `adjacent_misaligned`: the primary delivery differs, but the role remains in the same artifact class and professional delivery lifecycle. Without another hard gate it maps to `review/backup`; `misaligned` remains a hard exclusion.
+- Contract hardening requires strict direction evidence for both mismatch states, rejects the new state on the legacy full-result path, and keeps `insufficient_evidence` on the recall-first review path.
+- Match cache/version is now `v37`. The prompt remains shorter than the pre-v36 form, adds no IT-specific role list, and adds no extra model call.
+- Offline verification: 47/47 checks passed and `git diff --check` passed. Independent review: Critical 0, Important 0, Spec PASS, Code quality APPROVED.
+- Fresh v7 roots are reserved as `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v7-first-3-20260801` and `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v7-full-20-20260801`. No earlier cache or result will be reused.
+- After the matching policy is stable, run a separate prompt-compaction A/B focused on latency, variance, and boundary accuracy. This is intentionally non-blocking for v7 acceptance.
