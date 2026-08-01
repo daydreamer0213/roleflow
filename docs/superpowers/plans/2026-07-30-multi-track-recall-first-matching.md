@@ -2349,6 +2349,17 @@ evaluated checkpoint. Candidate product
 Record the evaluated SHA in one immediate docs-only binding and use evaluated,
 not the binding, in the v4r2 manifest/proof/live branch.
 
+### Recall-first v4r2 exact evaluated binding
+
+- Candidate evaluated/product are exactly
+  `f6729e9ab62ca5ee9ec180da8bbb852214f4affd` /
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c`.
+- Baseline evaluated/product remain
+  `8387a92f3978d57c72418e1c65205643c2291c51` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Use `f6729e9...`, not this binding commit, for every v4r2 artifact and live
+  command.
+
 ### Recall-first v3 structural-diagnostic checkpoint (2026-08-01)
 
 - The first v3 live diagnostic root is now immutable:

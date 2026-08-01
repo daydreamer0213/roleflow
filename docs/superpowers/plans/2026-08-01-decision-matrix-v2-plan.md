@@ -756,3 +756,13 @@ evaluated checkpoint. Product
 `2e030481b34f3cdee97ab3d404f76f084451bb7c` remains its strict ancestor.
 Bind the evaluated SHA immediately, and use evaluated rather than the binding
 commit in all v4r2 private artifacts and live execution.
+
+### v4r2 exact evaluated binding
+
+- Candidate evaluated/product:
+  `f6729e9ab62ca5ee9ec180da8bbb852214f4affd` /
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c`.
+- Baseline evaluated/product:
+  `8387a92f3978d57c72418e1c65205643c2291c51` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- The immediate binding commit is not the evaluated commit for v4r2.
