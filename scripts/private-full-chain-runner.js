@@ -1768,7 +1768,7 @@ function privateContractFailureReason(value) {
   add(/insufficient_evidence requires a concrete gap/i, "insufficient_requires_gap");
   add(/central transferable requires a concrete roleGap/i, "central_transferable_requires_gap");
   add(/\brequirements\b[^\n]*(?:最多包含\s*16\s*条|(?:at most|maximum|max(?:imum)?|exceeds?|more than)\s*16)/i, "requirements_limit");
-  add(/\brequirements\b[^\n]*(?:must be an array|必须是数组)/i, "requirements_shape");
+  add(/\brequirements\s+(?:must be an array|必须是数组)/i, "requirements_shape");
   add(/\brequirements(?:\[\d+\])?[^\n]*trackIds|trackIds[^\n]*(?:unknown|不存在|empty|非空|array|数组)/i, "requirements_track_ids");
   add(/\brequirements(?:\[\d+\])?[^\n]*(?:foundation|central|indispensable)[^\n]*(?:boolean|布尔)/i, "requirements_flags");
   add(/\brequirements(?:\[\d+\])?\.evidence|requirements[^\n]*evidence[^\n]*(?:format|prefix|格式|开头|字符)/i, "requirements_evidence");
