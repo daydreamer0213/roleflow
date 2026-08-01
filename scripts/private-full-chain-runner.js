@@ -109,10 +109,16 @@ const PRIVATE_USER_CONFIRMED_LABELING_POLICY_KEYS = [
   "roleDirectionSource", "requirementMatchingSource", "adjacencyBasis", "industryTreatment",
   "genericDutyWeight", "multiBranchJd", "falseNegativeCost"
 ];
-const PRIVATE_RECOMMENDATIONS = new Set(["apply", "caution", "review", "skip"]);
-const PRIVATE_BUCKETS = new Set(["primary", "talk", "backup", "not_recommended"]);
-const PRIVATE_ACTUAL_BUCKETS = new Set([...PRIVATE_BUCKETS, "analysis_pending", "refresh"]);
-const PRIVATE_LABEL_PAIRS = new Set(["apply/primary", "caution/talk", "review/talk", "review/backup", "skip/not_recommended"]);
+const PRIVATE_RECOMMENDATIONS = new Set([
+  "apply", "caution", "review", "skip",
+  "primary", "not_recommended"
+]);
+const PRIVATE_BUCKETS = new Set(["primary", "apply", "talk", "caution", "backup", "not_recommended"]);
+const PRIVATE_ACTUAL_BUCKETS = new Set(["primary", "apply", "caution", "not_recommended", "analysis_pending", "refresh"]);
+const PRIVATE_LABEL_PAIRS = new Set([
+  "apply/primary", "caution/talk", "review/talk", "review/backup", "skip/not_recommended",
+  "primary/primary", "apply/apply", "caution/caution", "not_recommended/not_recommended"
+]);
 const PRIVATE_DISPOSITIONS = new Set(["keep", "exclude"]);
 const PRIVATE_USER_DISPOSITIONS = new Set(["keep", "discard"]);
 const RECALL_FIRST_POLICY = "recall-first.v1";
@@ -122,6 +128,38 @@ const RECALL_FIRST_POLICIES = new Set([RECALL_FIRST_POLICY, PRIVATE_USER_CONFIRM
 
 function isRecallFirstPolicy(value) {
   return RECALL_FIRST_POLICIES.has(value);
+}
+
+function canonicalPrivateLabel(label) {
+  const pair = `${label?.expectedRecommendation}/${label?.expectedBucket}`;
+  const normalized = {
+    "apply/primary": ["primary", "primary"],
+    "caution/talk": ["apply", "apply"],
+    "review/talk": ["caution", "caution"],
+    "review/backup": ["caution", "caution"],
+    "skip/not_recommended": ["not_recommended", "not_recommended"],
+    "primary/primary": ["primary", "primary"],
+    "apply/apply": ["apply", "apply"],
+    "caution/caution": ["caution", "caution"],
+    "not_recommended/not_recommended": ["not_recommended", "not_recommended"]
+  }[pair];
+  return normalized
+    ? { expectedRecommendation: normalized[0], expectedBucket: normalized[1] }
+    : null;
+}
+
+function canonicalPrivateActualRecommendation(analysis, actualBucket) {
+  if (["analysis_pending", "refresh"].includes(actualBucket)) return null;
+  const value = String(analysis?.recommendation || "").trim();
+  if (Number(analysis?.recommendationSchemaVersion || 0) >= 2) {
+    return ["primary", "apply", "caution", "not_recommended"].includes(value) ? value : null;
+  }
+  return {
+    apply: "primary",
+    caution: "apply",
+    review: "caution",
+    skip: "not_recommended"
+  }[value] || null;
 }
 
 function isNonEmptyString(value) {
@@ -780,6 +818,29 @@ function readJsonFile(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
   }
 }
 
+function readJsonSnapshot(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
+  try {
+    const raw = fs.readFileSync(file);
+    const value = JSON.parse(raw.toString("utf8"));
+    if (!value || typeof value !== "object") throw new Error("invalid");
+    return { raw, value };
+  } catch {
+    throw runnerError(code, `Invalid JSON input: ${path.basename(file)}`);
+  }
+}
+
+function readNativeMatchInputs(request, assertResumeIdentityRedacted) {
+  const jobsSnapshot = readJsonSnapshot(request.jobs);
+  return {
+    profileValue: readJsonFile(request.profile),
+    cardValue: readJsonFile(request.matchingCard),
+    jobsValue: jobsSnapshot.value,
+    jobsRaw: jobsSnapshot.raw,
+    labelsValue: readJsonFile(request.labels),
+    resume: readMatchResumeAndIdentity(request.privateRoot, assertResumeIdentityRedacted)
+  };
+}
+
 function writeJsonFile(privateRoot, file, value) {
   exclusivePrivateWrite(privateRoot, file, JSON.stringify(value, null, 2) + "\n");
 }
@@ -1154,8 +1215,12 @@ function createConfirmedEvidencePortability(options, seam = null) {
       JSON.parse(target.bytes.labels.toString("utf8")),
       target.bytes.jobs
     );
-  } catch {
-    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "Source and target labels must both be confirmed valid fixtures.");
+  } catch (error) {
+    const detail = [error?.code, error?.message].filter(Boolean).join(": ");
+    throw runnerError(
+      "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      `Source and target labels must both be confirmed valid fixtures.${detail ? ` ${detail}` : ""}`
+    );
   }
   const labelsIdentical = source.bytes.labels.equals(target.bytes.labels);
   const labelPolicyTransition = !labelsIdentical
@@ -1520,8 +1585,8 @@ function privateJobsAndLabels(jobsValue, labelsValue, jobsRaw = null) {
       || !PRIVATE_LABEL_PAIRS.has(`${label.expectedRecommendation}/${label.expectedBucket}`)
       || (isRecallV2 && (!(isUserV2 ? PRIVATE_USER_DISPOSITIONS : PRIVATE_DISPOSITIONS).has(label.expectedDisposition)
         || (disposition === "exclude"
-          ? label.expectedRecommendation !== "skip" || label.expectedBucket !== "not_recommended"
-          : label.expectedBucket === "not_recommended")));
+          ? canonicalPrivateLabel(label)?.expectedBucket !== "not_recommended"
+          : canonicalPrivateLabel(label)?.expectedBucket === "not_recommended")));
     })) {
     throw runnerError("PRIVATE_FULL_CHAIN_FIXTURE_INVALID", "Job and label IDs must be unique, complete, and exactly equal.");
   }
@@ -1565,14 +1630,14 @@ function deriveRecallFirstMetrics(rows) {
   }
   const expectedKeepRows = rows.filter((row) => row.expectedDisposition === "keep");
   const expectedExcludeRows = rows.filter((row) => row.expectedDisposition === "exclude");
-  const retainedRows = expectedKeepRows.filter((row) => ["primary", "talk", "backup"].includes(row.actualBucket));
+  const retainedRows = expectedKeepRows.filter((row) => ["primary", "apply", "caution"].includes(row.actualBucket));
   const falseHardExclusionIds = expectedKeepRows
-    .filter((row) => row.actualBucket === "not_recommended")
+    .filter((row) => ["primary", "apply"].includes(row.expectedBucket) && row.actualBucket === "not_recommended")
     .map((row) => row.id)
     .sort();
   const obviousMismatchExcludedRows = expectedExcludeRows.filter((row) => row.actualBucket === "not_recommended");
   const missedObviousExclusionIds = expectedExcludeRows
-    .filter((row) => ["primary", "talk", "backup"].includes(row.actualBucket))
+    .filter((row) => ["primary", "apply"].includes(row.actualBucket))
     .map((row) => row.id)
     .sort();
   const unresolvedDispositionIds = rows
@@ -1703,8 +1768,9 @@ function ruleBlockedAnalysis() {
     provider: "rule-gate",
     semanticStatus: "blocked",
     decisionSource: "hard_boundary",
-    recommendation: "skip",
-    fitLevel: "D",
+    recommendation: "not_recommended",
+    recommendationSchemaVersion: 2,
+    fitLevel: "no_fit",
     confidence: null,
     fitReasons: [],
     missingPoints: [],
@@ -1956,13 +2022,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       })
       : request.portabilityProof
         ? validateConfirmedEvidencePortability(request, provenanceContext, privacyValidator, testSeam)
-        : {
-        profileValue: readJsonFile(request.profile),
-        cardValue: readJsonFile(request.matchingCard),
-        jobsValue: readJsonFile(request.jobs),
-        labelsValue: readJsonFile(request.labels),
-        resume: readMatchResumeAndIdentity(request.privateRoot, privacyValidator)
-      };
+        : readNativeMatchInputs(request, privacyValidator);
   if (request.mode === "match-live") {
     if (request.portabilityProof) {
       preflight.portability = { proof: preflight.proof };
@@ -1978,7 +2038,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
       throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
     }
-    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue, require("fs").readFileSync(request.jobs));
+    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue, preflight.jobsRaw);
     if (request.diagnosticIndices?.some((index) => index >= preflight.fixture.jobs.length)) {
       throw runnerError("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "A diagnostic index is outside the frozen fixture.");
     }
@@ -2104,15 +2164,16 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       const telemetryValues = telemetry.snapshot();
       const actualBucket = modules.decisionBucket({ ...analysisJob, analysis });
       const label = fixture.labelById.get(String(job.id));
-      const actualRecommendation = String(analysis.recommendation || "review");
+      const expected = canonicalPrivateLabel(label);
+      const actualRecommendation = canonicalPrivateActualRecommendation(analysis, actualBucket);
       return {
         id: String(job.id),
-        expectedRecommendation: label.expectedRecommendation,
+        expectedRecommendation: expected.expectedRecommendation,
         ...(isRecallFirstPolicy(fixture.evaluationPolicy)
           ? { expectedDisposition: label.expectedDisposition }
           : {}),
         actualRecommendation,
-        expectedBucket: label.expectedBucket,
+        expectedBucket: expected.expectedBucket,
         actualBucket,
         selectedTrackId: String(analysis.selectedTrackId || "").slice(0, 8),
         selectedTrackLabel: String(analysis.selectedTrackLabel || "").slice(0, 80),
@@ -2166,7 +2227,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         responseHadUtf8Bom: typeof analysis.errorHadUtf8Bom === "boolean"
           ? analysis.errorHadUtf8Bom
           : null,
-        pass: actualRecommendation === label.expectedRecommendation
+        pass: actualRecommendation === expected.expectedRecommendation
       };
     });
   } finally {
@@ -2283,8 +2344,12 @@ function recallFirstAcceptanceFailures(candidate) {
   }
   if (candidate.falseHardExclusion !== 0) failures.push(`存在 ${candidate.falseHardExclusion} 条错误硬排除`);
   if (candidate.missedObviousExclusion !== 0) failures.push(`存在 ${candidate.missedObviousExclusion} 条明确排除漏拦`);
-  const partialPrimary = candidate.rows.filter((row) => row.semanticStatus === "partial" && row.actualBucket === "primary");
-  if (partialPrimary.length) failures.push(`存在 ${partialPrimary.length} 条 partial -> primary`);
+  if (candidate.frozenFixtureTotal >= 20 && candidate.recommendationAccuracy < 0.9) {
+    const required = Math.ceil(candidate.frozenFixtureTotal * 0.9);
+    failures.push(`recommendationAccuracy=${candidate.recommendationAccuracy}，正式验收至少需要 ${required}/${candidate.frozenFixtureTotal}（0.9）`);
+  }
+  const partialPrimary = candidate.rows.filter((row) => row.semanticStatus === "partial" && ["primary", "apply"].includes(row.actualBucket));
+  if (partialPrimary.length) failures.push(`存在 ${partialPrimary.length} 条 partial -> primary/apply`);
   return failures;
 }
 
@@ -2649,5 +2714,6 @@ module.exports = {
   runPrivateFullChain,
   comparePrivateFullChainResults,
   deriveRecallFirstMetrics,
+  recallFirstAcceptanceFailures,
   classifyPrivateContractFailureReason: privateContractFailureReason
 };
