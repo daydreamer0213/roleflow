@@ -2287,6 +2287,18 @@ The docs-only commit containing this section is the next candidate evaluated
 checkpoint. Candidate product `cf1793a...` must be its strict ancestor. Record
 the complete evaluated SHA in an immediate descendant docs-only binding before
 creating the v3r2 private root.
+
+### Recall-first v3 structural-diagnostic exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e8f3449a201ccc4dda1d1963becd13237cf19bd3`. Candidate product
+  `cf1793a79877c8150385317853ff19e6994a2f00` is its strict ancestor.
+- Baseline evaluated/product are exactly
+  `56369670008b187d6259bf37c9dba9117223543f` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- This immediate docs-only binding does not replace candidate evaluated
+  `e8f3449a201ccc4dda1d1963becd13237cf19bd3` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
 - Candidate and baseline Git blobs were rechecked and are identical:
   runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
   benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,

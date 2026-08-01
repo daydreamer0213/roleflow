@@ -604,3 +604,14 @@ binding 提交记录 evaluated 的完整 SHA。binding 提交本身不得替代 
 The docs-only commit containing this section is the next candidate evaluated
 checkpoint. Record its exact SHA in an immediate descendant binding commit
 before initializing the v3r2 manifest and proof.
+
+### v3 structural-diagnostic exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e8f3449a201ccc4dda1d1963becd13237cf19bd3`; candidate product
+  `cf1793a79877c8150385317853ff19e6994a2f00` is its strict ancestor.
+- Baseline evaluated/product are exactly
+  `56369670008b187d6259bf37c9dba9117223543f` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- The binding commit itself must not be used as evaluated in the manifest,
+  proof, temporary evaluation branch, or live run.
