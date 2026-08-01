@@ -2134,6 +2134,27 @@ async function injectedLiveFlowSmoke(identityPath) {
     jobs: telemetryProbe.jobs,
     labels: telemetryProbe.labels
   }), authorizedEnv(), telemetrySeam);
+  assert.deepStrictEqual(
+    [
+      "requirements must be an array",
+      "requirements[0].trackIds must be an array",
+      "requirements 最多包含 16 条",
+      "coreRequirements「经验年限」的 indispensable 必须为 false",
+      "coreRequirements「资格与年限」混合独立硬条件与经验年限条件，必须拆成独立 requirements",
+      "requirements.evidence evidence 必须以 JD：开头、包含原文且最多 120 个字符",
+      "requirements[0].label 必须是非空字符串"
+    ].map((message) => runner.classifyPrivateContractFailureReason(message)),
+    [
+      "requirements_shape",
+      "requirements_track_ids",
+      "requirements_limit",
+      "requirements_flags",
+      "requirements_compound",
+      "requirements_evidence",
+      "requirements_label"
+    ],
+    "bounded requirements reasons must cover every validator-owned failure family without exposing raw text"
+  );
   const telemetryFields = [
     "roleAlignment",
     "foundationState",
