@@ -2299,6 +2299,46 @@ creating the v3r2 private root.
 - This immediate docs-only binding does not replace candidate evaluated
   `e8f3449a201ccc4dda1d1963becd13237cf19bd3` in the manifest, v3 proof,
   temporary evaluation branch, or live verification.
+
+### Recall-first v3r2 requirements-diagnostic checkpoint (2026-08-01)
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r2-first-3-20260801`
+  unchanged. The fresh run completed with one exact row out of three. Index 4
+  was `review/backup` instead of `apply/primary` after a medium
+  `responsibility_sprawl` signal; index 9 again failed
+  `understandJob/contract_repair` with both failures in the broad
+  `requirement_matches` category; index 10 was `apply/talk` instead of
+  `caution/talk`. There were no hard false placements, false hard exclusions,
+  empty responses, stale rows, pending rows, or partial rows.
+- Safe cache inspection showed that index 4 was modeled as three tracks with 15
+  requirements and one medium responsibility-sprawl signal, while index 10 was
+  modeled as one track with 14 requirements and no semantic risk. This confirms
+  that ordinary `apply/caution` placement is sensitive to model decomposition;
+  no deterministic IT keyword list caused the deviation.
+- Candidate bounded-diagnostic checkpoint is exactly
+  `6b8b5209adaba41cd02dbfb36b82621b1b3ea83b`. Baseline checkpoint is exactly
+  `54876927dd8b9ef9f9adb52ed7fc5f2488d3abac`. Their runner blob is exactly
+  `b49f3cb46d420b7c3bb70c36a3691e26305f0cd2`.
+- The runner now classifies requirements failures into fixed reasons for limit,
+  root shape, track IDs, boolean flags, evidence, and label. A TDD regression
+  also proves that `requirements[0].trackIds must be an array` cannot collide
+  with the root `requirements` shape reason. Candidate 47/47 and baseline 41/41
+  offline checks passed.
+- Independent review first found and then confirmed closure of the regex
+  collision. Final review returned **Critical 0**, **Important 0**,
+  **Spec PASS**, and **Code quality APPROVED**. Raw error text remains
+  classifier input only.
+- The next root is diagnostic-only and must be confirmed absent:
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r3-index-9-20260801`.
+  Run only zero-based index `9` with a fresh cache to identify the bounded
+  requirements reason. Do not treat this single row as acceptance and do not
+  create any 20-row root.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product remains `cf1793a...` and must be its strict
+ancestor. Record the evaluated SHA in an immediate descendant binding before
+creating the diagnostic root.
 - Candidate and baseline Git blobs were rechecked and are identical:
   runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
   benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,

@@ -615,3 +615,28 @@ before initializing the v3r2 manifest and proof.
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - The binding commit itself must not be used as evaluated in the manifest,
   proof, temporary evaluation branch, or live run.
+
+### v3r2 outcome and bounded requirements diagnosis
+
+- The v3r2 run is immutable and did not pass: one exact row, one
+  `understandJob` contract-repair failure, and two ordinary recommendation
+  deviations. Safety and hard-exclusion counts remained clean.
+- Safe cache facts identified model-decomposition variance rather than an
+  occupation-specific deterministic rule: the first completed job had three
+  tracks, 15 requirements, and medium responsibility sprawl; the other had one
+  track and 14 requirements.
+- Candidate/baseline bounded diagnostic commits are
+  `6b8b5209adaba41cd02dbfb36b82621b1b3ea83b` /
+  `54876927dd8b9ef9f9adb52ed7fc5f2488d3abac`, with identical runner blob
+  `b49f3cb46d420b7c3bb70c36a3691e26305f0cd2`.
+- Candidate 47/47 and baseline 41/41 offline checks passed. Final independent
+  review returned `Critical 0`, `Important 0`, `Spec PASS`, and
+  `Code quality APPROVED`.
+- The next private root is diagnostic-only:
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r3-index-9-20260801`.
+  Run only zero-based index `9` with no cache reuse. Keep every 20-row root
+  absent until a later fresh three-row acceptance succeeds.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Record its exact SHA in an immediate descendant binding before
+initializing the v3r3 diagnostic manifest and proof.
