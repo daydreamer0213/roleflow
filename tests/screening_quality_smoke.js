@@ -71,7 +71,7 @@ assert.strictEqual(expiredActivity.decisionBucket, "refresh");
 const sharedTalkAnalysis = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
 const sharedTalkGuard = applyRuleGuard(sharedTalkAnalysis, job());
 assert.strictEqual(sharedTalkGuard.recommendation, "caution");
-assert.strictEqual(sharedTalkGuard.decisionSource, "role_evidence_talk_guard");
+assert.strictEqual(sharedTalkGuard.decisionSource, "decision_matrix");
 assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkAnalysis }), "talk");
 
 const sharedBackupAnalysis = layeredDecisionAnalysis("misaligned", ["matched"]);
