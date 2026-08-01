@@ -2601,3 +2601,5 @@ Evaluated checkpoint binding: `3503d28e7ceadf6eceb169de485f55c82acb7c38`; evalua
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v6-first-3-20260801`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v6-full-20-20260801`
 - Acceptance remains outcome-based: disclose fine-tier differences, retain all confirmed keep opportunities, exclude all five confirmed obvious primary-direction mismatches, keep false hard exclusions at zero, and pass every structural/privacy gate.
+
+Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evaluated product ancestor: `c073cf376c244ee5bb3c6ef01da95706bc322dc6`.

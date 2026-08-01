@@ -786,3 +786,5 @@ The v5 diagnostic completed `3/3` recommendations with one allowed display-bucke
 Product commit `c073cf376c244ee5bb3c6ef01da95706bc322dc6` makes `misaligned` a verified primary-direction exclusion while preserving `partially_aligned` for adjacent-role review. It closes soft-tag ordering, multi-track evidence binding, contract repair, and zero-requirement evidence-envelope gaps. The match prompt is shorter and removes the previous IT-suite example lists; it adds no field or call. Multi-track fallback uses only closed selected-track `D<n>|dimension` bindings and match cache version `match-decision-v36`.
 
 All 47 offline checks and diff validation passed. Final independent review: Critical 0, Important 0, Spec PASS, Code quality APPROVED. The next live runs must use fresh v6 roots and caches, diagnostic indices `4,9,10` first, followed by all 20 only if the diagnostic is structurally healthy.
+
+Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evaluated product ancestor: `c073cf376c244ee5bb3c6ef01da95706bc322dc6`.
