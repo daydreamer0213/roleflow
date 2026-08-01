@@ -2575,3 +2575,5 @@ the manifest, v3 proof, temporary evaluation branch, or live verification.
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-first-3-20260801`
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-full-20-20260801`
 - Deferred, non-blocking task after product stability: inventory and slim the model prompts, then A/B test latency, output stability, safety gates, keep retention, and obvious-mismatch exclusion before adopting any shorter prompt. The deterministic checkpoint does not change prompt length.
+
+Evaluated checkpoint binding: `3503d28f1b6bb06c70bd2859f54858462f561d57`; evaluated product ancestor: `ddb8535b6f6da88684f89af5eeb18aa298c9c35e`.

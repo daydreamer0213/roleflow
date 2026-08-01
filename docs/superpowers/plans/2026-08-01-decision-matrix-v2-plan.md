@@ -776,3 +776,5 @@ Product commit `ddb8535b6f6da88684f89af5eeb18aa298c9c35e` applies `temperature=0
 The next acceptance run must use fresh v5 directories and caches. Fine-tier apply/caution/review deviations will be disclosed but are not hard failures. Hard product requirements are complete structural/privacy gates, `15/15` retained opportunities, `5/5` obvious mismatches excluded, and zero false hard exclusions.
 
 Prompt simplification is intentionally deferred until this suite is stable. That later task must start with a prompt inventory and controlled A/B measurement; no prompt should be shortened merely on intuition, and no longer prompt should be added during the current determinism experiment.
+
+Evaluated checkpoint binding: `3503d28f1b6bb06c70bd2859f54858462f561d57`; evaluated product ancestor: `ddb8535b6f6da88684f89af5eeb18aa298c9c35e`.
