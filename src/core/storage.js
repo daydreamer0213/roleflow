@@ -7,7 +7,7 @@ const { parseBossActivityText } = require("./activity_status");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
-const { decisionHardBlockers } = require("./model_contract");
+const { decisionHardBlockers, roleEvidenceDecisionState } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 
@@ -3314,24 +3314,27 @@ function decisionBucket(job) {
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
-  if (semanticStatus === "partial") return "talk";
+  if (semanticStatus === "partial") return applyRoleEvidenceBucketCeiling("talk", analysis);
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
     if (tags.has("experience_salary_overlap")) return "backup";
     // 新判定表: 基于recommendation推算bucket用于排序展示
     // skip但有有效hardBlocker → not_recommended; skip但无有效hardBlocker → talk
     if (recommendation === "skip") {
-      return decisionHardBlockers(analysis).length ? "not_recommended" : "talk";
+      return decisionHardBlockers(analysis).length
+        ? "not_recommended"
+        : applyRoleEvidenceBucketCeiling("talk", analysis);
     }
     if (recommendation === "apply") {
       const needsConversation = tags.has("salary_target_stretch")
         || tags.has("experience_stretch")
         || tags.has("experience_overrange")
         || (analysis.hiddenRisks || []).some((risk) => ["medium", "high"].includes(risk?.severity));
-      return !needsConversation && Number(analysis.confidence || 0) >= 0.62 ? "primary" : "talk";
+      const bucket = !needsConversation && Number(analysis.confidence || 0) >= 0.62 ? "primary" : "talk";
+      return applyRoleEvidenceBucketCeiling(bucket, analysis);
     }
-    if (recommendation === "caution") return "talk";
-    if (recommendation === "review") return "backup";
+    if (recommendation === "caution") return applyRoleEvidenceBucketCeiling("talk", analysis);
+    if (recommendation === "review") return applyRoleEvidenceBucketCeiling("backup", analysis);
     return "analysis_pending";
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
@@ -3344,6 +3347,11 @@ function decisionBucket(job) {
   if (["优先", "可投"].includes(job.level || "") && !requiresConversation && !(job.risks || []).length) return "talk";
   if (["优先", "可投", "可冲"].includes(job.level || "")) return "talk";
   return "backup";
+}
+
+function applyRoleEvidenceBucketCeiling(bucket, analysis) {
+  const ceiling = roleEvidenceDecisionState(analysis).bucketCeiling;
+  return decisionBucketRank(bucket) < decisionBucketRank(ceiling) ? ceiling : bucket;
 }
 
 function observationContentHash(job) {

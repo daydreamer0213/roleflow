@@ -7,7 +7,7 @@ const {
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
-const { decisionHardBlockers } = require("./model_contract");
+const { decisionHardBlockers, roleEvidenceDecisionState } = require("./model_contract");
 
 const MAX_ACTIVE_DAYS = 3;
 const MIN_DETAIL_LENGTH = 80;
@@ -63,10 +63,18 @@ function workflowEligibility(job = {}, context = {}) {
     return { eligible: true, tier: bucket, reasonCode: "" };
   }
   if (bucket !== "backup") return ineligible("WORKFLOW_DECISION_INELIGIBLE");
+  const roleEvidence = roleEvidenceDecisionState(job.analysis || {});
+  if (roleEvidence.bucketCeiling === "backup" && !tags.has("salary_target_high")) {
+    return ineligible(
+      roleEvidence.semantics === "legacy"
+        ? "WORKFLOW_ROLE_CORE_UNPROVEN"
+        : "WORKFLOW_ROLE_EVIDENCE_BACKUP"
+    );
+  }
   // 新判定表: backup bucket 的岗如果 recommendation=review 仍可进入备选队列
   const recommendation = (job.analysis || {}).recommendation || "";
   if (recommendation === "review" && !tags.has("salary_target_high")) {
-    return ineligible("WORKFLOW_ROLE_EVIDENCE_BACKUP");
+    return ineligible("WORKFLOW_DECISION_REVIEW");
   }
   if (!tags.has("salary_target_core") || !tags.has("experience_salary_overlap")
     || [...LOW_RISK_BACKUP_BLOCKERS].some((tag) => tags.has(tag))) {
@@ -113,7 +121,9 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
         && result.reasonCode === "WORKFLOW_ROLE_CORE_UNPROVEN";
       const roleEvidenceBackup = !result.eligible
         && result.reasonCode === "WORKFLOW_ROLE_EVIDENCE_BACKUP";
-      if (!result.eligible && !highSalaryBackup && !roleCoreBackup && !roleEvidenceBackup) return null;
+      const decisionReview = !result.eligible
+        && result.reasonCode === "WORKFLOW_DECISION_REVIEW";
+      if (!result.eligible && !highSalaryBackup && !roleCoreBackup && !roleEvidenceBackup && !decisionReview) return null;
       return {
         ...job,
         workflowRunId: workflow.id,
@@ -124,7 +134,9 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
             ? "role_core_backup"
             : roleEvidenceBackup
               ? "role_evidence_backup"
-              : result.tier,
+              : decisionReview
+                ? "decision_review"
+                : result.tier,
         fromCurrentScan: Boolean(workflow.scanBatchId && Number(job.batchId) === workflow.scanBatchId),
         defaultChecked: false,
         selectable: true
@@ -141,7 +153,7 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   );
   let remainingDefaults = workflow.targetSuccessCount + replacementBuffer;
   return candidates.map((candidate) => {
-    const defaultChecked = !["low_risk_backup", "high_salary_backup", "role_core_backup", "role_evidence_backup"].includes(candidate.workflowTier) && remainingDefaults > 0;
+    const defaultChecked = !["low_risk_backup", "high_salary_backup", "role_core_backup", "role_evidence_backup", "decision_review"].includes(candidate.workflowTier) && remainingDefaults > 0;
     if (defaultChecked) remainingDefaults -= 1;
     return { ...candidate, defaultChecked };
   });
@@ -210,7 +222,7 @@ function tierRank(tier) {
 }
 
 function reviewTierRank(tier) {
-  return { primary: 0, talk: 1, low_risk_backup: 2, role_evidence_backup: 3, role_core_backup: 3, high_salary_backup: 4 }[tier] ?? 9;
+  return { primary: 0, talk: 1, low_risk_backup: 2, decision_review: 3, role_evidence_backup: 4, role_core_backup: 4, high_salary_backup: 5 }[tier] ?? 9;
 }
 
 function nonNegativeInteger(value) {

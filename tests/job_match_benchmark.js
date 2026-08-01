@@ -276,13 +276,13 @@ function validateLiveBenchmarkRequest(options, env, provider) {
     opts.actualCommit
   );
   if (!commitCheck.ok) return commitCheck;
-  if (opts.worktreeClean !== true) {
-    return failLiveBenchmark("LIVE_BENCHMARK_WORKTREE_DIRTY", "实时基准只允许在无未提交改动的干净 worktree 运行，避免结果冒充某个 HEAD。");
-  }
   const modelSettingsRootCheck = checkLiveModelSettingsRoot(
     opts.modelSettingsRoot || environ[LIVE_BENCHMARK_MODEL_SETTINGS_ROOT_ENV]
   );
   if (!modelSettingsRootCheck.ok) return modelSettingsRootCheck;
+  if (opts.worktreeClean !== true) {
+    return failLiveBenchmark("LIVE_BENCHMARK_WORKTREE_DIRTY", "实时基准只允许在无未提交改动的干净 worktree 运行，避免结果冒充某个 HEAD。");
+  }
   if (typeof provider !== "function") {
     return failLiveBenchmark("LIVE_BENCHMARK_PROVIDER_REQUIRED", "实时基准要求 provider 以纯函数注入。");
   }

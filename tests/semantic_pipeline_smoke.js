@@ -86,7 +86,7 @@ const db = openDb(dbPath);
     compactResponsibilityFoundationContractSmoke();
     compactCentralRequirementSmoke();
     roleCentralBucketSmoke();
-    try { roleEvidenceDecisionStateSmoke(); } catch(e) {}
+    roleEvidenceDecisionStateSmoke();
     await compactMatchEvidenceContractSmoke();
     roleAlignmentEvidenceContractSmoke();
     await understandingContractRepairSmoke();
@@ -2312,9 +2312,9 @@ function roleCentralBucketSmoke() {
     }
   };
   assert.deepStrictEqual(roleCoreEvidenceState(analysis), {
-    centralRequirementCount: 1,
-    centralEvidenceCount: 0,
-    unproven: true
+    centralRequirementCount: 2,
+    centralEvidenceCount: 1,
+    unproven: false
   });
   assert.strictEqual(roleCoreEvidenceState({
     requirementMatches: [{
@@ -2499,6 +2499,30 @@ function roleEvidenceDecisionStateSmoke() {
     "中心职责缺口不得由召回底线提升为可投"
   );
 
+  const indispensableOnlyGap = layeredRoleAnalysis("aligned", []);
+  indispensableOnlyGap.requirementMatches.push({
+    requirement: "必须具备生产部署经验",
+    state: "missing",
+    foundation: false,
+    central: false,
+    indispensable: true,
+    jdEvidence: "JD：必须具备生产部署经验",
+    resumeEvidence: "简历：未提供生产部署证据"
+  });
+  assert.strictEqual(
+    roleEvidenceDecisionState(indispensableOnlyGap).bucketCeiling,
+    "backup",
+    "indispensable-only 核心缺口必须维持慎投上限"
+  );
+  assert.strictEqual(
+    decisionBucket({
+      ...completeJob("partial-indispensable-gap"),
+      analysis: { ...indispensableOnlyGap, semanticStatus: "partial" }
+    }),
+    "backup",
+    "partial 分析也必须服从角色证据 bucket ceiling"
+  );
+
   const mediumRiskReview = {
     ...layeredRoleAnalysis("mostly_aligned", ["matched"], { recommendation: "review" }),
     hiddenRisks: [{ severity: "medium", evidence: "JD：需确认关键交付风险" }]
@@ -2514,6 +2538,13 @@ function roleEvidenceDecisionStateSmoke() {
   const missingEvidenceGuarded = applyRuleGuard(missingEvidenceReview, completeJob("missing-evidence-review"));
   assert.strictEqual(missingEvidenceGuarded.recommendation, "review", "缺少双侧总证据的岗位不得由召回底线提升为可投");
   assert.strictEqual(missingEvidenceGuarded.decisionSource, "model_evidence_gap", "缺少双侧总证据必须保留证据守卫来源");
+  const missingEvidenceSkip = {
+    ...layeredRoleAnalysis("misaligned", ["missing"], { recommendation: "skip" }),
+    evidence: { jd: [], resume: [] }
+  };
+  const missingEvidenceSkipGuarded = applyRuleGuard(missingEvidenceSkip, completeJob("missing-evidence-skip"));
+  assert.strictEqual(missingEvidenceSkipGuarded.recommendation, "review", "无双侧证据时不得保留矩阵 skip");
+  assert.strictEqual(missingEvidenceSkipGuarded.decisionSource, "model_evidence_gap", "无证据 skip 必须进入证据缺口复核");
 
   const genericDutyGap = layeredRoleAnalysis("mostly_aligned", ["matched", "matched"], { recommendation: "review" });
   genericDutyGap.requirementMatches.push({
@@ -2527,8 +2558,8 @@ function roleEvidenceDecisionStateSmoke() {
   });
   assert.strictEqual(
     decisionBucket({ ...completeJob("generic-duty-gap"), analysis: applyRuleGuard(genericDutyGap, completeJob("generic-duty-gap")) }),
-    "talk",
-    "主体基本一致时，宽泛附带职责不得单独降为慎投"
+    "primary",
+    "主体基本一致且核心符合时，单条宽泛附带职责缺口不得降级"
   );
 
   const concreteCoreGap = layeredRoleAnalysis("mostly_aligned", ["matched", "missing"]);
@@ -2584,22 +2615,42 @@ function roleEvidenceDecisionStateSmoke() {
 }
 
 function coreRequirementScoreSmoke() {
-  const { computeCoreRequirementScore } = require("../src/core/model_contract");
+  const { computeCoreRequirementScore, computeDecisionFromMatrix } = require("../src/core/model_contract");
 
-  // transferable 现在计 1 分
+  // transferable 是可迁移证据，不得与直接匹配等价。
   const t2 = computeCoreRequirementScore([
     { requirement: "熟悉OpenAI SDK或LangChain", state: "transferable", central: true },
     { requirement: "深刻理解Prompt Engineering", state: "transferable", central: true }
   ]);
-  assert.strictEqual(t2.score, 2, "2 条 transferable 核心应得 2 分（每条 1 分）");
-  assert.strictEqual(t2.level, "符合", "2/2 transferable → 符合(≥80%)");
+  assert.strictEqual(t2.score, 1, "2 条 transferable 核心应得 1 分（每条 0.5 分）");
+  assert.strictEqual(t2.level, "大部分符合", "2/2 transferable → 大部分符合(50%)");
 
-  // unknown 计 0.5 分
+  // unknown 是信息不足，不能作为正向证据。
   const u1 = computeCoreRequirementScore([
     { requirement: "熟练使用AI编程辅助工具", state: "unknown", central: true }
   ]);
-  assert.strictEqual(u1.score, 0.5, "1 条 unknown 核心应得 0.5 分");
-  assert.strictEqual(u1.level, "大部分符合", "0.5/1 unknown → 大部分符合(≥50%)");
+  assert.strictEqual(u1.score, 0, "1 条 unknown 核心应得 0 分");
+  assert.strictEqual(u1.level, "信息不足", "全是 unknown 时不得判成不符合或部分符合");
+  assert.strictEqual(computeDecisionFromMatrix("aligned", [
+    { requirement: "熟练使用AI编程辅助工具", state: "unknown", central: true }
+  ]), "review", "核心证据全 unknown 时只能进入人工复核");
+
+  // 核心定义是 foundation ∪ central ∪ indispensable，不能只看 central。
+  const foundationMissing = [
+    { requirement: "Python 后端开发", state: "missing", foundation: true, central: false }
+  ];
+  assert.strictEqual(computeCoreRequirementScore(foundationMissing).total, 1, "foundation 条目必须计入核心要求");
+  assert.strictEqual(
+    computeDecisionFromMatrix("aligned", foundationMissing),
+    "review",
+    "缺失 foundation 要求不得因 central=false 被错误提升为主投"
+  );
+  assert.strictEqual(computeCoreRequirementScore([
+    { requirement: "必须具备生产部署经验", state: "matched", indispensable: true, central: false }
+  ]).total, 1, "indispensable 条目必须计入核心要求");
+
+  assert.strictEqual(computeDecisionFromMatrix("aligned", []), "caution", "JD 未声明核心要求时不得直接主投");
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", []), "caution", "JD 未声明核心要求时保留为可投");
 
   // missing 仍计 0 分
   const m1 = computeCoreRequirementScore([
@@ -2615,15 +2666,15 @@ function coreRequirementScoreSmoke() {
   assert.strictEqual(matched.score, 1, "1 条 matched 核心应得 1 分");
   assert.strictEqual(matched.level, "符合", "1/1 matched → 符合");
 
-  // 混合：1 matched + 1 transferable + 1 unknown + 1 missing = 1+1+0.5+0 = 2.5/4 = 62.5% → 大部分符合
+  // 混合：1 matched + 1 transferable + 1 unknown + 1 missing = 1+0.5+0+0 = 1.5/4 = 37.5% → 部分符合
   const mixed = computeCoreRequirementScore([
     { requirement: "R1", state: "matched", central: true },
     { requirement: "R2", state: "transferable", central: true },
     { requirement: "R3", state: "unknown", central: true },
     { requirement: "R4", state: "missing", central: true }
   ]);
-  assert.strictEqual(mixed.score, 2.5, "混合: 1+1+0.5+0 = 2.5");
-  assert.strictEqual(mixed.level, "大部分符合", "2.5/4=62.5% → 大部分符合");
+  assert.strictEqual(mixed.score, 1.5, "混合: 1+0.5+0+0 = 1.5");
+  assert.strictEqual(mixed.level, "部分符合", "1.5/4=37.5% → 部分符合");
 
   console.log("coreRequirementScoreSmoke ok");
 }
@@ -2642,18 +2693,18 @@ function decisionMatrixSmoke() {
   // aligned + 大部分符合 → 主投（不变）
   assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["matched","missing"])), "apply");
   // aligned + 部分符合 → 可投（不变）
-  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["unknown","missing"])), "caution");
+  assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["matched","missing","missing"])), "caution");
   // aligned + 不符合 → 慎投（不变）
   assert.strictEqual(computeDecisionFromMatrix("aligned", reqs(["missing"])), "review");
 
   // === 大部分匹配(mostly_aligned) 列 ===
-  // mostly_aligned + 符合 → 可投（旧:主投） ★变化
-  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","matched"])), "caution",
-    "大部分匹配+符合 → 可投（方向不完全对口，先沟通确认）");
+  // mostly_aligned + 符合 → 主投（产品判定表）
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","matched"])), "apply",
+    "大部分匹配+核心符合 → 主投");
   // mostly_aligned + 大部分符合 → 可投（不变）
   assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","missing"])), "caution");
   // mostly_aligned + 部分符合 → 可投（不变）
-  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["unknown","missing"])), "caution");
+  assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["matched","missing","missing"])), "caution");
   // mostly_aligned + 不符合 → 慎投（不变）
   assert.strictEqual(computeDecisionFromMatrix("mostly_aligned", reqs(["missing"])), "review");
 
@@ -2664,7 +2715,7 @@ function decisionMatrixSmoke() {
   // partially_aligned + 大部分符合 → 慎投（旧:慎投，但区分于符合） ★变化
   assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["matched","missing"])), "review");
   // partially_aligned + 部分符合 → 慎投（不变）
-  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["unknown","missing"])), "review");
+  assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["matched","missing","missing"])), "review");
   // partially_aligned + 不符合 → 不推荐（旧:慎投） ★变化
   assert.strictEqual(computeDecisionFromMatrix("partially_aligned", reqs(["missing"])), "skip",
     "部分匹配+核心不符合 → 不推荐");
@@ -2675,7 +2726,7 @@ function decisionMatrixSmoke() {
   // misaligned + 大部分符合 → 慎投（不变）
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing"])), "review");
   // misaligned + 部分符合 → 不推荐（不变）
-  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["unknown","missing"])), "skip");
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing","missing"])), "skip");
   // misaligned + 不符合 → 不推荐（不变）
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["missing"])), "skip");
 
@@ -2698,6 +2749,17 @@ function nonCentralMissingGuardSmoke() {
     { state: "missing", central: false },
     { state: "missing", central: false }
   ]), 3, "3 条非核心 missing（忽略核心）");
+  assert.strictEqual(countNonCentralMissing([
+    { requirement: "有大模型项目经验者优先", state: "missing", central: false },
+    { requirement: "熟悉 LangChain 优先", state: "missing", central: false },
+    { requirement: "加分项：了解 Kubernetes", state: "missing", central: false },
+    { requirement: "该能力非必须", state: "missing", central: false },
+    { requirement: "英文文档阅读能力（可选）", state: "missing", central: false }
+  ]), 0, "明确标记为优先、加分或可选的非核心条目不得触发缺口降级");
+  assert.strictEqual(countNonCentralMissing([
+    { requirement: "优先处理线上故障", state: "missing", central: false },
+    { requirement: "负责请求优先级调度", state: "missing", central: false }
+  ]), 2, "职责动词和优先级术语不得被误判成可选条件");
 
   // applyRuleGuard 降级测试
   // 构造一个 mostly_aligned + 3条核心 matched + 3条非核心 missing 的分析
@@ -2730,15 +2792,15 @@ function nonCentralMissingGuardSmoke() {
   };
 
   const guarded = applyRuleGuard(base, job);
-  assert.strictEqual(guarded.recommendation, "review",
-    "大部分匹配+符合 → 判定表给可投，非核心 missing=3 → 降为慎投");
+  assert.strictEqual(guarded.recommendation, "caution",
+    "大部分匹配+符合 → 判定表给主投，非核心 missing=3 → 降为可投");
   assert.strictEqual(guarded.decisionSource, "non_central_gap_guard");
 
   // 非核心 missing < 3 → 不触发降级
   const base2 = { ...base, requirementMatches: base.requirementMatches.slice(0, 4) }; // 只有 2 条非核心 missing
   const guarded2 = applyRuleGuard(base2, job);
-  assert.strictEqual(guarded2.recommendation, "caution",
-    "非核心 missing=2 < 3 → 不触发降级，判定表本身给可投");
+  assert.strictEqual(guarded2.recommendation, "apply",
+    "非核心 missing=2 < 3 → 不触发降级，判定表本身给主投");
 
   console.log("nonCentralMissingGuardSmoke ok");
 }

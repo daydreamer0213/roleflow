@@ -251,9 +251,13 @@ function liveOptions(mode, side, overrides = {}) {
 }
 
 function applyDerivedMetrics(result) {
-  const derived = deriveBenchmarkMetrics(result.rows);
+  const rows = result.rows.map((row) => ({
+    ...row,
+    pass: row.actualRecommendation === row.expectedRecommendation
+  }));
+  const derived = deriveBenchmarkMetrics(rows);
   assert.strictEqual(derived.ok, true);
-  return { ...result, ...derived.metrics };
+  return { ...result, rows, ...derived.metrics };
 }
 
 function asRecallFirstResult(result) {

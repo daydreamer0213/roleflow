@@ -76,9 +76,9 @@ assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkGuard }), "tal
 
 const sharedBackupAnalysis = layeredDecisionAnalysis("misaligned", ["matched"]);
 const sharedBackupGuard = applyRuleGuard(sharedBackupAnalysis, job());
-assert.strictEqual(sharedBackupGuard.recommendation, "skip");
+assert.strictEqual(sharedBackupGuard.recommendation, "review");
 assert.strictEqual(sharedBackupGuard.decisionSource, "decision_matrix");
-assert.strictEqual(typeof decisionBucket({ ...job(), analysis: sharedBackupGuard }), "string");
+assert.strictEqual(decisionBucket({ ...job(), analysis: sharedBackupGuard }), "backup");
 
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/job_detail/abc123.html?ka=search"), "https://www.zhipin.com/job_detail/abc123.html");
 assert.strictEqual(normalizeBossNavigationUrl("https://www.zhipin.com/job_detail/abc123.html?securityId=token"), "https://www.zhipin.com/job_detail/abc123.html?securityId=token");

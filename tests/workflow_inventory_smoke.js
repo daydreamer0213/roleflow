@@ -134,8 +134,19 @@ try {
     workflowEligibility(job("role-evidence-talk", { analysis: roleEvidenceTalk }), { now }).eligible,
     true
   );
+  const semanticRiskReview = {
+    ...layeredDecisionAnalysis("aligned", ["matched"]),
+    recommendation: "review",
+    decisionSource: "semantic_risk_guard"
+  };
+  assert.strictEqual(
+    workflowEligibility(job("semantic-risk-review", { analysis: semanticRiskReview }), { now }).reasonCode,
+    "WORKFLOW_DECISION_REVIEW",
+    "风险/低置信度/证据缺口 review 不得冒充 role evidence backup"
+  );
   const roleEvidenceBackupId = insert("role-evidence-review", { analysis: roleEvidenceBackup }, batchId);
   const legacyRoleCoreId = insert("legacy-role-core-review", { analysis: roleCoreUnprovenAnalysis() }, batchId);
+  const semanticRiskReviewId = insert("semantic-risk-review", { analysis: semanticRiskReview }, batchId);
   const layeredHighSalaryId = insert("layered-high-salary-review", {
     analysis: roleEvidenceBackup,
     qualityTags: ["salary_target_high", "experience_salary_overlap"]
@@ -156,6 +167,9 @@ try {
   const backupCandidate = reviewCandidates.find((candidate) => candidate.id === roleEvidenceBackupId);
   assert.strictEqual(typeof backupCandidate?.workflowTier, "string");
   assert.strictEqual(typeof backupCandidate?.defaultChecked, "boolean");
+  const semanticRiskCandidate = reviewCandidates.find((candidate) => candidate.id === semanticRiskReviewId);
+  assert.strictEqual(semanticRiskCandidate?.workflowTier, "decision_review");
+  assert.strictEqual(semanticRiskCandidate?.defaultChecked, false, "通用人工复核岗位不得默认勾选");
   assert.strictEqual(
     reviewCandidates.find((candidate) => candidate.id === ids.talk)?.defaultChecked,
     true,

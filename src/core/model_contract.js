@@ -1259,8 +1259,7 @@ function decisionHardBlockers(analysis = {}) {
 
 function roleCoreEvidenceState(analysis = {}) {
   const central = list(analysis.requirementMatches).filter((item) => (
-    item?.central === true
-      || (typeof item?.central !== "boolean" && item?.indispensable === true)
+    item?.foundation === true || item?.central === true || item?.indispensable === true
   ));
   const centralEvidence = central.filter((item) => (
     ["matched", "transferable"].includes(item.state)
@@ -1327,7 +1326,8 @@ function roleEvidenceDecisionState(analysis = {}) {
   const hasTransferableFoundation = foundation.some((item) => item.state === "transferable");
   const hasTransferableCentral = matches.some((item) => item?.central === true && item.state === "transferable");
   const hasConcreteFoundationGap = matches.some((item) => (
-    item?.state === "missing" && (item?.central === true || item?.foundation === true)
+    item?.state === "missing"
+      && (item?.foundation === true || item?.central === true || item?.indispensable === true)
   ));
 
   let bucketCeiling = "backup";
@@ -1471,25 +1471,32 @@ function contractListItem(value) {
 const RECOMMENDATION_RANK = { apply: 4, caution: 3, review: 2, skip: 1 };
 
 function computeCoreRequirementScore(requirementMatches = []) {
-  const central = requirementMatches.filter((item) => item?.central === true);
-  if (!central.length) return { score: 0, total: 0, level: "none" };
+  const core = requirementMatches.filter((item) => (
+    item?.foundation === true || item?.central === true || item?.indispensable === true
+  ));
+  if (!core.length) return { score: 0, total: 0, ratio: null, level: "none" };
   let points = 0;
-  for (const item of central) {
+  let known = 0;
+  for (const item of core) {
     if (item.state === "matched") points += 1;
-    else if (item.state === "transferable") points += 1;   // 0.5 → 1
-    else if (item.state === "unknown") points += 0.5;       // 新增：unknown 计 0.5
+    else if (item.state === "transferable") points += 0.5;
+    if (item.state !== "unknown") known += 1;
   }
-  const ratio = points / central.length;
+  if (!known) return { score: 0, total: core.length, ratio: null, level: "信息不足" };
+  const ratio = points / core.length;
   let level;
   if (ratio >= 0.8) level = "符合";         // ≥80%
   else if (ratio >= 0.5) level = "大部分符合"; // ≥50%
   else if (ratio > 0) level = "部分符合";    // >0  <50%
   else level = "不符合";                    // =0
-  return { score: points, total: central.length, ratio, level };
+  return { score: points, total: core.length, ratio, level };
 }
 
 function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   const { level } = computeCoreRequirementScore(requirementMatches);
+
+  if (level === "none") return "caution";
+  if (level === "信息不足") return "review";
 
   if (roleAlignment === "misaligned") {
     if (level === "符合" || level === "大部分符合") return "review";
@@ -1505,7 +1512,7 @@ function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   // aligned / mostly_aligned
   if (level === "不符合") return "review";
 
-  if (roleAlignment === "mostly_aligned" && level === "符合") return "caution";
+  if (roleAlignment === "mostly_aligned" && level === "符合") return "apply";
   if (roleAlignment === "aligned" && level === "符合") return "apply";
 
   if (level === "部分符合") return "caution";
@@ -1515,12 +1522,26 @@ function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   return "caution"; // mostly_aligned + 大部分符合
 }
 
-// 统计非核心（central !== true）且状态为 missing 的要求条目数。
-// 用于非核心缺口降级规则：非核心 missing ≥ 3 → 降一级。
+// 统计非核心且非明确可选的 missing 要求条目数。
+// 用于非核心缺口降级规则：可选/加分项不参与，普通非核心 missing ≥ 3 → 降一级。
 function countNonCentralMissing(requirementMatches = []) {
   return requirementMatches.filter((item) => (
-    item?.central !== true && item?.state === "missing"
+    item?.central !== true
+      && item?.foundation !== true
+      && item?.indispensable !== true
+      && item?.state === "missing"
+      && !isExplicitlyOptionalRequirement(item)
   )).length;
+}
+
+function isExplicitlyOptionalRequirement(item = {}) {
+  const content = [item.requirement, item.jdEvidence]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join(" ");
+  if (!content) return false;
+  return /(?:^|[：:；;，,\s（(])(?:加分项|加分条件)(?:[：:；;，,\s）)]|$)/i.test(content)
+    || /(?:非必须|非必需|不作硬性要求|不是硬性要求|可选项?|nice[\s-]*to[\s-]*have|preferred|bonus)/i.test(content)
+    || /(?:有|具有|具备|拥有|熟悉|了解|掌握|使用|经验|能力|技能|背景).{0,48}(?:者)?优先(?:考虑|录用)?[。；;，,！!）)]*\s*$/i.test(content);
 }
 
 module.exports = {

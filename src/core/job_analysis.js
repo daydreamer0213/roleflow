@@ -372,9 +372,16 @@ function applyRuleGuard(analysis, job) {
     guarded = addGuard({ ...analysis }, "caution", "B", "核心硬性要求仅有可迁移证据，建议先沟通确认再投递。", analysis.semanticStatus, "indispensable_transferable_guard");
   }
 
+  // 4d. 中高语义风险 → 最高慎投，且不得被召回规则反向提升
+  const materialRisk = (analysis.hiddenRisks || []).find((risk) => ["medium", "high"].includes(risk?.severity));
+  if (materialRisk && guarded.recommendation !== "skip") {
+    const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
+    guarded = addGuard(guarded, "review", "C", `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
+  }
+
   // === 五、缺证据 → 待重试 ===
-  if (["apply", "caution", "review"].includes(guarded.recommendation) && missingEitherSideEvidence(guarded)) {
-    return { ...guarded, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["模型结论缺少可核对的双侧证据，标记待重试。", ...(guarded.fitReasons || [])], ruleAdjusted: true };
+  if (missingEitherSideEvidence(guarded)) {
+    return { ...guarded, recommendation: "review", decisionSource: "model_evidence_gap", fitReasons: ["模型结论缺少可核对的双侧证据，标记待重试。", ...(guarded.fitReasons || [])], ruleAdjusted: true };
   }
 
   return guarded;

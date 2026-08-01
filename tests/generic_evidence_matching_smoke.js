@@ -22,11 +22,8 @@ validateGenericFixtures();
       await runGenericFixture(db, fixture);
     }
     sharedBenchmarkMetricsSmoke();
-    // comparatorSmoke and compareCliSmoke have pre-existing test data bugs
-    // (hardFalsePlacementIds and pass count mismatches) that were masked by
-    // the hardFalsePlacementIds mismatch. These are being fixed separately.
-    // comparatorSmoke();
-    // compareCliSmoke();
+    comparatorSmoke();
+    compareCliSmoke();
     console.log(`generic_evidence_matching_smoke ok (${fixtures.length} samples)`);
   } finally {
     db.close();
@@ -572,7 +569,14 @@ function comparatorSmoke() {
     }
   ];
   for (const testCase of acceptanceFailures) {
-    const result = compareBenchmarkResults(baseline, testCase.mutate(candidate));
+    const mutated = testCase.mutate(candidate);
+    const rows = mutated.rows.map((row) => ({
+      ...row,
+      pass: row.actualRecommendation === row.expectedRecommendation
+    }));
+    const derived = sharedBenchmarkMetrics.deriveBenchmarkMetrics(rows);
+    assert.strictEqual(derived.ok, true, `${testCase.name}：测试夹具必须能派生合法汇总`);
+    const result = compareBenchmarkResults(baseline, { ...mutated, rows, ...derived.metrics });
     assert(result.ok === true, `${testCase.name}：结构仍可比较，不得伪装成结构失败`);
     assert.strictEqual(result.report.accepted, false, `${testCase.name}：验收必须失败`);
     assert(result.report.failureReasons.some((reason) => testCase.reason.test(reason)), `${testCase.name}：失败原因必须可定位：${result.report.failureReasons.join("；")}`);
