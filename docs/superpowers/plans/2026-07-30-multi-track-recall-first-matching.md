@@ -2265,3 +2265,15 @@ checkpoint. Candidate product `cf1793a...` must be its strict ancestor. Record
 the complete evaluated SHA in an immediate descendant docs-only binding before
 creating either private root. That binding commit must not replace evaluated in
 the manifest, v3 proof, temporary evaluation branch, or live verification.
+
+### Recall-first confirmed-hard-boundary exact evaluated binding
+
+- Candidate evaluated is exactly
+  `d33e9f1aad1c0364c335e8cae8b9d9f713a083c0`. Candidate product
+  `cf1793a79877c8150385317853ff19e6994a2f00` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `d33e9f1aad1c0364c335e8cae8b9d9f713a083c0` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated remains exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
+  user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.

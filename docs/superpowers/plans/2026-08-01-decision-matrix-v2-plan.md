@@ -559,3 +559,16 @@ cd C:\Users\Administrator\.codex\worktrees\e843\ZhiPing && git rev-parse HEAD
 产品提交 `cf1793a...` 必须是它的严格祖先；随后立即创建一个 docs-only
 binding 提交记录 evaluated 的完整 SHA。binding 提交本身不得替代 evaluated
 提交进入 manifest、proof、临时评估分支或 live 验证。
+
+### Exact evaluated binding
+
+- Candidate evaluated is exactly
+  `d33e9f1aad1c0364c335e8cae8b9d9f713a083c0`.
+- Candidate product is exactly
+  `cf1793a79877c8150385317853ff19e6994a2f00` and is a strict ancestor of
+  candidate evaluated.
+- Baseline evaluated/product remain exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf` /
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- This immediate docs-only binding record does not replace candidate evaluated
+  in the manifest, v3 proof, temporary evaluation branch, or live verification.
