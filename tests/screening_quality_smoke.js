@@ -72,7 +72,7 @@ const sharedTalkAnalysis = layeredDecisionAnalysis("mostly_aligned", ["matched",
 const sharedTalkGuard = applyRuleGuard(sharedTalkAnalysis, job());
 assert.strictEqual(sharedTalkGuard.recommendation, "caution");
 assert.strictEqual(sharedTalkGuard.decisionSource, "decision_matrix");
-assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkAnalysis }), "talk");
+assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkGuard }), "talk");
 
 const sharedBackupAnalysis = layeredDecisionAnalysis("misaligned", ["matched"]);
 const sharedBackupGuard = applyRuleGuard(sharedBackupAnalysis, job());
