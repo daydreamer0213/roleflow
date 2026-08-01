@@ -2564,7 +2564,7 @@ the manifest, v3 proof, temporary evaluation branch, or live verification.
   - Recommendation exactness was `6/20`; only `1/5` confirmed obvious mismatches was excluded, so this run is a product-policy failure and must not be accepted.
   - All 20 analyses were structurally complete. The failure was not caused by empty responses, stale rows, or evidence repair.
 - Root-cause evidence: indices `4,9,10` had identical `understandJob` input hashes in the 3-row and 20-row runs, but all three produced different result hashes. Sampling drift therefore begins in the evidence-generation stage and can alter downstream decisions even when the input is unchanged.
-- Selected repair: product commit `ddb8535b6f6da88684f89af5eeb18aa298c9c35e` forces `temperature=0` only for `understandJob` and `matchJob`. Other phases retain the configured temperature. This adds no prompt text and no model calls, and is provider/domain neutral.
+- Selected repair: product commit `ddb8535e3b5798fe3a576610736b134d82557a1b` forces `temperature=0` only for `understandJob` and `matchJob`. Other phases retain the configured temperature. This adds no prompt text and no model calls, and is provider/domain neutral.
 - Cache boundaries were advanced to `job-understanding-v18` and `match-decision-v35`.
 - Verification: `node tests/model_adapter_smoke.js`, all `47` offline checks via `npm.cmd test`, and `git diff --check` passed. Independent review reported Critical `0`, Important `0`, `Spec PASS`, and `Code quality APPROVED`.
 - Acceptance interpretation for the current suite:
@@ -2576,4 +2576,4 @@ the manifest, v3 proof, temporary evaluation branch, or live verification.
   - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-full-20-20260801`
 - Deferred, non-blocking task after product stability: inventory and slim the model prompts, then A/B test latency, output stability, safety gates, keep retention, and obvious-mismatch exclusion before adopting any shorter prompt. The deterministic checkpoint does not change prompt length.
 
-Evaluated checkpoint binding: `3503d28f1b6bb06c70bd2859f54858462f561d57`; evaluated product ancestor: `ddb8535b6f6da88684f89af5eeb18aa298c9c35e`.
+Evaluated checkpoint binding: `3503d28e7ceadf6eceb169de485f55c82acb7c38`; evaluated product ancestor: `ddb8535e3b5798fe3a576610736b134d82557a1b`.
