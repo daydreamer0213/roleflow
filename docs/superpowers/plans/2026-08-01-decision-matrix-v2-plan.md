@@ -766,3 +766,13 @@ commit in all v4r2 private artifacts and live execution.
   `8387a92f3978d57c72418e1c65205643c2291c51` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - The immediate binding commit is not the evaluated commit for v4r2.
+
+## 2026-08-01 live checkpoint: evidence-stage determinism
+
+The first complete 20-row run under the repaired decision matrix was structurally healthy but failed the product boundary: it retained all `15/15` useful opportunities while excluding only `1/5` confirmed obvious mismatches. A direct comparison with the preceding 3-row diagnostic run showed different `understandJob` result hashes for identical input hashes at indices `4,9,10`. This isolates the next variable to model sampling rather than local parsing, cache reuse, or missing evidence.
+
+Product commit `ddb8535b6f6da88684f89af5eeb18aa298c9c35e` applies `temperature=0` to `understandJob` and `matchJob` only, retains configured temperature for generative/non-evidence phases, and advances the two pipeline versions to invalidate earlier evidence caches. It does not add prompt instructions, examples, domain-specific rules, or requests. Offline verification passed all 47 checks; independent review concluded Critical 0, Important 0, Spec PASS, and Code quality APPROVED.
+
+The next acceptance run must use fresh v5 directories and caches. Fine-tier apply/caution/review deviations will be disclosed but are not hard failures. Hard product requirements are complete structural/privacy gates, `15/15` retained opportunities, `5/5` obvious mismatches excluded, and zero false hard exclusions.
+
+Prompt simplification is intentionally deferred until this suite is stable. That later task must start with a prompt inventory and controlled A/B measurement; no prompt should be shortened merely on intuition, and no longer prompt should be added during the current determinism experiment.

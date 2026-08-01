@@ -2553,3 +2553,25 @@ the manifest, v3 proof, temporary evaluation branch, or live verification.
 - Baseline evaluated remains exactly
   `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
   user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-08-01 deterministic evidence checkpoint
+
+- Preserved diagnostic root: `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-first-3-20260801`.
+  - The exact zero-based indices `4,9,10` completed without empty, partial, stale, or repaired output.
+  - Recommendation labels were `3/3`; one acceptable apply-tier bucket difference remained.
+- Preserved full root: `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4r2-full-20-20260801`.
+  - Structural/privacy gates passed, expected-keep retention was `15/15`, and false hard exclusion was `0`.
+  - Recommendation exactness was `6/20`; only `1/5` confirmed obvious mismatches was excluded, so this run is a product-policy failure and must not be accepted.
+  - All 20 analyses were structurally complete. The failure was not caused by empty responses, stale rows, or evidence repair.
+- Root-cause evidence: indices `4,9,10` had identical `understandJob` input hashes in the 3-row and 20-row runs, but all three produced different result hashes. Sampling drift therefore begins in the evidence-generation stage and can alter downstream decisions even when the input is unchanged.
+- Selected repair: product commit `ddb8535b6f6da88684f89af5eeb18aa298c9c35e` forces `temperature=0` only for `understandJob` and `matchJob`. Other phases retain the configured temperature. This adds no prompt text and no model calls, and is provider/domain neutral.
+- Cache boundaries were advanced to `job-understanding-v18` and `match-decision-v35`.
+- Verification: `node tests/model_adapter_smoke.js`, all `47` offline checks via `npm.cmd test`, and `git diff --check` passed. Independent review reported Critical `0`, Important `0`, `Spec PASS`, and `Code quality APPROVED`.
+- Acceptance interpretation for the current suite:
+  - Apply/caution/review differences remain visible in the report but are not hard failures by themselves.
+  - All confirmed keep opportunities must remain retained, all five confirmed obvious mismatches must be excluded, false hard exclusions must remain zero, and all structural/privacy gates must pass.
+  - Labels are not copied into prompts and no job-title or IT-specific keyword rules are permitted.
+- Next fresh roots (never reuse prior caches):
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-first-3-20260801`
+  - `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v5-full-20-20260801`
+- Deferred, non-blocking task after product stability: inventory and slim the model prompts, then A/B test latency, output stability, safety gates, keep retention, and obvious-mismatch exclusion before adopting any shorter prompt. The deterministic checkpoint does not change prompt length.
