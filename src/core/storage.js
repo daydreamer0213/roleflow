@@ -3316,11 +3316,11 @@ function decisionBucket(job) {
   const analysis = job.analysis || {};
   const semanticStatus = analysis.semanticStatus || "";
   const recommendation = recommendationTierForAnalysis(analysis);
-  if (decisionHardBlockers(analysis).length) return "not_recommended";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
-  if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
   if (semanticStatus === "partial") return "analysis_pending";
+  if (decisionHardBlockers(analysis).length) return "not_recommended";
+  if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
     return recommendation || "analysis_pending";

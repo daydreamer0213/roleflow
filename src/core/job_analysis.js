@@ -326,11 +326,23 @@ function applyRuleGuard(analysis, job) {
   const gate = decisionState(job);
   const qualityTags = new Set(job.qualityTags || []);
 
-  // 一、明确硬边界仍优先于任何语义匹配结果。
+  // 一、本地已确认的基础边界不依赖模型语义，可直接排除。
   if (gate === "blocked") {
     return addGuard(analysis, "not_recommended", "no_fit", "已确认的基础条件不满足。", "blocked", "hard_boundary");
   }
 
+  // 二、技术失败和证据未完成不伪装成四档建议。模型 hardBlocker 与岗位风险
+  // 可能来自失败或过期的分析对象，必须等语义状态完整后才能参与定档。
+  if (gate === "refresh") {
+    return needsRetry(analysis, "岗位信息需要刷新后重新分析。");
+  }
+  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) {
+    return needsRetry(analysis);
+  }
+  if (analysis.semanticStatus === "partial") {
+    return needsRetry(analysis, "当前只有卡片级信息，完整 JD 补齐前不进入判定。");
+  }
+  // 三、完整语义结果中的明确硬边界优先于加权匹配结果。
   const hardBlockers = decisionHardBlockers(analysis);
   if (hardBlockers.length) {
     return addGuard(
@@ -352,22 +364,11 @@ function applyRuleGuard(analysis, job) {
       "job_quality_risk_guard"
     );
   }
-
-  // 二、技术失败和证据未完成不伪装成四档建议。
-  if (gate === "refresh") {
-    return needsRetry(analysis, "岗位信息需要刷新后重新分析。");
-  }
-  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) {
-    return needsRetry(analysis);
-  }
-  if (analysis.semanticStatus === "partial") {
-    return needsRetry(analysis, "当前只有卡片级信息，完整 JD 补齐前不进入判定。");
-  }
   if (!DECISION_POLICY.matrix[analysis.roleAlignment]) {
     return needsRetry(analysis, "岗位方向证据不足，等待补充后重新判定。");
   }
 
-  // 三、代码计算 70/30 加权结果并查四档二维表。模型 shadow 建议不参与。
+  // 四、代码计算 70/30 加权结果并查四档二维表。模型 shadow 建议不参与。
   const decisionMetrics = deriveMatrixDecision({
     roleAlignment: analysis.roleAlignment,
     requirementMatches: analysis.requirementMatches
@@ -383,7 +384,7 @@ function applyRuleGuard(analysis, job) {
     decisionPolicyHash: DECISION_POLICY_HASH
   };
 
-  // 四、已有产品安全信号只能向下封顶，不能反向提升。
+  // 五、已有产品安全信号只能向下封顶，不能反向提升。
   if (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap")) {
     guarded = capGuard(
       guarded,
@@ -422,7 +423,7 @@ function applyRuleGuard(analysis, job) {
     );
   }
 
-  // 五、缺少双侧证据属于分析未完成，不进入四档。
+  // 六、缺少双侧证据属于分析未完成，不进入四档。
   if (missingEitherSideEvidence(guarded)) {
     return needsRetry(guarded, "模型结论缺少可核对的双侧证据，标记待重试。", "model_evidence_gap");
   }

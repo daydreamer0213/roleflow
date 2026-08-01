@@ -32,9 +32,22 @@ const result = deriveBenchmarkMetrics([
 assert.strictEqual(result.ok, true);
 assert.deepStrictEqual(result.metrics.hardFalsePlacementIds, ["severe-exclusion-miss"]);
 assert.deepStrictEqual(result.metrics.falseHardExclusionIds, ["severe-opportunity-loss"]);
+assert.deepStrictEqual(result.metrics.moderateDeviationIds, [
+  "moderate-exclusion-miss",
+  "moderate-opportunity-loss"
+]);
+assert.strictEqual(result.metrics.moderateDeviation, 2);
 assert.strictEqual(result.metrics.primaryWithoutEvidence, 1,
   "primaryWithoutEvidence compatibility metric must cover both auto-selected tiers");
 assert.strictEqual(result.metrics.failed, 1);
 assert.strictEqual(result.metrics.pending, 0);
+
+for (const actualBucket of ["analysis_pending", "refresh"]) {
+  const forged = deriveBenchmarkMetrics([
+    row(`forged-${actualBucket}`, "apply", "apply", { actualBucket })
+  ]);
+  assert.strictEqual(forged.ok, false,
+    `${actualBucket} 技术桶不得携带非空 recommendation 制造 recommendation pass`);
+}
 
 console.log("four_tier_benchmark_metrics_smoke ok");

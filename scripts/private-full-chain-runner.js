@@ -818,6 +818,29 @@ function readJsonFile(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
   }
 }
 
+function readJsonSnapshot(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
+  try {
+    const raw = fs.readFileSync(file);
+    const value = JSON.parse(raw.toString("utf8"));
+    if (!value || typeof value !== "object") throw new Error("invalid");
+    return { raw, value };
+  } catch {
+    throw runnerError(code, `Invalid JSON input: ${path.basename(file)}`);
+  }
+}
+
+function readNativeMatchInputs(request, assertResumeIdentityRedacted) {
+  const jobsSnapshot = readJsonSnapshot(request.jobs);
+  return {
+    profileValue: readJsonFile(request.profile),
+    cardValue: readJsonFile(request.matchingCard),
+    jobsValue: jobsSnapshot.value,
+    jobsRaw: jobsSnapshot.raw,
+    labelsValue: readJsonFile(request.labels),
+    resume: readMatchResumeAndIdentity(request.privateRoot, assertResumeIdentityRedacted)
+  };
+}
+
 function writeJsonFile(privateRoot, file, value) {
   exclusivePrivateWrite(privateRoot, file, JSON.stringify(value, null, 2) + "\n");
 }
@@ -1999,13 +2022,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       })
       : request.portabilityProof
         ? validateConfirmedEvidencePortability(request, provenanceContext, privacyValidator, testSeam)
-        : {
-        profileValue: readJsonFile(request.profile),
-        cardValue: readJsonFile(request.matchingCard),
-        jobsValue: readJsonFile(request.jobs),
-        labelsValue: readJsonFile(request.labels),
-        resume: readMatchResumeAndIdentity(request.privateRoot, privacyValidator)
-      };
+        : readNativeMatchInputs(request, privacyValidator);
   if (request.mode === "match-live") {
     if (request.portabilityProof) {
       preflight.portability = { proof: preflight.proof };
@@ -2021,7 +2038,7 @@ async function runPrivateFullChain(options, env, testSeam = null) {
       || preflight.profileInput.envelope.identityManifestSha256 !== sha256(preflight.resume.identityRaw)) {
       throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED", "The confirmed profile is not bound to the current resume evidence.");
     }
-    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue, require("fs").readFileSync(request.jobs));
+    if (!preflight.fixture) preflight.fixture = privateJobsAndLabels(preflight.jobsValue, preflight.labelsValue, preflight.jobsRaw);
     if (request.diagnosticIndices?.some((index) => index >= preflight.fixture.jobs.length)) {
       throw runnerError("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", "A diagnostic index is outside the frozen fixture.");
     }
@@ -2327,6 +2344,10 @@ function recallFirstAcceptanceFailures(candidate) {
   }
   if (candidate.falseHardExclusion !== 0) failures.push(`存在 ${candidate.falseHardExclusion} 条错误硬排除`);
   if (candidate.missedObviousExclusion !== 0) failures.push(`存在 ${candidate.missedObviousExclusion} 条明确排除漏拦`);
+  if (candidate.frozenFixtureTotal >= 20 && candidate.recommendationAccuracy < 0.9) {
+    const required = Math.ceil(candidate.frozenFixtureTotal * 0.9);
+    failures.push(`recommendationAccuracy=${candidate.recommendationAccuracy}，正式验收至少需要 ${required}/${candidate.frozenFixtureTotal}（0.9）`);
+  }
   const partialPrimary = candidate.rows.filter((row) => row.semanticStatus === "partial" && ["primary", "apply"].includes(row.actualBucket));
   if (partialPrimary.length) failures.push(`存在 ${partialPrimary.length} 条 partial -> primary/apply`);
   return failures;
@@ -2693,5 +2714,6 @@ module.exports = {
   runPrivateFullChain,
   comparePrivateFullChainResults,
   deriveRecallFirstMetrics,
+  recallFirstAcceptanceFailures,
   classifyPrivateContractFailureReason: privateContractFailureReason
 };

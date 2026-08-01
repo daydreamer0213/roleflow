@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { applyRuleGuard, compactAnalysis } = require("../src/core/job_analysis");
 const { PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
+const { decisionBucket } = require("../src/core/storage");
 
 function requirement(requirementName, state, overrides = {}) {
   return {
@@ -86,6 +87,24 @@ for (const semanticStatus of ["failed", "stale", "pending", "partial"]) {
   assert.equal(technical.recommendation, null,
     `${semanticStatus} 是技术状态，不得伪装成四档建议`);
   assert.equal(technical.decisionStatus, "needs_retry");
+}
+
+const staleBlocker = {
+  kind: "safety",
+  requirement: "过期的收费风险",
+  jdEvidence: "JD：过期缓存中的收费描述",
+  resumeEvidence: "简历：无法接受该收费要求"
+};
+for (const technicalAnalysis of [
+  analysis({ semanticStatus: "failed", hardBlockers: [staleBlocker] }),
+  analysis({ semanticStatus: "stale", jobQuality: { level: "risk", concerns: [] } })
+]) {
+  const guarded = applyRuleGuard(technicalAnalysis, {});
+  assert.equal(guarded.recommendation, null,
+    "技术未完成状态不得被缓存中的 hardBlocker 或 jobQuality 抢先定档");
+  assert.equal(guarded.decisionStatus, "needs_retry");
+  assert.equal(decisionBucket({ analysis: technicalAnalysis }), "analysis_pending",
+    "技术未完成状态不得被缓存中的 hardBlocker 或 jobQuality 抢先分入不推荐");
 }
 
 const compact = compactAnalysis({

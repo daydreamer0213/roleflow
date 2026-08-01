@@ -1829,6 +1829,49 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(v2Result.falseHardExclusion, v2Result.falseHardExclusionIds.length);
   assert.strictEqual(v2Result.missedObviousExclusion, v2Result.missedObviousExclusionIds.length);
 
+  const nativeSnapshotProbe = createMatchProbeBundle("native-jobs-snapshot");
+  const nativeJobsOriginal = fs.readFileSync(nativeSnapshotProbe.jobs);
+  const nativeJobsOriginalValue = JSON.parse(nativeJobsOriginal.toString("utf8"));
+  const nativeLabelsOriginal = JSON.parse(fs.readFileSync(nativeSnapshotProbe.labels, "utf8"));
+  const nativeSnapshotReads = { jobs: 0 };
+  const nativeReadFileSync = fs.readFileSync;
+  fs.readFileSync = (file, ...args) => {
+    const value = nativeReadFileSync(file, ...args);
+    if (path.resolve(String(file)) === path.resolve(nativeSnapshotProbe.jobs)) {
+      nativeSnapshotReads.jobs += 1;
+      if (nativeSnapshotReads.jobs === 1) {
+        const changedJobs = nativeJobsOriginalValue.map((job, index) => {
+          if (index !== 0) return job;
+          const changed = { ...job, description: `${job.description} changed after first read` };
+          return { ...changed, sourceContentHash: sourceContentHash(changed) };
+        });
+        fs.writeFileSync(nativeSnapshotProbe.jobs, JSON.stringify(changedJobs), "utf8");
+      }
+    }
+    return value;
+  };
+  let nativeSnapshotResult;
+  try {
+    nativeSnapshotResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: nativeSnapshotProbe.root,
+      output: nativeSnapshotProbe.output,
+      profile: nativeSnapshotProbe.profile,
+      matchingCard: nativeSnapshotProbe.card,
+      jobs: nativeSnapshotProbe.jobs,
+      labels: nativeSnapshotProbe.labels
+    }), authorizedEnv(), seamFor("candidate"));
+  } finally {
+    fs.readFileSync = nativeReadFileSync;
+  }
+  assert.strictEqual(nativeSnapshotReads.jobs, 1,
+    "native jobs must be read once, then parsed, hashed, and evaluated from the same snapshot");
+  assert.strictEqual(nativeSnapshotResult.fixtureJobSetSha256, nativeLabelsOriginal.jobsSha256);
+  assert.deepStrictEqual(
+    nativeSnapshotResult.rows.map((row) => row.id),
+    nativeJobsOriginalValue.map((job) => job.id),
+    "native match rows must evaluate the original jobs snapshot"
+  );
+
   const expectFixtureReject = async (name, mutate, { refreshJobsSha = true, v2 = false } = {}) => {
     const probe = createMatchProbeBundle(`fixture-${name}`);
     const probeJobs = JSON.parse(fs.readFileSync(probe.jobs, "utf8"));
@@ -2647,7 +2690,7 @@ async function injectedLiveFlowSmoke(identityPath) {
   unsafeStateSeam.modules = {
     ...unsafeStateSeam.modules,
     decisionState: () => unsafeText,
-    decisionBucket: () => "caution"
+    decisionBucket: (job) => job.analysis?.recommendation || "analysis_pending"
   };
   const safeStateResult = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: stateProbe.root,
@@ -3423,6 +3466,28 @@ function recallFirstMetricSmoke() {
   assert.deepStrictEqual(failures.metrics.unresolvedDispositionIds, ["pending", "refresh"]);
   assert.strictEqual(failures.metrics.opportunityRetentionRate, 0);
   assert.strictEqual(failures.metrics.obviousExclusionRate, 0);
+
+  const exactFloorBase = {
+    frozenFixtureTotal: 20,
+    failed: 0,
+    stale: 0,
+    pending: 0,
+    primaryWithoutEvidence: 0,
+    unresolvedDisposition: 0,
+    falseHardExclusion: 0,
+    missedObviousExclusion: 0,
+    rows: []
+  };
+  assert(
+    runner.recallFirstAcceptanceFailures({ ...exactFloorBase, recommendationAccuracy: 17 / 20 })
+      .some((reason) => /18\/20|0\.9/.test(reason)),
+    "20-row recall-first acceptance must reject exact accuracy below 18/20"
+  );
+  assert.deepStrictEqual(
+    runner.recallFirstAcceptanceFailures({ ...exactFloorBase, recommendationAccuracy: 18 / 20 }),
+    [],
+    "20-row recall-first acceptance must allow two disclosed non-severe deviations"
+  );
 
   for (const rows of [
     [],

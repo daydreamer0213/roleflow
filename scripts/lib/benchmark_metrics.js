@@ -1,7 +1,7 @@
 const COMPARE_METRIC_FIELDS = [
   "total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy",
   "failed", "stale", "pending", "partial", "hardFalsePlacement",
-  "falseHardExclusion", "primaryWithoutEvidence"
+  "falseHardExclusion", "moderateDeviation", "primaryWithoutEvidence"
 ];
 
 function failCompare(code, message) {
@@ -21,7 +21,7 @@ function pickCompareMetrics(result) {
 const DERIVED_SUMMARY_FIELDS = [
   "total", "passed", "accuracy", "recommendationAccuracy", "bucketAccuracy",
   "failed", "stale", "pending", "partial", "primaryWithoutEvidence",
-  "hardFalsePlacement", "falseHardExclusion"
+  "hardFalsePlacement", "falseHardExclusion", "moderateDeviation"
 ];
 
 function sameNonEmptyIdentity(baseline, candidate, field) {
@@ -67,8 +67,12 @@ function deriveBenchmarkMetrics(rows) {
     if (!VALID_ACTUAL_BUCKETS.has(row.actualBucket)) {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 actualBucket 必须是运行时桶 ${[...VALID_ACTUAL_BUCKETS].join("/")} 之一。`);
     }
-    if (row.actualRecommendation === null && !TECHNICAL_ACTUAL_BUCKETS.has(row.actualBucket)) {
-      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的空 actualRecommendation 只允许用于技术待处理桶。`);
+    const technicalBucket = TECHNICAL_ACTUAL_BUCKETS.has(row.actualBucket);
+    if ((row.actualRecommendation === null) !== technicalBucket) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的空 actualRecommendation 与技术待处理桶必须同时出现。`);
+    }
+    if (!technicalBucket && row.actualRecommendation !== row.actualBucket) {
+      return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的四档 recommendation 与 bucket 必须一致。`);
     }
     if (typeof row.pass !== "boolean") {
       return failCompare("BENCHMARK_COMPARE_METRICS", `row ${id} 的 pass 必须是 boolean。`);
@@ -92,6 +96,13 @@ function deriveBenchmarkMetrics(rows) {
     .filter((row) => ["primary", "apply"].includes(row.expectedBucket) && row.actualBucket === "not_recommended")
     .map((row) => row.id)
     .sort();
+  const moderateDeviationIds = rows
+    .filter((row) => (
+      (row.expectedRecommendation === "caution" && row.actualRecommendation === "not_recommended")
+      || (row.expectedRecommendation === "not_recommended" && row.actualRecommendation === "caution")
+    ))
+    .map((row) => row.id)
+    .sort();
   const total = rows.length;
   const passed = rows.filter((row) => row.pass === true).length;
   const recommendationMatches = rows.filter((row) => row.actualRecommendation === row.expectedRecommendation).length;
@@ -113,7 +124,9 @@ function deriveBenchmarkMetrics(rows) {
       hardFalsePlacement: hardFalsePlacementIds.length,
       hardFalsePlacementIds,
       falseHardExclusion: falseHardExclusionIds.length,
-      falseHardExclusionIds
+      falseHardExclusionIds,
+      moderateDeviation: moderateDeviationIds.length,
+      moderateDeviationIds
     }
   };
 }
@@ -258,10 +271,11 @@ function compareBenchmarkResults(baseline, candidate) {
       }
     }
     if (!sameIds(side.value.hardFalsePlacementIds, side.metrics.hardFalsePlacementIds)
-      || !sameIds(side.value.falseHardExclusionIds, side.metrics.falseHardExclusionIds)) {
+      || !sameIds(side.value.falseHardExclusionIds, side.metrics.falseHardExclusionIds)
+      || !sameIds(side.value.moderateDeviationIds, side.metrics.moderateDeviationIds)) {
       return failCompare(
         "BENCHMARK_COMPARE_METRICS",
-        `${label}两类硬排除 ID 与 rows 复算结果不一致。`
+        `${label}偏差严重度 ID 与 rows 复算结果不一致。`
       );
     }
   }
@@ -290,6 +304,7 @@ function compareBenchmarkResults(baseline, candidate) {
       modelIdentity: candidate.modelIdentity,
       hardFalsePlacementIds: [...candidate.hardFalsePlacementIds],
       falseHardExclusionIds: [...candidate.falseHardExclusionIds],
+      moderateDeviationIds: [...candidate.moderateDeviationIds],
       accepted: failureReasons.length === 0,
       failureReasons,
       baseline: pickCompareMetrics(baseline),

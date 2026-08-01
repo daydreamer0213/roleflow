@@ -245,7 +245,7 @@
     "candidateProfile": {
       "candidate": { "name": "用户运营候选人", "city": "广州", "targetTitles": ["用户运营"] },
       "experiences": [
-        { "organization": "某互联网公司", "role": "用户运营", "highlights": ["负责线上用户社群运营与留存活动策划", "搭建用户反馈收集与复盘机制"] }
+        { "organization": "某互联网公司", "role": "用户运营", "highlights": ["负责线上用户社群运营与留存活动策划", "搭建用户反馈收集与复盘机制", "职业选择明确不接受电话销售与客户陌拜岗位"] }
       ],
       "skills": [
         { "name": "社群运营", "level": "resume", "evidence": ["某互联网公司"] },
@@ -260,7 +260,7 @@
       ],
       "transferableCapabilities": [],
       "cautionTransitions": [
-        { "direction": "纯销售", "reason": "候选人目标为线上用户运营，无电话销售或陌拜经历与意愿" }
+        { "direction": "纯销售", "reason": "候选人目标与已有证据均为线上用户运营，未提供电话销售或陌拜证据" }
       ],
       "userNotes": [],
       "source": "user"
@@ -305,7 +305,7 @@
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "电话销售与客户陌拜", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：候选人明确没有电话销售或陌拜经历与意愿" }
+        { "requirement": "电话销售与客户陌拜", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：职业选择明确不接受电话销售与客户陌拜岗位" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
       "hardBlockers": [
@@ -313,7 +313,7 @@
           "kind": "indispensable_core",
           "requirement": "电话销售与客户陌拜",
           "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜",
-            "resumeEvidence": "简历：候选人明确不愿从事电话销售或陌拜工作"
+          "resumeEvidence": "简历：职业选择明确不接受电话销售与客户陌拜岗位"
         }
       ],
       "softGaps": ["匹配卡将纯销售列为谨慎转向"],
@@ -321,7 +321,7 @@
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": ["简历：候选人明确没有电话销售或陌拜经历与意愿"] }
+      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": ["简历：职业选择明确不接受电话销售与客户陌拜岗位"] }
     },
     "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
   },
@@ -403,7 +403,7 @@
     "candidateProfile": {
       "candidate": { "name": "Python 候选人", "city": "广州", "targetTitles": ["Python后端"] },
       "experiences": [
-        { "organization": "某科技公司", "role": "Python 开发", "highlights": ["负责 Python/FastAPI 服务开发与接口联调"] }
+        { "organization": "某科技公司", "role": "Python 开发", "highlights": ["负责 Python/FastAPI 服务开发与接口联调", "当前无法承担以 Java/Spring 为唯一技术栈的开发工作"] }
       ],
       "skills": [
         { "name": "Python", "level": "resume", "evidence": ["某科技公司"] },
@@ -461,7 +461,7 @@
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [
-        { "requirement": "Java/Spring 核心开发", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：候选人明确仅有 Python/FastAPI，不具备 Java/Spring 项目经验" }
+        { "requirement": "Java/Spring 核心开发", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作" }
       ],
       "jobQuality": { "level": "normal", "concerns": [] },
       "hardBlockers": [
@@ -469,7 +469,7 @@
           "kind": "indispensable_core",
           "requirement": "Java/Spring 核心开发",
           "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python",
-            "resumeEvidence": "简历：候选人明确无法承担 Java/Spring 开发工作"
+          "resumeEvidence": "简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作"
         }
       ],
       "softGaps": ["简历没有直接 Java/Spring 项目证据"],
@@ -477,7 +477,7 @@
       "recommendedResumeVersion": "",
       "primaryProjects": [],
       "greetingAngle": "",
-      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": ["简历：候选人明确仅有 Python/FastAPI，不具备 Java/Spring 项目经验"] }
+      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": ["简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作"] }
     },
     "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
   }

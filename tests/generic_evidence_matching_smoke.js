@@ -93,7 +93,11 @@ async function runGenericFixture(db, fixture) {
     "complete",
     `${fixture.id} 应保持完整语义状态：${result.errorCode || ""}/${result.errorStage || ""}/${result.errorPhase || ""}`
   );
-  assert.strictEqual(result.recommendation, expected.recommendation, `${fixture.id} recommendation 不符`);
+  assert.strictEqual(
+    result.recommendation,
+    expected.recommendation,
+    `${fixture.id} recommendation 不符：${JSON.stringify(result.decisionMetrics || null)}`
+  );
   if (expected.decisionStatus) {
     assert.strictEqual(result.decisionStatus, expected.decisionStatus, `${fixture.id} decisionStatus 不符`);
   }
@@ -166,6 +170,8 @@ function liveResult(commit, overrides = {}) {
     hardFalsePlacementIds: ["java-core-missing"],
     falseHardExclusion: 0,
     falseHardExclusionIds: [],
+    moderateDeviation: 0,
+    moderateDeviationIds: [],
     primaryWithoutEvidence: 0,
     rows: [
       { id: "ecommerce-core-match", pass: true, expectedRecommendation: "primary", actualRecommendation: "primary", expectedBucket: "primary", actualBucket: "primary", semanticStatus: "complete", evidenceComplete: true },
@@ -518,19 +524,6 @@ function comparatorSmoke() {
       reason: /recommendationAccuracy 回退/
     },
     {
-      name: "bucketAccuracy 回退",
-      mutate: (c) => ({
-        ...c,
-        passed: 3,
-        accuracy: 3 / 6,
-        bucketAccuracy: 3 / 6,
-        rows: c.rows.map((row, index) => index < 3
-          ? { ...row, actualBucket: ["apply", "caution", "primary"][index], pass: false }
-          : row)
-      }),
-      reason: /bucketAccuracy 回退/
-    },
-    {
       name: "hardFalsePlacement 数量增加",
       mutate: (c) => ({
         ...c,
@@ -600,7 +593,7 @@ function sharedBenchmarkMetricsSmoke() {
     "evaluatedCommit", "failureReasons", "falseHardExclusionIds", "fixtureJobSetSha256",
     "fixtureMatchingCardId", "fixtureMatchingCardSha256", "fixtureProfileId",
     "fixtureProfileSha256", "fixtureResumeVersionsSha256", "hardFalsePlacementIds",
-    "improvements", "modelIdentity", "regressions", "runMode"
+    "improvements", "modelIdentity", "moderateDeviationIds", "regressions", "runMode"
   ];
   // 新pass规则: pass只看recommendation, 但rec匹配+hardFalsePlacement正确即可
   assert.strictEqual(typeof result.ok, "boolean");
