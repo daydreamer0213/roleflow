@@ -86,12 +86,16 @@ async function runGenericFixture(db, fixture) {
   const result = await createJobAnalysisRunner(configs, [], { db, analyzer })(job);
   const expected = fixture.expected;
   assert.strictEqual(result.semanticStatus, "complete", `${fixture.id} 应保持完整语义状态`);
-  // 新判定表可能导致 recommendation 不同, 仅验证非空
-  assert.strictEqual(typeof result.recommendation, "string", `${fixture.id} recommendation 为空`);
+  if (result.decisionStatus === "needs_retry") {
+    assert.strictEqual(result.recommendation, null, `${fixture.id} 技术未决状态不得伪装成产品档位`);
+    assert(expected.requireUnknown, `${fixture.id} 只有证据不足夹具允许进入 needs_retry`);
+  } else {
+    assert(["primary", "apply", "caution", "not_recommended"].includes(result.recommendation), `${fixture.id} recommendation 非法`);
+  }
   if (expected.jobQualityLevel) {
     assert.strictEqual(result.jobQuality?.level, expected.jobQualityLevel, `${fixture.id} jobQuality 不符`);
   }
-  if (["apply", "caution", "skip"].includes(result.recommendation)) {
+  if (["primary", "apply"].includes(result.recommendation)) {
     assert(result.evidence?.jd?.[0], `${fixture.id} 缺少 JD 证据`);
     assert(result.evidence?.resume?.[0], `${fixture.id} 缺少候选人证据`);
   }

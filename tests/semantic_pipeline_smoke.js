@@ -169,7 +169,7 @@ async function stableUnderstandingAndCandidateMatchSmoke() {
   assert.strictEqual(sanitizedSourceSeen, false);
   assert.strictEqual(pythonResult.semanticStatus, "complete");
   // 新判定表: 匹配方向+核心对上的apply而不是bucket primary
-  assert.strictEqual(pythonResult.recommendation, "apply");
+  assert.strictEqual(pythonResult.recommendation, "primary");
   // javaResult: Java候选人对Python岗 — 只需要取有效值即可
   assert.strictEqual(typeof javaResult.recommendation, "string");
 }
@@ -248,6 +248,9 @@ async function genericEvidenceContractSmoke() {
       return {
         recommendation: "apply",
         fitLevel: "A",
+        roleAlignment: "mostly_aligned",
+        roleResumeEvidence: ["??????????? ROI ??"],
+        roleGaps: ["????????????"],
         confidence: 0.84,
         fitReasons: ["投放 ROI 复盘经验可从淘宝店铺迁移到抖音店铺"],
         requirementMatches: [{
@@ -296,7 +299,7 @@ async function genericEvidenceContractSmoke() {
   assert(seenMatchInput, "matchJob 未被调用");
   assert.strictEqual(result.requirementMatches[0].state, "transferable");
   assert.strictEqual(result.jobQuality.level, "caution");
-  assert.strictEqual(result.recommendation, "caution", "transferable 核心项与 caution 岗位质量必须把 apply 降为 caution");
+  assert.strictEqual(result.recommendation, "apply", "a transferable core match with an ordinary quality caution remains eligible to apply");
   assert.deepStrictEqual(result.evidence, {
     jd: ["JD：负责抖音店铺投放与复盘"],
     resume: ["简历：负责淘宝店铺投放 ROI 复盘"]
@@ -657,7 +660,8 @@ async function contractRepairAndFailureSmoke() {
   });
   const failed = await failing(completeJob("model-failure"));
   assert.strictEqual(failed.semanticStatus, "failed");
-  assert.strictEqual(failed.recommendation, "review");
+  assert.strictEqual(failed.recommendation, null);
+  assert.strictEqual(failed.decisionStatus, "needs_retry");
   assert.strictEqual(failed.errorCode, "MODEL_TIMEOUT");
   assert.strictEqual(failed.errorStage, "matchJob");
   assert.strictEqual(failed.errorPhase, "initial");
@@ -740,8 +744,8 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v37");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v38");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v1");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1290,8 +1294,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v37",
-    "adjacent direction semantics must invalidate v36 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v38",
+    "four-tier weighted decisions must invalidate v37 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -1915,7 +1919,7 @@ function matchBoundaryContractSmoke() {
     evidence: { jd: ["JD：负责店铺运营与投放复盘"], resume: ["简历：负责店铺运营与投放复盘"] }
   };
   const legacyGuarded = applyRuleGuard(legacyStringAnalysis, completeJob("legacy-string-blocker"));
-  assert.notStrictEqual(legacyGuarded.recommendation, "skip", "历史字符串 blocker 不得触发自动 skip");
+  assert.notStrictEqual(legacyGuarded.recommendation, "not_recommended", "历史字符串 blocker 不得触发自动不推荐");
   assert.notStrictEqual(
     decisionBucket({ ...completeJob("legacy-string-blocker"), analysis: legacyStringAnalysis, qualityTags: [], risks: [] }),
     "not_recommended",
@@ -1927,7 +1931,7 @@ function matchBoundaryContractSmoke() {
     hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：先交培训费", resumeEvidence: "简历：无此经历" }],
     blockingGaps: ["收费培训"]
   };
-  assert.strictEqual(applyRuleGuard(structuredBlockerAnalysis, completeJob("structured-blocker")).recommendation, "skip", "合法结构化 blocker 仍触发 skip");
+  assert.strictEqual(applyRuleGuard(structuredBlockerAnalysis, completeJob("structured-blocker")).recommendation, "not_recommended", "合法结构化 blocker 仍触发不推荐");
   assert.strictEqual(
     decisionBucket({ ...completeJob("structured-blocker"), analysis: structuredBlockerAnalysis, qualityTags: [], risks: [] }),
     "not_recommended",
@@ -2028,8 +2032,8 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v37",
-    decisionRules: "multi-track-recall-v1",
+    matchJob: "match-decision-v38",
+    decisionRules: "four-tier-weighted-v1",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -2250,7 +2254,8 @@ async function understandingContractRepairSmoke() {
   const failedRepair = await failingRunner(completeJob("understanding-repair-fails"));
   assert.strictEqual(failedRepairCalls, 2, "首次非法输出后只允许一次修复");
   assert.strictEqual(failedRepair.semanticStatus, "failed");
-  assert.strictEqual(failedRepair.recommendation, "review");
+  assert.strictEqual(failedRepair.recommendation, null);
+  assert.strictEqual(failedRepair.decisionStatus, "needs_retry");
   assert.strictEqual(failedRepair.errorCode, "MODEL_CONTRACT_INVALID");
   assert.strictEqual(failedRepair.errorStage, "understandJob");
   assert.strictEqual(failedRepair.errorPhase, "contract_repair");
@@ -2379,7 +2384,7 @@ function roleCentralBucketSmoke() {
   }).unproven, true, "旧分析缺少 central 时必须回退到 indispensable");
   assert.strictEqual(
     decisionBucket({ ...completeJob("role-core-unproven"), analysis, qualityTags: [], risks: [] }),
-    "backup"
+    "caution"
   );
   const guarded = applyRuleGuard(analysis, completeJob("role-core-unproven"));
   // decisionSource changed from role_evidence_backup_guard to decision_matrix in new guard
@@ -2472,15 +2477,15 @@ function roleEvidenceDecisionStateSmoke() {
   assert.strictEqual(roleEvidenceDecisionState(noFoundation).bucketCeiling, "talk");
   assert.strictEqual(
     decisionBucket({ ...completeJob("role-no-foundation"), analysis: noFoundation }),
-    "talk",
-    "主体一致且 JD 未声明根基要求时至少保留为可投"
+    "primary",
+    "历史 apply 结论按只读兼容映射归一为主投"
   );
 
   const misaligned = layeredRoleAnalysis("misaligned", ["matched"]);
   assert.strictEqual(
     decisionBucket({ ...completeJob("role-misaligned"), analysis: misaligned }),
-    "backup",
-    "role misalignment alone must never become not_recommended"
+    "primary",
+    "legacy apply remains a read-only primary mapping until the stale analysis is recomputed"
   );
   const blocked = {
     ...misaligned,
@@ -2547,8 +2552,8 @@ function roleEvidenceDecisionStateSmoke() {
   assert.strictEqual(centralOnlyCoreState.bucketCeiling, "backup", "中心职责缺口必须维持慎投上限");
   assert.strictEqual(
     decisionBucket({ ...completeJob("central-only-core-gap"), analysis: applyRuleGuard(centralOnlyCoreGap, completeJob("central-only-core-gap")) }),
-    "backup",
-    "中心职责缺口不得由召回底线提升为可投"
+    "apply",
+    "单个中心职责缺口由四档加权矩阵综合判断，不再单独设置慎投上限"
   );
 
   const indispensableOnlyGap = layeredRoleAnalysis("aligned", []);
@@ -2571,8 +2576,8 @@ function roleEvidenceDecisionStateSmoke() {
       ...completeJob("partial-indispensable-gap"),
       analysis: { ...indispensableOnlyGap, semanticStatus: "partial" }
     }),
-    "backup",
-    "partial 分析也必须服从角色证据 bucket ceiling"
+    "analysis_pending",
+    "partial 分析属于待重试技术状态，不得伪装成产品档位"
   );
 
   const mediumRiskReview = {
@@ -2580,7 +2585,7 @@ function roleEvidenceDecisionStateSmoke() {
     hiddenRisks: [{ severity: "medium", evidence: "JD：需确认关键交付风险" }]
   };
   const mediumRiskGuarded = applyRuleGuard(mediumRiskReview, completeJob("medium-risk-review"));
-  assert.strictEqual(mediumRiskGuarded.recommendation, "review", "中高风险岗位不得由召回底线提升为可投");
+  assert.strictEqual(mediumRiskGuarded.recommendation, "caution", "中高风险岗位不得由召回底线提升为可投");
   assert.strictEqual(mediumRiskGuarded.decisionSource, "semantic_risk_guard", "中高风险岗位必须保留风险守卫来源");
   assert.match(mediumRiskGuarded.fitReasons[0], /关键交付风险/, "中高风险岗位必须保留风险理由");
   const missingEvidenceReview = {
@@ -2588,14 +2593,16 @@ function roleEvidenceDecisionStateSmoke() {
     evidence: { jd: [], resume: [] }
   };
   const missingEvidenceGuarded = applyRuleGuard(missingEvidenceReview, completeJob("missing-evidence-review"));
-  assert.strictEqual(missingEvidenceGuarded.recommendation, "review", "缺少双侧总证据的岗位不得由召回底线提升为可投");
+  assert.strictEqual(missingEvidenceGuarded.recommendation, null, "缺少双侧总证据时不得形成产品档位");
+  assert.strictEqual(missingEvidenceGuarded.decisionStatus, "needs_retry");
   assert.strictEqual(missingEvidenceGuarded.decisionSource, "model_evidence_gap", "缺少双侧总证据必须保留证据守卫来源");
   const missingEvidenceSkip = {
     ...layeredRoleAnalysis("misaligned", ["missing"], { recommendation: "skip" }),
     evidence: { jd: [], resume: [] }
   };
   const missingEvidenceSkipGuarded = applyRuleGuard(missingEvidenceSkip, completeJob("missing-evidence-skip"));
-  assert.strictEqual(missingEvidenceSkipGuarded.recommendation, "review", "无双侧证据时不得保留矩阵 skip");
+  assert.strictEqual(missingEvidenceSkipGuarded.recommendation, null, "无双侧证据时不得保留旧矩阵 skip");
+  assert.strictEqual(missingEvidenceSkipGuarded.decisionStatus, "needs_retry");
   assert.strictEqual(missingEvidenceSkipGuarded.decisionSource, "model_evidence_gap", "无证据 skip 必须进入证据缺口复核");
 
   const genericDutyGap = layeredRoleAnalysis("mostly_aligned", ["matched", "matched"], { recommendation: "review" });
@@ -2610,8 +2617,8 @@ function roleEvidenceDecisionStateSmoke() {
   });
   assert.strictEqual(
     decisionBucket({ ...completeJob("generic-duty-gap"), analysis: applyRuleGuard(genericDutyGap, completeJob("generic-duty-gap")) }),
-    "primary",
-    "主体基本一致且核心符合时，单条宽泛附带职责缺口不得降级"
+    "apply",
+    "主体基本一致且核心符合时保持可投，单条宽泛附带职责缺口不得降为慎投"
   );
 
   const concreteCoreGap = layeredRoleAnalysis("mostly_aligned", ["matched", "missing"]);
@@ -2625,8 +2632,8 @@ function roleEvidenceDecisionStateSmoke() {
   };
   assert.strictEqual(
     decisionBucket({ ...completeJob("core-delivery-gap"), analysis: applyRuleGuard(concreteCoreGap, completeJob("core-delivery-gap")) }),
-    "backup",
-    "明确的主体根基交付缺口仍必须慎投"
+    "apply",
+    "一半根基要求匹配时属于 mostly_fit，由二维表落为可投"
   );
 
   for (const [recommendation, expected] of [["review", "caution"], ["caution", "caution"]]) {
@@ -2642,11 +2649,11 @@ function roleEvidenceDecisionStateSmoke() {
     ...layeredRoleAnalysis("mostly_aligned", ["matched", "unknown"]),
     confidence: 0.5
   }, completeJob("role-talk-low-confidence"));
-  assert.strictEqual(lowConfidenceTalk.recommendation, "review");
+  assert.strictEqual(lowConfidenceTalk.recommendation, "caution");
   assert.strictEqual(
     lowConfidenceTalk.decisionSource,
-    "model_low_confidence",
-    "talk ceiling must not bypass the existing low-confidence review guard"
+    "weighted_decision_matrix",
+    "model confidence must not override the weighted decision matrix"
   );
 
   const directionMismatchCases = [
@@ -2661,7 +2668,7 @@ function roleEvidenceDecisionStateSmoke() {
   ];
   for (const [analysis, jobOverrides] of directionMismatchCases) {
     const guarded = applyRuleGuard(analysis, completeJob("role-backup-precedence", jobOverrides));
-    assert.strictEqual(guarded.recommendation, "skip", "主工作方向明确不匹配时不得被软性召回规则抬升");
+    assert.strictEqual(guarded.recommendation, "caution", "方向不匹配但要求仍有证据时保留为慎投且不得默认沟通");
     assert.strictEqual(typeof guarded.decisionSource, "string");
   }
 }
@@ -3063,9 +3070,9 @@ function nonCentralMissingGuardSmoke() {
   };
 
   const guarded = applyRuleGuard(base, job);
-  assert.strictEqual(guarded.recommendation, "caution",
-    "大部分匹配+符合 → 判定表给主投，非核心 missing=5 → 降为可投");
-  assert.strictEqual(guarded.decisionSource, "non_central_gap_guard");
+  assert.strictEqual(guarded.recommendation, "apply",
+    "核心全匹配且支持要求全缺失时按 70/30 得到 mostly_fit，由二维表落为可投");
+  assert.strictEqual(guarded.decisionSource, "weighted_decision_matrix");
 
   // 非核心 missing < 5 → 不触发降级
   const base2 = { ...base, requirementMatches: base.requirementMatches.slice(0, 6) }; // 只有 4 条非核心 missing
@@ -3087,8 +3094,8 @@ function nonCentralMissingGuardSmoke() {
       { requirement: "非核心5", state: "missing", central: false }
     ]
   }, job);
-  assert.strictEqual(reviewWithFiveNonCentral.recommendation, "review",
-    "非核心缺口守卫最低停在 review，不得单独制造 skip");
+  assert.strictEqual(reviewWithFiveNonCentral.recommendation, "caution",
+    "核心与支持要求整体仅部分符合时由二维表落为慎投");
 
   const ordinaryLowConfidence = applyRuleGuard({
     ...base,
@@ -3098,9 +3105,9 @@ function nonCentralMissingGuardSmoke() {
       { requirement: "核心2", state: "matched", central: true, jdEvidence: "JD: core 2", resumeEvidence: "Resume: core 2" }
     ]
   }, job);
-  assert.strictEqual(ordinaryLowConfidence.recommendation, "apply",
-    "全部核心要求都有直接正向事实时，不得仅因模型自评置信度低而机械降到 review");
-  assert.strictEqual(ordinaryLowConfidence.decisionSource, "decision_matrix");
+  assert.strictEqual(ordinaryLowConfidence.recommendation, "primary",
+    "全部核心要求都有直接正向事实时，不得仅因模型自评置信度低而降档");
+  assert.strictEqual(ordinaryLowConfidence.decisionSource, "weighted_decision_matrix");
 
   const strongDirectLowConfidence = applyRuleGuard({
     ...base,
@@ -3116,13 +3123,13 @@ function nonCentralMissingGuardSmoke() {
   }, job);
   assert.strictEqual(strongDirectLowConfidence.recommendation, "apply",
     "强直接核心证据不得被低置信度与 transferable 硬性项重复降级");
-  assert.strictEqual(strongDirectLowConfidence.decisionSource, "decision_matrix");
+  assert.strictEqual(strongDirectLowConfidence.decisionSource, "weighted_decision_matrix");
 
   const strongWithMaterialRisk = applyRuleGuard({
     ...strongDirectLowConfidence,
     hiddenRisks: [{ severity: "medium", evidence: "JD: confirm delivery risk" }]
   }, job);
-  assert.strictEqual(strongWithMaterialRisk.recommendation, "review",
+  assert.strictEqual(strongWithMaterialRisk.recommendation, "caution",
     "强直接证据不得绕过中高语义风险");
   assert.strictEqual(strongWithMaterialRisk.decisionSource, "semantic_risk_guard");
 
@@ -3136,7 +3143,7 @@ function nonCentralMissingGuardSmoke() {
   }, job);
   assert.strictEqual(strongWithResponsibilitySprawl.recommendation, "apply",
     "责任范围偏宽是岗位质量提示，不得把证据充分的同方向岗位强降为待复核");
-  assert.strictEqual(strongWithResponsibilitySprawl.decisionSource, "decision_matrix");
+  assert.strictEqual(strongWithResponsibilitySprawl.decisionSource, "weighted_decision_matrix");
 
   const strongWithSprawlAndMaterialRisk = applyRuleGuard({
     ...strongDirectLowConfidence,
@@ -3150,7 +3157,7 @@ function nonCentralMissingGuardSmoke() {
       evidence: "JD: delivery depends on an unconfirmed external team"
     }]
   }, job);
-  assert.strictEqual(strongWithSprawlAndMaterialRisk.recommendation, "review",
+  assert.strictEqual(strongWithSprawlAndMaterialRisk.recommendation, "caution",
     "职责偏宽不得掩盖同时存在的其他中高等级语义风险");
   assert.strictEqual(strongWithSprawlAndMaterialRisk.decisionSource, "semantic_risk_guard");
 
@@ -3158,8 +3165,9 @@ function nonCentralMissingGuardSmoke() {
     ...strongDirectLowConfidence,
     evidence: { jd: ["JD"], resume: [] }
   }, job);
-  assert.strictEqual(strongWithoutResumeEvidence.recommendation, "review",
+  assert.strictEqual(strongWithoutResumeEvidence.recommendation, null,
     "强直接证据不得绕过总证据门禁");
+  assert.strictEqual(strongWithoutResumeEvidence.decisionStatus, "needs_retry");
   assert.strictEqual(strongWithoutResumeEvidence.decisionSource, "model_evidence_gap");
 
   console.log("nonCentralMissingGuardSmoke ok");
@@ -3356,11 +3364,11 @@ async function compactMatchEvidenceContractSmoke() {
     ...zeroRequirementDirectionEvidence,
     semanticStatus: "complete"
   }, { qualityTags: [] });
-  assert.strictEqual(zeroRequirementGuard.recommendation, "skip");
+  assert.strictEqual(zeroRequirementGuard.recommendation, "caution");
   assert.strictEqual(
     decisionBucket({ qualityTags: [], analysis: zeroRequirementGuard }),
-    "not_recommended",
-    "零 requirement 的合法 D-gap 必须贯穿统一证据信封并进入方向排除"
+    "caution",
+    "零 requirement 时覆盖率不足，方向 D-gap 保留为不默认沟通的慎投"
   );
   for (const invalidRoleGaps of [
     ["D0|deliverable"],

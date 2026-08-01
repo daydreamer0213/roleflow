@@ -27,12 +27,14 @@ try {
     startedAt: now
   });
   const ids = {};
-  ids.primary = insert("primary", {}, batchId);
-  ids.talk = insert("talk", { analysis: partialAnalysis() }, batchId);
+  ids.primary = insert("primary", { analysis: completeAnalysis("primary") }, batchId);
+  ids.talk = insert("talk", { analysis: completeAnalysis("apply") }, batchId);
   ids.lowRiskBackup = insert("low-risk-backup", {
+    analysis: completeAnalysis("caution"),
     qualityTags: ["salary_target_core", "experience_salary_overlap"]
   }, batchId);
   ids.highSalaryBackup = insert("high-salary-backup", {
+    analysis: completeAnalysis("caution"),
     qualityTags: ["salary_target_high", "experience_salary_overlap"]
   }, batchId);
   ids.applied = insert("applied", {}, batchId);
@@ -66,17 +68,16 @@ try {
     inventory.map((item) => [item.sourceId, item.workflowTier]),
     [
       ["primary", "primary"],
-      ["talk", "talk"],
-      ["low-risk-backup", "low_risk_backup"]
+      ["talk", "apply"]
     ]
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
   assert.strictEqual(
     workflowEligibility(job("legacy-string-blocker", {
-      analysis: { ...completeAnalysis(), recommendation: "skip", fitLevel: "D", hardBlockers: ["Java 核心栈不匹配"] }
+      analysis: { ...completeAnalysis(), recommendationSchemaVersion: 1, recommendation: "skip", fitLevel: "D", hardBlockers: ["Java 核心栈不匹配"] }
     }), { now }).eligible,
-    true,
-    "历史字符串 blocker 及其旧 skip/D 结论只供兼容展示，不得拒绝工作流候选"
+    false,
+    "历史 skip 必须按批准映射读取为不推荐，不因字符串 blocker 结构不完整而升档"
   );
   assert.strictEqual(
     workflowEligibility(job("incomplete-object-blocker", {
@@ -89,7 +90,7 @@ try {
     workflowEligibility(job("valid-structured-blocker", {
       analysis: {
         ...completeAnalysis(),
-        recommendation: "skip",
+        recommendation: "not_recommended",
         fitLevel: "D",
         hardBlockers: [{ kind: "safety", requirement: "收费培训", jdEvidence: "JD：入职前收费", resumeEvidence: "简历：没有相关安排" }]
       }
@@ -98,15 +99,18 @@ try {
     "结构完整的 blocker 仍须通过 decisionBucket 拒绝"
   );
   assert.strictEqual(
-    workflowEligibility(job("pure-high", { qualityTags: ["salary_target_high", "experience_salary_overlap"] }), { now }).reasonCode,
-    "WORKFLOW_BACKUP_NOT_LOW_RISK"
+    workflowEligibility(job("pure-high", {
+      analysis: completeAnalysis("caution"),
+      qualityTags: ["salary_target_high", "experience_salary_overlap"]
+    }), { now }).reasonCode,
+    "WORKFLOW_DECISION_CAUTION"
   );
   assert.strictEqual(
     workflowEligibility(job("model-rejected", {
-      analysis: { ...completeAnalysis(), recommendation: "skip", fitLevel: "D", hardBlockers: ["核心技术栈不匹配"] }
+      analysis: { ...completeAnalysis(), recommendationSchemaVersion: 1, recommendation: "skip", fitLevel: "D", hardBlockers: ["核心技术栈不匹配"] }
     }), { now }).eligible,
-    true,
-    "旧模型仅凭字符串 blocker 给出的 skip/D 不得继续拒绝工作流"
+    false,
+    "旧 skip 必须稳定映射为不推荐"
   );
 
   assert.deepStrictEqual(
@@ -123,32 +127,33 @@ try {
   );
 
   const roleEvidenceBackup = layeredDecisionAnalysis("misaligned", ["matched"]);
-  // 新判定表: misaligned+部分符合→不推荐; applyRuleGuard不再使用decisionSource="role_evidence_backup_guard"
-  assert.strictEqual(typeof applyRuleGuard(roleEvidenceBackup, job("role-evidence-backup")).recommendation, "string");
-  assert.strictEqual(typeof decisionBucket(job("role-evidence-backup", { analysis: roleEvidenceBackup })), "string");
-  assert.strictEqual(typeof workflowEligibility(job("role-evidence-backup", { analysis: roleEvidenceBackup }), { now }).eligible, "boolean");
+  const guardedRoleEvidenceBackup = applyRuleGuard(roleEvidenceBackup, job("role-evidence-backup"));
+  assert.strictEqual(guardedRoleEvidenceBackup.recommendation, "caution");
+  assert.strictEqual(decisionBucket(job("role-evidence-backup", { analysis: guardedRoleEvidenceBackup })), "caution");
+  assert.strictEqual(workflowEligibility(job("role-evidence-backup", { analysis: guardedRoleEvidenceBackup }), { now }).eligible, false);
   const roleEvidenceTalk = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
-  assert.strictEqual(typeof applyRuleGuard(roleEvidenceTalk, job("role-evidence-talk")).decisionSource, "string");
-  assert.strictEqual(typeof decisionBucket(job("role-evidence-talk", { analysis: roleEvidenceTalk })), "string");
+  const guardedRoleEvidenceTalk = applyRuleGuard(roleEvidenceTalk, job("role-evidence-talk"));
+  assert.strictEqual(guardedRoleEvidenceTalk.decisionSource, "weighted_decision_matrix");
+  assert.strictEqual(decisionBucket(job("role-evidence-talk", { analysis: guardedRoleEvidenceTalk })), "caution");
   assert.strictEqual(
-    workflowEligibility(job("role-evidence-talk", { analysis: roleEvidenceTalk }), { now }).eligible,
-    true
+    workflowEligibility(job("role-evidence-talk", { analysis: guardedRoleEvidenceTalk }), { now }).eligible,
+    false
   );
   const semanticRiskReview = {
     ...layeredDecisionAnalysis("aligned", ["matched"]),
-    recommendation: "review",
+    recommendation: "caution",
     decisionSource: "semantic_risk_guard"
   };
   assert.strictEqual(
     workflowEligibility(job("semantic-risk-review", { analysis: semanticRiskReview }), { now }).reasonCode,
-    "WORKFLOW_DECISION_REVIEW",
-    "风险/低置信度/证据缺口 review 不得冒充 role evidence backup"
+    "WORKFLOW_DECISION_CAUTION",
+    "语义风险慎投不得进入默认沟通库存"
   );
-  const roleEvidenceBackupId = insert("role-evidence-review", { analysis: roleEvidenceBackup }, batchId);
+  const roleEvidenceBackupId = insert("role-evidence-review", { analysis: guardedRoleEvidenceBackup }, batchId);
   const legacyRoleCoreId = insert("legacy-role-core-review", { analysis: roleCoreUnprovenAnalysis() }, batchId);
   const semanticRiskReviewId = insert("semantic-risk-review", { analysis: semanticRiskReview }, batchId);
   const layeredHighSalaryId = insert("layered-high-salary-review", {
-    analysis: roleEvidenceBackup,
+    analysis: { ...guardedRoleEvidenceBackup, recommendation: "caution" },
     qualityTags: ["salary_target_high", "experience_salary_overlap"]
   }, batchId);
   const workflow = createWorkflowRun(db, {
@@ -168,17 +173,17 @@ try {
   assert.strictEqual(typeof backupCandidate?.workflowTier, "string");
   assert.strictEqual(typeof backupCandidate?.defaultChecked, "boolean");
   const semanticRiskCandidate = reviewCandidates.find((candidate) => candidate.id === semanticRiskReviewId);
-  assert.strictEqual(semanticRiskCandidate?.workflowTier, "decision_review");
+  assert.strictEqual(semanticRiskCandidate?.workflowTier, "caution");
   assert.strictEqual(semanticRiskCandidate?.defaultChecked, false, "通用人工复核岗位不得默认勾选");
   assert.strictEqual(
     reviewCandidates.find((candidate) => candidate.id === ids.talk)?.defaultChecked,
     true,
-    "容量允许时，可沟通岗位仍须默认勾选"
+    "容量允许时，可投岗位仍须默认勾选"
   );
   assert.strictEqual(
     reviewCandidates.find((candidate) => candidate.id === ids.lowRiskBackup)?.defaultChecked,
     false,
-    "低风险备选仍是备选，不得默认勾选"
+    "慎投不得默认勾选"
   );
   const legacyCandidate = reviewCandidates.find((candidate) => candidate.id === legacyRoleCoreId);
   assert.strictEqual(typeof legacyCandidate?.workflowTier, "string", "历史方向备选仍须可读且不默认勾选");
@@ -190,8 +195,8 @@ try {
   );
   assert.strictEqual(
     reviewCandidates.find((candidate) => candidate.id === layeredHighSalaryId)?.workflowTier,
-    "high_salary_backup",
-    "existing high-salary backup behavior must retain precedence"
+    "caution",
+    "高薪跨度已经在分析阶段归入慎投，人工可见但不默认勾选"
   );
 
   const outcomeJobIds = {
@@ -278,12 +283,13 @@ function job(sourceId, overrides = {}) {
   };
 }
 
-function completeAnalysis() {
+function completeAnalysis(recommendation = "primary") {
   return {
     provider: "openai_compatible",
     semanticStatus: "complete",
-    recommendation: "apply",
-    fitLevel: "A",
+    recommendation,
+    recommendationSchemaVersion: 2,
+    fitLevel: recommendation === "primary" ? "fit" : "mostly_fit",
     confidence: 0.9,
     evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
     hardBlockers: [],
@@ -299,7 +305,8 @@ function partialAnalysis() {
   return {
     provider: "openai_compatible",
     semanticStatus: "partial",
-    recommendation: "review",
+    recommendation: null,
+    recommendationSchemaVersion: 2,
     evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
     hardBlockers: []
   };
@@ -309,8 +316,9 @@ function roleCoreUnprovenAnalysis() {
   return {
     provider: "openai_compatible",
     semanticStatus: "complete",
-    recommendation: "review",
-    fitLevel: "C",
+    recommendation: "caution",
+    recommendationSchemaVersion: 2,
+    fitLevel: "insufficient_evidence",
     confidence: 0.45,
     requirementMatches: [{
       requirement: "推理框架与硬件适配",

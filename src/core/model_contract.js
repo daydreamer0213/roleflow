@@ -1276,7 +1276,9 @@ function assertJobQualityAlignment(jobUnderstanding, jobQuality) {
 
 function validateMatchDecision(value, context = {}) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
-  const modelRecommendation = validateModelRecommendation(value, context);
+  // 完整 MatchDecision 仅用于历史缓存与注入式兼容；新模型路径使用上面的 sparse contract。
+  // 因此这里对 shadow 字段只做“有则校验”，不因历史对象缺字段触发第二次模型修复。
+  const modelRecommendation = validateModelRecommendation(value);
   for (const [field, raw] of [
     ["softGaps", value.softGaps ?? value.missingPoints],
     ["questionsToVerify", value.questionsToVerify ?? value.riskQuestions]

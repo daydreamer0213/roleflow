@@ -60,6 +60,9 @@
     "matchDecision": {
       "recommendation": "apply",
       "fitLevel": "A",
+      "roleAlignment": "aligned",
+      "roleResumeEvidence": ["简历：负责淘宝店铺日常经营与活动复盘并独立完成投放 ROI 复盘"],
+      "roleGaps": [],
       "confidence": 0.88,
       "fitReasons": ["店铺活动运营与投放 ROI 复盘两项核心要求均有简历直接证据"],
       "requirementMatches": [
@@ -137,6 +140,9 @@
     "matchDecision": {
       "recommendation": "apply",
       "fitLevel": "A",
+      "roleAlignment": "partially_aligned",
+      "roleResumeEvidence": ["简历：负责淘宝店铺日常经营、活动复盘与投放 ROI 复盘"],
+      "roleGaps": ["直播运营与短视频拍摄剪辑并非候选人已证明的主工作方向"],
       "confidence": 0.8,
       "fitReasons": ["店铺活动运营核心要求有简历直接证据"],
       "requirementMatches": [
@@ -214,6 +220,9 @@
     "matchDecision": {
       "recommendation": "apply",
       "fitLevel": "A",
+      "roleAlignment": "partially_aligned",
+      "roleResumeEvidence": ["简历：通过内容活动提升用户互动与留存"],
+      "roleGaps": ["完整的用户分层运营尚未得到直接证明"],
       "confidence": 0.78,
       "fitReasons": ["用户增长要求可由内容渠道的增长与留存证据迁移支撑"],
       "requirementMatches": [
@@ -290,6 +299,9 @@
     "matchDecision": {
       "recommendation": "review",
       "fitLevel": "C",
+      "roleAlignment": "misaligned",
+      "roleResumeEvidence": ["简历：主工作方向是线上用户社群运营与留存活动"],
+      "roleGaps": ["岗位主工作方向是电话陌拜、上门拜访与销售签约"],
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [
@@ -359,6 +371,9 @@
     "matchDecision": {
       "recommendation": "review",
       "fitLevel": "C",
+      "roleAlignment": "insufficient_evidence",
+      "roleResumeEvidence": [],
+      "roleGaps": ["JD 未说明可与候选人经历核对的具体经营职责"],
       "confidence": 0.4,
       "fitReasons": [],
       "requirementMatches": [
@@ -433,6 +448,9 @@
     "matchDecision": {
       "recommendation": "review",
       "fitLevel": "C",
+      "roleAlignment": "misaligned",
+      "roleResumeEvidence": ["简历：主工作方向是 Python/FastAPI 服务开发"],
+      "roleGaps": ["岗位主工作方向是唯一 Java/Spring 技术栈"],
       "confidence": 0.45,
       "fitReasons": [],
       "requirementMatches": [

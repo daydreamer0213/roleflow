@@ -1,10 +1,17 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
-const { validateModelResult, decisionHardBlockers, roleEvidenceDecisionState, hardBlockerText, computeDecisionFromMatrix, hasStrongDirectCoreEvidence, countNonCentralMissing } = require("./model_contract");
+const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
+const { deriveMatrixDecision } = require("./four_tier_decision");
+const {
+  DECISION_POLICY,
+  DECISION_POLICY_HASH,
+  RECOMMENDATION_SCHEMA_VERSION,
+  capRecommendationTier
+} = require("./decision_policy");
 
 function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyzer: injectedAnalyzer = null, logger = null } = {}) {
   const analyzer = injectedAnalyzer || createLlmAnalyzer({ modelConfig: configs.model, logger });
@@ -42,7 +49,8 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
           candidateProfile: candidateProfileForJobMatch(candidateProfile),
           candidateMatchCard: configs.matchingCard || null,
           jobUnderstanding,
-          searchPreferences: searchPreferences(configs)
+          searchPreferences: searchPreferences(configs),
+          modelRecommendationMode: configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode
         },
         run: analyzer.matchJob
       });
@@ -81,8 +89,9 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
     coreRequirements: [],
     requirementMatches: [],
     hiddenRisks: [],
-    recommendation: "review",
-    fitLevel: "C",
+    recommendation: null,
+    decisionStatus: "needs_retry",
+    fitLevel: null,
     confidence: null,
     recommendedResumeVersion: versionId,
     recommendedResumeVersionName: resumeVersionName(configs.resumeVersions, versionId),
@@ -109,7 +118,10 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
   const cacheKey = crypto.createHash("sha256").update(`${provider}|${model}|${kind}|${pipelineVersion}|${inputHash}`).digest("hex");
   // matchJob 的跨字段核对需要本次 JobUnderstanding 作为最小上下文，
   // 让缓存读取、首次校验和契约修复使用同一份判定依据。
-  const validationContext = kind === "matchJob" ? { jobUnderstanding: input?.jobUnderstanding } : undefined;
+  const validationContext = kind === "matchJob" ? {
+    jobUnderstanding: input?.jobUnderstanding,
+    modelRecommendationMode: input?.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode
+  } : undefined;
   if (db) {
     const cached = getModelCache(db, cacheKey);
     if (cached) {
@@ -215,7 +227,12 @@ function compactAnalysis(configs, parts) {
     roleResumeEvidence: decision.roleResumeEvidence || [],
     roleGaps: decision.roleGaps || [],
     jobQuality: decision.jobQuality || understanding.jobQuality || { level: "normal", concerns: [] },
-    recommendation: decision.recommendation,
+    recommendation: null,
+    decisionStatus: "pending",
+    modelRecommendation: decision.modelRecommendation,
+    modelRecommendationMode: configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode,
+    recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
+    decisionPolicyHash: DECISION_POLICY_HASH,
     fitLevel: decision.fitLevel,
     confidence: decision.confidence,
     recommendedResumeVersion: versionId,
@@ -283,8 +300,9 @@ function failedAnalysis(configs, job, revision, error) {
     coreRequirements: [],
     requirementMatches: [],
     hiddenRisks: [],
-    recommendation: "review",
-    fitLevel: "C",
+    recommendation: null,
+    decisionStatus: "needs_retry",
+    fitLevel: null,
     confidence: null,
     recommendedResumeVersion: "",
     recommendedResumeVersionName: "",
@@ -308,84 +326,105 @@ function applyRuleGuard(analysis, job) {
   const gate = decisionState(job);
   const qualityTags = new Set(job.qualityTags || []);
 
-  // === 一、强制不推荐 ===
-  if (gate === "blocked") return addGuard(analysis, "skip", "D", "已确认的基础条件不满足。", "blocked", "hard_boundary");
+  // 一、明确硬边界仍优先于任何语义匹配结果。
+  if (gate === "blocked") {
+    return addGuard(analysis, "not_recommended", "no_fit", "已确认的基础条件不满足。", "blocked", "hard_boundary");
+  }
 
   const hardBlockers = decisionHardBlockers(analysis);
   if (hardBlockers.length) {
-    return addGuard({ ...analysis, hardBlockers }, "skip", "D", `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`, analysis.semanticStatus, "hard_blocker_guard");
+    return addGuard(
+      { ...analysis, hardBlockers },
+      "not_recommended",
+      "no_fit",
+      `存在不可沟通的硬性缺口：${hardBlockerText(hardBlockers[0])}`,
+      analysis.semanticStatus,
+      "hard_blocker_guard"
+    );
   }
   if (analysis.jobQuality?.level === "risk") {
-    return addGuard(analysis, "skip", "D", "岗位存在安全或合规风险，不建议投递。", analysis.semanticStatus, "job_quality_risk_guard");
-  }
-
-  // 方向不匹配(misaligned) → 不推荐or慎投，交给判定表处理
-
-  // === 二、信息残缺 → 不参与四档判定 ===
-  if (gate === "refresh") {
-    return { ...analysis, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["岗位信息需要刷新后重新分析。"], ruleAdjusted: true };
-  }
-  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) {
-    return { ...analysis, recommendation: "review", decisionSource: "needs_retry" };
-  }
-  if (analysis.semanticStatus === "partial") {
-    return { ...analysis, recommendation: "review", decisionSource: "needs_retry", fitReasons: ["当前只有卡片级信息，完整 JD 补齐前不进入判定。"], ruleAdjusted: true };
-  }
-
-  // === 三、查判定表 → 初步建议 ===
-  const matrixRec = computeDecisionFromMatrix(analysis.roleAlignment, analysis.requirementMatches);
-  let guarded = { ...analysis, recommendation: matrixRec, decisionSource: "decision_matrix" };
-  const strongDirectCoreEvidence = hasStrongDirectCoreEvidence(analysis.requirementMatches);
-
-  // === 三-B、非核心缺口降级 ===
-  const nonCentralMissing = countNonCentralMissing(analysis.requirementMatches);
-  if (nonCentralMissing >= 5 && ["apply", "caution"].includes(guarded.recommendation)) {
-    const downgradeMap = { apply: "caution", caution: "review" };
-    const levelHint = { apply: "B", caution: "C" };
-    guarded = addGuard(
-      { ...analysis },
-      downgradeMap[guarded.recommendation],
-      levelHint[guarded.recommendation],
-      `存在 ${nonCentralMissing} 条非核心硬技能缺失，建议降级处理。`,
+    return addGuard(
+      analysis,
+      "not_recommended",
+      "no_fit",
+      "岗位存在安全或合规风险，不建议投递。",
       analysis.semanticStatus,
-      "non_central_gap_guard"
+      "job_quality_risk_guard"
     );
   }
 
-  // === 四、降级修正 ===
-
-  // 4a. 低置信度 → 最高慎投
-  if (
-    Number(analysis.confidence ?? 0) < 0.62
-    && ["apply", "caution"].includes(matrixRec)
-    && !strongDirectCoreEvidence
-  ) {
-    guarded = addGuard({ ...analysis }, "review", "C", "模型置信度较低，需要人工复核 JD 与简历证据。", analysis.semanticStatus, "model_low_confidence");
+  // 二、技术失败和证据未完成不伪装成四档建议。
+  if (gate === "refresh") {
+    return needsRetry(analysis, "岗位信息需要刷新后重新分析。");
+  }
+  if (["failed", "stale", "pending"].includes(analysis.semanticStatus)) {
+    return needsRetry(analysis);
+  }
+  if (analysis.semanticStatus === "partial") {
+    return needsRetry(analysis, "当前只有卡片级信息，完整 JD 补齐前不进入判定。");
+  }
+  if (!DECISION_POLICY.matrix[analysis.roleAlignment]) {
+    return needsRetry(analysis, "岗位方向证据不足，等待补充后重新判定。");
   }
 
-  // 4b. 年限偏高 → 主投降可投
-  if (guarded.recommendation === "apply" && (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap"))) {
-    guarded = addGuard({ ...analysis }, "caution", "B", "岗位年限高于候选人当前经历，只作为可沟通的经验可冲岗位。", analysis.semanticStatus, "experience_stretch_guard");
-  }
+  // 三、代码计算 70/30 加权结果并查四档二维表。模型 shadow 建议不参与。
+  const decisionMetrics = deriveMatrixDecision({
+    roleAlignment: analysis.roleAlignment,
+    requirementMatches: analysis.requirementMatches
+  });
+  let guarded = {
+    ...analysis,
+    recommendation: decisionMetrics.matrixRecommendation,
+    decisionStatus: "decided",
+    decisionSource: "weighted_decision_matrix",
+    fitLevel: decisionMetrics.fitBand,
+    decisionMetrics,
+    recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
+    decisionPolicyHash: DECISION_POLICY_HASH
+  };
 
-  // 4c. 存在 indispensable（硬性）要求且只有可显著推导证据 → 主投降可投
-  if (guarded.recommendation === "apply" && hasTransferableIndispensable(analysis) && !strongDirectCoreEvidence) {
-    guarded = addGuard({ ...analysis }, "caution", "B", "核心硬性要求仅有可迁移证据，建议先沟通确认再投递。", analysis.semanticStatus, "indispensable_transferable_guard");
+  // 四、已有产品安全信号只能向下封顶，不能反向提升。
+  if (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap")) {
+    guarded = capGuard(
+      guarded,
+      "apply",
+      "岗位年限高于候选人当前经历，最高归入可投。",
+      "experience_stretch_guard"
+    );
   }
-
-  // 4d. 中高语义风险 → 最高慎投，且不得被召回规则反向提升
+  if (qualityTags.has("salary_target_high") || qualityTags.has("experience_salary_overlap")) {
+    guarded = capGuard(
+      guarded,
+      "caution",
+      "岗位薪资或经验跨度需要先确认，最高归入慎投。",
+      "salary_stretch_guard"
+    );
+  }
+  if (hasTransferableIndispensable(analysis)) {
+    guarded = capGuard(
+      guarded,
+      "apply",
+      "核心硬性要求只有可迁移证据，最高归入可投。",
+      "indispensable_transferable_guard"
+    );
+  }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => (
     risk?.type !== "responsibility_sprawl"
       && ["medium", "high"].includes(risk?.severity)
   ));
-  if (materialRisk && guarded.recommendation !== "skip") {
+  if (materialRisk && guarded.recommendation !== "not_recommended") {
     const evidence = materialRisk.evidence ? `：${materialRisk.evidence}` : "";
-    guarded = addGuard(guarded, "review", "C", `岗位存在需要先沟通确认的风险${evidence}`, analysis.semanticStatus, "semantic_risk_guard");
+    guarded = capGuard(
+      guarded,
+      "caution",
+      `岗位存在需要先沟通确认的风险${evidence}`,
+      "semantic_risk_guard"
+    );
   }
 
-  // === 五、缺证据 → 待重试 ===
+  // 五、缺少双侧证据属于分析未完成，不进入四档。
   if (missingEitherSideEvidence(guarded)) {
-    return { ...guarded, recommendation: "review", decisionSource: "model_evidence_gap", fitReasons: ["模型结论缺少可核对的双侧证据，标记待重试。", ...(guarded.fitReasons || [])], ruleAdjusted: true };
+    return needsRetry(guarded, "模型结论缺少可核对的双侧证据，标记待重试。", "model_evidence_gap");
   }
 
   return guarded;
@@ -395,14 +434,6 @@ function hasTransferableIndispensable(analysis) {
   return (analysis.requirementMatches || []).some((item) => (
     item?.state === "transferable" && item?.indispensable === true
   ));
-}
-
-function roleEvidenceGuardReason(roleEvidence) {
-  if (roleEvidence.semantics === "legacy") return "岗位主线与当前简历证据偏离，需要作为备选人工查看。";
-  if (roleEvidence.foundationState === "none" || roleEvidence.foundationState === "unproven") {
-    return "岗位基础要求缺少可核对的简历证据，需要作为备选人工查看。";
-  }
-  return "岗位方向或基础要求仅部分匹配，建议先沟通确认再投递。";
 }
 
 function missingEitherSideEvidence(analysis) {
@@ -416,8 +447,30 @@ function addGuard(analysis, recommendation, fitLevel, reason, semanticStatus = a
     semanticStatus,
     decisionSource,
     recommendation,
+    decisionStatus: "decided",
     fitLevel,
     fitReasons: [reason, ...(analysis.fitReasons || []).filter((item) => item && item !== reason)],
+    ruleAdjusted: true
+  };
+}
+
+function capGuard(analysis, cap, reason, decisionSource) {
+  const recommendation = capRecommendationTier(analysis.recommendation, cap);
+  if (recommendation === analysis.recommendation) return analysis;
+  return addGuard(analysis, recommendation, analysis.fitLevel, reason, analysis.semanticStatus, decisionSource);
+}
+
+function needsRetry(analysis, reason = "", decisionSource = "needs_retry") {
+  return {
+    ...analysis,
+    recommendation: null,
+    decisionStatus: "needs_retry",
+    decisionSource,
+    fitLevel: null,
+    decisionMetrics: null,
+    fitReasons: reason
+      ? [reason, ...(analysis.fitReasons || []).filter((item) => item && item !== reason)]
+      : (analysis.fitReasons || []),
     ruleAdjusted: true
   };
 }

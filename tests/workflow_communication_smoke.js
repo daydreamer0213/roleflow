@@ -31,6 +31,7 @@ async function workflowCommunicationSmoke() {
     ));
     const highSalaryId = upsertJob(db, job("high-salary", {
       salary: "15-25K",
+      analysis: completeAnalysis("caution"),
       qualityTags: ["salary_target_high", "experience_salary_overlap"]
     }), scanBatchId);
     const roleCoreBackupId = upsertJob(db, job("role-core-unproven", {
@@ -38,8 +39,9 @@ async function workflowCommunicationSmoke() {
       analysis: {
         provider: "openai_compatible",
         semanticStatus: "complete",
-        recommendation: "review",
-        fitLevel: "C",
+        recommendation: "caution",
+        recommendationSchemaVersion: 2,
+        fitLevel: "insufficient_evidence",
         confidence: 0.45,
         requirementMatches: [{
           requirement: "推理框架与硬件适配",
@@ -71,7 +73,7 @@ async function workflowCommunicationSmoke() {
     const selectedIds = review.filter((candidate) => candidate.defaultChecked).map((candidate) => candidate.id);
     assert.deepStrictEqual([...selectedIds].sort((a, b) => a - b), lowRiskIds);
     assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.defaultChecked, false);
-    assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.workflowTier, "high_salary_backup");
+    assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.workflowTier, "caution");
     assert.strictEqual(review.find((candidate) => candidate.id === roleCoreBackupId)?.defaultChecked, false);
     assert.strictEqual(typeof review.find((candidate) => candidate.id === roleCoreBackupId)?.workflowTier, "string");
 
@@ -182,16 +184,21 @@ function job(sourceId, overrides = {}) {
     matches: ["Python", "RAG"],
     risks: [],
     qualityTags: ["salary_target_core"],
-    analysis: {
-      provider: "openai_compatible",
-      semanticStatus: "complete",
-      recommendation: "apply",
-      fitLevel: "A",
-      confidence: 0.9,
-      evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
-      hardBlockers: []
-    },
+    analysis: completeAnalysis(),
     ...overrides
+  };
+}
+
+function completeAnalysis(recommendation = "primary") {
+  return {
+    provider: "openai_compatible",
+    semanticStatus: "complete",
+    recommendation,
+    recommendationSchemaVersion: 2,
+    fitLevel: recommendation === "primary" ? "fit" : "mostly_fit",
+    confidence: 0.9,
+    evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
+    hardBlockers: []
   };
 }
 

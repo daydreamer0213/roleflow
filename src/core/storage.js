@@ -7,9 +7,13 @@ const { parseBossActivityText } = require("./activity_status");
 const { mergeJobMetadata } = require("./job_metadata");
 const { NEGATIVE_FEEDBACK_STATUSES, normalizeFeedbackReason } = require("./feedback");
 const { buildAnalysisRevision, analysisStaleReasons } = require("./analysis_revision");
-const { decisionHardBlockers, roleEvidenceDecisionState } = require("./model_contract");
+const { decisionHardBlockers } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
+const {
+  RECOMMENDATION_SCHEMA_VERSION,
+  normalizeRecommendationTier
+} = require("./decision_policy");
 
 const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
@@ -2949,7 +2953,8 @@ function rescorePlanObservations(db, { planId, configs }) {
         ...(modelBacked && staleReasons.length ? {
           semanticStatus: "stale",
           decisionSource: "analysis_pending",
-          recommendation: "review",
+          recommendation: null,
+          decisionStatus: "needs_retry",
           staleReasons,
           expectedRevision
         } : {})
@@ -3087,8 +3092,10 @@ function reassessmentGateAnalysis(scored, gate) {
     model: "",
     semanticStatus: blocked ? "blocked" : "refresh",
     decisionSource: blocked ? "hard_boundary" : "source_refresh",
-    recommendation: blocked ? "skip" : "review",
-    fitLevel: blocked ? "D" : "C",
+    recommendation: blocked ? "not_recommended" : null,
+    decisionStatus: blocked ? "decided" : "needs_retry",
+    recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
+    fitLevel: blocked ? "no_fit" : null,
     confidence: null,
     recommendedResumeVersion: "",
     recommendedResumeVersionName: "",
@@ -3192,6 +3199,7 @@ function listCandidateFacts(db, profileId) {
 }
 
 function rowToJob(row) {
+  const analysis = normalizeAnalysisForRead(parseJson(row.analysis_json, {}));
   return {
     id: row.id,
     observationId: row.observation_id || null,
@@ -3217,7 +3225,7 @@ function rowToJob(row) {
     risks: JSON.parse(row.risks_json || "[]"),
     qualityTags: parseJson(row.quality_tags_json, []),
     greeting: row.greeting,
-    analysis: parseJson(row.analysis_json, {}),
+    analysis,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     firstBatchId: Number(row.first_batch_id || 0) || null,
@@ -3302,58 +3310,44 @@ function isActivityProbeDue(job, { now = Date.now(), maxActiveDays = 3 } = {}) {
 }
 
 function decisionBucket(job) {
-  const tags = new Set(job.qualityTags || []);
   const state = decisionState(job);
   if (state === "blocked") return "not_recommended";
   if (state === "refresh") return "refresh";
   const analysis = job.analysis || {};
   const semanticStatus = analysis.semanticStatus || "";
-  const recommendation = analysis.recommendation || "";
+  const recommendation = recommendationTierForAnalysis(analysis);
   if (decisionHardBlockers(analysis).length) return "not_recommended";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
-  if (semanticStatus === "partial") return applyRoleEvidenceBucketCeiling("talk", analysis);
+  if (semanticStatus === "partial") return "analysis_pending";
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
-    // 新判定表: 基于recommendation推算bucket用于排序展示
-    // A confirmed primary-direction mismatch is an exclusion boundary even
-    // without an eligibility hard blocker. Other non-hard skip results retain
-    // the recall-first fallback for human review.
-    if (recommendation === "skip") {
-      return decisionHardBlockers(analysis).length || analysis.roleAlignment === "misaligned"
-        ? "not_recommended"
-        : applyRoleEvidenceBucketCeiling("talk", analysis);
-    }
-    if (tags.has("salary_target_high") || tags.has("experience_salary_overlap")) return "backup";
-    if (recommendation === "apply") {
-      const needsConversation = tags.has("salary_target_stretch")
-        || tags.has("experience_stretch")
-        || tags.has("experience_overrange")
-        || (analysis.hiddenRisks || []).some((risk) => ["medium", "high"].includes(risk?.severity));
-      const bucket = !needsConversation && Number(analysis.confidence || 0) >= 0.62 ? "primary" : "talk";
-      return applyRoleEvidenceBucketCeiling(bucket, analysis);
-    }
-    if (recommendation === "caution") return applyRoleEvidenceBucketCeiling("talk", analysis);
-    if (recommendation === "review") return applyRoleEvidenceBucketCeiling("backup", analysis);
-    return "analysis_pending";
+    return recommendation || "analysis_pending";
   }
-  if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
-  if (tags.has("salary_target_high")) return "backup";
-  if ((job.risks || []).some((risk) => /薪资低于期望下限/.test(String(risk)))) return "backup";
-  if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_above_target") || tags.has("experience_salary_overlap")) return "backup";
-  if (tags.has("salary_unverified") || tags.has("experience_unverified")) return "talk";
-  const requiresConversation = tags.has("salary_target_stretch")
-    || tags.has("experience_stretch")
-    || (job.risks || []).some((risk) => /应届|学历|经验门槛/.test(String(risk)));
-  if (["优先", "可投"].includes(job.level || "") && !requiresConversation && !(job.risks || []).length) return "talk";
-  if (["优先", "可投", "可冲"].includes(job.level || "")) return "talk";
-  return "backup";
+  return "analysis_pending";
 }
 
-function applyRoleEvidenceBucketCeiling(bucket, analysis) {
-  const ceiling = roleEvidenceDecisionState(analysis).bucketCeiling;
-  return decisionBucketRank(bucket) < decisionBucketRank(ceiling) ? ceiling : bucket;
+function recommendationTierForAnalysis(analysis = {}) {
+  const raw = analysis.recommendation;
+  if (!raw) return "";
+  const schemaVersion = Number(analysis.recommendationSchemaVersion || 1);
+  return normalizeRecommendationTier(raw, schemaVersion);
+}
+
+function normalizeAnalysisForRead(analysis = {}) {
+  if (!analysis || typeof analysis !== "object" || Array.isArray(analysis)) return {};
+  const recommendation = recommendationTierForAnalysis(analysis);
+  if (!recommendation) return { ...analysis, recommendation: null };
+  if (Number(analysis.recommendationSchemaVersion || 0) >= RECOMMENDATION_SCHEMA_VERSION) {
+    return { ...analysis, recommendation };
+  }
+  return {
+    ...analysis,
+    legacyRecommendation: analysis.recommendation,
+    recommendation,
+    recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION
+  };
 }
 
 function observationContentHash(job) {
@@ -3448,7 +3442,7 @@ function levelRank(level) {
 }
 
 function decisionBucketRank(bucket) {
-  return { primary: 0, talk: 1, backup: 2, analysis_pending: 3, refresh: 4, not_recommended: 5 }[bucket] ?? 9;
+  return { primary: 0, apply: 1, caution: 2, analysis_pending: 3, refresh: 4, not_recommended: 5 }[bucket] ?? 9;
 }
 
 function modelConfidenceRank(job) {

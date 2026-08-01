@@ -114,13 +114,13 @@ let server;
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
   assert.match(reviewPage.body, /有效候选\s*<strong>/);
-  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount >= 7, true);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount >= 6, true);
   for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
     assert.match(reviewPage.body, new RegExp(label));
   }
   assert.match(reviewPage.body, /硬性限制：岗位方向需谨慎/);
   assert.match(reviewPage.body, /workflow-tier/);
-  assert.match(reviewPage.body, /低风险备选/);
+  for (const tier of ["主投", "可投", "慎投"]) assert.match(reviewPage.body, new RegExp(tier));
   const jobsPage = await getText(baseUrl, `/jobs?planId=${saved.planId}&batch=latest`);
   for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
     assert.match(jobsPage.body, new RegExp(label));
@@ -255,7 +255,9 @@ function job(index) {
     analysis: {
       provider: "openai_compatible",
       semanticStatus: "complete",
-      recommendation: "apply",
+      recommendation: "primary",
+      recommendationSchemaVersion: 2,
+      fitLevel: "fit",
       confidence: 0.9,
       evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
       hardBlockers: []
@@ -268,6 +270,8 @@ function layeredBackupJob() {
     ...job("layered-backup"),
     analysis: {
       ...job("layered-backup").analysis,
+      recommendation: "caution",
+      fitLevel: "mostly_fit",
       roleSummary: "负责 RAG 应用交付与持续优化",
       responsibilityEvidence: ["JD：负责 RAG 应用交付"],
       roleAlignment: "misaligned",
@@ -285,6 +289,11 @@ function layeredBackupJob() {
 function lowRiskBackupJob() {
   return {
     ...job("low-risk-backup"),
+    analysis: {
+      ...job("low-risk-backup").analysis,
+      recommendation: "caution",
+      fitLevel: "mostly_fit"
+    },
     qualityTags: ["salary_target_core", "experience_salary_overlap"]
   };
 }
@@ -294,6 +303,8 @@ function layeredTalkJob() {
     ...job("layered-talk"),
     analysis: {
       ...job("layered-talk").analysis,
+      recommendation: "apply",
+      fitLevel: "mostly_fit",
       selectedTrackId: "T1",
       selectedTrackLabel: "大模型应用开发",
       roleSummary: "负责 RAG 应用交付与持续优化",

@@ -1,0 +1,116 @@
+const assert = require("node:assert/strict");
+const { applyRuleGuard, compactAnalysis } = require("../src/core/job_analysis");
+const { PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
+
+function requirement(requirementName, state, overrides = {}) {
+  return {
+    requirement: requirementName,
+    state,
+    foundation: false,
+    central: false,
+    indispensable: false,
+    jdEvidence: `JD：${requirementName}`,
+    resumeEvidence: state === "unknown" ? "" : `简历：${requirementName}`,
+    ...overrides
+  };
+}
+
+function analysis(overrides = {}) {
+  return {
+    semanticStatus: "complete",
+    decisionSource: "model",
+    roleAlignment: "aligned",
+    requirementMatches: [
+      requirement("核心交付", "matched", { foundation: true, central: true })
+    ],
+    hardBlockers: [],
+    hiddenRisks: [],
+    jobQuality: { level: "normal", concerns: [] },
+    evidence: { jd: ["JD：核心交付"], resume: ["简历：核心交付"] },
+    fitReasons: ["模型旧理由"],
+    modelRecommendation: "not_recommended",
+    confidence: 0.1,
+    ...overrides
+  };
+}
+
+const primary = applyRuleGuard(analysis(), {});
+assert.equal(primary.recommendation, "primary",
+  "最终档位必须来自代码二维表，不能被低置信度或 shadow 模型建议降级");
+assert.equal(primary.modelRecommendation, "not_recommended",
+  "shadow 建议必须保留用于对照");
+assert.equal(primary.decisionSource, "weighted_decision_matrix");
+assert.equal(primary.decisionMetrics.matrixRecommendation, "primary");
+assert.equal(primary.decisionMetrics.combinedFit, 1);
+
+const weightedApply = applyRuleGuard(analysis({
+  roleAlignment: "mostly_aligned",
+  requirementMatches: [
+    requirement("核心交付", "transferable", { foundation: true, central: true }),
+    requirement("持续协作", "matched")
+  ]
+}), {});
+assert.equal(weightedApply.recommendation, "apply",
+  "核心与支持项必须按 70/30 的本地权重进入二维表");
+
+const noFit = applyRuleGuard(analysis({
+  roleAlignment: "partially_aligned",
+  requirementMatches: [
+    requirement("核心交付", "missing", { foundation: true, central: true })
+  ]
+}), {});
+assert.equal(noFit.recommendation, "not_recommended");
+
+const lowCoverage = applyRuleGuard(analysis({
+  requirementMatches: [
+    requirement("核心交付", "matched", { foundation: true, central: true }),
+    requirement("关键协作", "unknown", { foundation: true, central: true })
+  ]
+}), {});
+assert.equal(lowCoverage.recommendation, "caution",
+  "证据覆盖率不足时不得进入默认勾选档");
+assert.equal(lowCoverage.decisionMetrics.coverageCapped, true);
+
+const blocked = applyRuleGuard(analysis({
+  hardBlockers: [{
+    kind: "safety",
+    requirement: "入职收费风险",
+    jdEvidence: "JD：入职前支付培训费",
+    resumeEvidence: "简历：候选人无法规避该收费要求"
+  }]
+}), {});
+assert.equal(blocked.recommendation, "not_recommended");
+
+for (const semanticStatus of ["failed", "stale", "pending", "partial"]) {
+  const technical = applyRuleGuard(analysis({ semanticStatus }), {});
+  assert.equal(technical.recommendation, null,
+    `${semanticStatus} 是技术状态，不得伪装成四档建议`);
+  assert.equal(technical.decisionStatus, "needs_retry");
+}
+
+const compact = compactAnalysis({
+  model: { provider: "mock", providers: { mock: { model: "mock" } } },
+  resumeVersions: {}
+}, {
+  job: { detailRead: true, description: "完整岗位描述" },
+  jobUnderstanding: {
+    coreRequirements: [],
+    hiddenRisks: [],
+    jobQuality: { level: "normal", concerns: [] }
+  },
+  matchDecision: {
+    roleAlignment: "aligned",
+    modelRecommendation: "apply",
+    requirementMatches: [],
+    hardBlockers: [],
+    evidence: { jd: [], resume: [] }
+  },
+  ruleMatch: {},
+  revision: {}
+});
+assert.equal(compact.modelRecommendation, "apply");
+
+assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v38");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v1");
+
+console.log("four_tier_pipeline_smoke ok");

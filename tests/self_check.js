@@ -259,7 +259,7 @@ async function checkMockAnalyzer() {
   assert(analysis.recommendedResumeVersionName);
   assert(analysis.greeting);
   const riskyAnalysis = await analyzeJob({ ...sample[1], ...risky, greeting });
-  assert.strictEqual(riskyAnalysis.recommendation, "skip");
+  assert.strictEqual(riskyAnalysis.recommendation, "not_recommended");
 
   upsertJob(db, { ...sample[0], ...good, greeting: analysis.greeting, analysis }, batchId);
   const stored = listReportJobs(db, { batchId })[0];
@@ -448,8 +448,8 @@ async function checkMockAnalyzer() {
   });
   const communicationFallback = await communicationFailureRunner({ ...cacheJob, sourceId: "communication-fallback", description: `${cacheJob.description} `.repeat(4), greeting: "保留的招呼语" });
   assert.strictEqual(communicationFallback.realRoleType, "ai_application");
-  assert.strictEqual(communicationFallback.recommendation, "caution");
-  assert.strictEqual(communicationFallback.decisionSource, "decision_matrix");
+  assert.strictEqual(communicationFallback.recommendation, null);
+  assert.strictEqual(communicationFallback.decisionStatus, "needs_retry");
   assert.strictEqual(communicationFallback.greeting, "保留的招呼语");
 }
 

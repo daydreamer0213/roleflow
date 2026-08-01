@@ -582,7 +582,13 @@ function job(index) {
     matches: ["Python"],
     risks: [],
     qualityTags: [],
-    analysis: {}
+    analysis: {
+      semanticStatus: "complete",
+      recommendation: "primary",
+      recommendationSchemaVersion: 2,
+      fitLevel: "fit",
+      hardBlockers: []
+    }
   };
 }
 
