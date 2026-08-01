@@ -561,21 +561,39 @@ function validateSparseMatchEvidence(value, context = {}) {
     states: REQUIREMENT_MATCH_STATES,
     evidenceStates: ["matched", "transferable", "missing"]
   });
+  const derivedRoleResumeEvidence = [...new Set(matches
+    .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
+    .map((item) => item.resumeEvidence)
+    .filter(Boolean))].slice(0, 4);
+  const derivedRequirementRoleGaps = matches
+    .filter((item) => item.state === "missing")
+    .map((item) => requirements.find((requirement) => requirement.id === item.id))
+    .filter((requirement) => (
+      requirement
+      && (
+        value.roleAlignment !== "misaligned"
+        || requirement.foundation === true
+        || requirement.central === true
+      )
+    ))
+    .map((requirement) => `${requirement.label}缺少直接简历证据`)
+    .slice(0, 4);
+  const selectedTrackDirectionEvidence = selected.trackCount > 1
+    && value.roleAlignment === "misaligned"
+    && !derivedRequirementRoleGaps.length
+    ? selectedTrackBoundRoleEvidence(value, selected)
+    : null;
   const derivedRoleEvidence = selected.trackCount > 1
     ? {
-      roleResumeEvidence: [...new Set(matches
-        .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
-        .map((item) => item.resumeEvidence)
-        .filter(Boolean))].slice(0, 4),
-      roleGaps: matches
-        .filter((item) => item.state === "missing")
-        .map((item) => requirements.find((requirement) => requirement.id === item.id))
-        .filter(Boolean)
-        .map((requirement) => `${requirement.label}缺少直接简历证据`)
-        .slice(0, 4)
+      roleResumeEvidence: selectedTrackDirectionEvidence
+        ? selectedTrackDirectionEvidence.roleResumeEvidence
+        : derivedRoleResumeEvidence,
+      roleGaps: derivedRequirementRoleGaps.length
+        ? derivedRequirementRoleGaps
+        : (selectedTrackDirectionEvidence?.roleGaps || [])
     }
     : null;
-  if (derivedRoleEvidence && ["misaligned", "insufficient_evidence"].includes(value.roleAlignment)
+  if (derivedRoleEvidence && value.roleAlignment === "insufficient_evidence"
     && !derivedRoleEvidence.roleGaps.length) {
     derivedRoleEvidence.roleGaps.push("所选招聘方向的职责匹配信息待确认");
   }
@@ -668,9 +686,18 @@ function validateSparseMatchEvidence(value, context = {}) {
     ...unknownEligibility.map((item) => `${item.label}的资格信息待确认`),
     ...(requirementMatches.length && !hasPositiveEvidence ? ["候选人核心要求证据缺少，待确认"] : [])
   ].slice(0, 8);
-  const jdEvidence = requirementMatches.filter((item) => ["matched", "transferable", "missing"].includes(item.state)).map((item) => item.jdEvidence)
+  const directionJdEvidence = selectedTrackDirectionEvidence
+    ? selected.responsibilityEvidence
+    : [];
+  const directionResumeEvidence = selectedTrackDirectionEvidence
+    ? roleAlignmentEvidence.roleResumeEvidence
+    : [];
+  const jdEvidence = directionJdEvidence
+    .concat(requirementMatches.filter((item) => ["matched", "transferable", "missing"].includes(item.state)).map((item) => item.jdEvidence))
     .concat(hardBlockers.filter((item) => item.kind === "eligibility").map((item) => item.jdEvidence), list(jobUnderstanding.hiddenRisks).map((item) => text(item?.evidence)).filter(Boolean), list(jobQuality.concerns).map((item) => text(item?.evidence)).filter(Boolean)).slice(0, 6);
-  const resumeEvidence = [...matches, ...normalizedEligibility].map((item) => item.resumeEvidence).filter(Boolean).slice(0, 6);
+  const resumeEvidence = [...new Set(directionResumeEvidence
+    .concat([...matches, ...normalizedEligibility].map((item) => item.resumeEvidence))
+    .filter(Boolean))].slice(0, 6);
   return {
     selectedTrackId: selected.selectedTrackId,
     selectedTrackLabel: selected.selectedTrackLabel,
@@ -707,6 +734,51 @@ function validateRoleAlignmentEvidence(value, jobUnderstanding) {
     throw new ModelContractError("matchJob", "insufficient_evidence requires a concrete gap");
   }
   return { roleAlignment: value.roleAlignment, roleResumeEvidence, roleGaps };
+}
+
+function selectedTrackBoundRoleEvidence(value, selected) {
+  const responsibilities = Array.isArray(selected?.responsibilityEvidence)
+    ? selected.responsibilityEvidence
+    : [];
+  if (!Array.isArray(value.roleGaps) || value.roleGaps.length < 1 || value.roleGaps.length > 4) {
+    throw new ModelContractError("matchJob", "multi-track misaligned roleGaps must contain 1-4 direction bindings");
+  }
+  const rawRoleGaps = contractStringsStrict(value.roleGaps, "matchJob", "roleGaps", {
+    limit: 4,
+    maxLength: 32
+  });
+  if (!rawRoleGaps.length) {
+    throw new ModelContractError("matchJob", "multi-track misaligned requires a selected-track direction binding");
+  }
+  const roleResumeEvidence = contractStringsStrict(
+    value.roleResumeEvidence,
+    "matchJob",
+    "roleResumeEvidence",
+    { prefix: "简历：", limit: 4, maxLength: 120 }
+  );
+  if (!roleResumeEvidence.length) {
+    throw new ModelContractError("matchJob", "multi-track misaligned requires candidate direction evidence");
+  }
+  const dimensionLabels = {
+    work_object: "主要工作对象",
+    main_action: "主要动作",
+    deliverable: "主要交付"
+  };
+  const roleGaps = rawRoleGaps.map((raw) => {
+    const match = raw.match(/^D([1-4])\|(work_object|main_action|deliverable)$/);
+    if (!match) {
+      throw new ModelContractError("matchJob", "multi-track misaligned roleGaps must use selected-track D<n>|dimension bindings");
+    }
+    const responsibility = String(responsibilities[Number(match[1]) - 1] || "")
+      .replace(/^JD：/, "")
+      .trim();
+    if (!responsibility) {
+      throw new ModelContractError("matchJob", "multi-track misaligned roleGap references a missing selected-track responsibility");
+    }
+    const suffix = `（候选${dimensionLabels[match[2]]}不同）`;
+    return `${responsibility.slice(0, Math.max(1, 120 - suffix.length))}${suffix}`;
+  });
+  return { roleResumeEvidence, roleGaps };
 }
 
 function sparseEvidenceItems(value, { field, expected, states, evidenceStates }) {
@@ -1616,13 +1688,12 @@ function hasStrongDirectCoreEvidence(requirementMatches = []) {
 function computeDecisionFromMatrix(roleAlignment, requirementMatches = []) {
   const { level } = computeCoreRequirementScore(requirementMatches);
 
+  // misaligned is reserved for a different primary work direction. Requirement
+  // overlap can describe transferable skills, but cannot make that role a fit.
+  if (roleAlignment === "misaligned") return "skip";
+
   if (level === "none") return "caution";
   if (level === "信息不足") return "review";
-
-  if (roleAlignment === "misaligned") {
-    if (level !== "不符合") return "review";
-    return "skip";
-  }
 
   if (roleAlignment === "partially_aligned") {
     if (level === "符合") return "caution";

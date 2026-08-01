@@ -727,7 +727,7 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v35");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v36");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "multi-track-recall-v1");
   const currentRevision = {
     profileVersion: "profile",
@@ -1277,8 +1277,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v35",
-    "deterministic evidence sampling must invalidate v34 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v36",
+    "role-direction boundary changes must invalidate v35 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -2015,7 +2015,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v35",
+    matchJob: "match-decision-v36",
     decisionRules: "multi-track-recall-v1",
     communication: "communication-v2"
   });
@@ -2636,7 +2636,7 @@ function roleEvidenceDecisionStateSmoke() {
     "talk ceiling must not bypass the existing low-confidence review guard"
   );
 
-  const backupGuardCases = [
+  const directionMismatchCases = [
     [layeredRoleAnalysis("misaligned", ["matched"], { recommendation: "skip" }), {}],
     [layeredRoleAnalysis("misaligned", ["transferable"]), {}],
     [{ ...layeredRoleAnalysis("misaligned", ["matched"]), jobQuality: { level: "caution", concerns: [] } }, {}],
@@ -2646,9 +2646,9 @@ function roleEvidenceDecisionStateSmoke() {
     }, {}],
     [layeredRoleAnalysis("misaligned", ["matched"]), { qualityTags: ["experience_stretch"] }]
   ];
-  for (const [analysis, jobOverrides] of backupGuardCases) {
+  for (const [analysis, jobOverrides] of directionMismatchCases) {
     const guarded = applyRuleGuard(analysis, completeJob("role-backup-precedence", jobOverrides));
-    assert.strictEqual(guarded.recommendation, "review", "回退场景保持慎投");
+    assert.strictEqual(guarded.recommendation, "skip", "主工作方向明确不匹配时不得被软性召回规则抬升");
     assert.strictEqual(typeof guarded.decisionSource, "string");
   }
 }
@@ -2974,13 +2974,10 @@ function decisionMatrixSmoke() {
     "部分匹配+核心不符合 → 不推荐");
 
   // === 不匹配(misaligned) 列 ===
-  // misaligned + 符合 → 慎投（不变）
-  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","matched"])), "review");
-  // misaligned + 大部分符合 → 慎投（不变）
-  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing"])), "review");
-  // misaligned + 部分符合 → 慎投（召回优先：仍有核心证据且无硬阻断）
-  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing","missing"])), "review");
-  // misaligned + 不符合 → 不推荐（不变）
+  // misaligned 表示主工作方向不同；通用技能或次要职责重叠不得抬回推荐池。
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","matched"])), "skip");
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing"])), "skip");
+  assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["matched","missing","missing"])), "skip");
   assert.strictEqual(computeDecisionFromMatrix("misaligned", reqs(["missing"])), "skip");
 
   console.log("decisionMatrixSmoke ok");
@@ -3059,7 +3056,7 @@ function nonCentralMissingGuardSmoke() {
 
   const reviewWithFiveNonCentral = applyRuleGuard({
     ...base,
-    roleAlignment: "misaligned",
+    roleAlignment: "partially_aligned",
     requirementMatches: [
       { requirement: "核心1", state: "matched", central: true },
       { requirement: "核心2", state: "missing", central: true },
@@ -3283,6 +3280,77 @@ async function compactMatchEvidenceContractSmoke() {
   ]);
   assert.deepStrictEqual(selectedT1RoleEvidence.roleGaps, ["Agent 与 RAG 应用交付缺少直接简历证据"]);
   assert(!JSON.stringify(selectedT1RoleEvidence).includes("前后端模块开发"));
+  assert.throws(
+    () => validateModelResult("matchJob", {
+      selectedTrackId: "T1",
+      roleAlignment: "misaligned",
+      roleResumeEvidence: ["简历：使用 Python 开发 API"],
+      roleGaps: ["岗位主线需要确认"],
+      matches: [
+        { id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }
+      ],
+      eligibility: []
+    }, { jobUnderstanding: multiTrack }),
+    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+    "多分支 misaligned 必须由选中分支的 foundation/central 主线缺失支撑，不能用自动占位 gap"
+  );
+  const boundDirectionEvidence = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "misaligned",
+    roleResumeEvidence: ["简历：持续交付另一类软件产品"],
+    roleGaps: ["D1|deliverable"],
+    matches: [
+      { id: "R2", state: "matched", resumeEvidence: "简历：使用 Python 开发 API" }
+    ],
+    eligibility: []
+  }, { jobUnderstanding: multiTrack });
+  assert.deepStrictEqual(
+    boundDirectionEvidence.roleResumeEvidence,
+    ["简历：持续交付另一类软件产品"],
+    "D-gap 路径必须保留候选主方向证据，普通 requirement evidence 不得覆盖它"
+  );
+  const zeroRequirementDirectionEvidence = validateModelResult("matchJob", {
+    selectedTrackId: "T1",
+    roleAlignment: "misaligned",
+    roleResumeEvidence: ["简历：持续交付另一类软件产品"],
+    roleGaps: ["D1|deliverable"],
+    matches: [],
+    eligibility: []
+  }, { jobUnderstanding: multiTrack });
+  assert(zeroRequirementDirectionEvidence.evidence.jd.length > 0);
+  assert(zeroRequirementDirectionEvidence.evidence.resume.length > 0);
+  const { applyRuleGuard } = require("../src/core/job_analysis");
+  const { decisionBucket } = require("../src/core/storage");
+  const zeroRequirementGuard = applyRuleGuard({
+    ...zeroRequirementDirectionEvidence,
+    semanticStatus: "complete"
+  }, { qualityTags: [] });
+  assert.strictEqual(zeroRequirementGuard.recommendation, "skip");
+  assert.strictEqual(
+    decisionBucket({ qualityTags: [], analysis: zeroRequirementGuard }),
+    "not_recommended",
+    "零 requirement 的合法 D-gap 必须贯穿统一证据信封并进入方向排除"
+  );
+  for (const invalidRoleGaps of [
+    ["D0|deliverable"],
+    ["D5|deliverable"],
+    ["D1|unknown"],
+    ["D1|deliverable", "D5|main_action"],
+    ["D1|deliverable", "D1|work_object", "D1|main_action", "D1|deliverable", "D1|work_object"]
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", {
+        selectedTrackId: "T1",
+        roleAlignment: "misaligned",
+        roleResumeEvidence: ["简历：持续交付另一类软件产品"],
+        roleGaps: invalidRoleGaps,
+        matches: [],
+        eligibility: []
+      }, { jobUnderstanding: multiTrack }),
+      (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
+      "D-gap 必须逐项严格校验索引、枚举和数量，不能静默过滤"
+    );
+  }
 
   for (const invalid of [
     {

@@ -74,11 +74,28 @@ assert.strictEqual(sharedTalkGuard.recommendation, "caution");
 assert.strictEqual(sharedTalkGuard.decisionSource, "decision_matrix");
 assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkGuard }), "talk");
 
-const sharedBackupAnalysis = layeredDecisionAnalysis("misaligned", ["matched"]);
-const sharedBackupGuard = applyRuleGuard(sharedBackupAnalysis, job());
-assert.strictEqual(sharedBackupGuard.recommendation, "review");
-assert.strictEqual(sharedBackupGuard.decisionSource, "decision_matrix");
-assert.strictEqual(decisionBucket({ ...job(), analysis: sharedBackupGuard }), "backup");
+const adjacentRoleAnalysis = layeredDecisionAnalysis("partially_aligned", ["matched"]);
+const adjacentRoleGuard = applyRuleGuard(adjacentRoleAnalysis, job());
+assert.strictEqual(adjacentRoleGuard.recommendation, "caution");
+assert.strictEqual(adjacentRoleGuard.decisionSource, "decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: adjacentRoleGuard }), "backup");
+
+const obviousDirectionMismatch = layeredDecisionAnalysis("misaligned", ["matched"]);
+const obviousDirectionMismatchGuard = applyRuleGuard(obviousDirectionMismatch, job());
+assert.strictEqual(obviousDirectionMismatchGuard.recommendation, "skip");
+assert.strictEqual(obviousDirectionMismatchGuard.decisionSource, "decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: obviousDirectionMismatchGuard }), "not_recommended");
+for (const softTag of ["salary_target_high", "experience_salary_overlap"]) {
+  assert.strictEqual(
+    decisionBucket({
+      ...job(),
+      qualityTags: [softTag],
+      analysis: obviousDirectionMismatchGuard
+    }),
+    "not_recommended",
+    `${softTag} 只是排序软标签，不得绕过完整的主方向排除`
+  );
+}
 
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/job_detail/abc123.html?ka=search"), "https://www.zhipin.com/job_detail/abc123.html");
 assert.strictEqual(normalizeBossNavigationUrl("https://www.zhipin.com/job_detail/abc123.html?securityId=token"), "https://www.zhipin.com/job_detail/abc123.html?securityId=token");

@@ -3310,21 +3310,22 @@ function decisionBucket(job) {
   const semanticStatus = analysis.semanticStatus || "";
   const recommendation = analysis.recommendation || "";
   if (decisionHardBlockers(analysis).length) return "not_recommended";
-  if (tags.has("salary_target_high")) return "backup";
   if (["pending", "failed", "stale"].includes(semanticStatus)) return "analysis_pending";
   if (semanticStatus === "blocked") return "not_recommended";
   if (semanticStatus === "refresh") return "refresh";
   if (semanticStatus === "partial") return applyRoleEvidenceBucketCeiling("talk", analysis);
   if (semanticStatus === "complete") {
     if (analysis.jobQuality?.level === "risk") return "not_recommended";
-    if (tags.has("experience_salary_overlap")) return "backup";
     // 新判定表: 基于recommendation推算bucket用于排序展示
-    // skip但有有效hardBlocker → not_recommended; skip但无有效hardBlocker → talk
+    // A confirmed primary-direction mismatch is an exclusion boundary even
+    // without an eligibility hard blocker. Other non-hard skip results retain
+    // the recall-first fallback for human review.
     if (recommendation === "skip") {
-      return decisionHardBlockers(analysis).length
+      return decisionHardBlockers(analysis).length || analysis.roleAlignment === "misaligned"
         ? "not_recommended"
         : applyRoleEvidenceBucketCeiling("talk", analysis);
     }
+    if (tags.has("salary_target_high") || tags.has("experience_salary_overlap")) return "backup";
     if (recommendation === "apply") {
       const needsConversation = tags.has("salary_target_stretch")
         || tags.has("experience_stretch")
@@ -3338,6 +3339,7 @@ function decisionBucket(job) {
     return "analysis_pending";
   }
   if (analysis.provider && !["mock", "rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(analysis.provider)) return "analysis_pending";
+  if (tags.has("salary_target_high")) return "backup";
   if ((job.risks || []).some((risk) => /薪资低于期望下限/.test(String(risk)))) return "backup";
   if (tags.has("experience_out_of_scope") || tags.has("experience_overrange") || tags.has("experience_salary_above_target") || tags.has("experience_salary_overlap")) return "backup";
   if (tags.has("salary_unverified") || tags.has("experience_unverified")) return "talk";

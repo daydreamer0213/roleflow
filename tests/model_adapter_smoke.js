@@ -414,18 +414,13 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob prompt 不得用宽泛或相邻经历冒充明确的平台、流程或业务系统经验"
     );
     assert(
-      !matchPrompt.includes("for broad “AI 工具实践”, concrete Agent/RAG/Dify workflow delivery is a direct instance")
-        && matchPrompt.includes("AI 工具实践")
-        && matchPrompt.includes("Agent/RAG/Dify")
-        && matchPrompt.includes("AI 代码调试")
-        && ["logging", "tests", "mock", "exception tracing", "API debugging"]
-          .every((term) => matchPrompt.includes(term)),
-      "matchJob prompt 必须用非职业硬编码示例说明上位要求与具体事实的证据关系"
+      matchPrompt.includes("A shared tool, framework, industry, or secondary duty is not evidence of the required primary work object, action, or deliverable."),
+      "matchJob prompt 必须用职业无关规则限制工具或次要职责重叠"
     );
     assert(
-      ["image-generation/visual workflow", "named Agent platform", "data warehouse", "big-data framework", "ERP integration"]
-        .every((term) => matchPrompt.includes(term)),
-      "matchJob prompt 的具体示例必须保留相邻方向反向推断限制"
+      ["Agent/RAG/Dify", "AI 代码调试", "image-generation/visual workflow", "named Agent platform", "data warehouse", "big-data framework", "ERP integration"]
+        .every((term) => !matchPrompt.includes(term)),
+      "matchJob prompt 不得继续堆叠当前 IT 测试集的专用示例"
     );
     assert(!matchPrompt.includes("Python/Java"), "matchJob prompt 不得保留固定技术栈规则");
     assert(!matchPrompt.includes("二选一"), "matchJob prompt 不得保留固定技术栈规则");
@@ -459,41 +454,27 @@ server.listen(0, "127.0.0.1", async () => {
     assert(
       matchPrompt.includes("roleSummary")
         && matchPrompt.includes("responsibilityEvidence")
-        && matchPrompt.includes("work object")
-        && matchPrompt.includes("action")
-        && matchPrompt.includes("deliverable"),
-      "matchJob prompt must compare the role summary, responsibility evidence, and concrete work object/action/deliverable"
+        && matchPrompt.includes("primary work object")
+        && matchPrompt.includes("main action")
+        && matchPrompt.includes("primary deliverable"),
+      "matchJob prompt must compare the primary work object, action, and deliverable"
     );
     assert(
-      matchPrompt.includes("Agent/RAG/AI coding tools")
-        && matchPrompt.includes("UI components")
-        && matchPrompt.includes("visual front-end delivery"),
-      "AI tool overlap must not prove front-end work objects or delivery"
+      matchPrompt.includes("partially_aligned requires both an adjacent role family")
+        && matchPrompt.includes("substantial part of the job's primary delivery"),
+      "partially_aligned 必须要求相邻职业和实质主线证据同时成立"
     );
     assert(
-      matchPrompt.includes("Python/FastAPI/API/testing/debugging")
-        && matchPrompt.includes("back-end portion")
-        && matchPrompt.includes("full-stack delivery"),
-      "back-end evidence must not prove the front-end portion of full-stack delivery"
+      matchPrompt.includes("Use misaligned when the primary delivery differs")
+        && matchPrompt.includes("generic capabilities, tools, technologies, industry context, or secondary duties")
+        && matchPrompt.includes("A compatible secondary duty cannot redefine the job's primary direction"),
+      "misaligned 必须表达主方向不同，不能被工具或次要职责重叠抬升"
     );
     assert(
-      matchPrompt.includes("main role family and delivery direction")
-        && matchPrompt.includes("substantial back-end delivery")
-        && matchPrompt.includes("mostly_aligned")
-        && matchPrompt.includes("missing front-end")
-        && matchPrompt.includes("requirement gap")
-        && matchPrompt.includes("adjacent AI workflows")
-        && matchPrompt.includes("partially_aligned"),
-      "full-stack roles must stay in the same role family when a substantial delivery lane is proven"
-    );
-    assert(
-      matchPrompt.includes("jobUnderstanding.industryContext")
-        && matchPrompt.includes("does not by itself define the role family")
-        && matchPrompt.includes("same primary work")
-        && matchPrompt.includes("mostly_aligned")
-        && matchPrompt.includes("requirement gap")
-        && matchPrompt.includes("actual work pattern or deliverable differs"),
-      "matchJob 不得把行业、平台或技术栈差异冒充岗位方向差异"
+      matchPrompt.includes("For multi-track misaligned results without a missing foundation or central requirement")
+        && matchPrompt.includes("D<n>|work_object, D<n>|main_action, or D<n>|deliverable")
+        && matchPrompt.includes("D1 means the first responsibilityEvidence string of the selected track"),
+      "无主线 requirement 的多分支 misaligned gap 必须绑定选中分支职责证据"
     );
     assert(
       understandPrompt.includes("requirements[{label,trackIds,foundation,central,indispensable,evidence}]"),
@@ -515,18 +496,11 @@ server.listen(0, "127.0.0.1", async () => {
       "roleSummary 必须去掉行业外壳，但保留真正改变工作的领域动作"
     );
     assert(
-      matchPrompt.includes("Maintenance, extension, or integration of a named business system")
-        && matchPrompt.includes("same software-delivery family")
-        && matchPrompt.includes("named-system experience as a requirement gap"),
-      "业务系统维护和二次开发不得仅因系统名称不同被判成不同岗位族"
-    );
-    assert(
-      matchPrompt.includes("First remove industryContext and named-system terms")
-        && matchPrompt.includes("concrete back-end, API, integration, or software-system delivery")
-        && matchPrompt.includes("must use mostly_aligned")
-        && matchPrompt.includes("named-system lifecycle, business rules, or domain experience")
-        && matchPrompt.includes("requirement gaps rather than role-family gaps"),
-      "matchJob 必须先剥离行业外壳，再判断主体工作"
+      matchPrompt.includes("Ignore jobUnderstanding.industryContext")
+        && matchPrompt.includes("employer domain, customer type, named tools, platforms, frameworks, and technology stack")
+        && matchPrompt.includes("They may be requirement gaps")
+        && matchPrompt.includes("do not by themselves change the primary role direction"),
+      "matchJob 必须用职业无关规则剥离行业、客户和工具外壳"
     );
     assert(
       understandPrompt.includes("基础开发") && understandPrompt.includes("不能单独") && understandPrompt.includes("central=true"),

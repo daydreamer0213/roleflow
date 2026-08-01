@@ -107,3 +107,11 @@
 - Baseline evaluated is exactly
   `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
   user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+## 2026-08-01 role-direction boundary checkpoint
+
+- The v5 20-row live run retained all 15 keep opportunities but left all five confirmed obvious direction mismatches in the backup bucket. One row already had recommendation `skip`; `decisionBucket` still promoted non-hard-blocker skips back to review, confirming a local decision-chain defect.
+- The repair gives existing `misaligned` semantics an operational boundary: it always derives `skip`, and a complete `misaligned` analysis maps to `not_recommended`. `partially_aligned` remains the adjacent-role review path.
+- The match prompt was shortened and generalized. IT-suite examples were removed in favor of primary work object, main action, primary deliverable, substantial adjacent delivery, and peripheral-overlap rules. No model field or call was added.
+- `matchJob` pipeline version is now `match-decision-v36`; targeted semantic, screening, and adapter smoke tests pass. Full regression and independent review are the next gates before a new evaluated checkpoint and fresh live roots.
+- Multi-track `misaligned` fallback now uses closed `D<n>|work_object|main_action|deliverable` bindings to selected-track responsibility evidence. Invalid or mixed bindings fail the contract; verified direction evidence enters the common evidence envelope, including the zero-requirement path. Final independent review: Critical 0, Important 0, Spec PASS, Code quality APPROVED.
