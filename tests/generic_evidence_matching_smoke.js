@@ -154,7 +154,7 @@ function liveResult(commit, overrides = {}) {
     pending: 0,
     partial: 0,
     hardFalsePlacement: 1,
-    hardFalsePlacementIds: ["jcm"],
+    hardFalsePlacementIds: ["java-core-missing"],
     falseHardExclusion: 0,
     falseHardExclusionIds: [],
     primaryWithoutEvidence: 0,
@@ -588,6 +588,8 @@ function sharedBenchmarkMetricsSmoke() {
   ];
   // 新pass规则: pass只看recommendation, 但rec匹配+hardFalsePlacement正确即可
   assert.strictEqual(typeof result.ok, "boolean");
+  assert(result.ok, "shared benchmark metrics compare must succeed before result.report can be inspected");
+  assert(result.report && typeof result.report === "object", "shared benchmark metrics must return a report object");
   assert.deepStrictEqual(Object.keys(result.report).sort(), expectedReportKeys.sort());
   assert.deepStrictEqual(result, compareBenchmarkResults(baseline, candidate));
 
