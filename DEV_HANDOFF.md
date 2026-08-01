@@ -72,3 +72,15 @@
   不打印、不复制、不提交配置或密钥。
 - 所有私有输入、缓存和输出只写 `D:\DevData\RoleFlow-private-benchmark`。
 - 不复用 3 条缓存到 20 条，不覆盖任何旧结果目录。
+
+### Decision-matrix continuation exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e017a524b777675aa294be4935e35357ee094cea`. Candidate product
+  `175e9567fbfaedbfa4d3d92b55fcb5a4289c5a55` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `e017a524b777675aa294be4935e35357ee094cea` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated is exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
+  user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.

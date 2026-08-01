@@ -2195,3 +2195,15 @@ the next reviewed root-cause change.
   commit. Record its exact SHA in an immediate descendant docs-only binding
   before creating either private root. Candidate product `175e956...` must be a
   strict ancestor of that evaluated commit.
+
+### Decision-matrix continuation exact evaluated binding
+
+- Candidate evaluated is exactly
+  `e017a524b777675aa294be4935e35357ee094cea`. Candidate product
+  `175e9567fbfaedbfa4d3d92b55fcb5a4289c5a55` is its strict ancestor.
+- This immediate docs-only binding record does not replace candidate evaluated
+  `e017a524b777675aa294be4935e35357ee094cea` in the manifest, v3 proof,
+  temporary evaluation branch, or live verification.
+- Baseline evaluated is exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
+  user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
