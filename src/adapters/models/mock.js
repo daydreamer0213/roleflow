@@ -118,7 +118,16 @@ class MockModelAdapter {
     };
   }
 
-  async matchJob({ candidateProfile = {}, resumeVersions = {}, jobUnderstanding = {}, candidateMatchCard = null } = {}) {
+  async matchJob({
+    candidateProfile = {},
+    resumeVersions = {},
+    jobUnderstanding = {},
+    candidateMatchCard = null,
+    modelRecommendationMode = "shadow"
+  } = {}) {
+    if (!["off", "shadow"].includes(modelRecommendationMode)) {
+      throw new Error("modelRecommendationMode must be off or shadow");
+    }
     const versions = Array.isArray(resumeVersions?.versions)
       ? resumeVersions.versions
       : (Array.isArray(resumeVersions) ? resumeVersions : []);
@@ -168,6 +177,9 @@ class MockModelAdapter {
       roleAlignment,
       roleResumeEvidence,
       roleGaps,
+      ...(modelRecommendationMode === "shadow"
+        ? { modelRecommendation: sufficient ? "apply" : "caution" }
+        : {}),
       recommendation: sufficient ? "apply" : "review",
       fitLevel: sufficient ? "B" : "C",
       confidence: sufficient ? 0.72 : 0.4,

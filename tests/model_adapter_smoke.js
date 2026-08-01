@@ -142,9 +142,9 @@ const server = http.createServer(async (req, res) => {
   const content = requests === 2
     ? [{ type: "text", text: sentinelResponseContent }]
     : selectedTrackRequest
-      ? JSON.stringify({ selectedTrackId: "T1", roleAlignment: "mostly_aligned", roleResumeEvidence: ["简历：交付过应用"], roleGaps: [], matches: [], eligibility: [] })
+      ? JSON.stringify({ selectedTrackId: "T1", roleAlignment: "mostly_aligned", roleResumeEvidence: ["简历：交付过应用"], roleGaps: [], matches: [], eligibility: [], modelRecommendation: "apply" })
       : compactMatchRequest
-        ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [] })
+        ? JSON.stringify({ roleAlignment: "insufficient_evidence", roleResumeEvidence: [], roleGaps: ["No responsibility evidence was provided"], matches: [], eligibility: [], modelRecommendation: "caution" })
       : "{\"retried\":true}";
   res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 } }));
 });
@@ -249,8 +249,10 @@ server.listen(0, "127.0.0.1", async () => {
       }
     });
     assert.strictEqual(selectedTrackDecision.selectedTrackId, "T1", "OpenAI adapter 必须保留模型选择的分支 ID");
+    assert.strictEqual(selectedTrackDecision.modelRecommendation, "apply",
+      "默认 shadow 模式必须保留模型四档建议，但不得把它当作最终档位");
     const matchPrompt = payloads.at(-1).messages[0].content;
-    for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "matches", "eligibility"]) {
+    for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "matches", "eligibility", "modelRecommendation"]) {
       assert(matchPrompt.includes(field), `matchJob prompt must request ${field}`);
     }
     assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
@@ -259,9 +261,9 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
     assert(
       matchPrompt.includes(
-        "Return exactly these six top-level keys and no others: selectedTrackId, roleAlignment, roleResumeEvidence, roleGaps, matches, eligibility."
+        "Return exactly these seven top-level keys and no others: selectedTrackId, roleAlignment, roleResumeEvidence, roleGaps, matches, eligibility, modelRecommendation."
       ),
-      "matchJob prompt 必须声明精确的六键顶层契约"
+      "matchJob shadow prompt 必须声明精确的七键顶层契约"
     );
     for (const locallyDerived of [
       "requirementMatches",
@@ -292,6 +294,12 @@ server.listen(0, "127.0.0.1", async () => {
     assert(matchPrompt.includes("output only"), "matchJob prompt must request evidence rows only");
     assert(matchPrompt.includes("non-core explicit gap"), "matchJob prompt must retain evidenced non-core gaps as soft signals");
     assert(matchPrompt.includes("indispensable") && matchPrompt.includes("hard blocker"), "matchJob prompt must reserve hard blocking for explicit indispensable incompatibility");
+    assert(!matchPrompt.includes("adjacent_misaligned"),
+      "四方向契约不得继续暴露临时 adjacent_misaligned 状态");
+    assert(!/70\s*[%/]|30\s*[%/]|0\.7|0\.3|weighted score/i.test(matchPrompt),
+      "模型只做语义判断，提示词不得要求计算 70/30 权重或分数");
+    assert(matchPrompt.includes("Do not calculate scores or weights"),
+      "shadow 建议必须明确禁止模型执行本地权重计算");
     const sparseRepairReason = "matchJob 模型输出不符合契约：multi-track matching requires sparse evidence";
     const validSparseResult = {
       selectedTrackId: "T1",
@@ -299,7 +307,8 @@ server.listen(0, "127.0.0.1", async () => {
       roleResumeEvidence: ["简历：交付过应用"],
       roleGaps: [],
       matches: [],
-      eligibility: []
+      eligibility: [],
+      modelRecommendation: "apply"
     };
     const baseSparseRepairInput = {
       candidateProfile: { marker: "synthetic-repair" },
@@ -465,24 +474,48 @@ server.listen(0, "127.0.0.1", async () => {
       "partially_aligned 必须要求相邻职业和实质主线证据同时成立"
     );
     assert(
-      matchPrompt.includes("Use adjacent_misaligned")
-        && matchPrompt.includes("same primary artifact class and professional delivery lifecycle")
-        && matchPrompt.includes("neighboring layer or channel")
-        && matchPrompt.includes("human review, not a fit"),
-      "adjacent_misaligned 必须是职业无关的相邻交付通道复核状态"
-    );
-    assert(
       matchPrompt.includes("Use misaligned when the primary delivery differs")
         && matchPrompt.includes("generic capabilities, tools, technologies, industry context, or secondary duties")
         && matchPrompt.includes("A compatible secondary duty cannot redefine the job's primary direction"),
       "misaligned 必须表达主方向不同，不能被工具或次要职责重叠抬升"
     );
     assert(
-      matchPrompt.includes("For multi-track adjacent_misaligned or misaligned results without a missing foundation or central requirement")
+      matchPrompt.includes("For multi-track misaligned results without a missing foundation or central requirement")
         && matchPrompt.includes("D<n>|work_object, D<n>|main_action, or D<n>|deliverable")
         && matchPrompt.includes("D1 means the first responsibilityEvidence string of the selected track"),
       "无主线 requirement 的多分支 misaligned gap 必须绑定选中分支职责证据"
     );
+    let offPrompt = "";
+    const offAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    offAdapter.chatJson = async (prompt) => {
+      offPrompt = prompt;
+      return {
+        roleAlignment: "insufficient_evidence",
+        roleResumeEvidence: [],
+        roleGaps: ["No responsibility evidence was provided"],
+        matches: [],
+        eligibility: []
+      };
+    };
+    const offDecision = await offAdapter.matchJob({
+      modelRecommendationMode: "off",
+      candidateProfile: {},
+      jobUnderstanding: {
+        roleSummary: "运营交付",
+        responsibilityEvidence: [],
+        coreRequirements: [],
+        eligibilityItems: [],
+        jobQuality: { level: "normal", concerns: [] }
+      }
+    });
+    assert(!offPrompt.includes("modelRecommendation"),
+      "off 模式不得要求模型输出整体建议");
+    assert(!Object.prototype.hasOwnProperty.call(offDecision, "modelRecommendation"),
+      "off 模式归一化结果不得携带模型整体建议");
     assert(
       understandPrompt.includes("requirements[{label,trackIds,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"

@@ -13,10 +13,16 @@ const ROLE_ALIGNMENT_STATES = Object.freeze([
   "aligned",
   "mostly_aligned",
   "partially_aligned",
-  "adjacent_misaligned",
   "misaligned",
   "insufficient_evidence"
 ]);
+const MODEL_RECOMMENDATION_STATES = Object.freeze([
+  "primary",
+  "apply",
+  "caution",
+  "not_recommended"
+]);
+const MODEL_RECOMMENDATION_MODES = Object.freeze(["off", "shadow"]);
 
 function validateModelResult(kind, value, context = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelContractError(kind, "必须返回 JSON 对象");
@@ -551,6 +557,7 @@ function validateSparseMatchEvidence(value, context = {}) {
   if (!jobUnderstanding || !Array.isArray(jobUnderstanding.coreRequirements)) {
     throw new ModelContractError("matchJob", "sparse match evidence requires jobUnderstanding");
   }
+  const modelRecommendation = validateModelRecommendation(value, context);
   const selected = selectedTrackContext(value, jobUnderstanding);
   const requirements = selected.requirements.map(normalizeExpectedRequirement);
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
@@ -572,7 +579,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     .filter((requirement) => (
       requirement
       && (
-        !["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
+        value.roleAlignment !== "misaligned"
         || requirement.foundation === true
         || requirement.central === true
       )
@@ -580,7 +587,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     .map((requirement) => `${requirement.label}缺少直接简历证据`)
     .slice(0, 4);
   const selectedTrackDirectionEvidence = selected.trackCount > 1
-    && ["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
+    && value.roleAlignment === "misaligned"
     && !derivedRequirementRoleGaps.length
     ? selectedTrackBoundRoleEvidence(value, selected)
     : null;
@@ -707,6 +714,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     ...roleAlignmentEvidence,
     matches,
     eligibility,
+    ...(modelRecommendation ? { modelRecommendation } : {}),
     recommendation, fitLevel, confidence, fitReasons, requirementMatches, jobQuality, hardBlockers, softGaps, questionsToVerify,
     missingPoints: softGaps, blockingGaps: hardBlockers.map((item) => item.requirement), riskQuestions: questionsToVerify,
     recommendedResumeVersion: "", primaryProjects: [], greetingAngle: "", evidence: { jd: jdEvidence, resume: resumeEvidence }, hrPrep: {}
@@ -728,7 +736,7 @@ function validateRoleAlignmentEvidence(value, jobUnderstanding) {
   if (["aligned", "mostly_aligned", "partially_aligned"].includes(value.roleAlignment) && !roleResumeEvidence.length) {
     throw new ModelContractError("matchJob", `${value.roleAlignment} requires roleResumeEvidence`);
   }
-  if (["adjacent_misaligned", "misaligned"].includes(value.roleAlignment)
+  if (value.roleAlignment === "misaligned"
     && (!responsibilityEvidence.length || !roleResumeEvidence.length || !roleGaps.length)) {
     throw new ModelContractError("matchJob", `${value.roleAlignment} requires responsibility evidence, resume evidence, and a gap`);
   }
@@ -1268,6 +1276,7 @@ function assertJobQualityAlignment(jobUnderstanding, jobQuality) {
 
 function validateMatchDecision(value, context = {}) {
   if (!["apply", "caution", "skip", "review"].includes(value.recommendation)) throw new ModelContractError("matchJob", "recommendation 必须为 apply/caution/skip/review");
+  const modelRecommendation = validateModelRecommendation(value, context);
   for (const [field, raw] of [
     ["softGaps", value.softGaps ?? value.missingPoints],
     ["questionsToVerify", value.questionsToVerify ?? value.riskQuestions]
@@ -1282,9 +1291,6 @@ function validateMatchDecision(value, context = {}) {
   const jobQuality = normalizeJobQuality(value.jobQuality, "matchJob");
   const hardBlockers = normalizeStructuredHardBlockers(value.hardBlockers);
   const roleAlignment = ROLE_ALIGNMENT_STATES.includes(value.roleAlignment) ? value.roleAlignment : "";
-  if (roleAlignment === "adjacent_misaligned") {
-    throw new ModelContractError("matchJob", "adjacent_misaligned requires the sparse evidence contract");
-  }
   const roleResumeEvidence = Array.isArray(value.roleResumeEvidence) ? contractStrings(value.roleResumeEvidence, 4) : [];
   const roleGaps = Array.isArray(value.roleGaps) ? contractStrings(value.roleGaps, 4) : [];
   const jobUnderstanding = context?.jobUnderstanding;
@@ -1376,6 +1382,7 @@ function validateMatchDecision(value, context = {}) {
     roleAlignment,
     roleResumeEvidence,
     roleGaps,
+    ...(modelRecommendation ? { modelRecommendation } : {}),
     recommendation,
     fitLevel: demoteApply && value.fitLevel === "A" ? "B" : (["A", "B", "C", "D"].includes(value.fitLevel) ? value.fitLevel : "C"),
     confidence,
@@ -1411,6 +1418,35 @@ function validateMatchDecision(value, context = {}) {
     if (!result.evidence.jd.length && !statesInsufficientInfo && !hasUnknownRequirement) throw new ModelContractError("matchJob", "review 至少需要 JD 证据或明确的待确认信息");
   }
   return result;
+}
+
+function validateModelRecommendation(value, context = {}) {
+  const hasMode = Object.prototype.hasOwnProperty.call(context || {}, "modelRecommendationMode");
+  const mode = hasMode ? context.modelRecommendationMode : null;
+  if (hasMode && !MODEL_RECOMMENDATION_MODES.includes(mode)) {
+    throw new ModelContractError(
+      "matchJob",
+      `modelRecommendationMode must be one of ${MODEL_RECOMMENDATION_MODES.join("/")}`
+    );
+  }
+  const hasRecommendation = Object.prototype.hasOwnProperty.call(value, "modelRecommendation");
+  if (mode === "off") {
+    if (hasRecommendation) {
+      throw new ModelContractError("matchJob", "modelRecommendation must be omitted when modelRecommendationMode is off");
+    }
+    return "";
+  }
+  if (mode === "shadow" && !hasRecommendation) {
+    throw new ModelContractError("matchJob", "modelRecommendation is required when modelRecommendationMode is shadow");
+  }
+  if (!hasRecommendation) return "";
+  if (!MODEL_RECOMMENDATION_STATES.includes(value.modelRecommendation)) {
+    throw new ModelContractError(
+      "matchJob",
+      `modelRecommendation must be one of ${MODEL_RECOMMENDATION_STATES.join("/")}`
+    );
+  }
+  return value.modelRecommendation;
 }
 
 // 决策路径只接受结构完整的三类 blocker：合法 kind、非空 requirement、JD 与候选人双侧证据齐全。

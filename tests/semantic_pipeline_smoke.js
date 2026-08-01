@@ -207,6 +207,19 @@ async function mockRoleAlignmentSmoke() {
   assert.strictEqual(decision.roleAlignment, "insufficient_evidence");
   assert.deepStrictEqual(decision.roleResumeEvidence, []);
   assert(decision.roleGaps[0].includes("Mock"), "offline Mock must label the deterministic evidence gap");
+  assert(["primary", "apply", "caution", "not_recommended"].includes(decision.modelRecommendation),
+    "Mock 默认 shadow 模式必须返回规范四档建议");
+  const offDecision = await adapter.matchJob({
+    modelRecommendationMode: "off",
+    resumeVersions: [],
+    jobUnderstanding: {
+      responsibilityEvidence: ["JD：负责企业系统交付"],
+      coreRequirements: [],
+      jobQuality: { level: "normal", concerns: [] }
+    }
+  });
+  assert(!Object.prototype.hasOwnProperty.call(offDecision, "modelRecommendation"),
+    "Mock off 模式不得输出模型整体建议");
 }
 
 async function genericEvidenceContractSmoke() {
@@ -3315,46 +3328,17 @@ async function compactMatchEvidenceContractSmoke() {
     ["简历：持续交付另一类软件产品"],
     "D-gap 路径必须保留候选主方向证据，普通 requirement evidence 不得覆盖它"
   );
-  const adjacentDirectionEvidence = validateModelResult("matchJob", {
-    selectedTrackId: "T1",
-    roleAlignment: "adjacent_misaligned",
-    roleResumeEvidence: ["简历：持续交付同类产品的相邻层"],
-    roleGaps: ["D1|main_action"],
-    matches: [],
-    eligibility: []
-  }, { jobUnderstanding: multiTrack });
-  assert.strictEqual(adjacentDirectionEvidence.roleAlignment, "adjacent_misaligned");
-  assert.strictEqual(adjacentDirectionEvidence.recommendation, "review");
-  const adjacentWithOrdinaryMissing = {
-    ...multiTrack,
-    coreRequirements: multiTrack.coreRequirements.map((requirement) => (
-      requirement.id === "R2"
-        ? { ...requirement, foundation: false, central: false }
-        : requirement
-    ))
-  };
   assert.throws(
     () => validateModelResult("matchJob", {
       selectedTrackId: "T1",
       roleAlignment: "adjacent_misaligned",
       roleResumeEvidence: ["简历：持续交付同类产品的相邻层"],
-      roleGaps: ["岗位主线需要确认"],
-      matches: [
-        { id: "R2", state: "missing", resumeEvidence: "简历：仅证明普通可迁移能力" }
-      ],
+      roleGaps: ["D1|main_action"],
+      matches: [],
       eligibility: []
-    }, { jobUnderstanding: adjacentWithOrdinaryMissing }),
+    }, { jobUnderstanding: multiTrack }),
     (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
-    "adjacent_misaligned 不得用普通非核心 missing 绕过选中分支 D-gap 绑定"
-  );
-  const legacyAdjacent = decision("review", "C", "通用能力");
-  legacyAdjacent.roleAlignment = "adjacent_misaligned";
-  legacyAdjacent.roleResumeEvidence = ["简历：持续交付同类产品的相邻层"];
-  legacyAdjacent.roleGaps = ["相邻层职责不同"];
-  assert.throws(
-    () => validateModelResult("matchJob", legacyAdjacent),
-    (error) => error instanceof ModelContractError && error.code === "MODEL_CONTRACT_INVALID",
-    "adjacent_misaligned 只允许当前 sparse evidence 契约生成，legacy 完整结果入口必须拒绝"
+    "新契约必须彻底拒绝临时 adjacent_misaligned 状态"
   );
   const zeroRequirementDirectionEvidence = validateModelResult("matchJob", {
     selectedTrackId: "T1",
@@ -4129,6 +4113,32 @@ function roleAlignmentEvidenceContractSmoke() {
     normalized.requirementMatches.map(({ foundation, central, indispensable }) => ({ foundation, central, indispensable })),
     [{ foundation: true, central: true, indispensable: false }],
     "normalized requirement matches must inherit every role flag from jobUnderstanding"
+  );
+  const shadow = validateModelResult("matchJob", {
+    ...sparse,
+    modelRecommendation: "apply"
+  }, { jobUnderstanding, modelRecommendationMode: "shadow" });
+  assert.strictEqual(shadow.modelRecommendation, "apply",
+    "shadow 模式必须原样保留规范四档模型建议");
+  for (const invalidRecommendation of [undefined, "review", "skip", "mostly_fit"]) {
+    const invalid = { ...sparse };
+    if (invalidRecommendation !== undefined) invalid.modelRecommendation = invalidRecommendation;
+    assert.throws(
+      () => validateModelResult("matchJob", invalid, {
+        jobUnderstanding,
+        modelRecommendationMode: "shadow"
+      }),
+      (error) => error instanceof ModelContractError && /modelRecommendation/.test(error.message),
+      "shadow 模式必须要求规范四档 modelRecommendation"
+    );
+  }
+  assert.throws(
+    () => validateModelResult("matchJob", {
+      ...sparse,
+      modelRecommendation: "apply"
+    }, { jobUnderstanding, modelRecommendationMode: "off" }),
+    (error) => error instanceof ModelContractError && /modelRecommendation/.test(error.message),
+    "off 模式必须拒绝模型整体建议字段"
   );
 
   for (const invalid of [
