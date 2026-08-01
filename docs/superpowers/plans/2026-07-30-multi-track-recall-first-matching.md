@@ -2207,3 +2207,61 @@ the next reviewed root-cause change.
 - Baseline evaluated is exactly
   `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
   user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
+
+### Recall-first confirmed-hard-boundary checkpoint (2026-08-01)
+
+- This section supersedes every earlier candidate evaluated binding for the next
+  private run. Every old root remains immutable. In particular,
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v2-first-3-20260801`
+  is diagnostic-only after its 0/3 exact result and must not be overwritten,
+  deleted, or used as a cache source.
+- Candidate product is exactly
+  `cf1793a79877c8150385317853ff19e6994a2f00`. It implements recall-first
+  `misaligned + partial-positive -> review`, a non-central threshold of five,
+  aggregate rather than per-row positive evidence, bounded model trust for
+  ambiguous requirement semantics, and the three-part core-skip gate:
+  model `indispensable=true`, explicit JD hard boundary, and explicit candidate
+  incompatibility.
+- Deterministic decision code does not use Java, PMP, AI, or another occupation
+  vocabulary as a hard-boundary list. Current live scope remains the frozen AI
+  application pool; broader occupation suites are follow-up work after this
+  3/20 acceptance, not a prerequisite for it.
+- The seventh independent read-only review returned **Critical 0**,
+  **Important 0**, **Spec PASS**, and **Code quality APPROVED** under the
+  user-confirmed acceptance standard.
+- Fresh candidate verification passed `semantic_pipeline_smoke`,
+  `model_adapter_smoke`, all 47 offline checks, and all 31 benchmark fixtures.
+- Baseline evaluated remains exactly
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
+  user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- Candidate and baseline Git blobs were rechecked and are identical:
+  runner `0675a1cf21788dbc61532b3265d592aa7fa9afb4`,
+  benchmark metrics `4eea3267ec86aaa236af323562c52eea601320b8`,
+  and private resume privacy
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Frozen input files remain inside
+  `D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730`.
+  Their raw jobs and labels SHA-256 values were rechecked as
+  `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+  and
+  `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`.
+- The only permitted new roots, both confirmed absent before this checkpoint,
+  are
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3-full-20-20260801`.
+- Run exact zero-based indices `4,9,10` first. A structural, safety, empty
+  response, or exact mismatch stops the run at its first failing row. Only an
+  exact and safe three-row result may unlock a fresh-cache 20-row run.
+- The 20-row acceptance floor remains exact at least 18/20 with all safety and
+  recall gates satisfied. Every deviation must be inspected; the user has
+  authorized autonomous root-cause work rather than silently changing labels.
+- Private artifacts must be created or validated through the clean-commit v3
+  runner flow. Do not use `patch-artifacts.js` or manual edits to fabricate Git,
+  manifest, proof, profile, or card bindings.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product `cf1793a...` must be its strict ancestor. Record
+the complete evaluated SHA in an immediate descendant docs-only binding before
+creating either private root. That binding commit must not replace evaluated in
+the manifest, v3 proof, temporary evaluation branch, or live verification.

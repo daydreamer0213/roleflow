@@ -513,3 +513,49 @@ cd C:\Users\Administrator\.codex\worktrees\e843\ZhiPing && git rev-parse HEAD
 - [ ] **Step 5: Commit 基准结果**
 
 不 commit 基准数据（不含入 git），仅记录结果到交接文档。
+
+---
+
+## 2026-08-01 continuation execution correction
+
+本节覆盖上面的初版 Task 5 live 步骤。初版中的 `transferable=1`、
+`unknown=0.5`、非核心阈值 3、`patch-artifacts.js` 和
+`run-step4-only.ps1` 不再代表当前实现或验收入口。
+
+- 当前已审查产品提交为
+  `cf1793a79877c8150385317853ff19e6994a2f00`。
+- 当前分值保持 `matched=1`、`transferable=0.5`、`unknown/missing=0`；
+  普通非核心 missing 阈值为 5，且该守卫不得单独产生 `skip`。
+- 产品标准以召回为先：普通复杂语义有限度信任模型；`apply/caution`
+  只要求总体 JD 与简历证据可核对，不要求每条正向 requirement 重复证据。
+- 核心 `skip` 必须同时具备模型 `indispensable=true`、JD 明确不可协商
+  边界和简历明确不兼容事实。确定性代码不维护 Java、PMP、AI 等领域词表。
+- 第七轮独立只读复审结果为 `Critical 0`、`Important 0`、
+  `Spec PASS`、`Code quality APPROVED`。
+- 新鲜验证通过 `node tests/semantic_pipeline_smoke.js`、
+  `node tests/model_adapter_smoke.js` 和 `npm.cmd test`；完整离线结果为
+  47/47，`job_match_benchmark` 为 31/31。
+- 基线 evaluated commit 保持
+  `2878acc694ce9b31ef90602f145dc5958bace4cf`，批准的基线产品仍为
+  `fb0168afce265cf351f03e80f66d9e0f24015887`。
+- 冻结 jobs/labels 原始 SHA-256 重新核验为
+  `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+  和
+  `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`。
+- 旧目录
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v2-first-3-20260801`
+  只保留为 0/3 根因证据，不得覆盖、删除或复用缓存。
+- 只允许创建当前已确认不存在的新目录：
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3-first-3-20260801`
+  和
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3-full-20-20260801`。
+- 先以零基索引 `4,9,10` 运行全新 3 条；结构、安全和 exact 全部通过后，
+  才能以全新缓存运行 20 条。20 条门槛保持 exact 至少 18/20，并检查
+  全部偏差。
+- 不再手工 patch 私有 artifact。manifest、proof 和确认信封必须由干净 Git
+  提交和 v3 runner 门禁创建或校验。
+
+包含本节的 docs-only 提交是新的 candidate evaluated checkpoint。
+产品提交 `cf1793a...` 必须是它的严格祖先；随后立即创建一个 docs-only
+binding 提交记录 evaluated 的完整 SHA。binding 提交本身不得替代 evaluated
+提交进入 manifest、proof、临时评估分支或 live 验证。
