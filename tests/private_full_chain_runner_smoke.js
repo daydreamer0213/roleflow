@@ -2045,19 +2045,10 @@ async function injectedLiveFlowSmoke(identityPath) {
             kind: "understandJob",
             errorMessage: `requirements must be an array ${contractDiagnosticSecret}`
           });
-          logger.warn("model_contract_repair_completed", {
+          logger.warn("model_contract_repair_failed", {
             kind: "understandJob",
-            contentLength: 888888,
-            raw: telemetrySecret
-          });
-          logger.warn("model_contract_repair_requested", {
-            kind: "matchJob",
-            errorMessage: `必须返回 JSON 对象 ${contractDiagnosticSecret}`
-          });
-          logger.warn("model_contract_repair_completed", {
-            kind: "matchJob",
-            contentLength: 999999,
-            raw: telemetrySecret
+            initialErrorMessage: `requirements must be an array ${contractDiagnosticSecret}`,
+            errorMessage: `requirements contains unknown ID ${contractDiagnosticSecret}`
           });
         } else {
           logger.warn("model_contract_repair_requested", {
@@ -2222,13 +2213,13 @@ async function injectedLiveFlowSmoke(identityPath) {
     modelAttemptCount: 2,
     emptyResponseAttemptCount: 0,
     modelAttemptLatencyMs: 37000,
-    contractRepairCount: 2,
+    contractRepairCount: 1,
     understandJobContractRepairCount: 1,
-    matchJobContractRepairCount: 1,
-    initialContractFailureCategory: "result_shape",
-    repairContractFailureCategory: "none",
-    initialContractFailureReason: "result_not_object",
-    repairContractFailureReason: "none",
+    matchJobContractRepairCount: 0,
+    initialContractFailureCategory: "requirement_matches",
+    repairContractFailureCategory: "requirement_matches",
+    initialContractFailureReason: "other",
+    repairContractFailureReason: "other",
     responseContentChars: 3412
   });
   assert(Number.isInteger(firstTelemetry.analysisElapsedMs) && firstTelemetry.analysisElapsedMs >= 0);

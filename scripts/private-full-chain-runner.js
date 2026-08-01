@@ -1802,6 +1802,16 @@ function createPrivateTelemetryCollector() {
           MAX_SAFE_TELEMETRY_INTEGER,
           values.understandJobContractRepairCount + 1
         );
+        values.initialContractFailureCategory = safeEnum(
+          privateContractFailureCategory(data?.errorMessage),
+          SAFE_CONTRACT_FAILURE_CATEGORIES,
+          "other"
+        );
+        values.initialContractFailureReason = safeEnum(
+          privateContractFailureReason(data?.errorMessage),
+          SAFE_CONTRACT_FAILURE_REASONS,
+          "other"
+        );
         return;
       }
       if (stage !== "matchJob") return;
@@ -1822,7 +1832,7 @@ function createPrivateTelemetryCollector() {
       return;
     }
     if (event === "model_contract_repair_failed") {
-      if (safeEnum(data?.kind, SAFE_FAILURE_STAGES, "") !== "matchJob") return;
+      if (!["understandJob", "matchJob"].includes(safeEnum(data?.kind, SAFE_FAILURE_STAGES, ""))) return;
       if (values.initialContractFailureCategory === "none") {
         values.initialContractFailureCategory = safeEnum(
           privateContractFailureCategory(data?.initialErrorMessage),
