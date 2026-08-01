@@ -2235,6 +2235,82 @@ the next reviewed root-cause change.
   `2878acc694ce9b31ef90602f145dc5958bace4cf`; baseline product remains the
   user-approved `fb0168afce265cf351f03e80f66d9e0f24015887`.
 
+### Recall-first v3r4 root cause and policy-safe product repair checkpoint (2026-08-01)
+
+- Preserve the diagnostic-only root
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r4-index-9-20260801`
+  unchanged. The one-row probe made two non-empty model calls and one contract
+  repair. Both the initial and repair responses failed
+  `understandJob.requirements_flags`; the terminal state was
+  `MODEL_CONTRACT_INVALID` at `understandJob/contract_repair`. This closes the
+  root-cause investigation: the runner, parser shape, track IDs, limits,
+  evidence, and labels were not the failing boundary.
+- Product checkpoint is exactly
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c`. It normalizes only
+  occupation-neutral, explicit requirement boundaries: clear soft conditions
+  become non-hard, clear single-requirement hard conditions become hard, and
+  ordinary or unsplittable complex semantics retain the model judgment.
+  Strict boolean/shape validation and hard-plus-soft compound repair remain in
+  force. Negated possession clauses are range-limited so they cannot swallow a
+  later independent hard condition.
+- `responsibility_sprawl` remains visible as a job-quality signal but does not
+  by itself force `review` or `skip`. A model `jobQuality=caution` may still
+  retain the lighter `apply -> caution` reminder. Every other medium/high
+  semantic risk, `jobQuality=risk`, structured hard blocker, eligibility gate,
+  and bilateral evidence gate remains unchanged.
+- TDD regressions covered pure negated possession, negated A plus hard B,
+  hard-marker crossing, ordinary years, explicitly hard years, optional years,
+  compound hard-plus-soft, standalone sprawl, and sprawl plus another material
+  risk. Fresh candidate `npm.cmd test` passed all 47 offline checks and
+  `git diff --check` passed.
+- Four independent read-only review rounds closed each discovered Important.
+  The final result was **Critical 0**, **Important 0**, **Spec PASS**, and
+  **Code quality APPROVED**. Two accepted conservative Minors may cause a
+  contract repair for an explanatory multi-clause years sentence or a quoted
+  hard phrase inside a negation; neither can silently create `skip`.
+- The candidate harness checkpoint remains
+  `2420cabbc2312de3bb4f6b450a567c137c30ec3f`; baseline evaluated remains
+  `8387a92f3978d57c72418e1c65205643c2291c51`; baseline product remains
+  `fb0168afce265cf351f03e80f66d9e0f24015887`. Candidate and baseline Git
+  blobs are identical: runner
+  `15fcaaed3a53f8ee38e4a265fec0619232edfbef`, benchmark metrics
+  `4eea3267ec86aaa236af323562c52eea601320b8`, and privacy helper
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Frozen pool raw hashes remain jobs
+  `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+  and labels
+  `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`.
+- The only next roots, both confirmed absent, are
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4-first-3-20260801`
+  and
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4-full-20-20260801`.
+  Run exact zero-based indices `4,9,10` first with a fresh cache. Do not create
+  the 20-row root until all three rows are semantically complete and every
+  structural, privacy, stale/pending/partial, empty-response, and hard-exclusion
+  gate is clean.
+- Report exact labels without relabeling. Under the user-confirmed
+  recall-first product boundary, an `apply` / `caution` difference inside the
+  opportunity-retaining class is policy-equivalent and does not by itself block
+  the 20-row run. Any crossing into or out of `review` / `skip`, false hard
+  exclusion, or clearly unsuitable job promoted into the opportunity-retaining
+  class remains material and requires root-cause work.
+- For 20 rows, retain exact `>=18/20` as the diagnostic target and report every
+  deviation. Mandatory acceptance is structural/privacy/safety completeness,
+  no false hard exclusion, no missed obvious mismatch, and clean recall gates;
+  apply/caution-only variance does not silently change labels or automatically
+  fail this product-policy acceptance. Use a wholly fresh cache.
+- Do not change or lengthen model prompts during this acceptance. After the
+  product is stable, consider a separate prompt-slimming A/B task measuring
+  prompt tokens, latency, empty responses, repair rate, exact labels, and
+  policy-equivalent acceptance before deciding whether to adopt it.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product `2e030481b34f3cdee97ab3d404f76f084451bb7c`
+must be its strict ancestor. Record the exact evaluated SHA in an immediate
+descendant docs-only binding before creating either v4 private root. The
+binding commit must not replace evaluated in the manifest, v3 proof, temporary
+evaluation branch, or live verification.
+
 ### Recall-first v3 structural-diagnostic checkpoint (2026-08-01)
 
 - The first v3 live diagnostic root is now immutable:

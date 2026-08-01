@@ -678,3 +678,50 @@ checkpoint. Record it in an immediate descendant binding before v3r4 setup.
   `8387a92f3978d57c72418e1c65205643c2291c51` /
   `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - The binding commit is not the evaluated commit for private artifacts.
+
+### v3r4 root cause and repaired decision checkpoint
+
+- Preserve
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v3r4-index-9-20260801`.
+  Its two non-empty calls both failed `understandJob.requirements_flags`, with
+  one repair and terminal `MODEL_CONTRACT_INVALID`. This is the confirmed
+  product-contract root cause.
+- Product checkpoint
+  `2e030481b34f3cdee97ab3d404f76f084451bb7c` applies occupation-neutral
+  explicit hard/soft normalization, preserves model judgment for ordinary or
+  unsplittable complex semantics, and prevents negated possession text from
+  swallowing a later hard condition. It also makes `responsibility_sprawl` a
+  job-quality signal that cannot alone force `review/skip`.
+- Strict shape/type validation, compound repair, structured blockers,
+  eligibility, safety, evidence, and all other medium/high risk gates remain.
+  Fresh candidate tests passed 47/47 and `git diff --check`; final independent
+  review returned `Critical 0`, `Important 0`, `Spec PASS`, and
+  `Code quality APPROVED`.
+- Harness/baseline remain
+  `2420cabbc2312de3bb4f6b450a567c137c30ec3f` /
+  `8387a92f3978d57c72418e1c65205643c2291c51`, with identical runner,
+  metrics, and privacy blobs
+  `15fcaaed3a53f8ee38e4a265fec0619232edfbef`,
+  `4eea3267ec86aaa236af323562c52eea601320b8`, and
+  `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- Run fresh zero-based indices `4,9,10` at
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4-first-3-20260801`.
+  Structural/privacy/safety completeness is mandatory. Report exact labels,
+  but apply/caution-only variance is policy-equivalent under the user's
+  recall-first boundary; crossing review/skip, false hard exclusion, or a
+  missed obvious mismatch remains blocking.
+- Only after that gate may a wholly fresh 20-row cache be created at
+  `D:\DevData\RoleFlow-private-benchmark\multi-track-recall-decision-matrix-v4-full-20-20260801`.
+  Keep exact `>=18/20` as a reported diagnostic target while requiring all
+  structural, privacy, safety, hard-exclusion, obvious-mismatch, and recall
+  gates.
+- Prompt slimming is deferred until stability. Any later decision requires a
+  fixed-input A/B comparison of tokens, latency, empty/repair rates, exact
+  labels, and policy-equivalent acceptance; no prompt change belongs in this
+  live checkpoint.
+
+The docs-only commit containing this section is the next candidate evaluated
+checkpoint. Candidate product `2e030481b34f3cdee97ab3d404f76f084451bb7c`
+must be its strict ancestor. Bind the evaluated SHA in one immediate docs-only
+descendant before private setup, and use evaluated rather than the binding
+commit in every private artifact and live verification.
