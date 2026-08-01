@@ -2623,3 +2623,19 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Candidate product commit: `d342ecc89c1f1fa4ad92b7a36de18abf850abbe8`.
 - Candidate evaluated commit: `9c2e32abc324d46c2b0f5932a516b59d7ee6ade8`.
 - The product commit is required to remain a strict ancestor of the evaluated checkpoint and all later binding-only documentation commits.
+
+## 2026-08-01 four-tier weighted continuation audited checkpoint
+
+- This checkpoint supersedes earlier bindings only for the next private run; every earlier private root remains immutable and must not be reused or overwritten.
+- Candidate product and harness checkpoint is exactly `53bfbbfaadaefd31498470cd183ce74724d46ba2`. It contains the frozen four-tier policy, shadow model suggestion, product/workflow integration, canonical benchmark metrics, technical-state ordering, single-read native jobs snapshot, and the 18/20 full acceptance floor.
+- Baseline harness checkpoint is exactly `c1d32641bca2ccd4c82128f48f3cfac996310dfb`; baseline product remains the user-approved `fb0168afce265cf351f03e80f66d9e0f24015887` and is a strict ancestor of that baseline checkpoint.
+- Candidate verification passed all 50 offline checks; baseline verification passed all 41 checks available on the baseline branch. Independent read-only review returned Critical 0, Important 0, Spec PASS, and Code quality APPROVED.
+- Candidate and baseline Git blobs are identical: runner `001cda7c22c4de5e6bdd8f2fabbf99f78bf6986e`, benchmark metrics `0d5a7e073e1061f91a71de22ffce130fd0bc1837`, and private resume privacy `8a4b21d7493fb5e7d8ce49662ba3951687903c46`.
+- The frozen 20-job input was re-hashed without modification. Jobs raw SHA-256 is `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`; labels raw SHA-256 is `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`.
+- The only permitted new roots, both confirmed absent at this checkpoint, are `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v1-first-3-20260801` and `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v1-full-20-20260801`.
+- Run exact zero-based diagnostic indices `4,9,10` first with a fresh cache. Any structural, empty-response, stale/pending/partial, evidence, privacy, serious-deviation, or exact-label failure stops before the 20-row run.
+- Only an exact and safe 3/3 result unlocks a separate fresh-cache 20-row run. Full acceptance requires recommendation exactness at least 18/20, zero technical/privacy/safety failures, zero hard false placements, zero false hard exclusions, and complete disclosure of every moderate or other deviation.
+- `caution <-> not_recommended` is a reported moderate deviation, not a standalone hard failure, because neither tier is default-selected. The 18/20 floor prevents arbitrary moderate drift from being accepted.
+- Do not access BOSS, jobs.sqlite, cookies, or port 8787 during model acceptance. Model settings may be resolved only through the runner gate from `D:\Guo\ZhiPing`, without printing or copying configuration contents.
+
+The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.

@@ -1,16 +1,17 @@
 # 判定策略第二轮优化设计
 
-> **状态：已被 2026-08-01 continuation 独立复审修正。**
-> 下文保留 Claude 第二轮方案作为历史记录，不得再直接照搬其中
-> `transferable=1`、`unknown=0.5`、`mostly_aligned+符合=caution` 的提案。
-> 当前权威实现为：核心集合使用 `foundation || central || indispensable`；
-> `matched=1`、`transferable=0.5`、`unknown=0`；全 unknown 为信息不足；
-> JD 无核心为 caution；`mostly_aligned+符合=apply`；明确可选非核心缺口不计数，
-> 普通非核心阈值暂保持 3，是否调整只由全新 20 条真实验收决定。
-> 产品提交：`175e9567fbfaedbfa4d3d92b55fcb5a4289c5a55`。
-> 基线 harness 提交：`2878acc694ce9b31ef90602f145dc5958bace4cf`。
-> 独立复审：`Spec PASS` / `Code quality APPROVED`；候选 47/47、基线 41/41
-> 离线检查通过。
+> **状态：历史方案，当前权威规则已由 2026-08-01 four-tier continuation 取代。**
+> 下文保留 Claude 第二轮提案用于解释历史实验，不得直接实现其中
+> `transferable=1`、`unknown=0.5`、旧推荐枚举或旧 bucket。
+> 当前权威实现位于 `docs/roleflow-decision-matrix.md`：
+> `primary/apply/caution/not_recommended` 四档统一；核心集合使用
+> `foundation || central || indispensable`；支持集合独立保留；核心/支持权重
+> 为 70%/30%；`matched=1`、`transferable=0.5`、`unknown=0`、`missing=0`；
+> 普通非核心 missing 阈值为 5，明确优先/加分/非必须/可选项不计数；
+> 模型建议为 shadow，不参与本地最终档位。
+> 当前产品与 harness checkpoint：`53bfbbf`；基线 harness：
+> `c1d3264`。独立复审：`Critical 0`、`Important 0`、`Spec PASS`、
+> `Code quality APPROVED`；候选 50/50、基线 41/41 离线检查通过。
 
 > 日期：2026-08-01
 > 基于：第一轮 20 样本验证结果分析

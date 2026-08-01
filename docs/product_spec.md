@@ -134,10 +134,10 @@ RoleFlow 是面向普通求职者的本地岗位筛选和投递决策助手。�
 
 | 建议 | 含义 |
 |------|------|
-| 主投（apply） | 方向匹配 + 核心要求充分对上，直接投 |
-| 可投（caution） | 大体匹配但部分要求需沟通确认 |
-| 慎投（review） | 方向或核心要求不确定性较高，需人工审核 |
-| 不推荐（skip） | 硬性不匹配或方向完全不相关 |
+| 主投（primary） | 方向匹配 + 要求充分对上，默认沟通 |
+| 可投（apply） | 值得沟通但存在有限缺口，默认沟通 |
+| 慎投（caution） | 不完全匹配或需要人工确认，不默认沟通 |
+| 不推荐（not_recommended） | 明显不合适或命中确认硬边界，不可选择 |
 
 ### 判定规则
 
@@ -147,19 +147,20 @@ RoleFlow 是面向普通求职者的本地岗位筛选和投递决策助手。�
 
 ### 执行优先级
 
-1. 强制不推荐：硬性阻断、岗位安全风险、基础条件不满足
-2. 信息残缺：标记待重试，不参与四档判定
-3. 查判定表 → 四档建议
-4. 降级修正：置信度低、年限偏高、确认硬性要求仅可推导、中高语义风险、
-   普通非核心缺口；普通非核心缺口最低封顶慎投，不得单独制造不推荐。核心
-   符合度 ≥ 80%、至少一条直接匹配有双侧证据、且所有 JD 明确硬边界直接
-   匹配时，不再被模型自评低置信度重复降级
+1. 本地已确认的基础条件不满足：直接不推荐
+2. 模型失败、过期、等待、局部 JD、刷新或总体证据不完整：`null + needs_retry`
+3. 完整语义结果中的合法硬阻断和岗位安全风险：不推荐
+4. 本地按核心 70% + 支持 30% 计算，再查冻结二维表
+5. 年限/薪资跨度、确认硬性要求仅可推导、中高语义风险和普通非核心缺口只向下封顶
+6. 普通非核心缺口从 5 条起降一级；明确优先、加分、非必须或可选项不计数
 
 ### 运行时分桶
 
-- 判定矩阵负责 recommendation；`primary / talk / backup` bucket 只负责展示和
-  workflow 安全上限，不参与 benchmark pass。
-- partial、缺任一侧总体证据或确认硬性核心缺口不得借由展示层进入更高档。
+- 最终 recommendation 与业务 bucket 统一使用
+  `primary / apply / caution / not_recommended`，不得分叉。
+- `primary` 和 `apply` 默认勾选，`caution` 不默认勾选，
+  `not_recommended` 不可选择。
+- 技术桶 `analysis_pending / refresh` 必须配 `recommendation=null`。
 
 ## 非目标
 
@@ -180,7 +181,7 @@ RoleFlow 是面向普通求职者的本地岗位筛选和投递决策助手。�
 - The private full-chain benchmark is a merge gate, not a daily scanning command.
 - Real inputs and outputs never belong in Git.
 
-- `npm.cmd test` 完整离线回归通过；当前测试清单为 47 项。
+- `npm.cmd test` 完整离线回归通过；当前测试清单为 50 项。
 - 31 条脱敏离线 fixture 通过；冻结真实 20 条岗位池必须另走私有 runner 验收，
   不得用离线 fixture 冒充真实模型结论。
 - 主数据库备份后迁移，`PRAGMA quick_check` 为 `ok`，岗位和人工决策数量不下降。
