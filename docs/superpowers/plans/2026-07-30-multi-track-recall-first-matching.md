@@ -2788,3 +2788,12 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - 通过双重复审的 evaluated checkpoint：`e2a2366403b1a1052a96a5f0be4a6318329a0413`。
 - 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
 - `e370b254125d9a838b3563ee39c75e9343868229` 已验证为 `e2a2366403b1a1052a96a5f0be4a6318329a0413` 的严格祖先；v4.6 真实 3 条与 20 条固定使用 `e2a2366403b1a1052a96a5f0be4a6318329a0413`，不使用本次记录提交替代被评估提交。
+## 2026-08-02 deterministic split semantic matching v4.7 checkpoint
+
+- Reviewed product commit: `6faba4f038e9ff55ec5c0a94849dfff7091834d8`.
+- Root cause addressed: temperature zero does not make a remote model service bitwise deterministic; broad structured generation allowed internal semantic counts and recommendations to drift.
+- Selected mitigation: narrow model extraction calls, exact local schema validation, one stage-local repair, deterministic local four-tier decision, revision invalidation when semantic mode changes, and preserved failure observability.
+- Frozen-matrix constraint: no change to the user-confirmed two-dimensional direction/requirements matrix or its 70/30 requirement weights in this checkpoint.
+- Offline gate: 50/50 checks passed and `git diff --check` passed.
+- Independent gates: `Spec PASS`; `Code quality APPROVED`.
+- Next gate: fresh 3-job live acceptance with a beginner-readable stage report before any 20-job run.

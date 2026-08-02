@@ -90,3 +90,15 @@
 - [ ] Commit and push all accepted checkpoints to GitHub.
 - [ ] Do not merge or modify `main`.
 
+
+## 2026-08-02 v4.7 reviewed product checkpoint
+
+- Product checkpoint: `6faba4f038e9ff55ec5c0a94849dfff7091834d8` (`feat: add deterministic split semantic matching`).
+- The model is limited to two narrow semantic extraction stages; local code validates exact shapes, derives role alignment, and applies the existing four-tier decision policy.
+- The user-confirmed direction/requirement matrix and the existing 70/30 central/non-central weighting remain unchanged.
+- Fresh offline evidence: `npm.cmd test` passed all 50 checks; `git diff --check` exited 0.
+- Independent final review: `Spec PASS` and `Code quality APPROVED`; no Critical or Important behavior defect remained.
+- The new production module `src/core/split_semantic_matching.js` is included in the product commit.
+- Live acceptance must use fresh roots and fresh caches: first the frozen 3-job diagnostic sample, then the frozen 20-job pool only if the 3-job gate passes.
+- Product acceptance target: no expected `primary`/`apply` job may be omitted from default communication, and no expected `caution`/`not_recommended` job may enter default communication.
+- Private inputs, model configuration, and live outputs remain outside the repository. BOSS, cookies, `jobs.sqlite`, and port 8787 remain out of scope.
