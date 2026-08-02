@@ -2782,3 +2782,9 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - 私有基线仍为 `c1d32641bca2ccd4c82128f48f3cfac996310dfb`，三项共享 runner blob 未变化，无需再次同步基线。
 - 新真实目录固定为 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-first-3-20260802` 与 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-full-20-20260802`；必须先 3/3，再运行 20 条。
 - 包含本记录的下一份 docs checkpoint 是被评估提交；`e370b254125d9a838b3563ee39c75e9343868229` 必须为其严格祖先。
+### 2026-08-02 v4.6 精确 evaluated 绑定
+
+- v4.6 产品提交：`e370b254125d9a838b3563ee39c75e9343868229`。
+- 通过双重复审的 evaluated checkpoint：`e2a2366403b1a1052a96a5f0be4a6318329a0413`。
+- 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
+- `e370b254125d9a838b3563ee39c75e9343868229` 已验证为 `e2a2366403b1a1052a96a5f0be4a6318329a0413` 的严格祖先；v4.6 真实 3 条与 20 条固定使用 `e2a2366403b1a1052a96a5f0be4a6318329a0413`，不使用本次记录提交替代被评估提交。
