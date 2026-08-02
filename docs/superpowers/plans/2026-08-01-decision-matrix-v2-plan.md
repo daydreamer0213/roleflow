@@ -859,3 +859,14 @@ The docs-only commit containing this section is the next candidate evaluated che
 - Candidate evaluated is exactly `bae89bbc807126585701892311731c7f84e99e93`; candidate product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` is its strict ancestor.
 - Baseline evaluated/harness is exactly `c1d32641bca2ccd4c82128f48f3cfac996310dfb`; baseline product remains `fb0168afce265cf351f03e80f66d9e0f24015887`.
 - Use candidate evaluated `bae89bbc807126585701892311731c7f84e99e93`, not the immediate descendant binding commit containing this paragraph, in the run manifest, v3 portability proof, temporary evaluation branch, and live verification.
+
+## 2026-08-02 v4 执行检查点
+
+- v2 三条真实验收为 2/3；索引 9 从慎投降为不推荐。
+- v3 三条真实验收为 1/3；索引 9 从慎投降为不推荐，索引 10 从可投降为慎投，因此未进入新的 20 条运行。
+- 参数网格搜索覆盖 13,068 组组合，在不允许严重误放的约束下，已保存 20 条输出的四档 exact 上限为 16/20，确认纯调参不足。
+- v4 增加所选岗位方向 D1-Dn 的 `responsibilityMatches`，不增加模型调用，不让模型计算权重，不引入 IT 岗位专属规则。
+- 三轮独立复审已闭环字段丢失、部分匹配上限、D/R/E 编号冲突以及顶层契约/JSON 示例遗漏；最终结论为 `Spec PASS`、`Code quality APPROVED`。
+- 产品提交为 `6b04a599a9e18edcffed7516476e00b30aceab34`；完整 `npm.cmd test` 为 50/50 通过，`git diff --check` 通过。
+- 后续验收标准改为默认沟通集合行为正确：主投/可投零遗漏，慎投/不推荐零误入；相同沟通行为一侧的档位互换不阻断。
+- 下一步使用全新 v4 三条目录和缓存运行零基索引 `4,9,10`；通过后才运行全新 20 条目录。
