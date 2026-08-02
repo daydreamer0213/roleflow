@@ -133,3 +133,8 @@ v4.1 完整 20 条按默认沟通边界仅保留 7/10 个主投/可投，并把 
 v4.2 复用既有 `combinedFit`，不增加模型字段、提示词或调用。联合权重为职责 0.40、要求 0.60，阈值 0.50；至少两项正向职责。foundation missing 无条件封顶慎投；职责 missing ratio >=0.50 时，至少两项核心正证据才可恢复。联合门禁未通过时对最终建议直接设置 caution ceiling，不能被二维表绕过。所有数值位于 policy、进入 hash，并由失败测试保护。
 
 上轮 19 份合法真实输出按 selected track 离线重放达到 19/19 沟通边界正确；索引 3 因 contract repair timeout 没有合法输出，必须由新 API 运行验证。产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b` 通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。
+## 2026-08-02 v4.3：重职责缺口的近完整要求恢复
+
+v4.2 三条真实运行中索引 3 主投和索引 5 可投均正确，但索引 13 再次由慎投误入可投。字段链路完整；模型本轮把核心正证据从上一轮 1 项漂移为 2 项，导致重职责缺口恢复。该岗位职责 missing ratio=0.50、职责分 0.25、combinedFit 约 0.914；已确认应沟通的同类索引 2 在保存输出中 combinedFit=1.0。
+
+v4.3 增加 `heavyDutyRecoveryMinimumRequirementFit=0.95`，仅在职责 missing ratio >=0.50 的恢复分支使用。参数受 0-1 校验且不得低于普通 promotion threshold；decisionRules 升 v4.3，matchJob 契约仍 v40。产品提交 `7152117a86ffb0144794a465ec1833e4bb6bb17b` 通过 50/50 离线检查、通用跨岗位夹具和独立复审。

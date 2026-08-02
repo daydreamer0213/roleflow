@@ -909,3 +909,9 @@ The docs-only commit containing this section is the next candidate evaluated che
 - baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
+## 2026-08-02 v4.2 三条结果与 v4.3 检查点
+
+- v4.2 三条目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-2-first-3-20260802`：索引 3 主投→主投，5 可投→可投，13 慎投→可投；技术、隐私和空响应门禁通过，但行为门禁失败，未运行 v4.2 新 20 条。
+- 索引 13 的模型输出仍为两项 transferable、两项 missing；本轮 requirement 核心正证据漂移为 2 项、combinedFit 约 0.914，绕过 v4.2 重职责恢复线。
+- v4.3 要求重职责缺口恢复的 combinedFit 至少 0.95；普通联合阈值不变。产品提交 `7152117a86ffb0144794a465ec1833e4bb6bb17b`，50/50 离线检查及独立复审通过。
+- 下一轮继续用全新 `3,5,13` 目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-3-first-3-20260802`；通过后才运行 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-3-full-20-20260802`。
