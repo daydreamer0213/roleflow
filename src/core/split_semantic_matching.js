@@ -118,63 +118,6 @@ function normalizeResponsibilityOutput(raw, jobUnderstanding) {
   };
 }
 
-function normalizeResponsibilityConfirmationOutput(
-  raw,
-  jobUnderstanding,
-  selectedTrackId
-) {
-  const normalized = normalizeResponsibilityOutput(raw, jobUnderstanding);
-  if (normalized.selectedTrackId !== selectedTrackId) {
-    fail(
-      `responsibility confirmation selectedTrackId must remain ${selectedTrackId}`
-    );
-  }
-  return normalized;
-}
-
-function reconcileResponsibilityOutputs(first, confirmation) {
-  if (first?.selectedTrackId !== confirmation?.selectedTrackId) {
-    fail("responsibility confirmation selectedTrackId must match the first result");
-  }
-  const confirmationById = new Map(
-    (confirmation?.matches || []).map((item) => [item.id, item])
-  );
-  const matches = (first?.matches || []).map((initial) => {
-    const repeated = confirmationById.get(initial.id);
-    if (!repeated) fail(`responsibility confirmation omitted normalized id ${initial.id}`);
-    const positive = [initial, repeated].find((item) => item.state === "matched")
-      || [initial, repeated].find((item) => item.state === "transferable");
-    if (positive) {
-      return {
-        id: initial.id,
-        state: positive.state,
-        resumeEvidence: positive.resumeEvidence
-      };
-    }
-    if (initial.state === "missing" && repeated.state === "missing"
-      && initial.gapDimension === repeated.gapDimension) {
-      return {
-        id: initial.id,
-        state: "missing",
-        resumeEvidence: initial.resumeEvidence,
-        gapDimension: initial.gapDimension
-      };
-    }
-    return {
-      id: initial.id,
-      state: "unknown",
-      resumeEvidence: ""
-    };
-  });
-  if (confirmationById.size !== matches.length) {
-    fail("responsibility confirmation normalized IDs must match the first result");
-  }
-  return {
-    selectedTrackId: first.selectedTrackId,
-    matches: matches.filter((item) => item.state !== "unknown")
-  };
-}
-
 function normalizeRequirementOutput(raw, jobUnderstanding, selectedTrackId) {
   exactKeys(raw, ["matches", "eligibility"], "requirement");
   const requirements = requirementsForTrack(jobUnderstanding, selectedTrackId);
@@ -300,19 +243,13 @@ function buildSplitRequirementInput(input, selectedTrackId) {
   return result;
 }
 
-function buildSplitResponsibilityInput(input, selectedTrackId = "") {
+function buildSplitResponsibilityInput(input) {
   const tracks = hiringTracks(input?.jobUnderstanding);
-  const selectedTracks = selectedTrackId
-    ? tracks.filter((track) => track.id === selectedTrackId)
-    : tracks;
-  if (selectedTrackId && selectedTracks.length !== 1) {
-    fail(`selectedTrackId ${selectedTrackId} does not exist`);
-  }
   const result = {
     candidateProfile: input?.candidateProfile || {},
     candidateMatchCard: input?.candidateMatchCard || null,
     searchPreferences: input?.searchPreferences || {},
-    hiringTracks: selectedTracks.map((track) => ({
+    hiringTracks: tracks.map((track) => ({
       id: track.id,
       label: track.label,
       roleSummary: track.roleSummary,
@@ -375,8 +312,6 @@ module.exports = {
   buildSplitResponsibilityInput,
   combineSplitMatchEvidence,
   deriveRoleAlignment,
-  normalizeResponsibilityConfirmationOutput,
   normalizeRequirementOutput,
-  normalizeResponsibilityOutput,
-  reconcileResponsibilityOutputs
+  normalizeResponsibilityOutput
 };

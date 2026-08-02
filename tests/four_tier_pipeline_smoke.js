@@ -73,6 +73,34 @@ assert.equal(zeroDutyGap.decisionMetrics.responsibilityZeroDutyGapPromotionReady
 assert.equal(zeroDutyGap.decisionMetrics.responsibilityMatchedIndispensablePromotionReady, false);
 assert.equal(zeroDutyGap.decisionMetrics.responsibilityFoundationCeilingApplied, false);
 
+const calibratedIndispensableBoundary = applyRuleGuard(analysis({
+  roleAlignment: "partially_aligned",
+  requirementMatches: [
+    requirement("indispensable delivery", "matched", { indispensable: true }),
+    requirement("required item two", "matched"),
+    requirement("preferred item three", "missing"),
+    requirement("bonus item four", "missing"),
+    requirement("required item five", "matched"),
+    requirement("central gap", "missing", { central: true }),
+    requirement("central strength", "matched", { central: true }),
+    requirement("required item eight", "transferable"),
+    requirement("required item nine", "matched"),
+    requirement("required item ten", "missing"),
+    requirement("required item eleven", "missing"),
+    requirement("required item twelve", "transferable"),
+    requirement("required item thirteen", "missing")
+  ],
+  responsibilityMatches: [
+    { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+    { id: "D2", state: "missing", jdEvidence: "JD: duty two", resumeEvidence: "Resume: confirmed gap two" },
+    { id: "D3", state: "transferable", jdEvidence: "JD: duty three", resumeEvidence: "Resume: transferable three" },
+    { id: "D4", state: "missing", jdEvidence: "JD: duty four", resumeEvidence: "Resume: confirmed gap four" }
+  ]
+}), {});
+assert.equal(calibratedIndispensableBoundary.decisionMetrics.responsibilityRequirementJointFit, 0.47);
+assert.equal(calibratedIndispensableBoundary.recommendation, "apply",
+  "joint fit 0.47 with matched indispensable evidence must retain the recall-first opportunity");
+
 const consistencyAdjusted = applyRuleGuard(analysis({
   roleAlignment: "misaligned",
   requirementMatches: [
@@ -177,7 +205,7 @@ assert.deepEqual(compact.responsibilityMatches, [{
   resumeEvidence: "Resume: primary delivery evidence"
 }], "compact analysis must preserve responsibility evidence for the production decision path");
 
-assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v43");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.6");
+assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v44");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.7");
 
 console.log("four_tier_pipeline_smoke ok");

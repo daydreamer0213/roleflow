@@ -801,8 +801,8 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v43");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.6");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.7");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1395,8 +1395,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v43",
-    "responsibility confirmation changes must invalidate v42 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44",
+    "joint-fit threshold changes must invalidate v43 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -2133,8 +2133,8 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v43",
-    decisionRules: "four-tier-weighted-v4.6",
+    matchJob: "match-decision-v44",
+    decisionRules: "four-tier-weighted-v4.7",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
