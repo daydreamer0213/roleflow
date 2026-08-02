@@ -2707,3 +2707,10 @@ v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为
 v4.1 完整 20 条行为门禁失败：10 个主投/可投只保留 7 个，5 个慎投中 4 个误入可投；不推荐没有误入。索引 3 因 matches_resume_evidence 契约修复阶段超时而 analysis_pending。结果目录保持冻结。
 
 v4.2 不再单独放宽职责阈值，而用职责 0.40 与既有核心/非核心要求得分 0.60 形成 jointFit；基础缺失、重职责缺口和联合门禁失败都会直接把部分匹配岗位封顶慎投。规则无岗位关键词、无新增模型调用、未修改二维表。19 份合法真实输出离线重放 19/19 行为正确；产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b` 已通过完整离线测试和独立复审。
+### 2026-08-02 v4.2 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`51ad5637de2672f1f688f6f1f3db0f2700e2277b`
+- candidate evaluated commit（候选已评估提交）：`23f431fd7b7d4835ab2053d1b378947ecca8c559`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。

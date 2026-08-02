@@ -902,3 +902,10 @@ The docs-only commit containing this section is the next candidate evaluated che
 - v4.2 使用职责 0.40 + 现有要求得分 0.60 的联合分，配合基础缺失和重职责缺口封顶；二维表和模型提示词未改。
 - 19 份合法缓存按 selected track 离线重放为 19/19 行为正确；产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b`，50/50 离线检查及独立复审通过。
 - 下一轮三条使用零基索引 `3,5,13`，分别覆盖超时主投、漏选可投、误入慎投；目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-2-first-3-20260802`。通过后使用全新 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-2-full-20-20260802`。
+### 2026-08-02 v4.2 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`51ad5637de2672f1f688f6f1f3db0f2700e2277b`
+- candidate evaluated commit（候选已评估提交）：`23f431fd7b7d4835ab2053d1b378947ecca8c559`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。
