@@ -2648,6 +2648,7 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - The v2 matrix maps every `misaligned` coverage level to `not_recommended`. Core/support weighting stays 70/30, and no model field or call is added.
 - The prompt wording is domain-neutral rather than AI- or IT-specific. `match-decision-v39` invalidates old match caches, and `four-tier-weighted-v2` identifies the new local policy.
 - Product checkpoint is `0b6da19b1749a775bcbeab53b78556daa547c3bc`.
+- Evaluated checkpoint is `66fd3404bca2be531339f7eb8e5105aa28d0c277`; the product checkpoint is its strict ancestor. Baseline harness remains `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
 - All `50/50` offline checks and `git diff --check` pass. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
 - The review-requested `or` ambiguity is closed: `misaligned` now requires an overall substantial difference across work object, main action, and primary deliverable; a one-layer difference with a meaningful transferable path stays `partially_aligned`.
 - A fresh exact `4,9,10` run and then a separate fresh-cache 20-row run are still required.

@@ -832,6 +832,7 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Every `misaligned` matrix cell now produces `not_recommended`; support overlap cannot rescue it. The 70/30 core/support weighting, four final tiers, model-suggestion switch, model call count, and output fields remain unchanged.
 - The provider-neutral prompt receives only the minimal boundary clarification. Match cache revision advances to `match-decision-v39`; policy id advances to `four-tier-weighted-v2`.
 - Product checkpoint is `0b6da19b1749a775bcbeab53b78556daa547c3bc`.
+- Evaluated checkpoint is `66fd3404bca2be531339f7eb8e5105aa28d0c277`; the product checkpoint is its strict ancestor. Baseline harness remains `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
 - TDD coverage and all `50/50` offline checks pass; `git diff --check` passes. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
 - The reviewer-requested prompt correction is included: `misaligned` requires the primary direction to be substantially different overall across work object, main action, and primary deliverable. A one-layer difference with a meaningful transferable path must use `partially_aligned`.
 - Fresh live v2 reruns remain required before acceptance.
