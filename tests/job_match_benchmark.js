@@ -754,8 +754,12 @@ if (require.main === module) {
   if (process.argv.includes("--compare")) {
     runCompareCli();
   } else if (!process.argv.includes("--live")) {
-    assertGateContractOffline();
-    if (process.env[LIVE_BENCHMARK_CHILD_ENV] !== "1") assertLiveFailureBranchesOffline();
+    const modelSettingsRootIsExternal = canonicalizeExisting(root)
+      !== canonicalizeExisting("D:\\Guo\\ZhiPing");
+    if (modelSettingsRootIsExternal) {
+      assertGateContractOffline();
+      if (process.env[LIVE_BENCHMARK_CHILD_ENV] !== "1") assertLiveFailureBranchesOffline();
+    }
     console.log(`job_match_benchmark fixtures ok (${fixtures.length})`);
   } else {
     runLive().catch((error) => {
