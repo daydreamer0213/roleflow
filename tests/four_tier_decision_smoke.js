@@ -589,7 +589,7 @@ assert.strictEqual(zeroDutyGapAtHalfCoverage.matrixRecommendation, "apply");
 assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityPromotionRoute, "zero_duty_gap");
 assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, true);
 
-const confirmedDutyGapAtHalfCoverage = decision("partially_aligned", [
+const confirmedDutyGapBlocksZeroGapPromotion = decision("partially_aligned", [
   boundCore("missing", { foundation: false, central: true }),
   boundSupporting("transferable")
 ], [
@@ -598,8 +598,8 @@ const confirmedDutyGapAtHalfCoverage = decision("partially_aligned", [
   { id: "D3", state: "missing", jdEvidence: "JD: duty three", resumeEvidence: "Resume: confirmed duty gap" },
   { id: "D4", state: "unknown", jdEvidence: "JD: duty four", resumeEvidence: "" }
 ]);
-assert.strictEqual(confirmedDutyGapAtHalfCoverage.matrixRecommendation, "caution");
-assert.strictEqual(confirmedDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, false);
+assert.strictEqual(confirmedDutyGapBlocksZeroGapPromotion.matrixRecommendation, "caution");
+assert.strictEqual(confirmedDutyGapBlocksZeroGapPromotion.responsibilityZeroDutyGapPromotionReady, false);
 
 const indispensablePromotion = decision("partially_aligned", [
   boundIndispensable("matched"),

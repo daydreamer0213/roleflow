@@ -36,12 +36,20 @@ The `zero_duty_gap` route continues to require all of the following:
 - at least two duties are positively evidenced as `matched` or `transferable`;
 - known responsibility coverage is at least one-half;
 - no responsibility is classified as confirmed `missing`;
-- the joint responsibility/requirement score reaches its existing threshold;
 - no missing foundation requirement, low-coverage ceiling, hard blocker, or
   other existing safety ceiling applies.
 
 An `unknown` duty remains unscored. It is not converted into positive evidence
 and is not converted into a confirmed gap.
+
+As in the reviewed v4.4 route, `zero_duty_gap` is a bounded exception to the
+scalar joint-score threshold. This is intentional: unstable requirement
+segmentation must not by itself discard a role whose primary duties have
+positive evidence and no confirmed duty gap. Requirements are not ignored:
+confirmed foundation gaps, insufficient requirement coverage, all-unknown core
+requirements, hard blockers, and the other existing ceilings still prevent the
+promotion. The exception is capped at `apply` and cannot create a `primary`
+recommendation.
 
 ## Scope boundaries
 
