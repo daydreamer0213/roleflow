@@ -126,3 +126,10 @@ v4 在既有第二次模型调用中增加 `responsibilityMatches`，按所选 t
 v4 三条真实运行中，索引 10 返回两项 `transferable` 和一项 `unknown`，模型影子建议为 apply，但旧算法按全部三项作分母得到 1/3，错误降到 caution。v4.1 改为 `points / known`，同时用 `known / total` 单独约束覆盖率，并要求至少 2 项已判断且覆盖率至少 0.5。这样不会把未知当成已确认缺失，也不会让单条正证据在大量未知时产生过度提升。
 
 职责分值安全不变量固定为 matched=1、missing=0、unknown=0、matched>=transferable。`decisionRules` 升为 `four-tier-weighted-v4.1`，`matchJob` 保持 v40，因为模型契约未变化。产品提交 `8e2adf0d36a744f8f7aba5262de30958249fd141` 已通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。
+## 2026-08-02 v4.2：职责与要求联合量化
+
+v4.1 完整 20 条按默认沟通边界仅保留 7/10 个主投/可投，并把 4 个慎投提升为可投。根因是职责提升与现有核心/非核心要求分数各自决策，不能区分“职责部分可迁移但基础/重职责缺口明显”与“职责并不完整但要求覆盖足以沟通”。
+
+v4.2 复用既有 `combinedFit`，不增加模型字段、提示词或调用。联合权重为职责 0.40、要求 0.60，阈值 0.50；至少两项正向职责。foundation missing 无条件封顶慎投；职责 missing ratio >=0.50 时，至少两项核心正证据才可恢复。联合门禁未通过时对最终建议直接设置 caution ceiling，不能被二维表绕过。所有数值位于 policy、进入 hash，并由失败测试保护。
+
+上轮 19 份合法真实输出按 selected track 离线重放达到 19/19 沟通边界正确；索引 3 因 contract repair timeout 没有合法输出，必须由新 API 运行验证。产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b` 通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。

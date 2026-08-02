@@ -894,3 +894,11 @@ The docs-only commit containing this section is the next candidate evaluated che
 - baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
+## 2026-08-02 v4.1 完整结果与 v4.2 检查点
+
+- v4.1 三条 `4,9,10` 通过新行为门禁。
+- v4.1 完整目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-1-full-20-20260802` 完成：主投/可投保留 7/10，遗漏索引 3、5、10；慎投误入索引 11-14；不推荐误入 0。
+- 索引 3 在 matchJob contract repair 阶段超时，最终 analysis_pending；无空响应，其他结构/隐私门禁通过。
+- v4.2 使用职责 0.40 + 现有要求得分 0.60 的联合分，配合基础缺失和重职责缺口封顶；二维表和模型提示词未改。
+- 19 份合法缓存按 selected track 离线重放为 19/19 行为正确；产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b`，50/50 离线检查及独立复审通过。
+- 下一轮三条使用零基索引 `3,5,13`，分别覆盖超时主投、漏选可投、误入慎投；目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-2-first-3-20260802`。通过后使用全新 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-2-full-20-20260802`。
