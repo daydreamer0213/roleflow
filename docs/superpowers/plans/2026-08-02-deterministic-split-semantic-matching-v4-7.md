@@ -102,3 +102,23 @@
 - Live acceptance must use fresh roots and fresh caches: first the frozen 3-job diagnostic sample, then the frozen 20-job pool only if the 3-job gate passes.
 - Product acceptance target: no expected `primary`/`apply` job may be omitted from default communication, and no expected `caution`/`not_recommended` job may enter default communication.
 - Private inputs, model configuration, and live outputs remain outside the repository. BOSS, cookies, `jobs.sqlite`, and port 8787 remain out of scope.
+## v4.7.1 selective responsibility confirmation checkpoint
+
+- [x] Preserve the failed fresh live root `deterministic-split-v4-7-first-3-20260802`.
+- [x] Trace index 5 from the live bucket through local matrix metrics and compare it with all isolated repetitions.
+- [x] Confirm that no matrix, weight, or threshold defect caused the deviation.
+- [x] Choose conditional negative confirmation instead of prompt growth or matrix tuning.
+- [ ] Add a failing adapter regression for conditional confirmation and recall-first reconciliation.
+- [ ] Add the local reconciliation helper and conditional second responsibility call.
+- [ ] Bump the match cache version and update version assertions.
+- [ ] Run focused adapter/pipeline tests, the complete offline suite, and `git diff --check`.
+- [ ] Obtain independent `Spec PASS` and `Code quality APPROVED`.
+- [ ] Commit and push product and evaluated checkpoints.
+- [ ] Create a new private root and rerun diagnostic indices `5,8,13` with a fresh cache.
+- [ ] Run the frozen 20-job pool only if both expected default-communication jobs are retained and the expected caution job remains unselected.
+### v4.7.1 review clarifications
+
+- [x] Lock the confirmation input and output to the first validated selected track.
+- [x] Define the complete responsibility-state reconciliation table and deterministic evidence retention.
+- [x] Define `chatJson` semantic-attempt maxima: 4 normal match attempts, 6 confirmation-path match attempts, and 8 full-analysis attempts including understand repair; existing bounded transport retries are outside this new feature and unchanged.
+- [ ] Add `chatJson` semantic-attempt sequence tests for normal, confirmation, confirmation repair success, and confirmation repair failure paths.

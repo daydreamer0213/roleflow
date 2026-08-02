@@ -230,3 +230,51 @@ Any severe false default selection stops at its first row for root-cause work.
 Set `semanticMatchingMode` to `legacy` and invalidate the current analysis
 revision. Do not change the matrix or reinterpret existing labels during
 rollback.
+
+## v4.7.1 selective responsibility confirmation
+
+### Observed production gap
+
+The first fresh three-job v4.7 live gate completed structurally but returned `apply -> caution` for diagnostic index 5. The same responsibility was `transferable` in all three isolated repetitions and `missing` in the formal run. Keeping the formal requirement output fixed, this single responsibility change moved the local responsibility/requirement joint fit from `0.75` to `0.47`, disabled the existing `matched_indispensable` promotion route, and applied the existing caution ceiling. The matrix, 70/30 weighting, and thresholds behaved as designed; the unstable negative semantic extraction was the root cause.
+
+### Considered approaches
+
+1. Lower a matrix or promotion threshold. Rejected because it changes the user-confirmed policy, is vulnerable to sample overfitting, and requires separate user approval.
+2. Add more instructions, chain-of-thought, or temperature tuning. Rejected because temperature is already zero, the service remains nondeterministic, and a heavier prompt increases latency and structural risk.
+3. Selectively confirm high-impact negative responsibility states. Selected because it adds no prompt surface, preserves deterministic local policy, and adds one logical responsibility-confirmation stage only when the first narrow result contains `missing`.
+
+### Required behavior
+
+- Run the first validated `matchResponsibilities` stage exactly as v4.7 does.
+- If the normalized first result contains no `missing` state, do not make a confirmation call.
+- If it contains at least one `missing` state, run one confirmation responsibility stage with the same candidate evidence but an input narrowed to the first validated `selectedTrackId`.
+- Validate and repair each responsibility call independently. A confirmation that still fails after its one stage-local repair fails closed as `analysis_pending`; requirements must not run.
+- Reconcile by responsibility ID only after IDs and the locked selected track pass exact validation. The normative complete truth table and field-retention rules are defined below; no earlier shorthand overrides them.
+- Run `matchRequirements` once after responsibility reconciliation.
+- Do not change prompts, the four-tier matrix, 70/30 requirement weighting, promotion thresholds, hard blockers, or safety caps.
+- Bump the match pipeline cache version so prior single-pass results cannot be reused.
+
+### Acceptance evidence
+
+- A regression must fail before implementation for `missing + transferable -> transferable` and conditional call count.
+- Adapter tests must cover no-extra-call when the first result has no missing state, two-confirmation agreement, disagreement reconciliation, and confirmation failure closure.
+- The full offline suite and independent spec/code review must pass before another fresh three-job live run.
+- The next live gate must retain both expected `apply` jobs and keep the expected `caution` job out of default communication before the 20-job run is allowed.
+### v4.7.1 deterministic confirmation clarification
+
+This section is normative and resolves all confirmation ambiguity:
+
+- The confirmation input contains only the first validated hiring track and its responsibility IDs. The confirmation `selectedTrackId` must equal the first result exactly. A different or unknown track is a confirmation-stage contract error, receives at most one confirmation-stage repair, and then fails closed without running requirements.
+- Reconciliation is per ID after exact selected-track and ID-set validation. Normalized omission is `unknown`.
+- Complete state table:
+  - if either side is evidence-backed `matched`, output `matched`; choose the first `matched` object when both are matched, otherwise choose the matched object;
+  - otherwise, if either side is evidence-backed `transferable`, output `transferable`; choose the first transferable object when both are transferable, otherwise choose the transferable object;
+  - `missing + missing` with the same `gapDimension` remains missing and keeps the first validated missing object;
+  - `missing + missing` with different `gapDimension` becomes unknown;
+  - `missing + unknown`, `unknown + missing`, and `unknown + unknown` become unknown;
+  - every unknown output contains only its ID and `state: unknown`; it has no resume evidence or gap dimension;
+  - positive outputs never keep a gap dimension.
+- Positive evidence remains subject to the existing exact prefix/content validator. A state cannot win merely because of ordering when its evidence is invalid.
+- Cost terminology: confirmation adds at most one logical responsibility stage. At the `chatJson` semantic-request boundary, each logical stage has at most one initial attempt and one contract-repair attempt. The normal split matching path therefore has at most four semantic attempts; the conditional confirmation path has at most six; including `understandJob` and its repair, the full analysis has at most eight semantic attempts. These counts deliberately exclude the adapter's existing bounded transport/empty-response recovery inside one `chatJson` attempt; this feature does not enlarge those transport retry limits. Normal successful paths without repair use two matching semantic attempts, or three when confirmation is triggered.
+- There is no confirmation loop, majority vote, third responsibility sample, or requirement confirmation.
+- Tests must assert `chatJson` semantic-attempt sequences and maxima for normal success, confirmation success, confirmation repair success, and confirmation repair failure. Existing fetch-level transport retry tests remain unchanged.
