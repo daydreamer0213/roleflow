@@ -2695,3 +2695,10 @@ v3 全新三条真实运行完成但未通过沟通边界：索引 4 为主投�
 v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为可投，实际为慎投。模型已正常返回 D1/D2 transferable、D3 unknown，影子建议为 apply；因此不再修改提示词，改由代码区分未知和明确缺少。v4.1 按已知职责计算均分，并要求至少两项、至少一半职责被判断后才允许提升；旧 v4 结果通过 `decision_rules_changed` 失效。
 
 产品提交为 `8e2adf0d36a744f8f7aba5262de30958249fd141`，50/50 离线检查和独立复审均通过。下一轮三条必须使用全新目录和全新缓存；仅在主投/可投 3/3 保留且慎投无误入后运行 20 条。
+### 2026-08-02 v4.1 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`8e2adf0d36a744f8f7aba5262de30958249fd141`
+- candidate evaluated commit（候选已评估提交）：`a60efb0eee38a366de5d0d312dc65029af2d6cda`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。

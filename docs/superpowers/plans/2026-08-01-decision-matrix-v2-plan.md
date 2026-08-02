@@ -887,3 +887,10 @@ The docs-only commit containing this section is the next candidate evaluated che
 - v4.1 使用已知职责均分，并增加已知数量 2、覆盖率 0.5 双门槛；单项正证据场景仍保持慎投。
 - 产品提交 `8e2adf0d36a744f8f7aba5262de30958249fd141`；50/50 离线检查通过；独立复审 `Spec PASS`、`Code quality APPROVED`。
 - 下一次使用全新目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-1-first-3-20260802`，通过后预留全新 20 条目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-1-full-20-20260802`。
+### 2026-08-02 v4.1 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`8e2adf0d36a744f8f7aba5262de30958249fd141`
+- candidate evaluated commit（候选已评估提交）：`a60efb0eee38a366de5d0d312dc65029af2d6cda`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。
