@@ -484,6 +484,21 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob prompt must bind every selected-track primary duty to structured candidate evidence"
     );
     assert(
+      matchPrompt.includes(
+        "For responsibilityMatches, do not use missing merely because the resume lacks the exact named domain, platform, tool, framework, or specialist workflow."
+      )
+        && matchPrompt.includes(
+          "If a concrete resume fact proves the same underlying work action and deliverable through a different named context, use transferable."
+        )
+        && matchPrompt.includes(
+          "If the exact context is unproven and no comparable responsibility is evidenced, use unknown with empty resumeEvidence."
+        )
+        && matchPrompt.includes(
+          "Use missing only when a concrete resume fact explicitly proves an incompatible responsibility, work action, or deliverable."
+        ),
+      "responsibilityMatches must distinguish named-context gaps from missing underlying duties"
+    );
+    assert(
       matchPrompt.includes("partially_aligned includes an adjacent role family")
         && matchPrompt.includes("same artifact class or professional delivery lifecycle")
         && matchPrompt.includes("meaningful transferable evidence for primary duties"),

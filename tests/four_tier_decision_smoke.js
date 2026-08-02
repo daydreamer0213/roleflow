@@ -70,12 +70,16 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.4");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.5");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
 assert.strictEqual(DECISION_POLICY.requirementWeights.supporting, 0.30);
 assert.strictEqual(DECISION_POLICY.alignmentConsistency.recommendationCeiling, "caution");
+assert.strictEqual(
+  DECISION_POLICY.responsibilityAlignment.jointFit.zeroDutyGapMinimumKnownCoverage,
+  2 / 3
+);
 assert.match(DECISION_POLICY_HASH, /^[a-f0-9]{64}$/);
 assert.throws(
   () => assertDecisionPolicy({
@@ -560,6 +564,29 @@ assert.strictEqual(zeroDutyGapPromotion.matrixRecommendation, "apply",
   "all known duties being positive must retain a partially-aligned opportunity");
 assert.strictEqual(zeroDutyGapPromotion.responsibilityPromotionRoute, "zero_duty_gap");
 assert.strictEqual(zeroDutyGapPromotion.responsibilityZeroDutyGapPromotionReady, true);
+
+const zeroDutyGapAtTwoThirdsCoverage = decision("partially_aligned", [
+  boundCore("missing", { foundation: false, central: true }),
+  boundSupporting("transferable")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "unknown", jdEvidence: "JD: duty three", resumeEvidence: "" }
+]);
+assert.strictEqual(zeroDutyGapAtTwoThirdsCoverage.matrixRecommendation, "apply");
+assert.strictEqual(zeroDutyGapAtTwoThirdsCoverage.responsibilityPromotionRoute, "zero_duty_gap");
+
+const zeroDutyGapAtHalfCoverage = decision("partially_aligned", [
+  boundCore("missing", { foundation: false, central: true }),
+  boundSupporting("transferable")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "unknown", jdEvidence: "JD: duty three", resumeEvidence: "" },
+  { id: "D4", state: "unknown", jdEvidence: "JD: duty four", resumeEvidence: "" }
+]);
+assert.strictEqual(zeroDutyGapAtHalfCoverage.matrixRecommendation, "caution");
+assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, false);
 
 const indispensablePromotion = decision("partially_aligned", [
   boundIndispensable("matched"),
