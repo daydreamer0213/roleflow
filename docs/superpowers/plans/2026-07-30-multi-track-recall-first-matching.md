@@ -2724,6 +2724,21 @@ v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
 - manifest、proof 和临时 live eval 分支必须使用上述 evaluated 提交，不得使用包含本节的后续绑定提交。
+
+## 2026-08-02 weighted-v4.5 职责语义稳定检查点
+
+- v4.4 三条真实目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-first-3-20260802` 完成且无技术、隐私、结构、旧缓存或空响应问题，但行为为 2/3：索引 5 可投→可投，8 可投→慎投，13 慎投→慎投。因此没有运行 v4.4 新 20 条。
+- 索引 8 的旧证据为 4 项 transferable；新证据为 3 项 transferable、1 项 missing。与索引 12/13 对照证明总分与联合分无法单调区分，继续放宽本地阈值会重新引入慎投误入。
+- v4.5 只澄清 D1-Dn 职责的现有状态：不同命名工具、框架、平台、领域或流程但底层动作与交付物相同，使用 transferable；精确上下文未证明且无可比职责使用 unknown；只有具体事实证明职责不兼容才使用 missing。
+- `zero_duty_gap` 已判断职责覆盖率提高到 2/3，避免四项职责只有两项已知时晋级；matched-indispensable 路线保持原 0.50 联合阈值。二维表、70/30 权重、模型、温度、非思考模式、八键契约和调用次数均未修改。
+- 产品提交为 `dd8e17912dba95d4524229ce4e08bb7af27ea0d2`；`decisionRules=four-tier-weighted-v4.5`，`matchJob=match-decision-v41`。
+- 50/50 离线检查、通用跨职业夹具、私有 runner 门禁和 `git diff --check` 全部通过；独立复审为 Critical 0、Important 0、Minor 0、`Spec PASS`、`Code quality APPROVED`。
+- 冻结缓存回放目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-offline-replay-20260802`：应沟通 10、实际沟通 10、遗漏 0、误入 0、行为 20/20，四档 exact 13/20。
+- 新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-first-3-20260802`；零基索引固定 `5,8,13`。
+- 仅在新三条行为 3/3 且技术/隐私/结构门禁全过后，运行全新 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-full-20-20260802`，不得复用三条缓存。
+- 基线工具保持 `c1d32641bca2ccd4c82128f48f3cfac996310dfb`；授权基线产品保持 `fb0168afce265cf351f03e80f66d9e0f24015887`。
+
+包含本节的 docs-only 提交是 v4.5 candidate evaluated checkpoint；下一份紧邻 docs-only 提交记录其完整 SHA。
 ## 2026-08-02 weighted-v4.2 联合门禁
 
 v4.1 完整 20 条行为门禁失败：10 个主投/可投只保留 7 个，5 个慎投中 4 个误入可投；不推荐没有误入。索引 3 因 matches_resume_evidence 契约修复阶段超时而 analysis_pending。结果目录保持冻结。

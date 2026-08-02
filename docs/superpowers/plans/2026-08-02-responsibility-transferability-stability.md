@@ -451,3 +451,37 @@ commit the docs-only final checkpoint, and push
 `codex/multi-track-recall-continuation`.
 
 Do not push private artifacts. Do not modify or merge `main`.
+
+## 2026-08-02 implementation and reviewed checkpoint
+
+- Candidate product commit:
+  `dd8e17912dba95d4524229ce4e08bb7af27ea0d2`.
+- Baseline harness commit:
+  `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
+- Approved baseline product commit:
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- `decisionRules` is `four-tier-weighted-v4.5`; `matchJob` is
+  `match-decision-v41`.
+- The prompt keeps the exact eight-key contract and one match call. The matrix,
+  70/30 weights, provider, model, temperature, and thinking mode are unchanged.
+- The zero-duty-gap known-duty coverage gate is exactly 2/3. The
+  matched-indispensable route keeps the existing 0.50 joint threshold.
+- All 50 offline checks, generic evidence fixtures, private runner smoke, and
+  `git diff --check` passed.
+- Independent read-only review returned Critical 0, Important 0, Minor 0,
+  `Spec PASS`, and `Code quality APPROVED`.
+- Frozen-cache replay:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-offline-replay-20260802`.
+- Replay behavior: expected communication 10, actual communication 10,
+  retained 10, missed none, false communication none, behavior 20/20, exact
+  four-tier 13/20.
+- Fresh live diagnostic root:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-first-3-20260802`.
+- Fresh live full root:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-full-20-20260802`.
+
+The docs-only commit containing this section is the v4.5 candidate evaluated
+checkpoint. Record its exact SHA in one immediate descendant docs-only binding
+commit. The product commit must remain a strict ancestor. Use the evaluated
+commit, not its binding descendant, for the runner manifest, v3 portability
+proof, and temporary live-evaluation branch.
