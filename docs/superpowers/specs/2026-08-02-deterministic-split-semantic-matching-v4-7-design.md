@@ -114,6 +114,17 @@ For a live OpenAI-compatible analysis:
 3. Local code validates the selected track and responsibility IDs, rejects
    duplicate or invented IDs, fills omitted duties as `unknown`, and truncates
    non-empty evidence to 120 characters.
+
+   Responsibility rows have two exact item shapes:
+
+   - `matched` and `transferable`:
+     `{id,state,resumeEvidence}`;
+   - `missing`:
+     `{id,state,resumeEvidence,gapDimension}`, where `gapDimension` is exactly
+     `work_object`, `main_action`, or `deliverable`.
+
+   The conditional dimension binds a confirmed direction mismatch to the
+   selected track without asking the model for a final recommendation.
 4. `matchRequirements` receives only the selected track, that track's
    requirements, eligibility items, and candidate facts. It returns:
 
@@ -151,6 +162,8 @@ would re-couple the two narrow tasks. The legacy path preserves the existing
 Local normalization must:
 
 - require exact top-level and item keys;
+- require the conditional `gapDimension` field only for a `missing`
+  responsibility row;
 - reject unknown or duplicate D/R/E IDs;
 - accept only canonical states;
 - require non-empty evidence for returned sparse rows;
@@ -217,4 +230,3 @@ Any severe false default selection stops at its first row for root-cause work.
 Set `semanticMatchingMode` to `legacy` and invalidate the current analysis
 revision. Do not change the matrix or reinterpret existing labels during
 rollback.
-

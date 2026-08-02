@@ -601,22 +601,38 @@ function validateSparseMatchEvidence(value, context = {}) {
     states: REQUIREMENT_MATCH_STATES,
     evidenceStates: ["matched", "transferable", "missing"]
   });
-  const derivedRoleResumeEvidence = [...new Set(matches
+  const derivedRequirementRoleResumeEvidence = [...new Set(matches
     .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
     .map((item) => item.resumeEvidence)
     .filter(Boolean))].slice(0, 4);
+  const derivedResponsibilityRoleResumeEvidence = [...new Set(responsibilityMatches
+    .filter((item) => ["matched", "transferable", "missing"].includes(item.state))
+    .map((item) => item.resumeEvidence)
+    .filter(Boolean))].slice(0, 4);
+  const derivedRoleResumeEvidence = derivedResponsibilityRoleResumeEvidence.length
+    ? derivedResponsibilityRoleResumeEvidence
+    : derivedRequirementRoleResumeEvidence;
   const derivedRequirementRoleGaps = matches
-    .filter((item) => item.state === "missing")
-    .map((item) => requirements.find((requirement) => requirement.id === item.id))
-    .filter((requirement) => (
+    .filter((item) => item.state === "missing" || item.state === "transferable")
+    .map((item) => ({
+      match: item,
+      requirement: requirements.find((requirement) => requirement.id === item.id)
+    }))
+    .filter(({ match, requirement }) => (
       requirement
+      && (match.state !== "transferable" || requirement.central === true)
       && (
-        value.roleAlignment !== "misaligned"
+        match.state === "transferable"
+        || value.roleAlignment !== "misaligned"
         || requirement.foundation === true
         || requirement.central === true
       )
     ))
-    .map((requirement) => `${requirement.label}缺少直接简历证据`)
+    .map(({ match, requirement }) => (
+      match.state === "transferable"
+        ? `${requirement.label}尚未证明指定范围`
+        : `${requirement.label}缺少直接简历证据`
+    ))
     .slice(0, 4);
   const selectedTrackDirectionEvidence = selected.trackCount > 1
     && value.roleAlignment === "misaligned"

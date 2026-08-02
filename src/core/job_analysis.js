@@ -18,6 +18,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
   const provider = configs.model?.provider || "mock";
   const ruleOnly = !injectedAnalyzer && provider === "mock";
   const candidateProfile = configs.candidateProfile;
+  const semanticMatchingMode = effectiveSemanticMatchingMode(configs);
 
   return async function analyzeJob(job) {
     const ruleMatch = explainJobMatch(job, configs, keywordPlan);
@@ -50,7 +51,10 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
           candidateMatchCard: configs.matchingCard || null,
           jobUnderstanding,
           searchPreferences: searchPreferences(configs),
-          modelRecommendationMode: configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode
+          semanticMatchingMode,
+          modelRecommendationMode: semanticMatchingMode === "split"
+            ? "off"
+            : (configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode)
         },
         run: analyzer.matchJob
       });
@@ -148,9 +152,9 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
     rawResult = await run(input);
     result = validateModelResult(kind, rawResult, validationContext);
   } catch (error) {
-    if (error?.code !== "MODEL_CONTRACT_INVALID") {
-      error.modelStage = kind;
-      error.modelPhase = "initial";
+    if (error?.code !== "MODEL_CONTRACT_INVALID" || error?.modelRepairHandled) {
+      error.modelStage ||= kind;
+      error.modelPhase ||= "initial";
       throw error;
     }
     const invalidOutput = error.invalidOutput ?? rawResult;
@@ -203,6 +207,7 @@ function compactAnalysis(configs, parts) {
   const job = parts.job || {};
   const versionId = decision.recommendedResumeVersion || ruleMatch.recommendedResumeVersion || "";
   const fullJd = job.detailRead === true || String(job.description || "").trim().length >= 120;
+  const semanticMatchingMode = effectiveSemanticMatchingMode(configs);
   return {
     provider,
     model,
@@ -232,7 +237,10 @@ function compactAnalysis(configs, parts) {
     recommendation: null,
     decisionStatus: "pending",
     modelRecommendation: decision.modelRecommendation,
-    modelRecommendationMode: configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode,
+    semanticMatchingMode,
+    modelRecommendationMode: semanticMatchingMode === "split"
+      ? "off"
+      : (configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode),
     recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
     decisionPolicyHash: DECISION_POLICY_HASH,
     fitLevel: decision.fitLevel,
@@ -433,6 +441,18 @@ function applyRuleGuard(analysis, job) {
   }
 
   return guarded;
+}
+
+function effectiveSemanticMatchingMode(configs = {}) {
+  const mode = String(
+    configs.semanticMatchingMode
+      || configs.model?.semanticMatchingMode
+      || "split"
+  ).trim().toLowerCase();
+  if (!["split", "legacy"].includes(mode)) {
+    throw new Error("semanticMatchingMode must be split or legacy");
+  }
+  return mode;
 }
 
 function hasTransferableIndispensable(analysis) {

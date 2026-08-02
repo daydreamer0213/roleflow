@@ -177,7 +177,7 @@ assert.deepEqual(compact.responsibilityMatches, [{
   resumeEvidence: "Resume: primary delivery evidence"
 }], "compact analysis must preserve responsibility evidence for the production decision path");
 
-assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v41");
+assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v42");
 assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.6");
 
 console.log("four_tier_pipeline_smoke ok");

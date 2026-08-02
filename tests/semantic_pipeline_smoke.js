@@ -1,9 +1,10 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { loadConfigs } = require("../src/config");
+const { loadConfigs, normalizeSemanticMatchingMode } = require("../src/config");
 const { createJobAnalysisRunner, cachedModelCall, applyRuleGuard, compactAnalysis, createRuleOnlyAnalysis } = require("../src/core/job_analysis");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
+const { OpenAICompatibleAdapter } = require("../src/adapters/models/openai_compatible");
 const { MockModelAdapter } = require("../src/adapters/models/mock");
 const {
   validateModelResult: validateModelResultRaw,
@@ -620,6 +621,10 @@ async function contractRepairAndFailureSmoke() {
       understandJob: async ({ job }) => understanding(job.sourceId),
       matchJob: async (input) => {
         matchCalls += 1;
+        assert.strictEqual(input.semanticMatchingMode, "split",
+          "生产岗位分析默认使用拆分语义匹配");
+        assert.strictEqual(input.modelRecommendationMode, "off",
+          "拆分语义匹配必须关闭不参与决策的模型整体建议");
         if (!input.contractRepair) return invalidDecision;
         assert.deepStrictEqual(input.contractRepair.invalidOutput, invalidDecision);
         assert.match(input.contractRepair.reason, /apply\/caution/);
@@ -627,9 +632,10 @@ async function contractRepairAndFailureSmoke() {
       }
     }
   });
-  const repaired = await repairing(completeJob("contract-repair"));
-  assert.strictEqual(matchCalls, 2, "证据契约不完整时只允许一次修复请求");
-  assert.strictEqual(repaired.semanticStatus, "complete");
+    const repaired = await repairing(completeJob("contract-repair"));
+    assert.strictEqual(matchCalls, 2, "证据契约不完整时只允许一次修复请求");
+    assert.strictEqual(repaired.semanticStatus, "complete");
+    assert.strictEqual(repaired.modelRecommendationMode, "off");
 
   // 与 JobUnderstanding 跨字段不一致同样进入一次契约修复，而不是在最终 compact 后被静默接受。
   const fullDecision = decision("apply", "A", "Python");
@@ -666,6 +672,57 @@ async function contractRepairAndFailureSmoke() {
   assert.strictEqual(failed.errorStage, "matchJob");
   assert.strictEqual(failed.errorPhase, "initial");
   assert.strictEqual(decisionBucket({ ...completeJob("model-failure"), analysis: failed, qualityTags: [], risks: [] }), "analysis_pending");
+
+  const splitFailureCalls = [];
+  const splitFailureAdapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://example.invalid",
+    apiKey: "test-key",
+    model: "test"
+  });
+  splitFailureAdapter.chatJson = async (_prompt, _modelInput, { kind }) => {
+    splitFailureCalls.push(kind);
+    if (kind !== "matchResponsibilities") {
+      throw new Error("requirements must not run after responsibility repair fails");
+    }
+    return {
+      selectedTrackId: "T1",
+      matches: [{
+        id: "D1",
+        state: "matched",
+        resumeEvidence: "缺少简历前缀"
+      }]
+    };
+  };
+  const splitFailureAnalyzer = createLlmAnalyzer({
+    adapter: {
+      understandJob: async ({ job }) => understanding(job.sourceId),
+      matchJob: (input) => splitFailureAdapter.matchJob(input)
+    }
+  });
+  const splitFailing = createJobAnalysisRunner(configFor(["Python"]), [], {
+    db,
+    analyzer: splitFailureAnalyzer
+  });
+  const splitFailed = await splitFailing(completeJob("split-contract-failure"));
+  assert.deepStrictEqual(
+    splitFailureCalls,
+    ["matchResponsibilities", "matchResponsibilities"],
+    "职责初次与修复均失败后不得运行要求阶段或外层整链修复"
+  );
+  assert.strictEqual(splitFailed.semanticStatus, "failed");
+  assert.strictEqual(splitFailed.recommendation, null);
+  assert.strictEqual(splitFailed.decisionStatus, "needs_retry");
+  assert.strictEqual(splitFailed.errorStage, "matchResponsibilities");
+  assert.strictEqual(splitFailed.errorPhase, "contract_repair");
+  assert.strictEqual(
+    decisionBucket({
+      ...completeJob("split-contract-failure"),
+      analysis: splitFailed,
+      qualityTags: [],
+      risks: []
+    }),
+    "analysis_pending"
+  );
 
   assert.throws(() => validateModelResult("matchJob", { recommendation: "apply", fitLevel: "A", confidence: 0.9 }), ModelContractError);
 }
@@ -744,15 +801,29 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v41");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v42");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.6");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
     matchingCardVersion: "card",
     sourceContentHash: "job",
+    semanticMatchingMode: "split",
     pipelineVersions: PIPELINE_VERSIONS
   };
+  assert.deepStrictEqual(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        semanticMatchingMode: "legacy"
+      }
+    }, currentRevision),
+    ["semantic_matching_mode_changed"],
+    "split/legacy 切换必须使已保存分析过期"
+  );
+  assert.strictEqual(normalizeSemanticMatchingMode(undefined), "split");
+  assert.strictEqual(normalizeSemanticMatchingMode("legacy"), "legacy");
+  assert.throws(() => normalizeSemanticMatchingMode("invalid"), /split or legacy/);
   assert.deepStrictEqual(
     analysisStaleReasons({
       revision: {
@@ -1324,7 +1395,7 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v41",
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v42",
     "responsibility evidence changes must invalidate v39 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
@@ -2062,7 +2133,7 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v41",
+    matchJob: "match-decision-v42",
     decisionRules: "four-tier-weighted-v4.6",
     communication: "communication-v2"
   });

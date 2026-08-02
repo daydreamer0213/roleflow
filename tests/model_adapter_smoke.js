@@ -2,6 +2,10 @@ const assert = require("assert");
 const http = require("http");
 const { OpenAICompatibleAdapter, parseJsonContent } = require("../src/adapters/models/openai_compatible");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
+const {
+  deriveRoleAlignment,
+  normalizeResponsibilityOutput
+} = require("../src/core/split_semantic_matching");
 
 let requests = 0;
 const payloads = [];
@@ -553,6 +557,319 @@ server.listen(0, "127.0.0.1", async () => {
       "off 模式不得要求模型输出整体建议");
     assert(!Object.prototype.hasOwnProperty.call(offDecision, "modelRecommendation"),
       "off 模式归一化结果不得携带模型整体建议");
+    const splitCalls = [];
+    const splitAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    splitAdapter.chatJson = async (prompt, modelInput, { kind }) => {
+      splitCalls.push({ prompt, modelInput, kind });
+      if (kind === "matchResponsibilities") {
+        return {
+          selectedTrackId: "T1",
+          matches: [{
+            id: "D1",
+            state: "transferable",
+            resumeEvidence: `简历：${"具体事实".repeat(40)}`
+          }]
+        };
+      }
+      if (kind === "matchRequirements") {
+        return {
+          matches: [{
+            id: "R1",
+            state: "transferable",
+            resumeEvidence: "简历：有直接要求证据"
+          }],
+          eligibility: []
+        };
+      }
+      throw new Error(`unexpected split call kind: ${kind}`);
+    };
+    const splitInput = {
+      semanticMatchingMode: "split",
+      modelRecommendationMode: "off",
+      candidateProfile: {},
+      candidateMatchCard: null,
+      searchPreferences: {},
+      jobUnderstanding: {
+        industryContext: "示例行业",
+        hiringTracks: [{
+          id: "T1",
+          label: "示例方向",
+          roleSummary: "处理业务对象并交付结果",
+          responsibilityEvidence: ["JD：负责职责一", "JD：负责职责二"]
+        }],
+        coreRequirements: [{
+          id: "R1",
+          label: "要求一",
+          trackIds: ["T1"],
+          foundation: false,
+          central: true,
+          indispensable: false,
+          evidence: "JD：具备要求一"
+        }, {
+          id: "R2",
+          label: "要求二",
+          trackIds: ["T1"],
+          foundation: false,
+          central: false,
+          indispensable: false,
+          evidence: "JD：具备要求二"
+        }],
+        eligibilityItems: [],
+        riskSignals: [],
+        jobQuality: { level: "normal", concerns: [] }
+      }
+    };
+    const splitDecision = await splitAdapter.matchJob(splitInput);
+    assert.deepStrictEqual(
+      splitCalls.map((call) => call.kind),
+      ["matchResponsibilities", "matchRequirements"],
+      "split 模式必须恰好执行职责与要求两次窄调用"
+    );
+    assert.strictEqual(splitDecision.roleAlignment, "partially_aligned");
+    assert.strictEqual(splitDecision.responsibilityMatches[0].resumeEvidence.length, 120,
+      "非空超长证据必须由本地代码确定性截断");
+    assert.strictEqual(splitDecision.responsibilityMatches[1].state, "unknown",
+      "职责调用省略的预期 ID 必须保守归一化为 unknown");
+    assert.strictEqual(splitDecision.requirementMatches[1].state, "unknown",
+      "要求调用省略的预期 ID 必须保守归一化为 unknown");
+    assert(splitDecision.roleGaps.length > 0,
+      "central transferable 必须由本地代码生成可核对的要求差异");
+    assert(!Object.prototype.hasOwnProperty.call(splitDecision, "modelRecommendation"),
+      "split 模式不得重新引入模型整体建议");
+    assert(
+      splitCalls[0].prompt.length < matchPrompt.length
+        && splitCalls[1].prompt.length < matchPrompt.length,
+      "每个拆分提示词必须比旧的组合提示词更短"
+    );
+    assert.deepStrictEqual(
+      Object.keys(splitCalls[0].modelInput).sort(),
+      ["candidateMatchCard", "candidateProfile", "hiringTracks", "searchPreferences"],
+      "职责调用只能看到候选人事实、偏好和分支职责"
+    );
+    assert.deepStrictEqual(
+      Object.keys(splitCalls[1].modelInput).sort(),
+      ["candidateMatchCard", "candidateProfile", "eligibility", "requirements", "searchPreferences", "selectedTrack"],
+      "要求调用只能看到所选分支要求与资格"
+    );
+
+    const splitUnderstanding = splitInput.jobUnderstanding;
+    assert.throws(() => normalizeResponsibilityOutput({
+      selectedTrackId: "T1",
+      matches: [
+        { id: "D1", state: "matched", resumeEvidence: "简历：事实" },
+        { id: "D1", state: "matched", resumeEvidence: "简历：事实" }
+      ]
+    }, splitUnderstanding), /duplicate id/);
+    assert.throws(() => normalizeResponsibilityOutput({
+      selectedTrackId: "T1",
+      matches: [
+        { id: "D9", state: "matched", resumeEvidence: "简历：事实" }
+      ]
+    }, splitUnderstanding), /unknown id/);
+    assert.throws(() => normalizeResponsibilityOutput({
+      selectedTrackId: "T1",
+      matches: [
+        { id: "D1", state: "matched", resumeEvidence: { text: "简历：错误类型" } }
+      ]
+    }, splitUnderstanding), /resumeEvidence must be a string/);
+    for (const resumeEvidence of ["参与过相关项目", "简历：   "]) {
+      assert.throws(() => normalizeResponsibilityOutput({
+        selectedTrackId: "T1",
+        matches: [
+          { id: "D1", state: "matched", resumeEvidence }
+        ]
+      }, splitUnderstanding), /resumeEvidence must start with 简历： and contain evidence/);
+    }
+    assert.deepStrictEqual(
+      deriveRoleAlignment([
+        { state: "transferable", resumeEvidence: "简历：事实一" },
+        { state: "transferable", resumeEvidence: "简历：事实二" },
+        { state: "unknown", resumeEvidence: "" },
+        { state: "unknown", resumeEvidence: "" }
+      ]),
+      {
+        roleAlignment: "mostly_aligned",
+        total: 4,
+        known: 2,
+        coverage: 0.5,
+        score: 0.5
+      }
+    );
+
+    const badResponsibilityCalls = [];
+    const badResponsibilityAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    badResponsibilityAdapter.chatJson = async (_prompt, _modelInput, { kind }) => {
+      badResponsibilityCalls.push(kind);
+      if (kind !== "matchResponsibilities") {
+        throw new Error("requirements must not run after invalid responsibilities");
+      }
+      return {
+        selectedTrackId: "T1",
+        matches: [{
+          id: "D1",
+          state: "matched",
+          resumeEvidence: { text: "简历：错误类型" }
+        }]
+      };
+    };
+    await assert.rejects(
+      () => badResponsibilityAdapter.matchJob(splitInput),
+      (error) => error.code === "MODEL_CONTRACT_INVALID"
+        && error.modelStage === "matchResponsibilities"
+        && error.modelPhase === "contract_repair"
+    );
+    assert.deepStrictEqual(
+      badResponsibilityCalls,
+      ["matchResponsibilities", "matchResponsibilities"],
+      "职责结构失败只能重试职责一次，且不得调用要求阶段"
+    );
+
+    const requirementRepairCalls = [];
+    const requirementRepairAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    requirementRepairAdapter.chatJson = async (_prompt, modelInput, { kind }) => {
+      requirementRepairCalls.push(kind);
+      if (kind === "matchResponsibilities") {
+        return {
+          selectedTrackId: "T1",
+          matches: [{
+            id: "D1",
+            state: "transferable",
+            resumeEvidence: "简历：职责事实"
+          }]
+        };
+      }
+      if (!modelInput.contractRepair) {
+        return {
+          matches: [{
+            id: "R9",
+            state: "matched",
+            resumeEvidence: "简历：错误 ID"
+          }],
+          eligibility: []
+        };
+      }
+      return {
+        matches: [{
+          id: "R1",
+          state: "transferable",
+          resumeEvidence: "简历：要求事实"
+        }],
+        eligibility: []
+      };
+    };
+    await requirementRepairAdapter.matchJob(splitInput);
+    assert.deepStrictEqual(
+      requirementRepairCalls,
+      ["matchResponsibilities", "matchRequirements", "matchRequirements"],
+      "要求结构失败只能重试要求，不得重跑已经通过的职责阶段"
+    );
+
+    const multiTrackAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    multiTrackAdapter.chatJson = async (_prompt, _modelInput, { kind }) => (
+      kind === "matchResponsibilities"
+        ? {
+          selectedTrackId: "T2",
+          matches: [{
+            id: "D1",
+            state: "missing",
+            gapDimension: "work_object",
+            resumeEvidence: "简历：候选人的主要工作对象明确不同"
+          }]
+        }
+        : {
+          matches: [{
+            id: "R1",
+            state: "matched",
+            resumeEvidence: "简历：满足要求"
+          }],
+          eligibility: []
+        }
+    );
+    const multiTrackDecision = await multiTrackAdapter.matchJob({
+      ...splitInput,
+      jobUnderstanding: {
+        ...splitUnderstanding,
+        hiringTracks: [{
+          id: "T1",
+          label: "方向一",
+          roleSummary: "交付方向一",
+          responsibilityEvidence: ["JD：负责方向一"]
+        }, {
+          id: "T2",
+          label: "方向二",
+          roleSummary: "交付方向二",
+          responsibilityEvidence: ["JD：负责方向二"]
+        }],
+        coreRequirements: [{
+          ...splitUnderstanding.coreRequirements[0],
+          trackIds: ["T2"]
+        }]
+      }
+    });
+    assert.strictEqual(multiTrackDecision.selectedTrackId, "T2");
+    assert.strictEqual(multiTrackDecision.roleAlignment, "misaligned");
+    assert.match(multiTrackDecision.roleGaps[0], /主要工作对象不同/);
+
+    const multiTrackResponsibilityOnlyAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKey: "test-key",
+      model: "test"
+    });
+    multiTrackResponsibilityOnlyAdapter.chatJson = async (_prompt, _modelInput, { kind }) => (
+      kind === "matchResponsibilities"
+        ? {
+          selectedTrackId: "T2",
+          matches: [{
+            id: "D1",
+            state: "matched",
+            resumeEvidence: "简历：直接完成过同类职责交付"
+          }]
+        }
+        : { matches: [], eligibility: [] }
+    );
+    const responsibilityOnlyDecision = await multiTrackResponsibilityOnlyAdapter.matchJob({
+      ...splitInput,
+      jobUnderstanding: {
+        ...splitUnderstanding,
+        hiringTracks: [{
+          id: "T1",
+          label: "方向一",
+          roleSummary: "交付方向一",
+          responsibilityEvidence: ["JD：负责方向一"]
+        }, {
+          id: "T2",
+          label: "方向二",
+          roleSummary: "交付方向二",
+          responsibilityEvidence: ["JD：负责方向二"]
+        }],
+        coreRequirements: [{
+          ...splitUnderstanding.coreRequirements[0],
+          trackIds: ["T2"]
+        }]
+      }
+    });
+    assert.strictEqual(responsibilityOnlyDecision.roleAlignment, "partially_aligned");
+    assert.deepStrictEqual(
+      responsibilityOnlyDecision.roleResumeEvidence,
+      ["简历：直接完成过同类职责交付"],
+      "多分支岗位必须优先保留 D<n> 绑定的职责证据，不能被空要求证据覆盖"
+    );
     assert(
       understandPrompt.includes("requirements[{label,trackIds,foundation,central,indispensable,evidence}]"),
       "understandJob prompt 必须保留 foundation 与 central 标记"
@@ -875,6 +1192,20 @@ server.listen(0, "127.0.0.1", async () => {
             }
           }
         ],
+        ["https://api.deepseek.com", "deepseek-v4-pro", "matchResponsibilities", { test: true }],
+        ["https://api.deepseek.com", "deepseek-v4-pro", "matchRequirements", { test: true }],
+        [
+          "https://api.deepseek.com",
+          "deepseek-v4-pro",
+          "matchResponsibilities",
+          { test: true, contractRepair: { reason: "synthetic" } }
+        ],
+        [
+          "https://api.deepseek.com",
+          "deepseek-v4-pro",
+          "matchRequirements",
+          { test: true, contractRepair: { reason: "synthetic" } }
+        ],
         ["https://api.deepseek.com", "other-model", "understandJob", { test: true }],
         ["https://example.invalid", "deepseek-v4-pro", "understandJob", { test: true }],
         ["not-a-valid-url", "deepseek-v4-pro", "understandJob", { test: true }]
@@ -918,7 +1249,27 @@ server.listen(0, "127.0.0.1", async () => {
       !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[4], "thinking"),
       "official DeepSeek V4 matchJob contract repair must restore default thinking"
     );
-    for (const payload of deepSeekRequestBodies.slice(5)) {
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[5].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 responsibility matching must disable thinking"
+    );
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[6].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 requirement matching must disable thinking"
+    );
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[7].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 responsibility repair must keep thinking disabled"
+    );
+    assert.deepStrictEqual(
+      deepSeekRequestBodies[8].thinking,
+      { type: "disabled" },
+      "official DeepSeek V4 requirement repair must keep thinking disabled"
+    );
+    for (const payload of deepSeekRequestBodies.slice(9)) {
       assert(!Object.prototype.hasOwnProperty.call(payload, "thinking"),
         "other models, custom endpoints, and invalid URLs must keep their existing request body");
     }
