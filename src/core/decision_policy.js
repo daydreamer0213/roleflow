@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v3",
+  version: "four-tier-weighted-v4",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -50,6 +50,20 @@ const DECISION_POLICY = deepFreeze({
     positiveStates: ["matched", "transferable"],
     requireBoundEvidence: true,
     recommendationCeiling: "caution"
+  },
+  responsibilityAlignment: {
+    stateValues: {
+      matched: 1,
+      transferable: 0.5,
+      missing: 0,
+      unknown: 0
+    },
+    thresholds: {
+      aligned: 0.80,
+      mostlyAligned: 0.50
+    },
+    promotionCeiling: "apply",
+    contradictionCeiling: "caution"
   },
   defaultBatchSelection: {
     primary: true,
@@ -129,6 +143,24 @@ function assertDecisionPolicy(policy) {
   }
   if (policy.alignmentConsistency?.recommendationCeiling !== "caution") {
     throw new Error("alignment consistency must stay outside default batch selection");
+  }
+  for (const state of ["matched", "transferable", "missing", "unknown"]) {
+    finiteUnit(policy.responsibilityAlignment?.stateValues?.[state], `${state} responsibility value`);
+  }
+  const dutyAligned = finiteUnit(
+    policy.responsibilityAlignment?.thresholds?.aligned,
+    "aligned responsibility threshold"
+  );
+  const dutyMostly = finiteUnit(
+    policy.responsibilityAlignment?.thresholds?.mostlyAligned,
+    "mostly-aligned responsibility threshold"
+  );
+  if (dutyMostly >= dutyAligned) {
+    throw new Error("mostly-aligned responsibility threshold must be lower than aligned");
+  }
+  if (policy.responsibilityAlignment?.promotionCeiling !== "apply"
+    || policy.responsibilityAlignment?.contradictionCeiling !== "caution") {
+    throw new Error("responsibility alignment ceilings must preserve batch safety");
   }
 
   for (const state of ["matched", "transferable", "missing"]) {

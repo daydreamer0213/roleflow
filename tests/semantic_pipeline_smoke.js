@@ -744,8 +744,8 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v3");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1294,8 +1294,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v39",
-    "misaligned boundary changes must invalidate v38 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v40",
+    "responsibility evidence changes must invalidate v39 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -2032,8 +2032,8 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v39",
-    decisionRules: "four-tier-weighted-v3",
+    matchJob: "match-decision-v40",
+    decisionRules: "four-tier-weighted-v4",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -4115,6 +4115,41 @@ function roleAlignmentEvidenceContractSmoke() {
     eligibility: []
   };
   const normalized = validateModelResult("matchJob", sparse, { jobUnderstanding });
+  const normalizedWithResponsibilities = validateModelResult("matchJob", {
+    ...sparse,
+    responsibilityMatches: [{
+      id: "D1",
+      state: "transferable",
+      resumeEvidence: "简历：使用 Python 参与企业系统后端交付"
+    }]
+  }, { jobUnderstanding });
+  assert.deepStrictEqual(normalizedWithResponsibilities.responsibilityMatches, [{
+    id: "D1",
+    state: "transferable",
+    jdEvidence: jobUnderstanding.responsibilityEvidence[0],
+    resumeEvidence: "简历：使用 Python 参与企业系统后端交付"
+  }]);
+  assert.deepStrictEqual(normalized.responsibilityMatches, [{
+    id: "D1",
+    state: "unknown",
+    jdEvidence: jobUnderstanding.responsibilityEvidence[0],
+    resumeEvidence: ""
+  }], "omitted responsibility rows must remain bound to their D<n> position as unknown");
+  for (const responsibilityMatches of [
+    [
+      { id: "D1", state: "matched", resumeEvidence: "简历：事实一" },
+      { id: "D1", state: "transferable", resumeEvidence: "简历：事实二" }
+    ],
+    [{ id: "D2", state: "matched", resumeEvidence: "简历：越界事实" }],
+    [{ id: "D1", state: "missing", resumeEvidence: "" }],
+    [{ id: "D1", state: "unknown", resumeEvidence: "简历：unknown 不得携带证据" }]
+  ]) {
+    assert.throws(
+      () => validateModelResult("matchJob", { ...sparse, responsibilityMatches }, { jobUnderstanding }),
+      ModelContractError,
+      "responsibility evidence IDs, states, and evidence binding must remain strict"
+    );
+  }
   assert.strictEqual(normalized.roleAlignment, "mostly_aligned");
   assert.deepStrictEqual(normalized.roleResumeEvidence, sparse.roleResumeEvidence);
   assert.deepStrictEqual(normalized.roleGaps, sparse.roleGaps);

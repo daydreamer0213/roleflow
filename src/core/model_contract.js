@@ -559,6 +559,38 @@ function validateSparseMatchEvidence(value, context = {}) {
   }
   const modelRecommendation = validateModelRecommendation(value, context);
   const selected = selectedTrackContext(value, jobUnderstanding);
+  const expectedResponsibilities = selected.responsibilityEvidence.map((jdEvidence, index) => ({
+    id: `D${index + 1}`,
+    jdEvidence
+  }));
+  const sparseResponsibilities = value.responsibilityMatches === undefined
+    ? []
+    : sparseEvidenceItems(value.responsibilityMatches, {
+      field: "responsibilityMatches",
+      expected: expectedResponsibilities,
+      states: ["matched", "transferable", "missing", "unknown"],
+      evidenceStates: ["matched", "transferable", "missing"]
+    });
+  if (sparseResponsibilities.some((item) => item.state === "unknown" && item.resumeEvidence)) {
+    throw new ModelContractError(
+      "matchJob",
+      "responsibilityMatches.unknown must use an empty resumeEvidence"
+    );
+  }
+  const responsibilityById = new Map(sparseResponsibilities.map((item) => [item.id, item]));
+  const responsibilityMatches = expectedResponsibilities.map((expected) => {
+    const match = responsibilityById.get(expected.id) || {
+      id: expected.id,
+      state: "unknown",
+      resumeEvidence: ""
+    };
+    return {
+      id: expected.id,
+      state: match.state,
+      jdEvidence: expected.jdEvidence,
+      resumeEvidence: match.resumeEvidence
+    };
+  });
   const requirements = selected.requirements.map(normalizeExpectedRequirement);
   const eligibilityItems = Array.isArray(jobUnderstanding.eligibilityItems)
     ? jobUnderstanding.eligibilityItems
@@ -711,6 +743,7 @@ function validateSparseMatchEvidence(value, context = {}) {
     selectedTrackLabel: selected.selectedTrackLabel,
     roleSummary: selected.roleSummary,
     responsibilityEvidence: selected.responsibilityEvidence,
+    responsibilityMatches,
     ...roleAlignmentEvidence,
     matches,
     eligibility,

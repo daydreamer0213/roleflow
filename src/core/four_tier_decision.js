@@ -116,8 +116,87 @@ function matrixRecommendationFor(roleAlignment, band, policy = DECISION_POLICY) 
   return recommendation;
 }
 
+function scoreResponsibilityAlignment(items, policy) {
+  const matches = Array.isArray(items) ? items : [];
+  const total = matches.length;
+  let known = 0;
+  let points = 0;
+  for (const item of matches) {
+    const state = String(item?.state || "unknown").trim();
+    if (!Object.hasOwn(policy.responsibilityAlignment.stateValues, state)) continue;
+    if (state !== "unknown") known += 1;
+    if (["matched", "transferable", "missing"].includes(state)
+      && (!hasEvidence(item?.jdEvidence) || !hasEvidence(item?.resumeEvidence))) continue;
+    points += policy.responsibilityAlignment.stateValues[state];
+  }
+  const score = total ? points / total : null;
+  let alignment = "";
+  if (known > 0 && score >= policy.responsibilityAlignment.thresholds.aligned) {
+    alignment = "aligned";
+  } else if (known > 0 && score >= policy.responsibilityAlignment.thresholds.mostlyAligned) {
+    alignment = "mostly_aligned";
+  } else if (known > 0 && score > 0) {
+    alignment = "partially_aligned";
+  } else if (total > 0 && known === total) {
+    alignment = "misaligned";
+  }
+  return {
+    total,
+    known,
+    score,
+    coverage: total ? known / total : 0,
+    alignment
+  };
+}
+
 function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY) {
   const reportedRoleAlignment = String(analysis.roleAlignment || "insufficient_evidence").trim();
+  const responsibility = scoreResponsibilityAlignment(analysis.responsibilityMatches, policy);
+  const alignmentRank = {
+    insufficient_evidence: 0,
+    misaligned: 1,
+    partially_aligned: 2,
+    mostly_aligned: 3,
+    aligned: 4
+  };
+  let effectiveRoleAlignment = reportedRoleAlignment;
+  let alignmentConsistencyAdjusted = false;
+  let alignmentConsistencyReason = "";
+  let alignmentAdjustmentSource = "";
+  let recommendationCeiling = "";
+
+  if (responsibility.alignment) {
+    const reportedRank = alignmentRank[reportedRoleAlignment] || 0;
+    const responsibilityRank = alignmentRank[responsibility.alignment] || 0;
+    if (reportedRoleAlignment === "misaligned" && responsibilityRank > alignmentRank.misaligned) {
+      effectiveRoleAlignment = "partially_aligned";
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_positive_evidence";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    } else if (reportedRoleAlignment === "partially_aligned"
+      && responsibilityRank >= alignmentRank.mostly_aligned) {
+      effectiveRoleAlignment = responsibility.alignment;
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_coverage";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.promotionCeiling;
+    } else if (reportedRank >= alignmentRank.mostly_aligned
+      && responsibilityRank <= alignmentRank.partially_aligned) {
+      effectiveRoleAlignment = "partially_aligned";
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_coverage_gap";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    } else if (reportedRoleAlignment === "partially_aligned"
+      && responsibility.alignment === "misaligned") {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_mismatch";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    }
+  }
+
   const rule = policy.alignmentConsistency;
   const consistencyEvidence = (Array.isArray(analysis.requirementMatches) ? analysis.requirementMatches : [])
     .filter((item) => (
@@ -128,14 +207,30 @@ function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY
             && hasEvidence(item?.resumeEvidence)
         ))
     ));
-  const alignmentConsistencyAdjusted = reportedRoleAlignment === rule.source
+  const coreConsistencyAdjusted = !alignmentConsistencyAdjusted
+    && !responsibility.alignment
+    && reportedRoleAlignment === rule.source
     && consistencyEvidence.length > 0;
+  if (coreConsistencyAdjusted) {
+    effectiveRoleAlignment = rule.target;
+    alignmentConsistencyAdjusted = true;
+    alignmentConsistencyReason = "core_central_positive_evidence";
+    alignmentAdjustmentSource = "requirement_evidence";
+    recommendationCeiling = rule.recommendationCeiling;
+  }
   return {
     reportedRoleAlignment,
-    effectiveRoleAlignment: alignmentConsistencyAdjusted ? rule.target : reportedRoleAlignment,
+    effectiveRoleAlignment,
     alignmentConsistencyAdjusted,
-    alignmentConsistencyReason: alignmentConsistencyAdjusted ? "core_central_positive_evidence" : "",
-    alignmentConsistencyEvidenceCount: consistencyEvidence.length
+    alignmentConsistencyReason,
+    alignmentConsistencyEvidenceCount: consistencyEvidence.length,
+    alignmentAdjustmentSource,
+    alignmentRecommendationCeiling: recommendationCeiling,
+    responsibilityAlignment: responsibility.alignment,
+    responsibilityScore: responsibility.score,
+    responsibilityCoverage: responsibility.coverage,
+    responsibilityKnownCount: responsibility.known,
+    responsibilityTotalCount: responsibility.total
   };
 }
 
@@ -156,10 +251,10 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   }
 
   const recommendationBeforeAlignmentCap = recommendation;
-  if (alignment.alignmentConsistencyAdjusted) {
+  if (alignment.alignmentRecommendationCeiling) {
     recommendation = capRecommendationTier(
       recommendation,
-      policy.alignmentConsistency.recommendationCeiling
+      alignment.alignmentRecommendationCeiling
     );
   }
   const alignmentConsistencyCapped = recommendation !== recommendationBeforeAlignmentCap;

@@ -37,15 +37,15 @@ function supporting(state, options = {}) {
   return requirement(state, options);
 }
 
-function decision(roleAlignment, requirementMatches) {
-  return deriveMatrixDecision({ roleAlignment, requirementMatches });
+function decision(roleAlignment, requirementMatches, responsibilityMatches = []) {
+  return deriveMatrixDecision({ roleAlignment, requirementMatches, responsibilityMatches });
 }
 
 function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v3");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -245,6 +245,66 @@ const unboundCoreCentralNotAdjusted = decision("misaligned", [
 ]);
 assert.strictEqual(unboundCoreCentralNotAdjusted.effectiveRoleAlignment, "misaligned");
 assert.strictEqual(unboundCoreCentralNotAdjusted.matrixRecommendation, "not_recommended");
+
+const dutyEvidenceRecoversAdjacentRole = decision("misaligned", [
+  core("unknown", { central: true })
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：相邻主要职责", resumeEvidence: "简历：可迁移职责证据" },
+  { id: "D2", state: "unknown", jdEvidence: "JD：另一主要职责", resumeEvidence: "" }
+]);
+assert.strictEqual(dutyEvidenceRecoversAdjacentRole.effectiveRoleAlignment, "partially_aligned");
+assert.strictEqual(dutyEvidenceRecoversAdjacentRole.alignmentAdjustmentSource, "responsibility_evidence");
+assert.strictEqual(dutyEvidenceRecoversAdjacentRole.matrixRecommendation, "caution");
+
+const dutyEvidencePromotesPartialRole = decision("partially_aligned", [
+  core("matched", { central: true })
+], [
+  { id: "D1", state: "matched", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：直接职责证据" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据" }
+]);
+assert.strictEqual(dutyEvidencePromotesPartialRole.responsibilityAlignment, "mostly_aligned");
+assert.strictEqual(dutyEvidencePromotesPartialRole.effectiveRoleAlignment, "mostly_aligned");
+assert.strictEqual(dutyEvidencePromotesPartialRole.matrixRecommendation, "apply",
+  "responsibility evidence may recover an adjacent role only into a default-selected apply tier");
+
+const dutyEvidenceCapsOverstatedRole = decision("mostly_aligned", [
+  core("matched", { central: true })
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据" },
+  { id: "D2", state: "unknown", jdEvidence: "JD：主要职责二", resumeEvidence: "" }
+]);
+assert.strictEqual(dutyEvidenceCapsOverstatedRole.responsibilityAlignment, "partially_aligned");
+assert.strictEqual(dutyEvidenceCapsOverstatedRole.effectiveRoleAlignment, "partially_aligned");
+assert.strictEqual(dutyEvidenceCapsOverstatedRole.matrixRecommendation, "caution");
+
+const confirmedDutyMismatch = decision("misaligned", [
+  core("missing", {
+    central: true,
+    jdEvidence: "JD：核心职责要求",
+    resumeEvidence: "简历：明确不同的核心职责"
+  })
+], [
+  { id: "D1", state: "missing", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：明确不同的职责证据" },
+  { id: "D2", state: "missing", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：明确不同的交付证据" }
+]);
+assert.strictEqual(confirmedDutyMismatch.responsibilityAlignment, "misaligned");
+assert.strictEqual(confirmedDutyMismatch.effectiveRoleAlignment, "misaligned");
+assert.strictEqual(confirmedDutyMismatch.matrixRecommendation, "not_recommended");
+
+const partialClaimWithMissingDuties = decision("partially_aligned", [
+  core("matched", {
+    central: true,
+    jdEvidence: "JD：核心要求",
+    resumeEvidence: "简历：核心要求证据"
+  })
+], [
+  { id: "D1", state: "missing", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：明确不同的职责证据" },
+  { id: "D2", state: "missing", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：明确不同的交付证据" }
+]);
+assert.strictEqual(partialClaimWithMissingDuties.responsibilityAlignment, "misaligned");
+assert.strictEqual(partialClaimWithMissingDuties.effectiveRoleAlignment, "partially_aligned");
+assert.strictEqual(partialClaimWithMissingDuties.matrixRecommendation, "caution",
+  "a partial claim with fully mismatched primary duties must stay outside default communication");
 
 const lowFitNotRescued = decision("misaligned", [
   core("missing"),

@@ -136,6 +136,12 @@ const compact = compactAnalysis({
   },
   matchDecision: {
     roleAlignment: "aligned",
+    responsibilityMatches: [{
+      id: "D1",
+      state: "matched",
+      jdEvidence: "JD: primary delivery",
+      resumeEvidence: "Resume: primary delivery evidence"
+    }],
     modelRecommendation: "apply",
     requirementMatches: [],
     hardBlockers: [],
@@ -145,8 +151,14 @@ const compact = compactAnalysis({
   revision: {}
 });
 assert.equal(compact.modelRecommendation, "apply");
+assert.deepEqual(compact.responsibilityMatches, [{
+  id: "D1",
+  state: "matched",
+  jdEvidence: "JD: primary delivery",
+  resumeEvidence: "Resume: primary delivery evidence"
+}], "compact analysis must preserve responsibility evidence for the production decision path");
 
-assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v3");
+assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4");
 
 console.log("four_tier_pipeline_smoke ok");

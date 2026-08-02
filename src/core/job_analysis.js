@@ -83,6 +83,7 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
+    responsibilityMatches: [],
     roleAlignment: "",
     roleResumeEvidence: [],
     roleGaps: [],
@@ -215,6 +216,7 @@ function compactAnalysis(configs, parts) {
     selectedTrackLabel: decision.selectedTrackLabel || "",
     roleSummary: decision.roleSummary || "",
     responsibilityEvidence: decision.responsibilityEvidence || [],
+    responsibilityMatches: decision.responsibilityMatches || [],
     businessScenario: understanding.businessScenario || "",
     coreResponsibilities: understanding.coreResponsibilities || [],
     coreRequirements: (understanding.coreRequirements || []).map((item) => typeof item === "string" ? item : item.label).filter(Boolean),
@@ -294,6 +296,7 @@ function failedAnalysis(configs, job, revision, error) {
     roleSummary: "",
     businessScenario: "",
     responsibilityEvidence: [],
+    responsibilityMatches: [],
     roleAlignment: "",
     roleResumeEvidence: [],
     roleGaps: [],
@@ -371,7 +374,8 @@ function applyRuleGuard(analysis, job) {
   // 四、代码计算 70/30 加权结果并查四档二维表。模型 shadow 建议不参与。
   const decisionMetrics = deriveMatrixDecision({
     roleAlignment: analysis.roleAlignment,
-    requirementMatches: analysis.requirementMatches
+    requirementMatches: analysis.requirementMatches,
+    responsibilityMatches: analysis.responsibilityMatches
   });
   let guarded = {
     ...analysis,

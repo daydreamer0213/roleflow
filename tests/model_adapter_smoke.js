@@ -252,18 +252,27 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(selectedTrackDecision.modelRecommendation, "apply",
       "默认 shadow 模式必须保留模型四档建议，但不得把它当作最终档位");
     const matchPrompt = payloads.at(-1).messages[0].content;
-    for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "matches", "eligibility", "modelRecommendation"]) {
+    for (const field of ["roleAlignment", "roleResumeEvidence", "roleGaps", "responsibilityMatches", "matches", "eligibility", "modelRecommendation"]) {
       assert(matchPrompt.includes(field), `matchJob prompt must request ${field}`);
     }
     assert(matchPrompt.includes('matches:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的核心项证据");
     assert(matchPrompt.includes('eligibility:[{id,state,resumeEvidence}]'), "matchJob prompt 必须只要求紧凑的资格证据");
     assert(!matchPrompt.includes("uncertainties") && !matchPrompt.includes("certainty") && !matchPrompt.includes("cautions:[{kind,detail}]"), "matchJob prompt must only request sparse evidence rows");
-    assert(matchPrompt.includes("R1") && matchPrompt.includes("E1"), "matchJob prompt 必须按稳定 ID 覆盖理解结果");
+    assert(
+      matchPrompt.includes("For responsibilityMatches, use exactly D1 through D<n>")
+        && matchPrompt.includes("For matches, use only existing R* IDs")
+        && matchPrompt.includes("for eligibility, use only existing E* IDs"),
+      "matchJob prompt 必须把 D*、R*、E* 编号限制在各自字段"
+    );
+    assert(
+      matchPrompt.includes('"responsibilityMatches":[{"id":"D1"'),
+      "matchJob prompt 的精确 JSON 示例必须包含 D1 职责匹配"
+    );
     assert(
       matchPrompt.includes(
-        "Return exactly these seven top-level keys and no others: selectedTrackId, roleAlignment, roleResumeEvidence, roleGaps, matches, eligibility, modelRecommendation."
+        "Return exactly these eight top-level keys and no others: selectedTrackId, roleAlignment, roleResumeEvidence, roleGaps, responsibilityMatches, matches, eligibility, modelRecommendation."
       ),
-      "matchJob shadow prompt 必须声明精确的七键顶层契约"
+      "matchJob shadow prompt 必须声明包含责任项匹配的精确八键顶层契约"
     );
     for (const locallyDerived of [
       "requirementMatches",
@@ -467,6 +476,12 @@ server.listen(0, "127.0.0.1", async () => {
         && matchPrompt.includes("main action")
         && matchPrompt.includes("primary deliverable"),
       "matchJob prompt must compare the primary work object, action, and deliverable"
+    );
+    assert(
+      matchPrompt.includes("responsibilityMatches")
+        && matchPrompt.includes("D1 means the first selected-track responsibilityEvidence item")
+        && matchPrompt.includes("matched, transferable, missing, or unknown"),
+      "matchJob prompt must bind every selected-track primary duty to structured candidate evidence"
     );
     assert(
       matchPrompt.includes("partially_aligned includes an adjacent role family")
