@@ -18,6 +18,11 @@ const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
+const FORMAL_MODEL_SETTINGS_ROOT = "D:\\Guo\\ZhiPing";
+const TEST_MODEL_SETTINGS_ROOT = path.resolve(__dirname, "..").toLowerCase()
+  === path.resolve(FORMAL_MODEL_SETTINGS_ROOT).toLowerCase()
+  ? path.dirname(FORMAL_MODEL_SETTINGS_ROOT)
+  : FORMAL_MODEL_SETTINGS_ROOT;
 const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-${process.pid}`);
 const siblingBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-baseline-${process.pid}`);
 const formalBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-formal-baseline-${process.pid}`);
@@ -242,7 +247,7 @@ function liveOptions(mode, side, overrides = {}) {
     side,
     privateRoot: testRoot,
     output: privatePath("runs", side),
-    modelSettingsRoot: "D:\\Guo\\ZhiPing",
+    modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT,
     modelDescriptor: { provider: "synthetic-provider" },
     gitProof: { clean: true, commit: side === "baseline" ? "1".repeat(40) : "2".repeat(40) },
     ...overrides
@@ -3525,7 +3530,7 @@ async function main() {
       side: "candidate",
       resumeText: privatePath("input", "resume.redacted.txt"),
       output: privatePath("runs", "candidate"),
-      modelSettingsRoot: "D:\\Guo\\ZhiPing",
+      modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT,
       modelDescriptor: { provider: "real-test-provider" }
     });
     delete live.pdf;
@@ -3546,23 +3551,23 @@ async function main() {
 
     expectGateOk({
       mode: "card-live", privateRoot: testRoot, side: "candidate", profile: privatePath("runs", "candidate", "profile.json"),
-      output: privatePath("runs", "candidate"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" }, gitProof: { clean: true, commit: "39557f2" }
+      output: privatePath("runs", "candidate"), modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT, modelDescriptor: { provider: "real" }, gitProof: { clean: true, commit: "39557f2" }
     });
     expectGateOk({
       mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
       matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
-      output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" }, gitProof: { clean: true, commit: "39557f2" }
+      output: privatePath("runs", "baseline"), modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT, modelDescriptor: { provider: "real" }, gitProof: { clean: true, commit: "39557f2" }
     });
     expectGate("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", {
       mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
       matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
-      output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" },
+      output: privatePath("runs", "baseline"), modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT, modelDescriptor: { provider: "real" },
       diagnosticIndices: "0,0", gitProof: { clean: true, commit: "39557f2" }
     });
     expectGate("PRIVATE_FULL_CHAIN_DIAGNOSTIC_INVALID", {
       mode: "match-live", privateRoot: testRoot, side: "baseline", profile: privatePath("input", "confirmed-profile.private.json"),
       matchingCard: privatePath("input", "confirmed-card.private.json"), jobs: privatePath("input", "jobs.private.json"), labels: privatePath("labels", "jobs.reviewed.json"),
-      output: privatePath("runs", "baseline"), modelSettingsRoot: "D:\\Guo\\ZhiPing", modelDescriptor: { provider: "real" },
+      output: privatePath("runs", "baseline"), modelSettingsRoot: TEST_MODEL_SETTINGS_ROOT, modelDescriptor: { provider: "real" },
       diagnosticIndices: "0,1,2,3,4,5", gitProof: { clean: true, commit: "39557f2" }
     });
     expectGate("PRIVATE_FULL_CHAIN_PRIVATE_ROOT_FORBIDDEN", gateOptions({ privateRoot: path.resolve(__dirname, "..") }));
