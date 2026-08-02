@@ -35,7 +35,7 @@ const PRODUCT_POLICY = Object.freeze({
   }),
   operations: Object.freeze({
     modelAnalysis: Object.freeze({
-      scanConcurrency: 3,
+      scanConcurrency: 1,
       retryConcurrency: 2,
       maxRetryJobs: 50
     }),

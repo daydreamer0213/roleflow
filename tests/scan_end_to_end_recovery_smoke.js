@@ -21,8 +21,20 @@ async function main() {
   let db;
   try {
     const storage = require("../src/core/storage");
+    const { matchingCardFromProfile } = require("../src/core/matching_card");
     db = storage.openDb(dbPath);
-    const { profileId, planId } = storage.saveProfileAnalysis(db, fixtureProfile());
+    const fixture = fixtureProfile();
+    const saved = storage.saveProfileAnalysis(db, fixture);
+    const { profileId, planId } = saved;
+    const seededDraft = storage.createMatchingCardDraft(db, {
+      profileId,
+      profileVersionId: saved.profileVersionId,
+      resumeDocumentId: saved.resumeDocumentId,
+      resumeContentHash: fixture.document.contentHash,
+      card: matchingCardFromProfile(fixture.profile),
+      source: "migration"
+    });
+    storage.confirmMatchingCard(db, { profileId, cardId: seededDraft.id });
     const otherPlanId = storage.saveSearchPlan(db, {
       profileId,
       plan: { ...fixturePlan(), name: "Other recovery plan" }

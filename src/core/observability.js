@@ -5,7 +5,7 @@ const path = require("node:path");
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_LOG_DAYS = 21;
 const MAX_VALUE_LENGTH = 1600;
-const SECRET_KEY = /(?:api[_-]?key|authorization|cookie|token|password|secret|resume(?:text)?|description|content|body|buffer|(?:original)?file(?:name|path))/i;
+const SECRET_KEY = /(?:api[_-]?key|authorization|cookie|token|password|secret|resume(?:text)?|description|content|body|buffer|preview|(?:original)?file(?:name|path))/i;
 const SAFE_METRIC_KEY = /^(?:prompt|completion|total)_tokens$/i;
 
 function createLogger({ root, component = "app", context = {} } = {}) {

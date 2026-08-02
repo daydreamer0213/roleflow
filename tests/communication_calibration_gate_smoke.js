@@ -86,7 +86,13 @@ function seed(database) {
     matches: ["Node.js"],
     risks: [],
     qualityTags: [],
-    analysis: {}
+        analysis: {
+          semanticStatus: "complete",
+          recommendation: "primary",
+          recommendationSchemaVersion: 2,
+          fitLevel: "fit",
+          hardBlockers: []
+        }
   }, scanBatchId);
   return { planId, jobId };
 }

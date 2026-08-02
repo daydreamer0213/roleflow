@@ -20,18 +20,36 @@ function readOptionalConfig(file, fallback) {
 function loadConfigs(root = process.cwd(), options = {}) {
   const candidateProfilePath = options.candidateProfile || options.profile;
   const resumeVersionsPath = options.resumeVersions;
+  const model = readOptionalConfig(
+    path.join(root, "configs", "model.json"),
+    { provider: "mock", providers: { mock: {} } }
+  );
   return {
     profile: readOptionalConfig(path.join(root, "configs", "profile.yaml"), DEFAULT_PROFILE),
     keywords: readConfig(path.join(root, "configs", "keywords.yaml")),
     scoring: readConfig(path.join(root, "configs", "scoring.yaml")),
-    model: readOptionalConfig(path.join(root, "configs", "model.json"), { provider: "mock", providers: { mock: {} } }),
+    model,
+    semanticMatchingMode: normalizeSemanticMatchingMode(model.semanticMatchingMode),
     candidateProfile: candidateProfilePath ? readOptionalConfig(resolvePath(root, candidateProfilePath), null) : null,
     resumeVersions: resumeVersionsPath ? readOptionalConfig(resolvePath(root, resumeVersionsPath), { versions: [] }) : { versions: [] }
   };
+}
+
+function normalizeSemanticMatchingMode(value) {
+  const mode = String(value || "split").trim().toLowerCase();
+  if (!["split", "legacy"].includes(mode)) {
+    throw new Error("semantic matching mode must be split or legacy");
+  }
+  return mode;
 }
 
 function resolvePath(root, file) {
   return path.isAbsolute(file) ? file : path.join(root, file);
 }
 
-module.exports = { readConfig, readOptionalConfig, loadConfigs };
+module.exports = {
+  readConfig,
+  readOptionalConfig,
+  loadConfigs,
+  normalizeSemanticMatchingMode
+};

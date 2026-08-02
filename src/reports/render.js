@@ -24,7 +24,7 @@ function renderMarkdown(jobs) {
   for (const job of jobs) {
     const analysis = job.analysis || {};
     const title = job.url ? `[${escapeMd(job.title)}](${job.url})` : escapeMd(job.title);
-    lines.push(`|${job.score}|${escapeMd(job.level)}|${escapeMd(statusLabel(job))}|${escapeMd(seenLabel(job))}|${escapeMd(analysis.recommendation || "")}|${title}|${escapeMd(job.company)}|${escapeMd(job.location)}|${escapeMd(job.salary)}|${escapeMd(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "")}|${escapeMd([...(job.risks || []), ...(job.qualityTags || [])].join("；"))}|`);
+    lines.push(`|${job.score}|${escapeMd(job.level)}|${escapeMd(statusLabel(job))}|${escapeMd(seenLabel(job))}|${escapeMd(recommendationLabel(analysis.recommendation))}|${title}|${escapeMd(job.company)}|${escapeMd(job.location)}|${escapeMd(job.salary)}|${escapeMd(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "")}|${escapeMd([...(job.risks || []), ...(job.qualityTags || [])].join("；"))}|`);
   }
 
   lines.push("");
@@ -38,12 +38,12 @@ function renderMarkdown(jobs) {
     lines.push(`- 工作节奏：${workScheduleLabel(analysis)}`);
     lines.push(`- 状态：${statusLabel(job)} / ${seenLabel(job)}`);
     lines.push(`- 反馈提示：${feedbackText}`);
-    lines.push(`- 投递建议：${analysis.recommendation || "caution"} / ${analysis.fitLevel || "待确认"} / 置信度 ${formatConfidence(analysis.confidence)}`);
+    lines.push(`- 投递建议：${recommendationLabel(analysis.recommendation)} / ${analysis.fitLevel || "待确认"}`);
     lines.push(`- 推荐简历：${analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认"}`);
     lines.push(`- 主推项目：${(analysis.primaryProjects || []).join("、") || "待确认"}`);
     lines.push(`- 规则命中：${(job.matches || []).join("、") || "无"}`);
     lines.push(`- 质量标签：${(job.qualityTags || []).join("、") || "无"}`);
-    lines.push(`- 模型理由：${(analysis.fitReasons || []).join("；") || "待补充"}`);
+    lines.push(`- 判定理由：${(analysis.fitReasons || []).join("；") || "待补充"}`);
     lines.push(`- 风险：${(job.risks || []).join("、") || "无"}`);
     lines.push(`- 风险追问：${(analysis.riskQuestions || []).join("；") || "暂无"}`);
     lines.push(`- 沟通角度：${analysis.greetingAngle || "按岗位职责切入"}`);
@@ -102,7 +102,7 @@ function renderAnalysisBand(job) {
   const analysis = job.analysis || {};
   if (!Object.keys(analysis).length) return "";
   return `<div class="decision">
-    <span class="pill">建议：${escapeHtml(analysis.recommendation || "caution")}</span>
+    <span class="pill">建议：${escapeHtml(recommendationLabel(analysis.recommendation))}</span>
     <span class="pill">匹配：${escapeHtml(analysis.fitLevel || "待确认")}</span>
     <span class="pill">简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")}</span>
     <span class="pill">模型：${escapeHtml(analysis.provider || "mock")}</span>
@@ -137,6 +137,15 @@ function chips(values = [], cls) {
 
 function formatConfidence(value) {
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "待确认";
+}
+
+function recommendationLabel(value) {
+  return {
+    primary: "主投",
+    apply: "可投",
+    caution: "慎投",
+    not_recommended: "不推荐"
+  }[value] || "待分析";
 }
 
 function statusLabel(job) {

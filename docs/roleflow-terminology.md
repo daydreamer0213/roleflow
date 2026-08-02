@@ -1,63 +1,67 @@
----
+﻿---
 name: roleflow-terminology
-description: RoleFlow 项目统一中英文术语对照，所有代码和讨论中必须使用中文，必要时英文加括号中文备注
-metadata: 
+description: RoleFlow 当前统一中英文术语
+metadata:
   node_type: memory
   type: project
   originSessionId: 355f3b01-a14c-47cd-82a6-e7f1cf6dfe0c
-  modified: 2026-07-31T10:13:59.769Z
+  modified: 2026-08-01T00:00:00.000Z
 ---
-
-## 岗位要求分类
-
-- **基础要求**（foundation）：JD 里提到的关键能力或经验，比如"Python精通""熟悉 LangChain"
-- **硬性要求**（indispensable，不可或缺）：没它就不行的要求，比如 Python 岗不会 Python
-- **核心要求**（central）：基础要求 或 硬性要求，任意一个成立就算。公式：核心 = 基础 ∪ 硬性
 
 ## 四档建议
 
-| 中文 | 英文 | 含义 |
-|------|------|------|
-| 主投 | apply | 匹配度高，直接投 |
-| 可投 | caution | 可以投但要先沟通确认 |
-| 慎投 | review | AI 拿不准，需要人来看 |
-| 不推荐 | skip | 硬性不匹配，排除 |
+| 中文 | 代码值 | 默认沟通 | 简单解释 |
+|---|---|---:|---|
+| 主投 | `primary` | 是 | 最值得优先沟通 |
+| 可投 | `apply` | 是 | 可以沟通，但不是最优先 |
+| 慎投 | `caution` | 否 | 不完全匹配，需要人工判断 |
+| 不推荐 | `not_recommended` | 否 | 明显不合适，排除 |
 
-## 角色匹配度（roleAlignment）
+四档同时是最终 `recommendation` 和业务 `bucket`。技术待处理使用
+`analysis_pending` 或 `refresh`，此时 `recommendation=null`，不属于四档。
 
-- **匹配**（aligned）：岗位方向完全匹配简历
-- **大部分匹配**（mostly_aligned）：大体匹配，经验不完全对口
-- **部分匹配**（partially_aligned）：部分匹配，有交叉但不完全对应
-- **不匹配**（misaligned）：方向完全不同
-- **信息不足**（insufficient_evidence）：JD 信息不够，AI 无法判断
+## 岗位要求分类
 
-## 逐条要求匹配状态（requirementMatches.state）
+- **核心要求**：`foundation || central || indispensable` 任一字段为 true。
+- **支持要求**：不是核心、也不是明确可选项，但仍会影响岗位胜任度的要求。
+- **软条件**：JD 明确写成优先、加分、非必须或可选的条件，不计入普通非核心缺口数量。
+- **硬性要求**（indispensable）：岗位明确不可缺少的要求。这个字段可以参与核心计分，
+  但不能单独制造硬阻断。
+- **硬性阻断**（hardBlocker）：必须有合法 kind、具体 requirement、JD 明确不可协商边界、
+  候选人明确不兼容事实和双侧证据，才可直接形成不推荐。
 
-- **直接对上**（matched）：简历有直接证据
-- **可显著推导**（transferable，可迁移）：没有直接证据，但相关能力可以显著迁移。推导关系必须紧密，比如"熟悉 LangGraph 开发 Agent"可以推导出"有 Agent 架构设计能力"。不能宽松推导（如"会用 ChatGPT"不能推导出"会训练大模型"）
-- **对不上**（missing）：简历没有相关证据
-- **未知**（unknown）：信息不足无法判断
+## 岗位方向（roleAlignment）
 
-## 核心要求符合度
+- **匹配**（aligned）：主要工作对象、动作和交付与候选方向一致。
+- **大部分匹配**（mostly_aligned）：主线一致，但存在有限差异。
+- **部分匹配**（partially_aligned）：相邻方向，候选人对主要交付中的实质部分有证据。
+- **不匹配**（misaligned）：主要工作对象、动作或交付不同；共同工具或通用能力不能自动抬升。
+- **信息不足**（insufficient_evidence）：现有信息不足以判断方向，不直接硬猜四档正向建议。
 
-计算范围：核心要求（central = 基础（foundation）∪ 硬性（indispensable，不可或缺））。
+## 逐条要求状态
 
-按"直接对上 + 可显著推导 × 0.5"占核心要求总数的比例：
+- **直接对上**（matched）：候选人有直接证据，计 1 分。
+- **可显著推导**（transferable）：底层能力可紧密迁移，计 0.5 分。
+- **对不上**（missing）：有足够信息确认缺口，计 0 分。
+- **未知**（unknown）：现有信息无法确认，计 0 分，同时降低证据覆盖率。
 
-- **符合**：得分 ≥ 80%
-- **大部分符合**：得分 ≥ 50%
-- **部分符合**：得分 > 0 但 < 50%
-- **不符合**：得分 = 0（全无证据，多数对不上）
+核心集合占 70%，支持集合占 30%。符合度分为 `fit`、`mostly_fit`、`partial_fit`、
+`no_fit`，最终档位查询 `docs/roleflow-decision-matrix.md` 中冻结二维表。
 
-例如 5 条核心要求：2 条直接对上 + 1 条可显著推导 + 2 条对不上 → 得分 = (2 + 0.5) / 5 = 50% → 大部分符合
+## 证据与技术状态
 
-## 其他
+- **双侧证据**：总体结论至少包含可核对 JD 事实和候选人事实；不要求每个正向条目重复同一事实。
+- **技术待重试**（needs_retry）：模型失败、缓存过期、等待分析、只有局部 JD、需要刷新、方向无法进入
+  二维表或总体任一侧证据为空。技术状态不等于慎投。
+- **模型 shadow 建议**：模型的整体语义建议，只用于对照，不控制最终档位。
 
-- **通道**（bucket，已废弃）：代码内部曾用的上限值，分主投通道（primary）、沟通通道（talk）、备选通道（backup）。已在新策略中移除，不再使用。
-- **证据**（evidence）：简历中对某条要求的具体证明，必须以"简历："开头引用原文
-- **缺口**（gap）：核心要求对不上或可推导的情况
-- **硬性阻断**（hardBlocker）：经过核实的、不可沟通的排除理由，必须是 indispensable 且 state=missing 且有明确的拒绝证据
+## 偏差术语
 
-## 废弃概念
+- **严重错放**（hardFalsePlacement）：人工不推荐，实际进入主投或可投。
+- **错误硬排除**（falseHardExclusion）：人工主投或可投，实际进入不推荐。
+- **中度偏差**（moderateDeviation）：慎投与不推荐之间互相偏移。
 
-- **通道**（bucket）：已被新判定表替代。旧代码中的 roleEvidenceDecisionState 函数和相关 guard 规则已移除。
+## 历史只读别名
+
+旧 `apply/caution/review/skip` recommendation 和 `primary/talk/backup` bucket 只用于读取历史结果。
+新写入统一使用 `primary/apply/caution/not_recommended`，不得混写。

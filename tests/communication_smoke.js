@@ -5,6 +5,8 @@ const path = require("node:path");
 const {
   openDb,
   saveProfileAnalysis,
+  createMatchingCardDraft,
+  confirmMatchingCard,
   createBatch,
   upsertJob,
   listReportJobs,
@@ -12,6 +14,7 @@ const {
   buildFeedbackSummary,
   listCandidateFacts
 } = require("../src/core/storage");
+const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-communication-"));
@@ -39,6 +42,16 @@ let server;
       document: { originalFileName: "resume.txt", format: "text", contentHash: "communication-resume", text: "教育经历 测试大学 本科。项目经历 KnowledgeFlow，使用 Python、RAG 和 LangGraph 完成多 Agent 工作流。专业技能 Python RAG。".repeat(3), diagnostics: {} },
       searchPlan: plan
     });
+    // 分析重试路径以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认。
+    const draftCard = createMatchingCardDraft(db, {
+      profileId: saved.profileId,
+      profileVersionId: saved.profileVersionId,
+      resumeDocumentId: saved.resumeDocumentId,
+      resumeContentHash: "communication-resume",
+      card: matchingCardFromProfile(profile),
+      source: "migration"
+    });
+    confirmMatchingCard(db, { profileId: saved.profileId, cardId: draftCard.id });
     const batchId = createBatch(db, "boss", "AI应用开发", "communication", {
       profileId: saved.profileId,
       searchPlanId: saved.planId,

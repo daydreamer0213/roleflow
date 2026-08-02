@@ -7,6 +7,7 @@ const {
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
+const { defaultSelectedForBatch } = require("./decision_policy");
 
 const MAX_ACTIVE_DAYS = 3;
 const MIN_DETAIL_LENGTH = 80;
@@ -20,16 +21,6 @@ const BLOCKING_COMMUNICATION_STATUSES = new Set([
   "target_mismatch",
   "ambiguous"
 ]);
-const LOW_RISK_BACKUP_BLOCKERS = new Set([
-  "salary_target_high",
-  "senior_engineering_heavy",
-  "core_stack_mismatch",
-  "inactive_boss",
-  "stale_or_unknown_active",
-  "detail_unverified",
-  "needs_recheck"
-]);
-
 function workflowEligibility(job = {}, context = {}) {
   const now = normalizedNow(context.now);
   const status = String(job.applicationStatus || "").trim();
@@ -54,24 +45,15 @@ function workflowEligibility(job = {}, context = {}) {
   }
 
   const semanticStatus = String(job.analysis?.semanticStatus || "").trim();
-  if (!["complete", "partial"].includes(semanticStatus)) {
+  if (semanticStatus !== "complete") {
     return ineligible("WORKFLOW_ANALYSIS_INCOMPLETE");
   }
-  if (String(job.analysis?.fitLevel || "").toUpperCase() === "D"
-    || String(job.analysis?.recommendation || "").toLowerCase() === "skip"
-    || (job.analysis?.hardBlockers || []).length) {
-    return ineligible("WORKFLOW_ANALYSIS_REJECTED");
-  }
   const bucket = job.decisionBucket || decisionBucket(job);
-  if (bucket === "primary" || bucket === "talk") {
+  if (bucket === "primary" || bucket === "apply") {
     return { eligible: true, tier: bucket, reasonCode: "" };
   }
-  if (bucket !== "backup") return ineligible("WORKFLOW_DECISION_INELIGIBLE");
-  if (!tags.has("salary_target_core") || !tags.has("experience_salary_overlap")
-    || [...LOW_RISK_BACKUP_BLOCKERS].some((tag) => tags.has(tag))) {
-    return ineligible("WORKFLOW_BACKUP_NOT_LOW_RISK");
-  }
-  return { eligible: true, tier: "low_risk_backup", reasonCode: "" };
+  if (bucket === "caution") return ineligible("WORKFLOW_DECISION_CAUTION");
+  return ineligible("WORKFLOW_DECISION_INELIGIBLE");
 }
 
 function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = {}) {
@@ -100,20 +82,14 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
         now,
         communicationStatus: communicationStates.get(Number(job.id)) || ""
       });
-      const tags = new Set(job.qualityTags || []);
-      const highSalaryBackup = !result.eligible
-        && result.reasonCode === "WORKFLOW_BACKUP_NOT_LOW_RISK"
-        && tags.has("salary_target_high")
-        && tags.has("experience_salary_overlap")
-        && [...LOW_RISK_BACKUP_BLOCKERS]
-          .filter((tag) => tag !== "salary_target_high")
-          .every((tag) => !tags.has(tag));
-      if (!result.eligible && !highSalaryBackup) return null;
+      const caution = !result.eligible
+        && result.reasonCode === "WORKFLOW_DECISION_CAUTION";
+      if (!result.eligible && !caution) return null;
       return {
         ...job,
         workflowRunId: workflow.id,
         workflowEligibility: result,
-        workflowTier: highSalaryBackup ? "high_salary_backup" : result.tier,
+        workflowTier: caution ? "caution" : result.tier,
         fromCurrentScan: Boolean(workflow.scanBatchId && Number(job.batchId) === workflow.scanBatchId),
         defaultChecked: false,
         selectable: true
@@ -130,7 +106,7 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   );
   let remainingDefaults = workflow.targetSuccessCount + replacementBuffer;
   return candidates.map((candidate) => {
-    const defaultChecked = candidate.workflowTier !== "high_salary_backup" && remainingDefaults > 0;
+    const defaultChecked = defaultSelectedForBatch(candidate.decisionBucket) && remainingDefaults > 0;
     if (defaultChecked) remainingDefaults -= 1;
     return { ...candidate, defaultChecked };
   });
@@ -195,11 +171,11 @@ function normalizedNow(value) {
 }
 
 function tierRank(tier) {
-  return { primary: 0, talk: 1, low_risk_backup: 2 }[tier] ?? 9;
+  return { primary: 0, apply: 1 }[tier] ?? 9;
 }
 
 function reviewTierRank(tier) {
-  return { primary: 0, talk: 1, low_risk_backup: 2, high_salary_backup: 3 }[tier] ?? 9;
+  return { primary: 0, apply: 1, caution: 2 }[tier] ?? 9;
 }
 
 function nonNegativeInteger(value) {

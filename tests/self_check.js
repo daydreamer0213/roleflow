@@ -3,11 +3,12 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadConfigs } = require("../src/config");
-const { scoreJob } = require("../src/core/scoring");
+const { scoreJob, decisionState } = require("../src/core/scoring");
 const { createGreeting } = require("../src/core/llm");
 const { buildKeywordPlan, resolvePlannedKeywords } = require("../src/core/keyword_planner");
 const { explainJobMatch } = require("../src/core/match_explainer");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
+const { MockModelAdapter } = require("../src/adapters/models/mock");
 const { ModelContractError } = require("../src/core/model_contract");
 const { createJobAnalysisRunner } = require("../src/core/job_analysis");
 const { parseResumeUpload } = require("../src/core/resume_parser");
@@ -19,6 +20,7 @@ const { parseBossActivityText, normalizeBossUrl, bossSourceId } = require("../sr
 const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { mapWithConcurrency } = require("../src/core/async_pool");
+require("./four_tier_decision_smoke");
 
 const root = path.resolve(__dirname, "..");
 const selfCheckDir = path.join(root, ".runtime", "self-check");
@@ -112,8 +114,8 @@ const trainer = scoreJob({
   title: "AI Agent 课程讲师",
   description: `${sample[0].description} 负责课程设计和培训交付。`
 }, runtimeConfigs);
-assert.strictEqual(trainer.level, "不建议");
-assert(trainer.score < good.score);
+assert(!trainer.qualityTags.includes("role_mismatch"), "培训类标题不再由本地规则默认拦截，交由语义证据契约判断");
+assert.strictEqual(decisionState(trainer), "ready");
 
 const selfCheckDbPath = path.join(selfCheckDir, `self-check-${Date.now()}.sqlite`);
 const db = openDb(selfCheckDbPath);
@@ -147,6 +149,7 @@ async function checkMockAnalyzer() {
   assert.strictEqual(peakConcurrency, 3);
 
   assert.strictEqual(configs.model.provider, "mock");
+  const mockAdapter = new MockModelAdapter();
   const analyzer = createLlmAnalyzer({ modelConfig: configs.model });
   const candidateProfile = await analyzer.analyzeResume({
     resumeText: "",
@@ -155,20 +158,29 @@ async function checkMockAnalyzer() {
   assert.strictEqual(candidateProfile.candidate.name, configs.candidateProfile.candidate.name);
   assert(Array.isArray(candidateProfile.skills));
 
+  const rawJobUnderstanding = await mockAdapter.understandJob({
+    job: sample[0],
+    candidateProfile
+  });
+  assert.deepStrictEqual(
+    Object.keys(rawJobUnderstanding).sort(),
+    ["eligibility", "hiringTracks", "industryContext", "requirements", "riskSignals"]
+  );
+  assert.deepStrictEqual(rawJobUnderstanding.hiringTracks.map((track) => track.id), ["T1"]);
+  assert(Array.isArray(rawJobUnderstanding.requirements));
+  assert(Array.isArray(rawJobUnderstanding.riskSignals));
   const jobUnderstanding = await analyzer.understandJob({
     job: sample[0],
     candidateProfile
   });
-  assert(jobUnderstanding.jobId);
-  assert(Array.isArray(jobUnderstanding.coreRequirements));
-  assert(Array.isArray(jobUnderstanding.hiddenRisks));
 
   const matchDecision = await analyzer.matchJob({
     candidateProfile: configs.candidateProfile,
     resumeVersions: configs.resumeVersions,
     jobUnderstanding
   });
-  assert(["apply", "caution", "skip"].includes(matchDecision.recommendation));
+  assert.strictEqual(matchDecision.selectedTrackId, "T1");
+  assert(["apply", "caution", "review", "skip"].includes(matchDecision.recommendation));
   assert(matchDecision.recommendedResumeVersion);
   assert(Array.isArray(matchDecision.primaryProjects));
 
@@ -196,7 +208,9 @@ async function checkMockAnalyzer() {
   assert.strictEqual(onboarding.profile.source.inputMethod, "text_utf8");
   assert(planKeywords(onboarding.plan).length > 0);
   const savedProfile = saveProfileAnalysis(db, { profile: onboarding.profile, document: resume, searchPlan: onboarding.plan });
-  assert.strictEqual(getCandidateProfile(db, savedProfile.profileId).profile.candidate.name, "测试候选人");
+  const savedCandidateName = getCandidateProfile(db, savedProfile.profileId).profile.candidate.name;
+  assert(savedCandidateName);
+  assert(!savedCandidateName.includes("测试候选人"), "post-onboarding profile surfaces must not restore the original identity");
   assert.strictEqual(getSearchPlan(db, savedProfile.planId).profileId, savedProfile.profileId);
   assert(listCandidateResumeVersions(db, savedProfile.profileId).length >= 1);
   const initialVersions = listCandidateResumeVersions(db, savedProfile.profileId);
@@ -245,7 +259,7 @@ async function checkMockAnalyzer() {
   assert(analysis.recommendedResumeVersionName);
   assert(analysis.greeting);
   const riskyAnalysis = await analyzeJob({ ...sample[1], ...risky, greeting });
-  assert.strictEqual(riskyAnalysis.recommendation, "skip");
+  assert.strictEqual(riskyAnalysis.recommendation, "not_recommended");
 
   upsertJob(db, { ...sample[0], ...good, greeting: analysis.greeting, analysis }, batchId);
   const stored = listReportJobs(db, { batchId })[0];
@@ -399,13 +413,27 @@ async function checkMockAnalyzer() {
   const calls = { analyzeResume: 0, understandJob: 0, matchJob: 0, draftCommunication: 0 };
   const fakeAnalyzer = {
     analyzeResume: async () => { calls.analyzeResume += 1; return { candidate: { name: "Cache Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }; },
-    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: [job.title] }; },
-    matchJob: async ({ jobEvidence }) => { calls.matchJob += 1; assert.strictEqual(jobEvidence.title, "Cache test"); return { recommendation: "apply", fitLevel: "B", confidence: 0.9, primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], evidence: { jd: ["Python"], resume: ["Python"] } }; },
+    understandJob: async ({ job }) => { calls.understandJob += 1; return { jobId: job.sourceId, realRoleType: "ai_application", roleSummary: "Python application development", responsibilityEvidence: [`JD：${job.title}`], coreRequirements: [{ label: "Python", foundation: true, indispensable: true, evidence: "JD：必须熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: [job.title] }; },
+    matchJob: async (input) => {
+      calls.matchJob += 1;
+      for (const field of ["candidateProfile", "candidateMatchCard", "jobUnderstanding", "searchPreferences"]) {
+        assert(Object.hasOwn(input, field), `matchJob input must keep ${field}`);
+      }
+      for (const field of ["resumeVersions", "jobEvidence", "job", "ruleMatch"]) {
+        assert.strictEqual(Object.hasOwn(input, field), false, `matchJob input must omit ${field}`);
+      }
+      return { recommendation: "apply", fitLevel: "B", confidence: 0.9, roleAlignment: "aligned", roleResumeEvidence: ["简历：Python 项目经验"], roleGaps: [], primaryProjects: [], fitReasons: ["Python 经验与岗位要求匹配"], requirementMatches: [{ requirement: "Python", state: "matched", foundation: true, indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } };
+    },
     draftCommunication: async () => { calls.draftCommunication += 1; return { kind: "greeting", messages: ["Hello"], missingFact: null, evidence: { jd: ["JD"], resume: ["resume"] }, tone: "natural" }; }
   };
   const cachedRunner = createJobAnalysisRunner(configs, keywordPlan, { db, analyzer: fakeAnalyzer });
   const cacheJob = { ...sample[0], ...good, sourceId: "model-cache-regression", title: "Cache test", greeting };
-  await cachedRunner(cacheJob);
+  const cachedAnalysis = await cachedRunner(cacheJob);
+  assert.deepStrictEqual(cachedAnalysis.responsibilityEvidence, [`JD：${cacheJob.title}`]);
+  assert.strictEqual(cachedAnalysis.roleAlignment, "aligned");
+  assert.deepStrictEqual(cachedAnalysis.roleResumeEvidence, ["简历：Python 项目经验"]);
+  assert.deepStrictEqual(cachedAnalysis.roleGaps, []);
+  assert.strictEqual(cachedAnalysis.requirementMatches[0].foundation, true);
   await cachedRunner(cacheJob);
   assert.deepStrictEqual(calls, { analyzeResume: 0, understandJob: 1, matchJob: 1, draftCommunication: 0 });
 
@@ -413,15 +441,15 @@ async function checkMockAnalyzer() {
     db,
     analyzer: {
       analyzeResume: async () => ({ candidate: { name: "Fallback Candidate", targetTitles: ["AI Engineer"] }, skills: [], projects: [] }),
-      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: ["Python"], evidenceSnippets: ["Python"] }),
-      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], evidence: { jd: ["Python"], resume: ["Python"] } }),
+      understandJob: async ({ job }) => ({ jobId: job.sourceId, realRoleType: "ai_application", coreRequirements: [{ label: "Python", indispensable: true, evidence: "JD：必须熟练使用 Python" }], jobQuality: { level: "normal", concerns: [] }, hiddenRisks: [], evidenceSnippets: ["Python"] }),
+      matchJob: async () => ({ recommendation: "apply", fitLevel: "B", confidence: 0.81, primaryProjects: [], fitReasons: ["完整 JD 已匹配"], requirementMatches: [{ requirement: "Python", state: "matched", indispensable: true, jdEvidence: "JD：必须熟练使用 Python", resumeEvidence: "简历：Python 项目经验" }], jobQuality: { level: "normal", concerns: [] }, evidence: { jd: ["Python"], resume: ["Python"] } }),
       draftCommunication: async () => { throw new Error("communication contract failed"); }
     }
   });
   const communicationFallback = await communicationFailureRunner({ ...cacheJob, sourceId: "communication-fallback", description: `${cacheJob.description} `.repeat(4), greeting: "保留的招呼语" });
   assert.strictEqual(communicationFallback.realRoleType, "ai_application");
-  assert.strictEqual(communicationFallback.recommendation, "caution");
-  assert.strictEqual(communicationFallback.decisionSource, "experience_stretch_guard");
+  assert.strictEqual(communicationFallback.recommendation, null);
+  assert.strictEqual(communicationFallback.decisionStatus, "needs_retry");
   assert.strictEqual(communicationFallback.greeting, "保留的招呼语");
 }
 

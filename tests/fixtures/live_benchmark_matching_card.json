@@ -1,0 +1,42 @@
+{
+  "id": "live_benchmark_sanitized_matching_card",
+  "profileId": "live_benchmark_sanitized_profile",
+  "resumeVersionIds": ["ai_rag_agent", "python_backend_ai"],
+  "card": {
+    "targetDirections": ["AI应用开发", "Python后端", "RAG", "Agent"],
+    "strongEvidence": [
+      {
+        "label": "Python 与 FastAPI 应用开发",
+        "evidence": "简历：在企业知识库问答项目中使用 Python、FastAPI 完成可运行接口与联调。"
+      },
+      {
+        "label": "RAG 知识库实践",
+        "evidence": "简历：参与向量检索与关键词检索链路优化，并使用 Milvus、Redis 支撑知识问答流程。"
+      },
+      {
+        "label": "Agent 工作流与质量复核",
+        "evidence": "简历：使用 LangGraph 组织工作流节点、条件路由、工具调用和结构化质量复核步骤。"
+      }
+    ],
+    "transferableCapabilities": [
+      {
+        "label": "Python 自动化与数据处理",
+        "evidence": "简历：两个脱敏项目均使用 Python 组织处理流程、接口联调和基础测试。",
+        "limitation": "未证明大规模采集平台、高并发或分布式系统经验。"
+      },
+      {
+        "label": "AI 应用交付协作",
+        "evidence": "简历：参与知识库接口联调、日志排查和可运行流程实现。",
+        "limitation": "未证明独立售前、客户项目管理或长期驻场交付经验。"
+      }
+    ],
+    "cautionTransitions": [
+      {
+        "direction": "AI实施与解决方案支持",
+        "reason": "有 AI 应用、接口联调和方案理解基础，但独立客户交付、售前方案和现场项目管理经验需确认。"
+      }
+    ],
+    "userNotes": [],
+    "source": "user"
+  }
+}

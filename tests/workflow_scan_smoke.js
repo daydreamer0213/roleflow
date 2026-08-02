@@ -5,6 +5,8 @@ const { spawnSync } = require("node:child_process");
 const {
   openDb,
   saveProfileAnalysis,
+  createMatchingCardDraft,
+  confirmMatchingCard,
   createWorkflowRun,
   getWorkflowRun,
   getScanRun,
@@ -14,6 +16,7 @@ const {
   attachWorkflowScan,
   recordSiteAccessEvent
 } = require("../src/core/storage");
+const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
@@ -182,7 +185,7 @@ function seedProfile(database) {
     bossActiveDays: 3,
     platform: { site: "boss" }
   };
-  return saveProfileAnalysis(database, {
+  const saved = saveProfileAnalysis(database, {
     profile,
     document: {
       originalFileName: "workflow-resume.txt",
@@ -193,6 +196,21 @@ function seedProfile(database) {
     },
     searchPlan
   });
+  confirmSeededMatchingCard(database, saved, profile);
+  return saved;
+}
+
+// 扫描/工作流以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认，不走模型。
+function confirmSeededMatchingCard(database, saved, profile) {
+  const draft = createMatchingCardDraft(database, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: "workflow-scan-resume",
+    card: matchingCardFromProfile(profile),
+    source: "migration"
+  });
+  confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
 }
 
 function workflowInput(saved, overrides = {}) {

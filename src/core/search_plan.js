@@ -13,7 +13,7 @@ function cityToBossCode(city) {
   return CITY_CODES[String(city || "").trim()] || "";
 }
 
-function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVersionsOverride = null) {
+function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVersionsOverride = null, matchingCard = null) {
   const plan = searchPlan || {};
   const candidate = candidateProfile?.candidate || {};
   const persistedVersions = Array.isArray(resumeVersionsOverride) ? resumeVersionsOverride
@@ -44,7 +44,8 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
     ...configs,
     candidateProfile,
     searchPlan: plan,
-    analysisContext: runtimeAnalysisContext(candidateProfile, plan),
+    matchingCard: matchingCard || null,
+    analysisContext: runtimeAnalysisContext(candidateProfile, plan, matchingCard),
     targetPolicy: {
       jobTypes: plan.jobTypes || ["全职"],
       directions: plan.directions || candidate.targetTitles || [],

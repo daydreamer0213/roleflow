@@ -43,6 +43,7 @@ let server;
   const builder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.primaryId}" checked`));
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.talkId}"`));
+  assert.match(builder.body, /· apply<\/small>/);
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}" checked`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.notRecommendedId}"`));
@@ -179,14 +180,14 @@ function seed(database) {
   const planId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Dashboard smoke", "{}", now, now).lastInsertRowid);
   const scanBatchId = createBatch(database, "boss", "dashboard-communication", "dashboard communication smoke", { profileId, searchPlanId: planId });
   const primaryId = upsertJob(database, job("primary", { title: "Primary role", qualityTags: ["salary_target_core"], analysis: completeAnalysis() }), scanBatchId);
-  const talkId = upsertJob(database, job("talk", { title: "Talk role", analysis: { semanticStatus: "partial", recommendation: "review" } }), scanBatchId);
-  const backupId = upsertJob(database, job("backup", { title: "Backup role", qualityTags: ["experience_overrange"] }), scanBatchId);
-  const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", qualityTags: ["role_mismatch"] }), scanBatchId);
+  const talkId = upsertJob(database, job("talk", { title: "Talk role", analysis: completeAnalysis("apply") }), scanBatchId);
+  const backupId = upsertJob(database, job("backup", { title: "Backup role", analysis: completeAnalysis("caution"), qualityTags: ["experience_overrange"] }), scanBatchId);
+  const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", analysis: completeAnalysis("not_recommended"), qualityTags: ["hard_exclude"] }), scanBatchId);
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
   for (let index = 0; index < 35; index += 1) {
-    upsertJob(database, job(`extra-${index}`, { title: `Extra role ${index}`, analysis: { semanticStatus: "partial", recommendation: "review" } }), scanBatchId);
+    upsertJob(database, job(`extra-${index}`, { title: `Extra role ${index}`, analysis: completeAnalysis("apply") }), scanBatchId);
   }
   markCandidateJob(database, { profileId, planId, jobId: appliedId, status: "applied" });
   markCandidateJob(database, { profileId, planId, jobId: skippedId, status: "skipped" });
@@ -194,17 +195,17 @@ function seed(database) {
   const smallPlanId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Small dashboard smoke", "{}", now, now).lastInsertRowid);
   const smallBatchId = createBatch(database, "boss", "small-dashboard-communication", "small dashboard communication smoke", { profileId, searchPlanId: smallPlanId });
   for (let index = 0; index < 21; index += 1) {
-    upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: { semanticStatus: "partial", recommendation: "review" } }), smallBatchId);
+    upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: completeAnalysis("apply") }), smallBatchId);
   }
   return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
 }
 
 function job(sourceId, overrides = {}) {
-  return { source: "boss", sourceId, keyword: "dashboard-communication", title: "Communication role", company: `Company ${sourceId}`, location: "Guangzhou", salary: "10-15K", experience: "1-3 years", education: "Bachelor", bossActiveText: "Active today", bossActiveDays: 0, url: `https://www.zhipin.com/job_detail/${sourceId}.html`, tags: ["Python"], description: "Dashboard communication batch smoke job.", score: 20, level: "可投", matches: ["Python"], risks: [], qualityTags: [], analysis: {}, ...overrides };
+  return { source: "boss", sourceId, keyword: "dashboard-communication", title: "Communication role", company: `Company ${sourceId}`, location: "Guangzhou", salary: "10-15K", experience: "1-3 years", education: "Bachelor", bossActiveText: "Active today", bossActiveDays: 0, url: `https://www.zhipin.com/job_detail/${sourceId}.html`, tags: ["Python"], description: "Dashboard communication batch smoke job.", score: 20, level: "可投", matches: ["Python"], risks: [], qualityTags: [], analysis: completeAnalysis(), ...overrides };
 }
 
-function completeAnalysis() {
-  return { semanticStatus: "complete", recommendation: "apply", confidence: 0.9, evidence: { jd: ["Python"], resume: ["Python"] } };
+function completeAnalysis(recommendation = "primary") {
+  return { semanticStatus: "complete", recommendation, recommendationSchemaVersion: 2, fitLevel: recommendation === "primary" ? "fit" : "mostly_fit", confidence: 0.9, evidence: { jd: ["Python"], resume: ["Python"] } };
 }
 
 function clickAudit(item) {

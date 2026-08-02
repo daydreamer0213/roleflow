@@ -2,13 +2,12 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { PDFParse } = require("pdf-parse");
 const { appError } = require("./observability");
+const { extractPdfTextInReadingOrder } = require("./pdf_text");
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_RESUME_CHARS = 60000;
 const DOCX_PARSE_TIMEOUT_MS = 30000;
-const PDF_PARSE_TIMEOUT_MS = 30000;
 const TEXT_EXTENSIONS = new Set([".txt", ".md"]);
 const SUPPORTED_EXTENSIONS = new Set([...TEXT_EXTENSIONS, ".docx", ".pdf"]);
 
@@ -43,10 +42,10 @@ async function parseResumeUpload({ fileName, buffer, root }) {
     }
   }
   if (extension === ".pdf") {
-    extractionMethod = "pdf_text";
+    extractionMethod = "pdf_text_ordered";
     ocr = localOcrStatus();
     try {
-      text = await extractPdfText(buffer);
+      text = await extractPdfTextInReadingOrder(buffer);
     } catch (error) {
       const timedOut = error?.code === "RESUME_PDF_TIMEOUT";
       throw appError(timedOut ? "RESUME_PDF_TIMEOUT" : "RESUME_PDF_PARSE_FAILED", timedOut
@@ -175,30 +174,6 @@ function extractDocxText(buffer, fileName, root) {
     return result.stdout || "";
   } finally {
     try { fs.rmSync(tempPath, { force: true }); } catch { /* temporary upload cleanup */ }
-  }
-}
-
-async function extractPdfText(buffer) {
-  const parser = new PDFParse({ data: buffer });
-  try {
-    const result = await withTimeout(parser.getText(), PDF_PARSE_TIMEOUT_MS, "RESUME_PDF_TIMEOUT");
-    return result.text || "";
-  } finally {
-    await parser.destroy();
-  }
-}
-
-async function withTimeout(promise, timeoutMs, code) {
-  let timer;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(parseTimeoutError(code, timeoutMs)), timeoutMs);
-      })
-    ]);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

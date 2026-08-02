@@ -14,7 +14,7 @@ const { listWorkflowReviewCandidates, reconcileCommunicationOutcome } = require(
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
 const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
-const ALLOWED_BUCKETS = new Set(["primary", "talk", "backup"]);
+const ALLOWED_BUCKETS = new Set(["primary", "apply", "caution"]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const BATCH_TRANSITIONS = new Map([
   ["confirmed", new Set(["running", "stopped"])],

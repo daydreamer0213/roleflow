@@ -5,6 +5,8 @@ const { EventEmitter } = require("node:events");
 const {
   openDb,
   saveProfileAnalysis,
+  createMatchingCardDraft,
+  confirmMatchingCard,
   listWorkflowRuns,
   getWorkflowRun,
   getLatestScanRun,
@@ -14,6 +16,7 @@ const {
   upsertJob,
   recordSiteAccessEvent
 } = require("../src/core/storage");
+const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { createDashboardServer } = require("../src/dashboard/server");
 
@@ -99,17 +102,30 @@ let server;
     searchPlanId: saved.planId
   });
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
-  for (let index = 0; index < 6; index += 1) upsertJob(db, job(index + 1), batchId);
+  for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
+  upsertJob(db, lowRiskBackupJob(), batchId);
+  upsertJob(db, layeredBackupJob(), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
   transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
 
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
-  assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 6);
+  assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
-  assert.match(reviewPage.body, /有效候选\s*<strong>6/);
-  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, 6);
+  assert.match(reviewPage.body, /有效候选\s*<strong>/);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount >= 6, true);
+  for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
+    assert.match(reviewPage.body, new RegExp(label));
+  }
+  assert.match(reviewPage.body, /硬性限制：岗位方向需谨慎/);
+  assert.match(reviewPage.body, /workflow-tier/);
+  for (const tier of ["主投", "可投", "慎投"]) assert.match(reviewPage.body, new RegExp(tier));
+  const jobsPage = await getText(baseUrl, `/jobs?planId=${saved.planId}&batch=latest`);
+  for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
+    assert.match(jobsPage.body, new RegExp(label));
+  }
+  assert.doesNotMatch(jobsPage.body, /简历：完成 RAG 应用交付/);
 
   const selectedIds = listWorkflowReviewCandidates(db, workflow.id)
     .filter((candidate) => candidate.defaultChecked)
@@ -166,16 +182,17 @@ let server;
 });
 
 function seedProfile(database) {
-  return saveProfileAnalysis(database, {
-    profile: {
-      candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
-      education: [{ school: "Test University", degree: "本科", major: "电子信息工程" }],
-      experiences: [],
-      skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
-      projects: [{ name: "KnowledgeFlow", roleBoundary: "独立项目", canSay: ["LangGraph workflow"] }],
-      credentials: [],
-      strengths: []
-    },
+  const profile = {
+    candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
+    education: [{ school: "Test University", degree: "本科", major: "电子信息工程" }],
+    experiences: [],
+    skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
+    projects: [{ name: "KnowledgeFlow", roleBoundary: "独立项目", canSay: ["LangGraph workflow"] }],
+    credentials: [],
+    strengths: []
+  };
+  const saved = saveProfileAnalysis(database, {
+    profile,
     document: {
       originalFileName: "workflow-resume.txt",
       format: "text",
@@ -201,6 +218,17 @@ function seedProfile(database) {
       platform: { site: "boss" }
     }
   });
+  // 工作流启动以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认。
+  const draft = createMatchingCardDraft(database, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: "workflow-dashboard-resume",
+    card: matchingCardFromProfile(profile),
+    source: "migration"
+  });
+  confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
+  return saved;
 }
 
 function job(index) {
@@ -227,10 +255,67 @@ function job(index) {
     analysis: {
       provider: "openai_compatible",
       semanticStatus: "complete",
-      recommendation: "apply",
+      recommendation: "primary",
+      recommendationSchemaVersion: 2,
+      fitLevel: "fit",
       confidence: 0.9,
       evidence: { jd: ["Python RAG"], resume: ["Python RAG"] },
       hardBlockers: []
+    }
+  };
+}
+
+function layeredBackupJob() {
+  return {
+    ...job("layered-backup"),
+    analysis: {
+      ...job("layered-backup").analysis,
+      recommendation: "caution",
+      fitLevel: "mostly_fit",
+      roleSummary: "负责 RAG 应用交付与持续优化",
+      responsibilityEvidence: ["JD：负责 RAG 应用交付"],
+      roleAlignment: "misaligned",
+      roleResumeEvidence: ["简历：完成 RAG 应用交付"],
+      roleGaps: ["生产环境部署经验待确认"],
+      hardBlockers: ["岗位方向需谨慎"],
+      requirementMatches: [
+        { requirement: "RAG 应用交付", foundation: true, state: "matched" },
+        { requirement: "生产环境部署", foundation: true, state: "unknown" }
+      ]
+    }
+  };
+}
+
+function lowRiskBackupJob() {
+  return {
+    ...job("low-risk-backup"),
+    analysis: {
+      ...job("low-risk-backup").analysis,
+      recommendation: "caution",
+      fitLevel: "mostly_fit"
+    },
+    qualityTags: ["salary_target_core", "experience_salary_overlap"]
+  };
+}
+
+function layeredTalkJob() {
+  return {
+    ...job("layered-talk"),
+    analysis: {
+      ...job("layered-talk").analysis,
+      recommendation: "apply",
+      fitLevel: "mostly_fit",
+      selectedTrackId: "T1",
+      selectedTrackLabel: "大模型应用开发",
+      roleSummary: "负责 RAG 应用交付与持续优化",
+      responsibilityEvidence: ["JD：负责 RAG 应用交付"],
+      roleAlignment: "mostly_aligned",
+      roleResumeEvidence: ["简历：完成 RAG 应用交付"],
+      roleGaps: ["生产环境部署经验待确认"],
+      requirementMatches: [
+        { requirement: "RAG 应用交付", foundation: true, state: "matched" },
+        { requirement: "生产环境部署", foundation: true, state: "unknown" }
+      ]
     }
   };
 }

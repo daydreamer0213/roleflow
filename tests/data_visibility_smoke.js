@@ -72,14 +72,24 @@ function uniqueJobsBeforeLimitSmoke({ profileId, planId }) {
 
 function contentHashSmoke({ profileId, planId }) {
   const first = createBatch(db, "boss", "hash", "hash-first", { profileId, searchPlanId: planId });
-  const jobId = upsertJob(db, job("hash-stable", { score: 10, analysis: { provider: "model-a", recommendation: "caution" } }), first);
+  const jobId = upsertJob(db, job("hash-stable", {
+    score: 10,
+    analysis: { provider: "model-a", semanticStatus: "complete", recommendation: "caution", recommendationSchemaVersion: 2 }
+  }), first);
   const second = createBatch(db, "boss", "hash", "hash-model-change", { profileId, searchPlanId: planId });
-  upsertJob(db, job("hash-stable", { score: 99, analysis: { provider: "model-b", recommendation: "apply" } }), second);
+  upsertJob(db, job("hash-stable", {
+    score: 99,
+    analysis: { provider: "model-b", semanticStatus: "complete", recommendation: "apply", recommendationSchemaVersion: 2 }
+  }), second);
   let current = listReportJobs(db, { planId, limit: 1000 }).find((item) => item.id === jobId);
   assert.strictEqual(current.detailChanged, false, "仅模型结果或分数变化不得冒充 JD 变化");
 
   const third = createBatch(db, "boss", "hash", "hash-source-change", { profileId, searchPlanId: planId });
-  upsertJob(db, job("hash-stable", { salary: "12-18K", score: 99, analysis: { provider: "model-b", recommendation: "apply" } }), third);
+  upsertJob(db, job("hash-stable", {
+    salary: "12-18K",
+    score: 99,
+    analysis: { provider: "model-b", semanticStatus: "complete", recommendation: "apply", recommendationSchemaVersion: 2 }
+  }), third);
   current = listReportJobs(db, { planId, limit: 1000 }).find((item) => item.id === jobId);
   assert.strictEqual(current.detailChanged, true, "平台薪资或 JD 变化必须可见");
   assert(db.prepare("SELECT COUNT(*) AS count FROM job_observations WHERE job_id = ? AND content_hash_version = 1").get(jobId).count >= 3);
@@ -132,21 +142,27 @@ function queueUiSmoke({ profileId, planId }) {
   const latestBatchId = createBatch(db, "boss", "latest-main", "queue-scope", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
   const newJobId = upsertJob(db, job("latest-new", { title: "本轮新增岗位" }), latestBatchId);
   upsertJob(db, job("old-0", { title: "本轮再次出现岗位" }), latestBatchId);
-  const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "talk", scope: "all", page: "5" }) });
+  const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "all", page: "5" }) });
   assert(lastPage.includes("当前待处理岗位"));
-  assert(lastPage.includes("当前显示 121-131 / 共 131 条"));
+  assert(
+    lastPage.includes("当前显示 121-132 / 共 132 条"),
+    `分页摘要不符：${lastPage.match(/当前显示[^<]*/)?.[0] || lastPage.match(/共 \d+ 条/)?.[0] || "未找到摘要"}`
+  );
   assert(lastPage.includes("上一页"));
   assert(lastPage.includes("本轮新增 1"));
   assert(lastPage.includes("本轮重复 1"));
-  assert(lastPage.includes("历史未处理 131"));
+  assert(
+    lastPage.includes("历史未处理 131"),
+    `历史未处理摘要不符：${lastPage.match(/历史未处理 \d+/)?.[0] || "未找到摘要"}`
+  );
 
-  const newest = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "talk", scope: "new" }) });
+  const newest = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "new" }) });
   assert(newest.includes("本轮新增岗位"));
   assert(newest.includes("首次 "));
   assert(newest.includes("最近 "));
   assert(newest.includes("7 天后再看"));
 
-  const repeated = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "talk", scope: "repeated" }) });
+  const repeated = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "repeated" }) });
   assert(repeated.includes("本轮再次出现岗位"));
 
   const mark = handleMarkApi(db, JSON.stringify({ jobId: newJobId, profileId, planId, status: "later" }));
@@ -222,7 +238,13 @@ function job(sourceId, overrides = {}) {
     risks: [],
     qualityTags: [],
     greeting: "",
-    analysis: { provider: "mock", recommendation: "caution" },
+    analysis: {
+      provider: "mock",
+      semanticStatus: "complete",
+      recommendation: "apply",
+      recommendationSchemaVersion: 2,
+      hardBlockers: []
+    },
     ...overrides
   };
 }

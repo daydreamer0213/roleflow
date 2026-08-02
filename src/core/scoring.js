@@ -35,7 +35,6 @@ function scoreJob(job, configs) {
   const scoring = configs.scoring;
   const profile = configs.profile;
   const text = `${job.title || ""} ${job.company || ""} ${job.location || ""} ${job.experience || ""} ${job.education || ""} ${(job.tags || []).join(" ")} ${job.description || ""}`;
-  const roleText = `${job.title || ""} ${(job.tags || []).join(" ")}`;
   const targetCities = profile.location?.target_cities || [];
   const targetDirections = configs.targetPolicy?.directions || configs.candidateProfile?.candidate?.targetTitles || profile.candidate?.target_roles || [];
   const targetJobTypes = configs.targetPolicy?.jobTypes || ["全职"];
@@ -43,10 +42,7 @@ function scoreJob(job, configs) {
   const days = activeDays(job.bossActiveText);
   const workSchedule = parseWorkSchedule(`${(job.tags || []).join(" ")} ${job.description || ""}`);
   const role = classifyJobRole(job);
-  const technicalFit = classifyTechnicalFit(job, configs);
   const acceptsInternship = targetJobTypes.some((item) => /实习/.test(String(item)));
-  const targetsAlgorithm = targetDirections.some((item) => /算法|机器学习|深度学习|NLP|自然语言处理|计算机视觉|CV/.test(String(item)));
-  const roleMismatch = isClearlyNonTechnicalRole(roleText) && !matchesTargetDirection(roleText, targetDirections);
   let score = 0;
   const matches = [];
   const risks = [];
@@ -71,31 +67,6 @@ function scoreJob(job, configs) {
     score -= 100;
     qualityTags.push("internship_role");
     risks.push("实习岗位不在当前社招目标内");
-  } else if (role.kind === "algorithm" && !targetsAlgorithm) {
-    score -= 24;
-    qualityTags.push("algorithm_role");
-    risks.push("岗位核心偏算法训练/研究，与应用开发方向不符");
-  } else if (role.kind === "hybrid_algorithm" && !targetsAlgorithm) {
-    score -= 4;
-    qualityTags.push("algorithm_hybrid");
-    risks.push("岗位包含较重算法/训练要求，建议先确认应用开发占比");
-  }
-
-  if (technicalFit.kind === "aligned") {
-    score += 2;
-    matches.push("核心技术栈匹配");
-  } else if (technicalFit.kind === "core_stack_mismatch") {
-    score -= 12;
-    qualityTags.push("core_stack_mismatch");
-    risks.push(`核心技术栈偏 ${technicalFit.stackLabel}，与当前简历主栈不一致`);
-  } else if (technicalFit.kind === "java_backend_heavy") {
-    score -= 6;
-    qualityTags.push("java_backend_heavy");
-    risks.push("核心后端栈偏 Java/Spring，需确认 Python/AI 应用占比");
-  } else if (technicalFit.kind === "senior_engineering_heavy") {
-    score -= 6;
-    qualityTags.push("senior_engineering_heavy");
-    risks.push("高并发、云原生或分布式工程要求较重，可能偏资深");
   }
 
   if ((scoring.exclude_words || []).some((word) => text.includes(word))) {
@@ -165,10 +136,11 @@ function scoreJob(job, configs) {
   const salaryMin = Number(scoring.salary?.expected_min_k || 0);
   const salaryMax = Number(scoring.salary?.expected_max_k || 0);
   if (salaryMode === "strict") {
-    if (salary.min !== null && salary.max !== null && ((salaryMin > 0 && salary.max < salaryMin) || (salaryMax > 0 && salary.min > salaryMax))) {
+    // 严格模式只把“低于期望下限”当硬边界；薪资高于目标上限交给 salary_target_high 等软标记，不做硬排除。
+    if (salary.min !== null && salary.max !== null && salaryMin > 0 && salary.max < salaryMin) {
       score -= 50;
       qualityTags.push("salary_out_of_range");
-      risks.push("薪资不在严格范围内");
+      risks.push("薪资低于期望下限，不在严格范围内");
     }
   }
   if (salary.max !== null && salary.max > (scoring.salary?.hard_max_k || 35)) {
@@ -207,9 +179,6 @@ function scoreJob(job, configs) {
     && salary.max !== null
     && salary.max <= Number(scoring.salary?.experience_flex_max_k || 18)
     && score >= 6
-    && isStretchTechnicalMatch(job, role, technicalFit, roleMismatch)
-    && !["core_stack_mismatch", "java_backend_heavy", "senior_engineering_heavy"].includes(technicalFit.kind)
-    && !(role.kind === "algorithm" && !targetsAlgorithm)
     && !(role.kind === "internship" && !acceptsInternship)
     && (!job.detailRequired || job.detailRead);
   if (!String(job.experience || "").trim()) {
@@ -268,14 +237,9 @@ function scoreJob(job, configs) {
     qualityTags.push("invalid_job_link");
     risks.push("岗位链接无效");
   }
-  if (roleMismatch) {
-    score -= 100;
-    qualityTags.push("role_mismatch");
-    risks.push("岗位职责明显不是技术开发或技术交付");
-  }
   if (score < 0) qualityTags.push("low_value_risk");
 
-  const roleBlocked = roleMismatch || (role.kind === "internship" && !acceptsInternship) || (role.kind === "algorithm" && !targetsAlgorithm);
+  const roleBlocked = role.kind === "internship" && !acceptsInternship;
   const level = roleBlocked
     ? "不建议"
     : canStretch ? "可冲" : score >= 12 ? "优先" : score >= 6 ? "可投" : "谨慎";
@@ -293,8 +257,7 @@ function scoreJob(job, configs) {
     roleKind: role.kind,
     roleEvidence: role.evidence,
     workSchedule: workSchedule.kind,
-    workScheduleEvidence: workSchedule.evidence,
-    technicalFit
+    workScheduleEvidence: workSchedule.evidence
   };
 }
 
@@ -309,24 +272,6 @@ function isBossJobUrl(url) {
   }
 }
 
-function isClearlyNonTechnicalRole(value) {
-  return /(电话销售|销售(?:代表|经理|顾问|专员)?|商务(?:经理|专员|拓展)?|客户经理|运营(?:经理|专员)?|产品经理|课程顾问|讲师|招生顾问|培训|直播主播|房产经纪|保险代理)/.test(String(value || ""));
-}
-
-function matchesTargetDirection(roleText, directions) {
-  const text = String(roleText || "");
-  return (directions || []).some((direction) => {
-    const value = String(direction || "").trim();
-    if (!value) return false;
-    if (/产品/.test(value) && /产品/.test(text)) return true;
-    if (/销售|商务|客户经理/.test(value) && /销售|商务|客户经理/.test(text)) return true;
-    if (/运营/.test(value) && /运营/.test(text)) return true;
-    if (/实施|售前|解决方案/.test(value) && /实施|售前|解决方案/.test(text)) return true;
-    if (/讲师|训练师|知识运营|培训/.test(value) && /讲师|训练师|知识运营|培训/.test(text)) return true;
-    return false;
-  });
-}
-
 function riskRuleApplies(item, configs, directions) {
   const word = String(item?.word || "");
   const skills = `${(configs.targetPolicy?.skills || []).join(" ")} ${(configs.candidateProfile?.skills || []).map((skill) => typeof skill === "string" ? skill : skill?.name || "").join(" ")}`;
@@ -336,14 +281,6 @@ function riskRuleApplies(item, configs, directions) {
   if (/产品/.test(word) && /产品/.test(targets)) return false;
   if (/顾问|实施/.test(word) && /顾问|实施|售前|解决方案/.test(targets)) return false;
   return true;
-}
-
-function isStretchTechnicalMatch(job, role, technicalFit, roleMismatch) {
-  if (roleMismatch || role.kind !== "application") return false;
-  if (technicalFit.kind === "aligned") return true;
-  const text = `${(job.tags || []).join(" ")} ${job.description || ""}`.toLowerCase();
-  const signals = ["python", "rag", "agent", "langchain", "langgraph", "fastapi", "llm", "大模型", "知识库", "向量"].filter((signal) => text.includes(signal));
-  return new Set(signals).size >= 2;
 }
 
 function explicitNonTargetCity(value, targetCities) {
@@ -370,7 +307,8 @@ function parseWorkSchedule(value) {
 
 function decisionState(job) {
   const tags = new Set(job.qualityTags || []);
-  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "role_mismatch", "hard_exclude", "internship_role", "algorithm_role", "salary_out_of_range"].some((tag) => tags.has(tag))) {
+  // 本地硬边界只保留跨职业通用项：链接、地点、活跃、用户排除词、工作性质与薪资底线。
+  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "hard_exclude", "internship_role", "salary_out_of_range"].some((tag) => tags.has(tag))) {
     return "blocked";
   }
   if (tags.has("activity_unverified") || tags.has("stale_or_unknown_active") || tags.has("detail_unverified")) return "refresh";
@@ -415,48 +353,6 @@ function experienceRequirementText(description) {
     .join(" ");
 }
 
-function classifyTechnicalFit(job = {}, configs = {}) {
-  const candidateSkills = candidateSkillText(configs);
-  if (!candidateSkills) return { kind: "unknown", stackLabel: "", evidence: [] };
-  const requirements = requirementSentences(job.description || "");
-  const evidence = requirements.filter((line) => /(Python|C\+\+|C\/C\+\+|Golang|Go语言|\bGo\b|Java|Spring\s*Boot|Spring\s*Cloud|高并发|高可用|分布式|微服务|Kubernetes|K8s)/i.test(line));
-  const hasCandidatePython = /python/.test(candidateSkills);
-  const hasCandidateCpp = /c\+\+|c\/c\+\+/.test(candidateSkills);
-  const hasCandidateGo = /golang|go语言|\bgo\b/.test(candidateSkills);
-  const hasCandidateJava = /java|spring/.test(candidateSkills);
-  const requiredCppGo = evidence.filter((line) => mentionsRequiredStack(line, /C\+\+|C\/C\+\+|Golang|Go语言|\bGo\b/i));
-  const cppGoOnly = requiredCppGo.filter((line) => !/Python/i.test(line));
-  if (cppGoOnly.length && !hasCandidateCpp && !hasCandidateGo) {
-    return { kind: "core_stack_mismatch", stackLabel: stackLabel(cppGoOnly.join(" ")), evidence: cppGoOnly.slice(0, 2) };
-  }
-
-  const javaEvidence = evidence.filter((line) => mentionsRequiredStack(line, /Java|Spring\s*Boot|Spring\s*Cloud/i));
-  const javaHeavy = javaEvidence.some((line) => /Spring\s*(?:Boot|Cloud)/i.test(line))
-    || javaEvidence.length >= 2;
-  if (javaHeavy && !hasCandidateJava && !evidence.some((line) => /Python/i.test(line))) {
-    return { kind: "java_backend_heavy", stackLabel: "Java/Spring", evidence: javaEvidence.slice(0, 2) };
-  }
-
-  const seniorSignals = evidence.filter((line) => /高并发|高可用|分布式|微服务|Kubernetes|K8s/i.test(line));
-  if (seniorSignals.length >= 2) {
-    return { kind: "senior_engineering_heavy", stackLabel: "资深工程化", evidence: seniorSignals.slice(0, 2) };
-  }
-
-  if (hasCandidatePython && evidence.some((line) => /Python/i.test(line))) {
-    return { kind: "aligned", stackLabel: "Python", evidence: evidence.filter((line) => /Python/i.test(line)).slice(0, 2) };
-  }
-  return { kind: "unknown", stackLabel: "", evidence: [] };
-}
-
-function candidateSkillText(configs = {}) {
-  const skills = [
-    ...(configs.candidateProfile?.skills || []),
-    ...(configs.profile?.candidate?.strengths || []),
-    ...(configs.candidateProfile?.candidate?.directions || [])
-  ].map((skill) => typeof skill === "string" ? skill : skill?.name || "").filter(Boolean);
-  return skills.join(" ").toLowerCase();
-}
-
 function requirementSentences(description) {
   const text = String(description || "").replace(/\s+/g, " ");
   const marker = text.search(/任职要求|职位要求|岗位要求|任职资格|资格要求/i);
@@ -464,44 +360,17 @@ function requirementSentences(description) {
   return section.split(/[。；;\n]/).map((line) => line.trim()).filter((line) => line.length >= 4 && !/优先|加分项|了解即可|不限/.test(line));
 }
 
-function mentionsRequiredStack(line, pattern) {
-  return pattern.test(line) && /(熟练|精通|掌握|必须|必备|要求|至少|扎实|具备|负责)/.test(line);
-}
-
-function stackLabel(text) {
-  const labels = [];
-  if (/C\+\+|C\/C\+\+/i.test(text)) labels.push("C++");
-  if (/Golang|Go语言|\bGo\b/i.test(text)) labels.push("Go");
-  return labels.join("/") || "非 Python 后端";
-}
-
+// 本地规则只识别跨职业的工作性质（实习/社招），不再对岗位职业方向做默认分类；
+// 职业方向匹配交由语义模型按匹配偏好卡逐项证据判断。
 function classifyJobRole(job = {}) {
-  const title = String(job.title || "");
-  const meta = `${title} ${job.experience || ""} ${(job.tags || []).join(" ")}`;
-  const description = String(job.description || "");
-  const fullText = `${meta} ${description}`;
+  const meta = `${String(job.title || "")} ${job.experience || ""} ${(job.tags || []).join(" ")}`;
   const internshipEvidence = meta.match(/实习(?:生)?|intern/i)?.[0] || "";
   if (internshipEvidence) return { kind: "internship", evidence: internshipEvidence };
-
-  const applicationTitle = /AI应用|大模型应用|应用开发|AI后端|Python后端|Python开发|智能体|Agent|RAG|知识库|LLM应用|AI开发|后端开发|工程交付|解决方案/i.test(title);
-  const algorithmTitle = /算法工程师|算法开发|算法研究|机器学习工程师|深度学习工程师|NLP算法|自然语言处理算法|视觉算法|CV算法|推荐算法|模型训练/.test(title);
-  const algorithmSignals = [
-    "模型训练", "预训练", "算法研究", "算法建模", "模型微调", "强化学习",
-    "机器学习", "深度学习", "大模型算法", "多模态算法", "算法工程化",
-    "计算机视觉", "目标检测", "图像分割", "语音识别", "自然语言处理算法", "NLP算法"
-  ].filter((signal) => fullText.includes(signal));
-
-  if (algorithmTitle || (!applicationTitle && algorithmSignals.length >= 2)) {
-    return { kind: "algorithm", evidence: algorithmTitle ? title : algorithmSignals.slice(0, 2).join("、") };
-  }
-  if (applicationTitle && algorithmSignals.length >= 2) {
-    return { kind: "hybrid_algorithm", evidence: algorithmSignals.slice(0, 2).join("、") };
-  }
-  return { kind: applicationTitle ? "application" : "unknown", evidence: "" };
+  return { kind: "unknown", evidence: "" };
 }
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-module.exports = { scoreJob, salaryRangeK, activeDays, isBossJobUrl, decisionState, parseWorkSchedule, classifyJobRole, classifyExperienceFit, classifyTechnicalFit };
+module.exports = { scoreJob, salaryRangeK, activeDays, isBossJobUrl, decisionState, parseWorkSchedule, classifyJobRole, classifyExperienceFit };

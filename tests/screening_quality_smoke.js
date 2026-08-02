@@ -21,6 +21,7 @@ const {
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
+const { applyRuleGuard } = require("../src/core/job_analysis");
 const { extractJobMetadata } = require("../src/core/job_metadata");
 const { normalizeSearchPlan, normalizeBossActiveDays } = require("../src/core/profile_schema");
 const {
@@ -52,7 +53,7 @@ const freshActivity = applyJobQualityGovernance([{
   qualityTags: []
 }], { now: "2026-07-15T00:00:00.000Z", maxActiveDays: 3 })[0];
 assert.strictEqual(freshActivity.effectiveBossActiveDays, 2);
-assert.strictEqual(freshActivity.decisionBucket, "backup");
+assert.strictEqual(freshActivity.decisionBucket, "analysis_pending");
 assert(freshActivity.qualityTags.includes("activity_snapshot_aged"));
 assert(!freshActivity.qualityTags.includes("stale_or_unknown_active"));
 
@@ -66,6 +67,42 @@ const expiredActivity = applyJobQualityGovernance([{
 assert.strictEqual(expiredActivity.effectiveBossActiveDays, 5);
 assert(expiredActivity.qualityTags.includes("stale_or_unknown_active"));
 assert.strictEqual(expiredActivity.decisionBucket, "refresh");
+
+const sharedTalkAnalysis = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
+const sharedTalkGuard = applyRuleGuard(sharedTalkAnalysis, job());
+assert.strictEqual(sharedTalkGuard.recommendation, "caution");
+assert.strictEqual(sharedTalkGuard.decisionSource, "weighted_decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: sharedTalkGuard }), "caution");
+
+const adjacentRoleAnalysis = layeredDecisionAnalysis("partially_aligned", ["matched"]);
+const adjacentRoleGuard = applyRuleGuard(adjacentRoleAnalysis, job());
+assert.strictEqual(adjacentRoleGuard.recommendation, "apply");
+assert.strictEqual(adjacentRoleGuard.decisionSource, "weighted_decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: adjacentRoleGuard }), "apply");
+
+const neighboringDeliveryLane = layeredDecisionAnalysis("adjacent_misaligned", ["matched"]);
+const neighboringDeliveryLaneGuard = applyRuleGuard(neighboringDeliveryLane, job());
+assert.strictEqual(neighboringDeliveryLaneGuard.recommendation, null);
+assert.strictEqual(neighboringDeliveryLaneGuard.decisionStatus, "needs_retry");
+assert.strictEqual(neighboringDeliveryLaneGuard.decisionSource, "needs_retry");
+assert.strictEqual(decisionBucket({ ...job(), analysis: neighboringDeliveryLaneGuard }), "analysis_pending");
+
+const obviousDirectionMismatch = layeredDecisionAnalysis("misaligned", ["matched"]);
+const obviousDirectionMismatchGuard = applyRuleGuard(obviousDirectionMismatch, job());
+assert.strictEqual(obviousDirectionMismatchGuard.recommendation, "not_recommended");
+assert.strictEqual(obviousDirectionMismatchGuard.decisionSource, "weighted_decision_matrix");
+assert.strictEqual(decisionBucket({ ...job(), analysis: obviousDirectionMismatchGuard }), "not_recommended");
+for (const softTag of ["salary_target_high", "experience_salary_overlap"]) {
+  assert.strictEqual(
+    decisionBucket({
+      ...job(),
+      qualityTags: [softTag],
+      analysis: obviousDirectionMismatchGuard
+    }),
+    "not_recommended",
+    `${softTag} 只是排序软标签，不得覆盖四档加权矩阵`
+  );
+}
 
 assert.strictEqual(normalizeBossUrl("https://www.zhipin.com/job_detail/abc123.html?ka=search"), "https://www.zhipin.com/job_detail/abc123.html");
 assert.strictEqual(normalizeBossNavigationUrl("https://www.zhipin.com/job_detail/abc123.html?securityId=token"), "https://www.zhipin.com/job_detail/abc123.html?securityId=token");
@@ -234,8 +271,8 @@ const configs = {
 const ready = scoreJob(job({ bossActiveText: "今日活跃", experience: "3-5年", salary: "10-16K" }), configs);
 assert.strictEqual(decisionState(ready), "ready");
 assert(ready.qualityTags.includes("experience_stretch"));
-assert.strictEqual(decisionBucket({ ...ready, risks: ["Java占比需确认"], analysis: {} }), "talk");
-assert.strictEqual(decisionBucket({ ...ready, level: "可投", qualityTags: ["work_schedule_unknown"], risks: [], analysis: {} }), "talk");
+assert.strictEqual(decisionBucket({ ...ready, risks: ["Java占比需确认"], analysis: {} }), "analysis_pending");
+assert.strictEqual(decisionBucket({ ...ready, level: "可投", qualityTags: ["work_schedule_unknown"], risks: [], analysis: {} }), "analysis_pending");
 
 const unknown = scoreJob(job({ bossActiveText: "" }), configs);
 assert.strictEqual(decisionState(unknown), "refresh");
@@ -243,7 +280,7 @@ const metadataUnknown = scoreJob(job({ salary: "", experience: "", bossActiveTex
 assert(metadataUnknown.qualityTags.includes("salary_unverified"));
 assert(metadataUnknown.qualityTags.includes("experience_unverified"));
 assert.strictEqual(decisionState(metadataUnknown), "ready");
-assert.strictEqual(decisionBucket({ ...metadataUnknown, analysis: {} }), "talk");
+assert.strictEqual(decisionBucket({ ...metadataUnknown, analysis: {} }), "analysis_pending");
 const listOnly = scoreJob(job({ detailRequired: true, detailRead: false }), configs);
 assert.strictEqual(decisionState(listOnly), "refresh");
 const scopedConfigs = {
@@ -272,9 +309,16 @@ assert.strictEqual(stretchWithoutTechnicalEvidence.canStretch, false);
 assert.notStrictEqual(stretchWithoutTechnicalEvidence.level, "可冲");
 const overRange = scoreJob(job({ experience: "5-10年", salary: "10-12K" }), scopedConfigs);
 assert(overRange.qualityTags.includes("experience_overrange"));
-assert.strictEqual(decisionBucket({ ...overRange, analysis: {} }), "backup");
-const strictSalary = scoreJob(job({ experience: "0-3年", salary: "15-20K" }), scopedConfigs);
-assert.strictEqual(decisionState(strictSalary), "blocked");
+assert.strictEqual(decisionBucket({ ...overRange, analysis: {} }), "analysis_pending");
+// 严格模式下，岗位薪资高于目标上限只走软标记（备选），不做硬排除；低于期望下限仍然是硬边界。
+const strictHighSalary = scoreJob(job({ experience: "0-3年", salary: "15-20K" }), scopedConfigs);
+assert.notStrictEqual(decisionState(strictHighSalary), "blocked", "薪资高于目标上限不得在 strict 模式硬排除");
+assert(!strictHighSalary.qualityTags.includes("salary_out_of_range"));
+assert(strictHighSalary.qualityTags.includes("salary_target_high"), "高于目标上限只保留 salary_target_high 软标记");
+assert.strictEqual(decisionBucket({ ...strictHighSalary, analysis: {} }), "analysis_pending", "未完成语义分析时高薪资软标签不得伪装成产品档位");
+const strictLowSalary = scoreJob(job({ experience: "0-3年", salary: "6-8K" }), scopedConfigs);
+assert.strictEqual(decisionState(strictLowSalary), "blocked", "低于期望下限仍是严格硬边界");
+assert(strictLowSalary.qualityTags.includes("salary_out_of_range"));
 
 const finalSalaryConfigs = {
   ...scopedConfigs,
@@ -290,12 +334,12 @@ for (const salary of ["15-25K", "12-24K"]) {
   const overlap = scoreJob(job({ experience: "3-5年", salary }), finalSalaryConfigs);
   assert(overlap.qualityTags.includes("experience_salary_overlap"));
   assert.strictEqual(decisionState(overlap), "ready");
-  assert.strictEqual(decisionBucket({ ...overlap, analysis: {} }), "backup");
+  assert.strictEqual(decisionBucket({ ...overlap, analysis: {} }), "analysis_pending");
 }
 const aboveTarget = scoreJob(job({ experience: "3-5年", salary: "20-30K" }), finalSalaryConfigs);
 assert(aboveTarget.qualityTags.includes("experience_salary_above_target"));
 assert.strictEqual(decisionState(aboveTarget), "ready");
-assert.strictEqual(decisionBucket({ ...aboveTarget, analysis: {} }), "backup");
+assert.strictEqual(decisionBucket({ ...aboveTarget, analysis: {} }), "analysis_pending");
 const unknownStretchSalary = scoreJob(job({ experience: "3-5年", salary: "" }), finalSalaryConfigs);
 assert(unknownStretchSalary.qualityTags.includes("salary_unverified"));
 assert(!unknownStretchSalary.qualityTags.includes("experience_salary_above_target"));
@@ -314,16 +358,16 @@ assert(coreSalary.qualityTags.includes("salary_target_core"));
 
 const stretchSalary = scoreJob(job({ experience: "1-3年", salary: "15-20K" }), salaryTargetConfigs);
 assert(stretchSalary.qualityTags.includes("salary_target_stretch"));
-assert.notStrictEqual(decisionBucket({ ...stretchSalary, analysis: completeApplyAnalysis() }), "primary");
+assert.strictEqual(decisionBucket({ ...stretchSalary, analysis: completeApplyAnalysis() }), "apply");
 
 const highExperienceSalary = scoreJob(job({ experience: "3-5年", salary: "15-20K" }), salaryTargetConfigs);
 assert(highExperienceSalary.qualityTags.includes("salary_target_high"));
 assert.strictEqual(decisionState(highExperienceSalary), "ready");
-assert.strictEqual(decisionBucket({ ...highExperienceSalary, analysis: completeApplyAnalysis() }), "backup");
+assert.strictEqual(decisionBucket({ ...highExperienceSalary, analysis: completeApplyAnalysis() }), "apply");
 
 const highSalary = scoreJob(job({ experience: "1-3年", salary: "17-25K" }), salaryTargetConfigs);
 assert(highSalary.qualityTags.includes("salary_target_high"));
-assert.strictEqual(decisionBucket({ ...highSalary, analysis: completeApplyAnalysis() }), "backup");
+assert.strictEqual(decisionBucket({ ...highSalary, analysis: completeApplyAnalysis() }), "apply");
 
 const unknownTargetSalary = scoreJob(job({ experience: "1-3年", salary: "" }), salaryTargetConfigs);
 assert(unknownTargetSalary.qualityTags.includes("salary_unverified"));
@@ -352,8 +396,12 @@ const offCityInJd = scoreJob(job({
 assert(offCityInJd.qualityTags.includes("location_mismatch"));
 assert.strictEqual(decisionState(offCityInJd), "blocked");
 
-const wrongRole = scoreJob(job({ title: "AI 培训讲师", bossActiveText: "今日活跃" }), configs);
-assert.strictEqual(decisionState(wrongRole), "blocked");
+// 跨职业保护：运营、产品、设计等标题不再被本地规则默认拦截，交由语义证据契约判断。
+for (const title of ["电商运营专员", "产品经理", "UI设计师", "AI 培训讲师"]) {
+  const scoredRole = scoreJob(job({ title, bossActiveText: "今日活跃" }), configs);
+  assert(!scoredRole.qualityTags.includes("role_mismatch"), `${title} 不应再产生 role_mismatch`);
+  assert.strictEqual(decisionState(scoredRole), "ready", `${title} 应进入语义分析`);
+}
 const knowledgeTrainer = scoreJob(job({
   title: "AI知识库训练师",
   bossActiveText: "今日活跃",
@@ -365,28 +413,30 @@ const internshipRole = scoreJob(job({ title: "大模型应用开发实习生", b
 assert(internshipRole.qualityTags.includes("internship_role"));
 assert.strictEqual(decisionState(internshipRole), "blocked");
 const algorithmRole = scoreJob(job({ title: "RAG 算法工程师", bossActiveText: "今日活跃" }), configs);
-assert(algorithmRole.qualityTags.includes("algorithm_role"));
-assert.strictEqual(decisionState(algorithmRole), "blocked");
+assert(!algorithmRole.qualityTags.includes("algorithm_role"));
+assert.strictEqual(decisionState(algorithmRole), "ready");
 const hybridRole = scoreJob(job({ title: "AI Agent 开发工程师", bossActiveText: "今日活跃", description: "负责 Agent 应用开发和 RAG，参与模型训练、算法研究。" }), configs);
-assert(hybridRole.qualityTags.includes("algorithm_hybrid"));
+assert(!hybridRole.qualityTags.includes("algorithm_hybrid"));
 assert.strictEqual(decisionState(hybridRole), "ready");
 const cppGoCore = scoreJob(job({
   title: "RAG 平台工程师", bossActiveText: "今日活跃",
   description: "负责 RAG 服务开发。任职要求：熟练掌握 C++ 或 Golang，具备服务端开发经验；了解 RAG 者优先。"
 }), configs);
-assert(cppGoCore.qualityTags.includes("core_stack_mismatch"));
-assert.strictEqual(decisionBucket({ ...cppGoCore, analysis: {} }), "backup");
+assert(!cppGoCore.qualityTags.includes("core_stack_mismatch"));
+assert.strictEqual(decisionState(cppGoCore), "ready");
+assert.strictEqual(decisionBucket({ ...cppGoCore, analysis: {} }), "analysis_pending");
 const javaCore = scoreJob(job({
   title: "AI 后端工程师", bossActiveText: "今日活跃",
   description: "岗位职责：负责 AI 平台。任职要求：熟练掌握 Java 和 Spring Boot，具备微服务开发经验。"
 }), configs);
-assert(javaCore.qualityTags.includes("java_backend_heavy"));
-assert.strictEqual(decisionBucket({ ...javaCore, analysis: {} }), "backup");
+assert(!javaCore.qualityTags.includes("java_backend_heavy"));
+assert.strictEqual(decisionState(javaCore), "ready");
+assert.strictEqual(decisionBucket({ ...javaCore, analysis: {} }), "analysis_pending");
 const pythonCore = scoreJob(job({
   title: "AI 应用开发工程师", bossActiveText: "今日活跃",
   description: "岗位职责：负责 RAG 知识库。任职要求：熟练掌握 Python 和 FastAPI，具备 RAG 项目经验。"
 }), configs);
-assert.strictEqual(pythonCore.technicalFit.kind, "aligned");
+assert.strictEqual(decisionState(pythonCore), "ready");
 assert(!cleanDetailText("职位描述 负责 Python 开发。公司介绍 这部分不是 JD").includes("公司介绍"));
 assert.strictEqual(normalizeSearchPlan({}, { candidate: { city: "广州" } }).workSchedulePreference, "prefer_double_weekend");
 
@@ -649,5 +699,30 @@ function job(overrides = {}) {
 }
 
 function completeApplyAnalysis() {
-  return { semanticStatus: "complete", recommendation: "apply", confidence: 0.9, evidence: { jd: ["Python"], resume: ["Python"] } };
+  return {
+    semanticStatus: "complete",
+    recommendation: "apply",
+    recommendationSchemaVersion: 2,
+    confidence: 0.9,
+    evidence: { jd: ["Python"], resume: ["Python"] }
+  };
+}
+
+function layeredDecisionAnalysis(roleAlignment, states) {
+  return {
+    ...completeApplyAnalysis(),
+    fitLevel: "A",
+    roleAlignment,
+    requirementMatches: states.map((state, index) => ({
+      state,
+      foundation: true,
+      central: false,
+      indispensable: true,
+      jdEvidence: `JD ${index}`,
+      resumeEvidence: ["matched", "transferable"].includes(state) ? `Resume ${index}` : ""
+    })),
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    hiddenRisks: []
+  };
 }

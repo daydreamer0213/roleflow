@@ -40,12 +40,21 @@ const {
   updateCandidateProfile,
   saveCandidateResumeVersion,
   listCandidateResumeVersions,
+  listMatchingResumeVersions,
+  listProfileVersions,
   recordResumeParseAttempt,
   listResumeParseAttempts,
   saveSearchPlan,
   rescorePlanObservations,
   compareProfileVersions,
   getSearchPlanDependency,
+  getActiveMatchingCard,
+  getMatchingCard,
+  listMatchingCards,
+  createMatchingCardDraft,
+  saveMatchingCardDraftEdit,
+  confirmMatchingCard,
+  getCandidateMatchingContext,
   listDecisionPool,
   listDecisionQueue,
   recordCandidateJobEvent,
@@ -67,7 +76,8 @@ const {
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
-const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
+const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
+const { matchingCardFromProfile } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
@@ -79,6 +89,7 @@ const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, tes
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
+const { defaultSelectedForBatch } = require("../core/decision_policy");
 const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { scoreJob, decisionState } = require("../core/scoring");
@@ -126,6 +137,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
+      if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
@@ -147,6 +159,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
@@ -191,7 +205,9 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
     const resume = file
       ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
       : parseResumeText({ text: pastedText });
-    const prepared = prepareResumeTextForModel(resume.text);
+    const prepared = prepareResumeTextForModel(resume.text, {
+      originalFileName: resume.originalFileName
+    });
     logger.info("resume_model_input_previewed", { requestId, source: file ? "file" : "pasted_text", charCount: prepared.text.length, redactions: prepared.redactions });
     sendJson(res, 200, { text: prepared.text, charCount: prepared.text.length, redactions: prepared.redactions });
   } catch (error) {
@@ -209,8 +225,13 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     planId = Number(params.planId);
     const plan = getSearchPlan(db, planId);
     if (!plan) throw new Error("Search Plan 不存在。");
-    const profile = getCandidateProfile(db, plan.profileId);
-    if (!profile) throw new Error("候选人画像不存在。");
+    const matchingContext = getCandidateMatchingContext(db, plan.profileId);
+    if (!matchingContext) {
+      throw appError("MATCHING_CARD_CONFIRMATION_REQUIRED", "重试语义分析前，请先在工作台确认匹配偏好卡。", {
+        statusCode: 409,
+        details: { profileId: plan.profileId, cardId: getSearchPlanDependency(db, plan.id).draftCardId }
+      });
+    }
     const pool = listDecisionPool(db, { planId });
     const requestedJobId = Number(params.jobId);
     const jobs = bulk
@@ -220,12 +241,12 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     if (!jobs.length) throw new Error(bulk ? "当前没有待重试的语义分析岗位。" : "岗位不存在或不属于当前筛选方案。");
     const baseConfigs = loadConfigs(root);
     baseConfigs.model = modelConfig;
-    const configs = profileToRuntimeConfigs(baseConfigs, profile.profile, plan.plan, listCandidateResumeVersions(db, profile.id));
+    const configs = profileToRuntimeConfigs(baseConfigs, matchingContext.candidateProfile, plan.plan, listMatchingResumeVersions(db, plan.profileId), matchingContext.matchingCard);
     const analyze = createJobAnalysisRunner(configs, plan.plan.keywords || [], { db, logger });
     const batchId = createBatch(db, jobs[0].source || "boss", bulk ? "analysis-retry-bulk" : "analysis-retry", bulk
       ? `analysis-retry-bulk:plan:${planId}:jobs:${jobs.length}`
       : `analysis-retry:plan:${planId}:job:${jobs[0].id}`, {
-      profileId: profile.id,
+      profileId: plan.profileId,
       searchPlanId: planId,
       filterSnapshot: { mode: bulk ? "analysis-retry-bulk" : "analysis-retry", jobIds: jobs.map((job) => job.id) }
     });
@@ -309,26 +330,45 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
         ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
         : parseResumeText({ text: pastedText });
     } catch (error) {
-      const source = file ? `文件“${file.fileName}”` : "粘贴的简历文本";
+      const source = file ? "简历文件" : "粘贴的简历文本";
       error.message = `${source}解析失败：${error.message}`;
       throw error;
     }
-    logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", fileName: resume.originalFileName, format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
+    logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
+    const requestedProfileId = Number(form.fields.profileId || 0) || null;
+    const existing = requestedProfileId ? getCandidateProfile(db, requestedProfileId) : null;
+    const reusableCard = existing && listMatchingCards(db, existing.id)
+      .some((card) => card.resumeContentHash === resume.contentHash && ["draft", "confirmed"].includes(card.status));
+    if (existing && ((existing.sourceHash && existing.sourceHash === resume.contentHash) || reusableCard)) {
+      recordResumeParseAttempt(db, { profileId: existing.id, document: resume });
+      parseRecorded = true;
+      logger.info("resume_reupload_same_content", { requestId, profileId: existing.id, contentHash: resume.contentHash });
+      return redirect(res, matchingCardEntryLocation(db, existing.id, resume.contentHash));
+    }
     const profile = await analyzeResumeProfile({ modelConfig, resume, logger });
     const saved = saveProfileAnalysis(db, { profileId: form.fields.profileId, profile, document: resume, searchPlan: null });
     persistResumeSourceFile({ db, root, documentId: saved.resumeDocumentId, file, logger, requestId });
     recordResumeParseAttempt(db, { profileId: saved.profileId, document: resume });
     parseRecorded = true;
     logger.info("resume_profile_created", { requestId, profileId: saved.profileId, profileVersionId: saved.profileVersionId, modelProvider: modelConfig?.provider || "mock" });
-    try {
-      const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
-      const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
-      logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
-      return redirect(res, `/plan?profileId=${saved.profileId}&planId=${planId}&created=1`);
-    } catch (error) {
-      error.message = `候选人画像和简历版本已保存，但搜索建议生成失败：${error.message}`;
-      return respondUiError(res, error, `/profile?profileId=${saved.profileId}`, { logger, requestId, event: "search_plan_recommend_failed", fallbackCode: "SEARCH_PLAN_RECOMMEND_FAILED" });
+    const cardId = await createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId });
+    // 只要已有已确认匹配卡和 active 方案（无论方案当前是否 stale），新简历只生成草稿卡：
+    // 旧卡与旧方案继续作为扫描依据，绝不自动停用、替换或重绑；确认新卡后由用户明确保存方案。
+    // 只有首次上传、没有 confirmed 卡，或确实不存在任何 active 方案时才自动生成初始方案。
+    const activeCard = getActiveMatchingCard(db, saved.profileId);
+    const activePlan = getActiveSearchPlan(db, saved.profileId);
+    if (activeCard && activePlan) {
+      logger.info("search_plan_recommend_skipped", { requestId, profileId: saved.profileId, planId: activePlan.id, reason: "pending_matching_card_draft" });
+    } else {
+      try {
+        const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
+        const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
+        logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
+      } catch (planError) {
+        logger.warn("search_plan_recommend_failed", { requestId, profileId: saved.profileId, error: errorMeta(planError) });
+      }
     }
+    return redirect(res, `/match-card?profileId=${saved.profileId}&cardId=${cardId}`);
   } catch (error) {
     const failedFile = form.files?.resume;
     try {
@@ -343,6 +383,161 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
       logger.warn("resume_parse_attempt_record_failed", { requestId, error: errorMeta(recordError) });
     }
     respondUiError(res, error, "/onboarding", { logger, requestId, event: "resume_upload_failed", fallbackCode: "RESUME_UPLOAD_FAILED" });
+  }
+}
+
+// 相同内容重新上传：不新增画像版本、不调用模型，只按 profileId + resumeContentHash 决定去向。
+function matchingCardEntryLocation(db, profileId, resumeContentHash) {
+  const cards = listMatchingCards(db, profileId).filter((card) => card.resumeContentHash === resumeContentHash);
+  const confirmed = cards.find((card) => card.status === "confirmed");
+  if (confirmed) {
+    const activePlan = getActiveSearchPlan(db, profileId);
+    return `/plan?profileId=${profileId}&planId=${activePlan?.id || ""}`;
+  }
+  const draft = cards.find((card) => card.status === "draft");
+  if (draft) return `/match-card?profileId=${profileId}&cardId=${draft.id}`;
+  const latestVersion = listProfileVersions(db, profileId, 1)[0];
+  if (!latestVersion) throw new Error("候选人画像没有已保存的简历版本，无法生成匹配偏好卡。");
+  const created = createMatchingCardDraft(db, {
+    profileId,
+    profileVersionId: latestVersion.id,
+    resumeDocumentId: latestVersion.resumeDocumentId,
+    resumeContentHash,
+    card: matchingCardFromProfile(latestVersion.profile),
+    source: "migration"
+  });
+  return `/match-card?profileId=${profileId}&cardId=${created.id}`;
+}
+
+async function createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId }) {
+  let card;
+  try {
+    card = await buildCandidateMatchCard({ modelConfig, profile, logger });
+  } catch (error) {
+    logger.warn("matching_card_draft_fallback", { requestId, profileId: saved.profileId, error: errorMeta(error) });
+    card = matchingCardFromProfile(profile);
+  }
+  const draft = createMatchingCardDraft(db, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: resume.contentHash,
+    card,
+    source: "model"
+  });
+  logger.info("matching_card_draft_created", { requestId, profileId: saved.profileId, cardId: draft.id, source: draft.source });
+  return draft.id;
+}
+
+function renderMatchCardPage({ db, searchParams }) {
+  const profileId = Number(searchParams.get("profileId") || 0);
+  const profile = getCandidateProfile(db, profileId);
+  if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
+  const activeCard = getActiveMatchingCard(db, profileId);
+  const requested = getMatchingCard(db, searchParams.get("cardId"));
+  const card = requested?.profileId === profile.id ? requested : null;
+  const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
+  const activeDocument = activeCard?.resumeDocumentId ? getResumeDocument(db, activeCard.resumeDocumentId) : null;
+  const activeLabel = activeCard
+    ? `${activeDocument?.originalFileName || "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
+    : "尚无已确认的匹配偏好卡";
+  const draftLinks = drafts
+    .filter((item) => item.id !== card?.id)
+    .map((item) => `<a class="button-link" href="/match-card?profileId=${profile.id}&cardId=${item.id}">打开草稿卡 #${item.id}</a>`)
+    .join(" ");
+  const notices = [];
+  if (searchParams.get("saved")) notices.push(`<p class="notice">草稿已保存；确认之前不会改变扫描依据。</p>`);
+  if (!activeCard) notices.push(`<p class="setup-warning">尚无已确认的匹配偏好卡。无需重新上传简历，打开现有草稿卡确认后即可扫描。 ${draftLinks}</p>`);
+  if (card?.status === "draft" && activeCard) notices.push(`<p class="setup-warning">新简历待确认，不会自动替换当前匹配依据。</p>`);
+  const body = !card
+    ? `<section class="panel"><h2>选择要确认的草稿卡</h2><p class="hint">匹配偏好卡来自你已上传的简历；选择一张草稿卡检查并确认。</p><p>${draftLinks || "当前没有草稿卡。"}</p></section>`
+    : card.status === "draft"
+      ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（草稿）</h2>
+  <p class="hint">逐项核对模型从简历事实归纳的匹配依据；只有确认后，扫描和岗位匹配才会使用它。</p>
+  <form class="form-stack" method="post" action="/api/match-card">
+    <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
+    <input type="hidden" name="cardId" value="${escapeAttr(card.id)}">
+    <label>目标方向（每行一个）<textarea name="targetDirections">${escapeHtml((card.card.targetDirections || []).join("\n"))}</textarea></label>
+    <label>强证据（每行：名称 | 简历事实）<textarea name="strongEvidence">${escapeHtml((card.card.strongEvidence || []).map((item) => `${item.label} | ${item.evidence}`).join("\n"))}</textarea></label>
+    <label>可迁移能力（每行：名称 | 简历事实 | 尚未证明的部分）<textarea name="transferableCapabilities">${escapeHtml((card.card.transferableCapabilities || []).map((item) => [item.label, item.evidence, item.limitation].filter(Boolean).join(" | ")).join("\n"))}</textarea></label>
+    <label>需谨慎转向（每行：方向 | 原因）<textarea name="cautionTransitions">${escapeHtml((card.card.cautionTransitions || []).map((item) => `${item.direction} | ${item.reason}`).join("\n"))}</textarea></label>
+    <label>用户补充偏好（每行一条；会用于岗位匹配，不会直接发送给招聘方；不能代替简历证据）<textarea name="userNotes">${escapeHtml((card.card.userNotes || []).join("\n"))}</textarea></label>
+    <div><button type="submit">保存草稿</button></div>
+  </form>
+  <form class="inline-form" method="post" action="/api/match-card/confirm">
+    <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
+    <input type="hidden" name="cardId" value="${escapeAttr(card.id)}">
+    <button type="submit">确认匹配偏好卡</button>
+  </form>
+  <p class="hint">确认后，旧的已确认卡会被替换；基于旧卡的筛选方案需要重新保存一次。</p>
+</section>`
+      : card.status === "confirmed"
+        ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
+        : `<section class="panel"><h2>匹配偏好卡 #${card.id}（历史版本 · 已被替换）</h2><p class="hint">这张卡已被更新的确认卡替换，仅作历史留档，不能重新确认；当前扫描与岗位匹配不使用它。</p>${renderMatchingCardSummary(card.card)}</section>`;
+  return renderPage("匹配偏好卡", `<main>
+  <nav>${navLinks(`/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`)}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
+  <h1>匹配偏好卡</h1>
+  <p class="hint">当前扫描使用：${escapeHtml(activeLabel)}</p>
+  ${notices.join("\n")}
+  ${body}
+</main>`);
+}
+
+function renderMatchingCardSummary(card = {}) {
+  const items = (list, render) => (list || []).length ? `<ul>${list.map(render).join("")}</ul>` : "<p class=\"hint\">（空）</p>";
+  return `<dl>
+  <dt>目标方向</dt><dd>${escapeHtml((card.targetDirections || []).join("、") || "（空）")}</dd>
+  <dt>强证据</dt><dd>${items(card.strongEvidence, (item) => `<li>${escapeHtml(item.label)}：${escapeHtml(item.evidence)}</li>`)}</dd>
+  <dt>可迁移能力</dt><dd>${items(card.transferableCapabilities, (item) => `<li>${escapeHtml(item.label)}：${escapeHtml(item.evidence)}${item.limitation ? `（未证明：${escapeHtml(item.limitation)}）` : ""}</li>`)}</dd>
+  <dt>需谨慎转向</dt><dd>${items(card.cautionTransitions, (item) => `<li>${escapeHtml(item.direction)}：${escapeHtml(item.reason)}</li>`)}</dd>
+</dl>`;
+}
+
+function matchingCardFromForm(params = {}) {
+  const lines = (value) => String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const segments = (line) => line.split("|").map((item) => item.trim());
+  return {
+    targetDirections: lines(params.targetDirections),
+    strongEvidence: lines(params.strongEvidence).map((line) => {
+      const [label, ...rest] = segments(line);
+      return { label, evidence: rest.join(" | ") };
+    }),
+    transferableCapabilities: lines(params.transferableCapabilities).map((line) => {
+      const [label, evidence, ...rest] = segments(line);
+      return { label, evidence, limitation: rest.join(" | ") };
+    }),
+    cautionTransitions: lines(params.cautionTransitions).map((line) => {
+      const [direction, ...rest] = segments(line);
+      return { direction, reason: rest.join(" | ") };
+    }),
+    userNotes: lines(params.userNotes)
+  };
+}
+
+async function handleMatchCardSave(req, res, { db, logger, requestId }) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const profileId = Number(params.profileId);
+    const cardId = Number(params.cardId);
+    const saved = saveMatchingCardDraftEdit(db, { profileId, cardId, card: matchingCardFromForm(params) });
+    logger.info("matching_card_draft_saved", { requestId, profileId, cardId: saved.id });
+    redirect(res, `/match-card?profileId=${profileId}&cardId=${saved.id}&saved=1`);
+  } catch (error) {
+    respondUiError(res, error, "/match-card", { logger, requestId, event: "matching_card_save_failed", fallbackCode: "MATCHING_CARD_SAVE_FAILED" });
+  }
+}
+
+async function handleMatchCardConfirm(req, res, { db, logger, requestId }) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const profileId = Number(params.profileId);
+    const cardId = Number(params.cardId);
+    confirmMatchingCard(db, { profileId, cardId });
+    logger.info("matching_card_confirmed", { requestId, profileId, cardId });
+    const activePlan = getActiveSearchPlan(db, profileId);
+    redirect(res, `/plan?profileId=${profileId}&planId=${activePlan?.id || ""}&matchCardConfirmed=1`);
+  } catch (error) {
+    respondUiError(res, error, "/match-card", { logger, requestId, event: "matching_card_confirm_failed", fallbackCode: "MATCHING_CARD_CONFIRM_FAILED" });
   }
 }
 
@@ -567,12 +762,14 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
     }, profile.profile);
     const validation = validateSearchPlan(plan, profile.profile);
     if (!validation.valid) throw new Error(validation.errors.join("；"));
-    const planId = saveSearchPlan(db, { id: params.planId, profileId, plan });
+    const matchingContext = getCandidateMatchingContext(db, profileId);
+    const planId = saveSearchPlan(db, { id: params.planId, profileId, profileVersionId: matchingContext?.profileVersionId || null, plan });
     const runtimeConfigs = profileToRuntimeConfigs(
       loadConfigs(root),
-      profile.profile,
+      matchingContext?.candidateProfile || profile.profile,
       plan,
-      listCandidateResumeVersions(db, profileId)
+      listMatchingResumeVersions(db, profileId),
+      matchingContext?.matchingCard || null
     );
     const rescore = rescorePlanObservations(db, { planId, configs: runtimeConfigs });
     logger.info("search_plan_saved", {
@@ -593,9 +790,9 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
-    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
-    if (plan && !profile) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
-    assertSearchPlanReady(plan, profile?.profile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
+    const matchingContext = plan ? getCandidateMatchingContext(db, plan.profileId) : null;
+    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
     assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
@@ -742,9 +939,9 @@ async function handleWorkflowRunStart(req, res, {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId || 0);
     const plan = getSearchPlan(db, planId);
-    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
-    if (!profile) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
-    assertSearchPlanReady(plan, profile.profile, getSearchPlanDependency(db, plan.id));
+    if (!plan || !getCandidateProfile(db, plan.profileId)) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
+    const matchingContext = getCandidateMatchingContext(db, plan.profileId);
+    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, plan.id));
     const state = buildWorkflowDashboardState(db, plan);
     if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
     if (state.nextPlan?.errorCode) {
@@ -1299,7 +1496,7 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
 
 function canGenerateGreeting(job) {
   const analysis = job.analysis || {};
-  return job.decisionBucket === "primary" && analysis.semanticStatus === "complete"
+  return ["primary", "apply"].includes(job.decisionBucket) && analysis.semanticStatus === "complete"
     && Boolean(analysis.evidence?.jd?.length && analysis.evidence?.resume?.length);
 }
 
@@ -1629,7 +1826,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
   <nav>${navLinks(`/resumes?profileId=${profile.id}`)}<a href="/profile?profileId=${profile.id}">画像确认</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
   <h1>简历版本</h1>
   ${saved}
-  <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。</p>
+  <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。投递版简历只用于岗位沟通与版本管理：新增、编辑或停用版本不会改变基础候选人画像，也不会替换当前匹配偏好卡。</p>
   <form class="panel form-stack" method="post" action="/api/resume-version" enctype="multipart/form-data">
     <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
     <h2>新增版本</h2>
@@ -1638,7 +1835,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
     <label>或粘贴简历文本<textarea name="resumeText" placeholder="文件无法解析时可用"></textarea></label>
     ${renderResumeVersionFields({ isActive: true })}
     ${renderResumePreviewControls()}
-    <p class="hint">原始文件留在本机；发送给模型前会自动遮蔽手机号、邮箱、身份证号和详细住址。</p>
+    <p class="hint">原始文件留在本机；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型。</p>
     <button>解析并新增版本</button>
   </form>
   ${versions.length ? versions.map((version) => renderResumeVersion(version, profile.id)).join("") : `<section class="panel">暂无可用版本。</section>`}
@@ -1764,7 +1961,7 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
     <div class="inline-form"><button type="button" data-template="${escapeAttr(JSON.stringify(resumeTextTemplate()))}" onclick="const target=document.getElementById(&quot;resume-text&quot;);if(!target.value.trim())target.value=JSON.parse(this.dataset.template);target.focus()">使用模板</button></div>
     ${renderResumePreviewControls()}
-    <p class="hint">提交后先在本地提取文本，并自动遮蔽手机号、邮箱、身份证号和详细住址，再发送给当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
+    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
     <button${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
   </form>
   ${profiles.length ? `<section class="panel"><h2>已有候选人</h2>${profiles.map((profile) => `<p><a href="/plan?profileId=${profile.id}&planId=${profile.activePlanId || ""}">${escapeHtml(profile.displayName)}</a> · 最近更新 ${escapeHtml(profile.updatedAt.slice(0, 16).replace("T", " "))}</p>`).join("")}</section>` : ""}
@@ -1776,7 +1973,7 @@ function renderResumePreviewControls() {
 }
 
 function resumePreviewScript() {
-  return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
+  return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
 function renderModelSettingsPage({ modelState, searchParams }) {
@@ -1908,8 +2105,8 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
   const bossRuntimeBlock = communicationRuntimeBlock(db);
   const workflowState = buildWorkflowDashboardState(db, planRecord);
-  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock);
-  const workflowStartDisabled = !validation.valid || planDependency.stale || Boolean(bossRuntimeBlock)
+  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock);
+  const workflowStartDisabled = !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
     || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
@@ -1919,8 +2116,11 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
-  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
   const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
+  const matchingCardNotice = planDependency.matchingCardRequired
+    ? `<section class="panel validation validation-error"><strong>尚未确认匹配偏好卡</strong><p>扫描和岗位匹配只依据已确认的匹配偏好卡。请到<a href="/match-card?profileId=${profile.id}${planDependency.draftCardId ? `&cardId=${planDependency.draftCardId}` : ""}">匹配偏好卡</a>检查并确认现有草稿；无需重新上传简历。</p></section>`
+    : "";
   const riskControlNotice = bossRuntimeBlock
     ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
     : "";
@@ -1931,6 +2131,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   ${renderWorkflowLaunchPanel({ planRecord, workflowState, disabled: workflowStartDisabled })}
   ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
   ${dependencyNotice}
+  ${matchingCardNotice}
   ${riskControlNotice}
   ${renderPlanValidation(validation)}
   <section class="panel profile-summary">
@@ -1952,7 +2153,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <label>最低薪资（K）<input type="number" min="0" max="100" name="salaryMinK" value="${escapeAttr(plan.salary?.minK || "")}"></label>
     <label>最高薪资（K）<input type="number" min="0" max="100" name="salaryMaxK" value="${escapeAttr(plan.salary?.maxK || "")}"></label>
     ${bossSalaryOptions.length ? `<div class="choice-section"><strong>BOSS 薪资抓取档位</strong><div class="choice-list">${renderPlanChoices("platformSalaryLanes", bossSalaryOptions, selectedBossSalaryLanes)}</div></div>` : ""}
-    <label>薪资策略<select name="salaryMode"><option value="wide"${plan.salaryMode !== "strict" ? " selected" : ""}>宽松排序，范围外保留</option><option value="strict"${plan.salaryMode === "strict" ? " selected" : ""}>严格范围，范围外不推荐</option></select></label>
+    <label>薪资策略<select name="salaryMode"><option value="wide"${plan.salaryMode !== "strict" ? " selected" : ""}>宽松排序，范围外保留</option><option value="strict"${plan.salaryMode === "strict" ? " selected" : ""}>严格范围，低于下限不推荐</option></select></label>
     <label>工作节奏<select name="workSchedulePreference"><option value="prefer_double_weekend"${plan.workSchedulePreference !== "no_preference" ? " selected" : ""}>优先双休，其他仍保留</option><option value="no_preference"${plan.workSchedulePreference === "no_preference" ? " selected" : ""}>不作为排序依据</option></select></label>
     <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
     <p class="plan-note">岗位质量会自动优先保留招聘方近 ${escapeHtml(plan.bossActiveDays)} 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
@@ -2043,7 +2244,7 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
     ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
     : "";
   const style = `<style>
-    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.talk{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.high_salary_backup{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
+    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason,.workflow-job-evidence{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-job-evidence{display:block}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.apply{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.caution{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
   </style>`;
   return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
     <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
@@ -2087,10 +2288,12 @@ function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
   const defaultCount = candidates.filter((candidate) => candidate.defaultChecked).length;
   const rows = candidates.map((job) => {
     const fitReason = (job.analysis?.fitReasons || []).slice(0, 2).join("；") || (job.matches || []).slice(0, 3).join("、") || "匹配证据已保存";
-    return `<label class="workflow-job"><input type="checkbox" name="jobIds" value="${job.id}"${job.defaultChecked ? " checked" : ""}><span class="workflow-job-main"><strong><a href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a></strong><span class="workflow-job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.salary || "薪资待确认")} · ${escapeHtml(job.experience || "经验待确认")} · ${escapeHtml(compactScheduleLabel(job.analysis))}</span><span class="workflow-job-reason">${escapeHtml(fitReason)}</span></span><span class="workflow-tier ${escapeAttr(job.workflowTier)}">${escapeHtml(workflowTierLabel(job.workflowTier))}</span></label>`;
+    const hardBlockers = hardBlockerLabels(job.analysis);
+    const hardBlockerNote = hardBlockers.length ? `<span class="workflow-job-reason">硬性限制：${escapeHtml(hardBlockers.join("；"))}</span>` : "";
+    return `<label class="workflow-job"><input type="checkbox" name="jobIds" value="${job.id}"${job.defaultChecked ? " checked" : ""}><span class="workflow-job-main"><strong><a href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a></strong><span class="workflow-job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.salary || "薪资待确认")} · ${escapeHtml(job.experience || "经验待确认")} · ${escapeHtml(compactScheduleLabel(job.analysis))}</span>${renderRoleEvidenceSummary(job.analysis, "workflow-job-evidence")}<span class="workflow-job-reason">${escapeHtml(fitReason)}</span>${hardBlockerNote}</span><span class="workflow-tier ${workflowTierClass(job.workflowTier)}">${escapeHtml(workflowTierLabel(job.workflowTier))}</span></label>`;
   }).join("") || `<p class="hint">本轮没有满足有效期、详情和匹配证据要求的候选。</p>`;
   const blocked = Boolean(runtimeBlock) || quota.remaining <= 0 || defaultCount === 0 || defaultCount > quota.remaining;
-  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；默认勾选 ${defaultCount} 个，包含补位项。高薪备选仅展示，不会默认勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="edge"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 今日剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
+  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；主投和可投默认勾选 ${defaultCount} 个，包含补位项。慎投仅展示，需人工决定是否勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="edge"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 今日剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
 }
 
 function renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock) {
@@ -2114,10 +2317,55 @@ function renderRunningWorkflowCommunication(workflow, communication, runtimeBloc
 function workflowTierLabel(tier) {
   return {
     primary: "主投",
-    talk: "可沟通",
-    low_risk_backup: "低风险备选",
-    high_salary_backup: "高薪备选"
-  }[tier] || "备选";
+    apply: "可投",
+    caution: "慎投"
+  }[tier] || "待分析";
+}
+
+function workflowTierClass(tier) {
+  return ["primary", "apply", "caution"].includes(tier) ? tier : "";
+}
+
+function roleAlignmentLabel(value) {
+  return {
+    aligned: "一致",
+    mostly_aligned: "基本一致",
+    partially_aligned: "部分一致",
+    misaligned: "不一致",
+    insufficient_evidence: "证据不足，待确认"
+  }[value] || "历史分析，待重新计算";
+}
+
+function foundationEvidenceLists(analysis) {
+  const rows = (analysis?.requirementMatches || []).filter(
+    (item) => item?.foundation === true
+  );
+  return {
+    covered: rows.filter((item) =>
+      ["matched", "transferable"].includes(item.state)
+    ).map((item) => item.requirement),
+    unresolved: rows.filter((item) =>
+      !["matched", "transferable"].includes(item.state)
+    ).map((item) => item.requirement)
+  };
+}
+
+function hardBlockerLabels(analysis = {}) {
+  return (analysis.hardBlockers || [])
+    .map((item) => typeof item === "string" ? item : item?.requirement || item?.reason || "")
+    .filter(Boolean);
+}
+
+function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "span") {
+  const foundation = foundationEvidenceLists(analysis);
+  const track = analysis.selectedTrackLabel
+    ? `匹配分支：${escapeHtml(analysis.selectedTrackLabel)} · `
+    : "";
+  const roleSummary = String(analysis.roleSummary || "岗位主体待确认");
+  const evidenceCount = Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0;
+  const covered = foundation.covered.filter(Boolean).join("、") || "暂无";
+  const unresolved = foundation.unresolved.filter(Boolean).join("、") || "暂无";
+  return `<${tag} class="${escapeAttr(className)}">${track}岗位主体：${escapeHtml(roleSummary)} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${evidenceCount} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
 }
 
 function shouldPollWorkflow(workflow, communication) {
@@ -2289,7 +2537,7 @@ function renderQueuePage({ db, searchParams }) {
 }
 
 function renderCompactQueuePage({ db, plan, searchParams }) {
-  const pool = ["focus", "primary", "talk", "backup", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
+  const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
   const fullPool = listDecisionPool(db, { planId: plan.id });
@@ -2300,11 +2548,11 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
   const candidates = poolBase.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
   const scopedAwaiting = allCandidates.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
   const refreshable = scopedAwaiting.filter((job) => job.decisionBucket === "refresh");
-  const counts = Object.fromEntries(["primary", "talk", "backup", "analysis_pending", "refresh", "not_recommended"].map((key) => [key, scopedAwaiting.filter((job) => job.decisionBucket === key).length]));
+  const counts = Object.fromEntries(["primary", "apply", "caution", "analysis_pending", "refresh", "not_recommended"].map((key) => [key, scopedAwaiting.filter((job) => job.decisionBucket === key).length]));
   counts.detail_pending = refreshable.filter((job) => (job.qualityTags || []).includes("detail_unverified")).length;
   counts.activity_pending = refreshable.filter((job) => ((job.qualityTags || []).includes("activity_unverified") || (job.qualityTags || []).includes("stale_or_unknown_active")) && !(job.qualityTags || []).includes("detail_unverified")).length;
   counts.no_reply = noReplyCandidates.length;
-  const wanted = pool === "focus" ? new Set(["primary", "talk"]) : new Set([pool]);
+  const wanted = pool === "focus" ? new Set(["primary", "apply"]) : new Set([pool]);
   const filtered = candidates.filter((job) => {
     const tags = job.qualityTags || [];
     if (pool === "no_reply") return true;
@@ -2331,11 +2579,11 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
   if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
   const quota = communicationQuota(db);
   const runtimeBlock = communicationRuntimeBlock(db);
-  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "talk", "backup"].includes(job.decisionBucket)
+  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "apply", "caution"].includes(job.decisionBucket)
     && String(job.applicationStatus ?? "").length === 0);
   const selection = PRODUCT_POLICY.operations.bossCommunication.selection;
   const defaultIds = new Set(eligible
-    .filter((job) => ["primary", "talk"].includes(job.decisionBucket))
+    .filter((job) => defaultSelectedForBatch(job.decisionBucket))
     .slice(0, selection.targetCount)
     .map((job) => job.id));
   const defaultCount = defaultIds.size;
@@ -2387,7 +2635,7 @@ function renderCompactDashboard(data) {
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.talk{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.backup{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
+body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
 <nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
   ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${analysisRetry}
 ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
@@ -2395,7 +2643,7 @@ ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=
 
 function renderCompactPoolTabs(queue, planId) {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
-  const tabs = [["focus", "主投 + 先聊", (queue.counts.primary || 0) + (queue.counts.talk || 0)], ["primary", "主投", queue.counts.primary || 0], ["talk", "先聊确认", queue.counts.talk || 0], ["backup", "备选", queue.counts.backup || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不建议", queue.counts.not_recommended || 0]];
+  const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
     + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`;
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
@@ -2417,7 +2665,7 @@ function queueHref(planId, pool, scope, page) {
 }
 
 function renderCompactFilters(filters) {
-  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}">${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["talk", "先聊确认"], ["backup", "备选"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不建议"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点"><button>过滤</button></form>`;
+  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}">${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["apply", "可投"], ["caution", "慎投"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不推荐"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点"><button>过滤</button></form>`;
 }
 
 function renderCompactJob(job, filters) {
@@ -2436,7 +2684,8 @@ function renderCompactJob(job, filters) {
   const hrReplyAction = `<form class="follow" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="hr_reply"><textarea name="hrMessage" placeholder="粘贴 HR 原话" required></textarea><button>生成 HR 回复</button></form>`;
   const feedbackAction = `<form class="follow" method="post" action="/api/feedback${query}">${jobContext}${feedbackReasonSelect("", true)}<input name="note" placeholder="具体哪里推荐错了（可选）"><button>提交推荐反馈</button></form>`;
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
-  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body"><div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(job.risks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+  const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(job.risks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
 }
 
 function compactSeenLabel(job, latestMainBatchId) {
@@ -2451,12 +2700,13 @@ function compactDateTime(value) {
 }
 
 function compactDecisionLabel(bucket) {
-  return { primary: "主投", talk: "先聊确认", backup: "备选", analysis_pending: "待语义分析", refresh: "待刷新", not_recommended: "不建议" }[bucket] || "备选";
+  return { primary: "主投", apply: "可投", caution: "慎投", analysis_pending: "待语义分析", refresh: "待刷新", not_recommended: "不推荐" }[bucket] || "待分析";
 }
 
 function compactDecisionSource(analysis = {}) {
   return {
     model: "模型证据匹配",
+    weighted_decision_matrix: "本地加权二维表",
     model_partial: "模型初步判断",
     model_low_confidence: "模型低置信度复核",
     hard_boundary: "基础硬条件",

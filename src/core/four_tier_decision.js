@@ -1,0 +1,471 @@
+const {
+  DECISION_POLICY,
+  assertDecisionPolicy,
+  capRecommendationTier,
+  decisionPolicyHash,
+  isExplicitSoftRequirement
+} = require("./decision_policy");
+
+function scoreRequirementGroup(items, stateValues = DECISION_POLICY.stateValues) {
+  const requirements = Array.isArray(items) ? items : [];
+  const counts = {
+    total: requirements.length,
+    known: 0,
+    matched: 0,
+    transferable: 0,
+    missing: 0,
+    unknown: 0
+  };
+  let points = 0;
+  for (const item of requirements) {
+    const state = String(item?.state || "unknown").trim();
+    if (state === "unknown") {
+      counts.unknown += 1;
+      continue;
+    }
+    if (!Object.hasOwn(stateValues, state)) {
+      throw new Error(`unsupported requirement match state: ${state}`);
+    }
+    counts[state] += 1;
+    counts.known += 1;
+    points += Number(stateValues[state]);
+  }
+  return {
+    ...counts,
+    fit: counts.known ? points / counts.known : null,
+    coverage: counts.total ? counts.known / counts.total : 0
+  };
+}
+
+function groupRequirements(requirementMatches) {
+  const groups = {
+    core: [],
+    supporting: [],
+    soft: []
+  };
+  for (const item of Array.isArray(requirementMatches) ? requirementMatches : []) {
+    if (isExplicitSoftRequirement(item)) {
+      groups.soft.push(item);
+    } else if (item?.foundation === true || item?.central === true || item?.indispensable === true) {
+      groups.core.push(item);
+    } else {
+      groups.supporting.push(item);
+    }
+  }
+  return groups;
+}
+
+function computeWeightedRequirementFit(requirementMatches, policy = DECISION_POLICY) {
+  assertDecisionPolicy(policy);
+  const groups = groupRequirements(requirementMatches);
+  const core = scoreRequirementGroup(groups.core, policy.stateValues);
+  const supporting = scoreRequirementGroup(groups.supporting, policy.stateValues);
+  const hasCore = core.total > 0;
+  const hasSupporting = supporting.total > 0;
+  let combinedFit = null;
+  let combinedCoverage = 0;
+
+  if (hasCore && hasSupporting) {
+    combinedCoverage = core.coverage * policy.requirementWeights.core
+      + supporting.coverage * policy.requirementWeights.supporting;
+    if (core.fit !== null && supporting.fit !== null) {
+      combinedFit = core.fit * policy.requirementWeights.core
+        + supporting.fit * policy.requirementWeights.supporting;
+    } else {
+      combinedFit = core.fit !== null ? core.fit : supporting.fit;
+    }
+  } else if (hasCore) {
+    combinedFit = core.fit;
+    combinedCoverage = core.coverage;
+  } else if (hasSupporting) {
+    combinedFit = supporting.fit;
+    combinedCoverage = supporting.coverage;
+  }
+
+  return {
+    groups,
+    core,
+    supporting,
+    combinedFit,
+    combinedCoverage,
+    hasCore,
+    hasSupporting
+  };
+}
+
+function fitBand(score, policy = DECISION_POLICY) {
+  assertDecisionPolicy(policy);
+  if (score === null || score === undefined) return "insufficient_evidence";
+  const parsed = Number(score);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error("weighted fit score must be between zero and one");
+  }
+  if (parsed >= policy.fitThresholds.fit) return "fit";
+  if (parsed >= policy.fitThresholds.mostlyFit) return "mostly_fit";
+  if (parsed > 0) return "partial_fit";
+  return "no_fit";
+}
+
+function matrixRecommendationFor(roleAlignment, band, policy = DECISION_POLICY) {
+  assertDecisionPolicy(policy);
+  const row = policy.matrix[String(roleAlignment || "").trim()];
+  const recommendation = row?.[String(band || "").trim()];
+  if (!recommendation) {
+    throw new Error(`decision matrix cell is invalid: ${roleAlignment}/${band}`);
+  }
+  return recommendation;
+}
+
+function floorRecommendationTier(tier, floor) {
+  const order = ["not_recommended", "caution", "apply", "primary"];
+  const tierIndex = order.indexOf(tier);
+  const floorIndex = order.indexOf(floor);
+  if (tierIndex < 0 || floorIndex < 0) throw new Error("recommendation tier floor is invalid");
+  return tierIndex < floorIndex ? floor : tier;
+}
+
+function scoreResponsibilityAlignment(items, policy) {
+  const matches = Array.isArray(items) ? items : [];
+  const total = matches.length;
+  let known = 0;
+  let points = 0;
+  let positive = 0;
+  let missing = 0;
+  for (const item of matches) {
+    const state = String(item?.state || "unknown").trim();
+    if (!Object.hasOwn(policy.responsibilityAlignment.stateValues, state)) continue;
+    if (state === "unknown") continue;
+    if (!hasEvidence(item?.jdEvidence) || !hasEvidence(item?.resumeEvidence)) continue;
+    known += 1;
+    if (state === "missing") missing += 1;
+    if (state === "matched" || state === "transferable") positive += 1;
+    points += policy.responsibilityAlignment.stateValues[state];
+  }
+  const score = known ? points / known : null;
+  const coverage = total ? known / total : 0;
+  const enoughKnownEvidence = known >= policy.responsibilityAlignment.minimumKnownCount
+    && coverage >= policy.responsibilityAlignment.minimumKnownCoverage;
+  let alignment = "";
+  if (enoughKnownEvidence && score >= policy.responsibilityAlignment.thresholds.aligned) {
+    alignment = "aligned";
+  } else if (enoughKnownEvidence && score >= policy.responsibilityAlignment.thresholds.mostlyAligned) {
+    alignment = "mostly_aligned";
+  } else if (known > 0 && score > 0) {
+    alignment = "partially_aligned";
+  } else if (total > 0 && known === total) {
+    alignment = "misaligned";
+  }
+  return {
+    total,
+    known,
+    positive,
+    missing,
+    missingRatio: known ? missing / known : null,
+    score,
+    coverage,
+    alignment
+  };
+}
+
+function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECISION_POLICY) {
+  const reportedRoleAlignment = String(analysis.roleAlignment || "insufficient_evidence").trim();
+  const responsibility = scoreResponsibilityAlignment(analysis.responsibilityMatches, policy);
+  const jointPolicy = policy.responsibilityAlignment.jointFit;
+  const responsibilityRequirementJointFit = responsibility.score == null
+    || weighted?.combinedFit == null
+    ? null
+    : responsibility.score * jointPolicy.responsibilityWeight
+      + weighted.combinedFit * jointPolicy.requirementWeight;
+  const evidenceBoundCore = (Array.isArray(weighted?.groups?.core) ? weighted.groups.core : [])
+    .filter((item) => hasEvidence(item?.jdEvidence) && hasEvidence(item?.resumeEvidence));
+  const responsibilityFoundationMissingCount = evidenceBoundCore
+    .filter((item) => (
+      item?.foundation === true
+      && String(item?.state || "unknown").trim() === "missing"
+    ))
+    .length;
+  const responsibilityCorePositiveCount = evidenceBoundCore
+    .filter((item) => (
+      ["matched", "transferable"].includes(String(item?.state || "unknown").trim())
+    ))
+    .length;
+  const responsibilityMatchedIndispensableCount = evidenceBoundCore
+    .filter((item) => (
+      item?.indispensable === true
+        && jointPolicy.matchedIndispensableStates.includes(
+          String(item?.state || "unknown").trim()
+        )
+    ))
+    .length;
+  const responsibilityBasePromotionEvidenceReady =
+    responsibility.known >= policy.responsibilityAlignment.minimumKnownCount
+    && responsibility.positive >= jointPolicy.minimumPositiveDutyCount
+    && responsibility.coverage >= policy.responsibilityAlignment.minimumKnownCoverage;
+  const responsibilityZeroDutyGapPromotionReady = reportedRoleAlignment === "partially_aligned"
+    && responsibility.total > 0
+    && responsibilityBasePromotionEvidenceReady
+    && responsibility.coverage >= jointPolicy.zeroDutyGapMinimumKnownCoverage
+    && responsibilityFoundationMissingCount === 0
+    && responsibility.missing === 0;
+  const responsibilityMatchedIndispensablePromotionReady =
+    reportedRoleAlignment === "partially_aligned"
+    && responsibility.total > 0
+    && responsibilityBasePromotionEvidenceReady
+    && responsibilityFoundationMissingCount === 0
+    && responsibility.missing > 0
+    && responsibilityMatchedIndispensableCount > 0
+    && responsibilityRequirementJointFit != null
+    && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold;
+  const responsibilityPromotionRoute = responsibilityFoundationMissingCount > 0
+    ? "none"
+    : responsibilityZeroDutyGapPromotionReady
+      ? "zero_duty_gap"
+      : responsibilityMatchedIndispensablePromotionReady
+        ? "matched_indispensable"
+        : "none";
+  const responsibilityConfirmedDutyGapCeilingApplied =
+    reportedRoleAlignment === "partially_aligned"
+    && responsibility.missing > 0
+    && responsibilityMatchedIndispensablePromotionReady === false;
+  const responsibilityJointSafetyCap = responsibilityFoundationMissingCount > 0
+    || responsibilityConfirmedDutyGapCeilingApplied;
+  const responsibilityJointPromotionReady = responsibilityPromotionRoute !== "none"
+    && responsibility.known >= policy.responsibilityAlignment.minimumKnownCount
+    && responsibility.positive >= jointPolicy.minimumPositiveDutyCount
+    && responsibility.coverage >= policy.responsibilityAlignment.minimumKnownCoverage
+    && (
+      responsibilityPromotionRoute === "zero_duty_gap"
+      || (
+        responsibilityRequirementJointFit != null
+        && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold
+      )
+    );
+  const alignmentRank = {
+    insufficient_evidence: 0,
+    misaligned: 1,
+    partially_aligned: 2,
+    mostly_aligned: 3,
+    aligned: 4
+  };
+  let effectiveRoleAlignment = reportedRoleAlignment;
+  let alignmentConsistencyAdjusted = false;
+  let alignmentConsistencyReason = "";
+  let alignmentAdjustmentSource = "";
+  let recommendationCeiling = "";
+
+  if (reportedRoleAlignment === "partially_aligned") {
+    if (responsibilityJointSafetyCap) {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = responsibilityFoundationMissingCount > 0
+        ? "foundation_requirement_gap"
+        : "confirmed_duty_gap_without_matched_indispensable";
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
+      recommendationCeiling = responsibilityFoundationMissingCount > 0
+        ? jointPolicy.foundationMissingCeiling
+        : jointPolicy.confirmedDutyGapCeiling;
+    } else if (responsibility.total > 0 && !responsibilityJointPromotionReady) {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_evidence_below_promotion_gate";
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    }
+  }
+
+  if (responsibility.alignment) {
+    const reportedRank = alignmentRank[reportedRoleAlignment] || 0;
+    const responsibilityRank = alignmentRank[responsibility.alignment] || 0;
+    if (reportedRoleAlignment === "misaligned" && responsibilityRank > alignmentRank.misaligned) {
+      effectiveRoleAlignment = "partially_aligned";
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_positive_evidence";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    } else if (reportedRoleAlignment === "partially_aligned"
+      && responsibilityJointPromotionReady) {
+      effectiveRoleAlignment = responsibilityRank >= alignmentRank.mostly_aligned
+        ? responsibility.alignment
+        : "mostly_aligned";
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = responsibilityPromotionRoute;
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.promotionCeiling;
+    } else if (reportedRank >= alignmentRank.mostly_aligned
+      && responsibilityRank <= alignmentRank.partially_aligned) {
+      effectiveRoleAlignment = "partially_aligned";
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_coverage_gap";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    } else if (reportedRoleAlignment === "partially_aligned"
+      && responsibility.alignment === "misaligned") {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_mismatch";
+      alignmentAdjustmentSource = "responsibility_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    }
+  }
+
+  const rule = policy.alignmentConsistency;
+  const consistencyEvidence = (Array.isArray(analysis.requirementMatches) ? analysis.requirementMatches : [])
+    .filter((item) => (
+      rule.requiredEvidenceFlags.every((flag) => item?.[flag] === true)
+        && rule.positiveStates.includes(item?.state)
+        && (!rule.requireBoundEvidence || (
+          hasEvidence(item?.jdEvidence)
+            && hasEvidence(item?.resumeEvidence)
+        ))
+    ));
+  const coreConsistencyAdjusted = !alignmentConsistencyAdjusted
+    && !responsibility.alignment
+    && reportedRoleAlignment === rule.source
+    && consistencyEvidence.length > 0;
+  if (coreConsistencyAdjusted) {
+    effectiveRoleAlignment = rule.target;
+    alignmentConsistencyAdjusted = true;
+    alignmentConsistencyReason = "core_central_positive_evidence";
+    alignmentAdjustmentSource = "requirement_evidence";
+    recommendationCeiling = rule.recommendationCeiling;
+  }
+  return {
+    reportedRoleAlignment,
+    effectiveRoleAlignment,
+    alignmentConsistencyAdjusted,
+    alignmentConsistencyReason,
+    alignmentConsistencyEvidenceCount: consistencyEvidence.length,
+    alignmentAdjustmentSource,
+    alignmentRecommendationCeiling: recommendationCeiling,
+    responsibilityAlignment: responsibility.alignment,
+    responsibilityScore: responsibility.score,
+    responsibilityCoverage: responsibility.coverage,
+    responsibilityKnownCount: responsibility.known,
+    responsibilityTotalCount: responsibility.total,
+    responsibilityPositiveCount: responsibility.positive,
+    responsibilityMissingCount: responsibility.missing,
+    responsibilityMissingRatio: responsibility.missingRatio,
+    responsibilityRequirementJointFit,
+    responsibilityFoundationMissingCount,
+    responsibilityCorePositiveCount,
+    responsibilityMatchedIndispensableCount,
+    responsibilityZeroDutyGapPromotionReady,
+    responsibilityMatchedIndispensablePromotionReady,
+    responsibilityConfirmedDutyGapCeilingApplied,
+    responsibilityPromotionRoute,
+    responsibilityJointSafetyCap,
+    responsibilityJointPromotionReady
+  };
+}
+
+function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
+  assertDecisionPolicy(policy);
+  const weighted = computeWeightedRequirementFit(analysis.requirementMatches, policy);
+  const alignment = resolveRoleAlignmentForDecision(analysis, weighted, policy);
+  const roleAlignment = alignment.effectiveRoleAlignment;
+  let band = fitBand(weighted.combinedFit, policy);
+  let rescueApplied = false;
+  let rescueEvidence = supportingRescueEvidence(weighted.groups.supporting, policy);
+
+  let recommendation;
+  if (roleAlignment === "insufficient_evidence" || band === "insufficient_evidence") {
+    recommendation = "caution";
+  } else {
+    recommendation = matrixRecommendationFor(roleAlignment, band, policy);
+  }
+
+  const recommendationBeforeAlignmentCap = recommendation;
+  if (alignment.alignmentRecommendationCeiling) {
+    recommendation = capRecommendationTier(
+      recommendation,
+      alignment.alignmentRecommendationCeiling
+    );
+  }
+  const alignmentConsistencyCapped = recommendation !== recommendationBeforeAlignmentCap;
+
+  const noCoreCapApplied = weighted.core.total === 0 && recommendation === "primary";
+  if (weighted.core.total === 0) {
+    recommendation = capRecommendationTier(recommendation, "apply");
+  }
+
+  const coreUnknownCeilingRequired = weighted.core.total > 0
+    && weighted.core.known === 0;
+  const coreUnknownCapApplied = coreUnknownCeilingRequired
+    && ["primary", "apply"].includes(recommendation);
+  if (coreUnknownCeilingRequired) {
+    recommendation = capRecommendationTier(recommendation, "caution");
+  }
+
+  const coverageCeilingRequired =
+    weighted.combinedCoverage < policy.minEvidenceCoverageForAutoSelect;
+  const coverageCapped = coverageCeilingRequired
+    && ["primary", "apply"].includes(recommendation);
+  if (coverageCeilingRequired) {
+    recommendation = capRecommendationTier(recommendation, "caution");
+  }
+
+  const responsibilityPromotionFloorApplied =
+    alignment.responsibilityPromotionRoute !== "none"
+    && !coverageCeilingRequired
+    && !coreUnknownCeilingRequired
+    && alignment.responsibilityFoundationMissingCount === 0
+    && !alignment.responsibilityConfirmedDutyGapCeilingApplied
+    && recommendation === "caution";
+  if (responsibilityPromotionFloorApplied) {
+    recommendation = floorRecommendationTier(
+      recommendation,
+      policy.responsibilityAlignment.jointFit.promotionFloor
+    );
+  }
+
+  const responsibilityFoundationCeilingApplied =
+    alignment.responsibilityFoundationMissingCount > 0;
+  if (alignment.responsibilityFoundationMissingCount > 0) {
+    recommendation = capRecommendationTier(
+      recommendation,
+      policy.responsibilityAlignment.jointFit.foundationMissingCeiling
+    );
+  }
+
+  return {
+    ...alignment,
+    groups: weighted.groups,
+    core: weighted.core,
+    supporting: weighted.supporting,
+    combinedFit: weighted.combinedFit,
+    combinedCoverage: weighted.combinedCoverage,
+    fitBand: band,
+    matrixRecommendation: recommendation,
+    alignmentConsistencyCapped,
+    coverageCapped,
+    coreUnknownCapApplied,
+    noCoreCapApplied,
+    responsibilityPromotionFloorApplied,
+    responsibilityFoundationCeilingApplied,
+    rescueApplied,
+    rescueEvidence,
+    policyVersion: policy.version,
+    policyHash: decisionPolicyHash(policy)
+  };
+}
+
+function supportingRescueEvidence(items, policy) {
+  const evidenceBound = (Array.isArray(items) ? items : []).map((item) => {
+    if (!["matched", "transferable"].includes(item?.state)) return item;
+    return hasEvidence(item?.jdEvidence) && hasEvidence(item?.resumeEvidence)
+      ? item
+      : { ...item, state: "unknown" };
+  });
+  return scoreRequirementGroup(evidenceBound, policy.stateValues);
+}
+
+function hasEvidence(value) {
+  if (Array.isArray(value)) return value.some((item) => String(item || "").trim());
+  return Boolean(String(value || "").trim());
+}
+
+module.exports = {
+  computeWeightedRequirementFit,
+  deriveMatrixDecision,
+  fitBand,
+  groupRequirements,
+  matrixRecommendationFor,
+  scoreRequirementGroup
+};

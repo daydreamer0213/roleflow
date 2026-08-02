@@ -1,0 +1,484 @@
+[
+  {
+    "id": "ecommerce-core-match",
+    "scenario": "淘宝店铺、ROI、活动复盘经验对应电商核心职责",
+    "candidateProfile": {
+      "candidate": { "name": "电商候选人", "city": "广州", "targetTitles": ["电商运营"] },
+      "experiences": [
+        { "organization": "某淘宝旗舰店", "role": "店铺运营", "highlights": ["负责淘宝店铺日常经营与活动复盘", "独立完成投放 ROI 复盘并调整预算"] }
+      ],
+      "skills": [
+        { "name": "店铺运营", "level": "resume", "evidence": ["某淘宝旗舰店"] },
+        { "name": "投放复盘", "level": "resume", "evidence": ["某淘宝旗舰店"] }
+      ],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["电商运营"],
+      "strongEvidence": [
+        { "label": "店铺活动运营", "evidence": "简历：负责淘宝店铺日常经营与活动复盘" },
+        { "label": "投放 ROI 复盘", "evidence": "简历：独立完成投放 ROI 复盘并调整预算" }
+      ],
+      "transferableCapabilities": [],
+      "cautionTransitions": [],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "电商运营计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["电商运营"],
+      "keywords": [{ "word": "电商运营", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "电商运营专员",
+      "tags": ["电商运营", "淘宝"],
+      "salary": "9-14K",
+      "experience": "1-3年",
+      "description": "负责淘宝店铺日常经营：策划并执行店铺活动，跟进活动节奏与页面调整；独立完成投放 ROI 复盘，按月输出经营分析并调整预算分配；与设计、客服协同提升店铺转化。任职要求：必须具备店铺活动运营经验，必须能独立完成投放 ROI 复盘；熟悉淘宝平台规则者优先。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "负责淘宝店铺经营、活动策划与投放复盘",
+      "coreResponsibilities": [
+        { "label": "店铺活动运营", "evidence": "JD：策划并执行店铺活动" },
+        { "label": "投放 ROI 复盘", "evidence": "JD：独立完成投放 ROI 复盘" }
+      ],
+      "coreRequirements": [
+        { "label": "店铺活动运营", "indispensable": true, "evidence": "JD：必须具备店铺活动运营经验" },
+        { "label": "投放 ROI 复盘", "indispensable": true, "evidence": "JD：必须能独立完成投放 ROI 复盘" }
+      ],
+      "preferredRequirements": [{ "label": "熟悉淘宝平台规则", "evidence": "JD：熟悉淘宝平台规则者优先" }],
+      "outcomeExpectations": [{ "label": "月度经营分析", "evidence": "JD：按月输出经营分析" }],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：必须具备店铺活动运营经验"]
+    },
+    "matchDecision": {
+      "recommendation": "apply",
+      "fitLevel": "A",
+      "roleAlignment": "aligned",
+      "roleResumeEvidence": ["简历：负责淘宝店铺日常经营与活动复盘并独立完成投放 ROI 复盘"],
+      "roleGaps": [],
+      "confidence": 0.88,
+      "fitReasons": ["店铺活动运营与投放 ROI 复盘两项核心要求均有简历直接证据"],
+      "requirementMatches": [
+        { "requirement": "店铺活动运营", "state": "matched", "indispensable": true, "jdEvidence": "JD：必须具备店铺活动运营经验", "resumeEvidence": "简历：负责淘宝店铺日常经营与活动复盘" },
+        { "requirement": "投放 ROI 复盘", "state": "matched", "indispensable": true, "jdEvidence": "JD：必须能独立完成投放 ROI 复盘", "resumeEvidence": "简历：独立完成投放 ROI 复盘并调整预算" }
+      ],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hardBlockers": [],
+      "softGaps": [],
+      "questionsToVerify": [],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：必须具备店铺活动运营经验"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
+    },
+    "expected": { "recommendation": "primary", "jobQualityLevel": "normal", "bucket": "primary" }
+  },
+  {
+    "id": "ecommerce-wishlist-sprawl",
+    "scenario": "同一候选人面对天猫/抖音/直播/拍摄/剪辑大而全 JD",
+    "candidateProfile": {
+      "candidate": { "name": "电商候选人", "city": "广州", "targetTitles": ["电商运营"] },
+      "experiences": [
+        { "organization": "某淘宝旗舰店", "role": "店铺运营", "highlights": ["负责淘宝店铺日常经营与活动复盘", "独立完成投放 ROI 复盘并调整预算"] }
+      ],
+      "skills": [
+        { "name": "店铺运营", "level": "resume", "evidence": ["某淘宝旗舰店"] },
+        { "name": "投放复盘", "level": "resume", "evidence": ["某淘宝旗舰店"] }
+      ],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["电商运营"],
+      "strongEvidence": [
+        { "label": "店铺活动运营", "evidence": "简历：负责淘宝店铺日常经营与活动复盘" },
+        { "label": "投放 ROI 复盘", "evidence": "简历：独立完成投放 ROI 复盘并调整预算" }
+      ],
+      "transferableCapabilities": [],
+      "cautionTransitions": [],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "电商运营计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["电商运营"],
+      "keywords": [{ "word": "电商运营", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "全能电商运营（天猫+抖音）",
+      "tags": ["电商运营", "抖音", "天猫"],
+      "salary": "10-15K",
+      "experience": "1-3年",
+      "description": "负责天猫与抖音双平台店铺经营，独立完成活动策划与投放复盘；同时负责直播间日常运营与主播排期，独立完成短视频拍摄与剪辑，日更三条以上；兼顾客服话术设计与售后处理。任职要求：必须具备店铺活动运营经验；熟悉直播、拍摄、剪辑全流程者优先。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "双平台店铺经营叠加直播与短视频制作",
+      "coreResponsibilities": [
+        { "label": "店铺活动运营", "evidence": "JD：独立完成活动策划与投放复盘" },
+        { "label": "直播与短视频制作", "evidence": "JD：负责直播间日常运营，独立完成短视频拍摄与剪辑" }
+      ],
+      "coreRequirements": [
+        { "label": "店铺活动运营", "indispensable": true, "evidence": "JD：必须具备店铺活动运营经验" }
+      ],
+      "preferredRequirements": [{ "label": "直播拍摄剪辑流程", "evidence": "JD：熟悉直播、拍摄、剪辑全流程者优先" }],
+      "outcomeExpectations": [],
+      "jobQuality": { "level": "caution", "concerns": [{ "type": "responsibility_sprawl", "evidence": "JD 同时要求店铺经营、直播运营、拍摄与剪辑" }] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：必须具备店铺活动运营经验"]
+    },
+    "matchDecision": {
+      "recommendation": "apply",
+      "fitLevel": "A",
+      "roleAlignment": "partially_aligned",
+      "roleResumeEvidence": ["简历：负责淘宝店铺日常经营、活动复盘与投放 ROI 复盘"],
+      "roleGaps": ["直播运营与短视频拍摄剪辑并非候选人已证明的主工作方向"],
+      "confidence": 0.8,
+      "fitReasons": ["店铺活动运营核心要求有简历直接证据"],
+      "requirementMatches": [
+        { "requirement": "店铺活动运营", "state": "matched", "indispensable": true, "jdEvidence": "JD：必须具备店铺活动运营经验", "resumeEvidence": "简历：负责淘宝店铺日常经营与活动复盘" }
+      ],
+      "jobQuality": { "level": "caution", "concerns": [{ "type": "responsibility_sprawl", "evidence": "JD 同时要求店铺经营、直播运营、拍摄与剪辑" }] },
+      "hardBlockers": [],
+      "softGaps": ["直播与短视频制作占比需沟通确认"],
+      "questionsToVerify": ["确认直播与剪辑工作在岗位中的实际占比"],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：必须具备店铺活动运营经验"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
+    },
+    "expected": { "recommendation": "apply", "jobQualityLevel": "caution", "bucket": "apply", "concernType": "responsibility_sprawl" }
+  },
+  {
+    "id": "content-to-user-transfer",
+    "scenario": "内容/新媒体经历转用户运营",
+    "candidateProfile": {
+      "candidate": { "name": "内容运营候选人", "city": "广州", "targetTitles": ["用户运营", "内容运营"] },
+      "experiences": [
+        { "organization": "某新媒体工作室", "role": "内容运营", "highlights": ["负责公众号与社群内容策划，三个月涨粉两万", "通过内容活动提升用户互动与留存"] }
+      ],
+      "skills": [
+        { "name": "内容策划", "level": "resume", "evidence": ["某新媒体工作室"] },
+        { "name": "社群运营", "level": "resume", "evidence": ["某新媒体工作室"] }
+      ],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["用户运营", "内容运营"],
+      "strongEvidence": [
+        { "label": "内容策划", "evidence": "简历：负责公众号与社群内容策划，三个月涨粉两万" }
+      ],
+      "transferableCapabilities": [
+        { "label": "用户增长与留存", "evidence": "简历：通过内容活动提升用户互动与留存", "limitation": "增长依赖内容渠道，未证明完整的用户分层运营经验" }
+      ],
+      "cautionTransitions": [],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "用户运营计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["用户运营", "内容运营"],
+      "keywords": [{ "word": "用户运营", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "用户运营专员",
+      "tags": ["用户运营", "社群"],
+      "salary": "9-14K",
+      "experience": "1-3年",
+      "description": "负责用户增长与留存运营：搭建用户分层体系，设计留存活动并跟进转化数据；运营核心用户社群，收集反馈并推动产品改进。任职要求：必须具备用户增长或留存运营经验，能独立设计并复盘运营活动；有社群运营经验者优先。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "负责用户增长、留存与社群运营",
+      "coreResponsibilities": [
+        { "label": "用户增长与留存", "evidence": "JD：负责用户增长与留存运营" },
+        { "label": "社群运营", "evidence": "JD：运营核心用户社群" }
+      ],
+      "coreRequirements": [
+        { "label": "用户增长与留存运营", "indispensable": true, "evidence": "JD：必须具备用户增长或留存运营经验" }
+      ],
+      "preferredRequirements": [{ "label": "社群运营经验", "evidence": "JD：有社群运营经验者优先" }],
+      "outcomeExpectations": [],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：必须具备用户增长或留存运营经验"]
+    },
+    "matchDecision": {
+      "recommendation": "apply",
+      "fitLevel": "A",
+      "roleAlignment": "partially_aligned",
+      "roleResumeEvidence": ["简历：通过内容活动提升用户互动与留存"],
+      "roleGaps": ["完整的用户分层运营尚未得到直接证明"],
+      "confidence": 0.78,
+      "fitReasons": ["用户增长要求可由内容渠道的增长与留存证据迁移支撑"],
+      "requirementMatches": [
+        { "requirement": "用户增长与留存运营", "state": "transferable", "indispensable": true, "jdEvidence": "JD：必须具备用户增长或留存运营经验", "resumeEvidence": "简历：通过内容活动提升用户互动与留存" }
+      ],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hardBlockers": [],
+      "softGaps": ["用户分层体系经验未在简历中直接体现"],
+      "questionsToVerify": ["确认岗位对用户分层运营经验的要求程度"],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：必须具备用户增长或留存运营经验"], "resume": ["简历：通过内容活动提升用户互动与留存"] }
+    },
+    "expected": { "recommendation": "caution", "jobQualityLevel": "normal", "bucket": "caution", "minTransferable": 1 }
+  },
+  {
+    "id": "user-ops-vs-pure-sales",
+    "scenario": "用户运营经历，JD 主线为纯销售",
+    "candidateProfile": {
+      "candidate": { "name": "用户运营候选人", "city": "广州", "targetTitles": ["用户运营"] },
+      "experiences": [
+        { "organization": "某互联网公司", "role": "用户运营", "highlights": ["负责线上用户社群运营与留存活动策划", "搭建用户反馈收集与复盘机制", "职业选择明确不接受电话销售与客户陌拜岗位"] }
+      ],
+      "skills": [
+        { "name": "社群运营", "level": "resume", "evidence": ["某互联网公司"] },
+        { "name": "留存活动", "level": "resume", "evidence": ["某互联网公司"] }
+      ],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["用户运营"],
+      "strongEvidence": [
+        { "label": "社群运营", "evidence": "简历：负责线上用户社群运营与留存活动策划" }
+      ],
+      "transferableCapabilities": [],
+      "cautionTransitions": [
+        { "direction": "纯销售", "reason": "候选人目标与已有证据均为线上用户运营，未提供电话销售或陌拜证据" }
+      ],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "用户运营计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["用户运营"],
+      "keywords": [{ "word": "用户运营", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "客户拓展专员（销售方向）",
+      "tags": ["销售", "客户拓展"],
+      "salary": "8-13K",
+      "experience": "1-3年",
+      "description": "负责企业客户的电话陌拜与上门拜访，独立完成销售全流程：线索筛选、电话邀约、方案讲解与合同签订；每月须完成既定销售业绩指标，接受外勤与出差安排。任职要求：必须能承受高频电话销售与客户陌拜，具备强烈的业绩导向。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "以电话陌拜与上门拜访为主的纯销售岗位",
+      "coreResponsibilities": [
+        { "label": "电话销售与陌拜", "evidence": "JD：负责企业客户的电话陌拜与上门拜访" }
+      ],
+      "coreRequirements": [
+        { "label": "电话销售与客户陌拜", "indispensable": true, "evidence": "JD：必须能承受高频电话销售与客户陌拜" }
+      ],
+      "preferredRequirements": [],
+      "outcomeExpectations": [{ "label": "月度销售业绩指标", "evidence": "JD：每月须完成既定销售业绩指标" }],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：必须能承受高频电话销售与客户陌拜"]
+    },
+    "matchDecision": {
+      "recommendation": "skip",
+      "fitLevel": "D",
+      "roleAlignment": "misaligned",
+      "roleResumeEvidence": ["简历：主工作方向是线上用户社群运营与留存活动"],
+      "roleGaps": ["岗位主工作方向是电话陌拜、上门拜访与销售签约"],
+      "confidence": 0.45,
+      "fitReasons": [],
+      "requirementMatches": [
+        { "requirement": "电话销售与客户陌拜", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜", "resumeEvidence": "简历：职业选择明确不接受电话销售与客户陌拜岗位" }
+      ],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hardBlockers": [
+        {
+          "kind": "indispensable_core",
+          "requirement": "电话销售与客户陌拜",
+          "jdEvidence": "JD：必须能承受高频电话销售与客户陌拜",
+          "resumeEvidence": "简历：职业选择明确不接受电话销售与客户陌拜岗位"
+        }
+      ],
+      "softGaps": ["匹配卡将纯销售列为谨慎转向"],
+      "questionsToVerify": ["确认候选人是否愿意接受高频电话销售与客户陌拜"],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：必须能承受高频电话销售与客户陌拜"], "resume": ["简历：职业选择明确不接受电话销售与客户陌拜岗位"] }
+    },
+    "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
+  },
+  {
+    "id": "insufficient-evidence",
+    "scenario": "JD 或简历信息不足，不得虚构匹配理由",
+    "candidateProfile": {
+      "candidate": { "name": "电商候选人", "city": "广州", "targetTitles": ["电商运营"] },
+      "experiences": [
+        { "organization": "某淘宝旗舰店", "role": "店铺运营", "highlights": ["负责淘宝店铺日常经营与活动复盘"] }
+      ],
+      "skills": [{ "name": "店铺运营", "level": "resume", "evidence": ["某淘宝旗舰店"] }],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["电商运营"],
+      "strongEvidence": [
+        { "label": "店铺活动运营", "evidence": "简历：负责淘宝店铺日常经营与活动复盘" }
+      ],
+      "transferableCapabilities": [],
+      "cautionTransitions": [],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "电商运营计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["电商运营"],
+      "keywords": [{ "word": "电商运营", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "门店经营合伙人",
+      "tags": ["运营"],
+      "salary": "面议",
+      "experience": "经验不限",
+      "description": "负责门店日常经营，待遇优厚，发展空间大，具体职责与考核口径面议，欢迎有梦想的你加入，一起把门店做大做强，共享经营成果与长期回报。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "门店经营岗位，职责描述模糊",
+      "coreResponsibilities": [],
+      "coreRequirements": [
+        { "label": "门店经营职责", "indispensable": false, "evidence": "JD：具体职责与考核口径面议" }
+      ],
+      "preferredRequirements": [],
+      "outcomeExpectations": [],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：具体职责与考核口径面议"]
+    },
+    "matchDecision": {
+      "recommendation": "review",
+      "fitLevel": "C",
+      "roleAlignment": "insufficient_evidence",
+      "roleResumeEvidence": [],
+      "roleGaps": ["JD 未说明可与候选人经历核对的具体经营职责"],
+      "confidence": 0.4,
+      "fitReasons": [],
+      "requirementMatches": [
+        { "requirement": "门店经营职责", "state": "unknown", "indispensable": false, "jdEvidence": "JD：具体职责与考核口径面议", "resumeEvidence": "" }
+      ],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hardBlockers": [],
+      "softGaps": ["JD 未说明具体经营职责与考核口径"],
+      "questionsToVerify": ["待确认岗位核心职责、考核方式与薪资结构"],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：具体职责与考核口径面议"], "resume": ["简历：负责淘宝店铺日常经营与活动复盘"] }
+    },
+    "expected": { "recommendation": null, "decisionStatus": "needs_retry", "jobQualityLevel": "normal", "bucket": "analysis_pending", "requireUnknown": true, "forbidFitReasons": true }
+  },
+  {
+    "id": "java-core-missing",
+    "scenario": "Python 简历面对明确唯一 Java/Spring 核心岗",
+    "candidateProfile": {
+      "candidate": { "name": "Python 候选人", "city": "广州", "targetTitles": ["Python后端"] },
+      "experiences": [
+        { "organization": "某科技公司", "role": "Python 开发", "highlights": ["负责 Python/FastAPI 服务开发与接口联调", "当前无法承担以 Java/Spring 为唯一技术栈的开发工作"] }
+      ],
+      "skills": [
+        { "name": "Python", "level": "resume", "evidence": ["某科技公司"] },
+        { "name": "FastAPI", "level": "resume", "evidence": ["某科技公司"] }
+      ],
+      "projects": []
+    },
+    "matchingCard": {
+      "targetDirections": ["Python后端"],
+      "strongEvidence": [
+        { "label": "Python 服务开发", "evidence": "简历：负责 Python/FastAPI 服务开发与接口联调" }
+      ],
+      "transferableCapabilities": [],
+      "cautionTransitions": [],
+      "userNotes": [],
+      "source": "user"
+    },
+    "searchPlan": {
+      "name": "Python 后端计划",
+      "cities": ["广州"],
+      "salary": { "minK": 8, "maxK": 20 },
+      "experience": ["经验不限", "1-3年", "3-5年（可冲）"],
+      "jobTypes": ["全职"],
+      "directions": ["Python后端"],
+      "keywords": [{ "word": "Python后端", "priority": "A", "reason": "候选人目标方向" }],
+      "bossActiveDays": 3
+    },
+    "job": {
+      "title": "Java 后端工程师",
+      "tags": ["Java", "Spring Boot"],
+      "salary": "12-20K",
+      "experience": "1-3年",
+      "description": "负责交易核心系统的 Java 后端开发与维护，参与服务拆分与性能优化。任职要求：必须精通 Java 与 Spring Boot，熟练掌握 Spring Cloud 微服务组件，具备扎实的 JVM 调优经验；本岗位不使用 Python，技术栈为唯一 Java 体系。"
+    },
+    "jobUnderstanding": {
+      "roleSummary": "交易核心系统的 Java/Spring 后端开发",
+      "coreResponsibilities": [
+        { "label": "Java 后端开发", "evidence": "JD：负责交易核心系统的 Java 后端开发与维护" }
+      ],
+      "coreRequirements": [
+        { "label": "Java/Spring 核心开发", "indispensable": true, "evidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python" }
+      ],
+      "preferredRequirements": [],
+      "outcomeExpectations": [],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hiddenRisks": [],
+      "evidenceSnippets": ["JD：必须精通 Java 与 Spring Boot"]
+    },
+    "matchDecision": {
+      "recommendation": "skip",
+      "fitLevel": "D",
+      "roleAlignment": "misaligned",
+      "roleResumeEvidence": ["简历：主工作方向是 Python/FastAPI 服务开发"],
+      "roleGaps": ["岗位主工作方向是唯一 Java/Spring 技术栈"],
+      "confidence": 0.45,
+      "fitReasons": [],
+      "requirementMatches": [
+        { "requirement": "Java/Spring 核心开发", "state": "missing", "indispensable": true, "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python", "resumeEvidence": "简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作" }
+      ],
+      "jobQuality": { "level": "normal", "concerns": [] },
+      "hardBlockers": [
+        {
+          "kind": "indispensable_core",
+          "requirement": "Java/Spring 核心开发",
+          "jdEvidence": "JD：必须精通 Java 与 Spring Boot，本岗位不使用 Python",
+          "resumeEvidence": "简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作"
+        }
+      ],
+      "softGaps": ["简历没有直接 Java/Spring 项目证据"],
+      "questionsToVerify": ["确认候选人是否具备可核对的 Java/Spring 项目经历"],
+      "recommendedResumeVersion": "",
+      "primaryProjects": [],
+      "greetingAngle": "",
+      "evidence": { "jd": ["JD：必须精通 Java 与 Spring Boot"], "resume": ["简历：当前无法承担以 Java/Spring 为唯一技术栈的开发工作"] }
+    },
+    "expected": { "recommendation": "not_recommended", "jobQualityLevel": "normal", "bucket": "not_recommended", "forbidFitReasons": true }
+  }
+]

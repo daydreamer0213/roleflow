@@ -1,5 +1,18 @@
 # 判定策略第二轮优化设计
 
+> **状态：历史方案，当前权威规则已由 2026-08-01 four-tier continuation 取代。**
+> 下文保留 Claude 第二轮提案用于解释历史实验，不得直接实现其中
+> `transferable=1`、`unknown=0.5`、旧推荐枚举或旧 bucket。
+> 当前权威实现位于 `docs/roleflow-decision-matrix.md`：
+> `primary/apply/caution/not_recommended` 四档统一；核心集合使用
+> `foundation || central || indispensable`；支持集合独立保留；核心/支持权重
+> 为 70%/30%；`matched=1`、`transferable=0.5`、`unknown=0`、`missing=0`；
+> 普通非核心 missing 阈值为 5，明确优先/加分/非必须/可选项不计数；
+> 模型建议为 shadow，不参与本地最终档位。
+> 当前产品与 harness checkpoint：`53bfbbf`；基线 harness：
+> `c1d3264`。独立复审：`Critical 0`、`Important 0`、`Spec PASS`、
+> `Code quality APPROVED`；候选 50/50、基线 41/41 离线检查通过。
+
 > 日期：2026-08-01
 > 基于：第一轮 20 样本验证结果分析
 
@@ -35,12 +48,29 @@
 | 匹配(aligned) | 主投 | 主投 | 可投 | 慎投 |
 | 大部分匹配(mostly_aligned) | 可投(旧:主投) | 可投 | 慎投 | 慎投 |
 | 部分匹配(partially_aligned) | 可投(旧:慎投) | 慎投 | 慎投 | 不推荐(旧:慎投) |
-| 不匹配(misaligned) | 慎投 | 慎投 | 不推荐 | 不推荐 |
+| 不匹配(misaligned) | 不推荐 | 不推荐 | 不推荐 | 不推荐 |
 
 三个核心变化：
 - `大部分匹配+符合`：主投→可投。方向没完全对上时，即使核心全中也应先沟通确认
 - `部分匹配`：不再一律慎投，按核心得分分为可投/慎投/不推荐三档
-- `不匹配`：不变
+- `不匹配`：收紧为全部不推荐，但只允许用于主要工作对象、动作和交付物明确不同，
+  且不存在相邻产物类别或专业交付链路的岗位
+
+相邻岗位族统一归入 `partially_aligned`，由核心和支持要求覆盖度继续区分可投、慎投
+和不推荐。`misaligned` 不能再由通用工具、软技能或支持要求重合救援。这个定义按
+职业交付关系表达，不使用 AI、Java、销售等具体行业关键词。
+
+### v3 证据一致性补充
+
+真实小样本证明模型可能同时输出 `misaligned`，又把同一要求标记为
+`foundation=true + central=true + matched/transferable` 并提供 JD/简历双侧证据。
+这在语义上自相矛盾：若候选人对岗位基础核心交付有实质正向证据，就不能同时断言
+完全不存在相邻交付路径。
+
+本地代码只在上述严格组合成立时，把矩阵使用的有效方向归一为
+`partially_aligned`；原始 `roleAlignment` 保留用于审计。归一后的建议最高封顶为
+慎投，不能进入默认批量沟通。硬阻断、岗位风险、只有单一核心标记、普通支持项重合
+或缺少任一侧证据都不能触发。该补充不增加模型字段、调用或提示词。
 
 ### 三、非核心缺口降级（`model_contract.js` 新增 + `job_analysis.js` 调用）
 
@@ -81,3 +111,30 @@
 需更新的测试文件：
 - `tests/semantic_pipeline_smoke.js`：判定表测试用例需要更新新格子
 - `tests/generic_evidence_matching_smoke.js`：转移/对上/未确认的分值变化可能影响已有断言
+
+## 2026-08-02 v4 补充设计：主要职责结构化证据
+
+真实小样本显示，相同输入下模型的总体 `roleAlignment`（岗位方向匹配）和要求证据可能漂移。对已保存的 20 条输出进行 13,068 组安全约束参数搜索后，单纯调整核心权重、非核心权重、可迁移得分及分档阈值，四档 exact 最多只能达到 16/20；继续调阈值无法稳定修复语义信息缺失。
+
+v4 在既有第二次模型调用中增加 `responsibilityMatches`，按所选 track（岗位方向）的 `responsibilityEvidence` 顺序使用 D1-Dn。每行只表达语义状态和候选人证据；代码负责分值、组合和最终四档决策。D*、R*、E* 分别限定在职责、要求、资格字段，重复、越界及证据状态矛盾由契约拒绝。旧负载省略该字段时按 unknown 兼容，但 `match-decision-v40` 与 `four-tier-weighted-v4` 会使旧缓存失效。
+
+总体判断与职责判断组合时遵守安全边界：职责证据可以把缺乏支撑的总体乐观判断最多降到慎投，也可以把有充分职责支撑的部分匹配提升到可投；不能仅凭单个职责缺口制造错误硬排除。`modelRecommendation`（模型四档建议）继续保留 shadow（影子观察）开关，不直接覆盖代码决策。
+
+产品提交 `6b04a599a9e18edcffed7516476e00b30aceab34` 已通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。最终真实验收采用默认沟通集合零漏选、零误选口径，而非固定四档 exact 数量。
+## 2026-08-02 v4.1：unknown 与 missing 的量化分离
+
+v4 三条真实运行中，索引 10 返回两项 `transferable` 和一项 `unknown`，模型影子建议为 apply，但旧算法按全部三项作分母得到 1/3，错误降到 caution。v4.1 改为 `points / known`，同时用 `known / total` 单独约束覆盖率，并要求至少 2 项已判断且覆盖率至少 0.5。这样不会把未知当成已确认缺失，也不会让单条正证据在大量未知时产生过度提升。
+
+职责分值安全不变量固定为 matched=1、missing=0、unknown=0、matched>=transferable。`decisionRules` 升为 `four-tier-weighted-v4.1`，`matchJob` 保持 v40，因为模型契约未变化。产品提交 `8e2adf0d36a744f8f7aba5262de30958249fd141` 已通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。
+## 2026-08-02 v4.2：职责与要求联合量化
+
+v4.1 完整 20 条按默认沟通边界仅保留 7/10 个主投/可投，并把 4 个慎投提升为可投。根因是职责提升与现有核心/非核心要求分数各自决策，不能区分“职责部分可迁移但基础/重职责缺口明显”与“职责并不完整但要求覆盖足以沟通”。
+
+v4.2 复用既有 `combinedFit`，不增加模型字段、提示词或调用。联合权重为职责 0.40、要求 0.60，阈值 0.50；至少两项正向职责。foundation missing 无条件封顶慎投；职责 missing ratio >=0.50 时，至少两项核心正证据才可恢复。联合门禁未通过时对最终建议直接设置 caution ceiling，不能被二维表绕过。所有数值位于 policy、进入 hash，并由失败测试保护。
+
+上轮 19 份合法真实输出按 selected track 离线重放达到 19/19 沟通边界正确；索引 3 因 contract repair timeout 没有合法输出，必须由新 API 运行验证。产品提交 `51ad5637de2672f1f688f6f1f3db0f2700e2277b` 通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。
+## 2026-08-02 v4.3：重职责缺口的近完整要求恢复
+
+v4.2 三条真实运行中索引 3 主投和索引 5 可投均正确，但索引 13 再次由慎投误入可投。字段链路完整；模型本轮把核心正证据从上一轮 1 项漂移为 2 项，导致重职责缺口恢复。该岗位职责 missing ratio=0.50、职责分 0.25、combinedFit 约 0.914；已确认应沟通的同类索引 2 在保存输出中 combinedFit=1.0。
+
+v4.3 增加 `heavyDutyRecoveryMinimumRequirementFit=0.95`，仅在职责 missing ratio >=0.50 的恢复分支使用。参数受 0-1 校验且不得低于普通 promotion threshold；decisionRules 升 v4.3，matchJob 契约仍 v40。产品提交 `7152117a86ffb0144794a465ec1833e4bb6bb17b` 通过 50/50 离线检查、通用跨岗位夹具和独立复审。

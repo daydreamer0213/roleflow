@@ -38,17 +38,19 @@ try {
   }), scanBatchId);
   const talkId = upsertJob(db, job("talk", {
     title: "Talk role",
-    analysis: { semanticStatus: "partial", recommendation: "review" }
+    analysis: completeAnalysis("apply")
   }), scanBatchId);
   const backupId = upsertJob(db, job("backup", {
     title: "Backup role",
+    analysis: completeAnalysis("caution"),
     qualityTags: ["experience_overrange"]
   }), scanBatchId);
   const atomicId = upsertJob(db, job("atomic"), scanBatchId);
   const notRecommendedId = upsertJob(db, job("not-recommended", {
     title: "Not recommended role",
     level: "不建议",
-    qualityTags: ["role_mismatch"]
+    analysis: completeAnalysis("not_recommended"),
+    qualityTags: ["hard_exclude"]
   }), scanBatchId);
   const alreadyCommunicatedId = upsertJob(db, job("already-communicated", {
     title: "Already communicated role"
@@ -240,15 +242,17 @@ function job(sourceId, overrides = {}) {
     matches: ["Python"],
     risks: [],
     qualityTags: [],
-    analysis: {},
+    analysis: completeAnalysis(),
     ...overrides
   };
 }
 
-function completeAnalysis() {
+function completeAnalysis(recommendation = "primary") {
   return {
     semanticStatus: "complete",
-    recommendation: "apply",
+    recommendation,
+    recommendationSchemaVersion: 2,
+    fitLevel: recommendation === "primary" ? "fit" : "mostly_fit",
     confidence: 0.9,
     evidence: { jd: ["Python"], resume: ["Python"] }
   };

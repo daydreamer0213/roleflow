@@ -61,11 +61,9 @@ function fitReasons(job, matchedSkills, version) {
   return reasons.length ? reasons : ["等待 LLM 语义分析补充匹配理由"];
 }
 
-function missingPoints(text) {
-  const missing = [];
-  if (!hasText(text, "FastAPI")) missing.push("确认后端工程占比");
-  if (!hasText(text, "RAG") && !hasText(text, "知识库")) missing.push("确认是否真实涉及 RAG/知识库");
-  return missing;
+function missingPoints() {
+  // rule-only 模式不做职业特定的缺口猜测，只提示需要语义模型逐项比对。
+  return [];
 }
 
 function riskQuestions(job) {
@@ -77,8 +75,8 @@ function riskQuestions(job) {
 
 function greetingAngle(version, projects) {
   const projectNames = projects.map((project) => project.name).join("、");
-  if (!version && !projectNames) return "先确认岗位 AI 应用落地场景，再简短介绍项目经验。";
-  return `围绕${version?.name || "匹配版本"}切入，主推${projectNames || "相关 AI 项目"}。`;
+  if (!version && !projectNames) return "先确认岗位真实职责，再简短介绍项目经验。";
+  return `围绕${version?.name || "匹配版本"}切入，主推${projectNames || "相关项目"}。`;
 }
 
 function hasText(text, word) {
