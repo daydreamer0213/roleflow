@@ -838,6 +838,19 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Fresh live v2 reruns remain required before acceptance.
 - Fresh live roots are reserved as `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-first-3-20260802` and `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-full-20-20260802`; no earlier result or cache may be overwritten or reused.
 
+## 2026-08-02 weighted-v3 evidence-consistency checkpoint
+
+- The first v2 assembly root `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-first-3-20260802` is preserved after an offline portability failure caused by writing `manifest.json` instead of the required `run-manifest.json`. No model request was made from that root.
+- The correctly assembled fresh root `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-first-3-v2-20260802` completed three live rows with a fresh cache. Indices `4` and `10` were exact; index `9` changed from expected `caution` to `not_recommended`, so the result was `2/3`, acceptance was false, and the 20-row run was not started.
+- The v2 prompt still returned index `9` as `misaligned`, exactly as the previous successful v1 diagnostic had done. Repeated prompt wording therefore did not solve the semantic inconsistency.
+- Anonymous evidence comparison found the generic discriminator: index `9` had a requirement that was simultaneously `foundation=true`, `central=true`, and `transferable` with bound JD and resume evidence. The three confirmed obvious mismatches had no foundation-and-central positive evidence. Count-only or supporting-skill rescue remains forbidden.
+- weighted-v3 preserves the raw model alignment, but uses `partially_aligned` as the effective matrix row only for that strict evidence-backed contradiction. The normalized recommendation is capped at `caution`, so a reported mismatch can never be promoted into default-selected `primary/apply`.
+- Hard blockers and job-risk guards still return before normalization. Foundation-only, central-only, supporting-only, missing/unknown, or one-sided evidence cannot trigger it.
+- No prompt, model field, model call, or 70/30 matrix weight changed. `decisionRules` advances to `four-tier-weighted-v3`; the configuration and caution ceiling are included in the policy hash.
+- Product checkpoint is `5e1333c2cd002eb79c2dc7a29a88dbb9bfa6dc2d`.
+- TDD and all `50/50` offline checks pass; `git diff --check` passes. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
+- Fresh live roots are reserved as `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-first-3-20260802` and `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-full-20-20260802`. They must use separate fresh caches.
+
 The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.
 
 ### Four-tier weighted exact evaluated binding

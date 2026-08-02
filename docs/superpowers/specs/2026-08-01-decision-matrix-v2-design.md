@@ -60,6 +60,18 @@
 和不推荐。`misaligned` 不能再由通用工具、软技能或支持要求重合救援。这个定义按
 职业交付关系表达，不使用 AI、Java、销售等具体行业关键词。
 
+### v3 证据一致性补充
+
+真实小样本证明模型可能同时输出 `misaligned`，又把同一要求标记为
+`foundation=true + central=true + matched/transferable` 并提供 JD/简历双侧证据。
+这在语义上自相矛盾：若候选人对岗位基础核心交付有实质正向证据，就不能同时断言
+完全不存在相邻交付路径。
+
+本地代码只在上述严格组合成立时，把矩阵使用的有效方向归一为
+`partially_aligned`；原始 `roleAlignment` 保留用于审计。归一后的建议最高封顶为
+慎投，不能进入默认批量沟通。硬阻断、岗位风险、只有单一核心标记、普通支持项重合
+或缺少任一侧证据都不能触发。该补充不增加模型字段、调用或提示词。
+
 ### 三、非核心缺口降级（`model_contract.js` 新增 + `job_analysis.js` 调用）
 
 **新增函数 `countNonCentralMissing(requirementMatches)`：**

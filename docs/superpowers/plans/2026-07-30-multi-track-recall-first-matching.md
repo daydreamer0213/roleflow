@@ -2653,6 +2653,18 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - The review-requested `or` ambiguity is closed: `misaligned` now requires an overall substantial difference across work object, main action, and primary deliverable; a one-layer difference with a meaningful transferable path stays `partially_aligned`.
 - A fresh exact `4,9,10` run and then a separate fresh-cache 20-row run are still required.
 
+## 2026-08-02 evidence-consistency normalization checkpoint
+
+- weighted-v2 live diagnostic completed `2/3`; zero-based index `9` remained model-`misaligned` and became `not_recommended`, so the 20-row run was correctly blocked.
+- The failed assembly root and the completed `2/3` root remain preserved. Neither may be overwritten or used as the 20-row cache.
+- Rewording the prompt did not change the model classification. Anonymous comparison showed that index `9`, unlike the three confirmed obvious mismatches, contains a single requirement that is both foundation and central with bound positive JD/resume evidence.
+- weighted-v3 treats that exact combination as an internal consistency contradiction: raw `misaligned` remains auditable, while the matrix uses `partially_aligned`. The outcome is capped at `caution`, never `primary/apply`.
+- Hard blockers and job risk still win first. A foundation-only, central-only, supporting-only, missing/unknown, or one-sided row remains unable to rescue a mismatch.
+- This is a local evidence rule, not another matrix change or prompt expansion. It adds no model field/call and uses no IT-specific keyword.
+- Product checkpoint is `5e1333c2cd002eb79c2dc7a29a88dbb9bfa6dc2d`; decision rules are `four-tier-weighted-v3`.
+- All `50/50` offline checks and `git diff --check` pass. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
+- Next roots: `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-first-3-20260802`, then only after exact `3/3`, `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-full-20-20260802`.
+
 The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.
 
 ### Four-tier weighted exact evaluated binding
