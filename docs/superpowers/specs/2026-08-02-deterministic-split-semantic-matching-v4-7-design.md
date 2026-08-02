@@ -278,3 +278,15 @@ This section is normative and resolves all confirmation ambiguity:
 - Cost terminology: confirmation adds at most one logical responsibility stage. At the `chatJson` semantic-request boundary, each logical stage has at most one initial attempt and one contract-repair attempt. The normal split matching path therefore has at most four semantic attempts; the conditional confirmation path has at most six; including `understandJob` and its repair, the full analysis has at most eight semantic attempts. These counts deliberately exclude the adapter's existing bounded transport/empty-response recovery inside one `chatJson` attempt; this feature does not enlarge those transport retry limits. Normal successful paths without repair use two matching semantic attempts, or three when confirmation is triggered.
 - There is no confirmation loop, majority vote, third responsibility sample, or requirement confirmation.
 - Tests must assert `chatJson` semantic-attempt sequences and maxima for normal success, confirmation success, confirmation repair success, and confirmation repair failure. Existing fetch-level transport retry tests remain unchanged.
+### v4.7.1 reviewed implementation checkpoint
+
+- Product commit: `9a41d298cd96c0375b9c7a1a14d2162451c0e18c` (`fix: confirm unstable responsibility gaps`).
+- Match cache version: `match-decision-v43`; prior v42 single-pass match caches are stale.
+- The failed live root `D:\DevData\RoleFlow-private-benchmark\deterministic-split-v4-7-first-3-20260802` is immutable and preserved.
+- Failed-gate evidence: index 5 was `apply -> caution`; indices 8 and 13 were exact; all three analyses were structurally complete with no pending, hard false placement, or false hard exclusion.
+- Root-cause evidence: one responsibility varied from transferable in all three isolated repetitions to missing in the formal run. The deterministic joint fit moved from 0.75 to 0.47 and disabled the existing matched-indispensable promotion route. No matrix, weight, or threshold defect was found.
+- Offline simulation of the selected reconciliation kept index 8 at apply, restored index 5 to apply, and kept index 13 at caution.
+- TDD evidence: the new adapter regression first failed with the missing confirmation call, then passed after implementation.
+- Fresh offline evidence: focused adapter/pipeline tests passed; `npm.cmd test` passed all 50 offline checks; `git diff --check` exited 0.
+- Independent gates: `Spec PASS` and `Code quality APPROVED`; no Critical or Important finding remained.
+- The next live gate must use a new root and cache. The frozen matrix, 70/30 weights, promotion thresholds, hard blockers, and safety caps remain unchanged.

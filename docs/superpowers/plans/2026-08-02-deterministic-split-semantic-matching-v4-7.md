@@ -122,3 +122,15 @@
 - [x] Define the complete responsibility-state reconciliation table and deterministic evidence retention.
 - [x] Define `chatJson` semantic-attempt maxima: 4 normal match attempts, 6 confirmation-path match attempts, and 8 full-analysis attempts including understand repair; existing bounded transport retries are outside this new feature and unchanged.
 - [ ] Add `chatJson` semantic-attempt sequence tests for normal, confirmation, confirmation repair success, and confirmation repair failure paths.
+## v4.7.1 reviewed product result
+
+- [x] Add a failing adapter regression for conditional confirmation and recall-first reconciliation.
+- [x] Add the local reconciliation helper and conditional second responsibility call.
+- [x] Lock confirmation to the first selected track and fail closed after one confirmation repair.
+- [x] Cover normal success, confirmation success, six-attempt repair success, confirmation failure, and gap-dimension conflict.
+- [x] Bump the match cache version to `match-decision-v43` and update assertions.
+- [x] Run focused tests, all 50 offline checks, and `git diff --check`.
+- [x] Obtain independent `Spec PASS` and `Code quality APPROVED`.
+- [x] Commit and push product checkpoint `9a41d298cd96c0375b9c7a1a14d2162451c0e18c`.
+- [ ] Create `deterministic-split-v4-7-1-first-3-20260802` and rerun indices `5,8,13` with a fresh cache.
+- [ ] Create a separate fresh 20-job root only after the three-job default-communication gate passes.
