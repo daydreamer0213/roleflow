@@ -179,15 +179,22 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
   const evidenceBoundCore = (Array.isArray(weighted?.groups?.core) ? weighted.groups.core : [])
     .filter((item) => hasEvidence(item?.jdEvidence) && hasEvidence(item?.resumeEvidence));
   const responsibilityFoundationMissingCount = evidenceBoundCore
-    .filter((item) => item?.foundation === true && item?.state === "missing")
+    .filter((item) => (
+      item?.foundation === true
+      && String(item?.state || "unknown").trim() === "missing"
+    ))
     .length;
   const responsibilityCorePositiveCount = evidenceBoundCore
-    .filter((item) => ["matched", "transferable"].includes(item?.state))
+    .filter((item) => (
+      ["matched", "transferable"].includes(String(item?.state || "unknown").trim())
+    ))
     .length;
   const responsibilityMatchedIndispensableCount = evidenceBoundCore
     .filter((item) => (
       item?.indispensable === true
-        && jointPolicy.matchedIndispensableStates.includes(item?.state)
+        && jointPolicy.matchedIndispensableStates.includes(
+          String(item?.state || "unknown").trim()
+        )
     ))
     .length;
   const responsibilityBasePromotionEvidenceReady =
@@ -197,11 +204,13 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
   const responsibilityZeroDutyGapPromotionReady = reportedRoleAlignment === "partially_aligned"
     && responsibility.total > 0
     && responsibilityBasePromotionEvidenceReady
+    && responsibilityFoundationMissingCount === 0
     && responsibility.missing === 0;
   const responsibilityMatchedIndispensablePromotionReady =
     reportedRoleAlignment === "partially_aligned"
     && responsibility.total > 0
     && responsibilityBasePromotionEvidenceReady
+    && responsibilityFoundationMissingCount === 0
     && responsibility.missing > 0
     && responsibilityMatchedIndispensableCount > 0
     && responsibilityRequirementJointFit != null
@@ -375,23 +384,26 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
     recommendation = capRecommendationTier(recommendation, "apply");
   }
 
-  const coreUnknownCapApplied = weighted.core.total > 0
-    && weighted.core.known === 0
+  const coreUnknownCeilingRequired = weighted.core.total > 0
+    && weighted.core.known === 0;
+  const coreUnknownCapApplied = coreUnknownCeilingRequired
     && ["primary", "apply"].includes(recommendation);
-  if (weighted.core.total > 0 && weighted.core.known === 0) {
+  if (coreUnknownCeilingRequired) {
     recommendation = capRecommendationTier(recommendation, "caution");
   }
 
-  const coverageCapped = weighted.combinedCoverage < policy.minEvidenceCoverageForAutoSelect
+  const coverageCeilingRequired =
+    weighted.combinedCoverage < policy.minEvidenceCoverageForAutoSelect;
+  const coverageCapped = coverageCeilingRequired
     && ["primary", "apply"].includes(recommendation);
-  if (weighted.combinedCoverage < policy.minEvidenceCoverageForAutoSelect) {
+  if (coverageCeilingRequired) {
     recommendation = capRecommendationTier(recommendation, "caution");
   }
 
   const responsibilityPromotionFloorApplied =
     alignment.responsibilityPromotionRoute !== "none"
-    && !coverageCapped
-    && !coreUnknownCapApplied
+    && !coverageCeilingRequired
+    && !coreUnknownCeilingRequired
     && alignment.responsibilityFoundationMissingCount === 0
     && !alignment.responsibilityConfirmedDutyGapCeilingApplied
     && recommendation === "caution";
