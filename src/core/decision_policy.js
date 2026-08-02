@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v4.1",
+  version: "four-tier-weighted-v4.2",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -63,6 +63,15 @@ const DECISION_POLICY = deepFreeze({
     thresholds: {
       aligned: 0.80,
       mostlyAligned: 0.50
+    },
+    jointFit: {
+      responsibilityWeight: 0.40,
+      requirementWeight: 0.60,
+      promotionThreshold: 0.50,
+      heavyDutyMissingRatio: 0.50,
+      minimumPositiveDutyCount: 2,
+      minimumCorePositiveForHeavyDutyGap: 2,
+      foundationMissingCeiling: "caution"
     },
     promotionCeiling: "apply",
     contradictionCeiling: "caution"
@@ -177,6 +186,31 @@ function assertDecisionPolicy(policy) {
   );
   if (dutyMostly >= dutyAligned) {
     throw new Error("mostly-aligned responsibility threshold must be lower than aligned");
+  }
+  const jointFit = policy.responsibilityAlignment?.jointFit;
+  const jointResponsibilityWeight = finiteUnit(
+    jointFit?.responsibilityWeight,
+    "joint responsibility weight"
+  );
+  const jointRequirementWeight = finiteUnit(
+    jointFit?.requirementWeight,
+    "joint requirement weight"
+  );
+  if (Math.abs(jointResponsibilityWeight + jointRequirementWeight - 1) > 1e-12) {
+    throw new Error("joint responsibility and requirement weights must sum to one");
+  }
+  finiteUnit(jointFit?.promotionThreshold, "joint promotion threshold");
+  finiteUnit(jointFit?.heavyDutyMissingRatio, "heavy duty missing ratio");
+  if (!Number.isInteger(jointFit?.minimumPositiveDutyCount)
+    || jointFit.minimumPositiveDutyCount < 2) {
+    throw new Error("joint promotion must require at least two positive duties");
+  }
+  if (!Number.isInteger(jointFit?.minimumCorePositiveForHeavyDutyGap)
+    || jointFit.minimumCorePositiveForHeavyDutyGap < 2) {
+    throw new Error("heavy duty gap recovery must require at least two positive core requirements");
+  }
+  if (jointFit?.foundationMissingCeiling !== "caution") {
+    throw new Error("a missing foundation must stay outside default batch selection");
   }
   if (policy.responsibilityAlignment?.promotionCeiling !== "apply"
     || policy.responsibilityAlignment?.contradictionCeiling !== "caution") {

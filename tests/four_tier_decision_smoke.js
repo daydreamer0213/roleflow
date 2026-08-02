@@ -37,6 +37,22 @@ function supporting(state, options = {}) {
   return requirement(state, options);
 }
 
+function boundCore(state, options = {}) {
+  return requirement(state, {
+    jdEvidence: "JD：明确要求",
+    resumeEvidence: "简历：明确证据",
+    ...options
+  });
+}
+
+function boundSupporting(state, options = {}) {
+  return supporting(state, {
+    jdEvidence: "JD：明确要求",
+    resumeEvidence: "简历：明确证据",
+    ...options
+  });
+}
+
 function decision(roleAlignment, requirementMatches, responsibilityMatches = []) {
   return deriveMatrixDecision({ roleAlignment, requirementMatches, responsibilityMatches });
 }
@@ -45,7 +61,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.1");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.2");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -72,6 +88,21 @@ assert.throws(
   }),
   /responsibility state values must preserve/
 );
+for (const key of ["minimumPositiveDutyCount", "minimumCorePositiveForHeavyDutyGap"]) {
+  assert.throws(
+    () => assertDecisionPolicy({
+      ...DECISION_POLICY,
+      responsibilityAlignment: {
+        ...DECISION_POLICY.responsibilityAlignment,
+        jointFit: {
+          ...DECISION_POLICY.responsibilityAlignment.jointFit,
+          [key]: 1
+        }
+      }
+    }),
+    /must require at least two/
+  );
+}
 assert.throws(
   () => assertDecisionPolicy({
     ...DECISION_POLICY,
@@ -309,6 +340,106 @@ assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.responsibilityAlignment, 
 assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.effectiveRoleAlignment, "mostly_aligned");
 assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.matrixRecommendation, "apply",
   "two known transferable duties with majority coverage may retain a default-selected opportunity");
+
+const jointEvidencePromotesPartialRole = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundCore("missing", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "transferable", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：可迁移职责证据三" },
+  { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口" }
+]);
+assert(jointEvidencePromotesPartialRole.responsibilityRequirementJointFit >= 0.5);
+assert.strictEqual(jointEvidencePromotesPartialRole.matrixRecommendation, "apply",
+  "strong requirement coverage and mostly transferable duties may retain a partial role");
+
+const missingFoundationCapsPartialRole = decision("partially_aligned", [
+  boundCore("missing", { foundation: true }),
+  boundCore("matched", { central: true }),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "matched", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：直接职责证据一" },
+  { id: "D2", state: "matched", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：直接职责证据二" },
+  { id: "D3", state: "transferable", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：可迁移职责证据三" },
+  { id: "D4", state: "transferable", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：可迁移职责证据四" }
+]);
+assert.strictEqual(missingFoundationCapsPartialRole.matrixRecommendation, "caution",
+  "a confirmed missing foundation must keep a partial role outside default communication");
+
+const heavyDutyGapCapsWeakCoreRecovery = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("matched"),
+  boundSupporting("matched"),
+  boundSupporting("transferable"),
+  boundSupporting("missing")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "missing", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：明确职责缺口三" },
+  { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
+]);
+assert.strictEqual(heavyDutyGapCapsWeakCoreRecovery.matrixRecommendation, "caution",
+  "half of the duties missing requires more than one positive core requirement");
+
+const heavyDutyGapRecoveredByCoreEvidence = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundCore("matched", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "missing", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：明确职责缺口三" },
+  { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
+]);
+assert.strictEqual(heavyDutyGapRecoveredByCoreEvidence.matrixRecommendation, "apply",
+  "two positive core requirements may recover an otherwise strong high-duty-gap role");
+
+const lowJointFitStaysCaution = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundCore("missing", { central: true }),
+  boundSupporting("transferable"),
+  boundSupporting("missing"),
+  boundSupporting("missing")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "missing", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：明确职责缺口三" }
+]);
+assert(lowJointFitStaysCaution.responsibilityRequirementJointFit < 0.5);
+assert.strictEqual(lowJointFitStaysCaution.matrixRecommendation, "caution",
+  "low combined duty and requirement evidence must stay outside default communication");
+
+const singlePositiveDutyCannotBypassJointGate = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundCore("matched", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "matched", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：直接职责证据一" },
+  { id: "D2", state: "unknown", jdEvidence: "JD：主要职责二", resumeEvidence: "" }
+]);
+assert.strictEqual(singlePositiveDutyCannotBypassJointGate.responsibilityJointPromotionReady, false);
+assert.strictEqual(singlePositiveDutyCannotBypassJointGate.matrixRecommendation, "caution",
+  "one positive duty must not reach apply through the partially-aligned fit matrix cell");
+
+const foundationGapWithoutDutyAlignmentStillCaps = decision("partially_aligned", [
+  boundCore("missing", { foundation: true }),
+  boundCore("matched", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "missing", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：明确职责缺口一" },
+  { id: "D2", state: "unknown", jdEvidence: "JD：主要职责二", resumeEvidence: "" }
+]);
+assert.strictEqual(foundationGapWithoutDutyAlignmentStillCaps.responsibilityAlignment, "");
+assert.strictEqual(foundationGapWithoutDutyAlignmentStillCaps.responsibilityJointSafetyCap, true);
+assert.strictEqual(foundationGapWithoutDutyAlignmentStillCaps.matrixRecommendation, "caution",
+  "foundation missing must cap the result even when responsibility alignment is empty");
 
 const dutyEvidenceCapsOverstatedRole = decision("mostly_aligned", [
   core("matched", { central: true })

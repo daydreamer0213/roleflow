@@ -121,12 +121,16 @@ function scoreResponsibilityAlignment(items, policy) {
   const total = matches.length;
   let known = 0;
   let points = 0;
+  let positive = 0;
+  let missing = 0;
   for (const item of matches) {
     const state = String(item?.state || "unknown").trim();
     if (!Object.hasOwn(policy.responsibilityAlignment.stateValues, state)) continue;
     if (state === "unknown") continue;
     if (!hasEvidence(item?.jdEvidence) || !hasEvidence(item?.resumeEvidence)) continue;
     known += 1;
+    if (state === "missing") missing += 1;
+    if (state === "matched" || state === "transferable") positive += 1;
     points += policy.responsibilityAlignment.stateValues[state];
   }
   const score = known ? points / known : null;
@@ -146,15 +150,52 @@ function scoreResponsibilityAlignment(items, policy) {
   return {
     total,
     known,
+    positive,
+    missing,
+    missingRatio: known ? missing / known : null,
     score,
     coverage,
     alignment
   };
 }
 
-function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY) {
+function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECISION_POLICY) {
   const reportedRoleAlignment = String(analysis.roleAlignment || "insufficient_evidence").trim();
   const responsibility = scoreResponsibilityAlignment(analysis.responsibilityMatches, policy);
+  const jointPolicy = policy.responsibilityAlignment.jointFit;
+  const responsibilityRequirementJointFit = responsibility.score == null
+    || weighted?.combinedFit == null
+    ? null
+    : responsibility.score * jointPolicy.responsibilityWeight
+      + weighted.combinedFit * jointPolicy.requirementWeight;
+  const evidenceBoundCore = (Array.isArray(weighted?.groups?.core) ? weighted.groups.core : [])
+    .filter((item) => hasEvidence(item?.jdEvidence) && hasEvidence(item?.resumeEvidence));
+  const responsibilityFoundationMissingCount = evidenceBoundCore
+    .filter((item) => item?.foundation === true && item?.state === "missing")
+    .length;
+  const responsibilityCorePositiveCount = evidenceBoundCore
+    .filter((item) => ["matched", "transferable"].includes(item?.state))
+    .length;
+  const responsibilityHeavyDutyGap = responsibility.missingRatio != null
+    && responsibility.missingRatio >= jointPolicy.heavyDutyMissingRatio;
+  const responsibilityJointSafetyCap = reportedRoleAlignment === "partially_aligned"
+    && (
+      responsibilityFoundationMissingCount > 0
+      || (
+        responsibilityHeavyDutyGap
+        && (
+          responsibility.positive < jointPolicy.minimumPositiveDutyCount
+          || responsibilityCorePositiveCount < jointPolicy.minimumCorePositiveForHeavyDutyGap
+        )
+      )
+    );
+  const responsibilityJointPromotionReady = reportedRoleAlignment === "partially_aligned"
+    && !responsibilityJointSafetyCap
+    && responsibility.known >= policy.responsibilityAlignment.minimumKnownCount
+    && responsibility.positive >= jointPolicy.minimumPositiveDutyCount
+    && responsibility.coverage >= policy.responsibilityAlignment.minimumKnownCoverage
+    && responsibilityRequirementJointFit != null
+    && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold;
   const alignmentRank = {
     insufficient_evidence: 0,
     misaligned: 1,
@@ -168,6 +209,22 @@ function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY
   let alignmentAdjustmentSource = "";
   let recommendationCeiling = "";
 
+  if (reportedRoleAlignment === "partially_aligned") {
+    if (responsibilityJointSafetyCap) {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = responsibilityFoundationMissingCount > 0
+        ? "primary_duty_foundation_gap"
+        : "primary_duty_heavy_gap";
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
+      recommendationCeiling = jointPolicy.foundationMissingCeiling;
+    } else if (responsibility.total > 0 && !responsibilityJointPromotionReady) {
+      alignmentConsistencyAdjusted = true;
+      alignmentConsistencyReason = "primary_duty_requirement_joint_fit_below_threshold";
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
+      recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
+    }
+  }
+
   if (responsibility.alignment) {
     const reportedRank = alignmentRank[reportedRoleAlignment] || 0;
     const responsibilityRank = alignmentRank[responsibility.alignment] || 0;
@@ -178,11 +235,17 @@ function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY
       alignmentAdjustmentSource = "responsibility_evidence";
       recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
     } else if (reportedRoleAlignment === "partially_aligned"
-      && responsibilityRank >= alignmentRank.mostly_aligned) {
-      effectiveRoleAlignment = responsibility.alignment;
+      && responsibilityJointPromotionReady) {
+      effectiveRoleAlignment = responsibilityRank >= alignmentRank.mostly_aligned
+        ? responsibility.alignment
+        : "mostly_aligned";
       alignmentConsistencyAdjusted = true;
-      alignmentConsistencyReason = "primary_duty_coverage";
-      alignmentAdjustmentSource = "responsibility_evidence";
+      alignmentConsistencyReason = responsibilityJointPromotionReady
+        ? "primary_duty_requirement_joint_fit"
+        : "primary_duty_coverage";
+      alignmentAdjustmentSource = responsibilityJointPromotionReady
+        ? "responsibility_requirement_evidence"
+        : "responsibility_evidence";
       recommendationCeiling = policy.responsibilityAlignment.promotionCeiling;
     } else if (reportedRank >= alignmentRank.mostly_aligned
       && responsibilityRank <= alignmentRank.partially_aligned) {
@@ -233,14 +296,23 @@ function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY
     responsibilityScore: responsibility.score,
     responsibilityCoverage: responsibility.coverage,
     responsibilityKnownCount: responsibility.known,
-    responsibilityTotalCount: responsibility.total
+    responsibilityTotalCount: responsibility.total,
+    responsibilityPositiveCount: responsibility.positive,
+    responsibilityMissingCount: responsibility.missing,
+    responsibilityMissingRatio: responsibility.missingRatio,
+    responsibilityRequirementJointFit,
+    responsibilityFoundationMissingCount,
+    responsibilityCorePositiveCount,
+    responsibilityHeavyDutyGap,
+    responsibilityJointSafetyCap,
+    responsibilityJointPromotionReady
   };
 }
 
 function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   assertDecisionPolicy(policy);
   const weighted = computeWeightedRequirementFit(analysis.requirementMatches, policy);
-  const alignment = resolveRoleAlignmentForDecision(analysis, policy);
+  const alignment = resolveRoleAlignmentForDecision(analysis, weighted, policy);
   const roleAlignment = alignment.effectiveRoleAlignment;
   let band = fitBand(weighted.combinedFit, policy);
   let rescueApplied = false;
