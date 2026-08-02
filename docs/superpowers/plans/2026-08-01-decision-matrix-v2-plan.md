@@ -958,3 +958,10 @@ The docs-only commit containing this section is the next candidate evaluated che
 - baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
+
+### 2026-08-02 v4.5 精确 evaluated 绑定
+
+- v4.5 产品提交：`dd8e17912dba95d4524229ce4e08bb7af27ea0d2`。
+- 已复审 evaluated checkpoint：`94792289ee01bc21d35ea93aeae7834002fa98a9`。
+- 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
+- `dd8e17912dba95d4524229ce4e08bb7af27ea0d2` 已验证为 `94792289ee01bc21d35ea93aeae7834002fa98a9` 的严格祖先；后续 v4.5 真实验收固定使用 `94792289ee01bc21d35ea93aeae7834002fa98a9`，不使用本次记录提交替代 evaluated checkpoint。

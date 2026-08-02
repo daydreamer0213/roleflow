@@ -485,3 +485,10 @@ checkpoint. Record its exact SHA in one immediate descendant docs-only binding
 commit. The product commit must remain a strict ancestor. Use the evaluated
 commit, not its binding descendant, for the runner manifest, v3 portability
 proof, and temporary live-evaluation branch.
+
+### 2026-08-02 精确 evaluated 绑定
+
+- v4.5 产品提交：`dd8e17912dba95d4524229ce4e08bb7af27ea0d2`。
+- 通过规范与代码质量复审的 evaluated checkpoint：`94792289ee01bc21d35ea93aeae7834002fa98a9`。
+- 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
+- `dd8e17912dba95d4524229ce4e08bb7af27ea0d2` 已验证为 `94792289ee01bc21d35ea93aeae7834002fa98a9` 的严格祖先。真实 3 条与 20 条验收必须固定到 `94792289ee01bc21d35ea93aeae7834002fa98a9`；本次仅记录精确绑定，不改变被评估代码。
