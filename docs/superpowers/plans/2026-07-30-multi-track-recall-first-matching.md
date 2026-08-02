@@ -2768,3 +2768,17 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - 已复审 evaluated checkpoint：`94792289ee01bc21d35ea93aeae7834002fa98a9`。
 - 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
 - `dd8e17912dba95d4524229ce4e08bb7af27ea0d2` 已验证为 `94792289ee01bc21d35ea93aeae7834002fa98a9` 的严格祖先；后续 v4.5 真实验收固定使用 `94792289ee01bc21d35ea93aeae7834002fa98a9`，不使用本次记录提交替代 evaluated checkpoint。
+### 2026-08-02 v4.6 半覆盖零缺口 checkpoint
+
+- v4.5 全新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-5-first-3-20260802`。索引 `5,8,13` 技术门禁全部正常，行为通过 2/3；索引 8 仍为人工 `apply`、实际 `caution`，因此未运行 v4.5 全 20 条。
+- 根因：索引 8 的职责结构已经稳定为 2 个 `transferable`、2 个 `unknown`、0 个 `missing`，但 v4.5 新增的 `2/3` 已知职责覆盖门槛高于实际 `2/4`。保护样本索引 13 保留 1 个 confirmed `missing`。
+- v4.6 保持二维表、70/30 权重、模型提示词、温度、调用次数和 `matched_indispensable` 路线不变，只把 `zeroDutyGapMinimumKnownCoverage` 从 `2/3` 调整为基础值 `0.5`；至少 2 个正向职责、0 个 confirmed missing 及所有既有 ceiling 继续生效。
+- RED 测试提交：`cce5df5b8374d92e5b42d17d64001167440bac5c`。产品提交：`e370b254125d9a838b3563ee39c75e9343868229`。复审说明修复提交：`3c8aa3ba3fcd34143dbda499c1d6dce705484043`。
+- 版本：`decisionRules=four-tier-weighted-v4.6`；模型提示词缓存版本仍为 `matchJob=match-decision-v41`。
+- 聚焦测试、31 个通用 fixture、私有 full-chain runner 冒烟测试、`npm.cmd test` 全部 50 项及 `git diff --check` 均通过。
+- 冻结 20 条接受回放：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-offline-replay-v2-20260802`；应沟通 10、实际沟通 10、遗漏 0、误入 0、行为 20/20、四档 exact 13/20。未调用模型。
+- 首次回放目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-offline-replay-20260802` 因一次性脚本把 `primary` 误写为 `priority` 而失败，已原样保留；产品和冻结证据无缺陷。
+- 第一轮规范复审指出 v4.6 设计误写联合阈值约束；代码质量复审同时指出主说明和测试命名问题。修正文档契约与命名后，第二轮结论为 `Spec PASS` 和 `Code quality APPROVED`，无剩余 Critical、Important 或 Minor。
+- 私有基线仍为 `c1d32641bca2ccd4c82128f48f3cfac996310dfb`，三项共享 runner blob 未变化，无需再次同步基线。
+- 新真实目录固定为 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-first-3-20260802` 与 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-6-full-20-20260802`；必须先 3/3，再运行 20 条。
+- 包含本记录的下一份 docs checkpoint 是被评估提交；`e370b254125d9a838b3563ee39c75e9343868229` 必须为其严格祖先。
