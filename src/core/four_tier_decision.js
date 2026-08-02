@@ -204,6 +204,7 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
   const responsibilityZeroDutyGapPromotionReady = reportedRoleAlignment === "partially_aligned"
     && responsibility.total > 0
     && responsibilityBasePromotionEvidenceReady
+    && responsibility.coverage >= jointPolicy.zeroDutyGapMinimumKnownCoverage
     && responsibilityFoundationMissingCount === 0
     && responsibility.missing === 0;
   const responsibilityMatchedIndispensablePromotionReady =

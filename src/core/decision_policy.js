@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v4.4",
+  version: "four-tier-weighted-v4.5",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -69,6 +69,7 @@ const DECISION_POLICY = deepFreeze({
       requirementWeight: 0.60,
       promotionThreshold: 0.50,
       minimumPositiveDutyCount: 2,
+      zeroDutyGapMinimumKnownCoverage: 2 / 3,
       matchedIndispensableStates: ["matched"],
       promotionFloor: "apply",
       confirmedDutyGapCeiling: "caution",
@@ -204,6 +205,13 @@ function assertDecisionPolicy(policy) {
   if (!Number.isInteger(jointFit?.minimumPositiveDutyCount)
     || jointFit.minimumPositiveDutyCount < 2) {
     throw new Error("joint promotion must require at least two positive duties");
+  }
+  const zeroDutyGapMinimumKnownCoverage = finiteUnit(
+    jointFit?.zeroDutyGapMinimumKnownCoverage,
+    "zero-duty-gap minimum known responsibility coverage"
+  );
+  if (zeroDutyGapMinimumKnownCoverage < minimumKnownCoverage) {
+    throw new Error("zero-duty-gap coverage must not be lower than the base responsibility coverage");
   }
   if (!sameValues(jointFit?.matchedIndispensableStates, ["matched"])) {
     throw new Error("indispensable promotion must require a matched requirement");
