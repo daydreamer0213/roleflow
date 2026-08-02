@@ -2681,3 +2681,12 @@ v3 全新三条真实运行完成但未通过沟通边界：索引 4 为主投�
 根因是模型对总体方向和要求证据的提取会波动，且现有输出缺少逐项主要职责支撑。13,068 组参数搜索证明纯权重/阈值调整的四档 exact 上限为 16/20。weighted-v4 在同一次 matchJob 调用中加入 D1-Dn `responsibilityMatches`，由本地代码量化；产品提交为 `6b04a599a9e18edcffed7516476e00b30aceab34`，独立复审为 `Spec PASS`、`Code quality APPROVED`，50/50 离线检查通过。
 
 新的正式门禁不再要求 18/20 四档 exact，而要求：所有确认主投/可投仍落在主投或可投；所有确认慎投/不推荐均不得落入主投或可投；隐私、结构、安全、缓存隔离门禁全部通过。主投↔可投以及慎投↔不推荐只记录偏差，不阻断验收。
+### 2026-08-02 v4 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`6b04a599a9e18edcffed7516476e00b30aceab34`
+- candidate evaluated commit（候选已评估提交）：`ddbdd92b6fc15867ecdd0503435ba722d2295ed2`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 已用 `git merge-base --is-ancestor` 确认产品提交是 evaluated 提交的严格祖先。
+- 全新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-first-3-20260802`
+- 预留全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-full-20-20260802`

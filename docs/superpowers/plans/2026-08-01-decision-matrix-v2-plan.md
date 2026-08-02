@@ -870,3 +870,12 @@ The docs-only commit containing this section is the next candidate evaluated che
 - 产品提交为 `6b04a599a9e18edcffed7516476e00b30aceab34`；完整 `npm.cmd test` 为 50/50 通过，`git diff --check` 通过。
 - 后续验收标准改为默认沟通集合行为正确：主投/可投零遗漏，慎投/不推荐零误入；相同沟通行为一侧的档位互换不阻断。
 - 下一步使用全新 v4 三条目录和缓存运行零基索引 `4,9,10`；通过后才运行全新 20 条目录。
+### 2026-08-02 v4 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`6b04a599a9e18edcffed7516476e00b30aceab34`
+- candidate evaluated commit（候选已评估提交）：`ddbdd92b6fc15867ecdd0503435ba722d2295ed2`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 已用 `git merge-base --is-ancestor` 确认产品提交是 evaluated 提交的严格祖先。
+- 全新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-first-3-20260802`
+- 预留全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-full-20-20260802`
