@@ -3,7 +3,7 @@ const { matchingCardRevision } = require("./matching_card");
 
 const PIPELINE_VERSIONS = Object.freeze({
   understandJob: "job-understanding-v18",
-  matchJob: "match-decision-v42",
+  matchJob: "match-decision-v43",
   decisionRules: "four-tier-weighted-v4.6",
   communication: "communication-v2"
 });
