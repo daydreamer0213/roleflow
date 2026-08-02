@@ -186,6 +186,8 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
         && (
           responsibility.positive < jointPolicy.minimumPositiveDutyCount
           || responsibilityCorePositiveCount < jointPolicy.minimumCorePositiveForHeavyDutyGap
+          || weighted?.combinedFit == null
+          || weighted.combinedFit < jointPolicy.heavyDutyRecoveryMinimumRequirementFit
         )
       )
     );

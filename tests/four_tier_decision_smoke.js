@@ -61,7 +61,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.2");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.3");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -398,6 +398,22 @@ const heavyDutyGapRecoveredByCoreEvidence = decision("partially_aligned", [
 ]);
 assert.strictEqual(heavyDutyGapRecoveredByCoreEvidence.matrixRecommendation, "apply",
   "two positive core requirements may recover an otherwise strong high-duty-gap role");
+
+const heavyDutyGapNeedsNearCompleteRequirements = decision("partially_aligned", [
+  boundCore("matched", { central: true }),
+  boundCore("matched", { central: true }),
+  boundSupporting("matched"),
+  boundSupporting("missing")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "missing", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：明确职责缺口三" },
+  { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
+]);
+assert(heavyDutyGapNeedsNearCompleteRequirements.combinedFit < 0.95);
+assert(heavyDutyGapNeedsNearCompleteRequirements.responsibilityRequirementJointFit >= 0.5);
+assert.strictEqual(heavyDutyGapNeedsNearCompleteRequirements.matrixRecommendation, "caution",
+  "half of the duties missing requires near-complete requirement fit even with two positive core requirements");
 
 const lowJointFitStaysCaution = decision("partially_aligned", [
   boundCore("matched", { central: true }),

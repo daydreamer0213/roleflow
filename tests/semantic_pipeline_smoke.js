@@ -745,7 +745,7 @@ async function initialFailureProvenanceSmoke() {
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.2");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.3");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -786,6 +786,16 @@ async function pipelineVersionCacheSmoke() {
     }, currentRevision),
     ["decision_rules_changed"],
     "v4.1 analyses must become stale when joint responsibility and requirement gates are introduced"
+  );
+  assert.deepStrictEqual(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, decisionRules: "four-tier-weighted-v4.2" }
+      }
+    }, currentRevision),
+    ["decision_rules_changed"],
+    "v4.2 analyses must become stale when heavy duty recovery requires near-complete requirement fit"
   );
   assert(
     analysisStaleReasons({
@@ -2053,7 +2063,7 @@ function staleAnalysisSmoke() {
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
     matchJob: "match-decision-v40",
-    decisionRules: "four-tier-weighted-v4.2",
+    decisionRules: "four-tier-weighted-v4.3",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({

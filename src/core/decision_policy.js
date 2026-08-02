@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v4.2",
+  version: "four-tier-weighted-v4.3",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -71,6 +71,7 @@ const DECISION_POLICY = deepFreeze({
       heavyDutyMissingRatio: 0.50,
       minimumPositiveDutyCount: 2,
       minimumCorePositiveForHeavyDutyGap: 2,
+      heavyDutyRecoveryMinimumRequirementFit: 0.95,
       foundationMissingCeiling: "caution"
     },
     promotionCeiling: "apply",
@@ -208,6 +209,13 @@ function assertDecisionPolicy(policy) {
   if (!Number.isInteger(jointFit?.minimumCorePositiveForHeavyDutyGap)
     || jointFit.minimumCorePositiveForHeavyDutyGap < 2) {
     throw new Error("heavy duty gap recovery must require at least two positive core requirements");
+  }
+  const heavyDutyRecoveryMinimumRequirementFit = finiteUnit(
+    jointFit?.heavyDutyRecoveryMinimumRequirementFit,
+    "heavy duty recovery minimum requirement fit"
+  );
+  if (heavyDutyRecoveryMinimumRequirementFit < jointFit.promotionThreshold) {
+    throw new Error("heavy duty recovery fit must not be lower than the normal promotion threshold");
   }
   if (jointFit?.foundationMissingCeiling !== "caution") {
     throw new Error("a missing foundation must stay outside default batch selection");
