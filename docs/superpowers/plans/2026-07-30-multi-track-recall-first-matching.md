@@ -20,7 +20,9 @@
 - `matchJob` 必须返回一个既有 `selectedTrackId`，且只允许匹配所选分支及全局要求；其他分支的要求不得变成缺口、blocker 或展示证据。
 - 职责用于判断主体工作；只有 JD 明确写成任职门槛或核心交付要求时，才进入逐项要求匹配。
 - `aligned` 或 `mostly_aligned` 且没有硬冲突时，通常不得低于 `talk`；沟通、学习、稳定性意识、文档、一般排错等宽泛能力不得单独把岗位降到 `backup` 或 `not_recommended`。
-- `misaligned` 本身只限制上限，不自动产生硬淘汰；薪资下限、地点、学历/届别/证书、明确不可替代核心要求、安全风险和用户排除词等既有硬边界继续有效。
+- `partially_aligned` 承接存在实质证据迁移路径的相邻岗位；`misaligned` 仅表示主要
+  工作对象、动作和交付物明确不同且不存在相邻交付路径，并直接进入不推荐。薪资下限、
+  地点、学历/届别/证书、明确不可替代核心要求、安全风险和用户排除词等既有硬边界继续有效。
 - 冻结 20 条测试集位于 `D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730`；不得修改其中 JD、标签或两个 SHA-256。
 - 不把真实 JD、公司名、URL、简历、画像、模型配置或密钥提交到 Git。
 - 不访问真实 BOSS，不操作浏览器，不点击沟通或投递，不读写 `D:\Guo\ZhiPing\data\jobs.sqlite`，不启动或操作正式 8787。
@@ -2637,6 +2639,18 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Only an exact and safe 3/3 result unlocks a separate fresh-cache 20-row run. Full acceptance requires recommendation exactness at least 18/20, zero technical/privacy/safety failures, zero hard false placements, zero false hard exclusions, and complete disclosure of every moderate or other deviation.
 - `caution <-> not_recommended` is a reported moderate deviation, not a standalone hard failure, because neither tier is default-selected. The 18/20 floor prevents arbitrary moderate drift from being accepted.
 - Do not access BOSS, jobs.sqlite, cookies, or port 8787 during model acceptance. Model settings may be resolved only through the runner gate from `D:\Guo\ZhiPing`, without printing or copying configuration contents.
+
+## 2026-08-02 four-tier weighted-v2 checkpoint
+
+- The v1 three-row diagnostic passed `3/3`; the fresh 20-row run completed safely but reached only `11/20` exact.
+- All `15/15` expected opportunities were retained. The decisive defect was the opposite side: three confirmed obvious mismatches were returned by the model as `misaligned/not_recommended`, then promoted locally to `caution`.
+- The user approved replacing the old support-rescue behavior with one semantic boundary: adjacent role families remain `partially_aligned`, while clear primary work-object/action/deliverable mismatch with no adjacent professional delivery path is `misaligned`.
+- The v2 matrix maps every `misaligned` coverage level to `not_recommended`. Core/support weighting stays 70/30, and no model field or call is added.
+- The prompt wording is domain-neutral rather than AI- or IT-specific. `match-decision-v39` invalidates old match caches, and `four-tier-weighted-v2` identifies the new local policy.
+- Product checkpoint is `0b6da19b1749a775bcbeab53b78556daa547c3bc`.
+- All `50/50` offline checks and `git diff --check` pass. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
+- The review-requested `or` ambiguity is closed: `misaligned` now requires an overall substantial difference across work object, main action, and primary deliverable; a one-layer difference with a meaningful transferable path stays `partially_aligned`.
+- A fresh exact `4,9,10` run and then a separate fresh-cache 20-row run are still required.
 
 The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.
 

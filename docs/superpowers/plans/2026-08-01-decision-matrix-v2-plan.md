@@ -823,6 +823,20 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - `caution <-> not_recommended` is a reported moderate deviation, not a standalone hard failure, because neither tier is default-selected. The 18/20 floor prevents arbitrary moderate drift from being accepted.
 - Do not access BOSS, jobs.sqlite, cookies, or port 8787 during model acceptance. Model settings may be resolved only through the runner gate from `D:\Guo\ZhiPing`, without printing or copying configuration contents.
 
+## 2026-08-02 weighted-v2 mismatch boundary checkpoint
+
+- The fresh three-row run at `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v1-first-3-v3-20260801` passed `3/3` exactly with all structural, privacy, evidence, and safety gates satisfied.
+- The preserved full run at `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v1-full-20-v2-20260801` completed all 20 rows with a fresh cache. It retained all `15/15` expected opportunities and had zero hard false placements and zero false hard exclusions, but exactness was `11/20`.
+- Three confirmed obvious direction mismatches were classified by the model as `misaligned` and `not_recommended`, then raised by the local v1 matrix to `caution`. This proved the remaining defect was the local matrix boundary, not transport, privacy, empty output, or a missing model field.
+- User-approved v2 rule: fold adjacent role families with a meaningful same-artifact or professional-delivery path into `partially_aligned`; reserve `misaligned` for a clearly different primary work object, action, and deliverable with no adjacent delivery path.
+- Every `misaligned` matrix cell now produces `not_recommended`; support overlap cannot rescue it. The 70/30 core/support weighting, four final tiers, model-suggestion switch, model call count, and output fields remain unchanged.
+- The provider-neutral prompt receives only the minimal boundary clarification. Match cache revision advances to `match-decision-v39`; policy id advances to `four-tier-weighted-v2`.
+- Product checkpoint is `0b6da19b1749a775bcbeab53b78556daa547c3bc`.
+- TDD coverage and all `50/50` offline checks pass; `git diff --check` passes. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
+- The reviewer-requested prompt correction is included: `misaligned` requires the primary direction to be substantially different overall across work object, main action, and primary deliverable. A one-layer difference with a meaningful transferable path must use `partially_aligned`.
+- Fresh live v2 reruns remain required before acceptance.
+- Fresh live roots are reserved as `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-first-3-20260802` and `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v2-full-20-20260802`; no earlier result or cache may be overwritten or reused.
+
 The docs-only commit containing this section is the next candidate evaluated checkpoint. Record its exact SHA in an immediate descendant docs-only binding commit before creating either private root. The product/harness checkpoint `53bfbbfaadaefd31498470cd183ce74724d46ba2` must remain its strict ancestor; the later binding commit must not replace the evaluated checkpoint in manifests, portability proof, temporary evaluation branches, or live runs.
 
 ### Four-tier weighted exact evaluated binding
