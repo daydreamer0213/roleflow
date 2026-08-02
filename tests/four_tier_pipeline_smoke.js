@@ -54,6 +54,23 @@ const weightedApply = applyRuleGuard(analysis({
 assert.equal(weightedApply.recommendation, "apply",
   "核心与支持项必须按 70/30 的本地权重进入二维表");
 
+const zeroDutyGap = applyRuleGuard(analysis({
+  roleAlignment: "partially_aligned",
+  requirementMatches: [
+    requirement("core delivery", "missing", { central: true }),
+    requirement("adjacent collaboration", "transferable")
+  ],
+  responsibilityMatches: [
+    { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+    { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" }
+  ]
+}), {});
+assert.equal(zeroDutyGap.recommendation, "apply");
+assert.equal(zeroDutyGap.decisionMetrics.responsibilityPromotionRoute, "zero_duty_gap");
+assert.equal(zeroDutyGap.decisionMetrics.responsibilityZeroDutyGapPromotionReady, true);
+assert.equal(zeroDutyGap.decisionMetrics.responsibilityMatchedIndispensablePromotionReady, false);
+assert.equal(zeroDutyGap.decisionMetrics.responsibilityFoundationCeilingApplied, false);
+
 const consistencyAdjusted = applyRuleGuard(analysis({
   roleAlignment: "misaligned",
   requirementMatches: [
@@ -159,6 +176,6 @@ assert.deepEqual(compact.responsibilityMatches, [{
 }], "compact analysis must preserve responsibility evidence for the production decision path");
 
 assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.3");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.4");
 
 console.log("four_tier_pipeline_smoke ok");

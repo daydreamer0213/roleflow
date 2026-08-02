@@ -745,7 +745,7 @@ async function initialFailureProvenanceSmoke() {
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.3");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.4");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -2063,7 +2063,7 @@ function staleAnalysisSmoke() {
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
     matchJob: "match-decision-v40",
-    decisionRules: "four-tier-weighted-v4.3",
+    decisionRules: "four-tier-weighted-v4.4",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -2662,7 +2662,7 @@ function roleEvidenceDecisionStateSmoke() {
   };
   assert.strictEqual(
     decisionBucket({ ...completeJob("core-delivery-gap"), analysis: applyRuleGuard(concreteCoreGap, completeJob("core-delivery-gap")) }),
-    "apply",
+    "caution",
     "一半根基要求匹配时属于 mostly_fit，由二维表落为可投"
   );
 
