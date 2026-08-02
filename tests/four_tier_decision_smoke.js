@@ -45,6 +45,15 @@ function boundCore(state, options = {}) {
   });
 }
 
+function boundIndispensable(state, options = {}) {
+  return requirement(state, {
+    indispensable: true,
+    jdEvidence: "JD: indispensable requirement",
+    resumeEvidence: "Resume: indispensable requirement evidence",
+    ...options
+  });
+}
+
 function boundSupporting(state, options = {}) {
   return supporting(state, {
     jdEvidence: "JD：明确要求",
@@ -495,6 +504,76 @@ assert.strictEqual(partialClaimWithMissingDuties.responsibilityAlignment, "misal
 assert.strictEqual(partialClaimWithMissingDuties.effectiveRoleAlignment, "partially_aligned");
 assert.strictEqual(partialClaimWithMissingDuties.matrixRecommendation, "caution",
   "a partial claim with fully mismatched primary duties must stay outside default communication");
+
+const mostlyAlignedMissingFoundation = decision("mostly_aligned", [
+  boundCore("missing", { foundation: true }),
+  boundCore("matched", { foundation: false, central: true }),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "matched", jdEvidence: "JD: duty one", resumeEvidence: "Resume: duty one" },
+  { id: "D2", state: "matched", jdEvidence: "JD: duty two", resumeEvidence: "Resume: duty two" }
+]);
+assert.strictEqual(mostlyAlignedMissingFoundation.matrixRecommendation, "caution",
+  "a bound missing foundation must cap even a mostly-aligned role");
+assert.strictEqual(mostlyAlignedMissingFoundation.responsibilityFoundationMissingCount, 1);
+assert.strictEqual(mostlyAlignedMissingFoundation.responsibilityFoundationCeilingApplied, true);
+
+const zeroDutyGapPromotion = decision("partially_aligned", [
+  boundCore("missing", { foundation: false, central: true }),
+  boundSupporting("transferable")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "transferable", jdEvidence: "JD: duty three", resumeEvidence: "Resume: transferable three" }
+]);
+assert.strictEqual(zeroDutyGapPromotion.matrixRecommendation, "apply",
+  "all known duties being positive must retain a partially-aligned opportunity");
+assert.strictEqual(zeroDutyGapPromotion.responsibilityPromotionRoute, "zero_duty_gap");
+assert.strictEqual(zeroDutyGapPromotion.responsibilityZeroDutyGapPromotionReady, true);
+
+const indispensablePromotion = decision("partially_aligned", [
+  boundIndispensable("matched"),
+  boundCore("matched", { foundation: false, central: true }),
+  boundCore("missing", { foundation: false, central: true }),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "missing", jdEvidence: "JD: duty three", resumeEvidence: "Resume: duty gap three" },
+  { id: "D4", state: "missing", jdEvidence: "JD: duty four", resumeEvidence: "Resume: duty gap four" }
+]);
+assert.strictEqual(indispensablePromotion.matrixRecommendation, "apply",
+  "a matched indispensable requirement may recover a bounded duty gap");
+assert.strictEqual(indispensablePromotion.responsibilityPromotionRoute, "matched_indispensable");
+assert.strictEqual(indispensablePromotion.responsibilityMatchedIndispensableCount, 1);
+
+const dutyGapWithoutIndispensable = decision("partially_aligned", [
+  boundCore("matched", { foundation: false, central: true }),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "matched", jdEvidence: "JD: duty one", resumeEvidence: "Resume: duty one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "missing", jdEvidence: "JD: duty three", resumeEvidence: "Resume: duty gap three" }
+]);
+assert.strictEqual(dutyGapWithoutIndispensable.matrixRecommendation, "caution",
+  "a confirmed duty gap without a matched indispensable requirement must stay outside communication");
+assert.strictEqual(dutyGapWithoutIndispensable.responsibilityConfirmedDutyGapCeilingApplied, true);
+
+const foundationOverridesIndispensable = decision("partially_aligned", [
+  boundCore("missing", { foundation: true }),
+  boundIndispensable("matched"),
+  boundSupporting("matched")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" }
+]);
+assert.strictEqual(foundationOverridesIndispensable.matrixRecommendation, "caution",
+  "a missing foundation must override every promotion route");
+assert.strictEqual(foundationOverridesIndispensable.responsibilityFoundationCeilingApplied, true);
+assert.notStrictEqual(foundationOverridesIndispensable.responsibilityPromotionRoute, "matched_indispensable");
+
+assert.notStrictEqual(zeroDutyGapPromotion.matrixRecommendation, "primary");
+assert.notStrictEqual(indispensablePromotion.matrixRecommendation, "primary");
 
 const lowFitNotRescued = decision("misaligned", [
   core("missing"),
