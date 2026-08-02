@@ -89,9 +89,9 @@ assert.strictEqual(decisionBucket({ ...job(), analysis: neighboringDeliveryLaneG
 
 const obviousDirectionMismatch = layeredDecisionAnalysis("misaligned", ["matched"]);
 const obviousDirectionMismatchGuard = applyRuleGuard(obviousDirectionMismatch, job());
-assert.strictEqual(obviousDirectionMismatchGuard.recommendation, "caution");
+assert.strictEqual(obviousDirectionMismatchGuard.recommendation, "not_recommended");
 assert.strictEqual(obviousDirectionMismatchGuard.decisionSource, "weighted_decision_matrix");
-assert.strictEqual(decisionBucket({ ...job(), analysis: obviousDirectionMismatchGuard }), "caution");
+assert.strictEqual(decisionBucket({ ...job(), analysis: obviousDirectionMismatchGuard }), "not_recommended");
 for (const softTag of ["salary_target_high", "experience_salary_overlap"]) {
   assert.strictEqual(
     decisionBucket({
@@ -99,7 +99,7 @@ for (const softTag of ["salary_target_high", "experience_salary_overlap"]) {
       qualityTags: [softTag],
       analysis: obviousDirectionMismatchGuard
     }),
-    "caution",
+    "not_recommended",
     `${softTag} 只是排序软标签，不得覆盖四档加权矩阵`
   );
 }

@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v1",
+  version: "four-tier-weighted-v2",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -69,9 +69,9 @@ const DECISION_POLICY = deepFreeze({
       no_fit: "not_recommended"
     },
     misaligned: {
-      fit: "caution",
-      mostly_fit: "caution",
-      partial_fit: "caution",
+      fit: "not_recommended",
+      mostly_fit: "not_recommended",
+      partial_fit: "not_recommended",
       no_fit: "not_recommended"
     }
   }

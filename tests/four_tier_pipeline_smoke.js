@@ -129,7 +129,7 @@ const compact = compactAnalysis({
 });
 assert.equal(compact.modelRecommendation, "apply");
 
-assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v38");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v1");
+assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v2");
 
 console.log("four_tier_pipeline_smoke ok");

@@ -744,8 +744,8 @@ async function initialFailureProvenanceSmoke() {
 
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v38");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v1");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v2");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1294,8 +1294,8 @@ async function multiTrackValidationIdempotenceSmoke() {
   assert(!JSON.stringify(analyzerResult).includes(privacySentinel),
     "analyzer wrapper must not preserve raw extra values");
 
-  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v38",
-    "four-tier weighted decisions must invalidate v37 match caches");
+  assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v39",
+    "misaligned boundary changes must invalidate v38 match caches");
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
     "deterministic evidence sampling must invalidate v17 understandings");
   const currentRevision = {
@@ -2032,8 +2032,8 @@ function staleAnalysisSmoke() {
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
-    matchJob: "match-decision-v38",
-    decisionRules: "four-tier-weighted-v1",
+    matchJob: "match-decision-v39",
+    decisionRules: "four-tier-weighted-v2",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -2668,7 +2668,8 @@ function roleEvidenceDecisionStateSmoke() {
   ];
   for (const [analysis, jobOverrides] of directionMismatchCases) {
     const guarded = applyRuleGuard(analysis, completeJob("role-backup-precedence", jobOverrides));
-    assert.strictEqual(guarded.recommendation, "caution", "方向不匹配但要求仍有证据时保留为慎投且不得默认沟通");
+    assert.strictEqual(guarded.recommendation, "not_recommended",
+      "完整证据已确认主方向错位时，技能重叠、风险或经验标签都不得救回慎投");
     assert.strictEqual(typeof guarded.decisionSource, "string");
   }
 }

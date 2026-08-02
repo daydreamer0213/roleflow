@@ -469,12 +469,19 @@ server.listen(0, "127.0.0.1", async () => {
       "matchJob prompt must compare the primary work object, action, and deliverable"
     );
     assert(
-      matchPrompt.includes("partially_aligned requires both an adjacent role family")
-        && matchPrompt.includes("substantial part of the job's primary delivery"),
-      "partially_aligned 必须要求相邻职业和实质主线证据同时成立"
+      matchPrompt.includes("partially_aligned includes an adjacent role family")
+        && matchPrompt.includes("same artifact class or professional delivery lifecycle")
+        && matchPrompt.includes("meaningful transferable evidence for primary duties"),
+      "partially_aligned 必须覆盖同类产物或同一交付生命周期中的相邻职业"
     );
     assert(
-      matchPrompt.includes("Use misaligned when the primary delivery differs")
+      matchPrompt.includes("substantially different overall across the work object, main action, and primary deliverable")
+        && matchPrompt.includes("no meaningful adjacent artifact-class or professional-delivery-lifecycle path exists")
+        && matchPrompt.includes("If only one layer differs and a meaningful transferable path exists, use partially_aligned"),
+      "misaligned 必须只覆盖整体主方向明显不同且不存在相邻迁移路径的岗位"
+    );
+    assert(
+      matchPrompt.includes("Overlap limited to generic capabilities")
         && matchPrompt.includes("generic capabilities, tools, technologies, industry context, or secondary duties")
         && matchPrompt.includes("A compatible secondary duty cannot redefine the job's primary direction"),
       "misaligned 必须表达主方向不同，不能被工具或次要职责重叠抬升"

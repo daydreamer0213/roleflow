@@ -124,13 +124,6 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   let rescueApplied = false;
   let rescueEvidence = supportingRescueEvidence(weighted.groups.supporting, policy);
 
-  if (roleAlignment === "misaligned" && weighted.core.total > 0 && weighted.core.fit === 0) {
-    rescueApplied = rescueEvidence.fit !== null
-      && rescueEvidence.fit >= policy.supportingRescue.minFit
-      && rescueEvidence.coverage >= policy.supportingRescue.minCoverage;
-    if (!rescueApplied) band = "no_fit";
-  }
-
   let recommendation;
   if (roleAlignment === "insufficient_evidence" || band === "insufficient_evidence") {
     recommendation = "caution";

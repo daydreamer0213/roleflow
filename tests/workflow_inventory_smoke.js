@@ -126,11 +126,11 @@ try {
     "岗位主线无证据时，即使薪资与经验重叠，也不得进入默认勾选的低风险补位"
   );
 
-  const roleEvidenceBackup = layeredDecisionAnalysis("misaligned", ["matched"]);
-  const guardedRoleEvidenceBackup = applyRuleGuard(roleEvidenceBackup, job("role-evidence-backup"));
-  assert.strictEqual(guardedRoleEvidenceBackup.recommendation, "caution");
-  assert.strictEqual(decisionBucket(job("role-evidence-backup", { analysis: guardedRoleEvidenceBackup })), "caution");
-  assert.strictEqual(workflowEligibility(job("role-evidence-backup", { analysis: guardedRoleEvidenceBackup }), { now }).eligible, false);
+  const roleEvidenceExclusion = layeredDecisionAnalysis("misaligned", ["matched"]);
+  const guardedRoleEvidenceExclusion = applyRuleGuard(roleEvidenceExclusion, job("role-evidence-exclusion"));
+  assert.strictEqual(guardedRoleEvidenceExclusion.recommendation, "not_recommended");
+  assert.strictEqual(decisionBucket(job("role-evidence-exclusion", { analysis: guardedRoleEvidenceExclusion })), "not_recommended");
+  assert.strictEqual(workflowEligibility(job("role-evidence-exclusion", { analysis: guardedRoleEvidenceExclusion }), { now }).eligible, false);
   const roleEvidenceTalk = layeredDecisionAnalysis("mostly_aligned", ["matched", "unknown"]);
   const guardedRoleEvidenceTalk = applyRuleGuard(roleEvidenceTalk, job("role-evidence-talk"));
   assert.strictEqual(guardedRoleEvidenceTalk.decisionSource, "weighted_decision_matrix");
@@ -149,11 +149,11 @@ try {
     "WORKFLOW_DECISION_CAUTION",
     "语义风险慎投不得进入默认沟通库存"
   );
-  const roleEvidenceBackupId = insert("role-evidence-review", { analysis: guardedRoleEvidenceBackup }, batchId);
+  const roleEvidenceBackupId = insert("role-evidence-review", { analysis: guardedRoleEvidenceExclusion }, batchId);
   const legacyRoleCoreId = insert("legacy-role-core-review", { analysis: roleCoreUnprovenAnalysis() }, batchId);
   const semanticRiskReviewId = insert("semantic-risk-review", { analysis: semanticRiskReview }, batchId);
   const layeredHighSalaryId = insert("layered-high-salary-review", {
-    analysis: { ...guardedRoleEvidenceBackup, recommendation: "caution" },
+    analysis: { ...guardedRoleEvidenceExclusion, recommendation: "caution" },
     qualityTags: ["salary_target_high", "experience_salary_overlap"]
   }, batchId);
   const workflow = createWorkflowRun(db, {
@@ -170,8 +170,8 @@ try {
   transitionWorkflowRun(db, { id: workflow.id, status: "review_required", updatedAt: now });
   const reviewCandidates = listWorkflowReviewCandidates(db, workflow.id, { now });
   const backupCandidate = reviewCandidates.find((candidate) => candidate.id === roleEvidenceBackupId);
-  assert.strictEqual(typeof backupCandidate?.workflowTier, "string");
-  assert.strictEqual(typeof backupCandidate?.defaultChecked, "boolean");
+  assert.strictEqual(backupCandidate, undefined,
+    "主方向完全错位的岗位不得进入慎投复核集合");
   const semanticRiskCandidate = reviewCandidates.find((candidate) => candidate.id === semanticRiskReviewId);
   assert.strictEqual(semanticRiskCandidate?.workflowTier, "caution");
   assert.strictEqual(semanticRiskCandidate?.defaultChecked, false, "通用人工复核岗位不得默认勾选");

@@ -45,7 +45,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v1");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v2");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -97,9 +97,9 @@ const matrix = {
     no_fit: "not_recommended"
   },
   misaligned: {
-    fit: "caution",
-    mostly_fit: "caution",
-    partial_fit: "caution",
+    fit: "not_recommended",
+    mostly_fit: "not_recommended",
+    partial_fit: "not_recommended",
     no_fit: "not_recommended"
   }
 };
@@ -183,8 +183,9 @@ const rescued = decision("misaligned", [
     jdEvidence: "JD：独立负责辅助交付"
   })
 ]);
-assert.strictEqual(rescued.matrixRecommendation, "caution");
-assert.strictEqual(rescued.rescueApplied, true);
+assert.strictEqual(rescued.matrixRecommendation, "not_recommended",
+  "a fully misaligned role must not be rescued by supporting skill overlap");
+assert.strictEqual(rescued.rescueApplied, false);
 
 const lowFitNotRescued = decision("misaligned", [
   core("missing"),
