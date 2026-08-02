@@ -2717,3 +2717,10 @@ v4.2 不再单独放宽职责阈值，而用职责 0.40 与既有核心/非核�
 ## 2026-08-02 weighted-v4.3
 
 v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏，但索引 13 因模型对核心要求标记漂移仍从慎投进入可投。v4.3 只收紧职责明确缺失至少一半时的恢复例外：要求 combinedFit >=0.95；普通 jointFit、提示词、模型调用和二维表均不变。产品提交 `7152117a86ffb0144794a465ec1833e4bb6bb17b` 已通过完整离线测试和独立复审。
+### 2026-08-02 v4.3 evaluated 绑定
+
+- candidate product commit（候选产品提交）：`7152117a86ffb0144794a465ec1833e4bb6bb17b`
+- candidate evaluated commit（候选已评估提交）：`33eb869c9c5a8fdda83be5a31ee555420047182f`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。
