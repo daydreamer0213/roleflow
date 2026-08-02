@@ -116,6 +116,14 @@ function matrixRecommendationFor(roleAlignment, band, policy = DECISION_POLICY) 
   return recommendation;
 }
 
+function floorRecommendationTier(tier, floor) {
+  const order = ["not_recommended", "caution", "apply", "primary"];
+  const tierIndex = order.indexOf(tier);
+  const floorIndex = order.indexOf(floor);
+  if (tierIndex < 0 || floorIndex < 0) throw new Error("recommendation tier floor is invalid");
+  return tierIndex < floorIndex ? floor : tier;
+}
+
 function scoreResponsibilityAlignment(items, policy) {
   const matches = Array.isArray(items) ? items : [];
   const total = matches.length;
@@ -176,28 +184,52 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
   const responsibilityCorePositiveCount = evidenceBoundCore
     .filter((item) => ["matched", "transferable"].includes(item?.state))
     .length;
-  const responsibilityHeavyDutyGap = responsibility.missingRatio != null
-    && responsibility.missingRatio >= jointPolicy.heavyDutyMissingRatio;
-  const responsibilityJointSafetyCap = reportedRoleAlignment === "partially_aligned"
-    && (
-      responsibilityFoundationMissingCount > 0
-      || (
-        responsibilityHeavyDutyGap
-        && (
-          responsibility.positive < jointPolicy.minimumPositiveDutyCount
-          || responsibilityCorePositiveCount < jointPolicy.minimumCorePositiveForHeavyDutyGap
-          || weighted?.combinedFit == null
-          || weighted.combinedFit < jointPolicy.heavyDutyRecoveryMinimumRequirementFit
-        )
-      )
-    );
-  const responsibilityJointPromotionReady = reportedRoleAlignment === "partially_aligned"
-    && !responsibilityJointSafetyCap
+  const responsibilityMatchedIndispensableCount = evidenceBoundCore
+    .filter((item) => (
+      item?.indispensable === true
+        && jointPolicy.matchedIndispensableStates.includes(item?.state)
+    ))
+    .length;
+  const responsibilityBasePromotionEvidenceReady =
+    responsibility.known >= policy.responsibilityAlignment.minimumKnownCount
+    && responsibility.positive >= jointPolicy.minimumPositiveDutyCount
+    && responsibility.coverage >= policy.responsibilityAlignment.minimumKnownCoverage;
+  const responsibilityZeroDutyGapPromotionReady = reportedRoleAlignment === "partially_aligned"
+    && responsibility.total > 0
+    && responsibilityBasePromotionEvidenceReady
+    && responsibility.missing === 0;
+  const responsibilityMatchedIndispensablePromotionReady =
+    reportedRoleAlignment === "partially_aligned"
+    && responsibility.total > 0
+    && responsibilityBasePromotionEvidenceReady
+    && responsibility.missing > 0
+    && responsibilityMatchedIndispensableCount > 0
+    && responsibilityRequirementJointFit != null
+    && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold;
+  const responsibilityPromotionRoute = responsibilityFoundationMissingCount > 0
+    ? "none"
+    : responsibilityZeroDutyGapPromotionReady
+      ? "zero_duty_gap"
+      : responsibilityMatchedIndispensablePromotionReady
+        ? "matched_indispensable"
+        : "none";
+  const responsibilityConfirmedDutyGapCeilingApplied =
+    reportedRoleAlignment === "partially_aligned"
+    && responsibility.missing > 0
+    && responsibilityMatchedIndispensablePromotionReady === false;
+  const responsibilityJointSafetyCap = responsibilityFoundationMissingCount > 0
+    || responsibilityConfirmedDutyGapCeilingApplied;
+  const responsibilityJointPromotionReady = responsibilityPromotionRoute !== "none"
     && responsibility.known >= policy.responsibilityAlignment.minimumKnownCount
     && responsibility.positive >= jointPolicy.minimumPositiveDutyCount
     && responsibility.coverage >= policy.responsibilityAlignment.minimumKnownCoverage
-    && responsibilityRequirementJointFit != null
-    && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold;
+    && (
+      responsibilityPromotionRoute === "zero_duty_gap"
+      || (
+        responsibilityRequirementJointFit != null
+        && responsibilityRequirementJointFit >= jointPolicy.promotionThreshold
+      )
+    );
   const alignmentRank = {
     insufficient_evidence: 0,
     misaligned: 1,
@@ -215,13 +247,15 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
     if (responsibilityJointSafetyCap) {
       alignmentConsistencyAdjusted = true;
       alignmentConsistencyReason = responsibilityFoundationMissingCount > 0
-        ? "primary_duty_foundation_gap"
-        : "primary_duty_heavy_gap";
+        ? "foundation_requirement_gap"
+        : "confirmed_duty_gap_without_matched_indispensable";
       alignmentAdjustmentSource = "responsibility_requirement_evidence";
-      recommendationCeiling = jointPolicy.foundationMissingCeiling;
+      recommendationCeiling = responsibilityFoundationMissingCount > 0
+        ? jointPolicy.foundationMissingCeiling
+        : jointPolicy.confirmedDutyGapCeiling;
     } else if (responsibility.total > 0 && !responsibilityJointPromotionReady) {
       alignmentConsistencyAdjusted = true;
-      alignmentConsistencyReason = "primary_duty_requirement_joint_fit_below_threshold";
+      alignmentConsistencyReason = "primary_duty_evidence_below_promotion_gate";
       alignmentAdjustmentSource = "responsibility_requirement_evidence";
       recommendationCeiling = policy.responsibilityAlignment.contradictionCeiling;
     }
@@ -242,12 +276,8 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
         ? responsibility.alignment
         : "mostly_aligned";
       alignmentConsistencyAdjusted = true;
-      alignmentConsistencyReason = responsibilityJointPromotionReady
-        ? "primary_duty_requirement_joint_fit"
-        : "primary_duty_coverage";
-      alignmentAdjustmentSource = responsibilityJointPromotionReady
-        ? "responsibility_requirement_evidence"
-        : "responsibility_evidence";
+      alignmentConsistencyReason = responsibilityPromotionRoute;
+      alignmentAdjustmentSource = "responsibility_requirement_evidence";
       recommendationCeiling = policy.responsibilityAlignment.promotionCeiling;
     } else if (reportedRank >= alignmentRank.mostly_aligned
       && responsibilityRank <= alignmentRank.partially_aligned) {
@@ -305,7 +335,11 @@ function resolveRoleAlignmentForDecision(analysis = {}, weighted, policy = DECIS
     responsibilityRequirementJointFit,
     responsibilityFoundationMissingCount,
     responsibilityCorePositiveCount,
-    responsibilityHeavyDutyGap,
+    responsibilityMatchedIndispensableCount,
+    responsibilityZeroDutyGapPromotionReady,
+    responsibilityMatchedIndispensablePromotionReady,
+    responsibilityConfirmedDutyGapCeilingApplied,
+    responsibilityPromotionRoute,
     responsibilityJointSafetyCap,
     responsibilityJointPromotionReady
   };
@@ -354,6 +388,29 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
     recommendation = capRecommendationTier(recommendation, "caution");
   }
 
+  const responsibilityPromotionFloorApplied =
+    alignment.responsibilityPromotionRoute !== "none"
+    && !coverageCapped
+    && !coreUnknownCapApplied
+    && alignment.responsibilityFoundationMissingCount === 0
+    && !alignment.responsibilityConfirmedDutyGapCeilingApplied
+    && recommendation === "caution";
+  if (responsibilityPromotionFloorApplied) {
+    recommendation = floorRecommendationTier(
+      recommendation,
+      policy.responsibilityAlignment.jointFit.promotionFloor
+    );
+  }
+
+  const responsibilityFoundationCeilingApplied =
+    alignment.responsibilityFoundationMissingCount > 0;
+  if (alignment.responsibilityFoundationMissingCount > 0) {
+    recommendation = capRecommendationTier(
+      recommendation,
+      policy.responsibilityAlignment.jointFit.foundationMissingCeiling
+    );
+  }
+
   return {
     ...alignment,
     groups: weighted.groups,
@@ -367,6 +424,8 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
     coverageCapped,
     coreUnknownCapApplied,
     noCoreCapApplied,
+    responsibilityPromotionFloorApplied,
+    responsibilityFoundationCeilingApplied,
     rescueApplied,
     rescueEvidence,
     policyVersion: policy.version,

@@ -70,7 +70,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.3");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.4");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -97,7 +97,37 @@ assert.throws(
   }),
   /responsibility state values must preserve/
 );
-for (const key of ["minimumPositiveDutyCount", "minimumCorePositiveForHeavyDutyGap"]) {
+assert.throws(
+  () => assertDecisionPolicy({
+    ...DECISION_POLICY,
+    responsibilityAlignment: {
+      ...DECISION_POLICY.responsibilityAlignment,
+      jointFit: {
+        ...DECISION_POLICY.responsibilityAlignment.jointFit,
+        minimumPositiveDutyCount: 1
+      }
+    }
+  }),
+  /must require at least two/
+);
+assert.throws(
+  () => assertDecisionPolicy({
+    ...DECISION_POLICY,
+    responsibilityAlignment: {
+      ...DECISION_POLICY.responsibilityAlignment,
+      jointFit: {
+        ...DECISION_POLICY.responsibilityAlignment.jointFit,
+        matchedIndispensableStates: ["matched", "transferable"]
+      }
+    }
+  }),
+  /must require a matched requirement/
+);
+for (const [key, value, message] of [
+  ["promotionFloor", "primary", /must stop at apply/],
+  ["confirmedDutyGapCeiling", "apply", /unprotected duty gap/],
+  ["foundationMissingCeiling", "apply", /missing foundation/]
+]) {
   assert.throws(
     () => assertDecisionPolicy({
       ...DECISION_POLICY,
@@ -105,11 +135,11 @@ for (const key of ["minimumPositiveDutyCount", "minimumCorePositiveForHeavyDutyG
         ...DECISION_POLICY.responsibilityAlignment,
         jointFit: {
           ...DECISION_POLICY.responsibilityAlignment.jointFit,
-          [key]: 1
+          [key]: value
         }
       }
     }),
-    /must require at least two/
+    message
   );
 }
 assert.throws(
@@ -351,7 +381,7 @@ assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.matrixRecommendation, "ap
   "two known transferable duties with majority coverage may retain a default-selected opportunity");
 
 const jointEvidencePromotesPartialRole = decision("partially_aligned", [
-  boundCore("matched", { central: true }),
+  boundCore("matched", { central: true, indispensable: true }),
   boundCore("missing", { central: true }),
   boundSupporting("matched"),
   boundSupporting("matched")
@@ -392,10 +422,10 @@ const heavyDutyGapCapsWeakCoreRecovery = decision("partially_aligned", [
   { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
 ]);
 assert.strictEqual(heavyDutyGapCapsWeakCoreRecovery.matrixRecommendation, "caution",
-  "half of the duties missing requires more than one positive core requirement");
+  "confirmed duty gaps require a matched indispensable requirement");
 
 const heavyDutyGapRecoveredByCoreEvidence = decision("partially_aligned", [
-  boundCore("matched", { central: true }),
+  boundCore("matched", { central: true, indispensable: true }),
   boundCore("matched", { central: true }),
   boundSupporting("matched"),
   boundSupporting("matched")
@@ -406,7 +436,7 @@ const heavyDutyGapRecoveredByCoreEvidence = decision("partially_aligned", [
   { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
 ]);
 assert.strictEqual(heavyDutyGapRecoveredByCoreEvidence.matrixRecommendation, "apply",
-  "two positive core requirements may recover an otherwise strong high-duty-gap role");
+  "a matched indispensable requirement may recover an otherwise strong duty-gap role");
 
 const heavyDutyGapNeedsNearCompleteRequirements = decision("partially_aligned", [
   boundCore("matched", { central: true }),
@@ -419,10 +449,10 @@ const heavyDutyGapNeedsNearCompleteRequirements = decision("partially_aligned", 
   { id: "D3", state: "missing", jdEvidence: "JD：主要职责三", resumeEvidence: "简历：明确职责缺口三" },
   { id: "D4", state: "missing", jdEvidence: "JD：主要职责四", resumeEvidence: "简历：明确职责缺口四" }
 ]);
-assert(heavyDutyGapNeedsNearCompleteRequirements.combinedFit < 0.95);
 assert(heavyDutyGapNeedsNearCompleteRequirements.responsibilityRequirementJointFit >= 0.5);
+assert.strictEqual(heavyDutyGapNeedsNearCompleteRequirements.responsibilityMatchedIndispensableCount, 0);
 assert.strictEqual(heavyDutyGapNeedsNearCompleteRequirements.matrixRecommendation, "caution",
-  "half of the duties missing requires near-complete requirement fit even with two positive core requirements");
+  "aggregate requirement fit alone must not bypass a confirmed duty gap");
 
 const lowJointFitStaysCaution = decision("partially_aligned", [
   boundCore("matched", { central: true }),
