@@ -742,3 +742,40 @@ metrics, commit the docs-only final checkpoint, and push
 `codex/multi-track-recall-continuation`.
 
 Do not push private artifacts. Do not modify or merge `main`.
+
+## 2026-08-02 implementation and reviewed checkpoint
+
+- Candidate product commit:
+  `640a375e667e19db71cfd82517c93b12616f7015`.
+- Baseline harness commit:
+  `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
+- Approved baseline product commit:
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- `decisionRules` is `four-tier-weighted-v4.4`; `matchJob` remains
+  `match-decision-v40`.
+- The matrix, 70/30 requirement weights, prompt, temperature, thinking mode,
+  provider, model, and model-call count are unchanged.
+- TDD covers foundation ceilings, zero-duty-gap promotion,
+  matched-indispensable promotion, confirmed-duty-gap ceilings, normalized
+  evidence states, low-coverage precedence, and unknown-core precedence.
+- All 50 offline checks and `git diff --check` passed after the review fix.
+- Independent read-only re-review returned Critical 0, Important 0, Minor 0,
+  `Spec PASS`, and `Code quality APPROVED`.
+- Final cached replay:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-offline-replay-v3-20260802`.
+- Cached replay behavior: expected communication 10, actual communication 10,
+  retained opportunity 10, missed indices none, false communication indices
+  none, behavior pass 20/20, exact four-tier pass 13/20.
+- The failed label-normalization replay root and the successful v2 replay root
+  remain immutable; neither is a live-model acceptance root.
+- Fresh live diagnostic root:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-first-3-20260802`.
+- Fresh live full root:
+  `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-full-20-20260802`.
+
+The docs-only commit containing this section is the candidate evaluated
+checkpoint. Record its exact SHA in one immediate descendant docs-only binding
+commit before creating either live root. The product commit above must remain a
+strict ancestor. The runner manifest, portability proof, and temporary live
+evaluation branch must use the evaluated checkpoint, not the later binding
+commit.

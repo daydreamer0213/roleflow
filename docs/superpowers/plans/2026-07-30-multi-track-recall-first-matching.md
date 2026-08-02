@@ -2702,6 +2702,19 @@ v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为
 - baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
+
+## 2026-08-02 weighted-v4.4 证据晋级检查点
+
+- v4.3 全新 20 条真实运行完成且技术、隐私、结构门禁通过，但只保留 8/10 个应沟通岗位，遗漏零基索引 5、8，并把慎投索引 11、12、13 放入默认沟通集合。
+- v4.4 删除 50% 重职责缺口与 0.95 恢复线，改用两条通用、可审计的职责晋级路线：无已知职责缺口的 `zero_duty_gap`，以及有职责缺口但关键要求双侧证据匹配的 `matched_indispensable`。
+- 根基要求明确缺失、低要求证据覆盖率、核心要求全部未知和其他既有安全上限优先于任何晋级。复审发现的上限绕过与状态首尾空格问题已通过失败回归修复。
+- 二维表、70/30 权重、提示词、温度、模型、思考模式和调用次数均未修改；规则不包含 IT 或 AI 岗位专用词。
+- 产品提交为 `640a375e667e19db71cfd82517c93b12616f7015`；50/50 离线检查和 `git diff --check` 通过；独立复审结论为 Critical 0、Important 0、Minor 0、`Spec PASS`、`Code quality APPROVED`。
+- 最终冻结缓存回放目录为 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-offline-replay-v3-20260802`：应沟通 10、实际沟通 10、遗漏 0、误入 0、行为 20/20，四档 exact 13/20。
+- 下一轮必须先用全新目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-first-3-20260802` 和零基索引 `5,8,13`；通过后才使用独立新缓存运行 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-full-20-20260802`。
+- 基线工具提交保持 `c1d32641bca2ccd4c82128f48f3cfac996310dfb`；已授权基线产品提交保持 `fb0168afce265cf351f03e80f66d9e0f24015887`。
+
+包含本节的 docs-only 提交是新的 candidate evaluated checkpoint。创建真实目录前，必须在紧邻的下一份 docs-only 绑定提交中记录其完整 SHA；manifest、proof 和临时 live eval 分支使用 evaluated checkpoint，不使用后续绑定提交。
 ## 2026-08-02 weighted-v4.2 联合门禁
 
 v4.1 完整 20 条行为门禁失败：10 个主投/可投只保留 7 个，5 个慎投中 4 个误入可投；不推荐没有误入。索引 3 因 matches_resume_evidence 契约修复阶段超时而 analysis_pending。结果目录保持冻结。

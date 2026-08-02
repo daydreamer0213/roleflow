@@ -894,6 +894,20 @@ The docs-only commit containing this section is the next candidate evaluated che
 - baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
 - approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
 - 产品提交已验证为 evaluated 提交的严格祖先。
+
+## 2026-08-02 v4.4 证据晋级与安全优先级检查点
+
+- v4.3 完整 20 条保留 8/10 个应沟通岗位，遗漏索引 5、8；慎投索引 11、12、13 误入默认沟通集合。
+- v4.4 不再使用重职责缺口比例与 0.95 恢复阈值。部分匹配岗位只有在职责无明确缺口，或存在双侧证据绑定的关键要求直接匹配且联合分至少 0.50 时，才可保留为可投。
+- 根基要求明确缺失、低证据覆盖率和核心要求全部未知始终优先封顶慎投。证据状态先去除首尾空格，再参与评分与安全门禁。
+- 已确认二维表、70/30 权重、提示词、温度、模型和调用次数均未修改，规则没有职业专用关键词。
+- 候选产品提交：`640a375e667e19db71cfd82517c93b12616f7015`。
+- 基线工具提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
+- 完整 50/50 离线检查通过；独立复审为 Critical 0、Important 0、Minor 0、`Spec PASS`、`Code quality APPROVED`。
+- 冻结缓存最终回放位于 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-offline-replay-v3-20260802`，行为门禁 20/20：主投/可投遗漏 0，慎投/不推荐误入 0。
+- 新三条目录为 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-first-3-20260802`，零基索引固定为 `5,8,13`；通过后使用全新缓存运行 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-full-20-20260802`。
+
+包含本节的 docs-only 提交是 candidate evaluated checkpoint。其完整 SHA 必须在紧邻下一份 docs-only 绑定提交中记录，且产品提交必须保持为 evaluated 提交的严格祖先。
 ## 2026-08-02 v4.1 完整结果与 v4.2 检查点
 
 - v4.1 三条 `4,9,10` 通过新行为门禁。
