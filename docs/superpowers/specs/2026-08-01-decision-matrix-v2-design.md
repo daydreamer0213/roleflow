@@ -121,3 +121,8 @@ v4 在既有第二次模型调用中增加 `responsibilityMatches`，按所选 t
 总体判断与职责判断组合时遵守安全边界：职责证据可以把缺乏支撑的总体乐观判断最多降到慎投，也可以把有充分职责支撑的部分匹配提升到可投；不能仅凭单个职责缺口制造错误硬排除。`modelRecommendation`（模型四档建议）继续保留 shadow（影子观察）开关，不直接覆盖代码决策。
 
 产品提交 `6b04a599a9e18edcffed7516476e00b30aceab34` 已通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。最终真实验收采用默认沟通集合零漏选、零误选口径，而非固定四档 exact 数量。
+## 2026-08-02 v4.1：unknown 与 missing 的量化分离
+
+v4 三条真实运行中，索引 10 返回两项 `transferable` 和一项 `unknown`，模型影子建议为 apply，但旧算法按全部三项作分母得到 1/3，错误降到 caution。v4.1 改为 `points / known`，同时用 `known / total` 单独约束覆盖率，并要求至少 2 项已判断且覆盖率至少 0.5。这样不会把未知当成已确认缺失，也不会让单条正证据在大量未知时产生过度提升。
+
+职责分值安全不变量固定为 matched=1、missing=0、unknown=0、matched>=transferable。`decisionRules` 升为 `four-tier-weighted-v4.1`，`matchJob` 保持 v40，因为模型契约未变化。产品提交 `8e2adf0d36a744f8f7aba5262de30958249fd141` 已通过 50/50 离线检查和独立复审：`Spec PASS`、`Code quality APPROVED`。

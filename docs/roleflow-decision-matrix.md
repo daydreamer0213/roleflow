@@ -113,3 +113,8 @@ metadata:
 - 隐私、结构、缓存隔离和技术门禁仍必须全部通过。
 
 v4 产品提交：`6b04a599a9e18edcffed7516476e00b30aceab34`。
+## 2026-08-02：v4.1 未知职责覆盖率修正
+
+`unknown`（现有材料无法判断）不再与 `missing`（有明确证据证明缺少）使用相同的均分语义。职责匹配均分只纳入证据完整的已判断职责；覆盖率仍按全部职责计算。只有 `minimumKnownCount=2`（至少两项已判断）且 `minimumKnownCoverage=0.5`（至少一半职责已判断）同时满足，职责结果才可达到 `mostly_aligned` 或 `aligned` 并支持保留为可投。少量正证据加大量未知仍最多视为部分匹配。
+
+这项修正没有改变二维表，只修正补充证据轴的量化。策略与持久化失效版本统一为 `four-tier-weighted-v4.1`；旧 v4 分析会标记 `decision_rules_changed` 并重新计算。产品提交：`8e2adf0d36a744f8f7aba5262de30958249fd141`。

@@ -879,3 +879,11 @@ The docs-only commit containing this section is the next candidate evaluated che
 - 已用 `git merge-base --is-ancestor` 确认产品提交是 evaluated 提交的严格祖先。
 - 全新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-first-3-20260802`
 - 预留全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-full-20-20260802`
+## 2026-08-02 v4 三条结果与 v4.1 修复
+
+- 首个 v4 目录因 `--output` 误传文件路径在 API 前安全退出；无缓存、无模型调用，目录保留。
+- 有效 v4 目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-first-3-v2-20260802` 完成真实三条：4 主投→主投，9 慎投→不推荐，10 可投→慎投；按行为门禁保留机会 2/3，因此未运行 20 条。
+- 索引 10 的职责输出为两项 transferable、一项 unknown；字段与提示词均正常，根因是本地均分把 unknown 放入分母。
+- v4.1 使用已知职责均分，并增加已知数量 2、覆盖率 0.5 双门槛；单项正证据场景仍保持慎投。
+- 产品提交 `8e2adf0d36a744f8f7aba5262de30958249fd141`；50/50 离线检查通过；独立复审 `Spec PASS`、`Code quality APPROVED`。
+- 下一次使用全新目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-1-first-3-20260802`，通过后预留全新 20 条目录 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-1-full-20-20260802`。

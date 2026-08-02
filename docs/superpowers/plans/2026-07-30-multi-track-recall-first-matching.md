@@ -2690,3 +2690,8 @@ v3 全新三条真实运行完成但未通过沟通边界：索引 4 为主投�
 - 已用 `git merge-base --is-ancestor` 确认产品提交是 evaluated 提交的严格祖先。
 - 全新三条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-first-3-20260802`
 - 预留全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-full-20-20260802`
+## 2026-08-02 v4.1 行为边界续跑
+
+v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为可投，实际为慎投。模型已正常返回 D1/D2 transferable、D3 unknown，影子建议为 apply；因此不再修改提示词，改由代码区分未知和明确缺少。v4.1 按已知职责计算均分，并要求至少两项、至少一半职责被判断后才允许提升；旧 v4 结果通过 `decision_rules_changed` 失效。
+
+产品提交为 `8e2adf0d36a744f8f7aba5262de30958249fd141`，50/50 离线检查和独立复审均通过。下一轮三条必须使用全新目录和全新缓存；仅在主投/可投 3/3 保留且慎投无误入后运行 20 条。
