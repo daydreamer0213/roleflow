@@ -290,3 +290,39 @@ This section is normative and resolves all confirmation ambiguity:
 - Fresh offline evidence: focused adapter/pipeline tests passed; `npm.cmd test` passed all 50 offline checks; `git diff --check` exited 0.
 - Independent gates: `Spec PASS` and `Code quality APPROVED`; no Critical or Important finding remained.
 - The next live gate must use a new root and cache. The frozen matrix, 70/30 weights, promotion thresholds, hard blockers, and safety caps remain unchanged.
+## v4.7.2 minimal quantitative promotion calibration
+
+### New evidence
+
+The fresh v4.7.1 three-job run remained 2/3: index 5 stayed `apply -> caution`, while indices 8 and 13 remained exact. The repeated responsibility confirmation produced the same two missing duties and therefore added latency without changing behavior.
+
+A separate six-call counterevidence experiment used a different, narrower positive-evidence task for indices 5 and 13. All calls were structurally valid and no false default selection occurred, but index 5 remained caution in all three repetitions. This rejects the hypothesis that another model call or another prompt decomposition can reliably recover the opportunity.
+
+Converting every responsibility missing state to unknown was also rejected: offline replay restored index 5 but incorrectly promoted index 13 from caution to apply.
+
+### Quantitative sensitivity result
+
+The remaining boundary is the existing matched-indispensable responsibility/requirement joint-fit promotion threshold. Index 5 has joint fit `0.47`; the current threshold is `0.50`.
+
+A threshold sweep replayed fixed semantic outputs without model calls:
+
+- Current three-job output: thresholds `0.50` through `0.48` keep one default-communication miss; `0.47` through `0.40` produce no miss and no false default selection.
+- Existing 20-job historical semantic risk set: thresholds `0.50` through `0.44` do not change the default-communication set; threshold `0.40` first creates one severe `not_recommended -> apply` false selection.
+
+The historical set is sensitivity evidence, not a substitute for fresh v4.7.2 acceptance. The selected value is `0.47`: the highest and therefore least permissive threshold that fixes the current confirmed miss.
+
+### Selected design
+
+- Change only `DECISION_POLICY.responsibilityAlignment.jointFit.promotionThreshold` from `0.50` to `0.47`.
+- Remove the v4.7.1 repeated responsibility confirmation, its reconciliation helpers, and its extra-call tests because live and counterevidence experiments showed no benefit.
+- Restore the successful split path to one responsibility call followed by one requirement call, with the existing one repair per stage.
+- Keep the four-tier matrix cells, 70/30 requirement weighting, state values, minimum positive/coverage gates, hard blockers, safety caps, and prompts unchanged.
+- Bump the match cache version to `match-decision-v44` and the decision-rules version to `four-tier-weighted-v4.7`.
+- Preserve both failed live roots and the counterevidence experiment root.
+
+### Acceptance
+
+- A synthetic regression with two transferable duties, two confirmed duty gaps, one matched indispensable requirement, and joint fit exactly `0.47` must fail before the policy change and return apply afterward.
+- Existing caution/non-recommended safety cases must remain unchanged.
+- Focused tests, all offline checks, `git diff --check`, and independent spec/code review must pass.
+- A fresh three-job run must retain indices 5 and 8 in default communication and keep index 13 out before any fresh 20-job run.

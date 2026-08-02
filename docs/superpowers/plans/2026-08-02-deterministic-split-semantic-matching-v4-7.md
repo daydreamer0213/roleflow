@@ -134,3 +134,16 @@
 - [x] Commit and push product checkpoint `9a41d298cd96c0375b9c7a1a14d2162451c0e18c`.
 - [ ] Create `deterministic-split-v4-7-1-first-3-20260802` and rerun indices `5,8,13` with a fresh cache.
 - [ ] Create a separate fresh 20-job root only after the three-job default-communication gate passes.
+## v4.7.2 minimal calibration plan
+
+- [x] Preserve failed root `deterministic-split-v4-7-1-first-3-20260802`.
+- [x] Run and preserve `responsibility-counterevidence-stability-v1-20260802`; reject extra model-call recovery after 0/3 index-5 recoveries.
+- [x] Reject universal missing-to-unknown normalization because it promotes index 13 to apply.
+- [x] Sweep promotion thresholds against current three-job and historical 20-job fixed semantic outputs.
+- [x] Select 0.47 as the highest threshold that fixes index 5; 0.50-0.44 leave the historical default-communication set unchanged, while 0.40 creates a severe false selection.
+- [ ] Add a failing exact-boundary regression at joint fit 0.47.
+- [ ] Change only the joint promotion threshold and remove ineffective confirmation complexity.
+- [ ] Bump match cache to v44 and decision rules to v4.7.
+- [ ] Run focused and complete offline regression plus independent review.
+- [ ] Commit/push product and evaluated checkpoints.
+- [ ] Run a new fresh three-job root before the 20-job gate.
