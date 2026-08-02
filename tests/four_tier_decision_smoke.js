@@ -70,7 +70,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.5");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.6");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -78,7 +78,7 @@ assert.strictEqual(DECISION_POLICY.requirementWeights.supporting, 0.30);
 assert.strictEqual(DECISION_POLICY.alignmentConsistency.recommendationCeiling, "caution");
 assert.strictEqual(
   DECISION_POLICY.responsibilityAlignment.jointFit.zeroDutyGapMinimumKnownCoverage,
-  2 / 3
+  0.5
 );
 assert.match(DECISION_POLICY_HASH, /^[a-f0-9]{64}$/);
 assert.throws(
@@ -585,8 +585,21 @@ const zeroDutyGapAtHalfCoverage = decision("partially_aligned", [
   { id: "D3", state: "unknown", jdEvidence: "JD: duty three", resumeEvidence: "" },
   { id: "D4", state: "unknown", jdEvidence: "JD: duty four", resumeEvidence: "" }
 ]);
-assert.strictEqual(zeroDutyGapAtHalfCoverage.matrixRecommendation, "caution");
-assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, false);
+assert.strictEqual(zeroDutyGapAtHalfCoverage.matrixRecommendation, "apply");
+assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityPromotionRoute, "zero_duty_gap");
+assert.strictEqual(zeroDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, true);
+
+const confirmedDutyGapAtHalfCoverage = decision("partially_aligned", [
+  boundCore("missing", { foundation: false, central: true }),
+  boundSupporting("transferable")
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
+  { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+  { id: "D3", state: "missing", jdEvidence: "JD: duty three", resumeEvidence: "Resume: confirmed duty gap" },
+  { id: "D4", state: "unknown", jdEvidence: "JD: duty four", resumeEvidence: "" }
+]);
+assert.strictEqual(confirmedDutyGapAtHalfCoverage.matrixRecommendation, "caution");
+assert.strictEqual(confirmedDutyGapAtHalfCoverage.responsibilityZeroDutyGapPromotionReady, false);
 
 const indispensablePromotion = decision("partially_aligned", [
   boundIndispensable("matched"),

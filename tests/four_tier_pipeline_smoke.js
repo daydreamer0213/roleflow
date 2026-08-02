@@ -62,7 +62,9 @@ const zeroDutyGap = applyRuleGuard(analysis({
   ],
   responsibilityMatches: [
     { id: "D1", state: "transferable", jdEvidence: "JD: duty one", resumeEvidence: "Resume: transferable one" },
-    { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" }
+    { id: "D2", state: "transferable", jdEvidence: "JD: duty two", resumeEvidence: "Resume: transferable two" },
+    { id: "D3", state: "unknown", jdEvidence: "JD: duty three", resumeEvidence: "" },
+    { id: "D4", state: "unknown", jdEvidence: "JD: duty four", resumeEvidence: "" }
   ]
 }), {});
 assert.equal(zeroDutyGap.recommendation, "apply");
@@ -176,6 +178,6 @@ assert.deepEqual(compact.responsibilityMatches, [{
 }], "compact analysis must preserve responsibility evidence for the production decision path");
 
 assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v41");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.5");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.6");
 
 console.log("four_tier_pipeline_smoke ok");
