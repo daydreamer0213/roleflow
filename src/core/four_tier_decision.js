@@ -124,16 +124,19 @@ function scoreResponsibilityAlignment(items, policy) {
   for (const item of matches) {
     const state = String(item?.state || "unknown").trim();
     if (!Object.hasOwn(policy.responsibilityAlignment.stateValues, state)) continue;
-    if (state !== "unknown") known += 1;
-    if (["matched", "transferable", "missing"].includes(state)
-      && (!hasEvidence(item?.jdEvidence) || !hasEvidence(item?.resumeEvidence))) continue;
+    if (state === "unknown") continue;
+    if (!hasEvidence(item?.jdEvidence) || !hasEvidence(item?.resumeEvidence)) continue;
+    known += 1;
     points += policy.responsibilityAlignment.stateValues[state];
   }
-  const score = total ? points / total : null;
+  const score = known ? points / known : null;
+  const coverage = total ? known / total : 0;
+  const enoughKnownEvidence = known >= policy.responsibilityAlignment.minimumKnownCount
+    && coverage >= policy.responsibilityAlignment.minimumKnownCoverage;
   let alignment = "";
-  if (known > 0 && score >= policy.responsibilityAlignment.thresholds.aligned) {
+  if (enoughKnownEvidence && score >= policy.responsibilityAlignment.thresholds.aligned) {
     alignment = "aligned";
-  } else if (known > 0 && score >= policy.responsibilityAlignment.thresholds.mostlyAligned) {
+  } else if (enoughKnownEvidence && score >= policy.responsibilityAlignment.thresholds.mostlyAligned) {
     alignment = "mostly_aligned";
   } else if (known > 0 && score > 0) {
     alignment = "partially_aligned";
@@ -144,7 +147,7 @@ function scoreResponsibilityAlignment(items, policy) {
     total,
     known,
     score,
-    coverage: total ? known / total : 0,
+    coverage,
     alignment
   };
 }

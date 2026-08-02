@@ -745,7 +745,7 @@ async function initialFailureProvenanceSmoke() {
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v40");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.1");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -766,6 +766,16 @@ async function pipelineVersionCacheSmoke() {
     }, currentRevision),
     ["match_pipeline_changed", "decision_rules_changed"],
     "岗位族提示词与要求权重变化必须使旧匹配缓存和旧分析结论失效"
+  );
+  assert.deepStrictEqual(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, decisionRules: "four-tier-weighted-v4" }
+      }
+    }, currentRevision),
+    ["decision_rules_changed"],
+    "v4 analyses must become stale when unknown responsibilities stop counting as confirmed misses"
   );
   assert(
     analysisStaleReasons({
@@ -2033,7 +2043,7 @@ function staleAnalysisSmoke() {
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
     matchJob: "match-decision-v40",
-    decisionRules: "four-tier-weighted-v4",
+    decisionRules: "four-tier-weighted-v4.1",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({

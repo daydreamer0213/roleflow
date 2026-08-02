@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v4",
+  version: "four-tier-weighted-v4.1",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -58,6 +58,8 @@ const DECISION_POLICY = deepFreeze({
       missing: 0,
       unknown: 0
     },
+    minimumKnownCount: 2,
+    minimumKnownCoverage: 0.5,
     thresholds: {
       aligned: 0.80,
       mostlyAligned: 0.50
@@ -146,6 +148,24 @@ function assertDecisionPolicy(policy) {
   }
   for (const state of ["matched", "transferable", "missing", "unknown"]) {
     finiteUnit(policy.responsibilityAlignment?.stateValues?.[state], `${state} responsibility value`);
+  }
+  const responsibilityValues = policy.responsibilityAlignment.stateValues;
+  if (responsibilityValues.matched !== 1
+    || responsibilityValues.missing !== 0
+    || responsibilityValues.unknown !== 0
+    || responsibilityValues.matched < responsibilityValues.transferable) {
+    throw new Error("responsibility state values must preserve matched=1, missing=0, unknown=0, and matched>=transferable");
+  }
+  const minimumKnownCount = policy.responsibilityAlignment?.minimumKnownCount;
+  if (!Number.isInteger(minimumKnownCount) || minimumKnownCount < 1) {
+    throw new Error("minimum known responsibility count must be a positive integer");
+  }
+  const minimumKnownCoverage = finiteUnit(
+    policy.responsibilityAlignment?.minimumKnownCoverage,
+    "minimum known responsibility coverage"
+  );
+  if (minimumKnownCoverage <= 0) {
+    throw new Error("minimum known responsibility coverage must be greater than zero");
   }
   const dutyAligned = finiteUnit(
     policy.responsibilityAlignment?.thresholds?.aligned,

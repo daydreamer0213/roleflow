@@ -45,7 +45,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.1");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
@@ -58,6 +58,33 @@ assert.throws(
     requirementWeights: { core: 0.7, supporting: 0.4 }
   }),
   /sum to one/
+);
+assert.throws(
+  () => assertDecisionPolicy({
+    ...DECISION_POLICY,
+    responsibilityAlignment: {
+      ...DECISION_POLICY.responsibilityAlignment,
+      stateValues: {
+        ...DECISION_POLICY.responsibilityAlignment.stateValues,
+        missing: 0.1
+      }
+    }
+  }),
+  /responsibility state values must preserve/
+);
+assert.throws(
+  () => assertDecisionPolicy({
+    ...DECISION_POLICY,
+    responsibilityAlignment: {
+      ...DECISION_POLICY.responsibilityAlignment,
+      stateValues: {
+        ...DECISION_POLICY.responsibilityAlignment.stateValues,
+        transferable: 1,
+        matched: 0.5
+      }
+    }
+  }),
+  /responsibility state values must preserve/
 );
 
 assert.strictEqual(normalizeRecommendationTier("apply", 1), "primary");
@@ -266,6 +293,22 @@ assert.strictEqual(dutyEvidencePromotesPartialRole.responsibilityAlignment, "mos
 assert.strictEqual(dutyEvidencePromotesPartialRole.effectiveRoleAlignment, "mostly_aligned");
 assert.strictEqual(dutyEvidencePromotesPartialRole.matrixRecommendation, "apply",
   "responsibility evidence may recover an adjacent role only into a default-selected apply tier");
+
+const knownDutyEvidenceIgnoresUnknownRows = decision("partially_aligned", [
+  core("matched", { central: true })
+], [
+  { id: "D1", state: "transferable", jdEvidence: "JD：主要职责一", resumeEvidence: "简历：可迁移职责证据一" },
+  { id: "D2", state: "transferable", jdEvidence: "JD：主要职责二", resumeEvidence: "简历：可迁移职责证据二" },
+  { id: "D3", state: "unknown", jdEvidence: "JD：主要职责三", resumeEvidence: "" }
+]);
+nearlyEqual(knownDutyEvidenceIgnoresUnknownRows.responsibilityScore, 0.5,
+  "unknown duties must not be scored as confirmed missing duties");
+nearlyEqual(knownDutyEvidenceIgnoresUnknownRows.responsibilityCoverage, 2 / 3,
+  "known duty coverage must remain separately observable");
+assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.responsibilityAlignment, "mostly_aligned");
+assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.effectiveRoleAlignment, "mostly_aligned");
+assert.strictEqual(knownDutyEvidenceIgnoresUnknownRows.matrixRecommendation, "apply",
+  "two known transferable duties with majority coverage may retain a default-selected opportunity");
 
 const dutyEvidenceCapsOverstatedRole = decision("mostly_aligned", [
   core("matched", { central: true })
