@@ -2662,6 +2662,7 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Hard blockers and job risk still win first. A foundation-only, central-only, supporting-only, missing/unknown, or one-sided row remains unable to rescue a mismatch.
 - This is a local evidence rule, not another matrix change or prompt expansion. It adds no model field/call and uses no IT-specific keyword.
 - Product checkpoint is `5e1333c2cd002eb79c2dc7a29a88dbb9bfa6dc2d`; decision rules are `four-tier-weighted-v3`.
+- Evaluated checkpoint is `1d3d81d7eb8b814a54d4bec339f6eb88bfde5d25`; the product checkpoint is its strict ancestor. Baseline harness remains `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
 - All `50/50` offline checks and `git diff --check` pass. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
 - Next roots: `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-first-3-20260802`, then only after exact `3/3`, `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-full-20-20260802`.
 

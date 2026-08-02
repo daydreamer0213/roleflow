@@ -848,6 +848,7 @@ Evaluated checkpoint binding: `babb99328ea71e7f2c6e0df4d39555a109cbb2fb`; evalua
 - Hard blockers and job-risk guards still return before normalization. Foundation-only, central-only, supporting-only, missing/unknown, or one-sided evidence cannot trigger it.
 - No prompt, model field, model call, or 70/30 matrix weight changed. `decisionRules` advances to `four-tier-weighted-v3`; the configuration and caution ceiling are included in the policy hash.
 - Product checkpoint is `5e1333c2cd002eb79c2dc7a29a88dbb9bfa6dc2d`.
+- Evaluated checkpoint is `1d3d81d7eb8b814a54d4bec339f6eb88bfde5d25`; the product checkpoint is its strict ancestor. Baseline harness remains `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
 - TDD and all `50/50` offline checks pass; `git diff --check` passes. Independent review reports Critical `0`, Important `0`, Spec PASS, and Code quality APPROVED.
 - Fresh live roots are reserved as `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-first-3-20260802` and `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v3-full-20-20260802`. They must use separate fresh caches.
 
