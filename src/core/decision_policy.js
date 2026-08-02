@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v2",
+  version: "four-tier-weighted-v3",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",
@@ -42,6 +42,14 @@ const DECISION_POLICY = deepFreeze({
   supportingRescue: {
     minFit: 0.50,
     minCoverage: 0.60
+  },
+  alignmentConsistency: {
+    source: "misaligned",
+    target: "partially_aligned",
+    requiredEvidenceFlags: ["foundation", "central"],
+    positiveStates: ["matched", "transferable"],
+    requireBoundEvidence: true,
+    recommendationCeiling: "caution"
   },
   defaultBatchSelection: {
     primary: true,
@@ -105,6 +113,23 @@ function assertDecisionPolicy(policy) {
   finiteUnit(policy.minEvidenceCoverageForAutoSelect, "minimum evidence coverage");
   finiteUnit(policy.supportingRescue?.minFit, "supporting rescue fit");
   finiteUnit(policy.supportingRescue?.minCoverage, "supporting rescue coverage");
+  if (!ROLE_ALIGNMENT_ROWS.includes(policy.alignmentConsistency?.source)
+    || !ROLE_ALIGNMENT_ROWS.includes(policy.alignmentConsistency?.target)
+    || policy.alignmentConsistency.source === policy.alignmentConsistency.target) {
+    throw new Error("alignment consistency must define distinct canonical source and target rows");
+  }
+  if (!sameValues(policy.alignmentConsistency?.requiredEvidenceFlags, ["foundation", "central"])) {
+    throw new Error("alignment consistency must require foundation and central evidence");
+  }
+  if (!sameValues(policy.alignmentConsistency?.positiveStates, ["matched", "transferable"])) {
+    throw new Error("alignment consistency must use matched and transferable evidence");
+  }
+  if (policy.alignmentConsistency?.requireBoundEvidence !== true) {
+    throw new Error("alignment consistency must require bound JD and resume evidence");
+  }
+  if (policy.alignmentConsistency?.recommendationCeiling !== "caution") {
+    throw new Error("alignment consistency must stay outside default batch selection");
+  }
 
   for (const state of ["matched", "transferable", "missing"]) {
     finiteUnit(policy.stateValues?.[state], `${state} state value`);

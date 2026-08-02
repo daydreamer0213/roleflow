@@ -745,7 +745,7 @@ async function initialFailureProvenanceSmoke() {
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v2");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v3");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -2033,7 +2033,7 @@ function staleAnalysisSmoke() {
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v18",
     matchJob: "match-decision-v39",
-    decisionRules: "four-tier-weighted-v2",
+    decisionRules: "four-tier-weighted-v3",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({

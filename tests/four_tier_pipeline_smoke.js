@@ -54,6 +54,20 @@ const weightedApply = applyRuleGuard(analysis({
 assert.equal(weightedApply.recommendation, "apply",
   "核心与支持项必须按 70/30 的本地权重进入二维表");
 
+const consistencyAdjusted = applyRuleGuard(analysis({
+  roleAlignment: "misaligned",
+  requirementMatches: [
+    requirement("adjacent core delivery", "transferable", { foundation: true, central: true }),
+    requirement("another core duty", "unknown", { foundation: true, central: true })
+  ]
+}), {});
+assert.equal(consistencyAdjusted.recommendation, "caution");
+assert.equal(consistencyAdjusted.roleAlignment, "misaligned",
+  "raw model alignment must remain available for audit");
+assert.equal(consistencyAdjusted.decisionMetrics.reportedRoleAlignment, "misaligned");
+assert.equal(consistencyAdjusted.decisionMetrics.effectiveRoleAlignment, "partially_aligned");
+assert.equal(consistencyAdjusted.decisionMetrics.alignmentConsistencyAdjusted, true);
+
 const noFit = applyRuleGuard(analysis({
   roleAlignment: "partially_aligned",
   requirementMatches: [
@@ -73,6 +87,7 @@ assert.equal(lowCoverage.recommendation, "caution",
 assert.equal(lowCoverage.decisionMetrics.coverageCapped, true);
 
 const blocked = applyRuleGuard(analysis({
+  roleAlignment: "misaligned",
   hardBlockers: [{
     kind: "safety",
     requirement: "入职收费风险",
@@ -81,6 +96,8 @@ const blocked = applyRuleGuard(analysis({
   }]
 }), {});
 assert.equal(blocked.recommendation, "not_recommended");
+assert.equal(blocked.decisionSource, "hard_blocker_guard",
+  "a hard blocker must win before alignment consistency normalization");
 
 for (const semanticStatus of ["failed", "stale", "pending", "partial"]) {
   const technical = applyRuleGuard(analysis({ semanticStatus }), {});
@@ -130,6 +147,6 @@ const compact = compactAnalysis({
 assert.equal(compact.modelRecommendation, "apply");
 
 assert.equal(PIPELINE_VERSIONS.matchJob, "match-decision-v39");
-assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v2");
+assert.equal(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v3");
 
 console.log("four_tier_pipeline_smoke ok");

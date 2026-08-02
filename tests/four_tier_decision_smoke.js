@@ -45,11 +45,12 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v2");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v3");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
 assert.strictEqual(DECISION_POLICY.requirementWeights.supporting, 0.30);
+assert.strictEqual(DECISION_POLICY.alignmentConsistency.recommendationCeiling, "caution");
 assert.match(DECISION_POLICY_HASH, /^[a-f0-9]{64}$/);
 assert.throws(
   () => assertDecisionPolicy({
@@ -186,6 +187,64 @@ const rescued = decision("misaligned", [
 assert.strictEqual(rescued.matrixRecommendation, "not_recommended",
   "a fully misaligned role must not be rescued by supporting skill overlap");
 assert.strictEqual(rescued.rescueApplied, false);
+
+const adjacentByCoreCentralEvidence = decision("misaligned", [
+  core("transferable", {
+    central: true,
+    jdEvidence: "JD：核心交付要求",
+    resumeEvidence: "简历：相邻交付证据"
+  }),
+  core("unknown", { central: true })
+]);
+assert.strictEqual(adjacentByCoreCentralEvidence.reportedRoleAlignment, "misaligned");
+assert.strictEqual(adjacentByCoreCentralEvidence.effectiveRoleAlignment, "partially_aligned");
+assert.strictEqual(adjacentByCoreCentralEvidence.alignmentConsistencyAdjusted, true);
+assert.strictEqual(adjacentByCoreCentralEvidence.alignmentConsistencyReason, "core_central_positive_evidence");
+assert.strictEqual(adjacentByCoreCentralEvidence.matrixRecommendation, "caution",
+  "evidence-backed foundation-and-central transfer contradicts a fully misaligned direction");
+
+const matchedConsistencyAdjustment = decision("misaligned", [
+  core("matched", {
+    central: true,
+    jdEvidence: "JD：同一核心交付",
+    resumeEvidence: "简历：同一核心交付证据"
+  })
+]);
+assert.strictEqual(matchedConsistencyAdjustment.fitBand, "fit");
+assert.strictEqual(matchedConsistencyAdjustment.effectiveRoleAlignment, "partially_aligned");
+assert.strictEqual(matchedConsistencyAdjustment.matrixRecommendation, "caution",
+  "a reported misalignment must never be normalized directly into a default-selected tier");
+assert.strictEqual(matchedConsistencyAdjustment.alignmentConsistencyCapped, true);
+
+const foundationOnlyNotAdjusted = decision("misaligned", [
+  core("matched", {
+    central: false,
+    jdEvidence: "JD：基础要求",
+    resumeEvidence: "简历：基础证据"
+  })
+]);
+assert.strictEqual(foundationOnlyNotAdjusted.effectiveRoleAlignment, "misaligned");
+assert.strictEqual(foundationOnlyNotAdjusted.matrixRecommendation, "not_recommended");
+
+const centralOnlyNotAdjusted = decision("misaligned", [
+  requirement("matched", {
+    foundation: false,
+    central: true,
+    jdEvidence: "JD：核心要求",
+    resumeEvidence: "简历：核心证据"
+  })
+]);
+assert.strictEqual(centralOnlyNotAdjusted.effectiveRoleAlignment, "misaligned");
+assert.strictEqual(centralOnlyNotAdjusted.matrixRecommendation, "not_recommended");
+
+const unboundCoreCentralNotAdjusted = decision("misaligned", [
+  core("transferable", {
+    central: true,
+    jdEvidence: "JD：核心交付要求"
+  })
+]);
+assert.strictEqual(unboundCoreCentralNotAdjusted.effectiveRoleAlignment, "misaligned");
+assert.strictEqual(unboundCoreCentralNotAdjusted.matrixRecommendation, "not_recommended");
 
 const lowFitNotRescued = decision("misaligned", [
   core("missing"),

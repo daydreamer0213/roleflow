@@ -116,10 +116,34 @@ function matrixRecommendationFor(roleAlignment, band, policy = DECISION_POLICY) 
   return recommendation;
 }
 
+function resolveRoleAlignmentForDecision(analysis = {}, policy = DECISION_POLICY) {
+  const reportedRoleAlignment = String(analysis.roleAlignment || "insufficient_evidence").trim();
+  const rule = policy.alignmentConsistency;
+  const consistencyEvidence = (Array.isArray(analysis.requirementMatches) ? analysis.requirementMatches : [])
+    .filter((item) => (
+      rule.requiredEvidenceFlags.every((flag) => item?.[flag] === true)
+        && rule.positiveStates.includes(item?.state)
+        && (!rule.requireBoundEvidence || (
+          hasEvidence(item?.jdEvidence)
+            && hasEvidence(item?.resumeEvidence)
+        ))
+    ));
+  const alignmentConsistencyAdjusted = reportedRoleAlignment === rule.source
+    && consistencyEvidence.length > 0;
+  return {
+    reportedRoleAlignment,
+    effectiveRoleAlignment: alignmentConsistencyAdjusted ? rule.target : reportedRoleAlignment,
+    alignmentConsistencyAdjusted,
+    alignmentConsistencyReason: alignmentConsistencyAdjusted ? "core_central_positive_evidence" : "",
+    alignmentConsistencyEvidenceCount: consistencyEvidence.length
+  };
+}
+
 function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   assertDecisionPolicy(policy);
   const weighted = computeWeightedRequirementFit(analysis.requirementMatches, policy);
-  const roleAlignment = String(analysis.roleAlignment || "insufficient_evidence").trim();
+  const alignment = resolveRoleAlignmentForDecision(analysis, policy);
+  const roleAlignment = alignment.effectiveRoleAlignment;
   let band = fitBand(weighted.combinedFit, policy);
   let rescueApplied = false;
   let rescueEvidence = supportingRescueEvidence(weighted.groups.supporting, policy);
@@ -130,6 +154,15 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   } else {
     recommendation = matrixRecommendationFor(roleAlignment, band, policy);
   }
+
+  const recommendationBeforeAlignmentCap = recommendation;
+  if (alignment.alignmentConsistencyAdjusted) {
+    recommendation = capRecommendationTier(
+      recommendation,
+      policy.alignmentConsistency.recommendationCeiling
+    );
+  }
+  const alignmentConsistencyCapped = recommendation !== recommendationBeforeAlignmentCap;
 
   const noCoreCapApplied = weighted.core.total === 0 && recommendation === "primary";
   if (weighted.core.total === 0) {
@@ -150,6 +183,7 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
   }
 
   return {
+    ...alignment,
     groups: weighted.groups,
     core: weighted.core,
     supporting: weighted.supporting,
@@ -157,6 +191,7 @@ function deriveMatrixDecision(analysis = {}, policy = DECISION_POLICY) {
     combinedCoverage: weighted.combinedCoverage,
     fitBand: band,
     matrixRecommendation: recommendation,
+    alignmentConsistencyCapped,
     coverageCapped,
     coreUnknownCapApplied,
     noCoreCapApplied,
