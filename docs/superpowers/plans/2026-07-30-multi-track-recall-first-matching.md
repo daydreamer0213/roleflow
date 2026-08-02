@@ -2715,6 +2715,15 @@ v4 有效三条运行成功但机会召回为 2/3：索引 10 的人工档位为
 - 基线工具提交保持 `c1d32641bca2ccd4c82128f48f3cfac996310dfb`；已授权基线产品提交保持 `fb0168afce265cf351f03e80f66d9e0f24015887`。
 
 包含本节的 docs-only 提交是新的 candidate evaluated checkpoint。创建真实目录前，必须在紧邻的下一份 docs-only 绑定提交中记录其完整 SHA；manifest、proof 和临时 live eval 分支使用 evaluated checkpoint，不使用后续绑定提交。
+
+### 2026-08-02 v4.4 evaluated 精确绑定
+
+- candidate product commit（候选产品提交）：`640a375e667e19db71cfd82517c93b12616f7015`
+- candidate evaluated commit（候选已评估提交）：`f45d8117668af547dde2cc0b5f75a4f899fcaa5a`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先。
+- manifest、proof 和临时 live eval 分支必须使用上述 evaluated 提交，不得使用包含本节的后续绑定提交。
 ## 2026-08-02 weighted-v4.2 联合门禁
 
 v4.1 完整 20 条行为门禁失败：10 个主投/可投只保留 7 个，5 个慎投中 4 个误入可投；不推荐没有误入。索引 3 因 matches_resume_evidence 契约修复阶段超时而 analysis_pending。结果目录保持冻结。

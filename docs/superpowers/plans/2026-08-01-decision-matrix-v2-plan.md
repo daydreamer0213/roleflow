@@ -908,6 +908,14 @@ The docs-only commit containing this section is the next candidate evaluated che
 - 新三条目录为 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-first-3-20260802`，零基索引固定为 `5,8,13`；通过后使用全新缓存运行 `D:\DevData\RoleFlow-private-benchmark\four-tier-weighted-v4-4-full-20-20260802`。
 
 包含本节的 docs-only 提交是 candidate evaluated checkpoint。其完整 SHA 必须在紧邻下一份 docs-only 绑定提交中记录，且产品提交必须保持为 evaluated 提交的严格祖先。
+
+### 2026-08-02 v4.4 evaluated 精确绑定
+
+- candidate product commit（候选产品提交）：`640a375e667e19db71cfd82517c93b12616f7015`
+- candidate evaluated commit（候选已评估提交）：`f45d8117668af547dde2cc0b5f75a4f899fcaa5a`
+- baseline harness commit（基线工具提交）：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`
+- approved baseline product commit（已授权基线产品提交）：`fb0168afce265cf351f03e80f66d9e0f24015887`
+- 产品提交已验证为 evaluated 提交的严格祖先；后续运行绑定到 evaluated 提交，不绑定到本节所在提交。
 ## 2026-08-02 v4.1 完整结果与 v4.2 检查点
 
 - v4.1 三条 `4,9,10` 通过新行为门禁。

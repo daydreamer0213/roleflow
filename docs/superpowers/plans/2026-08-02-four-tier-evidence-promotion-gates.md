@@ -779,3 +779,18 @@ commit before creating either live root. The product commit above must remain a
 strict ancestor. The runner manifest, portability proof, and temporary live
 evaluation branch must use the evaluated checkpoint, not the later binding
 commit.
+
+### Exact evaluated binding
+
+- Candidate product commit:
+  `640a375e667e19db71cfd82517c93b12616f7015`.
+- Candidate evaluated commit:
+  `f45d8117668af547dde2cc0b5f75a4f899fcaa5a`.
+- Baseline harness commit:
+  `c1d32641bca2ccd4c82128f48f3cfac996310dfb`.
+- Approved baseline product commit:
+  `fb0168afce265cf351f03e80f66d9e0f24015887`.
+- The product commit is a strict ancestor of the evaluated commit.
+- Use the evaluated commit above, not the descendant binding commit containing
+  this section, in the runner manifest, portability proof, and temporary live
+  evaluation branch.
