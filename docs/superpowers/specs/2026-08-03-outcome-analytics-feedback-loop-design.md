@@ -33,7 +33,7 @@
 ```js
 {
   decisionBucket: "primary" | "apply" | "caution" | "not_recommended" | "analysis_pending" | "refresh",
-  applicationStatus: "pending" | "review" | "later" | "applied" | "no_reply" | "interview" | "rejected" | "invalid" | "salary_mismatch" | null,
+  applicationStatus: "pending" | "review" | "later" | "applied" | "skipped" | "no_reply" | "interview" | "rejected" | "invalid" | "salary_mismatch" | null,
   keyword: string | null
 }
 ```
@@ -49,7 +49,9 @@
 
 页面只显示计数，不显示“成功率”“转化率”“模型准确率”等带因果暗示的结论。样本量不足时应明确提示“仅供观察，不足以调参”。
 
-第一版的“方向”采用岗位保存时的搜索关键词，而不是模型推断的语义赛道。界面使用“搜索方向（关键词）”，并把空值归为“未记录关键词”。
+第一版的“方向”采用岗位保存时的搜索关键词，而不是模型推断的语义赛道。界面使用“搜索方向（关键词）”，并把空值归为“未记录关键词”。缺失、`undefined` 或空字符串的 `applicationStatus` 一律按 `pending` 计数。
+
+关键词展示最多保留 12 个具名关键词。按确定性顺序选出前 12 个后，第 13 个及以后全部聚合为固定标签“其他关键词”；该聚合行必须保留 `total`、各结果状态计数及其可复核的总和。关键词所有展示行（包括“其他关键词”）的 `total` 和状态计数必须分别等于输入记录总数，不能因展示上限丢失记录。
 
 ## 5. 架构
 
@@ -86,7 +88,7 @@ getOutcomeAnalyticsSnapshot(...) (只读存储适配)
 
 ## 7. 错误处理与安全
 
-- 方案不存在或聚合器异常时，队列页面保持可用，面板显示“统计暂不可用”，并只记录固定错误码。
+- 方案不存在或聚合器异常时，队列页面保持可用并保留面板的固定位置；面板显示不含异常详情的“统计暂不可用”提示，不得隐藏或移除面板，并只记录固定错误码。
 - 不把异常 message、SQL、岗位字段、简历内容或模型内容写入日志。
 - 输入未知档位或未知结果状态时，计入明确的 `unclassified` 计数，不静默归入四档。
 - 不执行扫描、补读、重试分析、沟通、状态变更或数据修复。
@@ -98,6 +100,7 @@ getOutcomeAnalyticsSnapshot(...) (只读存储适配)
 - 关键词总数、四档总数、未知项均可复核，聚合后不含岗位识别字段。
 - 实际 SQLite smoke 证明新快照路径不写 schema、不改变岗位或候选人状态。
 - 页面可在无结果、混合结果、未知字段和关键词超过上限时正确显示。
+- 测试覆盖 `applicationStatus` 缺失、`undefined`、空字符串均按 `pending`，至少 13 个关键词时“其他关键词”聚合且 `total` 与各状态计数守恒；使用含 job ID、title、company、URL、JD、resume、raw model output 诱饵字段的合成记录，断言快照、纯统计结果和面板渲染均不泄露这些值。
 - 离线测试不调用模型、网络、BOSS 或真实浏览器。
 
 ## 9. 非目标

@@ -64,6 +64,8 @@ Each tiers entry has this stable shape:
 }
 ~~~
 
+The minimal safe projection explicitly permits `applicationStatus` values `pending`, `review`, `later`, `applied`, `skipped`, `no_reply`, `interview`, `rejected`, `invalid`, `salary_mismatch`, or `null`. Missing, `undefined`, and empty-string values are normalized to `pending`.
+
 ### Task 1: Create the Pure Four-Tier Aggregator
 
 **Files:**
@@ -104,6 +106,8 @@ assert.strictEqual(analytics.keywords.find((row) => row.keyword === "RAG").total
 assert.strictEqual(JSON.stringify(analytics).includes("title"), false);
 console.log("outcome_analytics_smoke ok");
 ~~~
+
+Extend the regression with missing, `undefined`, and empty-string `applicationStatus` records and assert that all three count as `pending`. Add at least 13 distinct named keywords with mixed statuses; assert exactly 12 named keyword rows plus one fixed `其他关键词` row, and assert that the displayed keyword totals and every status count equal the corresponding input totals. Include synthetic records with bait fields named job ID, title, company, URL, JD, resume, and raw model output, and assert that none of their values appears in the snapshot or pure aggregate JSON.
 
 - [ ] **Step 2: Run the new test to verify red**
 
@@ -158,11 +162,21 @@ function buildOutcomeAnalytics(rows = [], { maxKeywordGroups = 12 } = {}) {
 
   const keywordRows = [...keywords.values()]
     .sort((a, b) => b.total - a.total || a.keyword.localeCompare(b.keyword));
+  const namedKeywords = keywordRows.slice(0, 12);
+  const overflow = keywordRows.slice(12);
+  if (overflow.length) {
+    const other = { keyword: "其他关键词", total: 0, outcomes: emptyOutcomes() };
+    for (const group of overflow) {
+      other.total += group.total;
+      for (const outcome of OUTCOMES) other.outcomes[outcome] += group.outcomes[outcome];
+    }
+    namedKeywords.push(other);
+  }
   return {
     totals: { total: source.length, fourTierTotal: tiers.reduce((sum, row) => sum + row.total, 0) },
     tiers,
     diagnostics,
-    keywords: keywordRows.slice(0, maxKeywordGroups),
+    keywords: namedKeywords,
     unclassified
   };
 }
@@ -330,7 +344,7 @@ In renderCompactQueuePage, call the new snapshot after the plan is resolved. Wra
 logger.warn("outcome_analytics_render_failed", { code: "OUTCOME_ANALYTICS_UNAVAILABLE" });
 ~~~
 
-Set the panel to an empty string and leave all existing queue behavior unchanged. Render the panel after queue counters and before job cards.
+Render a panel at the same fixed position containing only `统计暂不可用`; do not expose exception details and do not hide or remove the panel. Leave all existing queue behavior unchanged. Render the panel after queue counters and before job cards.
 
 - [ ] **Step 4: Run the dashboard regression and confirm green**
 
@@ -407,6 +421,8 @@ git diff --check
 
 Expected: all offline checks pass and git diff --check prints nothing.
 
+The dashboard regression must also assert that synthetic bait values for job ID, title, company, URL, JD, resume, and raw model output are absent from the snapshot, pure statistics, and rendered panel. When the reader throws, it must assert that the fixed panel position remains and only `统计暂不可用` is shown.
+
 - [ ] **Step 5: Commit the documentation and runner registration**
 
 ~~~powershell
@@ -415,5 +431,7 @@ git commit -m "docs: explain outcome analytics boundaries"
 ~~~
 
 ## Review Gates
+
+The recommendation rows remain strictly `primary`, `apply`, `caution`, and `not_recommended`; `analysis_pending` and `refresh` remain diagnostic-only. The implementation remains read-only, deterministic, fail-open, with no model/BOSS call, migration, or automatic tuning.
 
 After each completed task, request an independent read-only review. Critical or Important findings must be fixed and re-reviewed before the next task. Before pushing the branch, run a whole-range review from this plan's first commit to the final commit and require Spec PASS plus Code quality APPROVED.
