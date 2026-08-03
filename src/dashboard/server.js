@@ -2563,11 +2563,12 @@ function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = ge
   const fallbackPlan = fallbackProfile ? getActiveSearchPlan(db, fallbackProfile.id) : null;
   const plan = getSearchPlan(db, requestedPlanId) || fallbackPlan;
   if (!plan) return renderErrorPage("还没有可用的筛选方案，请先上传简历并确认方案。", "/onboarding");
+  const outcomeAnalyticsLogger = logger && typeof logger.warn === "function" ? logger : { warn() {} };
   let outcomeAnalyticsPanel;
   try {
     outcomeAnalyticsPanel = renderOutcomeAnalyticsPanel(outcomeAnalyticsReader(db, { planId: plan.id }));
   } catch {
-    logger.warn("outcome_analytics_render_failed", { code: "OUTCOME_ANALYTICS_UNAVAILABLE" });
+    outcomeAnalyticsLogger.warn("outcome_analytics_render_failed", { code: "OUTCOME_ANALYTICS_UNAVAILABLE" });
     outcomeAnalyticsPanel = '<section class="panel outcome-analytics">统计暂不可用</section>';
   }
   return renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel });
@@ -2620,7 +2621,7 @@ const OUTCOME_TIER_LABELS = {
 };
 
 function outcomeTierLabel(key) {
-  return OUTCOME_TIER_LABELS[key] || "";
+  return Object.hasOwn(OUTCOME_TIER_LABELS, key) ? OUTCOME_TIER_LABELS[key] : "";
 }
 
 function renderOutcomeAnalyticsPanel(aggregate) {
@@ -2633,9 +2634,9 @@ function renderOutcomeAnalyticsPanel(aggregate) {
     }).join("")
     : '<tr><td colspan="8">暂无四档结果记录。</td></tr>';
   const keywords = keywordRows.length
-    ? `<table><thead><tr><th>关键词</th><th>总数</th></tr></thead><tbody>${keywordRows.map((item) => `<tr><th scope="row">${escapeHtml(item.label)}</th><td>${outcomeCount(item, "total")}</td></tr>`).join("")}</tbody></table>`
+    ? `<table class="outcome-keyword-table"><thead><tr><th>关键词</th><th>总数</th></tr></thead><tbody>${keywordRows.map((item) => `<tr><th scope="row">${escapeHtml(item.label)}</th><td>${outcomeCount(item, "total")}</td></tr>`).join("")}</tbody></table>`
     : "<p>暂无关键词统计记录。</p>";
-  return `<section class="panel outcome-analytics"><h2>结果统计（只读）</h2><table><thead><tr><th>推荐档位</th><th>总数</th><th>未处理</th><th>已投</th><th>已跳过</th><th>无回复</th><th>已约面</th><th>已拒绝或无效</th></tr></thead><tbody>${tiers}</tbody></table><p class="queue-summary">待分析或待刷新（不纳入四档比较）：${outcomeDiagnosticsCount(aggregate)}</p><h3>搜索方向（关键词）</h3>${keywords}<p class="queue-summary">提示：调整匹配矩阵、权重或提示词前，必须取得用户确认。</p></section>`;
+  return `<section class="panel outcome-analytics"><h2>结果统计（只读）</h2><table class="outcome-tier-table"><thead><tr><th>推荐档位</th><th>总数</th><th>未处理</th><th>已投</th><th>已跳过</th><th>无回复</th><th>已约面</th><th>已拒绝或无效</th></tr></thead><tbody>${tiers}</tbody></table><p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：${outcomeDiagnosticsCount(aggregate)}</p><h3>搜索方向（关键词）</h3>${keywords}<p class="queue-summary">提示：调整匹配矩阵、权重或提示词前，必须取得用户确认。</p></section>`;
 }
 
 function outcomeTierRows(aggregate) {
@@ -2651,6 +2652,7 @@ function outcomeKeywordRows(aggregate) {
 }
 
 function outcomeCount(row, key) {
+  if (key === "unresolved") return outcomeCount(row, "unresolvedCount");
   const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
   if (key === "rejected_or_invalid") {
     const direct = groups.map((group) => Number(group?.[key])).find(Number.isFinite);

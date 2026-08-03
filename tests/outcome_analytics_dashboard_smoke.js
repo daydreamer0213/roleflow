@@ -7,10 +7,11 @@ const {
   createMatchingCardDraft,
   confirmMatchingCard,
   createBatch,
-  upsertJob
+  upsertJob,
+  markCandidateJob
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
-const { createDashboardServer } = require("../src/dashboard/server");
+const { createDashboardServer, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -20,6 +21,15 @@ const logger = {
   requestId() { return "outcome-analytics-dashboard-smoke"; },
   listRecent() { return []; }
 };
+const BAIT = Object.freeze({
+  jobOrSourceId: "bait-job-source-id-4be2b00b",
+  title: "bait-job-title-41f1e2a9",
+  company: "bait-company-70db732d",
+  url: "https://bait-job-url-5a7cf798.example/private",
+  jd: "bait-jd-content-83c8b9fb",
+  resume: "bait-resume-content-ef1518a2",
+  rawModel: "bait-raw-model-output-e0a0d5cc"
+});
 
 let db;
 let server;
@@ -32,7 +42,7 @@ let server;
     profileId,
     searchPlanId: planId
   });
-  seedJobs(db, batchId);
+  seedJobs(db, batchId, { planId, profileId });
 
   server = createDashboardServer({
     db,
@@ -43,22 +53,45 @@ let server;
     logger
   });
   const baseUrl = await listen(server);
-  const page = await getText(baseUrl, `/queue?planId=${planId}`);
+  const page = await getText(baseUrl, `/queue?planId=${planId}&pool=analysis_pending`);
 
   assert.strictEqual(page.status, 200);
-  assertContains(page.body, /结果统计（只读）/, "outcome analytics heading is rendered");
-  for (const label of ["主投", "可投", "慎投", "不推荐"]) assertContains(page.body, new RegExp(label), `tier label is rendered: ${label}`);
-  assertContains(page.body, /待分析或待刷新（不纳入四档比较）/, "diagnostics label is rendered");
-  for (const column of ["推荐档位", "总数", "未处理", "已投", "已跳过", "无回复", "已约面", "已拒绝或无效"]) {
-    assertContains(page.body, new RegExp(column), `tier column is rendered: ${column}`);
-  }
-  assertContains(page.body, /搜索方向（关键词）/, "keyword heading is rendered");
-  assertContains(page.body, /调整匹配矩阵、权重或提示词前，必须取得用户确认/, "confirmation notice is rendered");
-  assertExcludes(page.body, /模型准确率|自动调整二维表|成功率/, "prohibited claims are absent");
   const normalPanel = extractAnalyticsPanel(page.body);
-  assert(!normalPanel.includes("private-primary-title"));
-  assert(!normalPanel.includes("private-company"));
-  assert(!normalPanel.includes("private-job-url"));
+  assertContains(normalPanel, /结果统计（只读）/, "outcome analytics heading is rendered in the panel");
+  const tierTable = extractAnalyticsTable(normalPanel, "outcome-tier-table");
+  for (const label of ["主投", "可投", "慎投", "不推荐"]) {
+    assertContains(tierTable, new RegExp(`<th scope="row">${label}<\\/th>`), `tier label is rendered in the analytics table: ${label}`);
+  }
+  assert.strictEqual(extractTableBodyRows(tierTable).length, 4, "analytics table renders exactly four tier rows");
+  assertContains(tierTable, /<th>已跳过<\/th>/, "analytics table includes the skipped column");
+  assertTierMetrics(tierTable, "主投", [1, 0, 0, 0, 0, 1, 0]);
+  assertTierMetrics(tierTable, "可投", [1, 0, 0, 0, 1, 0, 0]);
+  assertTierMetrics(tierTable, "慎投", [1, 1, 0, 0, 0, 0, 0]);
+  assertTierMetrics(tierTable, "不推荐", [1, 0, 0, 1, 0, 0, 0]);
+  assertContains(normalPanel, /<p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：1<\/p>/, "diagnostics count is separate from the four tiers");
+  assertContains(normalPanel, /搜索方向（关键词）/, "keyword heading is rendered in the panel");
+  assertContains(normalPanel, /调整匹配矩阵、权重或提示词前，必须取得用户确认/, "confirmation notice is rendered in the panel");
+  assertExcludes(normalPanel, /模型准确率|自动调整二维表|成功率/, "prohibited claims are absent from the panel");
+  for (const marker of Object.values(BAIT)) {
+    assertExcludes(normalPanel, new RegExp(escapeRegExp(marker)), "analytics panel omits sensitive source data");
+  }
+  assertAnalyticsPanelPlacement(page.body, "normal analytics panel");
+
+  const directFailurePage = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "analysis_pending" }),
+    outcomeAnalyticsReader() { throw new Error("direct analytics fixture failure"); }
+  });
+  assert.strictEqual(extractAnalyticsPanel(directFailurePage), "统计暂不可用", "direct queue rendering is fail-open without a logger");
+
+  const unknownTierPage = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId) }),
+    outcomeAnalyticsReader() {
+      return { tiers: [{ tier: "toString", total: 1 }], diagnostics: { total: 0 }, keywords: [] };
+    }
+  });
+  assertContains(extractAnalyticsPanel(unknownTierPage), /暂无四档结果记录。/, "unknown tier data uses the no-records behavior");
 
   const warnings = [];
   const failOpenServer = createDashboardServer({
@@ -79,13 +112,12 @@ let server;
   });
   const failOpenBaseUrl = await listen(failOpenServer);
   try {
-    const failure = await getText(failOpenBaseUrl, `/queue?planId=${planId}&pool=caution`);
+    const failure = await getText(failOpenBaseUrl, `/queue?planId=${planId}&pool=analysis_pending`);
     assert.strictEqual(failure.status, 200);
     assertContains(failure.body, /当前待处理岗位/, "queue heading is retained after analytics failure");
     const failurePanel = extractAnalyticsPanel(failure.body);
     assert.strictEqual(failurePanel, "统计暂不可用");
-    assert(failure.body.indexOf('class="panel outcome-analytics"') > failure.body.indexOf("当前待处理岗位"));
-    assert(failure.body.indexOf('class="panel outcome-analytics"') < failure.body.indexOf('<article class="job">'));
+    assertAnalyticsPanelPlacement(failure.body, "fallback analytics panel");
     assertExcludes(failure.body, /结果统计（只读）|private analytics fixture failure/, "failure panel reveals no analytics details");
     assert.deepStrictEqual(warnings, [{
       event: "outcome_analytics_render_failed",
@@ -118,7 +150,7 @@ function seedPlan(database) {
       originalFileName: "outcome-resume.txt",
       format: "text",
       contentHash: "outcome-analytics-dashboard-resume",
-      text: "Outcome analytics fixture resume.",
+      text: BAIT.resume,
       diagnostics: {}
     },
     searchPlan: {
@@ -146,33 +178,35 @@ function seedPlan(database) {
   return saved;
 }
 
-function seedJobs(database, batchId) {
+function seedJobs(database, batchId, { planId, profileId }) {
   const jobs = [
-    job("primary", "interview"),
-    job("apply", "no_reply"),
-    job("caution", ""),
-    job("not_recommended", "skipped"),
-    job("analysis_pending", "")
+    ["primary", "interview"],
+    ["apply", "no_reply"],
+    ["caution", ""],
+    ["not_recommended", "skipped"],
+    ["analysis_pending", ""]
   ];
-  for (const item of jobs) upsertJob(database, item, batchId);
+  for (const [recommendation, status] of jobs) {
+    const jobId = upsertJob(database, job(recommendation), batchId);
+    if (status) markCandidateJob(database, { profileId, planId, jobId, status });
+  }
 }
 
-function job(recommendation, applicationStatus) {
+function job(recommendation) {
   const pending = recommendation === "analysis_pending";
   return {
-    source: "boss",
-    sourceId: `outcome-analytics-${recommendation}`,
+    source: "outcome-analytics-smoke",
+    sourceId: `${BAIT.jobOrSourceId}-${recommendation}`,
     keyword: "RAG 工程师",
-    title: `private-${recommendation}-title`,
-    company: "private-company",
+    title: `${BAIT.title}-${recommendation}`,
+    company: BAIT.company,
     location: "上海",
     salary: "15-25K",
     experience: "1-3年",
     education: "本科",
-    url: "https://private-job-url.example/job",
+    url: BAIT.url,
     tags: [],
-    description: "private JD",
-    applicationStatus,
+    description: BAIT.jd,
     analysis: {
       semanticStatus: pending ? "pending" : "complete",
       recommendation: pending ? "" : recommendation,
@@ -180,7 +214,8 @@ function job(recommendation, applicationStatus) {
       fitLevel: "fit",
       confidence: 0.9,
       evidence: { jd: [], resume: [] },
-      hardBlockers: []
+      hardBlockers: [],
+      rawModelOutput: BAIT.rawModel
     }
   };
 }
@@ -189,6 +224,39 @@ function extractAnalyticsPanel(body) {
   const match = body.match(/<section class="panel outcome-analytics">([\s\S]*?)<\/section>/);
   assert(match, "outcome analytics panel must remain in its fixed slot");
   return match[1];
+}
+
+function extractAnalyticsTable(panel, className) {
+  const match = panel.match(new RegExp(`<table class="${className}">([\\s\\S]*?)<\\/table>`));
+  assert(match, "analytics table must remain inside the analytics panel");
+  return match[1];
+}
+
+function extractTableBodyRows(table) {
+  const body = table.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] || "";
+  return body.match(/<tr>/g) || [];
+}
+
+function assertTierMetrics(table, label, expected) {
+  const row = table.match(new RegExp(`<tr><th scope="row">${label}<\\/th>((?:<td>\\d+<\\/td>){7})<\\/tr>`));
+  assert(row, "analytics tier row is present");
+  const values = [...row[1].matchAll(/<td>(\d+)<\/td>/g)].map((match) => Number(match[1]));
+  assert.deepStrictEqual(values, expected, "analytics tier metrics match the seeded aggregate data");
+}
+
+function assertAnalyticsPanelPlacement(body, label) {
+  const counters = body.indexOf('class="pool-tab active"');
+  const panel = body.indexOf('class="panel outcome-analytics"');
+  const retryControls = body.indexOf('action="/api/analyze-jobs"');
+  const jobCards = body.indexOf('<article class="job">');
+  assert(counters >= 0, `${label} retains the queue counters marker`);
+  assert(panel > counters, `${label} follows the queue counters`);
+  assert(retryControls > panel, `${label} precedes retry controls`);
+  assert(jobCards > panel, `${label} precedes job cards`);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function assertContains(body, expression, message) {
