@@ -9,6 +9,18 @@ function emptyOutcomes() {
   return Object.fromEntries(OUTCOMES.map((status) => [status, 0]));
 }
 
+function addKeywordGroup(target, source) {
+  target.total += source.total;
+  for (const outcome of OUTCOMES) target.outcomes[outcome] += source.outcomes[outcome];
+}
+
+function compareKeywordGroups(left, right) {
+  if (left.total !== right.total) return right.total - left.total;
+  if (left.keyword < right.keyword) return -1;
+  if (left.keyword > right.keyword) return 1;
+  return 0;
+}
+
 function buildOutcomeAnalytics(rows = []) {
   const source = Array.isArray(rows) ? rows : [];
   const tiers = RECOMMENDATION_TIERS.map((tier) => ({
@@ -58,16 +70,16 @@ function buildOutcomeAnalytics(rows = []) {
     keywords.set(keyword, group);
   }
 
+  const reservedOther = keywords.get(OTHER_KEYWORD);
   const keywordRows = [...keywords.values()]
-    .sort((a, b) => b.total - a.total || a.keyword.localeCompare(b.keyword));
+    .filter((group) => group.keyword !== OTHER_KEYWORD)
+    .sort(compareKeywordGroups);
   const boundedKeywords = keywordRows.slice(0, MAX_NAMED_KEYWORDS);
   const overflow = keywordRows.slice(MAX_NAMED_KEYWORDS);
-  if (overflow.length) {
+  if (reservedOther || overflow.length) {
     const other = { keyword: OTHER_KEYWORD, total: 0, outcomes: emptyOutcomes() };
-    for (const group of overflow) {
-      other.total += group.total;
-      for (const outcome of OUTCOMES) other.outcomes[outcome] += group.outcomes[outcome];
-    }
+    if (reservedOther) addKeywordGroup(other, reservedOther);
+    for (const group of overflow) addKeywordGroup(other, group);
     boundedKeywords.push(other);
   }
 

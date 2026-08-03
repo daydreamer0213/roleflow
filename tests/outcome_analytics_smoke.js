@@ -1,6 +1,8 @@
 ﻿const assert = require("node:assert/strict");
 const { buildOutcomeAnalytics } = require("../src/core/outcome_analytics");
 
+const OTHER_KEYWORD = "\u5176\u4ed6\u5173\u952e\u8bcd";
+
 const bait = {
   jobId: "BAIT-JOB-ID",
   title: "BAIT-TITLE",
@@ -51,9 +53,9 @@ assert.strictEqual(analytics.unclassified.unknownDecisionBucket, 1);
 assert.strictEqual(analytics.unclassified.unknownApplicationStatus, 1);
 assert.strictEqual(analytics.keywords.find((row) => row.keyword === "RAG").total, 3);
 
-const namedKeywords = analytics.keywords.filter((row) => row.keyword !== "\u5176\u4ed6\u5173\u952e\u8bcd");
+const namedKeywords = analytics.keywords.filter((row) => row.keyword !== OTHER_KEYWORD);
 assert.strictEqual(namedKeywords.length, 12);
-const other = analytics.keywords.find((row) => row.keyword === "\u5176\u4ed6\u5173\u952e\u8bcd");
+const other = analytics.keywords.find((row) => row.keyword === OTHER_KEYWORD);
 assert.ok(other);
 assert.strictEqual(other.total, 9);
 assert.strictEqual(other.outcomes.applied, 3);
@@ -67,6 +69,48 @@ const displayedOutcomeTotals = Object.fromEntries(Object.keys(inputOutcomeTotals
   analytics.keywords.reduce((sum, row) => sum + row.outcomes[status], 0)
 ]));
 assert.deepStrictEqual(displayedOutcomeTotals, inputOutcomeTotals);
+assert.strictEqual(analytics.keywords.reduce((sum, row) => sum + row.total, 0), rows.length);
+
+const reservedLabelRows = [
+  { decisionBucket: "primary", applicationStatus: "applied", keyword: OTHER_KEYWORD },
+  { decisionBucket: "primary", applicationStatus: "skipped", keyword: OTHER_KEYWORD }
+];
+for (let index = 0; index < 13; index += 1) {
+  reservedLabelRows.push({
+    decisionBucket: "primary",
+    applicationStatus: "pending",
+    keyword: `tie-${String(index).padStart(2, "0")}`
+  });
+}
+
+const reservedLabelAnalytics = buildOutcomeAnalytics(reservedLabelRows);
+const reservedLabelRowsByName = reservedLabelAnalytics.keywords.filter((row) => row.keyword === OTHER_KEYWORD);
+assert.strictEqual(reservedLabelRowsByName.length, 1);
+assert.deepStrictEqual(
+  reservedLabelAnalytics.keywords.map((row) => row.keyword),
+  [...Array.from({ length: 12 }, (_, index) => `tie-${String(index).padStart(2, "0")}`), OTHER_KEYWORD]
+);
+assert.strictEqual(reservedLabelRowsByName[0].total, 3);
+assert.strictEqual(reservedLabelRowsByName[0].outcomes.pending, 1);
+assert.strictEqual(reservedLabelRowsByName[0].outcomes.applied, 1);
+assert.strictEqual(reservedLabelRowsByName[0].outcomes.skipped, 1);
+assert.strictEqual(
+  reservedLabelAnalytics.keywords.reduce((sum, row) => sum + row.total, 0),
+  reservedLabelRows.length
+);
+const reservedInputOutcomeTotals = Object.fromEntries(Object.keys(inputOutcomeTotals).map((status) => [
+  status,
+  reservedLabelRows.filter((row) => row.applicationStatus === status).length
+]));
+const reservedDisplayedOutcomeTotals = Object.fromEntries(Object.keys(reservedInputOutcomeTotals).map((status) => [
+  status,
+  reservedLabelAnalytics.keywords.reduce((sum, row) => sum + row.outcomes[status], 0)
+]));
+assert.deepStrictEqual(reservedDisplayedOutcomeTotals, reservedInputOutcomeTotals);
+assert.deepStrictEqual(
+  buildOutcomeAnalytics([...reservedLabelRows].reverse()).keywords,
+  reservedLabelAnalytics.keywords
+);
 
 const snapshot = JSON.stringify(analytics);
 for (const value of Object.values(bait)) assert.strictEqual(snapshot.includes(value), false);
