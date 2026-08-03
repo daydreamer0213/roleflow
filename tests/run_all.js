@@ -18,6 +18,7 @@ const tests = [
   "matching_card_smoke.js",
   "workflow_storage_smoke.js",
   "workflow_inventory_smoke.js",
+  "workflow_health_smoke.js",
   "workflow_communication_smoke.js",
   "workflow_dashboard_smoke.js",
   "workflow_recovery_smoke.js",
