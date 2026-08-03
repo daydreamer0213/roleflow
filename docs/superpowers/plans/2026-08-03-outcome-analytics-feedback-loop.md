@@ -420,7 +420,7 @@ git diff --check
 
 Expected: all offline checks pass and git diff --check prints nothing.
 
-The combined outcome-analytics regressions must also assert that synthetic bait values for job ID, title, company, URL, JD, resume, and raw model output are absent across all three layers: `outcome_analytics_smoke.js` covers pure aggregation; `outcome_analytics_smoke.js` covers the read-only snapshot; and `outcome_analytics_dashboard_smoke.js` covers the rendered panel and fallback. When the reader throws, it must assert that the fixed panel position remains and only `统计暂不可用` is shown.
+The combined outcome-analytics regressions must also assert that synthetic bait values for job ID, source ID, title, company, URL, JD, resume, and raw model output are absent across all three layers: `outcome_analytics_smoke.js` covers pure aggregation; `outcome_analytics_smoke.js` covers the read-only snapshot; and `outcome_analytics_dashboard_smoke.js` covers the rendered panel and fallback. When the reader throws, it must assert that the fixed panel position remains and only `统计暂不可用` is shown.
 
 - [ ] **Step 5: Commit the documentation and runner registration**
 
