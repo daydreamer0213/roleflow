@@ -13,7 +13,8 @@ const { PRODUCT_POLICY } = require("./product_policy");
 const {
   RECOMMENDATION_SCHEMA_VERSION,
   normalizeRecommendationTier
-} = require("./decision_policy");
+} = require("./decision_policy");const { buildOutcomeAnalytics } = require("./outcome_analytics");
+
 
 const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
@@ -2475,6 +2476,16 @@ function listDecisionPool(db, { planId } = {}) {
   if (!plan) return [];
   return listReportJobs(db, { planId: plan.id, batch: "all", profileId: plan.profileId, limit: 10000 });
 }
+function getOutcomeAnalyticsSnapshot(db, { planId } = {}) {
+  const plan = getSearchPlan(db, planId);
+  if (!plan) return buildOutcomeAnalytics([]);
+  const rows = listDecisionPool(db, { planId: plan.id }).map((job) => ({
+    decisionBucket: job.decisionBucket,
+    applicationStatus: job.applicationStatus || "pending",
+    keyword: job.keyword || ""
+  }));
+  return buildOutcomeAnalytics(rows);
+}
 
 function listDecisionQueue(db, { planId, limit = 15, buckets = null } = {}) {
   const plan = getSearchPlan(db, planId);
@@ -3728,6 +3739,7 @@ module.exports = {
   getLatestProfileVersionId,
   getSearchPlanDependency,
   listDecisionPool,
+  getOutcomeAnalyticsSnapshot,
   listDecisionQueue,
   isJobAwaitingAction,
   decisionBucket,
