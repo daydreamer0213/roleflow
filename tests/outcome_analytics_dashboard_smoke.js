@@ -1,6 +1,14 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const decisionPolicy = require("../src/core/decision_policy");
+const FUTURE_TIER = "future_tier";
+const normalizeRecommendationTier = decisionPolicy.normalizeRecommendationTier;
+decisionPolicy.normalizeRecommendationTier = (value, schemaVersion) => {
+  return String(value || "").trim().toLowerCase() === FUTURE_TIER
+    ? FUTURE_TIER
+    : normalizeRecommendationTier(value, schemaVersion);
+};
 const {
   openDb,
   saveProfileAnalysis,
@@ -10,6 +18,7 @@ const {
   upsertJob,
   markCandidateJob
 } = require("../src/core/storage");
+decisionPolicy.normalizeRecommendationTier = normalizeRecommendationTier;
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { createDashboardServer, renderQueuePage } = require("../src/dashboard/server");
 
@@ -60,7 +69,7 @@ let server;
   assert.strictEqual(page.status, 200);
   const normalPanel = extractAnalyticsPanel(page.body);
   assertContains(normalPanel, /结果统计（只读）/, "outcome analytics heading is rendered in the panel");
-  assertContains(normalPanel, /当前方案：Outcome &lt;analytics&gt; &amp; plan；纳入岗位：20；已记录终态：3。/, "safe plan context and aggregate summary are rendered");
+  assertContains(normalPanel, /当前方案：Outcome &lt;analytics&gt; &amp; plan；纳入岗位：21；已记录终态：4。/, "normal snapshot includes an unknown-bucket terminal result in aggregate totals");
   assertExcludes(normalPanel, /Outcome <analytics> & plan/, "raw plan name is not rendered");
   const tierTable = extractAnalyticsTable(normalPanel, "outcome-tier-table");
   for (const label of ["主投", "可投", "慎投", "不推荐"]) {
@@ -74,7 +83,8 @@ let server;
   assertTierMetrics(tierTable, "慎投", [1, 1, 0, 0, 0, 0, 0]);
   assertTierMetrics(tierTable, "不推荐", [1, 0, 0, 1, 0, 0, 0]);
   assertContains(normalPanel, /<p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：16<\/p>/, "diagnostics count is separate from the four tiers");
-  assertContains(normalPanel, /<p class="outcome-analytics-unclassified">未分类记录：0；未知推荐档位：0；未知状态：0<\/p>/, "aggregate-only unclassified counters are rendered");
+  assertContains(normalPanel, /<p class="outcome-analytics-unclassified">未分类记录：1；未知推荐档位：1；未知状态：0<\/p>/, "normal snapshot renders unknown decision counts as aggregates");
+  assertExcludes(normalPanel, new RegExp(FUTURE_TIER), "normal snapshot hides the raw unknown decision bucket");
   assertContains(normalPanel, /搜索方向（关键词）/, "keyword heading is rendered in the panel");
   const keywordTable = extractAnalyticsTable(normalPanel, "outcome-keyword-table");
   assert.strictEqual(extractTableBodyRows(keywordTable).length, 13, "dashboard renders every aggregator-bounded keyword row");
@@ -229,6 +239,8 @@ function seedJobs(database, batchId, { planId, profileId }) {
     const jobId = upsertJob(database, job(recommendation), batchId);
     if (status) markCandidateJob(database, { profileId, planId, jobId, status });
   }
+  const futureTierJobId = upsertJob(database, job(FUTURE_TIER, "RAG 工程师", "future-tier", 1), batchId);
+  markCandidateJob(database, { profileId, planId, jobId: futureTierJobId, status: "interview" });
   for (let index = 1; index <= 13; index += 1) {
     upsertJob(database, job("analysis_pending", `Named-${String(index).padStart(2, "0")}`, `named-${index}`), batchId);
   }
@@ -237,7 +249,7 @@ function seedJobs(database, batchId, { planId, profileId }) {
   }
 }
 
-function job(recommendation, keyword = "RAG 工程师", sourceSuffix = recommendation) {
+function job(recommendation, keyword = "RAG 工程师", sourceSuffix = recommendation, recommendationSchemaVersion = 2) {
   const pending = recommendation === "analysis_pending";
   return {
     source: "outcome-analytics-smoke",
@@ -255,7 +267,7 @@ function job(recommendation, keyword = "RAG 工程师", sourceSuffix = recommend
     analysis: {
       semanticStatus: pending ? "pending" : "complete",
       recommendation: pending ? "" : recommendation,
-      recommendationSchemaVersion: 2,
+      recommendationSchemaVersion,
       fitLevel: "fit",
       confidence: 0.9,
       evidence: { jd: [], resume: [] },
