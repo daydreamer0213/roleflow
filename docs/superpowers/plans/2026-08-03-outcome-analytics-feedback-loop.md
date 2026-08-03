@@ -37,7 +37,7 @@
 const RECOMMENDATION_TIERS = ["primary", "apply", "caution", "not_recommended"];
 const DIAGNOSTIC_BUCKETS = ["analysis_pending", "refresh"];
 
-function buildOutcomeAnalytics(rows, { maxKeywordGroups = 12 } = {}) {
+function buildOutcomeAnalytics(rows = []) {
   // rows only use decisionBucket, applicationStatus, keyword.
   // returns { totals, tiers, diagnostics, keywords, unclassified }.
 }
@@ -128,12 +128,13 @@ const RECOMMENDATION_TIERS = ["primary", "apply", "caution", "not_recommended"];
 const DIAGNOSTIC_BUCKETS = new Set(["analysis_pending", "refresh"]);
 const OUTCOMES = ["pending", "review", "later", "applied", "skipped", "no_reply", "interview", "rejected", "invalid", "salary_mismatch"];
 const UNRESOLVED = new Set(["pending", "review", "later"]);
+const MAX_NAMED_KEYWORDS = 12;
 
 function emptyOutcomes() {
   return Object.fromEntries(OUTCOMES.map((status) => [status, 0]));
 }
 
-function buildOutcomeAnalytics(rows = [], { maxKeywordGroups = 12 } = {}) {
+function buildOutcomeAnalytics(rows = []) {
   const source = Array.isArray(rows) ? rows : [];
   const tiers = RECOMMENDATION_TIERS.map((tier) => ({
     tier, total: 0, unresolvedCount: 0, recordedOutcomeCount: 0, outcomes: emptyOutcomes()
@@ -162,8 +163,8 @@ function buildOutcomeAnalytics(rows = [], { maxKeywordGroups = 12 } = {}) {
 
   const keywordRows = [...keywords.values()]
     .sort((a, b) => b.total - a.total || a.keyword.localeCompare(b.keyword));
-  const namedKeywords = keywordRows.slice(0, 12);
-  const overflow = keywordRows.slice(12);
+  const namedKeywords = keywordRows.slice(0, MAX_NAMED_KEYWORDS);
+  const overflow = keywordRows.slice(MAX_NAMED_KEYWORDS);
   if (overflow.length) {
     const other = { keyword: "其他关键词", total: 0, outcomes: emptyOutcomes() };
     for (const group of overflow) {
