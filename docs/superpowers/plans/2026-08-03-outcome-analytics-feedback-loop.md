@@ -328,7 +328,7 @@ Expected: failure because the queue has no outcome analytics panel.
 
 - [ ] **Step 3: Add a safe renderer and fail-open integration**
 
-Import getOutcomeAnalyticsSnapshot into src/dashboard/server.js. Add a renderer that accepts only aggregate data and escapes all labels. The tier table must include these columns: recommendation tier, total, unresolved, applied, no_reply, interview, rejected_or_invalid.
+Import getOutcomeAnalyticsSnapshot into src/dashboard/server.js. Add a renderer that accepts only aggregate data and escapes all labels. The tier table must include exactly these columns: recommendation tier, total, unresolved, applied, skipped, no_reply, interview, rejected_or_invalid.
 
 The renderer must:
 - use outcomeTierLabel to translate only the four stable keys;
@@ -336,8 +336,6 @@ The renderer must:
 - show a bounded keyword table with the heading 搜索方向（关键词）;
 - show the diagnostics summary as 待分析或待刷新（不纳入四档比较）：<count>;
 - include the fixed notice that matrix, weight, and prompt changes require user confirmation.
-
-The tier table must expose these columns: recommendation tier, total, unresolved, applied, skipped, no_reply, interview, rejected_or_invalid.
 
 In renderCompactQueuePage, call the new snapshot after the plan is resolved. Wrap only this new call in try/catch. On error call:
 
