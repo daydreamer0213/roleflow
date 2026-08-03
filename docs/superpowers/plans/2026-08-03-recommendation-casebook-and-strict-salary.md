@@ -13,8 +13,8 @@
 - Do not modify the language-matching or recommendation policy.
 - Do not copy real job, company, URL, candidate, or resume content into Git.
 - Do not store candidate names, contacts, full resume text, cookies, tokens, or secrets in the private casebook.
-- Keep the confirmed communication batch #5 immutable: seven existing job IDs, status `confirmed`, and zero clicks.
-- Do not navigate BOSS or start communication.
+- Keep completed communication batch #5 immutable: the same seven existing job IDs, status `completed`, all items `succeeded`, and click count `1` for every item.
+- Do not perform any further BOSS navigation or communication.
 - Store private casebook data only under `D:\DevData\RoleFlow-private-benchmark\recommendation-casebook`.
 - Change the current plan salary mode from `wide` to `strict`, but preserve an explicit `wide` choice for future users.
 - Use `apply_patch` for file edits.
@@ -485,7 +485,7 @@ Expected: one commit containing only the focused test and two production files.
 
 **Interfaces:**
 - Consumes: dashboard `POST /api/plan`, active plan ID `1`, profile ID `1`, and the currently persisted plan fields.
-- Produces: plan ID `1` with `salaryMode: strict`, normal plan rescoring, and unchanged communication batch #5.
+- Produces: plan ID `1` with `salaryMode: strict`, normal plan rescoring, and communication batch #5 retained as completed with its seven succeeded items and one click per item.
 
 - [ ] **Step 1: Capture the pre-migration communication invariant**
 
@@ -506,6 +506,7 @@ console.log(JSON.stringify({
   planFingerprint:crypto.createHash("sha256").update(JSON.stringify(planWithoutMode)).digest("hex"),
   batchStatus:batch.status,
   startedAt:batch.startedAt,
+  finishedAt:batch.finishedAt,
   jobIds:items.map(x=>x.jobId),
   statuses:items.map(x=>x.status),
   clicks:items.map(x=>x.clickCount)
@@ -517,7 +518,7 @@ db.close();
 Expected:
 
 ```json
-{"planMode":"wide","planFingerprint":"59459a1857a5485b6e82e1d74d0ac75789c6ea502af8cb5f7a3eaafdd1bb7f80","batchStatus":"confirmed","startedAt":null,"jobIds":[527,500,454,444,447,488,451],"statuses":["pending","pending","pending","pending","pending","pending","pending"],"clicks":[0,0,0,0,0,0,0]}
+{"planMode":"wide","planFingerprint":"59459a1857a5485b6e82e1d74d0ac75789c6ea502af8cb5f7a3eaafdd1bb7f80","batchStatus":"completed","startedAt":"2026-08-03T05:49:45.849Z","finishedAt":"2026-08-03T05:52:29.243Z","jobIds":[527,500,454,444,447,488,451],"statuses":["succeeded","succeeded","succeeded","succeeded","succeeded","succeeded","succeeded"],"clicks":[1,1,1,1,1,1,1]}
 ```
 
 - [ ] **Step 2: Save plan #1 through the normal dashboard API**
@@ -596,10 +597,10 @@ const items=listCommunicationBatchItems(db,5);
 const {salaryMode,...planWithoutMode}=plan.plan;
 if(plan.plan.salaryMode!=="strict") throw new Error("plan salary mode was not migrated");
 if(crypto.createHash("sha256").update(JSON.stringify(planWithoutMode)).digest("hex")!=="59459a1857a5485b6e82e1d74d0ac75789c6ea502af8cb5f7a3eaafdd1bb7f80") throw new Error("plan fields other than salaryMode changed");
-if(batch.status!=="confirmed"||batch.startedAt!==null) throw new Error("communication batch changed");
+if(batch.status!=="completed") throw new Error("communication batch status changed");
 if(JSON.stringify(items.map(x=>x.jobId))!==JSON.stringify([527,500,454,444,447,488,451])) throw new Error("communication job snapshot changed");
-if(!items.every(x=>x.status==="pending"&&x.clickCount===0)) throw new Error("communication item state changed");
-console.log("strict current plan and immutable batch ok");
+if(!items.every(x=>x.status==="succeeded"&&x.clickCount===1)) throw new Error("communication item state changed");
+console.log("strict current plan and completed batch invariant ok");
 db.close();
 '@ | node
 ```
@@ -607,7 +608,7 @@ db.close();
 Expected:
 
 ```text
-strict current plan and immutable batch ok
+strict current plan and completed batch invariant ok
 ```
 
 - [ ] **Step 4: Verify the dashboard renders strict mode as selected**

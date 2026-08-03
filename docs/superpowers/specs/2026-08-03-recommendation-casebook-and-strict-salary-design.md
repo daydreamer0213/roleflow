@@ -10,6 +10,10 @@ default-selected even though the candidate had no direct Golang evidence.
 The user also confirmed that strict salary handling should become the default
 and should apply to the current saved search plan.
 
+Execution-time note: before Task 2, a read-only preflight found that the stale
+batch precondition no longer matched reality. The user chose to preserve the
+actual completed communication-batch state and continue the strict-salary work.
+
 ## Goals
 
 - Preserve real recommendation-error evidence outside Git and outside the
@@ -24,7 +28,7 @@ and should apply to the current saved search plan.
 - Do not change the language-matching or recommendation policy yet.
 - Do not automatically train, prompt, or rescore from one case.
 - Do not add the real case to committed test fixtures.
-- Do not modify the already confirmed communication batch.
+- Do not modify the already completed communication batch.
 - Do not store candidate names, contact details, or full resume content.
 
 ## Storage layout
@@ -124,7 +128,7 @@ Current-data impact measured before the change:
 
 - 14 of 103 jobs have a maximum salary below 9K;
 - only one of the original nine default-selected jobs is affected;
-- none of the seven jobs in confirmed communication batch #5 is affected.
+- none of the seven jobs in completed communication batch #5 is affected.
 
 ## Validation
 
@@ -134,8 +138,9 @@ Current-data impact measured before the change:
   supplied `wide` plan must remain `wide`.
 - Dashboard rendering must show strict selected for a strict current plan.
 - The current database must report `salaryMode: strict` for plan #1.
-- Communication batch #5 must remain confirmed with the same seven job IDs and
-  zero clicks.
+- Communication batch #5 must retain the same seven job IDs, have status
+  `completed`, have all items `succeeded`, and have click count `1` for every
+  item.
 - The casebook index must parse as JSONL; referenced files must exist and use
   the declared case ID.
 - A privacy scan must reject candidate names, contact details, secrets, cookies,
