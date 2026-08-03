@@ -1,4 +1,4 @@
-const PRODUCT_POLICY_VERSION = "2026-07-21.4";
+const PRODUCT_POLICY_VERSION = "2026-08-03.1";
 const MIN_CARDS_PER_TARGET = 10;
 
 const PRODUCT_POLICY = Object.freeze({
@@ -10,7 +10,7 @@ const PRODUCT_POLICY = Object.freeze({
     degreeOptions: Object.freeze(["初中及以下", "中专/中技", "高中", "大专", "本科", "硕士", "博士"]),
     defaultBossActiveDays: 3,
     allowedBossActiveDays: Object.freeze([3]),
-    defaultSalaryMode: "wide",
+    defaultSalaryMode: "strict",
     defaultWorkSchedulePreference: "prefer_double_weekend",
     priorityCardRatios: Object.freeze({ A: 1, B: 0.65, C: 0.4 }),
     minCardsPerTarget: MIN_CARDS_PER_TARGET,

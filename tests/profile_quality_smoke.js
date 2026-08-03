@@ -57,6 +57,11 @@ assert.deepStrictEqual(plan.degrees, []);
 assert.strictEqual(plan.scan.maxDetailTotal, 300);
 assert.strictEqual(plan.scan.maxCards, PRODUCT_POLICY.searchPlan.broadScanDefaults.maxCards);
 assert.strictEqual(Object.hasOwn(plan.scan, "detailLimit"), false);
+const defaultSalaryModePlan = normalizeSearchPlan({}, profile);
+assert.strictEqual(defaultSalaryModePlan.salaryMode, "strict");
+assert.strictEqual(normalizeSearchPlan({ salaryMode: "invalid" }, profile).salaryMode, "strict");
+assert.strictEqual(normalizeSearchPlan({ salaryMode: "wide" }, profile).salaryMode, "wide");
+assert.strictEqual(normalizeSearchPlan({ salaryMode: "strict" }, profile).salaryMode, "strict");
 assert.strictEqual(normalizeSearchPlan({ scan: { maxDetailTotal: 500 } }, profile).scan.maxDetailTotal, 500);
 const modePlan = {
   ...plan,

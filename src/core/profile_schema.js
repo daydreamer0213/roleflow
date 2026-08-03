@@ -58,7 +58,9 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
     cities: city,
     bossCityCode: text(input.bossCityCode || cityToBossCode(city[0]) || ""),
     salary: { minK, maxK },
-    salaryMode: input.salaryMode === "strict" ? "strict" : policy.defaultSalaryMode,
+    salaryMode: ["wide", "strict"].includes(input.salaryMode)
+      ? input.salaryMode
+      : policy.defaultSalaryMode,
     experience: normalizeExperience(input.experience || policy.defaultExperience),
     jobTypes: strings(input.jobTypes || input.jobType || policy.defaultJobTypes, 4),
     degrees: strings(input.degrees || input.degree, 8),
