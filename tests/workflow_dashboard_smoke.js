@@ -175,6 +175,24 @@ let server;
   assert(backslashPanel.includes('href="#"'));
   assert(!backslashPanel.includes('href="/\\external.example"'));
 
+  const truncatedPanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 51, issueCount: 51 },
+    issues: Array.from({ length: 51 }, (_, index) => ({
+      severity: "warning",
+      title: `Issue ${index}`,
+      message: "fixture",
+      actionHref: "/queue"
+    })),
+    recentEvents: Array.from({ length: 21 }, (_, index) => ({
+      eventType: "review",
+      jobId: index + 1,
+      createdAt: "2026-08-03T08:00:00.000Z"
+    })),
+    truncated: { issues: true, recentEvents: true }
+  });
+  assert.match(truncatedPanel, /记录数量超过页面上限/);
+
   const failOpenWarnings = [];
   const failOpenServer = createDashboardServer({
     db,
@@ -187,7 +205,11 @@ let server;
       warn(event, metadata) { failOpenWarnings.push({ event, metadata }); }
     },
     workflowHealth: {
-      getSnapshot() { throw new Error("health fixture failure"); }
+      getSnapshot() {
+        const error = new Error("health fixture failure");
+        error.code = "C:\\Users\\Administrator\\secret.txt";
+        throw error;
+      }
     }
   });
   const failOpenBaseUrl = await listen(failOpenServer);
@@ -206,6 +228,7 @@ let server;
       }
     });
     assert(!JSON.stringify(failOpenWarnings[0]).includes("health fixture failure"));
+    assert(!JSON.stringify(failOpenWarnings[0]).includes("secret.txt"));
   } finally {
     await new Promise((resolve) => failOpenServer.close(resolve));
   }

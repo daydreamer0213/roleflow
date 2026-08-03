@@ -16,6 +16,7 @@ const {
   upsertJob,
   markCandidateJob,
   recordCandidateJobEvent,
+  listCandidateJobEvents,
   createWorkflowRun,
   getWorkflowHealthSnapshot
 } = require("../src/core/storage");
@@ -98,7 +99,11 @@ assert.strictEqual(
   "review_required must not be reported as stalled"
 );
 assert.deepStrictEqual(report.recentEvents.map((event) => event.id), [91]);
-assert.deepStrictEqual(report.truncated, snapshot.truncated);
+assert.deepStrictEqual(report.truncated, {
+  ...snapshot.truncated,
+  issues: false,
+  recentEvents: false
+});
 
 const healthy = buildWorkflowHealthReport({
   generatedAt: now,
@@ -123,6 +128,92 @@ const healthy = buildWorkflowHealthReport({
 assert.strictEqual(healthy.status, "healthy");
 assert.strictEqual(healthy.issues.length, 0);
 assert.strictEqual(healthy.summary.jobsChecked, 1);
+
+const hardBoundaryComplete = buildWorkflowHealthReport({
+  generatedAt: now,
+  profileId: 1,
+  planId: 7,
+  jobs: [{
+    id: 14,
+    title: "Hard boundary job",
+    company: "Test Company",
+    description: "Complete job description and requirements. ".repeat(20),
+    applicationStatus: "pending",
+    reviewAt: "",
+    qualityTags: [],
+    analysis: {
+      semanticStatus: "blocked",
+      decisionStatus: "decided",
+      recommendation: "not_recommended"
+    }
+  }],
+  workflowRuns: [],
+  candidateEvents: [],
+  linkIssues: [],
+  truncated: { jobs: false, workflowRuns: false, candidateEvents: false }
+}, { now });
+assert.strictEqual(
+  hardBoundaryComplete.issues.some((item) => item.code === HEALTH_ISSUE_CODES.ANALYSIS_INCOMPLETE),
+  false
+);
+
+const duplicateOnly = buildWorkflowHealthReport({
+  generatedAt: now,
+  profileId: 1,
+  planId: 7,
+  jobs: [{
+    id: 15,
+    title: "Possible duplicate job",
+    company: "Test Company",
+    description: "Complete job description and requirements. ".repeat(20),
+    applicationStatus: "pending",
+    reviewAt: "",
+    qualityTags: ["possible_duplicate"],
+    analysis: { semanticStatus: "complete", recommendation: "apply" }
+  }],
+  workflowRuns: [],
+  candidateEvents: [],
+  linkIssues: [],
+  truncated: { jobs: false, workflowRuns: false, candidateEvents: false }
+}, { now });
+assert.strictEqual(duplicateOnly.status, "attention");
+assert.deepStrictEqual(duplicateOnly.issues.map((item) => item.code), [
+  HEALTH_ISSUE_CODES.POSSIBLE_DUPLICATE
+]);
+
+const displayTruncation = buildWorkflowHealthReport({
+  generatedAt: now,
+  profileId: 1,
+  planId: 7,
+  jobs: Array.from({ length: 51 }, (_, index) => ({
+    id: 100 + index,
+    title: `Display issue ${index}`,
+    company: "Test Company",
+    description: "",
+    applicationStatus: "pending",
+    reviewAt: "",
+    qualityTags: [],
+    analysis: { semanticStatus: "complete", recommendation: "apply" }
+  })),
+  workflowRuns: [],
+  candidateEvents: Array.from({ length: 21 }, (_, index) => ({
+    id: index + 1,
+    jobId: index + 1,
+    eventType: "review",
+    createdAt: `2026-08-03T08:${String(index).padStart(2, "0")}:00.000Z`
+  })),
+  linkIssues: [],
+  truncated: { jobs: false, workflowRuns: false, candidateEvents: false }
+}, { now });
+assert.strictEqual(displayTruncation.issues.length, 51);
+assert.strictEqual(displayTruncation.recentEvents.length, 20);
+assert.deepStrictEqual(displayTruncation.truncated, {
+  jobs: false,
+  workflowRuns: false,
+  candidateEvents: false,
+  issues: true,
+  recentEvents: true
+});
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-workflow-health-"));
 const dbPath = path.join(root, "jobs.sqlite");
@@ -231,6 +322,13 @@ try {
     url: "https://example.test/job/health-job-2", description: "Complete JD ".repeat(20),
     tags: [], matches: [], risks: [], qualityTags: [], analysis: {}
   }, batchId);
+  const otherPlanJobId = upsertJob(db, {
+    source: "boss", sourceId: "health-job-other-plan", keyword: "Other plan",
+    title: "Other plan job", company: "Other Test Company", location: "Guangzhou",
+    salary: "8-12K", experience: "1-3 years", education: "Bachelor",
+    url: "https://example.test/job/health-job-other-plan", description: "Complete JD ".repeat(20),
+    tags: [], matches: [], risks: [], qualityTags: [], analysis: {}
+  }, otherBatchId);
   recordCandidateJobEvent(db, {
     profileId: saved.profileId, planId: saved.planId, jobId: secondJobId,
     eventType: "review", payload: {}
@@ -240,9 +338,20 @@ try {
     eventType: "review", payload: { legacy: true }
   });
   recordCandidateJobEvent(db, {
-    profileId: saved.profileId, planId: otherPlanId, jobId: secondJobId,
+    profileId: saved.profileId, planId: otherPlanId, jobId: otherPlanJobId,
     eventType: "review", payload: { otherPlan: true }
   });
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId, planId: null, jobId: otherPlanJobId,
+    eventType: "review", payload: { legacyOtherPlan: true }
+  });
+  const selectedPlanEvents = listCandidateJobEvents(db, {
+    profileId: saved.profileId, planId: saved.planId, limit: 30
+  });
+  assert(selectedPlanEvents.some((event) => event.jobId === secondJobId && event.planId === saved.planId));
+  assert(selectedPlanEvents.some((event) => event.jobId === secondJobId && event.planId === null));
+  assert(!selectedPlanEvents.some((event) => event.jobId === otherPlanJobId && event.planId === otherPlanId));
+  assert(!selectedPlanEvents.some((event) => event.jobId === otherPlanJobId && event.planId === null));
   createWorkflowRun(db, {
     id: "health-workflow-new", profileId: saved.profileId, planId: saved.planId,
     localDay: "2026-08-04", sequence: 1, targetSuccessCount: 10, successfulCount: 0,

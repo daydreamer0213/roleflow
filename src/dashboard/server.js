@@ -2227,6 +2227,11 @@ function workflowShortfallLabel(code) {
   }[code] || "候选可能不足";
 }
 
+function workflowHealthFailureCode(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  return /^[A-Z0-9_]{1,80}$/.test(code) ? code : "WORKFLOW_HEALTH_FAILED";
+}
+
 function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
@@ -2260,7 +2265,7 @@ function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth })
     logger?.warn("workflow_health_render_failed", {
       workflowRunId: workflow.id,
       planId: plan.id,
-      errorCode: String(error.code || "WORKFLOW_HEALTH_FAILED")
+      errorCode: workflowHealthFailureCode(error)
     });
   }
   const polling = shouldPollWorkflow(workflow, communication)

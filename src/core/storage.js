@@ -3173,8 +3173,18 @@ function listCandidateJobEvents(db, {
     params.push(Number(jobId));
   }
   if (planId) {
-    clauses.push("(plan_id = ? OR plan_id IS NULL)");
-    params.push(Number(planId));
+    clauses.push(`(
+      plan_id = ?
+      OR (plan_id IS NULL AND EXISTS (
+        SELECT 1
+        FROM job_observations legacy_observation
+        JOIN batches legacy_batch ON legacy_batch.id = legacy_observation.batch_id
+        WHERE legacy_observation.job_id = candidate_job_events.job_id
+          AND legacy_batch.search_plan_id = ?
+          AND legacy_batch.profile_id = ?
+      ))
+    )`);
+    params.push(Number(planId), Number(planId), Number(profileId));
   }
   if (eventType) {
     clauses.push("event_type = ?");

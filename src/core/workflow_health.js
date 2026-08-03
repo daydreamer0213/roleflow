@@ -55,7 +55,7 @@ function buildWorkflowHealthReport(snapshot = {}, options = {}) {
       }));
     }
 
-    if (String(job.analysis?.semanticStatus || "") !== "complete") {
+    if (!analysisIsComplete(job.analysis)) {
       issues.push(issue({
         code: HEALTH_ISSUE_CODES.ANALYSIS_INCOMPLETE,
         severity: "warning",
@@ -148,11 +148,15 @@ function buildWorkflowHealthReport(snapshot = {}, options = {}) {
   issues.sort(compareIssues);
   const severityCounts = { critical: 0, warning: 0, info: 0 };
   for (const item of issues) severityCounts[item.severity] += 1;
+  const sortedCandidateEvents = candidateEvents
+    .slice()
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+      || Number(b.id || 0) - Number(a.id || 0));
 
   return Object.freeze({
     status: severityCounts.critical > 0
       ? "blocked"
-      : severityCounts.warning > 0 ? "attention" : "healthy",
+      : issues.length > 0 ? "attention" : "healthy",
     generatedAt,
     summary: Object.freeze({
       jobsChecked: jobs.length,
@@ -161,15 +165,13 @@ function buildWorkflowHealthReport(snapshot = {}, options = {}) {
       ...severityCounts
     }),
     issues: Object.freeze(issues),
-    recentEvents: Object.freeze(candidateEvents
-      .slice()
-      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
-        || Number(b.id || 0) - Number(a.id || 0))
-      .slice(0, 20)),
+    recentEvents: Object.freeze(sortedCandidateEvents.slice(0, 20)),
     truncated: Object.freeze({
       jobs: Boolean(snapshot.truncated?.jobs),
       workflowRuns: Boolean(snapshot.truncated?.workflowRuns),
-      candidateEvents: Boolean(snapshot.truncated?.candidateEvents)
+      candidateEvents: Boolean(snapshot.truncated?.candidateEvents),
+      issues: issues.length > 50,
+      recentEvents: sortedCandidateEvents.length > 20
     })
   });
 }
@@ -185,6 +187,13 @@ function issue(value) {
     actionHref: value.actionHref,
     details: Object.freeze(value.details || {})
   });
+}
+
+function analysisIsComplete(analysis) {
+  return String(analysis?.semanticStatus || "") === "complete"
+    || (String(analysis?.semanticStatus || "") === "blocked"
+      && String(analysis?.decisionStatus || "") === "decided"
+      && String(analysis?.recommendation || "") === "not_recommended");
 }
 
 function compareIssues(a, b) {
