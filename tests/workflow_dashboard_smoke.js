@@ -160,6 +160,21 @@ let server;
   assert(unsafePanel.includes('href="#"'));
   assert(!unsafePanel.includes('href="//external.example"'));
 
+  const backslashPanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 0, issueCount: 1 },
+    issues: [{
+      severity: "warning",
+      title: "backslash href",
+      message: "fixture",
+      actionHref: "/\\external.example"
+    }],
+    recentEvents: [],
+    truncated: {}
+  });
+  assert(backslashPanel.includes('href="#"'));
+  assert(!backslashPanel.includes('href="/\\external.example"'));
+
   const failOpenWarnings = [];
   const failOpenServer = createDashboardServer({
     db,
