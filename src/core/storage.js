@@ -3159,15 +3159,37 @@ function recordCandidateJobEvent(db, { profileId, jobId, planId = null, eventTyp
     .run(profile, job, Number(planId || 0) || null, type, JSON.stringify(payload || {}), nowIso());
 }
 
-function listCandidateJobEvents(db, { profileId, jobId = null, eventType = "", limit = 30 }) {
+function listCandidateJobEvents(db, {
+  profileId,
+  jobId = null,
+  planId = null,
+  eventType = "",
+  limit = 30
+}) {
   const clauses = ["profile_id = ?"];
   const params = [Number(profileId)];
-  if (jobId) { clauses.push("job_id = ?"); params.push(Number(jobId)); }
-  if (eventType) { clauses.push("event_type = ?"); params.push(String(eventType)); }
+  if (jobId) {
+    clauses.push("job_id = ?");
+    params.push(Number(jobId));
+  }
+  if (planId) {
+    clauses.push("(plan_id = ? OR plan_id IS NULL)");
+    params.push(Number(planId));
+  }
+  if (eventType) {
+    clauses.push("event_type = ?");
+    params.push(String(eventType));
+  }
   params.push(Math.max(1, Math.min(200, Number(limit) || 30)));
-  return db.prepare(`SELECT * FROM candidate_job_events WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...params).map((row) => ({
-    id: Number(row.id), profileId: Number(row.profile_id), jobId: Number(row.job_id), planId: row.plan_id || null,
-    eventType: row.event_type, payload: parseJson(row.payload_json, {}), createdAt: row.created_at
+  return db.prepare(`
+    SELECT * FROM candidate_job_events
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params).map((row) => ({
+    id: Number(row.id), profileId: Number(row.profile_id), jobId: Number(row.job_id),
+    planId: row.plan_id || null, eventType: row.event_type,
+    payload: parseJson(row.payload_json, {}), createdAt: row.created_at
   }));
 }
 
@@ -3532,6 +3554,72 @@ function planRow(row) {
   };
 }
 
+function getWorkflowHealthSnapshot(db, options = {}) {
+  const planId = optionalPositiveInteger(options.planId, "planId");
+  if (!planId) throw new Error("planId is required");
+  const plan = getSearchPlan(db, planId);
+  if (!plan) throw new Error("search plan not found");
+  const profileId = optionalPositiveInteger(options.profileId || plan.profileId, "profileId");
+  if (Number(plan.profileId) !== profileId) {
+    throw new Error("search plan does not belong to the selected profile");
+  }
+
+  const generatedAt = validDate(options.now || nowIso(), "now");
+  const jobLimit = boundedHealthLimit(options.jobLimit, 1000, 9999);
+  const workflowLimit = boundedHealthLimit(options.workflowLimit, 100, 499);
+  const eventLimit = boundedHealthLimit(options.eventLimit, 100, 199);
+  const jobs = listReportJobs(db, { profileId, planId, limit: jobLimit + 1 });
+  const workflowRuns = listWorkflowRuns(db, { profileId, planId, limit: workflowLimit + 1 });
+  const candidateEvents = listCandidateJobEvents(db, { profileId, planId, limit: eventLimit + 1 });
+  const linkRows = db.prepare(`
+    SELECT w.id AS workflow_id, w.plan_id AS workflow_plan_id,
+      w.profile_id AS workflow_profile_id, w.scan_run_id, sr.plan_id AS scan_plan_id,
+      w.scan_batch_id, sb.search_plan_id AS scan_batch_plan_id,
+      sb.profile_id AS scan_batch_profile_id, w.communication_batch_id,
+      cb.plan_id AS communication_plan_id, cb.profile_id AS communication_profile_id
+    FROM workflow_runs w
+    LEFT JOIN scan_runs sr ON sr.id = w.scan_run_id
+    LEFT JOIN batches sb ON sb.id = w.scan_batch_id
+    LEFT JOIN communication_batches cb ON cb.id = w.communication_batch_id
+    WHERE w.profile_id = ? AND w.plan_id = ?
+  `).all(profileId, planId);
+
+  return Object.freeze({
+    generatedAt, profileId, planId,
+    jobs: Object.freeze(jobs.slice(0, jobLimit)),
+    workflowRuns: Object.freeze(workflowRuns.slice(0, workflowLimit)),
+    candidateEvents: Object.freeze(candidateEvents.slice(0, eventLimit)),
+    linkIssues: Object.freeze(linkRows.flatMap(workflowLinkIssues)),
+    truncated: Object.freeze({
+      jobs: jobs.length > jobLimit,
+      workflowRuns: workflowRuns.length > workflowLimit,
+      candidateEvents: candidateEvents.length > eventLimit
+    })
+  });
+}
+
+function boundedHealthLimit(value, fallback, maximum) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) return fallback;
+  return Math.min(number, maximum);
+}
+
+function workflowLinkIssues(row) {
+  const issues = [];
+  if (row.scan_run_id && Number(row.scan_plan_id || 0) !== Number(row.workflow_plan_id)) {
+    issues.push({ workflowId: row.workflow_id, reason: "scan_plan_mismatch" });
+  }
+  if (row.scan_batch_id && (Number(row.scan_batch_plan_id || 0) !== Number(row.workflow_plan_id)
+    || Number(row.scan_batch_profile_id || 0) !== Number(row.workflow_profile_id))) {
+    issues.push({ workflowId: row.workflow_id, reason: "scan_batch_owner_mismatch" });
+  }
+  if (row.communication_batch_id && (Number(row.communication_plan_id || 0) !== Number(row.workflow_plan_id)
+    || Number(row.communication_profile_id || 0) !== Number(row.workflow_profile_id))) {
+    issues.push({ workflowId: row.workflow_id, reason: "communication_batch_owner_mismatch" });
+  }
+  return issues;
+}
+
 module.exports = {
   SCHEMA,
   SCHEMA_VERSION,
@@ -3605,6 +3693,7 @@ module.exports = {
   markCandidateJob,
   buildFeedbackSummary,
   buildBatchSummary,
+  getWorkflowHealthSnapshot,
   getLatestBatchId,
   getLatestMainScanBatchId,
   saveProfileAnalysis,
