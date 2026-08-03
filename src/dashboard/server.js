@@ -108,8 +108,13 @@ const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {} }) {
   const scanRuns = new Map();
+  const resolvedWorkflowHealth = {
+    getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
+    buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
+    renderPanel: workflowHealth?.renderPanel || renderWorkflowHealthPanel
+  };
   const recovery = recoverWorkflowRuns(db, {
     site: "boss",
     orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
@@ -141,7 +146,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
-      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
+      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
@@ -2222,7 +2227,7 @@ function workflowShortfallLabel(code) {
   }[code] || "候选可能不足";
 }
 
-function renderWorkflowPage({ db, searchParams, logger = null }) {
+function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
     workflowRunId,
@@ -2245,12 +2250,12 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   const phase = renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock });
   let healthPanel = "";
   try {
-    const snapshot = getWorkflowHealthSnapshot(db, {
+    const snapshot = workflowHealth.getSnapshot(db, {
       profileId: plan.profileId,
       planId: plan.id,
       now: new Date().toISOString()
     });
-    healthPanel = renderWorkflowHealthPanel(buildWorkflowHealthReport(snapshot));
+    healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
   } catch (error) {
     logger?.warn("workflow_health_render_failed", {
       workflowRunId: workflow.id,

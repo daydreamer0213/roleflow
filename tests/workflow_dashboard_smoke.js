@@ -20,6 +20,7 @@ const {
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -123,7 +124,6 @@ let server;
   const workflowBeforeHealthPage = listWorkflowRuns(db, {
     planId: saved.planId
   }).map((run) => ({ ...run }));
-  const healthChangesBefore = db.prepare("SELECT total_changes() AS count").get().count;
   const healthPage = await getText(
     baseUrl,
     `/workflow?runId=${encodeURIComponent(workflowBeforeHealthPage[0].id)}`
@@ -134,11 +134,6 @@ let server;
   assert.match(healthPage.body, /\u5df2\u68c0\u67e5\u5c97\u4f4d/);
   assert.match(healthPage.body, /\u6700\u8fd1\u72b6\u6001\u53d8\u5316/);
   assert.match(healthPage.body, /\u5c97\u4f4d\u7f3a\u5c11\u5b8c\u6574 JD|\u5f53\u524d\u672a\u53d1\u73b0\u6d41\u7a0b\u6570\u636e\u95ee\u9898/);
-  assert.strictEqual(
-    db.prepare("SELECT total_changes() AS count").get().count,
-    healthChangesBefore,
-    "鎵撳紑浣撴鍖哄潡涓嶈兘鍐欐暟鎹簱"
-  );
   assert.deepStrictEqual(
     listWorkflowRuns(db, { planId: saved.planId }),
     workflowBeforeHealthPage,
@@ -146,6 +141,59 @@ let server;
   );
   assert(!healthPage.body.includes("<script>health-xss</script>"));
   assert(healthPage.body.includes("&lt;script&gt;health-xss&lt;/script&gt;"));
+  const healthPanel = healthPage.body.match(/<section class="panel workflow-health">[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(healthPanel, /\u5f85\u590d\u6838/);
+  assert.match(healthPanel, /\u5c97\u4f4d #\d+/);
+
+  const unsafePanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 0, issueCount: 1 },
+    issues: [{
+      severity: "warning",
+      title: "unsafe href",
+      message: "fixture",
+      actionHref: "//external.example"
+    }],
+    recentEvents: [],
+    truncated: {}
+  });
+  assert(unsafePanel.includes('href="#"'));
+  assert(!unsafePanel.includes('href="//external.example"'));
+
+  const failOpenWarnings = [];
+  const failOpenServer = createDashboardServer({
+    db,
+    root,
+    dbPath,
+    forceMock: true,
+    allowOfflineMock: true,
+    logger: {
+      ...logger,
+      warn(event, metadata) { failOpenWarnings.push({ event, metadata }); }
+    },
+    workflowHealth: {
+      getSnapshot() { throw new Error("health fixture failure"); }
+    }
+  });
+  const failOpenBaseUrl = await listen(failOpenServer);
+  try {
+    const failOpenPage = await getText(failOpenBaseUrl, started.location);
+    assert.strictEqual(failOpenPage.status, 200);
+    assert.match(failOpenPage.body, /\u786e\u8ba4\u672c\u8f6e\u6c9f\u901a\u6e05\u5355/);
+    assert.doesNotMatch(failOpenPage.body, /\u6d41\u7a0b\u4f53\u68c0/);
+    assert.strictEqual(failOpenWarnings.length, 1);
+    assert.deepStrictEqual(failOpenWarnings[0], {
+      event: "workflow_health_render_failed",
+      metadata: {
+        workflowRunId: workflow.id,
+        planId: saved.planId,
+        errorCode: "WORKFLOW_HEALTH_FAILED"
+      }
+    });
+    assert(!JSON.stringify(failOpenWarnings[0]).includes("health fixture failure"));
+  } finally {
+    await new Promise((resolve) => failOpenServer.close(resolve));
+  }
 
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);

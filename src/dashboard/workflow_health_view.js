@@ -81,7 +81,7 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   const text = String(value || "");
-  if (!text.startsWith("/")) return "#";
+  if (!text.startsWith("/") || text.startsWith("//")) return "#";
   return escapeHtml(text);
 }
 
