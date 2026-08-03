@@ -1543,8 +1543,9 @@ function startMessageDiscovery(res, {
     }
   }, heartbeatMs);
 
+  let browser = null;
   Promise.resolve().then(async () => {
-    const browser = typeof dependencies.createBrowser === "function"
+    browser = typeof dependencies.createBrowser === "function"
       ? dependencies.createBrowser()
       : new EdgeControlAdapter();
     const reader = typeof dependencies.createReader === "function"
@@ -1589,18 +1590,32 @@ function startMessageDiscovery(res, {
     });
   }).finally(() => {
     clearInterval(heartbeat);
-    try {
-      releaseSiteScanLease(db, { site: "boss", owner });
-    } catch {
-      logger.warn("message_discovery_lease_release_failed", {
-        profileId,
-        status: run.status,
-        reasonCode: "MESSAGE_DISCOVERY_LEASE_RELEASE_FAILED"
-      });
-    }
+    return cleanupMessageDiscoveryBrowser(dependencies, browser, logger, profileId).finally(() => {
+      try {
+        releaseSiteScanLease(db, { site: "boss", owner });
+      } catch {
+        logger.warn("message_discovery_lease_release_failed", {
+          profileId,
+          status: run.status,
+          reasonCode: "MESSAGE_DISCOVERY_LEASE_RELEASE_FAILED"
+        });
+      }
+    });
   });
 
   sendJson(res, 202, publicMessageDiscoveryRun(run));
+}
+
+async function cleanupMessageDiscoveryBrowser(dependencies, browser, logger, profileId) {
+  if (!browser || typeof dependencies.cleanupBrowser !== "function") return;
+  try {
+    await dependencies.cleanupBrowser(browser);
+  } catch (error) {
+    logger.warn("message_discovery_browser_cleanup_failed", {
+      profileId,
+      error: errorMeta(error)
+    });
+  }
 }
 
 function draftDiscoveredMessage({ db, modelConfig, logger, card, job, hrMessage }) {

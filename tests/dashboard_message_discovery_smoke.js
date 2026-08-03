@@ -45,7 +45,7 @@ async function main() {
   const fixture = createFixture();
   const scenarios = [];
   const cleanupTimers = controllableTimers();
-  const browser = { kind: "fake-browser" };
+  const browsers = [];
   const readerCalls = [];
   const reader = {
     async scanUnread() {
@@ -59,6 +59,7 @@ async function main() {
     }
   };
   let browserCreations = 0;
+  let cleanupFailure = null;
   let nowMs = Date.parse("2026-07-31T01:00:00.000Z");
   server = createDashboardServer({
     db,
@@ -69,10 +70,20 @@ async function main() {
     messageDiscoveryDependencies: {
       createBrowser() {
         browserCreations += 1;
+        const browser = { kind: "fake-browser", cleanupCalls: 0 };
+        browsers.push(browser);
         return browser;
       },
+      async cleanupBrowser(browser) {
+        browser.cleanupCalls += 1;
+        if (cleanupFailure) {
+          const error = cleanupFailure;
+          cleanupFailure = null;
+          throw error;
+        }
+      },
       createReader(input) {
-        assert.strictEqual(input.browser, browser);
+        assert(browsers.includes(input.browser));
         return reader;
       },
       async runDiscovery(context) {
@@ -152,6 +163,17 @@ async function main() {
   await waitForStatus(base, fixture.profileId, "stopped");
   assert.deepStrictEqual(readerCalls, ["scan", "open:0"], "stop must abort before the next click");
   await waitForLeaseRelease();
+  assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "abort must clean up its browser exactly once");
+
+  scenarios.push(failedRun());
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await waitForStatus(base, fixture.profileId, "stopped");
+  await waitForLeaseRelease();
+  assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "runner failure must clean up its browser exactly once");
 
   scenarios.push(completedRun({
     fixture,
@@ -188,6 +210,7 @@ async function main() {
   ]);
   assertNoPrivateData(status);
   await waitForLeaseRelease();
+  assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "successful discovery must clean up its browser exactly once");
 
   const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(completedPage.status, 200);
@@ -203,6 +226,14 @@ async function main() {
   assert.strictEqual(status.status, "dismissed");
   assert.deepStrictEqual(status.results, []);
   assert.strictEqual(cleanupTimers.activeCount(), 0, "dismiss must clear the cleanup timer");
+
+  cleanupFailure = new Error("fake browser cleanup failed");
+  scenarios.push(completedRun({ fixture, drafts: ["清理失败后仍成功的草稿"] }));
+  status = await startAndWait(base, fixture.profileId, "completed");
+  await waitForLeaseRelease();
+  assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "cleanup hook must run exactly once when it throws");
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "completed", "cleanup failure must not overwrite a successful discovery status");
 
   scenarios.push(multiResultCompletedRun(fixture));
   await startAndWait(base, fixture.profileId, "completed");
@@ -410,6 +441,13 @@ function controlledPendingRun() {
       await reader.openQueuedConversation(queue[1], signal);
       throw new Error("the second click must be unreachable");
     }
+  };
+}
+
+function failedRun() {
+  return async ({ onStatus }) => {
+    onStatus({ status: "running", queued: 1, processed: 0, reasonCode: "", results: [] });
+    throw new Error("fake discovery failed");
   };
 }
 
