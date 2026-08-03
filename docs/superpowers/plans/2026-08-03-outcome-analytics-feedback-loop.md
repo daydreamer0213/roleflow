@@ -314,7 +314,7 @@ assert.match(page.body, /待分析或待刷新（不纳入四档比较）/);
 assert.doesNotMatch(page.body, /模型准确率|自动调整二维表|成功率/);
 ~~~
 
-Inject an analytics reader that throws once. Assert that /queue still returns 200, preserves its existing queue heading, omits the analytics panel, and emits one outcome_analytics_render_failed warning containing only a fixed error code.
+Inject an analytics reader that throws once. Assert that /queue returns HTTP 200, preserves its existing queue heading, keeps the analytics panel at its fixed position, shows the Chinese text `统计暂不可用`, exposes no exception details, and emits exactly one `outcome_analytics_render_failed` warning containing only the fixed error code `OUTCOME_ANALYTICS_UNAVAILABLE`.
 
 - [ ] **Step 2: Run the dashboard test to verify red**
 
