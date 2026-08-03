@@ -176,3 +176,11 @@
 真实适配器使用 OpenAI-compatible `/chat/completions`，支持 JSON mode；不支持时自动回退普通 JSON 提示。仅对短暂 5xx/网络错误做有限重试，不对鉴权、余额和模型名错误盲目重试。
 
 每个逻辑调用记录：kind、provider、model、缓存命中、延迟、尝试次数、HTTP 状态和 token 用量。日志不得包含 system prompt、输入、输出、简历、JD、HR 消息、回复草稿或 Key。用户粘贴的消息只存在于当前请求，不写入模型缓存、进展事件或隐藏字段。
+
+## 后台只读消息发现的 `draftCommunication`
+
+消息发现只有在用户从 `/messages?profileId=<个人资料 ID>` 主动启动、且页面已可靠关联唯一 `profile + job + thread` 后，才可调用 `draftCommunication({ mode: "hr_reply" })`。HR 消息正文只存在于本次调用的局部内存中，调用后立即释放；不得进入模型缓存、日志、数据库、状态 API、进度事件或页面字段。
+
+返回的 `CommunicationDraft` 继续受现有契约约束：有已确认事实时 `messages` 最多两条；缺失事实时必须为 `messages=[]` 且阶段为 `needs_user_action`；身份或关联不可靠时不得调用模型，同样进入 `needs_user_action`。`messageCategory=interview_invitation` 必须为 `messages=[]`、`missingFact=null`、`progressUpdate.stage=interview_invited`，只提醒用户自行决定，不能产生确认、接受、改期、安排或日历操作建议。
+
+模型输出的草稿只用于本地页面的内存展示与人工复制，不是 BOSS 操作指令。RoleFlow 不自动填写、聚焦或发送 BOSS 输入框；用户在 BOSS 手动发送后，才可在本地页面点击“已手动发送”。草稿在放弃、下一轮发现开始、30 分钟到期或服务重启时清除。不得保存 HR 原话、回复正文、完整聊天、截图、Cookie、localStorage 或敏感 URL。
