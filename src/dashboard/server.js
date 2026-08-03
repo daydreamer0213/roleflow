@@ -27,6 +27,7 @@ const {
   createScanRun,
   createWorkflowRun,
   getWorkflowRun,
+  getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
   getActiveWorkflowRun,
@@ -101,6 +102,8 @@ const {
   listWorkflowInventory,
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
+const { buildWorkflowHealthReport } = require("../core/workflow_health");
+const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
@@ -2240,6 +2243,21 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   const runtimeBlock = communicationRuntimeBlock(db);
   const phase = renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock });
+  let healthPanel = "";
+  try {
+    const snapshot = getWorkflowHealthSnapshot(db, {
+      profileId: plan.profileId,
+      planId: plan.id,
+      now: new Date().toISOString()
+    });
+    healthPanel = renderWorkflowHealthPanel(buildWorkflowHealthReport(snapshot));
+  } catch (error) {
+    logger?.warn("workflow_health_render_failed", {
+      workflowRunId: workflow.id,
+      planId: plan.id,
+      errorCode: String(error.code || "WORKFLOW_HEALTH_FAILED")
+    });
+  }
   const polling = shouldPollWorkflow(workflow, communication)
     ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
     : "";
@@ -2249,7 +2267,7 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
     <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
       <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
-    </header>${phase}</main>${polling}`);
+    </header>${healthPanel}${phase}</main>${polling}`);
 }
 
 function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock }) {

@@ -14,6 +14,7 @@ const {
   transitionWorkflowRun,
   createBatch,
   upsertJob,
+  recordCandidateJobEvent,
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
@@ -102,11 +103,49 @@ let server;
     searchPlanId: saved.planId
   });
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
-  for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
+  for (let index = 0; index < 6; index += 1) {
+    const seededJob = index === 0 ? layeredTalkJob() : job(index + 1);
+    if (index === 1) seededJob.title = "<script>health-xss</script>";
+    upsertJob(db, seededJob, batchId);
+  }
   upsertJob(db, lowRiskBackupJob(), batchId);
   upsertJob(db, layeredBackupJob(), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
-  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
+  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 6 });
+
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    jobId: listWorkflowReviewCandidates(db, workflow.id)[0].id,
+    eventType: "review",
+    payload: {}
+  });
+  const workflowBeforeHealthPage = listWorkflowRuns(db, {
+    planId: saved.planId
+  }).map((run) => ({ ...run }));
+  const healthChangesBefore = db.prepare("SELECT total_changes() AS count").get().count;
+  const healthPage = await getText(
+    baseUrl,
+    `/workflow?runId=${encodeURIComponent(workflowBeforeHealthPage[0].id)}`
+  );
+
+  assert.strictEqual(healthPage.status, 200);
+  assert.match(healthPage.body, /\u6d41\u7a0b\u4f53\u68c0/);
+  assert.match(healthPage.body, /\u5df2\u68c0\u67e5\u5c97\u4f4d/);
+  assert.match(healthPage.body, /\u6700\u8fd1\u72b6\u6001\u53d8\u5316/);
+  assert.match(healthPage.body, /\u5c97\u4f4d\u7f3a\u5c11\u5b8c\u6574 JD|\u5f53\u524d\u672a\u53d1\u73b0\u6d41\u7a0b\u6570\u636e\u95ee\u9898/);
+  assert.strictEqual(
+    db.prepare("SELECT total_changes() AS count").get().count,
+    healthChangesBefore,
+    "鎵撳紑浣撴鍖哄潡涓嶈兘鍐欐暟鎹簱"
+  );
+  assert.deepStrictEqual(
+    listWorkflowRuns(db, { planId: saved.planId }),
+    workflowBeforeHealthPage,
+    "鎵撳紑浣撴鍖哄潡涓嶈兘鎺ㄨ繘鎴栦慨澶嶅伐浣滄祦"
+  );
+  assert(!healthPage.body.includes("<script>health-xss</script>"));
+  assert(healthPage.body.includes("&lt;script&gt;health-xss&lt;/script&gt;"));
 
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
