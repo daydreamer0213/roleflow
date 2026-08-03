@@ -18,6 +18,7 @@
 - 不新增数据库迁移；`SCHEMA_VERSION` 保持不变。
 - 状态历史继续以 `candidate_job_events` 为权威来源，不复制到新表。
 - 健康报告是只读派生结果，不反向修改岗位、工作流、缓存或四档建议。
+- 体检新增的健康快照、规则评估和 HTML 渲染路径必须零写入；`/workflow` 原有的工作流恢复和库存对账逻辑不属于本子项目，不得为了满足体检验收而删除或迁移。
 - 页面查询必须有数量上限，并显示结果是否被截断。
 - 新功能失败时只隐藏体检报告并记录脱敏错误，不阻断工作流页面。
 
@@ -75,6 +76,16 @@ buildWorkflowHealthReport(snapshot, {
 
 // src/dashboard/workflow_health_view.js
 renderWorkflowHealthPanel(report) => string
+
+// src/dashboard/server.js
+createDashboardServer({
+  // Existing options omitted.
+  workflowHealth = {
+    getSnapshot: getWorkflowHealthSnapshot,
+    buildReport: buildWorkflowHealthReport,
+    renderPanel: renderWorkflowHealthPanel
+  }
+})
 ```
 
 ### Health Issue Contract
@@ -895,8 +906,6 @@ In `tests/workflow_dashboard_smoke.js`, after a workflow and at least one candid
 const workflowBeforeHealthPage = listWorkflowRuns(db, {
   planId: saved.planId
 }).map((run) => ({ ...run }));
-const healthChangesBefore = db.prepare("SELECT total_changes() AS count").get().count;
-
 const healthPage = await getText(
   baseUrl,
   `/workflow?runId=${encodeURIComponent(workflowBeforeHealthPage[0].id)}`
@@ -907,15 +916,10 @@ assert.match(healthPage.body, /流程体检/);
 assert.match(healthPage.body, /已检查岗位/);
 assert.match(healthPage.body, /最近状态变化/);
 assert.match(healthPage.body, /岗位缺少完整 JD|当前未发现流程数据问题/);
-assert.strictEqual(
-  db.prepare("SELECT total_changes() AS count").get().count,
-  healthChangesBefore,
-  "打开体检区块不能写数据库"
-);
 assert.deepStrictEqual(
   listWorkflowRuns(db, { planId: saved.planId }),
   workflowBeforeHealthPage,
-  "打开体检区块不能推进或修复工作流"
+  "当前测试夹具中的页面打开不能推进或修复工作流"
 );
 ```
 
@@ -925,6 +929,28 @@ Seed one job title as `"<script>health-xss</script>"`, then assert:
 assert(!healthPage.body.includes("<script>health-xss</script>"));
 assert(healthPage.body.includes("&lt;script&gt;health-xss&lt;/script&gt;"));
 ```
+
+Add a direct renderer assertion so protocol-relative links are rejected:
+
+```js
+const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
+const unsafePanel = renderWorkflowHealthPanel({
+  status: "attention",
+  summary: { jobsChecked: 0, issueCount: 1 },
+  issues: [{
+    severity: "warning",
+    title: "unsafe href",
+    message: "fixture",
+    actionHref: "//external.example"
+  }],
+  recentEvents: [],
+  truncated: {}
+});
+assert(unsafePanel.includes('href="#"'));
+assert(!unsafePanel.includes('href="//external.example"'));
+```
+
+Add a separate server created with injected `workflowHealth.getSnapshot` that throws `new Error("health fixture failure")`. Its GET must still return `200`, contain existing workflow phase text, omit the health panel, and record exactly one `workflow_health_render_failed` warning without the error message. This proves the new health path fails open without asserting that unrelated, pre-existing workflow recovery writes never occur.
 
 - [ ] **Step 2: Run the dashboard test and confirm the panel is absent**
 
@@ -1043,17 +1069,19 @@ const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 
 If `getWorkflowHealthSnapshot` is added to an existing destructured storage import, do not add a second `require("../core/storage")`.
 
+Extend `createDashboardServer()` with an optional `workflowHealth` dependency object. Default its three functions to the imports above, and pass that object into `renderWorkflowPage()`. This follows the existing dependency-injection pattern used by `connectionTester` and `spawnProcess`, and permits a deterministic fail-open test without patching CommonJS module caches.
+
 Inside `renderWorkflowPage({ db, searchParams, logger })`, after `workflow`, `plan` and `phase` are available, add:
 
 ```js
 let healthPanel = "";
 try {
-  const snapshot = getWorkflowHealthSnapshot(db, {
+  const snapshot = workflowHealth.getSnapshot(db, {
     profileId: plan.profileId,
     planId: plan.id,
     now: new Date().toISOString()
   });
-  healthPanel = renderWorkflowHealthPanel(buildWorkflowHealthReport(snapshot));
+  healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
 } catch (error) {
   logger?.warn("workflow_health_render_failed", {
     workflowRunId: workflow.id,
@@ -1063,7 +1091,7 @@ try {
 }
 ```
 
-Render `${healthPanel}` immediately after the existing workflow progress summary and before `${phase}`. Do not call any write method from this block.
+Render `${healthPanel}` immediately after the existing workflow progress summary and before `${phase}`. Do not call any write method from this block. Do not change `recoverWorkflowRuns()` or `reconcilePlanWorkflowInventory()` in this task; they are pre-existing workflow recovery behavior outside the health path.
 
 - [ ] **Step 5: Run focused dashboard tests**
 
@@ -1208,7 +1236,7 @@ git push
 - [ ] `SCHEMA_VERSION` is unchanged.
 - [ ] No migration or new table was added.
 - [ ] `candidate_job_events` remains the only new-style candidate status history.
-- [ ] Opening `/workflow` causes zero SQLite changes.
+- [ ] Health snapshot, report generation and panel rendering cause zero SQLite changes; existing `/workflow` recovery and inventory reconciliation behavior is unchanged.
 - [ ] Opening `/workflow` causes zero model or BOSS calls.
 - [ ] `review_required` is not reported as a stalled workflow.
 - [ ] Health failures do not block the existing workflow page.
