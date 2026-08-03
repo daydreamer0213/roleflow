@@ -2476,15 +2476,20 @@ function listDecisionPool(db, { planId } = {}) {
   if (!plan) return [];
   return listReportJobs(db, { planId: plan.id, batch: "all", profileId: plan.profileId, limit: 10000 });
 }
+
+function outcomeAnalyticsPlanName(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function getOutcomeAnalyticsSnapshot(db, { planId } = {}) {
   const plan = getSearchPlan(db, planId);
-  if (!plan) return buildOutcomeAnalytics([]);
+  if (!plan) return { ...buildOutcomeAnalytics([]), context: { planName: "" } };
   const rows = listDecisionPool(db, { planId: plan.id }).map((job) => ({
     decisionBucket: job.decisionBucket,
     applicationStatus: job.applicationStatus || "pending",
     keyword: job.keyword || ""
   }));
-  return buildOutcomeAnalytics(rows);
+  return { ...buildOutcomeAnalytics(rows), context: { planName: outcomeAnalyticsPlanName(plan.name) } };
 }
 
 function listDecisionQueue(db, { planId, limit = 15, buckets = null } = {}) {

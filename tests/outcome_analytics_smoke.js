@@ -4,6 +4,7 @@ const { buildOutcomeAnalytics } = require("../src/core/outcome_analytics");
 const { openDb, getOutcomeAnalyticsSnapshot } = require("../src/core/storage");
 
 const OTHER_KEYWORD = "\u5176\u4ed6\u5173\u952e\u8bcd";
+const MISSING_KEYWORD = "\u672a\u8bb0\u5f55\u5173\u952e\u8bcd";
 
 const bait = {
   jobId: "BAIT-JOB-ID",
@@ -54,6 +55,12 @@ assert.strictEqual(analytics.unclassified.total, 1);
 assert.strictEqual(analytics.unclassified.unknownDecisionBucket, 1);
 assert.strictEqual(analytics.unclassified.unknownApplicationStatus, 1);
 assert.strictEqual(analytics.keywords.find((row) => row.keyword === "RAG").total, 3);
+
+const blankKeywordAnalytics = buildOutcomeAnalytics([
+  { decisionBucket: "primary", applicationStatus: "applied", keyword: " " }
+]);
+assert.strictEqual(blankKeywordAnalytics.keywords[0].keyword, MISSING_KEYWORD);
+assert.strictEqual(blankKeywordAnalytics.keywords[0].total, 1);
 
 const namedKeywords = analytics.keywords.filter((row) => row.keyword !== OTHER_KEYWORD);
 assert.strictEqual(namedKeywords.length, 12);
@@ -125,7 +132,7 @@ function outcomeSnapshotFixture() {
   const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at)
     VALUES (?, ?, ?, ?)`).run("Confirmed candidate", "{}", now, now).lastInsertRowid);
   const planId = Number(db.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, is_active, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?)`).run(profileId, "Analytics plan", "{}", now, now).lastInsertRowid);
+    VALUES (?, ?, ?, 1, ?, ?)`).run(profileId, "Analytics <plan> & safe", "{}", now, now).lastInsertRowid);
   const batchId = Number(db.prepare(`INSERT INTO batches(site, keyword, started_at, note, profile_id, search_plan_id)
     VALUES (?, ?, ?, ?, ?, ?)`).run("fixture", "Analytics", now, "safe synthetic fixture", profileId, planId).lastInsertRowid);
   const jobId = Number(db.prepare(`INSERT INTO jobs(source, source_id, title, company, url, first_seen_at, last_seen_at)
@@ -160,14 +167,18 @@ const outcomeSnapshot = getOutcomeAnalyticsSnapshot(fixture.db, { planId: fixtur
 assert.deepStrictEqual(outcomeSnapshot.tiers.map((row) => row.tier), ["primary", "apply", "caution", "not_recommended"]);
 assert.strictEqual(outcomeSnapshot.tiers[0].total, 1);
 assert.strictEqual(outcomeSnapshot.tiers[0].outcomes.pending, 1);
+assert.deepStrictEqual(outcomeSnapshot.context, { planName: "Analytics &lt;plan&gt; &amp; safe" });
+assert.deepStrictEqual(Object.keys(outcomeSnapshot.context), ["planName"]);
 assert.deepStrictEqual(outcomeSnapshotState(fixture.db), beforeSnapshot);
 const outcomeSnapshotJson = JSON.stringify(outcomeSnapshot);
 for (const value of Object.values(bait)) assert.strictEqual(outcomeSnapshotJson.includes(value), false);
+assert.strictEqual(outcomeSnapshotJson.includes("Analytics <plan> & safe"), false);
 
 const beforeEmptySnapshot = outcomeSnapshotState(fixture.db);
 const emptyOutcomeSnapshot = getOutcomeAnalyticsSnapshot(fixture.db, { planId: fixture.planId + 1000 });
 assert.deepStrictEqual(emptyOutcomeSnapshot.tiers.map((row) => row.tier), ["primary", "apply", "caution", "not_recommended"]);
 assert.strictEqual(emptyOutcomeSnapshot.tiers.reduce((total, row) => total + row.total, 0), 0);
+assert.deepStrictEqual(emptyOutcomeSnapshot.context, { planName: "" });
 assert.deepStrictEqual(outcomeSnapshotState(fixture.db), beforeEmptySnapshot);
 fixture.db.close();
 console.log("outcome_analytics_smoke ok");

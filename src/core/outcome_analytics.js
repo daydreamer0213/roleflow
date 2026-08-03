@@ -4,6 +4,7 @@ const OUTCOMES = ["pending", "review", "later", "applied", "skipped", "no_reply"
 const UNRESOLVED = new Set(["pending", "review", "later"]);
 const MAX_NAMED_KEYWORDS = 12;
 const OTHER_KEYWORD = "\u5176\u4ed6\u5173\u952e\u8bcd";
+const MISSING_KEYWORD = "\u672a\u8bb0\u5f55\u5173\u952e\u8bcd";
 
 function emptyOutcomes() {
   return Object.fromEntries(OUTCOMES.map((status) => [status, 0]));
@@ -46,7 +47,7 @@ function buildOutcomeAnalytics(rows = []) {
     const validStatus = OUTCOMES.includes(status);
     const keyword = typeof item?.keyword === "string" && item.keyword.trim()
       ? item.keyword.trim()
-      : "鏈褰曞叧閿瘝";
+      : MISSING_KEYWORD;
     const target = tierByName.get(bucket) || (DIAGNOSTIC_BUCKETS.has(bucket) ? diagnostics : null);
 
     if (!target || !validStatus) unclassified.total += 1;

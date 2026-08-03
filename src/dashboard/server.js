@@ -2627,16 +2627,30 @@ function outcomeTierLabel(key) {
 function renderOutcomeAnalyticsPanel(aggregate) {
   const tierRows = outcomeTierRows(aggregate);
   const keywordRows = outcomeKeywordRows(aggregate);
+  const planName = typeof aggregate?.context?.planName === "string" && aggregate.context.planName ? aggregate.context.planName : "-";
+  const includedCount = outcomeIncludedCount(aggregate);
+  const terminalCount = outcomeTerminalCount(aggregate);
   const tiers = tierRows.length
     ? Object.keys(OUTCOME_TIER_LABELS).map((key) => {
       const row = tierRows.find((item) => item.key === key) || {};
-      return `<tr><th scope="row">${escapeHtml(outcomeTierLabel(key))}</th><td>${outcomeCount(row, "total")}</td><td>${outcomeCount(row, "unresolved")}</td><td>${outcomeCount(row, "applied")}</td><td>${outcomeCount(row, "skipped")}</td><td>${outcomeCount(row, "no_reply")}</td><td>${outcomeCount(row, "interview")}</td><td>${outcomeCount(row, "rejected_or_invalid")}</td></tr>`;
+      return '<tr><th scope="row">' + escapeHtml(outcomeTierLabel(key)) + '</th>' + outcomeAnalyticsMetricCells(row) + '</tr>';
     }).join("")
-    : '<tr><td colspan="8">暂无四档结果记录。</td></tr>';
+    : '<tr><td colspan="9">\u6682\u65e0\u56db\u6863\u7ed3\u679c\u8bb0\u5f55\u3002</td></tr>';
   const keywords = keywordRows.length
-    ? `<table class="outcome-keyword-table"><thead><tr><th>关键词</th><th>总数</th></tr></thead><tbody>${keywordRows.map((item) => `<tr><th scope="row">${escapeHtml(item.label)}</th><td>${outcomeCount(item, "total")}</td></tr>`).join("")}</tbody></table>`
-    : "<p>暂无关键词统计记录。</p>";
-  return `<section class="panel outcome-analytics"><h2>结果统计（只读）</h2><table class="outcome-tier-table"><thead><tr><th>推荐档位</th><th>总数</th><th>未处理</th><th>已投</th><th>已跳过</th><th>无回复</th><th>已约面</th><th>已拒绝或无效</th></tr></thead><tbody>${tiers}</tbody></table><p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：${outcomeDiagnosticsCount(aggregate)}</p><h3>搜索方向（关键词）</h3>${keywords}<p class="queue-summary">提示：调整匹配矩阵、权重或提示词前，必须取得用户确认。</p></section>`;
+    ? '<div class="outcome-analytics-table-wrap"><table class="outcome-keyword-table"><thead><tr><th>\u5173\u952e\u8bcd</th>' + outcomeAnalyticsMetricHeaders() + '</tr></thead><tbody>' + keywordRows.map((item) => '<tr><th scope="row">' + escapeHtml(item.label) + '</th>' + outcomeAnalyticsMetricCells(item) + '</tr>').join("") + '</tbody></table></div>'
+    : "<p>\u6682\u65e0\u5173\u952e\u8bcd\u7edf\u8ba1\u8bb0\u5f55\u3002</p>";
+  const unclassified = outcomeUnclassifiedCounts(aggregate);
+  const noRecordedResults = terminalCount === 0 ? '<p class="outcome-analytics-empty">\u6682\u65e0\u5df2\u8bb0\u5f55\u7ed3\u679c\u3002</p>' : "";
+  const style = '<style>.outcome-analytics-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}.outcome-tier-table,.outcome-keyword-table{width:100%;min-width:880px;border-collapse:collapse}.outcome-tier-table th,.outcome-tier-table td,.outcome-keyword-table th,.outcome-keyword-table td{padding:7px;border-bottom:1px solid #d8e0e6;text-align:left;white-space:nowrap}.outcome-analytics-context,.outcome-analytics-diagnostics,.outcome-analytics-unclassified,.outcome-analytics-empty{margin:10px 0;color:#5b6773;font-size:13px}</style>';
+  return style + '<section class="panel outcome-analytics"><h2>\u7ed3\u679c\u7edf\u8ba1\uff08\u53ea\u8bfb\uff09</h2><p class="outcome-analytics-context">\u5f53\u524d\u65b9\u6848\uff1a' + planName + '\uff1b\u7eb3\u5165\u5c97\u4f4d\uff1a' + includedCount + '\uff1b\u5df2\u8bb0\u5f55\u7ec8\u6001\uff1a' + terminalCount + '\u3002</p><div class="outcome-analytics-table-wrap"><table class="outcome-tier-table"><thead><tr><th>\u63a8\u8350\u6863\u4f4d</th>' + outcomeAnalyticsMetricHeaders() + '</tr></thead><tbody>' + tiers + '</tbody></table></div><p class="outcome-analytics-diagnostics">\u5f85\u5206\u6790\u6216\u5f85\u5237\u65b0\uff08\u4e0d\u7eb3\u5165\u56db\u6863\u6bd4\u8f83\uff09\uff1a' + outcomeDiagnosticsCount(aggregate) + '</p><p class="outcome-analytics-unclassified">\u672a\u5206\u7c7b\u8bb0\u5f55\uff1a' + unclassified.total + '\uff1b\u672a\u77e5\u63a8\u8350\u6863\u4f4d\uff1a' + unclassified.unknownDecisionBucket + '\uff1b\u672a\u77e5\u72b6\u6001\uff1a' + unclassified.unknownApplicationStatus + '</p>' + noRecordedResults + '<h3>\u641c\u7d22\u65b9\u5411\uff08\u5173\u952e\u8bcd\uff09</h3>' + keywords + '<p class="queue-summary">\u4ec5\u4f9b\u89c2\u5bdf\uff0c\u4e0d\u8db3\u4ee5\u8c03\u53c2</p><p class="queue-summary">\u63d0\u793a\uff1a\u8c03\u6574\u5339\u914d\u77e9\u9635\u3001\u6743\u91cd\u6216\u63d0\u793a\u8bcd\u524d\uff0c\u5fc5\u987b\u53d6\u5f97\u7528\u6237\u786e\u8ba4\u3002</p></section>';
+}
+
+function outcomeAnalyticsMetricHeaders() {
+  return "<th>\u603b\u6570</th><th>\u672a\u5904\u7406</th><th>\u5df2\u6295</th><th>\u5df2\u8df3\u8fc7</th><th>\u65e0\u56de\u590d</th><th>\u5df2\u7ea6\u9762</th><th>\u5df2\u62d2\u7edd\u6216\u65e0\u6548</th><th>\u85aa\u8d44\u4e0d\u5339\u914d</th>";
+}
+
+function outcomeAnalyticsMetricCells(row) {
+  return ["total", "unresolved", "applied", "skipped", "no_reply", "interview", "rejected_or_invalid", "salary_mismatch"].map((key) => '<td>' + outcomeCount(row, key) + '</td>').join("");
 }
 
 function outcomeTierRows(aggregate) {
@@ -2647,12 +2661,16 @@ function outcomeTierRows(aggregate) {
 
 function outcomeKeywordRows(aggregate) {
   const rows = Array.isArray(aggregate?.keywords) ? aggregate.keywords : [];
-  return rows.slice(0, 8).map((row) => ({ ...row, label: String(row?.label || row?.keyword || row?.word || "") }))
+  return rows.map((row) => ({ ...row, label: String(row?.label || row?.keyword || row?.word || "") }))
     .filter((row) => row.label);
 }
 
 function outcomeCount(row, key) {
-  if (key === "unresolved") return outcomeCount(row, "unresolvedCount");
+  if (key === "unresolved") {
+    const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
+    const value = groups.map((group) => Number(group?.unresolvedCount)).find(Number.isFinite);
+    return value === undefined ? outcomeCount(row, "pending") + outcomeCount(row, "review") + outcomeCount(row, "later") : value;
+  }
   const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
   if (key === "rejected_or_invalid") {
     const direct = groups.map((group) => Number(group?.[key])).find(Number.isFinite);
@@ -2668,6 +2686,26 @@ function outcomeDiagnosticsCount(aggregate) {
   const value = diagnostics.analysis_pending ?? diagnostics.pending ?? diagnostics.total ?? aggregate?.analysisPending ?? aggregate?.pending;
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
+
+function outcomeIncludedCount(aggregate) {
+  return outcomeCount(aggregate?.totals || {}, "total");
+}
+
+function outcomeTerminalCount(aggregate) {
+  const terminalOutcomes = ["applied", "skipped", "no_reply", "interview", "rejected", "invalid", "salary_mismatch"];
+  return [...outcomeTierRows(aggregate), aggregate?.diagnostics || {}]
+    .reduce((total, row) => total + terminalOutcomes.reduce((sum, status) => sum + outcomeCount(row, status), 0), 0);
+}
+
+function outcomeUnclassifiedCounts(aggregate) {
+  const unclassified = aggregate?.unclassified || {};
+  return {
+    total: outcomeCount(unclassified, "total"),
+    unknownDecisionBucket: outcomeCount(unclassified, "unknownDecisionBucket"),
+    unknownApplicationStatus: outcomeCount(unclassified, "unknownApplicationStatus")
+  };
+}
+
 
 function renderCommunicationBuilderPage({ db, searchParams }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));

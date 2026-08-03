@@ -30,6 +30,8 @@ const BAIT = Object.freeze({
   resume: "bait-resume-content-ef1518a2",
   rawModel: "bait-raw-model-output-e0a0d5cc"
 });
+const MISSING_KEYWORD = "\u672a\u8bb0\u5f55\u5173\u952e\u8bcd";
+const OTHER_KEYWORD = "\u5176\u4ed6\u5173\u952e\u8bcd";
 
 let db;
 let server;
@@ -58,18 +60,29 @@ let server;
   assert.strictEqual(page.status, 200);
   const normalPanel = extractAnalyticsPanel(page.body);
   assertContains(normalPanel, /结果统计（只读）/, "outcome analytics heading is rendered in the panel");
+  assertContains(normalPanel, /当前方案：Outcome &lt;analytics&gt; &amp; plan；纳入岗位：20；已记录终态：3。/, "safe plan context and aggregate summary are rendered");
+  assertExcludes(normalPanel, /Outcome <analytics> & plan/, "raw plan name is not rendered");
   const tierTable = extractAnalyticsTable(normalPanel, "outcome-tier-table");
   for (const label of ["主投", "可投", "慎投", "不推荐"]) {
     assertContains(tierTable, new RegExp(`<th scope="row">${label}<\\/th>`), `tier label is rendered in the analytics table: ${label}`);
   }
   assert.strictEqual(extractTableBodyRows(tierTable).length, 4, "analytics table renders exactly four tier rows");
   assertContains(tierTable, /<th>已跳过<\/th>/, "analytics table includes the skipped column");
+  assertContains(tierTable, /<th>薪资不匹配<\/th>/, "analytics table includes the salary mismatch column");
   assertTierMetrics(tierTable, "主投", [1, 0, 0, 0, 0, 1, 0]);
   assertTierMetrics(tierTable, "可投", [1, 0, 0, 0, 1, 0, 0]);
   assertTierMetrics(tierTable, "慎投", [1, 1, 0, 0, 0, 0, 0]);
   assertTierMetrics(tierTable, "不推荐", [1, 0, 0, 1, 0, 0, 0]);
-  assertContains(normalPanel, /<p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：1<\/p>/, "diagnostics count is separate from the four tiers");
+  assertContains(normalPanel, /<p class="outcome-analytics-diagnostics">待分析或待刷新（不纳入四档比较）：16<\/p>/, "diagnostics count is separate from the four tiers");
+  assertContains(normalPanel, /<p class="outcome-analytics-unclassified">未分类记录：0；未知推荐档位：0；未知状态：0<\/p>/, "aggregate-only unclassified counters are rendered");
   assertContains(normalPanel, /搜索方向（关键词）/, "keyword heading is rendered in the panel");
+  const keywordTable = extractAnalyticsTable(normalPanel, "outcome-keyword-table");
+  assert.strictEqual(extractTableBodyRows(keywordTable).length, 13, "dashboard renders every aggregator-bounded keyword row");
+  assertContains(keywordTable, new RegExp(`<th scope="row">${MISSING_KEYWORD}<\\/th>`), "rendered keywords include the blank-keyword fallback");
+  assertContains(keywordTable, new RegExp(`<th scope="row">${OTHER_KEYWORD}<\\/th>`), "rendered keywords include the aggregator overflow row");
+  assertKeywordRowsReconcile(keywordTable);
+  assert.strictEqual((normalPanel.match(/class="outcome-analytics-table-wrap"/g) || []).length, 2, "wide analytics tables use local horizontal overflow wrappers");
+  assertContains(normalPanel, /\u4ec5\u4f9b\u89c2\u5bdf\uff0c\u4e0d\u8db3\u4ee5\u8c03\u53c2/, "deterministic v1 sample caution is rendered");
   assertContains(normalPanel, /调整匹配矩阵、权重或提示词前，必须取得用户确认/, "confirmation notice is rendered in the panel");
   assertExcludes(normalPanel, /模型准确率|自动调整二维表|成功率/, "prohibited claims are absent from the panel");
   for (const marker of Object.values(BAIT)) {
@@ -92,6 +105,32 @@ let server;
     }
   });
   assertContains(extractAnalyticsPanel(unknownTierPage), /暂无四档结果记录。/, "unknown tier data uses the no-records behavior");
+  assertContains(extractAnalyticsPanel(unknownTierPage), /暂无已记录结果。/, "zero terminal count uses the no-recorded-results behavior");
+
+  const aggregateOnlyPage = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId) }),
+    outcomeAnalyticsReader() {
+      return {
+        context: { planName: "Safe &amp; plan", rawPlanId: "raw-plan-id" },
+        totals: { total: 7 },
+        tiers: [],
+        diagnostics: { total: 0, outcomes: {} },
+        keywords: [],
+        unclassified: {
+          total: 2,
+          unknownDecisionBucket: 1,
+          unknownApplicationStatus: 1,
+          rawDecisionBucket: "raw-decision-value",
+          rawApplicationStatus: "raw-status-value"
+        }
+      };
+    }
+  });
+  const aggregateOnlyPanel = extractAnalyticsPanel(aggregateOnlyPage);
+  assertContains(aggregateOnlyPanel, /当前方案：Safe &amp; plan；纳入岗位：7；已记录终态：0。/, "display-only safe context and aggregate counts are rendered");
+  assertContains(aggregateOnlyPanel, /未分类记录：2；未知推荐档位：1；未知状态：1/, "unknown counters render as aggregate numbers only");
+  assertExcludes(aggregateOnlyPanel, /raw-plan-id|raw-decision-value|raw-status-value/, "raw context and unknown values are not rendered");
 
   const warnings = [];
   const failOpenServer = createDashboardServer({
@@ -154,7 +193,7 @@ function seedPlan(database) {
       diagnostics: {}
     },
     searchPlan: {
-      name: "Outcome analytics",
+      name: "Outcome <analytics> & plan",
       cities: ["上海"],
       directions: ["AI 应用开发"],
       keywords: [{ word: "RAG 工程师", priority: "A", reason: "主方向" }],
@@ -190,14 +229,20 @@ function seedJobs(database, batchId, { planId, profileId }) {
     const jobId = upsertJob(database, job(recommendation), batchId);
     if (status) markCandidateJob(database, { profileId, planId, jobId, status });
   }
+  for (let index = 1; index <= 13; index += 1) {
+    upsertJob(database, job("analysis_pending", `Named-${String(index).padStart(2, "0")}`, `named-${index}`), batchId);
+  }
+  for (let index = 1; index <= 2; index += 1) {
+    upsertJob(database, job("analysis_pending", " ", `blank-${index}`), batchId);
+  }
 }
 
-function job(recommendation) {
+function job(recommendation, keyword = "RAG 工程师", sourceSuffix = recommendation) {
   const pending = recommendation === "analysis_pending";
   return {
     source: "outcome-analytics-smoke",
-    sourceId: `${BAIT.jobOrSourceId}-${recommendation}`,
-    keyword: "RAG 工程师",
+    sourceId: `${BAIT.jobOrSourceId}-${sourceSuffix}`,
+    keyword,
     title: `${BAIT.title}-${recommendation}`,
     company: BAIT.company,
     location: "上海",
@@ -238,10 +283,19 @@ function extractTableBodyRows(table) {
 }
 
 function assertTierMetrics(table, label, expected) {
-  const row = table.match(new RegExp(`<tr><th scope="row">${label}<\\/th>((?:<td>\\d+<\\/td>){7})<\\/tr>`));
+  const row = table.match(new RegExp(`<tr><th scope="row">${label}<\\/th>((?:<td>\\d+<\\/td>){7,})<\\/tr>`));
   assert(row, "analytics tier row is present");
   const values = [...row[1].matchAll(/<td>(\d+)<\/td>/g)].map((match) => Number(match[1]));
-  assert.deepStrictEqual(values, expected, "analytics tier metrics match the seeded aggregate data");
+  assert.deepStrictEqual(values.slice(0, expected.length), expected, "analytics tier metrics match the seeded aggregate data");
+}
+
+function assertKeywordRowsReconcile(table) {
+  const rows = [...table.matchAll(/<tr><th scope="row">[\s\S]*?<\/th>((?:<td>\d+<\/td>){8})<\/tr>/g)];
+  assert.strictEqual(rows.length, 13, "every keyword row includes total and reconcilable outcome dimensions");
+  for (const row of rows) {
+    const [total, unresolved, applied, skipped, noReply, interview, rejectedOrInvalid, salaryMismatch] = [...row[1].matchAll(/<td>(\d+)<\/td>/g)].map((match) => Number(match[1]));
+    assert.strictEqual(total, unresolved + applied + skipped + noReply + interview + rejectedOrInvalid + salaryMismatch, "keyword outcome dimensions reconcile with its total");
+  }
 }
 
 function assertAnalyticsPanelPlacement(body, label) {
