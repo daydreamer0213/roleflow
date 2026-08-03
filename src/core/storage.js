@@ -3571,7 +3571,9 @@ function getWorkflowHealthSnapshot(db, options = {}) {
   const jobs = listReportJobs(db, { profileId, planId, limit: jobLimit + 1 });
   const workflowRuns = listWorkflowRuns(db, { profileId, planId, limit: workflowLimit + 1 });
   const candidateEvents = listCandidateJobEvents(db, { profileId, planId, limit: eventLimit + 1 });
-  const linkRows = db.prepare(`
+  const selectedWorkflowRuns = workflowRuns.slice(0, workflowLimit);
+  const selectedWorkflowIds = selectedWorkflowRuns.map((workflow) => workflow.id);
+  const linkRows = selectedWorkflowIds.length ? db.prepare(`
     SELECT w.id AS workflow_id, w.plan_id AS workflow_plan_id,
       w.profile_id AS workflow_profile_id, w.scan_run_id, sr.plan_id AS scan_plan_id,
       w.scan_batch_id, sb.search_plan_id AS scan_batch_plan_id,
@@ -3581,13 +3583,13 @@ function getWorkflowHealthSnapshot(db, options = {}) {
     LEFT JOIN scan_runs sr ON sr.id = w.scan_run_id
     LEFT JOIN batches sb ON sb.id = w.scan_batch_id
     LEFT JOIN communication_batches cb ON cb.id = w.communication_batch_id
-    WHERE w.profile_id = ? AND w.plan_id = ?
-  `).all(profileId, planId);
+    WHERE w.id IN (${selectedWorkflowIds.map(() => "?").join(", ")})
+  `).all(...selectedWorkflowIds) : [];
 
   return Object.freeze({
     generatedAt, profileId, planId,
     jobs: Object.freeze(jobs.slice(0, jobLimit)),
-    workflowRuns: Object.freeze(workflowRuns.slice(0, workflowLimit)),
+    workflowRuns: Object.freeze(selectedWorkflowRuns),
     candidateEvents: Object.freeze(candidateEvents.slice(0, eventLimit)),
     linkIssues: Object.freeze(linkRows.flatMap(workflowLinkIssues)),
     truncated: Object.freeze({

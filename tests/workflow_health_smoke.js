@@ -15,6 +15,7 @@ const {
   createBatch,
   upsertJob,
   markCandidateJob,
+  recordCandidateJobEvent,
   createWorkflowRun,
   getWorkflowHealthSnapshot
 } = require("../src/core/storage");
@@ -207,6 +208,62 @@ try {
   assert.throws(() => getWorkflowHealthSnapshot(db, {
     profileId: saved.profileId + 1, planId: saved.planId
   }), /does not belong to the selected profile/);
+
+  const otherPlanId = Number(db.prepare(`
+    INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    saved.profileId,
+    "Other health plan",
+    JSON.stringify({ name: "Other health plan" }),
+    "2026-08-03T08:01:00.000Z",
+    "2026-08-03T08:01:00.000Z"
+  ).lastInsertRowid);
+  const otherBatchId = createBatch(db, "boss", "Other plan", "other plan fixture", {
+    profileId: saved.profileId, searchPlanId: otherPlanId
+  });
+  db.prepare("UPDATE workflow_runs SET scan_batch_id = ? WHERE id = ?")
+    .run(otherBatchId, "health-workflow");
+  const secondJobId = upsertJob(db, {
+    source: "boss", sourceId: "health-job-2", keyword: "Product Operations",
+    title: "Product Operations 2", company: "Test Company", location: "Guangzhou",
+    salary: "8-12K", experience: "1-3 years", education: "Bachelor",
+    url: "https://example.test/job/health-job-2", description: "Complete JD ".repeat(20),
+    tags: [], matches: [], risks: [], qualityTags: [], analysis: {}
+  }, batchId);
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId, planId: saved.planId, jobId: secondJobId,
+    eventType: "review", payload: {}
+  });
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId, planId: null, jobId: secondJobId,
+    eventType: "review", payload: { legacy: true }
+  });
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId, planId: otherPlanId, jobId: secondJobId,
+    eventType: "review", payload: { otherPlan: true }
+  });
+  createWorkflowRun(db, {
+    id: "health-workflow-new", profileId: saved.profileId, planId: saved.planId,
+    localDay: "2026-08-04", sequence: 1, targetSuccessCount: 10, successfulCount: 0,
+    inventoryCount: 2, candidateGap: 8, scanNeeded: true, keywords: [], budget: {},
+    planner: {}, metrics: {}, createdAt: "2026-08-03T08:02:00.000Z"
+  });
+
+  const boundedSnapshot = getWorkflowHealthSnapshot(db, {
+    profileId: saved.profileId, planId: saved.planId, now,
+    jobLimit: 1, workflowLimit: 1, eventLimit: 2
+  });
+  assert.deepStrictEqual(boundedSnapshot.truncated, {
+    jobs: true, workflowRuns: true, candidateEvents: true
+  });
+  assert.strictEqual(boundedSnapshot.jobs.length, 1);
+  assert.strictEqual(boundedSnapshot.workflowRuns.length, 1);
+  assert.strictEqual(boundedSnapshot.candidateEvents.length, 2);
+  assert(boundedSnapshot.candidateEvents.some((event) => event.planId === null));
+  assert(boundedSnapshot.candidateEvents.every((event) => event.planId !== otherPlanId));
+  const selectedWorkflowIds = new Set(boundedSnapshot.workflowRuns.map((run) => run.id));
+  assert(boundedSnapshot.linkIssues.every((issue) => selectedWorkflowIds.has(issue.workflowId)));
 
   console.log("workflow_health_smoke ok");
 } finally {
