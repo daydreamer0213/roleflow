@@ -63,7 +63,8 @@ const {
   saveCandidateFact,
   listCandidateFacts,
   isJobAwaitingAction,
-  OUTCOME_STATUSES
+  OUTCOME_STATUSES,
+  getOutcomeAnalyticsSnapshot
 } = require("../core/storage");
 const {
   createCommunicationBatch,
@@ -108,13 +109,14 @@ const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {} }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {} }) {
   const scanRuns = new Map();
   const resolvedWorkflowHealth = {
     getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
     buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
     renderPanel: workflowHealth?.renderPanel || renderWorkflowHealthPanel
   };
+  const outcomeAnalyticsReader = outcomeAnalytics?.getSnapshot || getOutcomeAnalyticsSnapshot;
   const recovery = recoverWorkflowRuns(db, {
     site: "boss",
     orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
@@ -147,7 +149,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
-      if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
@@ -2555,16 +2557,23 @@ function renderDashboard(data) {
   return renderCompactDashboard(data);
 }
 
-function renderQueuePage({ db, searchParams }) {
+function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = getOutcomeAnalyticsSnapshot }) {
   const requestedPlanId = Number(searchParams.get("planId") || 0);
   const fallbackProfile = listCandidateProfiles(db)[0];
   const fallbackPlan = fallbackProfile ? getActiveSearchPlan(db, fallbackProfile.id) : null;
   const plan = getSearchPlan(db, requestedPlanId) || fallbackPlan;
   if (!plan) return renderErrorPage("还没有可用的筛选方案，请先上传简历并确认方案。", "/onboarding");
-  return renderCompactQueuePage({ db, plan, searchParams });
+  let outcomeAnalyticsPanel;
+  try {
+    outcomeAnalyticsPanel = renderOutcomeAnalyticsPanel(outcomeAnalyticsReader(db, { planId: plan.id }));
+  } catch {
+    logger.warn("outcome_analytics_render_failed", { code: "OUTCOME_ANALYTICS_UNAVAILABLE" });
+    outcomeAnalyticsPanel = '<section class="panel outcome-analytics">统计暂不可用</section>';
+  }
+  return renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel });
 }
 
-function renderCompactQueuePage({ db, plan, searchParams }) {
+function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
   const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
@@ -2598,8 +2607,64 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
     latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
     title: pool === "no_reply" ? "无回复待跟进" : "当前待处理岗位",
     hint: pool === "no_reply" ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。" : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
-    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId }
+    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId },
+    outcomeAnalyticsPanel
   });
+}
+
+const OUTCOME_TIER_LABELS = {
+  primary: "主投",
+  apply: "可投",
+  caution: "慎投",
+  not_recommended: "不推荐"
+};
+
+function outcomeTierLabel(key) {
+  return OUTCOME_TIER_LABELS[key] || "";
+}
+
+function renderOutcomeAnalyticsPanel(aggregate) {
+  const tierRows = outcomeTierRows(aggregate);
+  const keywordRows = outcomeKeywordRows(aggregate);
+  const tiers = tierRows.length
+    ? Object.keys(OUTCOME_TIER_LABELS).map((key) => {
+      const row = tierRows.find((item) => item.key === key) || {};
+      return `<tr><th scope="row">${escapeHtml(outcomeTierLabel(key))}</th><td>${outcomeCount(row, "total")}</td><td>${outcomeCount(row, "unresolved")}</td><td>${outcomeCount(row, "applied")}</td><td>${outcomeCount(row, "skipped")}</td><td>${outcomeCount(row, "no_reply")}</td><td>${outcomeCount(row, "interview")}</td><td>${outcomeCount(row, "rejected_or_invalid")}</td></tr>`;
+    }).join("")
+    : '<tr><td colspan="8">暂无四档结果记录。</td></tr>';
+  const keywords = keywordRows.length
+    ? `<table><thead><tr><th>关键词</th><th>总数</th></tr></thead><tbody>${keywordRows.map((item) => `<tr><th scope="row">${escapeHtml(item.label)}</th><td>${outcomeCount(item, "total")}</td></tr>`).join("")}</tbody></table>`
+    : "<p>暂无关键词统计记录。</p>";
+  return `<section class="panel outcome-analytics"><h2>结果统计（只读）</h2><table><thead><tr><th>推荐档位</th><th>总数</th><th>未处理</th><th>已投</th><th>已跳过</th><th>无回复</th><th>已约面</th><th>已拒绝或无效</th></tr></thead><tbody>${tiers}</tbody></table><p class="queue-summary">待分析或待刷新（不纳入四档比较）：${outcomeDiagnosticsCount(aggregate)}</p><h3>搜索方向（关键词）</h3>${keywords}<p class="queue-summary">提示：调整匹配矩阵、权重或提示词前，必须取得用户确认。</p></section>`;
+}
+
+function outcomeTierRows(aggregate) {
+  const rows = Array.isArray(aggregate?.tiers) ? aggregate.tiers : [];
+  return rows.map((row) => ({ ...row, key: String(row?.key || row?.tier || row?.recommendationTier || "") }))
+    .filter((row) => outcomeTierLabel(row.key));
+}
+
+function outcomeKeywordRows(aggregate) {
+  const rows = Array.isArray(aggregate?.keywords) ? aggregate.keywords : [];
+  return rows.slice(0, 8).map((row) => ({ ...row, label: String(row?.label || row?.keyword || row?.word || "") }))
+    .filter((row) => row.label);
+}
+
+function outcomeCount(row, key) {
+  const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
+  if (key === "rejected_or_invalid") {
+    const direct = groups.map((group) => Number(group?.[key])).find(Number.isFinite);
+    if (direct !== undefined) return direct;
+    return outcomeCount(row, "rejected") + outcomeCount(row, "invalid");
+  }
+  const value = groups.map((group) => Number(group?.[key])).find(Number.isFinite);
+  return value === undefined ? 0 : value;
+}
+
+function outcomeDiagnosticsCount(aggregate) {
+  const diagnostics = aggregate?.diagnostics || {};
+  const value = diagnostics.analysis_pending ?? diagnostics.pending ?? diagnostics.total ?? aggregate?.analysisPending ?? aggregate?.pending;
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
 function renderCommunicationBuilderPage({ db, searchParams }) {
@@ -2658,14 +2723,14 @@ function queueScopeForJob(job, latestMainBatchId) {
 }
 
 function renderCompactDashboard(data) {
-  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "" } = data;
+  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "", outcomeAnalyticsPanel = "" } = data;
   const analysisRetry = queue?.pool === "analysis_pending" && Number(queue.counts.analysis_pending || 0) > 0
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
 body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
 <nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
-  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${analysisRetry}
+  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
 ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
 }
 
