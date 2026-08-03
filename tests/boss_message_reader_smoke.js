@@ -19,7 +19,7 @@ function row(rowIndex, { unread = false, selected = false, recruiterLabel, previ
   return { ...value, transientSignature: safeDigest([value.rowIndex, value.recruiterLabel, value.previewText, value.unread]) };
 }
 
-function snapshot({ rows = [row(0, { unread: true }), row(1)], selectedRowIndex = 0, risk = false, login = false, path = "/web/geek/chat" } = {}) {
+function snapshot({ rows = [row(0, { unread: true }), row(1)], selectedRowIndex = 0, risk = false, login = false, path = "/web/geek/chat", messages = null } = {}) {
   return {
     path,
     rows: rows.map((item) => ({ ...item, selected: item.rowIndex === selectedRowIndex })),
@@ -29,7 +29,7 @@ function snapshot({ rows = [row(0, { unread: true }), row(1)], selectedRowIndex 
     city: "Shenzhen",
     risk,
     login,
-    messages: [{ direction: "friend", messageId: "123456789012345", text: "Hello" }],
+    messages: messages === null ? [{ direction: "friend", messageId: "123456789012345", text: "Hello" }] : messages,
     writeTargetsPresent: { editor: true, send: true }
   };
 }
@@ -161,6 +161,51 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const unreadGone = await scan(unreadGoneBrowser);
   assert.deepStrictEqual(await unreadGone.reader.openQueuedConversation(unreadGone.scan.queue[0]), { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" });
   assert.strictEqual(unreadGoneBrowser.guardedDomClicks, 0);
+
+  const readAfterClickBrowser = fakeBrowser({
+    snapshots: [
+      snapshot(),
+      guardedSuccess,
+      snapshot({ rows: [row(0, { unread: false }), row(1)] }),
+      snapshot({ rows: [row(0, { unread: false }), row(1)] }),
+      snapshot({ rows: [row(0, { unread: false }), row(1)] })
+    ]
+  });
+  const readAfterClick = await scan(readAfterClickBrowser);
+  const readAfterClickSelected = await readAfterClick.reader.openQueuedConversation(readAfterClick.scan.queue[0]);
+  assert.strictEqual(readAfterClickSelected.rows[0].unread, false, "reading the selected row must not invalidate its identity");
+
+  const messageLoadWaits = [];
+  const messageLoadBrowser = fakeBrowser({
+    snapshots: [
+      snapshot(),
+      guardedSuccess,
+      snapshot({ messages: [] }),
+      snapshot()
+    ]
+  });
+  const messageLoadReader = createBossMessageReader({
+    browser: messageLoadBrowser,
+    sleepFn: async (ms) => messageLoadWaits.push(ms)
+  });
+  const messageLoadQueue = await messageLoadReader.scanUnread();
+  await messageLoadReader.openQueuedConversation(messageLoadQueue.queue[0]);
+  assert.deepStrictEqual(messageLoadWaits, [250], "an empty first snapshot must wait for message loading");
+
+  const emptyMessagesBrowser = fakeBrowser({
+    snapshots: [
+      snapshot(),
+      guardedSuccess,
+      snapshot({ messages: [] }),
+      snapshot({ messages: [] }),
+      snapshot({ messages: [] })
+    ]
+  });
+  const emptyMessages = await scan(emptyMessagesBrowser);
+  await assert.rejects(
+    () => emptyMessages.reader.openQueuedConversation(emptyMessages.scan.queue[0]),
+    (error) => error.code === "BOSS_MESSAGE_TARGET_MISMATCH"
+  );
 
   const mismatchBrowser = fakeBrowser({ snapshots: [snapshot(), guardedSuccess, snapshot({ selectedRowIndex: 1 }), snapshot({ selectedRowIndex: 1 }), snapshot({ selectedRowIndex: 1 })] });
   const mismatch = await scan(mismatchBrowser);

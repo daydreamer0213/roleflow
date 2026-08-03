@@ -10,6 +10,7 @@ const {
 } = require("../src/core/candidate_progress");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
+const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
 
 const PRIVATE_BODY = "PRIVATE_HR_BODY";
 const PRIVATE_PREVIEW = "PRIVATE_CONVERSATION_PREVIEW";
@@ -34,6 +35,7 @@ async function main() {
   await identityStopsSmoke();
   await messageSelectionSmoke();
   await classificationOutcomeSmoke();
+  await sensitiveExplanationGuardSmoke();
   await readerStopSmoke();
   await abortAfterClassificationSmoke();
   await pacingAndInterruptSmoke();
@@ -267,6 +269,57 @@ async function classificationOutcomeSmoke() {
   });
   assert.strictEqual(summary.results[0].stage, "interview_invited");
   assert.deepStrictEqual(summary.results[0].messages, []);
+}
+
+async function sensitiveExplanationGuardSmoke() {
+  const analyzer = createLlmAnalyzer({
+    adapter: {
+      async draftCommunication() {
+        return classification({ messages: [PRIVATE_DRAFT] });
+      }
+    }
+  });
+  for (const hrMessage of [
+    "Please explain the GAP in your employment history.",
+    "Why did you leave your previous role?",
+    "Please explain this short-term project."
+  ]) {
+    const result = await analyzer.draftCommunication({
+      mode: "hr_reply",
+      hrMessage,
+      userProvidedFacts: [{ key: "historical_sensitive_fact", value: "already supplied" }]
+    });
+    assert.strictEqual(result.progressUpdate.stage, "needs_user_action");
+    assert.strictEqual(result.missingFact.key, "sensitive_personal_explanation");
+    assert.deepStrictEqual(result.messages, []);
+  }
+
+  const availability = await analyzer.draftCommunication({
+    mode: "hr_reply",
+    hrMessage: "When can you start?",
+    userProvidedFacts: [{ key: "availability", value: "already confirmed" }]
+  });
+  assert.strictEqual(availability.progressUpdate.stage, "reply_ready");
+  assert.deepStrictEqual(availability.messages, [PRIVATE_DRAFT]);
+
+  const interview = createLlmAnalyzer({
+    adapter: {
+      async draftCommunication() {
+        return classification({
+          messageCategory: "interview_invitation",
+          stage: "interview_invited",
+          messages: []
+        });
+      }
+    }
+  });
+  const invitation = await interview.draftCommunication({
+    mode: "hr_reply",
+    hrMessage: "You are invited to an interview.",
+    userProvidedFacts: []
+  });
+  assert.strictEqual(invitation.progressUpdate.stage, "interview_invited");
+  assert.deepStrictEqual(invitation.messages, []);
 }
 
 async function readerStopSmoke() {

@@ -186,9 +186,10 @@ function selectedTargetMatches(snapshot, target) {
   const selected = snapshot.rows.filter((row) => row.selected);
   return selected.length === 1
     && selected[0].rowIndex === target.rowIndex
-    && selected[0].transientSignature === target.transientSignature
+    && conversationSignature({ ...selected[0], unread: true }) === target.transientSignature
     && Boolean(snapshot.headerText)
     && Boolean(snapshot.positionName)
+    && snapshot.messages.length > 0
     && snapshot.messages.every((item) => /^\d{15}$/.test(item.messageId));
 }
 

@@ -1703,6 +1703,26 @@ function publicMessageDiscoveryRun(run) {
     queued: run.queued,
     processed: run.processed,
     reasonCode: run.reasonCode,
+    results: sanitizeMessageDiscoveryResults(run.results).map((item) => ({
+      cardId: item.cardId,
+      jobId: item.jobId,
+      stage: item.stage,
+      messageCategory: item.messageCategory,
+      missingFactKey: item.missingFactKey
+    })),
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    expiresAt: run.expiresAt
+  };
+}
+
+function pageMessageDiscoveryRun(run) {
+  return {
+    profileId: run.profileId,
+    status: run.status,
+    queued: run.queued,
+    processed: run.processed,
+    reasonCode: run.reasonCode,
     results: sanitizeMessageDiscoveryResults(run.results),
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
@@ -2761,7 +2781,7 @@ function renderMessageDiscoveryPage({ db, searchParams, messageDiscoveryRuns, de
   if (!profile) return renderErrorPage("候选人画像不存在。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_NOT_FOUND" });
   clearExpiredMessageDiscoveryRun(messageDiscoveryRuns, profileId, dependencies);
   const status = messageDiscoveryRuns.has(profileId)
-    ? publicMessageDiscoveryRun(messageDiscoveryRuns.get(profileId))
+    ? pageMessageDiscoveryRun(messageDiscoveryRuns.get(profileId))
     : emptyMessageDiscoveryStatus(profileId);
   const plan = db.prepare(`SELECT id FROM search_plans
     WHERE profile_id = ?

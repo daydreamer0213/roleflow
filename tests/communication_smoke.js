@@ -158,9 +158,18 @@ let server;
     });
     const answeredGapHtml = await answeredGap.text();
     assert.strictEqual(answeredGap.status, 200, answeredGapHtml);
-    assert(answeredGapHtml.includes(gapFact));
+    assert(answeredGapHtml.includes('data-message-category="other"'));
+    assert(answeredGapHtml.includes('value="sensitive_personal_explanation"'));
+    assert(!answeredGapHtml.includes('id="communication-0"'));
+    assert(!answeredGapHtml.includes(gapFact), "historical GAP facts must not generate a reply draft");
     assert.strictEqual(listCandidateFacts(db, saved.profileId)[0].source, "user_provided");
 
+    transitionProgressCard(db, {
+      cardId: progressCard.id,
+      expectedStage: "needs_user_action",
+      stage: "reply_ready",
+      nextAction: "Review draft before manual send"
+    });
     const progressQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=needs_user_action`)).text();
     assert(progressQueueHtml.includes("回复草稿已就绪"));
     assert(progressQueueHtml.includes("已手动发送"));

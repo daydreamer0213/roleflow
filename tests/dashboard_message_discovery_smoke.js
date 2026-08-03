@@ -19,6 +19,7 @@ const { createDashboardServer } = require("../src/dashboard/server");
 const PRIVATE_BODY = "脱敏测试问题";
 const PRIVATE_PREVIEW = "脱敏会话预览";
 const PRIVATE_RECRUITER = "脱敏招聘方";
+const PRIVATE_DRAFT = "PRIVATE_DISCOVERY_DRAFT";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-dashboard-messages-"));
 const dbPath = path.join(root, "dashboard-messages.sqlite");
 const db = openDb(dbPath);
@@ -177,7 +178,7 @@ async function main() {
 
   scenarios.push(completedRun({
     fixture,
-    drafts: ["脱敏草稿一"],
+    drafts: [PRIVATE_DRAFT],
     callModel: true
   }));
   response = await postJson(base, "/api/message-discovery", {
@@ -186,7 +187,6 @@ async function main() {
   });
   assert.strictEqual(response.status, 202);
   let status = await waitForStatus(base, fixture.profileId, "completed");
-  assert.deepStrictEqual(status.results[0].messages, ["脱敏草稿一"]);
   assert.strictEqual(cleanupTimers.activeCount(), 1);
   assert.strictEqual(cleanupTimers.latest().delay, 30 * 60 * 1000);
   assert.deepStrictEqual(Object.keys(status).sort(), [
@@ -204,7 +204,6 @@ async function main() {
     "cardId",
     "jobId",
     "messageCategory",
-    "messages",
     "missingFactKey",
     "stage"
   ]);
@@ -214,7 +213,7 @@ async function main() {
 
   const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(completedPage.status, 200);
-  assert(completedPage.body.includes("脱敏草稿一"));
+  assert(completedPage.body.includes(PRIVATE_DRAFT));
   assertNoPrivateData(completedPage.body);
 
   response = await postJson(base, "/api/message-discovery", {
@@ -238,11 +237,10 @@ async function main() {
   scenarios.push(multiResultCompletedRun(fixture));
   await startAndWait(base, fixture.profileId, "completed");
   status = await getStatus(base, fixture.profileId);
-  assert.deepStrictEqual(
-    status.results.flatMap((item) => item.messages),
-    ["运行额度草稿一", "运行额度草稿二"],
-    "all results in one run must share a two-message budget"
-  );
+  const cappedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(cappedPage.body.includes("运行额度草稿一"));
+  assert(cappedPage.body.includes("运行额度草稿二"));
+  assert(!cappedPage.body.includes("不应返回的第三条"), "all results in one run must share a two-message budget");
   const staleTimerId = cleanupTimers.latest().id;
   await waitForLeaseRelease();
 
@@ -633,13 +631,16 @@ async function request(base, route) {
   return { status: response.status, body: await response.text() };
 }
 
-function postJson(base, route, body) {
-  return fetch(base + route, {
+async function postJson(base, route, body) {
+  const response = await fetch(base + route, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
     redirect: "manual"
   });
+  const text = await response.text();
+  assertNoDraftMessagesInJson(text);
+  return { status: response.status };
 }
 
 function postForm(base, route, values) {
@@ -654,7 +655,9 @@ function postForm(base, route, values) {
 async function getStatus(base, profileId) {
   const response = await fetch(`${base}/api/message-discovery-status?profileId=${profileId}`);
   assert.strictEqual(response.status, 200);
-  return response.json();
+  const text = await response.text();
+  assertNoDraftMessagesInJson(text);
+  return JSON.parse(text);
 }
 
 async function waitForStatus(base, profileId, expected) {
@@ -693,6 +696,12 @@ function assertNoPrivateData(value) {
   for (const forbidden of [PRIVATE_BODY, PRIVATE_PREVIEW, PRIVATE_RECRUITER]) {
     assert(!text.includes(forbidden), `${forbidden} must not leave the discovery callback`);
   }
+}
+
+function assertNoDraftMessagesInJson(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  assert(!text.includes('"messages"'), "message discovery JSON must use an explicit safe-field whitelist");
+  assert(!text.includes(PRIVATE_DRAFT), "message discovery JSON must not expose draft text");
 }
 
 function requestKey(sequence) {
