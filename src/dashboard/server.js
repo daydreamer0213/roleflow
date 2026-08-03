@@ -2692,6 +2692,8 @@ function outcomeIncludedCount(aggregate) {
 }
 
 function outcomeTerminalCount(aggregate) {
+  const aggregateCount = Number(aggregate?.totals?.recordedOutcomeCount);
+  if (Number.isFinite(aggregateCount)) return Math.max(0, aggregateCount);
   const terminalOutcomes = ["applied", "skipped", "no_reply", "interview", "rejected", "invalid", "salary_mismatch"];
   return [...outcomeTierRows(aggregate), aggregate?.diagnostics || {}]
     .reduce((total, row) => total + terminalOutcomes.reduce((sum, status) => sum + outcomeCount(row, status), 0), 0);

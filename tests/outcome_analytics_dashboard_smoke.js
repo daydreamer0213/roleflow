@@ -113,7 +113,7 @@ let server;
     outcomeAnalyticsReader() {
       return {
         context: { planName: "Safe &amp; plan", rawPlanId: "raw-plan-id" },
-        totals: { total: 7 },
+        totals: { total: 7, recordedOutcomeCount: 1 },
         tiers: [],
         diagnostics: { total: 0, outcomes: {} },
         keywords: [],
@@ -128,7 +128,7 @@ let server;
     }
   });
   const aggregateOnlyPanel = extractAnalyticsPanel(aggregateOnlyPage);
-  assertContains(aggregateOnlyPanel, /当前方案：Safe &amp; plan；纳入岗位：7；已记录终态：0。/, "display-only safe context and aggregate counts are rendered");
+  assertContains(aggregateOnlyPanel, /当前方案：Safe &amp; plan；纳入岗位：7；已记录终态：1。/, "aggregate terminal count includes an unclassified valid terminal result");
   assertContains(aggregateOnlyPanel, /未分类记录：2；未知推荐档位：1；未知状态：1/, "unknown counters render as aggregate numbers only");
   assertExcludes(aggregateOnlyPanel, /raw-plan-id|raw-decision-value|raw-status-value/, "raw context and unknown values are not rendered");
 

@@ -39,6 +39,7 @@ function buildOutcomeAnalytics(rows = []) {
     unknownApplicationStatus: 0
   };
   const keywords = new Map();
+  let recordedOutcomeCount = 0;
 
   for (const item of source) {
     const bucket = typeof item?.decisionBucket === "string" ? item.decisionBucket : "";
@@ -53,6 +54,7 @@ function buildOutcomeAnalytics(rows = []) {
     if (!target || !validStatus) unclassified.total += 1;
     if (!target) unclassified.unknownDecisionBucket += 1;
     if (!validStatus) unclassified.unknownApplicationStatus += 1;
+    if (validStatus && !UNRESOLVED.has(status)) recordedOutcomeCount += 1;
 
     if (target) {
       target.total += 1;
@@ -87,7 +89,8 @@ function buildOutcomeAnalytics(rows = []) {
   return {
     totals: {
       total: source.length,
-      fourTierTotal: tiers.reduce((sum, row) => sum + row.total, 0)
+      fourTierTotal: tiers.reduce((sum, row) => sum + row.total, 0),
+      recordedOutcomeCount
     },
     tiers,
     diagnostics,

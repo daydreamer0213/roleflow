@@ -62,6 +62,18 @@ const blankKeywordAnalytics = buildOutcomeAnalytics([
 assert.strictEqual(blankKeywordAnalytics.keywords[0].keyword, MISSING_KEYWORD);
 assert.strictEqual(blankKeywordAnalytics.keywords[0].total, 1);
 
+const unclassifiedTerminalAnalytics = buildOutcomeAnalytics([
+  { decisionBucket: "unknown_bucket", applicationStatus: "interview", keyword: "Unknown terminal" }
+]);
+assert.strictEqual(unclassifiedTerminalAnalytics.totals.total, 1);
+assert.strictEqual(unclassifiedTerminalAnalytics.totals.recordedOutcomeCount, 1);
+assert.strictEqual(unclassifiedTerminalAnalytics.tiers.reduce((sum, row) => sum + row.recordedOutcomeCount, 0), 0);
+assert.deepStrictEqual(unclassifiedTerminalAnalytics.unclassified, {
+  total: 1,
+  unknownDecisionBucket: 1,
+  unknownApplicationStatus: 0
+});
+
 const namedKeywords = analytics.keywords.filter((row) => row.keyword !== OTHER_KEYWORD);
 assert.strictEqual(namedKeywords.length, 12);
 const other = analytics.keywords.find((row) => row.keyword === OTHER_KEYWORD);
