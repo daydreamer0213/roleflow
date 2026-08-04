@@ -4,7 +4,7 @@ const { explainJobMatch } = require("./match_explainer");
 const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
 const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
 const { decisionState } = require("./scoring");
-const { PIPELINE_VERSIONS, buildAnalysisRevision } = require("./analysis_revision");
+const { PIPELINE_VERSIONS, buildAnalysisRevision, modelInferenceVersion } = require("./analysis_revision");
 const { deriveMatrixDecision } = require("./four_tier_decision");
 const {
   DECISION_POLICY,
@@ -117,10 +117,21 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
 }
 
 async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersion, input, run }) {
-  const provider = configs.model?.provider || "mock";
-  const model = configs.model?.providers?.[provider]?.model || "";
+  const modelConfig = configs.model || {};
+  const provider = modelConfig.provider || "mock";
+  const providerConfig = modelConfig.providers?.[provider] || {};
+  const model = modelConfig.model || providerConfig.model || "";
+  const inferenceVersion = modelInferenceVersion({
+    provider,
+    baseUrl: modelConfig.baseUrl ?? providerConfig.baseUrl,
+    model,
+    thinkingMode: modelConfig.thinkingMode ?? providerConfig.thinkingMode,
+    reasoningEffort: modelConfig.reasoningEffort ?? providerConfig.reasoningEffort
+  });
   const inputHash = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
-  const cacheKey = crypto.createHash("sha256").update(`${provider}|${model}|${kind}|${pipelineVersion}|${inputHash}`).digest("hex");
+  const cacheKey = crypto.createHash("sha256").update(
+    `${provider}|${model}|${inferenceVersion}|${kind}|${pipelineVersion}|${inputHash}`
+  ).digest("hex");
   // matchJob 的跨字段核对需要本次 JobUnderstanding 作为最小上下文，
   // 让缓存读取、首次校验和契约修复使用同一份判定依据。
   const validationContext = kind === "matchJob" ? {
@@ -421,6 +432,14 @@ function applyRuleGuard(analysis, job) {
       "indispensable_transferable_guard"
     );
   }
+  if (hasShadowResponsibilitySprawlCaution(analysis) && guarded.recommendation !== "not_recommended") {
+    guarded = capGuard(
+      guarded,
+      "caution",
+      "岗位存在职责发散，且模型语义建议慎投，最高归入慎投。",
+      "model_quality_caution_guard"
+    );
+  }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => (
     risk?.type !== "responsibility_sprawl"
       && ["medium", "high"].includes(risk?.severity)
@@ -459,6 +478,12 @@ function hasTransferableIndispensable(analysis) {
   return (analysis.requirementMatches || []).some((item) => (
     item?.state === "transferable" && item?.indispensable === true
   ));
+}
+
+function hasShadowResponsibilitySprawlCaution(analysis) {
+  return analysis?.modelRecommendation === "caution"
+    && analysis?.jobQuality?.level === "caution"
+    && (analysis.jobQuality.concerns || []).some((concern) => concern?.type === "responsibility_sprawl");
 }
 
 function missingEitherSideEvidence(analysis) {

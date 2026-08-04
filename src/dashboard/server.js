@@ -27,6 +27,7 @@ const {
   createScanRun,
   createWorkflowRun,
   getWorkflowRun,
+  getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
   getActiveWorkflowRun,
@@ -62,7 +63,8 @@ const {
   saveCandidateFact,
   listCandidateFacts,
   isJobAwaitingAction,
-  OUTCOME_STATUSES
+  OUTCOME_STATUSES,
+  getOutcomeAnalyticsSnapshot
 } = require("../core/storage");
 const {
   createCommunicationBatch,
@@ -85,7 +87,7 @@ const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../c
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
-const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
+const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady, supportsDeepSeekV4Thinking } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
@@ -101,12 +103,20 @@ const {
   listWorkflowInventory,
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
+const { buildWorkflowHealthReport } = require("../core/workflow_health");
+const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {} }) {
   const scanRuns = new Map();
+  const resolvedWorkflowHealth = {
+    getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
+    buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
+    renderPanel: workflowHealth?.renderPanel || renderWorkflowHealthPanel
+  };
+  const outcomeAnalyticsReader = outcomeAnalytics?.getSnapshot || getOutcomeAnalyticsSnapshot;
   const recovery = recoverWorkflowRuns(db, {
     site: "boss",
     orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
@@ -138,8 +148,8 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
-      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger }));
-      if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
+      if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
@@ -1982,8 +1992,11 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const presets = listModelPresets({ includeAdvanced: showAdvanced });
   const firstSetup = modelState.source === "legacy" && storedSettings.provider === "mock" && !modelState.keyConfigured;
   const settings = firstSetup
-    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000 }
+    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000, thinkingMode: "disabled", reasoningEffort: "high" }
     : storedSettings;
+  const supportsThinking = supportsDeepSeekV4Thinking(settings.preset, settings.model);
+  const thinkingMode = settings.thinkingMode || "disabled";
+  const reasoningEffort = settings.reasoningEffort || "high";
   const selectedPreset = presets.find((item) => item.id === settings.preset) || presets.find((item) => item.id === "custom");
   const presetOptions = presets.map((preset) => {
     const selected = preset.id === selectedPreset.id ? " selected" : "";
@@ -1999,6 +2012,12 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     : "尚未验证，保存时会发送一次极小连接测试";
   const next = safeSettingsNext(searchParams.get("next"));
   const presetJson = JSON.stringify(presets);
+  const thinkingControls = [
+    '      <div id="thinking-controls" class="settings-grid settings-field-wide"' + (supportsThinking ? "" : " hidden") + '>',
+    '        <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode"' + (supportsThinking ? "" : " disabled") + '><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
+    '        <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (supportsThinking && thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8\uff08high\uff09</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8\uff08max\uff09</option></select><small>max \u66f4\u6162\uff0c\u63a8\u7406\u8f93\u51fa\u548c\u6210\u672c\u66f4\u9ad8\uff0c\u53ea\u5efa\u8bae\u7528\u4e8e\u5c0f\u6837\u672c\u8bca\u65ad\u3002</small></label>',
+    "      </div>"
+  ].join("");
   const body = [
     '<style>.settings-page{max-width:960px;padding-top:32px}.settings-header{max-width:720px;margin:34px 0 24px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#0969da;font-size:13px;font-weight:700}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}.settings-form{max-width:none;padding:24px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.settings-field{display:grid;gap:7px;font-size:14px;font-weight:600}.settings-field[hidden]{display:none}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-security{display:grid;gap:3px;border-top:1px solid #d8dee4;margin-top:22px;padding-top:16px;font-size:13px;color:#57606a}.settings-security strong{color:#1f2328}.settings-clear{margin-top:14px}.settings-actions{display:flex;justify-content:flex-end;margin-top:20px}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:22px 0 18px}.settings-header h1{font-size:26px}.settings-form{padding:16px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}</style>',
     '<main class="settings-page">',
@@ -2011,6 +2030,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     saved,
     requiredNotice,
     '  <form class="panel settings-form" method="post" action="/api/settings/model">',
+    thinkingControls,
     '    <input type="hidden" name="next" value="' + escapeAttr(next) + '">',
     '    <div class="settings-grid">',
     '      <label class="settings-field">模型厂商<select id="model-preset" name="preset">' + presetOptions + "</select><small>常用接口地址已预设；每个厂商分别保存自己的 Key。</small></label>",
@@ -2030,10 +2050,22 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     '    const baseUrl = document.getElementById("model-base-url");',
     '    const modelName = document.getElementById("model-name");',
     '    const modelOptions = document.getElementById("model-options");',
+    '    const thinkingControls = document.getElementById("thinking-controls");',
+    '    const thinkingMode = document.getElementById("thinking-mode");',
+    '    const reasoningEffort = document.getElementById("reasoning-effort");',
+    '    ' + supportsDeepSeekV4Thinking.toString(),
     "    function currentPreset() { return presets.find(function (item) { return item.id === presetSelect.value; }) || presets[0]; }",
+    "    function syncThinkingControls() {",
+    '      const supported = supportsDeepSeekV4Thinking(currentPreset().id, modelName.value);',
+    "      thinkingControls.hidden = !supported;",
+    "      thinkingMode.disabled = !supported;",
+    '      if (!supported) { thinkingMode.value = "disabled"; reasoningEffort.value = "high"; }',
+    '      reasoningEffort.disabled = !supported || thinkingMode.value !== "enabled";',
+    "    }",
     "    function syncMode() {",
     "      const preset = currentPreset();",
     '      baseUrl.readOnly = preset.id !== "custom";',
+    "      syncThinkingControls();",
     "    }",
     "    function updatePreset() {",
     "      const preset = currentPreset();",
@@ -2049,6 +2081,8 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     "      syncMode();",
     "    }",
     '    presetSelect.addEventListener("change", updatePreset);',
+    '    modelName.addEventListener("input", syncThinkingControls);',
+    '    thinkingMode.addEventListener("change", syncThinkingControls);',
     "    syncMode();",
     "  }());",
     "  </script>",
@@ -2219,7 +2253,12 @@ function workflowShortfallLabel(code) {
   }[code] || "候选可能不足";
 }
 
-function renderWorkflowPage({ db, searchParams, logger = null }) {
+function workflowHealthFailureCode(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  return /^[A-Z0-9_]{1,80}$/.test(code) ? code : "WORKFLOW_HEALTH_FAILED";
+}
+
+function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
     workflowRunId,
@@ -2240,6 +2279,21 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   const runtimeBlock = communicationRuntimeBlock(db);
   const phase = renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock });
+  let healthPanel = "";
+  try {
+    const snapshot = workflowHealth.getSnapshot(db, {
+      profileId: plan.profileId,
+      planId: plan.id,
+      now: new Date().toISOString()
+    });
+    healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
+  } catch (error) {
+    logger?.warn("workflow_health_render_failed", {
+      workflowRunId: workflow.id,
+      planId: plan.id,
+      errorCode: workflowHealthFailureCode(error)
+    });
+  }
   const polling = shouldPollWorkflow(workflow, communication)
     ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
     : "";
@@ -2249,7 +2303,7 @@ function renderWorkflowPage({ db, searchParams, logger = null }) {
   return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
     <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
       <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
-    </header>${phase}</main>${polling}`);
+    </header>${healthPanel}${phase}</main>${polling}`);
 }
 
 function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock }) {
@@ -2527,16 +2581,24 @@ function renderDashboard(data) {
   return renderCompactDashboard(data);
 }
 
-function renderQueuePage({ db, searchParams }) {
+function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = getOutcomeAnalyticsSnapshot }) {
   const requestedPlanId = Number(searchParams.get("planId") || 0);
   const fallbackProfile = listCandidateProfiles(db)[0];
   const fallbackPlan = fallbackProfile ? getActiveSearchPlan(db, fallbackProfile.id) : null;
   const plan = getSearchPlan(db, requestedPlanId) || fallbackPlan;
   if (!plan) return renderErrorPage("还没有可用的筛选方案，请先上传简历并确认方案。", "/onboarding");
-  return renderCompactQueuePage({ db, plan, searchParams });
+  const outcomeAnalyticsLogger = logger && typeof logger.warn === "function" ? logger : { warn() {} };
+  let outcomeAnalyticsPanel;
+  try {
+    outcomeAnalyticsPanel = renderOutcomeAnalyticsPanel(outcomeAnalyticsReader(db, { planId: plan.id }));
+  } catch {
+    outcomeAnalyticsLogger.warn("outcome_analytics_render_failed", { code: "OUTCOME_ANALYTICS_UNAVAILABLE" });
+    outcomeAnalyticsPanel = '<section class="panel outcome-analytics">统计暂不可用</section>';
+  }
+  return renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel });
 }
 
-function renderCompactQueuePage({ db, plan, searchParams }) {
+function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
   const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
@@ -2570,9 +2632,106 @@ function renderCompactQueuePage({ db, plan, searchParams }) {
     latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
     title: pool === "no_reply" ? "无回复待跟进" : "当前待处理岗位",
     hint: pool === "no_reply" ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。" : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
-    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId }
+    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId },
+    outcomeAnalyticsPanel
   });
 }
+
+const OUTCOME_TIER_LABELS = {
+  primary: "主投",
+  apply: "可投",
+  caution: "慎投",
+  not_recommended: "不推荐"
+};
+
+function outcomeTierLabel(key) {
+  return Object.hasOwn(OUTCOME_TIER_LABELS, key) ? OUTCOME_TIER_LABELS[key] : "";
+}
+
+function renderOutcomeAnalyticsPanel(aggregate) {
+  const tierRows = outcomeTierRows(aggregate);
+  const keywordRows = outcomeKeywordRows(aggregate);
+  const planName = typeof aggregate?.context?.planName === "string" && aggregate.context.planName ? aggregate.context.planName : "-";
+  const includedCount = outcomeIncludedCount(aggregate);
+  const terminalCount = outcomeTerminalCount(aggregate);
+  const tiers = tierRows.length
+    ? Object.keys(OUTCOME_TIER_LABELS).map((key) => {
+      const row = tierRows.find((item) => item.key === key) || {};
+      return '<tr><th scope="row">' + escapeHtml(outcomeTierLabel(key)) + '</th>' + outcomeAnalyticsMetricCells(row) + '</tr>';
+    }).join("")
+    : '<tr><td colspan="9">\u6682\u65e0\u56db\u6863\u7ed3\u679c\u8bb0\u5f55\u3002</td></tr>';
+  const keywords = keywordRows.length
+    ? '<div class="outcome-analytics-table-wrap"><table class="outcome-keyword-table"><thead><tr><th>\u5173\u952e\u8bcd</th>' + outcomeAnalyticsMetricHeaders() + '</tr></thead><tbody>' + keywordRows.map((item) => '<tr><th scope="row">' + escapeHtml(item.label) + '</th>' + outcomeAnalyticsMetricCells(item) + '</tr>').join("") + '</tbody></table></div>'
+    : "<p>\u6682\u65e0\u5173\u952e\u8bcd\u7edf\u8ba1\u8bb0\u5f55\u3002</p>";
+  const unclassified = outcomeUnclassifiedCounts(aggregate);
+  const noRecordedResults = terminalCount === 0 ? '<p class="outcome-analytics-empty">\u6682\u65e0\u5df2\u8bb0\u5f55\u7ed3\u679c\u3002</p>' : "";
+  const style = '<style>.outcome-analytics-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}.outcome-tier-table,.outcome-keyword-table{width:100%;min-width:880px;border-collapse:collapse}.outcome-tier-table th,.outcome-tier-table td,.outcome-keyword-table th,.outcome-keyword-table td{padding:7px;border-bottom:1px solid #d8e0e6;text-align:left;white-space:nowrap}.outcome-analytics-context,.outcome-analytics-diagnostics,.outcome-analytics-unclassified,.outcome-analytics-empty{margin:10px 0;color:#5b6773;font-size:13px}</style>';
+  return style + '<section class="panel outcome-analytics"><h2>\u7ed3\u679c\u7edf\u8ba1\uff08\u53ea\u8bfb\uff09</h2><p class="outcome-analytics-context">\u5f53\u524d\u65b9\u6848\uff1a' + planName + '\uff1b\u7eb3\u5165\u5c97\u4f4d\uff1a' + includedCount + '\uff1b\u5df2\u8bb0\u5f55\u7ec8\u6001\uff1a' + terminalCount + '\u3002</p><div class="outcome-analytics-table-wrap"><table class="outcome-tier-table"><thead><tr><th>\u63a8\u8350\u6863\u4f4d</th>' + outcomeAnalyticsMetricHeaders() + '</tr></thead><tbody>' + tiers + '</tbody></table></div><p class="outcome-analytics-diagnostics">\u5f85\u5206\u6790\u6216\u5f85\u5237\u65b0\uff08\u4e0d\u7eb3\u5165\u56db\u6863\u6bd4\u8f83\uff09\uff1a' + outcomeDiagnosticsCount(aggregate) + '</p><p class="outcome-analytics-unclassified">\u672a\u5206\u7c7b\u8bb0\u5f55\uff1a' + unclassified.total + '\uff1b\u672a\u77e5\u63a8\u8350\u6863\u4f4d\uff1a' + unclassified.unknownDecisionBucket + '\uff1b\u672a\u77e5\u72b6\u6001\uff1a' + unclassified.unknownApplicationStatus + '</p>' + noRecordedResults + '<h3>\u641c\u7d22\u65b9\u5411\uff08\u5173\u952e\u8bcd\uff09</h3>' + keywords + '<p class="queue-summary">\u4ec5\u4f9b\u89c2\u5bdf\uff0c\u4e0d\u8db3\u4ee5\u8c03\u53c2</p><p class="queue-summary">\u63d0\u793a\uff1a\u8c03\u6574\u5339\u914d\u77e9\u9635\u3001\u6743\u91cd\u6216\u63d0\u793a\u8bcd\u524d\uff0c\u5fc5\u987b\u53d6\u5f97\u7528\u6237\u786e\u8ba4\u3002</p></section>';
+}
+
+function outcomeAnalyticsMetricHeaders() {
+  return "<th>\u603b\u6570</th><th>\u672a\u5904\u7406</th><th>\u5df2\u6295</th><th>\u5df2\u8df3\u8fc7</th><th>\u65e0\u56de\u590d</th><th>\u5df2\u7ea6\u9762</th><th>\u5df2\u62d2\u7edd\u6216\u65e0\u6548</th><th>\u85aa\u8d44\u4e0d\u5339\u914d</th>";
+}
+
+function outcomeAnalyticsMetricCells(row) {
+  return ["total", "unresolved", "applied", "skipped", "no_reply", "interview", "rejected_or_invalid", "salary_mismatch"].map((key) => '<td>' + outcomeCount(row, key) + '</td>').join("");
+}
+
+function outcomeTierRows(aggregate) {
+  const rows = Array.isArray(aggregate?.tiers) ? aggregate.tiers : [];
+  return rows.map((row) => ({ ...row, key: String(row?.key || row?.tier || row?.recommendationTier || "") }))
+    .filter((row) => outcomeTierLabel(row.key));
+}
+
+function outcomeKeywordRows(aggregate) {
+  const rows = Array.isArray(aggregate?.keywords) ? aggregate.keywords : [];
+  return rows.map((row) => ({ ...row, label: String(row?.label || row?.keyword || row?.word || "") }))
+    .filter((row) => row.label);
+}
+
+function outcomeCount(row, key) {
+  if (key === "unresolved") {
+    const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
+    const value = groups.map((group) => Number(group?.unresolvedCount)).find(Number.isFinite);
+    return value === undefined ? outcomeCount(row, "pending") + outcomeCount(row, "review") + outcomeCount(row, "later") : value;
+  }
+  const groups = [row, row?.counts, row?.statusCounts, row?.outcomes];
+  if (key === "rejected_or_invalid") {
+    const direct = groups.map((group) => Number(group?.[key])).find(Number.isFinite);
+    if (direct !== undefined) return direct;
+    return outcomeCount(row, "rejected") + outcomeCount(row, "invalid");
+  }
+  const value = groups.map((group) => Number(group?.[key])).find(Number.isFinite);
+  return value === undefined ? 0 : value;
+}
+
+function outcomeDiagnosticsCount(aggregate) {
+  const diagnostics = aggregate?.diagnostics || {};
+  const value = diagnostics.analysis_pending ?? diagnostics.pending ?? diagnostics.total ?? aggregate?.analysisPending ?? aggregate?.pending;
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function outcomeIncludedCount(aggregate) {
+  return outcomeCount(aggregate?.totals || {}, "total");
+}
+
+function outcomeTerminalCount(aggregate) {
+  const aggregateCount = Number(aggregate?.totals?.recordedOutcomeCount);
+  if (Number.isFinite(aggregateCount)) return Math.max(0, aggregateCount);
+  const terminalOutcomes = ["applied", "skipped", "no_reply", "interview", "rejected", "invalid", "salary_mismatch"];
+  return [...outcomeTierRows(aggregate), aggregate?.diagnostics || {}]
+    .reduce((total, row) => total + terminalOutcomes.reduce((sum, status) => sum + outcomeCount(row, status), 0), 0);
+}
+
+function outcomeUnclassifiedCounts(aggregate) {
+  const unclassified = aggregate?.unclassified || {};
+  return {
+    total: outcomeCount(unclassified, "total"),
+    unknownDecisionBucket: outcomeCount(unclassified, "unknownDecisionBucket"),
+    unknownApplicationStatus: outcomeCount(unclassified, "unknownApplicationStatus")
+  };
+}
+
 
 function renderCommunicationBuilderPage({ db, searchParams }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
@@ -2630,14 +2789,14 @@ function queueScopeForJob(job, latestMainBatchId) {
 }
 
 function renderCompactDashboard(data) {
-  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "" } = data;
+  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "", outcomeAnalyticsPanel = "" } = data;
   const analysisRetry = queue?.pool === "analysis_pending" && Number(queue.counts.analysis_pending || 0) > 0
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
 body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
 <nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
-  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${analysisRetry}
+  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
 ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
 }
 

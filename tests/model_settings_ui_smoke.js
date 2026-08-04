@@ -50,6 +50,14 @@ async function main() {
   assert(settingsHtml.includes("https://api.deepseek.com"));
   assert(settingsHtml.includes("通义千问"));
   assert(settingsHtml.includes("模型名称"));
+  assert(settingsHtml.includes('name="thinkingMode"'));
+  assert(settingsHtml.includes('name="reasoningEffort"'));
+  assert(settingsHtml.includes('id="thinking-controls"'));
+  assert(settingsHtml.includes('modelName.addEventListener("input", syncThinkingControls)'));
+  assert(settingsHtml.includes('thinkingMode.addEventListener("change", syncThinkingControls)'));
+  assert(settingsHtml.includes("\u9ad8\uff08high\uff09"));
+  assert(settingsHtml.includes("\u6700\u9ad8\uff08max\uff09"));
+  assert(settingsHtml.includes("max \u66f4\u6162\uff0c\u63a8\u7406\u8f93\u51fa\u548c\u6210\u672c\u66f4\u9ad8\uff0c\u53ea\u5efa\u8bae\u7528\u4e8e\u5c0f\u6837\u672c\u8bca\u65ad\u3002"));
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const saved = await fetch(baseUrl + "/api/settings/model", {
@@ -59,6 +67,8 @@ async function main() {
       preset: "deepseek",
       model: "deepseek-v4-flash",
       timeoutMs: "30000",
+      thinkingMode: "enabled",
+      reasoningEffort: "high",
       apiKey
     }).toString(),
     redirect: "manual"
@@ -81,6 +91,39 @@ async function main() {
 
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.baseUrl, "https://api.deepseek.com");
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.apiKey, apiKey);
+  assert.strictEqual(runtime.modelConfig.providers.openai_compatible.thinkingMode, "enabled");
+  assert.strictEqual(runtime.modelConfig.providers.openai_compatible.reasoningEffort, "high");
+  assert(afterHtml.includes('name="thinkingMode"'));
+  assert(afterHtml.includes('name="reasoningEffort"'));
+  assert(afterHtml.includes('id="reasoning-effort"'));
+  const invalid = await fetch(baseUrl + "/api/settings/model", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ preset: "deepseek", model: "deepseek-v4-flash", thinkingMode: "sometimes", reasoningEffort: "high" }).toString(),
+    redirect: "manual"
+  });
+  assert.notStrictEqual(invalid.status, 303);
+  const pollutedQwen = await fetch(baseUrl + "/api/settings/model", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      preset: "qwen",
+      model: "qwen-plus",
+      thinkingMode: "sometimes",
+      reasoningEffort: "medium",
+      apiKey: "qwen-ui-test-key"
+    }).toString(),
+    redirect: "manual"
+  });
+  assert.strictEqual(pollutedQwen.status, 303);
+  const qwenRuntime = resolveRuntimeModelConfig({ root, fallbackModelConfig: fallback });
+  assert.strictEqual(qwenRuntime.settings.thinkingMode, "disabled");
+  assert.strictEqual(qwenRuntime.settings.reasoningEffort, "high");
+  const qwenSettings = await fetch(baseUrl + "/settings");
+  const qwenHtml = await qwenSettings.text();
+  assert(/id="thinking-controls"[^>]* hidden/.test(qwenHtml));
+  assert(qwenHtml.includes('id="thinking-mode" name="thinkingMode" disabled'));
+  assert(qwenHtml.includes('id="reasoning-effort" name="reasoningEffort" disabled'));
   const afterSetup = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.strictEqual(afterSetup.status, 303);
   assert.strictEqual(afterSetup.headers.get("location"), "/onboarding");

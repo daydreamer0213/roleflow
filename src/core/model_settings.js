@@ -7,6 +7,12 @@ const { secretPath, hasSecret, saveSecret, loadSecret, inspectSecret, clearSecre
 const SETTINGS_RELATIVE_PATH = path.join(".runtime", "settings", "model.json");
 const SECRET_ID = "model-api-key";
 const DEFAULT_MODEL_TIMEOUT_MS = 60000;
+const THINKING_MODES = new Set(["enabled", "disabled"]);
+const REASONING_EFFORTS = new Set(["high", "max"]);
+
+function supportsDeepSeekV4Thinking(preset, model) {
+  return String(preset || "") === "deepseek" && ["deepseek-v4-pro", "deepseek-v4-flash"].includes(String(model || ""));
+}
 
 const MODEL_PRESETS = {
   deepseek: {
@@ -147,16 +153,18 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
   let response;
   let payload;
   try {
+    const probeBody = {
+      model: normalized.model,
+      messages: [{ role: "user", content: "Return JSON: {\\\"ok\\\":true}" }],
+      temperature: 0,
+      max_tokens: 16,
+      response_format: { type: "json_object" }
+    };
+    if (supportsDeepSeekV4Thinking(normalized.preset, normalized.model)) probeBody.thinking = { type: "disabled" };
     response = await fetchImpl(`${normalized.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${String(apiKey).trim()}` },
-      body: JSON.stringify({
-        model: normalized.model,
-        messages: [{ role: "user", content: "只返回 JSON：{\"ok\":true}" }],
-        temperature: 0,
-        max_tokens: 16,
-        response_format: { type: "json_object" }
-      }),
+      body: JSON.stringify(probeBody),
       signal: controller.signal
     });
     const body = await response.text();
@@ -199,6 +207,8 @@ function modelConfigFromSettings(settings, apiKey = "", apiKeyEnv = "ZHIPPING_MO
         baseUrl: settings.baseUrl,
         model: settings.model,
         timeoutMs: settings.timeoutMs,
+        thinkingMode: settings.thinkingMode,
+        reasoningEffort: settings.reasoningEffort,
         apiKey: apiKey || "",
         apiKeyEnv
       }
@@ -215,7 +225,16 @@ function normalizeSettings(raw = {}) {
   const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
   if (preset.provider !== "mock" && !baseUrl) throw new Error("请填写兼容接口基础地址。");
   if (preset.provider !== "mock" && !model) throw new Error("请填写模型名称。");
-  const basic = { preset: presetId, provider: preset.provider, baseUrl, model, timeoutMs: normalizeTimeout(raw.timeoutMs) };
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
+  const basic = {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl,
+    model,
+    timeoutMs: normalizeTimeout(raw.timeoutMs),
+    thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high"
+  };
   const connection = normalizeConnection(raw.connection, modelFingerprint(basic));
   return { ...basic, connection };
 }
@@ -263,7 +282,25 @@ function migrateLegacySecret(root, settings) {
 }
 
 function modelFingerprint(settings = {}) {
-  return crypto.createHash("sha256").update([settings.provider, settings.baseUrl, settings.model].join("|")).digest("hex").slice(0, 20);
+  return crypto.createHash("sha256").update([
+    settings.provider,
+    settings.baseUrl,
+    settings.model,
+    settings.thinkingMode,
+    settings.reasoningEffort
+  ].join("|")).digest("hex").slice(0, 20);
+}
+
+function normalizeThinkingMode(value, fallback = "disabled") {
+  const normalized = String(value || fallback).trim().toLowerCase();
+  if (!THINKING_MODES.has(normalized)) throw new Error("MODEL_THINKING_MODE_INVALID");
+  return normalized;
+}
+
+function normalizeReasoningEffort(value, fallback = "high") {
+  const normalized = String(value || fallback).trim().toLowerCase();
+  if (!REASONING_EFFORTS.has(normalized)) throw new Error("MODEL_REASONING_EFFORT_INVALID");
+  return normalized;
 }
 
 function modelHttpError(status, upstream = "") {
@@ -347,6 +384,9 @@ module.exports = {
   isModelReady,
   modelConfigFromSettings,
   normalizeSettings,
+  normalizeThinkingMode,
+  normalizeReasoningEffort,
+  supportsDeepSeekV4Thinking,
   secretIdForSettings,
   modelFingerprint,
   settingsPath
