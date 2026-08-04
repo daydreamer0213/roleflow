@@ -94,6 +94,8 @@ class OpenAICompatibleAdapter {
     this.jsonMode = config.jsonMode !== false;
     this.temperature = Number(config.temperature ?? 0.1);
     this.maxTokens = Number(config.maxTokens ?? 4096);
+    this.thinkingMode = config.thinkingMode === "enabled" ? "enabled" : "disabled";
+    this.reasoningEffort = config.reasoningEffort === "max" ? "max" : "high";
     this.logger = config.logger || null;
   }
 
@@ -450,9 +452,12 @@ class OpenAICompatibleAdapter {
         ]
       };
       if (jsonMode) body.response_format = { type: "json_object" };
-      if (shouldDisableDeepSeekThinking(this.baseUrl, this.model, kind, input)) {
-        body.thinking = { type: "disabled" };
-      }
+      applyDeepSeekInferencePolicy(body, {
+        officialDeepSeek: isOfficialDeepSeek(this.baseUrl),
+        deepSeekV4: DEEPSEEK_V4_MODELS.has(String(this.model || "").trim().toLowerCase()),
+        thinkingMode: this.thinkingMode,
+        reasoningEffort: this.reasoningEffort
+      });
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
@@ -737,14 +742,24 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shouldDisableDeepSeekThinking(baseUrl, model, kind, input) {
-  const splitKind = kind === "matchResponsibilities"
-    || kind === "matchRequirements";
-  if (!DETERMINISTIC_EVIDENCE_KINDS.has(kind)
-    || (input?.contractRepair && !splitKind)
-    || !DEEPSEEK_V4_MODELS.has(String(model || "").trim().toLowerCase())) {
-    return false;
+function applyDeepSeekInferencePolicy(body, {
+  officialDeepSeek,
+  deepSeekV4,
+  thinkingMode,
+  reasoningEffort
+}) {
+  if (!officialDeepSeek || !deepSeekV4) return body;
+  body.thinking = { type: thinkingMode };
+  if (thinkingMode === "enabled") {
+    body.reasoning_effort = reasoningEffort;
+    delete body.temperature;
+  } else {
+    delete body.reasoning_effort;
   }
+  return body;
+}
+
+function isOfficialDeepSeek(baseUrl) {
   try {
     return new URL(baseUrl).hostname.toLowerCase() === "api.deepseek.com";
   } catch {
