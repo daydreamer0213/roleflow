@@ -2816,3 +2816,9 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - 完整离线回归 53/53，独立复审最终 `Spec PASS` / `Code quality APPROVED`。
 - 20 条尚未启动。继续沿用行为边界验收：人工确认的 `primary/apply` 不得遗漏；人工确认的 `caution/not_recommended` 不得混入默认沟通集合；exact 仅作次要观察指标。
 - 下一步顺序不可跳过：全新 index 10 -> 全新 3 条 `4,9,10` -> 全新 20 条；每轮禁止复用缓存或覆盖旧目录。
+### Exact evaluated binding
+
+- candidateProductCommit: $product
+- candidateEvaluatedCommit: $evaluated
+- aselineEvaluatedCommit: 52ca494c8c68e97974ac03423cf4523f24486a28
+- 绑定规则：product 是 evaluated 的严格祖先；后续私有 v4 manifest 必须原样使用以上完整 SHA。

@@ -753,3 +753,9 @@ Expected: accepted checkpoint is present on the current GitHub branch; `main` is
 - 独立复审：第一轮发现 1 Important、1 Minor，修正后第二轮为 Critical 0 / Important 0 / Minor 0，`Spec PASS`，`Code quality APPROVED`。
 - runner 与三项共享 blob 未变化，基线继续使用 `52ca494c8c68e97974ac03423cf4523f24486a28`，无需再次机械同步。
 - 下一门禁：全新缓存先单独验证零基 index 10；通过后再用全新目录执行零基 `4,9,10` 的 3 条验收，最后才执行全新 20 条。
+### Exact evaluated binding
+
+- candidateProductCommit: $product
+- candidateEvaluatedCommit: $evaluated
+- aselineEvaluatedCommit: 52ca494c8c68e97974ac03423cf4523f24486a28
+- 绑定规则：product 是 evaluated 的严格祖先；后续私有 v4 manifest 必须原样使用以上完整 SHA。
