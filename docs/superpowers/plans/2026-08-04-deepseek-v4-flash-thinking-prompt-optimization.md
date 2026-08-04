@@ -739,3 +739,17 @@ Expected: accepted checkpoint is present on the current GitHub branch; `main` is
 - candidate evaluated checkpoint R：`47b807d5036ade7af0562ca81040af6f71d5f3e3`
 - product `bde0c011a1af7bbffb18368def0c4edb0c6309c2` 是 R 的严格祖先。
 - manifest/proof/live 临时分支必须使用 R，不能使用下一绑定提交。
+
+## 2026-08-04 Flash non-thinking foundation v19 reviewed checkpoint
+
+- Product checkpoint: `141d6a639de38c4c0cd2c0e617cfdf54c36cbd1b`.
+- Thinking/high 首轮 3 条目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-thinking-high-first-3-v1-20260804`。3 条均在 `understandJob` 初次响应阶段返回 HTTP 200 但最终内容为空，诊断为 `MODEL_OUTPUT_TRUNCATED`；未进入 20 条。
+- Non-thinking 对照 3 条目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-first-3-control-v1-20260804`。结构门禁通过；index 4 为 `primary -> primary`，index 9 为 `caution -> not_recommended`（沟通行为均为 false，按中度偏差记录），index 10 为 `apply -> caution`（漏掉应沟通岗位，阻断 20 条）。
+- index 10 根因不是二维表、权重或资格门槛：Flash 把支持性部署能力扩大为 `foundation=true`，使 `foundationState=partial` 并触发 caution 上限；旧 Pro 输出将同类能力视为普通非基础要求。
+- v19 最小通用修复：`understandJob` 从 v18 升到 v19；明确 foundation 只表示直接决定主要工作对象、动作或交付结果的稀缺最低履职前提。支持性工具、平台、部署和通用工程能力默认 false；若工具或平台本身就是主要工作对象则不得一概排除；不可协商条件只辅助 `indispensable/eligibility`，不能自动成为 foundation。
+- 未修改二维表、量化权重、eligibility 规则、match prompt、调用次数或四档映射。
+- 实现提交：`5d98f1b64d31de8370d20a10f5debc0af0fba350`；审查修正提交：`141d6a639de38c4c0cd2c0e617cfdf54c36cbd1b`。
+- 回归证据：新断言在旧提示词上先失败，修正后通过；`npm.cmd test` 为 53/53；`git diff --check` clean。
+- 独立复审：第一轮发现 1 Important、1 Minor，修正后第二轮为 Critical 0 / Important 0 / Minor 0，`Spec PASS`，`Code quality APPROVED`。
+- runner 与三项共享 blob 未变化，基线继续使用 `52ca494c8c68e97974ac03423cf4523f24486a28`，无需再次机械同步。
+- 下一门禁：全新缓存先单独验证零基 index 10；通过后再用全新目录执行零基 `4,9,10` 的 3 条验收，最后才执行全新 20 条。
