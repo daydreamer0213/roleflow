@@ -1,5 +1,5 @@
 {
-  "url": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+  "url": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405",
   "rawFields": [
     {
       "label": "薪资待遇",
@@ -8,7 +8,14 @@
       ]
     }
   ],
-  "urlOptions": [
-    { "param": "district", "code": "101280105", "label": "天河区" }
+  "links": [
+    {
+      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&district=101280105",
+      "label": "天河区"
+    },
+    {
+      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&futureFilter=preview-9",
+      "label": "未来筛选"
+    }
   ]
 }

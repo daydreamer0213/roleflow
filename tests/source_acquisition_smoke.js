@@ -1,6 +1,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { BossSiteAdapter, buildBossScanTargets, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
@@ -148,6 +149,8 @@ async function preflightSmoke() {
 
 async function inheritedPageInspectionSmoke() {
   let navigations = 0;
+  let clicks = 0;
+  let sessionCreations = 0;
   const fixture = JSON.parse(fs.readFileSync(
     path.join(__dirname, "fixtures", "boss_inherited_filter_dom.json"),
     "utf8"
@@ -156,7 +159,7 @@ async function inheritedPageInspectionSmoke() {
     async evalValue(_tabId, expression) {
       if (expression.includes("isSearchPage")) {
         return {
-          url: "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+          url: fixture.url,
           title: "全国招聘",
           isBoss: true,
           isLoginPage: false,
@@ -167,27 +170,65 @@ async function inheritedPageInspectionSmoke() {
         };
       }
       if (expression.includes("condition-filter-select")) {
-        return fixture;
+        return vm.runInNewContext(expression, inheritedFilterDomSandbox(fixture));
       }
       return {
-        url: "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+        url: fixture.url,
         path: "/web/geek/jobs",
         isRiskPage: false,
         isLoginPage: false,
         hasJobStructure: true
       };
     },
-    async navigate() { navigations += 1; }
+    async navigate() { navigations += 1; },
+    async clickAt() { clicks += 1; },
+    async createTab() { sessionCreations += 1; }
   };
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   const inspected = await adapter.inspectInheritedSearchPage({ tabId: "BOSS-SEARCH" });
   assert.strictEqual(navigations, 0);
+  assert.strictEqual(clicks, 0);
+  assert.strictEqual(sessionCreations, 0);
   assert.strictEqual(inspected.tabId, "BOSS-SEARCH");
-  assert.strictEqual(inspected.searchTemplate.cityCode, "100010000");
+  assert.strictEqual(inspected.searchTemplate.cityCode, "101280100");
   assert.strictEqual(inspected.catalog.fields.salary.options[0].label, "10-20K");
-  assert.deepStrictEqual(inspected.urlOptions, [
+  assert.deepStrictEqual(inspected.urlOptions.filter((item) => item.label === "天河区"), [
     { param: "district", code: "101280105", label: "天河区" }
   ]);
+  assert.strictEqual(inspected.urlOptions.some((item) => item.param === "city" || item.param === "salary"), false);
+  assert.deepStrictEqual(inspected.urlOptions.find((item) => item.param === "futureFilter"), {
+    param: "futureFilter",
+    code: "preview-9",
+    label: "未来筛选"
+  });
+}
+
+function inheritedFilterDomSandbox(fixture) {
+  const currentUrl = new URL(fixture.url);
+  const filterNodes = fixture.rawFields.map((field) => ({
+    querySelector(selector) {
+      return selector === ".current-select .placeholder-text" ? { textContent: field.label } : null;
+    },
+    querySelectorAll(selector) {
+      if (selector !== "[ka*='sel-job-rec-']") return [];
+      return field.options.map((option) => ({
+        textContent: option.label,
+        getAttribute(name) { return name === "ka" ? option.ka : null; }
+      }));
+    }
+  }));
+  const linkNodes = fixture.links.map((link) => ({ href: link.href, textContent: link.label }));
+  return {
+    URL,
+    location: { href: currentUrl.href, origin: currentUrl.origin },
+    document: {
+      querySelectorAll(selector) {
+        if (selector === ".condition-filter-select") return filterNodes;
+        if (selector === 'a[href*="/web/geek/jobs"]') return linkNodes;
+        return [];
+      }
+    }
+  };
 }
 
 async function riskPreflightSmoke() {

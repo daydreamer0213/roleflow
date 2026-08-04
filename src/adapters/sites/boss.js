@@ -422,6 +422,7 @@ class BossSiteAdapter {
       })),
       urlOptions: Array.from(document.querySelectorAll('a[href*="/web/geek/jobs"]')).flatMap((node) => {
         try {
+          const currentUrl = new URL(location.href);
           const optionUrl = new URL(node.href, location.href);
           if (optionUrl.origin !== location.origin || !/^\\/web\\/geek\\/jobs\\/?$/i.test(optionUrl.pathname)) return [];
           const label = String(node.textContent || "").replace(/\\s+/g, " ").trim();
@@ -430,7 +431,8 @@ class BossSiteAdapter {
             .filter(([param, code]) => param !== "query" && param !== "page" && code)
             .flatMap(([param, value]) => String(value).split(",")
               .map((code) => ({ param, code: code.trim(), label }))
-              .filter((item) => item.code));
+              .filter((item) => item.code && !new Set(currentUrl.searchParams.getAll(param)
+                .flatMap((currentValue) => String(currentValue).split(",").map((code) => code.trim()))).has(item.code)));
         } catch {
           return [];
         }
