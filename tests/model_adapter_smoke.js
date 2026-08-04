@@ -903,7 +903,10 @@ server.listen(0, "127.0.0.1", async () => {
     assert(
       understandPrompt.includes("稀缺的最低履职前提")
         && understandPrompt.includes("不等于‘要求、精通、掌握’")
-        && understandPrompt.includes("工具、平台、部署、通用工程能力默认 false")
+        && understandPrompt.includes("仅支撑某个环节的工具、平台、部署、通用工程能力默认 false")
+        && understandPrompt.includes("工具或平台本身就是主要工作对象时")
+        && understandPrompt.includes("不能仅凭不可协商标为 foundation=true")
+        && understandPrompt.includes("要标为 foundation，该要求仍须直接决定主要工作对象、动作或交付结果")
         && understandPrompt.includes("主要工作对象、动作或交付结果")
         && understandPrompt.includes("JD 明确为不可协商前提")
         && understandPrompt.includes("不确定时 false"),
