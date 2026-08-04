@@ -43,7 +43,13 @@ function validateModelResult(kind, value, context) {
   }
   return validateModelResultRaw(kind, value, { jobUnderstanding: legacyFullTestContext(value) });
 }
-const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
+const {
+  runtimeAnalysisContext,
+  buildAnalysisRevision,
+  modelInferenceVersion,
+  analysisStaleReasons,
+  PIPELINE_VERSIONS
+} = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
 const {
@@ -69,6 +75,7 @@ const db = openDb(dbPath);
     await multiTrackValidationIdempotenceSmoke();
     await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
+    await modelInferenceIsolationSmoke();
     await compactRoleEvidencePersistenceSmoke();
     await ruleGuardSmoke();
     await localEvidenceGuardSmoke();
@@ -921,6 +928,88 @@ async function pipelineVersionCacheSmoke() {
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v1", input, run });
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v2", input, run });
   assert.strictEqual(runs, 2, "pipelineVersion 变化必须使旧缓存失效");
+}
+
+async function modelInferenceIsolationSmoke() {
+  const fakeApiKey = "flash-task-3-fake-api-key";
+  const modelConfig = {
+    provider: "deepseek",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+    reasoningEffort: "high",
+    apiKey: fakeApiKey,
+    headers: { authorization: `Bearer ${fakeApiKey}` }
+  };
+  const disabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "disabled" });
+  const enabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "enabled" });
+  const revisionBase = {
+    profileVersion: "profile",
+    searchPlanVersion: "plan",
+    matchingCardVersion: null,
+    sourceContentHash: "job",
+    semanticMatchingMode: "split",
+    pipelineVersions: PIPELINE_VERSIONS
+  };
+
+  assert.notStrictEqual(disabled, enabled);
+  assert.deepStrictEqual(
+    analysisStaleReasons(
+      { revision: { ...revisionBase, modelInferenceVersion: disabled } },
+      { ...revisionBase, modelInferenceVersion: enabled }
+    ),
+    ["model_inference_changed"]
+  );
+  assert.deepStrictEqual(
+    analysisStaleReasons(
+      { revision: revisionBase },
+      { ...revisionBase, modelInferenceVersion: disabled }
+    ),
+    ["model_inference_changed"],
+    "legacy revisions without an inference version must be stale once"
+  );
+  const revision = buildAnalysisRevision({ model: { ...modelConfig, thinkingMode: "disabled" } }, "job");
+  assert(!JSON.stringify(revision).includes(fakeApiKey), "revision must not retain model secrets");
+
+  const configsFor = (thinkingMode) => ({
+    model: {
+      ...modelConfig,
+      thinkingMode,
+      providers: {
+        deepseek: {
+          ...modelConfig,
+          thinkingMode
+        }
+      }
+    }
+  });
+  const input = { job: { sourceId: "inference-isolation", description: "Python RAG" } };
+  let runs = 0;
+  const run = async () => {
+    runs += 1;
+    return understanding("inference-isolation");
+  };
+  await cachedModelCall({
+    db,
+    configs: configsFor("disabled"),
+    kind: "understandJob",
+    pipelineVersion: "inference-isolation-v1",
+    input,
+    run
+  });
+  await cachedModelCall({
+    db,
+    configs: configsFor("enabled"),
+    kind: "understandJob",
+    pipelineVersion: "inference-isolation-v1",
+    input,
+    run
+  });
+  assert.strictEqual(runs, 2, "thinking mode changes must miss the prior model cache");
+  const cacheMetadata = db.prepare(
+    "SELECT cache_key, kind, provider, model, input_hash, result_json FROM model_cache WHERE model = ?"
+  ).all("deepseek-v4-flash");
+  assert.strictEqual(cacheMetadata.length, 2, "each inference identity requires its own cache record");
+  assert(!JSON.stringify(cacheMetadata).includes(fakeApiKey), "cache metadata must not retain model secrets");
 }
 
 function understandingContractSmoke() {
@@ -2178,6 +2267,10 @@ function staleAnalysisSmoke() {
     revision: {
       ...runtimeAnalysisContext(candidate, initialPlan),
       sourceContentHash: require("../src/core/storage").sourceContentHash(source),
+      modelInferenceVersion: buildAnalysisRevision(
+        configs,
+        require("../src/core/storage").sourceContentHash(source)
+      ).modelInferenceVersion,
       pipelineVersions: require("../src/core/analysis_revision").PIPELINE_VERSIONS
     }
   };
