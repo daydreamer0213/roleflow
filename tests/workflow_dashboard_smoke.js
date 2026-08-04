@@ -224,6 +224,7 @@ let server;
     .run(JSON.stringify(unresolvedPlanner), workflow.id);
   const unresolvedPage = await getText(baseUrl, started.location);
   assert.match(unresolvedPage.body, /未解析平台筛选：industry/);
+  assert.doesNotMatch(unresolvedPage.body, /100020/);
   assert.doesNotMatch(unresolvedPage.body, /raw-authenticated-browser-state/);
   db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
     .run(JSON.stringify(workflow.planner), workflow.id);

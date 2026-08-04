@@ -1022,7 +1022,7 @@ async function resolveLiveInheritedContext({
         site: "boss",
         scopeId: scopeShortId(searchScope.key),
         param: unresolved.param,
-        codes: unresolved.codes
+        unresolvedValueCount: Array.isArray(unresolved.codes) ? unresolved.codes.length : 0
       });
     }
     return {
@@ -3039,4 +3039,4 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-module.exports = { createDashboardServer, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };
+module.exports = { createDashboardServer, resolveLiveInheritedContext, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };

@@ -2,6 +2,8 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createLogger, workflowLogContext } = require("../src/core/observability");
+const { resolveLiveInheritedContext } = require("../src/dashboard/server");
+const { BossSiteAdapter } = require("../src/adapters/sites/boss");
 
 const root = path.join(__dirname, "..", ".runtime", `observability-context-smoke-${Date.now()}`);
 
@@ -101,43 +103,92 @@ async function main() {
       communicationBatchId: null
     });
 
-    const scopeLogger = createLogger({
-      root,
-      component: "inherited-scope-test"
-    });
-    scopeLogger.info("inherited_scope_resolved", {
-      site: "boss",
-      scopeId: "1234567890",
-      recognizedFilterCount: 4,
-      unresolvedFilterCount: 1,
-      keywordCatalogHash: "catalog-hash"
-    });
-    const inheritedScope = scopeLogger.listRecent(10)
-      .find((row) => row.event === "inherited_scope_resolved");
-    assert(inheritedScope);
-    assert.deepStrictEqual({
-      site: inheritedScope.site,
-      scopeId: inheritedScope.scopeId,
-      recognizedFilterCount: inheritedScope.recognizedFilterCount,
-      unresolvedFilterCount: inheritedScope.unresolvedFilterCount,
-      keywordCatalogHash: inheritedScope.keywordCatalogHash
-    }, {
-      site: "boss",
-      scopeId: "1234567890",
-      recognizedFilterCount: 4,
-      unresolvedFilterCount: 1,
-      keywordCatalogHash: "catalog-hash"
-    });
-    const serializedScope = JSON.stringify(inheritedScope);
+    const dashboardSource = fs.readFileSync(
+      path.join(__dirname, "..", "src", "dashboard", "server.js"),
+      "utf8"
+    );
+    assert.doesNotMatch(
+      dashboardSource,
+      /platform_filter_unresolved[\s\S]{0,300}\bcodes\s*:/,
+      "production unresolved-filter diagnostics must not emit raw codes"
+    );
+    assert.strictEqual(typeof resolveLiveInheritedContext, "function");
+
+    const originalPreflight = BossSiteAdapter.prototype.preflight;
+    const originalInspectInheritedSearchPage = BossSiteAdapter.prototype.inspectInheritedSearchPage;
+    const diagnosticEvents = [];
+    try {
+      BossSiteAdapter.prototype.preflight = async () => ({
+        tabId: "fixture-search-tab",
+        isSearchPage: true
+      });
+      BossSiteAdapter.prototype.inspectInheritedSearchPage = async () => ({
+        url: "https://www.zhipin.com/web/geek/jobs?city=100010000&industry=100020&query=raw-secret-query",
+        catalog: { fields: {} },
+        urlOptions: []
+      });
+      await resolveLiveInheritedContext({
+        db: {
+          prepare() {
+            return { get() { return null; } };
+          }
+        },
+        plan: {
+          id: 9,
+          profileId: 7,
+          profileVersionId: 11,
+          plan: {
+            keywords: [{ word: "RAG工程师", priority: "A", reason: "fixture" }]
+          }
+        },
+        matchingContext: { matchingCard: {} },
+        logger: {
+          info(event, fields = {}) { diagnosticEvents.push({ event, fields }); },
+          warn(event, fields = {}) { diagnosticEvents.push({ event, fields }); }
+        }
+      });
+    } finally {
+      BossSiteAdapter.prototype.preflight = originalPreflight;
+      BossSiteAdapter.prototype.inspectInheritedSearchPage = originalInspectInheritedSearchPage;
+    }
+
+    const scopeResolved = diagnosticEvents.find((row) => row.event === "inherited_scope_resolved");
+    assert(scopeResolved);
+    assert.deepStrictEqual(Object.keys(scopeResolved.fields).sort(), [
+      "keywordCatalogHash",
+      "recognizedFilterCount",
+      "scopeId",
+      "site",
+      "unresolvedFilterCount"
+    ]);
+    const unresolvedFilter = diagnosticEvents.find((row) => row.event === "platform_filter_unresolved");
+    assert(unresolvedFilter);
+    assert.deepStrictEqual(Object.keys(unresolvedFilter.fields).sort(), [
+      "param",
+      "scopeId",
+      "site",
+      "unresolvedValueCount"
+    ]);
+    assert.strictEqual(unresolvedFilter.fields.param, "industry");
+    assert.strictEqual(unresolvedFilter.fields.unresolvedValueCount, 1);
+    assert.strictEqual(scopeResolved.fields.scopeId.length, 10);
+
+    const serializedDiagnostics = JSON.stringify(diagnosticEvents);
     for (const sensitive of [
+      "codes",
+      "filterParams",
+      "templateUrl",
+      "browserState",
       "https://www.zhipin.com/web/geek/jobs?",
+      "100020",
+      "raw-secret-query",
       "candidateProfile",
       "resumeText",
       "description",
       "cookie",
       "apiKey"
     ]) {
-      assert(!serializedScope.includes(sensitive), `inherited scope diagnostics leaked: ${sensitive}`);
+      assert(!serializedDiagnostics.includes(sensitive), `inherited scope diagnostics leaked: ${sensitive}`);
     }
 
     console.log("observability_context_smoke ok");
