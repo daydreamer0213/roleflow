@@ -446,3 +446,28 @@ file at the original portability validation position, preserving their failure
 ordering and file-replacement semantics. Only an exact-schema, hash-verified,
 HMAC-authenticated v4 proof is retained and reused as the early snapshot; this
 keeps v4 authentication before Git while preserving v4 proof single-read.
+
+## 17. Offline validation stderr attribution
+
+The successful private runner smoke may emit
+`fatal: Needed a single revision` on stderr. Git trace identifies the exact
+command as:
+
+```text
+git rev-parse --verify ffffffffffffffffffffffffffffffffffffffff^{commit}
+```
+
+This comes from the legacy negative test that supplies
+`baselineProductCommit: "f".repeat(40)` and asserts that an arbitrary CLI
+baseline hash is rejected. The runner catches that Git failure and returns the
+expected safe `PRIVATE_FULL_CHAIN_WORKTREE_DIRTY` error, so the complete smoke
+continues and exits zero. The test line was introduced by commit `465830e5` on
+2026-07-26 and is present in the pre-Task-4 baseline
+`4cdad74b5034c1981908dc66456090e5b8b0922e`.
+
+As dynamic confirmation, executing the runner and smoke source from that
+pre-Task-4 baseline in the current Git context produces exit code zero and one
+identical fatal line. This stderr is therefore not caused by v4 CLI fixtures,
+HMAC handling, proof snapshots, or model identity separation. Task 4 must not
+filter or redirect it, because doing so would hide stderr from an intentional
+Git failure and would change a legacy test path outside this task.
