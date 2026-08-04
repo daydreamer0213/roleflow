@@ -70,7 +70,7 @@ function nearlyEqual(actual, expected, message) {
   assert(Math.abs(actual - expected) < 1e-12, `${message}: ${actual} !== ${expected}`);
 }
 
-assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.7");
+assert.strictEqual(DECISION_POLICY.version, "four-tier-weighted-v4.8");
 assert.strictEqual(DECISION_POLICY.recommendationSchemaVersion, 2);
 assert.strictEqual(DECISION_POLICY.modelRecommendationMode, "shadow");
 assert.strictEqual(DECISION_POLICY.requirementWeights.core, 0.70);
