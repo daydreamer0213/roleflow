@@ -2012,9 +2012,11 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     : "尚未验证，保存时会发送一次极小连接测试";
   const next = safeSettingsNext(searchParams.get("next"));
   const presetJson = JSON.stringify(presets);
-  const thinkingControls = !supportsThinking ? "" : [
-    '      <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode" onchange="document.getElementById(\'reasoning-effort\').disabled=this.value!==\'enabled\'"><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
-    '      <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8</option></select></label>'
+  const thinkingControls = [
+    '      <div id="thinking-controls" class="settings-grid settings-field-wide"' + (supportsThinking ? "" : " hidden") + '>',
+    '        <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode"' + (supportsThinking ? "" : " disabled") + '><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
+    '        <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (supportsThinking && thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8</option></select></label>',
+    "      </div>"
   ].join("");
   const body = [
     '<style>.settings-page{max-width:960px;padding-top:32px}.settings-header{max-width:720px;margin:34px 0 24px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#0969da;font-size:13px;font-weight:700}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}.settings-form{max-width:none;padding:24px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.settings-field{display:grid;gap:7px;font-size:14px;font-weight:600}.settings-field[hidden]{display:none}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-security{display:grid;gap:3px;border-top:1px solid #d8dee4;margin-top:22px;padding-top:16px;font-size:13px;color:#57606a}.settings-security strong{color:#1f2328}.settings-clear{margin-top:14px}.settings-actions{display:flex;justify-content:flex-end;margin-top:20px}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:22px 0 18px}.settings-header h1{font-size:26px}.settings-form{padding:16px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}</style>',
@@ -2048,10 +2050,21 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     '    const baseUrl = document.getElementById("model-base-url");',
     '    const modelName = document.getElementById("model-name");',
     '    const modelOptions = document.getElementById("model-options");',
+    '    const thinkingControls = document.getElementById("thinking-controls");',
+    '    const thinkingMode = document.getElementById("thinking-mode");',
+    '    const reasoningEffort = document.getElementById("reasoning-effort");',
     "    function currentPreset() { return presets.find(function (item) { return item.id === presetSelect.value; }) || presets[0]; }",
+    "    function syncThinkingControls() {",
+    '      const supported = currentPreset().id === "deepseek" && ["deepseek-v4-pro", "deepseek-v4-flash"].includes(modelName.value);',
+    "      thinkingControls.hidden = !supported;",
+    "      thinkingMode.disabled = !supported;",
+    '      if (!supported) { thinkingMode.value = "disabled"; reasoningEffort.value = "high"; }',
+    '      reasoningEffort.disabled = !supported || thinkingMode.value !== "enabled";',
+    "    }",
     "    function syncMode() {",
     "      const preset = currentPreset();",
     '      baseUrl.readOnly = preset.id !== "custom";',
+    "      syncThinkingControls();",
     "    }",
     "    function updatePreset() {",
     "      const preset = currentPreset();",
@@ -2067,6 +2080,8 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     "      syncMode();",
     "    }",
     '    presetSelect.addEventListener("change", updatePreset);',
+    '    modelName.addEventListener("input", syncThinkingControls);',
+    '    thinkingMode.addEventListener("change", syncThinkingControls);',
     "    syncMode();",
     "  }());",
     "  </script>",

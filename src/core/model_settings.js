@@ -9,6 +9,7 @@ const SECRET_ID = "model-api-key";
 const DEFAULT_MODEL_TIMEOUT_MS = 60000;
 const THINKING_MODES = new Set(["enabled", "disabled"]);
 const REASONING_EFFORTS = new Set(["high", "max"]);
+const DEEPSEEK_V4_MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
 
 const MODEL_PRESETS = {
   deepseek: {
@@ -222,14 +223,15 @@ function normalizeSettings(raw = {}) {
   const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
   if (preset.provider !== "mock" && !baseUrl) throw new Error("请填写兼容接口基础地址。");
   if (preset.provider !== "mock" && !model) throw new Error("请填写模型名称。");
+  const supportsThinking = presetId === "deepseek" && DEEPSEEK_V4_MODELS.has(model);
   const basic = {
     preset: presetId,
     provider: preset.provider,
     baseUrl,
     model,
     timeoutMs: normalizeTimeout(raw.timeoutMs),
-    thinkingMode: normalizeThinkingMode(raw.thinkingMode),
-    reasoningEffort: normalizeReasoningEffort(raw.reasoningEffort)
+    thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high"
   };
   const connection = normalizeConnection(raw.connection, modelFingerprint(basic));
   return { ...basic, connection };

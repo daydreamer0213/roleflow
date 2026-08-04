@@ -11,6 +11,7 @@ const {
   resolveRuntimeModelConfig,
   isModelReady,
   modelConfigFromSettings,
+  normalizeSettings,
   normalizeThinkingMode,
   normalizeReasoningEffort,
   secretIdForSettings,
@@ -69,6 +70,28 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
     assert.strictEqual(modelConfigFromSettings(deepseek.settings).providers.openai_compatible.reasoningEffort, "high");
     assert.throws(() => normalizeThinkingMode("sometimes"), /MODEL_THINKING_MODE_INVALID/);
     assert.throws(() => normalizeReasoningEffort("medium"), /MODEL_REASONING_EFFORT_INVALID/);
+    assert.throws(() => normalizeSettings({
+      preset: "deepseek",
+      model: "deepseek-v4-flash",
+      thinkingMode: "sometimes",
+      reasoningEffort: "high"
+    }), /MODEL_THINKING_MODE_INVALID/);
+    const unofficialDeepSeek = normalizeSettings({
+      preset: "deepseek",
+      model: "deepseek-v4-preview",
+      thinkingMode: "enabled",
+      reasoningEffort: "max"
+    });
+    assert.strictEqual(unofficialDeepSeek.thinkingMode, "disabled");
+    assert.strictEqual(unofficialDeepSeek.reasoningEffort, "high");
+    const pollutedQwen = normalizeSettings({
+      preset: "qwen",
+      model: "qwen-plus",
+      thinkingMode: "sometimes",
+      reasoningEffort: "medium"
+    });
+    assert.strictEqual(pollutedQwen.thinkingMode, "disabled");
+    assert.strictEqual(pollutedQwen.reasoningEffort, "high");
     const deepseekSecretId = secretIdForSettings(deepseek.settings);
     assert.notStrictEqual(deepseekSecretId, qwenSecretId);
     assert.strictEqual(loadSecret(root, deepseekSecretId), "deepseek-key-not-public");
