@@ -101,6 +101,45 @@ async function main() {
       communicationBatchId: null
     });
 
+    const scopeLogger = createLogger({
+      root,
+      component: "inherited-scope-test"
+    });
+    scopeLogger.info("inherited_scope_resolved", {
+      site: "boss",
+      scopeId: "1234567890",
+      recognizedFilterCount: 4,
+      unresolvedFilterCount: 1,
+      keywordCatalogHash: "catalog-hash"
+    });
+    const inheritedScope = scopeLogger.listRecent(10)
+      .find((row) => row.event === "inherited_scope_resolved");
+    assert(inheritedScope);
+    assert.deepStrictEqual({
+      site: inheritedScope.site,
+      scopeId: inheritedScope.scopeId,
+      recognizedFilterCount: inheritedScope.recognizedFilterCount,
+      unresolvedFilterCount: inheritedScope.unresolvedFilterCount,
+      keywordCatalogHash: inheritedScope.keywordCatalogHash
+    }, {
+      site: "boss",
+      scopeId: "1234567890",
+      recognizedFilterCount: 4,
+      unresolvedFilterCount: 1,
+      keywordCatalogHash: "catalog-hash"
+    });
+    const serializedScope = JSON.stringify(inheritedScope);
+    for (const sensitive of [
+      "https://www.zhipin.com/web/geek/jobs?",
+      "candidateProfile",
+      "resumeText",
+      "description",
+      "cookie",
+      "apiKey"
+    ]) {
+      assert(!serializedScope.includes(sensitive), `inherited scope diagnostics leaked: ${sensitive}`);
+    }
+
     console.log("observability_context_smoke ok");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

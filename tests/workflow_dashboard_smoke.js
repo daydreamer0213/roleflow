@@ -67,7 +67,10 @@ let server;
         profileVersionId: plan.profileVersionId,
         matchingCardRevision: "fixture-card",
         catalogHash: "fixture-catalog",
-        keywords: plan.plan.keywords.map(({ word, priority, reason = "" }) => ({ word, priority, reason }))
+        keywords: [
+          ...plan.plan.keywords.map(({ word, priority, reason = "" }) => ({ word, priority, reason })),
+          { word: "Agent工程师", priority: "B", reason: "测试继承关键词展示" }
+        ]
       },
       platformPolicy: {
         hash: "fixture-policy",
@@ -191,6 +194,39 @@ let server;
   assert.match(scanningPage.body, /正在筛选岗位/);
   assert.match(scanningPage.body, /本轮目标\s*<strong>35/);
   assert.doesNotMatch(scanningPage.body, /上午|下午/);
+  for (const text of [
+    "筛选来源：BOSS 当前页面",
+    "地点：全国",
+    "薪资：10-20K",
+    "范围：fixture-sc",
+    "关键词来源：Search Plan",
+    "AI应用开发工程师",
+    "RAG工程师",
+    "Agent工程师",
+    "修改 BOSS 筛选会创建新的统计范围"
+  ]) {
+    assert.match(scanningPage.body, new RegExp(text));
+  }
+  assert.doesNotMatch(scanningPage.body, /广州 AI.*目标城市/);
+  assert.doesNotMatch(scanningPage.body, /https:\/\/www\.zhipin\.com\/web\/geek\/jobs\?/);
+
+  const unresolvedPlanner = {
+    ...workflow.planner,
+    platformPolicy: {
+      ...workflow.planner.platformPolicy,
+      unresolvedParams: [{ param: "industry", codes: ["100020"] }]
+    },
+    browserState: {
+      cookie: "raw-authenticated-browser-state"
+    }
+  };
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(unresolvedPlanner), workflow.id);
+  const unresolvedPage = await getText(baseUrl, started.location);
+  assert.match(unresolvedPage.body, /未解析平台筛选：industry/);
+  assert.doesNotMatch(unresolvedPage.body, /raw-authenticated-browser-state/);
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(workflow.planner), workflow.id);
 
   spawns[0].child.emit("error", new Error("spawn failed"));
   const interruptedWorkflow = getWorkflowRun(db, workflow.id);
