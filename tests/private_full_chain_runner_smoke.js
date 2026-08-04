@@ -189,6 +189,73 @@ function rehashV4ProofWithoutHmac(value) {
   value.proofSha256 = valueSha256(payload);
 }
 
+function v4CliPreloadSource({ syntheticWorktree, targetEvaluatedCommit, sharedBlobs, consumerBlobs }) {
+  return [
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    'const childProcess = require("node:child_process");',
+    'const Module = require("node:module");',
+    `const syntheticWorktree = ${JSON.stringify(syntheticWorktree)};`,
+    `const targetEvaluatedCommit = ${JSON.stringify(targetEvaluatedCommit)};`,
+    `const sharedBlobs = ${JSON.stringify(sharedBlobs)};`,
+    `const consumerBlobs = ${JSON.stringify(consumerBlobs)};`,
+    `const fixedCandidate = ${JSON.stringify("D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix")};`,
+    'const originalRealpathSync = fs.realpathSync.bind(fs);',
+    'const originalRealpathNative = fs.realpathSync.native.bind(fs.realpathSync);',
+    'const originalExistsSync = fs.existsSync.bind(fs);',
+    'const isFixedCandidate = (value) => path.resolve(String(value)).toLowerCase() === path.resolve(fixedCandidate).toLowerCase();',
+    'const mappedRealpathSync = (value, options) => originalRealpathSync(isFixedCandidate(value) ? syntheticWorktree : value, options);',
+    'mappedRealpathSync.native = (value, options) => originalRealpathNative(isFixedCandidate(value) ? syntheticWorktree : value, options);',
+    'fs.realpathSync = mappedRealpathSync;',
+    'fs.existsSync = (value) => isFixedCandidate(value) ? true : originalExistsSync(value);',
+    'const originalExecFileSync = childProcess.execFileSync.bind(childProcess);',
+    'const gitResult = (value, options) => options?.encoding ? String(value) : Buffer.from(String(value));',
+    'childProcess.execFileSync = (command, args = [], options = {}) => {',
+    '  if (command !== "git") return originalExecFileSync(command, args, options);',
+    '  if (args[0] === "status") return gitResult("", options);',
+    '  if (args[0] === "merge-base") return gitResult("", options);',
+    '  if (args[0] === "rev-parse") {',
+    '    const spec = String(args[args.length - 1] || "");',
+    '    if (spec === "HEAD") return gitResult(`${targetEvaluatedCommit}\\n`, options);',
+    '    if (spec.startsWith("HEAD:")) return gitResult(`${sharedBlobs[spec.slice(5)]}\\n`, options);',
+    '    if (args.includes("--verify")) return gitResult(`${spec.replace(/\\^\\{commit\\}$/, "")}\\n`, options);',
+    '    const separator = spec.indexOf(":");',
+    '    if (separator > 0) return gitResult(`${consumerBlobs[spec.slice(separator + 1)]}\\n`, options);',
+    '  }',
+    '  throw new Error(`unexpected synthetic git command: ${args.join(" ")}`);',
+    '};',
+    'const syntheticModules = {',
+    '  loadConfigs: () => ({ model: { provider: "mock", providers: { mock: {} } } }),',
+    '  resolveRuntimeModelConfig: ({ root }) => ({ modelConfig: JSON.parse(fs.readFileSync(path.join(root, "model.json"), "utf8")) }),',
+    '  profileToRuntimeConfigs: (base, _profile, _plan, _unused, card) => ({ ...base, matchingCard: card }),',
+    '  createJobAnalysisRunner: () => async () => ({',
+    '    recommendation: "apply", recommendationSchemaVersion: 1, selectedTrackId: "synthetic",',
+    '    selectedTrackLabel: "Synthetic", roleSummary: "Synthetic analysis",',
+    '    roleResumeEvidence: ["synthetic"], roleGaps: [], roleAlignment: "aligned",',
+    '    semanticStatus: "complete", evidence: { jd: ["synthetic"], resume: ["synthetic"] },',
+    '    decisionSource: "model", fitReasons: ["synthetic"], missingPoints: []',
+    '  }),',
+    '  scoreJob: (job) => job,',
+    '  decisionState: () => "ready",',
+    '  decisionBucket: () => "primary",',
+    '  decisionHardBlockers: () => [],',
+    '  effectiveHardBlockers: () => [],',
+    '  roleEvidenceDecisionState: () => ({ foundationState: "complete" }),',
+    '  openDb: () => ({ close() {} }),',
+    '  mapWithConcurrency: async (items, _limit, flow) => Promise.all(items.map(flow)),',
+    '  assertResumeIdentityRedacted: () => {}',
+    '};',
+    'const originalLoad = Module._load;',
+    'Module._load = function(request, parent, isMain) {',
+    '  if (typeof request === "string" && (request === "../src/config" || request.startsWith("../src/core/"))) {',
+    '    return syntheticModules;',
+    '  }',
+    '  return originalLoad.call(this, request, parent, isMain);',
+    '};',
+    ''
+  ].join("\n");
+}
+
 function sourceContentHash(job) {
   return crypto.createHash("sha256").update(JSON.stringify({
     title: job.title || "",
@@ -1522,6 +1589,29 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(v4Result.modelIdentitySha256, v4Result.matchModelIdentitySha256);
   assert.strictEqual(v4Result.confirmedEvidencePortabilitySha256, v4Proof.proofSha256);
   assert(!JSON.stringify(v4Result.modelIdentity).includes("synthetic-flash-secret-beta"));
+  const serializedV4Result = JSON.stringify(v4Result);
+  for (const rawConfirmationId of [portableEvidence.profile.id, portableEvidence.card.id]) {
+    assert(!serializedV4Result.includes(rawConfirmationId), `v4 match result must not contain raw confirmation ID ${rawConfirmationId}`);
+  }
+  assert.strictEqual(Object.hasOwn(v4Result, "fixtureProfileId"), false);
+  assert.strictEqual(Object.hasOwn(v4Result, "fixtureMatchingCardId"), false);
+  assert.strictEqual(v4Result.fixtureProfileIdSha256, v4Proof.profileConfirmationIdSha256);
+  assert.strictEqual(v4Result.fixtureMatchingCardIdSha256, v4Proof.cardConfirmationIdSha256);
+
+  for (const mode of ["profile-live", "card-live"]) {
+    const legacyPhaseGate = expectGateOk(liveOptions(mode, "candidate", {
+      modelSettingsRoot: externalRoot,
+      portabilityProof: changedProofPath,
+      ...(mode === "profile-live"
+        ? { resumeText: resumePath, identity: identityPath }
+        : { profile: profilePath })
+    }), authorizedEnv());
+    assert.strictEqual(
+      Object.hasOwn(legacyPhaseGate.request, "portabilityProof"),
+      false,
+      `legacy portability proof must retain the old ignored ${mode} semantics`
+    );
+  }
 
   const expectV4PreflightReject = async (name, mutate, selectedModelConfig = flashThinkingConfig, env = v4Env) => {
     const root = privatePath(`portability-v4-run-${name}`);
@@ -1562,6 +1652,18 @@ async function injectedLiveFlowSmoke(identityPath) {
       fs.writeFileSync(file, JSON.stringify(value), "utf8");
     });
   }
+  const authenticationOrderRoot = privatePath("portability-v4-authentication-before-git");
+  fs.cpSync(v4TargetRoot, authenticationOrderRoot, { recursive: true });
+  fs.rmSync(path.join(authenticationOrderRoot, "runs"), { recursive: true, force: true });
+  const authenticationOrderProof = path.join(authenticationOrderRoot, "input", "confirmed-evidence-portability.json");
+  const authenticationOrderValue = JSON.parse(fs.readFileSync(authenticationOrderProof, "utf8"));
+  authenticationOrderValue.proofHmacSha256 = "f".repeat(64);
+  fs.writeFileSync(authenticationOrderProof, JSON.stringify(authenticationOrderValue), "utf8");
+  await assert.rejects(
+    () => runner.runPrivateFullChain(v4MatchOptions(authenticationOrderRoot), v4Env),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+    "v4 schema/hash/HMAC authentication must fail before target worktree or source Git checkpoint work"
+  );
   await expectV4PreflightReject(
     "wrong-hmac-key",
     () => {},
@@ -1665,6 +1767,103 @@ async function injectedLiveFlowSmoke(identityPath) {
   });
   assert(!JSON.stringify(observedPreflightV4.portability).includes(V4_HMAC_KEY));
 
+  const cliTargetRoot = privatePath("portability-v4-cli-e2e");
+  fs.cpSync(changedTargetRoot, cliTargetRoot, { recursive: true });
+  fs.rmSync(path.join(cliTargetRoot, "runs"), { recursive: true, force: true });
+  const cliProofPath = path.join(cliTargetRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(cliProofPath);
+  const cliManifestPath = path.join(cliTargetRoot, "run-manifest.json");
+  const cliManifest = JSON.parse(fs.readFileSync(cliManifestPath, "utf8"));
+  cliManifest.candidateEvaluatedCommit = "c".repeat(40);
+  fs.writeFileSync(cliManifestPath, JSON.stringify(cliManifest, null, 2), "utf8");
+  const cliWorktree = path.join(externalRoot, "v4-cli-synthetic-worktree");
+  const cliRunnerPath = path.join(cliWorktree, "scripts", "private-full-chain-runner.js");
+  const cliSettingsRoot = path.join(externalRoot, "v4-cli-model-settings");
+  const cliPreloadPath = path.join(externalRoot, "v4-cli-preload.js");
+  fs.mkdirSync(path.dirname(cliRunnerPath), { recursive: true });
+  fs.mkdirSync(cliSettingsRoot, { recursive: true });
+  fs.copyFileSync(path.resolve(__dirname, "..", "scripts", "private-full-chain-runner.js"), cliRunnerPath);
+  fs.cpSync(path.resolve(__dirname, "..", "scripts", "lib"), path.join(cliWorktree, "scripts", "lib"), { recursive: true });
+  fs.writeFileSync(path.join(cliSettingsRoot, "model.json"), JSON.stringify(flashThinkingConfig), "utf8");
+  fs.writeFileSync(cliPreloadPath, v4CliPreloadSource({
+    syntheticWorktree: cliWorktree,
+    targetEvaluatedCommit: cliManifest.candidateEvaluatedCommit,
+    sharedBlobs: cliManifest.sharedFileBlobs,
+    consumerBlobs: Object.fromEntries(portabilityBlobIds)
+  }), "utf8");
+  const { spawnSync: spawnV4CliSync } = require("node:child_process");
+  const cliEnv = {
+    ...process.env,
+    ...v4Env,
+    ALLOW_PRIVATE_RESUME_BENCHMARK: "YES",
+    ALLOW_LIVE_MODEL_BENCHMARK: "YES"
+  };
+  const cliCreate = spawnV4CliSync(process.execPath, [
+    "--require", cliPreloadPath,
+    cliRunnerPath,
+    "--create-portability-proof",
+    "--proof-version", "confirmed-evidence-portability.v4",
+    "--source-private-root", sourcePortabilityRoot,
+    "--private-root", cliTargetRoot,
+    "--model-settings-root", cliSettingsRoot,
+    "--output", cliProofPath
+  ], { cwd: cliWorktree, encoding: "utf8", env: cliEnv });
+  assert.strictEqual(cliCreate.status, 0, `v4 CLI proof creation failed safely: ${cliCreate.stderr}`);
+  const cliProof = JSON.parse(fs.readFileSync(cliProofPath, "utf8"));
+  assert.strictEqual(cliProof.proofVersion, "confirmed-evidence-portability.v4");
+  assert.match(cliProof.proofHmacSha256, /^[0-9a-f]{64}$/);
+  const cliMatchOutput = path.join(cliTargetRoot, "runs", "candidate");
+  const cliMatchArgs = [
+    "--require", cliPreloadPath,
+    cliRunnerPath,
+    "--match-live",
+    "--private-root", cliTargetRoot,
+    "--side", "candidate",
+    "--profile", path.join(cliTargetRoot, "input", "confirmed-profile.private.json"),
+    "--matching-card", path.join(cliTargetRoot, "input", "confirmed-card.private.json"),
+    "--jobs", path.join(cliTargetRoot, "input", "jobs.private.json"),
+    "--labels", path.join(cliTargetRoot, "labels", "jobs.reviewed.json"),
+    "--portability-proof", cliProofPath,
+    "--model-settings-root", cliSettingsRoot,
+    "--output", cliMatchOutput
+  ];
+  const cliMatch = spawnV4CliSync(process.execPath, cliMatchArgs, {
+    cwd: cliWorktree,
+    encoding: "utf8",
+    env: cliEnv
+  });
+  assert.strictEqual(cliMatch.status, 0, `v4 CLI match-live failed safely: ${cliMatch.stderr}`);
+  const cliMatchResult = JSON.parse(fs.readFileSync(path.join(cliMatchOutput, "match-result.json"), "utf8"));
+  assert.strictEqual(cliMatchResult.matchModelIdentitySha256, cliProof.matchModelIdentitySha256);
+  for (const forbidden of [
+    V4_HMAC_KEY,
+    flashThinkingConfig.providers["synthetic-provider"].apiKey,
+    portableEvidence.profile.id,
+    portableEvidence.card.id,
+    "Synthetic Candidate"
+  ]) {
+    assert(!`${cliCreate.stderr}\n${cliMatch.stderr}\n${JSON.stringify(cliMatchResult)}`.includes(forbidden));
+  }
+  const cliWrongKey = spawnV4CliSync(process.execPath, cliMatchArgs, {
+    cwd: cliWorktree,
+    encoding: "utf8",
+    env: {
+      ...cliEnv,
+      PRIVATE_FULL_CHAIN_PORTABILITY_HMAC_KEY: "synthetic-wrong-cli-hmac-key-0123456789abcdef"
+    }
+  });
+  assert.notStrictEqual(cliWrongKey.status, 0, "wrong CLI HMAC key must fail");
+  assert.match(cliWrongKey.stderr, /PRIVATE_FULL_CHAIN_PORTABILITY_INVALID/);
+  for (const forbidden of [
+    V4_HMAC_KEY,
+    flashThinkingConfig.providers["synthetic-provider"].apiKey,
+    portableEvidence.profile.id,
+    portableEvidence.card.id,
+    "Synthetic Candidate"
+  ]) {
+    assert(!cliWrongKey.stderr.includes(forbidden), `safe CLI stderr must not contain ${forbidden}`);
+  }
+
   const v3Result = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: changedTargetRoot,
     output: path.join(changedTargetRoot, "runs", "candidate"),
@@ -1676,6 +1875,8 @@ async function injectedLiveFlowSmoke(identityPath) {
   }), authorizedEnv(), portableRunSeam("candidate"));
   assert.strictEqual(v3Result.confirmedEvidencePortabilitySha256, v3Proof.proofSha256);
   assert.deepStrictEqual(v3Result.rows.map((row) => row.id), changedJobs.map((job) => job.id));
+  assert.strictEqual(v3Result.fixtureProfileId, portableEvidence.profile.id);
+  assert.strictEqual(v3Result.fixtureMatchingCardId, portableEvidence.card.id);
   const independentBaselineRepo = privatePath("portability-v3-independent-baseline-repo");
   fs.mkdirSync(path.join(independentBaselineRepo, "src", "core"), { recursive: true });
   fs.cpSync(path.resolve(__dirname, "..", "scripts"), path.join(independentBaselineRepo, "scripts"), { recursive: true });

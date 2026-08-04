@@ -413,3 +413,28 @@ After step 5, `preflight.portability` is a new non-circular, privacy-safe summar
 ```
 
 Changing `thinkingMode`, `reasoningEffort`, or any other request-affecting sanitized setting after proof creation fails before SQLite or model adapter initialization. Secret-only changes such as API key rotation do not change either public model identity.
+
+## 16. Task 4 review hardening
+
+The v4 result never writes raw profile or card confirmation IDs. It writes only
+the already authenticated `fixtureProfileIdSha256` and
+`fixtureMatchingCardIdSha256` values from the v4 proof. v1, v2, and v3 retain
+their existing result fields for compatibility.
+
+Phase restriction is schema-aware. A `profile-live` or `card-live` request
+retains the legacy behavior of ignoring an unrelated v1, v2, or v3
+`portabilityProof` option. It is rejected as match-only only when the supplied
+file has the exact v4 schema and passes both the public proof hash and HMAC
+authentication.
+
+For v4 `match-live`, the runner reads one proof snapshot and authenticates its
+exact schema, public hash, and HMAC immediately after request validation. This
+happens before target worktree inspection, target manifest checkpoint work,
+source commit resolution, or consumer blob resolution. The same authenticated
+in-memory proof snapshot then enters the remaining portability preflight.
+
+The smoke suite also executes the actual subprocess CLI entry for v4 proof
+creation and `match-live`. That subprocess uses generated synthetic evidence,
+mock Git responses, and mock model modules only; it verifies success and
+failure exit codes plus privacy-safe stderr without accessing a real provider,
+real configuration, or private benchmark content.

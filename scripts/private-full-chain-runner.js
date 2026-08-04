@@ -488,9 +488,6 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
   if (proofVersion && mode !== "create-portability-proof") {
     return fail("PRIVATE_FULL_CHAIN_MODE_REQUIRED", "Proof version is only available when creating a portability proof.");
   }
-  if (String(opts.portabilityProof || "").trim() && mode !== "match-live") {
-    return fail("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "A portability proof is only valid for match-live.");
-  }
   const diagnostic = parseDiagnosticIndices(opts.diagnosticIndices);
   if (!diagnostic.ok) return diagnostic;
   if (diagnostic.indices && mode !== "match-live") {
@@ -500,6 +497,19 @@ function validatePrivateFullChainRequest(options, env, providerResolver) {
 
   const root = checkPrivateRoot(opts.privateRoot);
   if (!root.ok) return root;
+  if (["profile-live", "card-live"].includes(mode) && String(opts.portabilityProof || "").trim()) {
+    const proofPath = checkPrivateArtifact(
+      opts.portabilityProof,
+      root.resolved,
+      "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID"
+    );
+    if (proofPath.ok) {
+      const inspected = inspectPortabilityProofAuthentication(proofPath.resolved, environ);
+      if (inspected.isV4 && inspected.authenticated) {
+        return fail("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "An authenticated v4 portability proof is only valid for match-live.");
+      }
+    }
+  }
   if (mode === "init-manifest") {
     const baseline = checkBaselineWorktree(opts.baselineWorktree);
     const candidate = isLocalAbsolutePath(opts.candidateWorktree) ? path.resolve(String(opts.candidateWorktree)) : null;
@@ -844,6 +854,69 @@ function validPortabilityProofHmac(value, env) {
   } catch {
     return false;
   }
+}
+
+function v4PortabilityProofExpectedKeys() {
+  return [
+    "proofVersion", "runMode", "modelCallPerformed", "sourceHarness", "targetHarness",
+    "sourceRunManifestSha256", "targetRunManifestSha256", "sourceProductCommit", "sourceEvaluatedCommit",
+    "targetProductCommit", "targetEvaluatedCommit", "confirmedProfileFileSha256",
+    "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
+    "profileConfirmedAt", "cardConfirmedAt", "consumerCodeBlobs", "proofSha256",
+    "evidenceModelIdentitySha256", "matchModelIdentitySha256", "proofHmacSha256",
+    "targetJobsFileSha256", "targetLabelsFileSha256", "targetFixtureTotal",
+    "targetLabelsVersion", "targetEvaluationPolicy", "targetLabelsConfirmedAt",
+    "profileConfirmationIdSha256", "cardConfirmationIdSha256"
+  ];
+}
+
+function validV4PortabilityProofSchemaAndIntegrity(proof, env) {
+  const shaFields = [
+    "sourceRunManifestSha256", "targetRunManifestSha256", "confirmedProfileFileSha256",
+    "confirmedCardFileSha256", "resumeContentSha256", "identityManifestSha256",
+    "proofSha256", "evidenceModelIdentitySha256", "matchModelIdentitySha256",
+    "proofHmacSha256", "targetJobsFileSha256", "targetLabelsFileSha256",
+    "profileConfirmationIdSha256", "cardConfirmationIdSha256"
+  ];
+  const commitFields = [
+    "sourceProductCommit", "sourceEvaluatedCommit", "targetProductCommit", "targetEvaluatedCommit"
+  ];
+  return sameKeys(proof, v4PortabilityProofExpectedKeys())
+    && proof.proofVersion === PORTABILITY_MATCH_MODEL_TRANSITION_PROOF_VERSION
+    && proof.runMode === "offline-confirmed-evidence-portability"
+    && proof.modelCallPerformed === false
+    && proof.sourceHarness === PORTABLE_SOURCE_HARNESS_VERSION
+    && proof.targetHarness === PRIVATE_HARNESS_VERSION
+    && shaFields.every((field) => /^[0-9a-f]{64}$/.test(String(proof[field] || "")))
+    && commitFields.every((field) => /^[0-9a-f]{40}$/.test(String(proof[field] || "")))
+    && proof.evidenceModelIdentitySha256 !== proof.matchModelIdentitySha256
+    && proof.proofSha256 === valueSha256(portabilityProofPayload(proof))
+    && validPortabilityProofHmac(proof, env)
+    && Number.isSafeInteger(proof.targetFixtureTotal)
+    && proof.targetFixtureTotal > 0
+    && isV3TargetLabelIdentity(proof.targetLabelsVersion, proof.targetEvaluationPolicy)
+    && Number.isFinite(Date.parse(proof.targetLabelsConfirmedAt))
+    && Number.isFinite(Date.parse(proof.profileConfirmedAt))
+    && Number.isFinite(Date.parse(proof.cardConfirmedAt))
+    && sameKeys(proof.consumerCodeBlobs, Object.keys(PORTABILITY_V3_CONSUMER_FILES))
+    && Object.values(proof.consumerCodeBlobs).every((blob) => /^[0-9a-f]{40,64}$/.test(String(blob || "")));
+}
+
+function inspectPortabilityProofAuthentication(file, env) {
+  let proof;
+  try {
+    proof = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)) throw new Error("invalid");
+  } catch {
+    return { parsed: false, isV4: false, authenticated: false, proof: null };
+  }
+  const isV4 = proof.proofVersion === PORTABILITY_MATCH_MODEL_TRANSITION_PROOF_VERSION;
+  return {
+    parsed: true,
+    isV4,
+    authenticated: isV4 && validV4PortabilityProofSchemaAndIntegrity(proof, env),
+    proof
+  };
 }
 
 function readJsonFile(file, code = "PRIVATE_FULL_CHAIN_INPUT_IDENTITY") {
@@ -1386,12 +1459,21 @@ function createConfirmedEvidencePortability(options, seam = null, env = process.
   return proof;
 }
 
-function validateConfirmedEvidencePortability(request, context, assertPrivacy, seam = null, env = process.env) {
-  let proof;
-  try {
-    proof = JSON.parse(fs.readFileSync(request.portabilityProof).toString("utf8"));
-  } catch {
-    throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "An explicit valid portability proof is required for v1 confirmed evidence.");
+function validateConfirmedEvidencePortability(
+  request,
+  context,
+  assertPrivacy,
+  seam = null,
+  env = process.env,
+  proofSnapshot = null
+) {
+  let proof = proofSnapshot;
+  if (!proof) {
+    try {
+      proof = JSON.parse(fs.readFileSync(request.portabilityProof).toString("utf8"));
+    } catch {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "An explicit valid portability proof is required for v1 confirmed evidence.");
+    }
   }
   const commonKeys = [
     "proofVersion", "runMode", "modelCallPerformed", "sourceHarness", "targetHarness",
@@ -1439,12 +1521,7 @@ function validateConfirmedEvidencePortability(request, context, assertPrivacy, s
     || !/^[0-9a-f]{40}$/.test(String(proof.sourceProductCommit || ""))
     || proof.targetProductCommit !== context.manifest.candidateProductCommit
     || proof.targetEvaluatedCommit !== context.manifest.candidateEvaluatedCommit
-    || (matchModelTransition && (
-      !/^[0-9a-f]{64}$/.test(String(proof.evidenceModelIdentitySha256 || ""))
-      || !/^[0-9a-f]{64}$/.test(String(proof.matchModelIdentitySha256 || ""))
-      || proof.evidenceModelIdentitySha256 === proof.matchModelIdentitySha256
-      || !validPortabilityProofHmac(proof, env)
-    ))
+    || (matchModelTransition && !validV4PortabilityProofSchemaAndIntegrity(proof, env))
     || (!fixtureTransition && (!genericPortabilityConfirmationId(proof.profileConfirmationId)
       || !genericPortabilityConfirmationId(proof.cardConfirmationId)))
     || (labelTransition && (
@@ -2107,6 +2184,14 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   const gate = validatePrivateFullChainRequest(gateOptions, env, null);
   if (!gate.ok) throw runnerError(gate.code, gate.message);
   const request = gate.request;
+  let portabilityProofSnapshot = null;
+  if (request.mode === "match-live" && request.portabilityProof) {
+    const inspected = inspectPortabilityProofAuthentication(request.portabilityProof, env);
+    if (!inspected.parsed || (inspected.isV4 && !inspected.authenticated)) {
+      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof schema or integrity check failed.");
+    }
+    portabilityProofSnapshot = inspected.proof;
+  }
   if (request.mode === "profile-live" && request.side !== "candidate") {
     throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNSUPPORTED", "The baseline product does not generate the canonical candidate profile.");
   }
@@ -2136,7 +2221,14 @@ async function runPrivateFullChain(options, env, testSeam = null) {
         ...provenanceContext
       })
       : request.portabilityProof
-        ? validateConfirmedEvidencePortability(request, provenanceContext, privacyValidator, testSeam, env)
+        ? validateConfirmedEvidencePortability(
+          request,
+          provenanceContext,
+          privacyValidator,
+          testSeam,
+          env,
+          portabilityProofSnapshot
+        )
         : readNativeMatchInputs(request, privacyValidator);
   if (request.mode === "match-live") {
     if (request.portabilityProof) {
@@ -2386,12 +2478,20 @@ async function runPrivateFullChain(options, env, testSeam = null) {
     worktreeClean: true,
     resumeContentSha256: sha256(resumeText),
     identityManifestSha256: sha256(identityRaw),
-    fixtureProfileId: String(profileInput.envelope.id || "confirmed-private-profile"),
+    ...(matchModelTransition ? {
+      fixtureProfileIdSha256: preflight.proof.profileConfirmationIdSha256
+    } : {
+      fixtureProfileId: String(profileInput.envelope.id || "confirmed-private-profile")
+    }),
     fixtureProfileSha256: profileInput.profileSha256,
     fixtureProfileResultSha256: profileInput.envelope.profileResultSha256,
     fixtureResumeVersionsSha256: valueSha256(profileInput.profile.resumeVersions || []),
     profileReviewStatus: "confirmed",
-    fixtureMatchingCardId: String(cardInput.envelope.id),
+    ...(matchModelTransition ? {
+      fixtureMatchingCardIdSha256: preflight.proof.cardConfirmationIdSha256
+    } : {
+      fixtureMatchingCardId: String(cardInput.envelope.id)
+    }),
     fixtureMatchingCardSha256: cardInput.cardSha256,
     fixtureMatchingCardDraftSha256: cardInput.envelope.draftSha256,
     matchingCardProvided: true,
