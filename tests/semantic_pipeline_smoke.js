@@ -807,7 +807,7 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v19");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44");
   assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.7");
   const currentRevision = {
@@ -1510,8 +1510,8 @@ async function multiTrackValidationIdempotenceSmoke() {
 
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44",
     "joint-fit threshold changes must invalidate v43 match caches");
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
-    "deterministic evidence sampling must invalidate v17 understandings");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v19",
+    "foundation requirement extraction clarification must invalidate v18 understandings");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1519,6 +1519,15 @@ async function multiTrackValidationIdempotenceSmoke() {
     sourceContentHash: "job",
     pipelineVersions: PIPELINE_VERSIONS
   };
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v18" }
+      }
+    }, currentRevision).includes("job_understanding_pipeline_changed"),
+    "v18 understandings must become stale after the foundation requirement extraction clarification"
+  );
   assert(
     analysisStaleReasons({
       revision: {
@@ -2245,7 +2254,7 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v18",
+    understandJob: "job-understanding-v19",
     matchJob: "match-decision-v44",
     decisionRules: "four-tier-weighted-v4.7",
     communication: "communication-v2"

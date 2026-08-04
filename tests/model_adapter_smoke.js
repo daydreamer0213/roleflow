@@ -901,6 +901,15 @@ server.listen(0, "127.0.0.1", async () => {
       "通用能力不得冒充岗位主线"
     );
     assert(
+      understandPrompt.includes("稀缺的最低履职前提")
+        && understandPrompt.includes("不等于‘要求、精通、掌握’")
+        && understandPrompt.includes("工具、平台、部署、通用工程能力默认 false")
+        && understandPrompt.includes("主要工作对象、动作或交付结果")
+        && understandPrompt.includes("JD 明确为不可协商前提")
+        && understandPrompt.includes("不确定时 false"),
+      "foundation=true 必须只标记稀缺的最低履职前提，不能放大支持性能力"
+    );
+    assert(
       ["编程语言", "操作系统", "数据库", "办公工具", "通用数据清洗", "基础 AI 概念"]
         .every((term) => understandPrompt.includes(term)),
       "understandJob prompt 必须明确列出不得单独作为 central 的通用能力"
