@@ -20,6 +20,9 @@ const {
 } = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const {
+  applyPlatformRuntimePolicy
+} = require("../src/core/platform_runtime_policy");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
 const { applyRuleGuard } = require("../src/core/job_analysis");
 const { extractJobMetadata } = require("../src/core/job_metadata");
@@ -267,6 +270,39 @@ const configs = {
     experience_stretch_keywords: ["Python", "RAG", "AI"]
   }
 };
+
+const inheritedBoundaryPolicy = {
+  hash: "screening-platform-policy",
+  filters: {
+    location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+    salary: { codes: ["405"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] },
+    experience: { codes: ["104"], labels: ["1-3年"] },
+    degree: { codes: ["203"], labels: ["本科"] },
+    jobType: { codes: ["1901"], labels: ["全职"] },
+    acquisitionOnly: {}
+  },
+  unresolvedParams: [],
+  filterSummary: ["地点：全国", "薪资：10-20K", "经验：1-3年", "学历：本科", "求职类型：全职"]
+};
+const inheritedBoundaryConfigs = applyPlatformRuntimePolicy(configs, inheritedBoundaryPolicy);
+const platformMismatch = scoreJob(job({
+  salary: "30-40K",
+  experience: "3-5年",
+  education: "硕士",
+  tags: ["实习"],
+  bossActiveText: "今日活跃"
+}), inheritedBoundaryConfigs);
+assert.strictEqual(decisionState(platformMismatch), "blocked");
+assert(platformMismatch.qualityTags.includes("platform_salary_mismatch"));
+
+const platformUnknown = scoreJob(job({
+  salary: "",
+  experience: "",
+  education: "",
+  tags: [],
+  bossActiveText: "今日活跃"
+}), inheritedBoundaryConfigs);
+assert.notStrictEqual(decisionState(platformUnknown), "blocked");
 
 const ready = scoreJob(job({ bossActiveText: "今日活跃", experience: "3-5年", salary: "10-16K" }), configs);
 assert.strictEqual(decisionState(ready), "ready");

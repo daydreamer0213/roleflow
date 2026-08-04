@@ -5,6 +5,12 @@ const {
   freezeKeywordSource,
   scopeShortId
 } = require("../src/core/inherited_search_scope");
+const {
+  compilePlatformRuntimePolicy,
+  applyPlatformRuntimePolicy,
+  evaluatePlatformBoundaries
+} = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 
 const firstUrl = "https://www.zhipin.com/web/geek/jobs?query=RAG&page=3&city=100010000&salary=405&unknownFilter=9&ka=search&utm_source=test";
 const secondUrl = "https://www.zhipin.com/web/geek/jobs?unknownFilter=9&salary=405&city=100010000&query=Agent&page=1";
@@ -63,5 +69,144 @@ assert.strictEqual(keywordSource.searchPlanId, 11);
 assert.strictEqual(keywordSource.profileVersionId, 23);
 assert.strictEqual(keywordSource.matchingCardRevision, "card-revision-5");
 assert.match(keywordSource.catalogHash, /^[a-f0-9]{64}$/);
+
+const platformCatalog = {
+  site: "boss",
+  source: "fixture",
+  discoveredAt: "2026-08-04T00:00:00.000Z",
+  fields: {
+    salary: {
+      key: "salary", label: "薪资待遇", urlParam: "salary",
+      selection: "single", semantic: "salary_range",
+      options: [{ code: "405", label: "10-20K" }]
+    },
+    experience: {
+      key: "experience", label: "工作经验", urlParam: "experience",
+      selection: "multiple", semantic: "experience",
+      options: [{ code: "104", label: "1-3年" }]
+    },
+    degree: {
+      key: "degree", label: "学历要求", urlParam: "degree",
+      selection: "single", semantic: "choice",
+      options: [{ code: "203", label: "本科" }]
+    },
+    jobType: {
+      key: "jobType", label: "求职类型", urlParam: "jobType",
+      selection: "single", semantic: "choice",
+      options: [{ code: "1901", label: "全职" }]
+    }
+  }
+};
+
+const nationwideScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405&experience=104&degree=203&jobType=1901&industry=100020"
+}).searchScope;
+const nationwidePolicy = compilePlatformRuntimePolicy({
+  searchScope: nationwideScope,
+  catalog: platformCatalog,
+  urlOptions: [{ param: "industry", code: "100020", label: "互联网" }],
+  cityCodes: CITY_CODES
+});
+assert.strictEqual(nationwidePolicy.filters.location.mode, "nationwide");
+assert.deepStrictEqual(nationwidePolicy.filters.location.cities, []);
+assert.deepStrictEqual(nationwidePolicy.filters.salary.labels, ["10-20K"]);
+assert.deepStrictEqual(nationwidePolicy.filters.experience.labels, ["1-3年"]);
+assert.deepStrictEqual(nationwidePolicy.filters.degree.labels, ["本科"]);
+assert.deepStrictEqual(nationwidePolicy.filters.jobType.labels, ["全职"]);
+assert.deepStrictEqual(nationwidePolicy.filters.acquisitionOnly.industry, {
+  codes: ["100020"],
+  labels: ["互联网"]
+});
+assert.deepStrictEqual(nationwidePolicy.unresolvedParams, []);
+assert.match(nationwidePolicy.hash, /^[a-f0-9]{64}$/);
+
+const guangzhouScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&salary=405"
+}).searchScope;
+const guangzhouPolicy = compilePlatformRuntimePolicy({
+  searchScope: guangzhouScope,
+  catalog: platformCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(guangzhouPolicy.filters.location.cities, ["广州"]);
+
+const districtScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105"
+}).searchScope;
+const districtPolicy = compilePlatformRuntimePolicy({
+  searchScope: districtScope,
+  catalog: platformCatalog,
+  urlOptions: [{ param: "district", code: "101280105", label: "天河区" }],
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(districtPolicy.filters.location.districts, ["天河区"]);
+
+const unresolvedPolicy = compilePlatformRuntimePolicy({
+  searchScope: nationwideScope,
+  catalog: platformCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(unresolvedPolicy.unresolvedParams, [
+  { param: "industry", codes: ["100020"] }
+]);
+
+const baseConfigs = {
+  candidateProfile: { candidate: { targetTitles: ["AI应用开发工程师"] } },
+  matchingCard: { targetDirections: ["AI应用开发"] },
+  searchPlan: {
+    cities: ["广州"],
+    salary: { minK: 9, maxK: 14 },
+    experience: ["经验不限"],
+    jobTypes: ["实习"],
+    degrees: ["硕士"],
+    directions: ["AI应用开发"]
+  },
+  targetPolicy: { directions: ["AI应用开发"], jobTypes: ["实习"], skills: ["Python"] },
+  profile: { location: { target_cities: ["广州"] } },
+  scoring: {
+    salary: { expected_min_k: 9, expected_max_k: 14, hard_max_k: 35 },
+    experience: { selected: ["经验不限"], allowStretch: true }
+  }
+};
+const inheritedConfigs = applyPlatformRuntimePolicy(baseConfigs, nationwidePolicy);
+assert.deepStrictEqual(inheritedConfigs.profile.location.target_cities, []);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.cities, []);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.salary, { minK: 10, maxK: 20 });
+assert.deepStrictEqual(inheritedConfigs.searchPlan.experience, ["1-3年"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.jobTypes, ["全职"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.degrees, ["本科"]);
+assert.deepStrictEqual(inheritedConfigs.targetPolicy.directions, ["AI应用开发"]);
+assert.strictEqual(inheritedConfigs.scoring.salary.expected_min_k, 10);
+assert.strictEqual(inheritedConfigs.scoring.salary.expected_max_k, 20);
+
+assert.deepStrictEqual(
+  evaluatePlatformBoundaries({
+    salary: "30-40K", experience: "3-5年", education: "硕士", tags: ["实习"]
+  }, nationwidePolicy).qualityTags,
+  [
+    "platform_salary_mismatch",
+    "platform_experience_mismatch",
+    "platform_degree_mismatch",
+    "platform_job_type_mismatch"
+  ]
+);
+assert.deepStrictEqual(
+  evaluatePlatformBoundaries({ location: "广州·越秀区" }, districtPolicy).qualityTags,
+  ["platform_district_mismatch"]
+);
+assert.deepStrictEqual(
+  evaluatePlatformBoundaries({
+    salary: "", experience: "", education: "", tags: []
+  }, nationwidePolicy).qualityTags,
+  [
+    "platform_salary_unverified",
+    "platform_experience_unverified",
+    "platform_degree_unverified",
+    "platform_job_type_unverified"
+  ]
+);
 
 console.log("inherited_search_scope_smoke ok");
