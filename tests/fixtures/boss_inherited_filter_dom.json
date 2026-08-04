@@ -1,0 +1,14 @@
+{
+  "url": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+  "rawFields": [
+    {
+      "label": "薪资待遇",
+      "options": [
+        { "ka": "sel-job-rec-salary-405", "label": "10-20K" }
+      ]
+    }
+  ],
+  "urlOptions": [
+    { "param": "district", "code": "101280105", "label": "天河区" }
+  ]
+}

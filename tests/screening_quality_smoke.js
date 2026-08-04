@@ -203,7 +203,7 @@ assert.strictEqual(extendedSearchUrl.searchParams.get("jobType"), "1901");
 const inheritedTemplate = normalizeBossSearchTemplate("https://www.zhipin.com/web/geek/jobs?query=old&page=3&city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020");
 assert.deepStrictEqual(inheritedTemplate, {
   mode: "inherited",
-  url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020",
+  url: "https://www.zhipin.com/web/geek/jobs?city=101280100&degree=203&district=101280105&experience=101%2C104&industry=100020&salary=405",
   cityCode: "101280100"
 });
 const inheritedSearchUrl = new URL(buildBossSearchUrl({
@@ -227,6 +227,14 @@ assert.deepStrictEqual(resolveBossSearchContext({
 }), {
   searchTemplate: inheritedTemplate,
   cityScopes: [{ city: "广州", cityCode: "101280100" }]
+});
+const inheritedTemplateWithoutCity = normalizeBossSearchTemplate("https://www.zhipin.com/web/geek/jobs?query=RAG&salary=405");
+assert.deepStrictEqual(resolveBossSearchContext({
+  currentUrl: inheritedTemplateWithoutCity.url,
+  cityScopes: [{ city: "广州", cityCode: "101280100" }]
+}), {
+  searchTemplate: inheritedTemplateWithoutCity,
+  cityScopes: [{ city: "", cityCode: "platform-default" }]
 });
 assert.deepStrictEqual(resolveBossSearchContext({
   currentUrl: "https://www.zhipin.com/guangzhou/",

@@ -68,6 +68,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
 
 (async () => {
   await preflightSmoke();
+  await inheritedPageInspectionSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
   await delayedAppendAtBottomSmoke();
@@ -143,6 +144,50 @@ async function preflightSmoke() {
   assert.strictEqual(state.tabId, usableSearch.id);
   assert.strictEqual(state.loggedIn, true);
   assert.deepStrictEqual(inspected, [oldSearch.id, usableSearch.id, activeChat.id]);
+}
+
+async function inheritedPageInspectionSmoke() {
+  let navigations = 0;
+  const fixture = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "fixtures", "boss_inherited_filter_dom.json"),
+    "utf8"
+  ));
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isSearchPage")) {
+        return {
+          url: "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+          title: "全国招聘",
+          isBoss: true,
+          isLoginPage: false,
+          isRiskPage: false,
+          loggedIn: true,
+          isSearchPage: true,
+          hasJobStructure: true
+        };
+      }
+      if (expression.includes("condition-filter-select")) {
+        return fixture;
+      }
+      return {
+        url: "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=100010000&salary=405",
+        path: "/web/geek/jobs",
+        isRiskPage: false,
+        isLoginPage: false,
+        hasJobStructure: true
+      };
+    },
+    async navigate() { navigations += 1; }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const inspected = await adapter.inspectInheritedSearchPage({ tabId: "BOSS-SEARCH" });
+  assert.strictEqual(navigations, 0);
+  assert.strictEqual(inspected.tabId, "BOSS-SEARCH");
+  assert.strictEqual(inspected.searchTemplate.cityCode, "100010000");
+  assert.strictEqual(inspected.catalog.fields.salary.options[0].label, "10-20K");
+  assert.deepStrictEqual(inspected.urlOptions, [
+    { param: "district", code: "101280105", label: "天河区" }
+  ]);
 }
 
 async function riskPreflightSmoke() {
