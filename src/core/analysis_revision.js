@@ -28,7 +28,7 @@ function normalizeBaseUrl(value) {
     url.hash = "";
     return url.toString().replace(/\/+$/, "");
   } catch {
-    return endpoint.replace(/[?#].*$/, "").replace(/\/+$/, "");
+    throw new Error("MODEL_INFERENCE_BASE_URL_INVALID");
   }
 }
 

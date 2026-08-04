@@ -942,6 +942,16 @@ async function modelInferenceIsolationSmoke() {
   };
   const disabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "disabled" });
   const enabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "enabled" });
+  const publicEndpoint = modelInferenceVersion({
+    ...modelConfig,
+    baseUrl: "https://example.com/path",
+    thinkingMode: "disabled"
+  });
+  const sensitiveEndpoint = modelInferenceVersion({
+    ...modelConfig,
+    baseUrl: "https://user:password@example.com/path?token=x#fragment",
+    thinkingMode: "disabled"
+  });
   const revisionBase = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -952,6 +962,20 @@ async function modelInferenceIsolationSmoke() {
   };
 
   assert.notStrictEqual(disabled, enabled);
+  assert.strictEqual(
+    sensitiveEndpoint,
+    publicEndpoint,
+    "userinfo, query, and fragment must not affect the inference version"
+  );
+  assert.throws(
+    () => modelInferenceVersion({
+      ...modelConfig,
+      baseUrl: "https://user:password@example.com:bad-port/path?token=x#fragment",
+      thinkingMode: "disabled"
+    }),
+    (error) => error?.message === "MODEL_INFERENCE_BASE_URL_INVALID",
+    "an endpoint that cannot be safely normalized must not produce an inference version"
+  );
   assert.deepStrictEqual(
     analysisStaleReasons(
       { revision: { ...revisionBase, modelInferenceVersion: disabled } },
