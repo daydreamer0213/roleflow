@@ -10,6 +10,7 @@ const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner } = require("./core/job_analysis");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
 const {
+  CITY_CODES,
   cityToBossCode,
   profileToRuntimeConfigs,
   planKeywords,
@@ -76,6 +77,10 @@ const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
+const { stableHash } = require("./core/analysis_revision");
+const { matchingCardRevision } = require("./core/matching_card");
+const { buildInheritedSearchScope, freezeKeywordSource, scopeShortId } = require("./core/inherited_search_scope");
+const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
 const { runCommunicationBatch } = require("./core/communication_executor");
@@ -361,17 +366,38 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     ? offlineMockModelConfig()
     : resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
   let planRecord = null;
+  let matchingContext = null;
   if (args.plan) {
     planRecord = getSearchPlan(db, args.plan);
     if (!planRecord) throw new Error(`未找到 Search Plan #${args.plan}`);
     const profileRecord = getCandidateProfile(db, planRecord.profileId);
     if (!profileRecord) throw new Error(`Search Plan #${args.plan} 对应的候选人画像不存在。`);
-    const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
+    matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
     assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
     if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
     configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   }
   const workflowRun = resolveWorkflowScanContext(db, args, planRecord);
+  const frozenInherited = workflowRun?.planner?.acquisitionMode === "inherited"
+    ? {
+      acquisitionMode: "inherited",
+      searchTemplate: workflowRun.planner.searchTemplate,
+      searchScope: workflowRun.planner.searchScope,
+      keywordSource: workflowRun.planner.keywordSource,
+      platformPolicy: workflowRun.planner.platformPolicy
+    }
+    : null;
+  if (frozenInherited && (
+    frozenInherited.searchTemplate?.mode !== "inherited"
+    || !frozenInherited.searchScope?.key
+    || !frozenInherited.keywordSource?.catalogHash
+    || !frozenInherited.platformPolicy?.hash
+  )) {
+    throw codedError(
+      "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+      "本轮继承模式快照不完整，不能安全扫描或恢复。"
+    );
+  }
   const planned = workflowRun
     ? {
       keywords: workflowRun.keywords.map((item) => item.word),
@@ -399,7 +425,6 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const keywords = keywordPlan.map((item) => item.word);
   const source = `${planned.source}:${scanMode}`;
   if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
-  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
   const analysisConcurrency = resolveAnalysisConcurrency(args);
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const browser = createBrowser(args);
@@ -433,14 +458,72 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
   const resumeBatchId = parseOptionalPositiveIntegerArg(args, "resume-batch");
   if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");
   const storedExecution = resumeBatchId ? getBatch(db, resumeBatchId)?.filterSnapshot?.execution : null;
-  const searchContext = args.input
-    ? { searchTemplate: { mode: "generated", url: "", cityCode: "" }, cityScopes: plannedCityScopes }
-    : resolveBossSearchContext({
-      currentUrl: browserState?.url || browserState?.tab?.url || "",
-      storedTemplate: storedExecution?.searchTemplate,
-      cityScopes: plannedCityScopes
-    });
-  const { searchTemplate, cityScopes } = searchContext;
+  let searchTemplate;
+  let cityScopes = plannedCityScopes;
+  let searchScope = {};
+  let keywordSource = {};
+  let platformPolicy = {};
+  if (frozenInherited) {
+    configs = applyPlatformRuntimePolicy(configs, frozenInherited.platformPolicy);
+    searchTemplate = frozenInherited.searchTemplate;
+    searchScope = frozenInherited.searchScope;
+    keywordSource = frozenInherited.keywordSource;
+    platformPolicy = frozenInherited.platformPolicy;
+    cityScopes = [{
+      city: platformPolicy.filters?.location?.cities?.[0] || "",
+      cityCode: searchTemplate.cityCode || "platform-default"
+    }];
+  } else {
+    const searchContext = args.input
+      ? { searchTemplate: { mode: "generated", url: "", cityCode: "" }, cityScopes: plannedCityScopes }
+      : resolveBossSearchContext({
+        currentUrl: browserState?.url || browserState?.tab?.url || "",
+        storedTemplate: storedExecution?.searchTemplate,
+        cityScopes: plannedCityScopes
+      });
+    searchTemplate = searchContext.searchTemplate;
+    cityScopes = searchContext.cityScopes;
+    if (searchTemplate.mode === "inherited") {
+      if (resumeBatchId && storedExecution) {
+        searchScope = storedExecution.searchScope || {};
+        keywordSource = storedExecution.keywordSource || {};
+        platformPolicy = storedExecution.platformPolicy || {};
+      } else {
+        const inspected = await adapter.inspectInheritedSearchPage({ tabId: browserState.tabId });
+        ({ searchTemplate, searchScope } = buildInheritedSearchScope({
+          profileId: planRecord.profileId,
+          rawUrl: inspected.url
+        }));
+        const inspectedFieldCount = Object.keys(inspected.catalog?.fields || {}).length;
+        if (inspectedFieldCount) {
+          savePlatformFilterCatalog(db, {
+            site: "boss",
+            catalog: inspected.catalog,
+            source: "live_dom",
+            discoveredAt: inspected.catalog.discoveredAt
+          });
+        }
+        const catalog = inspectedFieldCount
+          ? inspected.catalog
+          : getPlatformFilterCatalog(db, "boss")?.catalog || {};
+        keywordSource = freezeKeywordSource({
+          planRecord,
+          matchingCardRevision: matchingCardRevision(matchingContext.matchingCard)
+        });
+        platformPolicy = compilePlatformRuntimePolicy({
+          searchScope,
+          catalog,
+          urlOptions: inspected.urlOptions,
+          cityCodes: CITY_CODES
+        });
+      }
+      configs = applyPlatformRuntimePolicy(configs, platformPolicy);
+      cityScopes = [{
+        city: platformPolicy.filters?.location?.cities?.[0] || "",
+        cityCode: searchTemplate.cityCode || "platform-default"
+      }];
+    }
+  }
   const nativeFilterSnapshot = args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
     : searchTemplate.mode === "inherited"
@@ -454,6 +537,15 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       ? `[platform] BOSS 预筛：继承当前搜索页（仅替换关键词）`
       : `[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
   }
+  if (searchTemplate.mode === "inherited") {
+    scanLogger.info("inherited_scan_context_ready", {
+      site,
+      scopeId: scopeShortId(searchScope.key),
+      platformPolicyHash: platformPolicy.hash || "",
+      keywordCatalogHash: keywordSource.catalogHash || ""
+    });
+  }
+  const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
   assertScanLimitOverridesAllowed(args, scanMode, Boolean(workflowRun));
   const workflowMaxCards = workflowRun
     ? Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0))
@@ -470,11 +562,21 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     supplementalSalaryLaneCardLimit: scanPolicy.supplementalSalaryLaneCardLimit,
     supplementalSalaryLaneDetailLimit: scanPolicy.supplementalSalaryLaneDetailLimit
   };
+  const runtimePolicyHash = searchTemplate.mode === "inherited"
+    ? stableHash({
+      productPolicyVersion: scanPolicy.policyVersion,
+      scanMode,
+      platformPolicyHash: platformPolicy.hash
+    })
+    : scanPolicy.policyHash;
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
     site,
     scanKind: scanMode,
-    runtimePolicyHash: scanPolicy.policyHash,
+    runtimePolicyHash,
     searchTemplate,
+    searchScope,
+    keywordSource,
+    platformPolicy,
     cityScopes,
     keywordPlan,
     nativeFilters: nativeFilterSnapshot,
@@ -511,7 +613,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       filterSnapshot: {
         ...nativeFilterSnapshot,
         runtimePolicy: scanPolicy.snapshot,
-        runtimePolicyHash: scanPolicy.policyHash,
+        runtimePolicyHash,
         searchTemplate,
         ...(executionSnapshot ? { execution: executionSnapshot } : {})
       }
@@ -558,12 +660,16 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     source,
     scanMode,
     runtimePolicyVersion: scanPolicy.policyVersion,
-    runtimePolicyHash: scanPolicy.policyHash,
+    runtimePolicyHash,
     browser: args.browser || "input",
     hasInput: Boolean(args.input),
     analysisConcurrency,
     nativeFilters: args.input ? null : nativeFilterSnapshot,
-    searchTemplate: args.input ? null : searchTemplate,
+    searchTemplate: args.input ? null : {
+      mode: searchTemplate.mode,
+      cityCode: searchTemplate.cityCode || "",
+      scopeId: searchTemplate.mode === "inherited" ? scopeShortId(searchScope.key) : ""
+    },
     scanLimits,
     resumeBatchId: resumeBatchId || null,
     resumeTargetCount: resumeTargetKeys?.length ?? null,

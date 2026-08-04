@@ -71,6 +71,40 @@ async function main() {
   assert.deepStrictEqual(workflowAccessUsage(db, "usage-probe"), { details: 2, pages: 1, scrolls: 1 });
   const saved = seedProfile(db);
   const workflow = createWorkflowRun(db, workflowInput(saved));
+  const invalidInherited = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-invalid-inherited",
+    localDay: "2026-07-19",
+    planner: {
+      acquisitionMode: "inherited",
+      searchTemplate: { mode: "inherited", url: "", cityCode: "" },
+      searchScope: {},
+      keywordSource: {},
+      platformPolicy: {}
+    }
+  }));
+  db.close();
+  db = null;
+
+  const invalidResult = spawnSync(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "scan",
+    "--db", dbPath,
+    "--input", path.join("data", "sample_jobs.json"),
+    "--plan", String(saved.planId),
+    "--force-mock",
+    "--run-id", "workflow-invalid-inherited-process",
+    "--workflow-run", invalidInherited.id,
+    "--keywords", "AI application,RAG engineer",
+    "--max-cards", "50",
+    "--max-detail-total", "120",
+    "--browser-page-budget", "20"
+  ], { cwd: root, encoding: "utf8" });
+  assert.strictEqual(invalidResult.status, 1, invalidResult.stderr || invalidResult.stdout);
+  assert.match(invalidResult.stderr, /本轮继承模式快照不完整/);
+  db = openDb(dbPath);
+  assert.strictEqual(getScanRun(db, "workflow-invalid-inherited-process").stopCode, "WORKFLOW_INHERITED_SNAPSHOT_INVALID");
+  assert.strictEqual(getWorkflowRun(db, invalidInherited.id).errorCode, "WORKFLOW_INHERITED_SNAPSHOT_INVALID");
   db.close();
   db = null;
 
@@ -228,7 +262,7 @@ function workflowInput(saved, overrides = {}) {
       { word: "RAG engineer", priority: "B", maxCards: 32, maxDetails: 30 }
     ],
     budget: { maxDetailTotal: 120, browserPageBudget: 20 },
-    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 },
+    planner: { acquisitionMode: "generated", remainingDailyTarget: 70, remainingRunSlots: 2 },
     ...overrides
   };
 }

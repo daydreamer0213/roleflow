@@ -37,6 +37,53 @@ let server;
   db = openDb(dbPath);
   const saved = seedProfile(db);
   const spawns = [];
+  let inheritedFailureCode = "";
+  const inheritedContextResolver = async ({ plan, matchingContext }) => {
+    if (inheritedFailureCode) {
+      throw Object.assign(new Error(`blocked by ${inheritedFailureCode}`), {
+        code: inheritedFailureCode,
+        statusCode: 409
+      });
+    }
+    return {
+      acquisitionMode: "inherited",
+      searchTemplate: {
+        mode: "inherited",
+        url: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405",
+        cityCode: "100010000"
+      },
+      searchScope: {
+        key: `boss:${plan.profileId}:fixture-scope`,
+        site: "boss",
+        templateHash: "fixture-scope",
+        templateUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405",
+        filterParams: { city: ["100010000"], salary: ["405"] }
+      },
+      keywordSource: {
+        searchPlanId: plan.id,
+        profileVersionId: plan.profileVersionId,
+        matchingCardRevision: "fixture-card",
+        catalogHash: "fixture-catalog",
+        keywords: plan.plan.keywords.map(({ word, priority, reason = "" }) => ({ word, priority, reason }))
+      },
+      platformPolicy: {
+        hash: "fixture-policy",
+        site: "boss",
+        templateHash: "fixture-scope",
+        filters: {
+          location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+          salary: { codes: ["405"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] },
+          experience: { codes: [], labels: [] },
+          degree: { codes: [], labels: [] },
+          jobType: { codes: [], labels: [] },
+          acquisitionOnly: {}
+        },
+        unresolvedParams: [],
+        filterSummary: ["地点：全国", "薪资：10-20K"]
+      },
+      matchingContext
+    };
+  };
   server = createDashboardServer({
     db,
     root,
@@ -44,6 +91,7 @@ let server;
     forceMock: true,
     allowOfflineMock: true,
     logger,
+    inheritedContextResolver,
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
@@ -62,6 +110,31 @@ let server;
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
 
+  for (const code of [
+    "BOSS_RISK_CONTROL",
+    "BOSS_LOGIN_REQUIRED",
+    "BOSS_SEARCH_PAGE_INVALID"
+  ]) {
+    inheritedFailureCode = code;
+    const rejected = await postForm(baseUrl, "/api/workflow-run", {
+      planId: saved.planId,
+      browserMode: "edge",
+      action: "start"
+    });
+    assert.strictEqual(rejected.status, 409);
+    assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 0);
+    assert.strictEqual(spawns.length, 0);
+  }
+  inheritedFailureCode = "";
+
+  const portableStart = await postForm(baseUrl, "/api/workflow-run", {
+    planId: saved.planId,
+    browserMode: "portable",
+    action: "start"
+  });
+  assert.strictEqual(portableStart.status, 409);
+  assert.match(portableStart.body, /INHERITED_EDGE_REQUIRED/);
+
   const started = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
     browserMode: "edge",
@@ -72,6 +145,13 @@ let server;
   const workflow = listWorkflowRuns(db, { planId: saved.planId })[0];
   assert.strictEqual(workflow.status, "scanning");
   assert.strictEqual(workflow.targetSuccessCount, 35);
+  assert.strictEqual(workflow.planner.acquisitionMode, "inherited");
+  assert.strictEqual(workflow.planner.searchScope.key, `boss:${saved.profileId}:fixture-scope`);
+  assert.strictEqual(workflow.planner.platformPolicy.hash, "fixture-policy");
+  assert.deepStrictEqual(
+    workflow.keywords.map((item) => item.word),
+    ["AI应用开发工程师", "大模型应用开发工程师", "Agent开发工程师"]
+  );
   assert.strictEqual(spawns.length, 1);
   assert(spawns[0].args.includes("--workflow-run"));
   assert(spawns[0].args.includes(workflow.id));
@@ -86,6 +166,15 @@ let server;
   assert.strictEqual(interruptedWorkflow.status, "interrupted");
   assert.strictEqual(interruptedWorkflow.sequence, 1);
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
+
+  const spawnCountBeforePortableResume = spawns.length;
+  const portableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "portable"
+  });
+  assert.strictEqual(portableResume.status, 409);
+  assert.match(portableResume.body, /INHERITED_EDGE_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforePortableResume);
 
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
@@ -206,9 +295,10 @@ function seedProfile(database) {
       directions: ["AI应用开发"],
       keywords: [
         { word: "AI应用开发工程师", priority: "A", reason: "主方向" },
-        { word: "RAG工程师", priority: "A", reason: "主方向" },
-        { word: "Python AI后端", priority: "B", reason: "补充方向" },
-        { word: "Agent工程师", priority: "B", reason: "补充方向" }
+        { word: "大模型应用开发工程师", priority: "A", reason: "主方向" },
+        { word: "Agent开发工程师", priority: "A", reason: "主方向" },
+        { word: "RAG工程师", priority: "B", reason: "补充方向" },
+        { word: "AI知识库开发", priority: "B", reason: "补充方向" }
       ],
       salary: { minK: 10, maxK: 20 },
       experience: ["经验不限", "1-3年"],

@@ -15,6 +15,34 @@ const input = {
     url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405",
     cityCode: "101280100"
   },
+  searchScope: {
+    key: "boss:7:scope-v1",
+    site: "boss",
+    templateHash: "scope-v1",
+    templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405",
+    filterParams: { city: ["101280100"], district: ["101280105"], salary: ["405"] }
+  },
+  keywordSource: {
+    searchPlanId: 9,
+    profileVersionId: 11,
+    matchingCardRevision: "card-v1",
+    catalogHash: "catalog-v1",
+    keywords: [
+      { word: "Agent", priority: "B", reason: "补充方向" },
+      { word: "RAG", priority: "A", reason: "主方向" }
+    ]
+  },
+  platformPolicy: {
+    hash: "platform-policy-v1",
+    site: "boss",
+    templateHash: "scope-v1",
+    filters: {
+      location: { mode: "city", codes: ["101280100", "101280105"], cities: ["广州"], districts: ["天河区"] },
+      salary: { codes: ["405"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] }
+    },
+    unresolvedParams: [],
+    filterSummary: ["地点：广州·天河区", "薪资：10-20K"]
+  },
   cityScopes: [
     { city: "Guangzhou", cityCode: "101280100" },
     { city: "Shenzhen", cityCode: "101280600" }
@@ -41,7 +69,7 @@ const input = {
 };
 
 const snapshot = buildScanExecutionSnapshot(input);
-assert.strictEqual(snapshot.schemaVersion, 2);
+assert.strictEqual(snapshot.schemaVersion, 3);
 assert.match(snapshot.createdAt, /^\d{4}-\d{2}-\d{2}T/);
 assert.match(snapshot.snapshotHash, /^[a-f0-9]{64}$/);
 assert.deepStrictEqual(snapshot.targets[0], {
@@ -87,6 +115,9 @@ const reordered = buildScanExecutionSnapshot({
   ],
   runtimePolicyHash: "policy-v1",
   searchTemplate: input.searchTemplate,
+  searchScope: input.searchScope,
+  keywordSource: input.keywordSource,
+  platformPolicy: input.platformPolicy,
   scanKind: "daily",
   site: "boss"
 });
@@ -106,6 +137,21 @@ const volatileMetadata = buildScanExecutionSnapshot({
   }
 });
 assert.strictEqual(volatileMetadata.snapshotHash, snapshot.snapshotHash);
+
+for (const mutate of [
+  (value) => { value.searchScope.key = "boss:7:scope-v2"; },
+  (value) => { value.keywordSource.catalogHash = "catalog-v2"; },
+  (value) => { value.platformPolicy.hash = "platform-policy-v2"; }
+]) {
+  const changedInput = JSON.parse(JSON.stringify(input));
+  mutate(changedInput);
+  const changedSnapshot = buildScanExecutionSnapshot(changedInput);
+  assert.notStrictEqual(changedSnapshot.snapshotHash, snapshot.snapshotHash);
+  assert.throws(
+    () => assertScanSnapshotCompatible(snapshot, changedSnapshot),
+    (error) => error.code === "SCAN_SNAPSHOT_MISMATCH"
+  );
+}
 
 for (const mutate of [
   (value) => { value.keywordPlan[0].word = "LLM"; },
@@ -138,6 +184,18 @@ assert.deepStrictEqual(summarizeResumePlan(snapshot, latestResults), {
 assert.throws(
   () => remainingTargetKeys(snapshot, [{ targetKey: "unknown-target", status: "completed" }]),
   (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /unknown-target/.test(error.message)
+);
+
+const changedLivePage = {
+  ...input,
+  searchTemplate: input.searchTemplate,
+  searchScope: input.searchScope,
+  keywordSource: input.keywordSource,
+  platformPolicy: input.platformPolicy
+};
+assertScanSnapshotCompatible(
+  snapshot,
+  buildScanExecutionSnapshot(changedLivePage)
 );
 
 const changedBudgetSnapshot = buildScanExecutionSnapshot({

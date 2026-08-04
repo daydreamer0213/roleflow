@@ -1,12 +1,15 @@
 const { stableHash } = require("./analysis_revision");
 const { buildBossScanTargets } = require("../adapters/sites/boss");
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const PAYLOAD_FIELDS = [
   "site",
   "scanKind",
   "runtimePolicyHash",
   "searchTemplate",
+  "searchScope",
+  "keywordSource",
+  "platformPolicy",
   "cityScopes",
   "keywordPlan",
   "nativeFilters",
@@ -26,6 +29,7 @@ function buildScanExecutionSnapshot(input = {}) {
   })).filter((item) => item.word);
   const nativeFilters = normalizeExecutionFilters(input.nativeFilters);
   const searchTemplate = normalizeSearchTemplate(input.searchTemplate);
+  const { searchScope, keywordSource, platformPolicy } = normalizeInheritedContext(input);
   const limits = normalizeExecutionLimits(input.limits);
   const targets = buildBossScanTargets({
     keywords: keywordPlan.map((item) => typeof item === "string" ? item : item?.word).filter(Boolean),
@@ -51,6 +55,9 @@ function buildScanExecutionSnapshot(input = {}) {
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
     searchTemplate,
+    searchScope,
+    keywordSource,
+    platformPolicy,
     cityScopes,
     keywordPlan,
     nativeFilters,
@@ -65,6 +72,26 @@ function normalizeSearchTemplate(value = {}) {
     mode: value?.mode === "inherited" ? "inherited" : "generated",
     url: String(value?.url || ""),
     cityCode: String(value?.cityCode || "")
+  });
+}
+
+function normalizeInheritedContext(input = {}) {
+  return cloneJson({
+    searchScope: {
+      key: String(input.searchScope?.key || ""),
+      site: String(input.searchScope?.site || ""),
+      templateHash: String(input.searchScope?.templateHash || ""),
+      templateUrl: String(input.searchScope?.templateUrl || ""),
+      filterParams: input.searchScope?.filterParams || {}
+    },
+    keywordSource: {
+      searchPlanId: Number(input.keywordSource?.searchPlanId || 0),
+      profileVersionId: Number(input.keywordSource?.profileVersionId || 0),
+      matchingCardRevision: String(input.keywordSource?.matchingCardRevision || ""),
+      catalogHash: String(input.keywordSource?.catalogHash || ""),
+      keywords: input.keywordSource?.keywords || []
+    },
+    platformPolicy: input.platformPolicy || {}
   });
 }
 
