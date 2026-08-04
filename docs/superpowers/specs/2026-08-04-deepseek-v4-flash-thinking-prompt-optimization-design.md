@@ -372,3 +372,44 @@ checkpoint 才允许推送。
 - 是否需要提示词修正有真实数据依据；
 - 通过复审的提交已推送当前开发分支；
 - `main` 未被修改。
+
+## 15. Frozen evidence identity and match execution identity
+
+`confirmed-evidence-portability.v3` remains unchanged. The cross-model experiment uses the new `confirmed-evidence-portability.v4` schema and only authorizes `match-live`; `profile-live` and `card-live` reject a portability proof instead of accepting a skip or allow flag.
+
+A confirmed profile and card prove facts extracted and confirmed under their original evidence-generation model. Switching only the downstream matching model must not regenerate those confirmed facts. Therefore v4 preserves and verifies the immutable evidence identity from both confirmation envelopes as `evidenceModelIdentitySha256`, while it separately binds the sanitized current matching configuration as `matchModelIdentitySha256`. The two hashes must be different for this cross-model schema.
+
+The v4 proof is created with:
+
+```powershell
+$env:PRIVATE_FULL_CHAIN_PORTABILITY_HMAC_KEY = "<at least 32 secret bytes>"
+node scripts/private-full-chain-runner.js --create-portability-proof `
+  --proof-version confirmed-evidence-portability.v4 `
+  --source-private-root <source> --private-root <target> `
+  --model-settings-root <external-settings-root> `
+  --output <target>\input\confirmed-evidence-portability.json
+```
+
+The secret environment value HMAC-binds the complete public proof manifest, including both identity hashes, and is required again by v4 `match-live`. The key, API keys, full model configuration, confirmation IDs, and private evidence content never enter the proof, preflight summary, result, log, or safe error. A local administrator who can rewrite the proof, manifests, all frozen files, and the HMAC key remains outside the existing threat model.
+
+The v4 `match-live` preflight is fail-closed and ordered:
+
+1. Verify the exact v4 schema, public proof hash, and HMAC.
+2. Verify source and target Git checkpoints, approved shared consumer blobs, and the current runtime consumer blobs.
+3. Verify byte hashes for the frozen profile, card, redacted resume, and identity manifest, plus the separately confirmed job and label fixture.
+4. Verify the complete profile/card confirmation chain and require both envelopes to agree with `evidenceModelIdentitySha256`.
+5. Resolve current model settings exactly once, sanitize and hash that exact in-memory object, and compare it with `matchModelIdentitySha256`.
+6. Pass the same already-hashed in-memory model configuration through runtime config construction to the model adapter.
+
+After step 5, `preflight.portability` is a new non-circular, privacy-safe summary containing only proof version/hash, source/target harness versions, and:
+
+```json
+{
+  "modelIdentity": {
+    "evidenceModelIdentitySha256": "<sha256>",
+    "matchModelIdentitySha256": "<sha256>"
+  }
+}
+```
+
+Changing `thinkingMode`, `reasoningEffort`, or any other request-affecting sanitized setting after proof creation fails before SQLite or model adapter initialization. Secret-only changes such as API key rotation do not change either public model identity.

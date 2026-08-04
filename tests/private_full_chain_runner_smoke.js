@@ -29,6 +29,7 @@ const formalBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-cha
 const externalRoot = path.join("D:\\DevData\\RoleFlow-private-runner-fixtures", `synthetic-private-full-chain-runner-${process.pid}`);
 const externalPdf = path.join(externalRoot, "synthetic-resume.pdf");
 const downloadsRoot = path.join(os.homedir(), "Downloads", `roleflow-private-runner-${process.pid}`);
+const V4_HMAC_KEY = "synthetic-v4-portability-hmac-key-0123456789abcdef";
 
 function privatePath(...parts) {
   return path.join(testRoot, ...parts);
@@ -158,6 +159,34 @@ function stableJson(value) {
 
 function valueSha256(value) {
   return crypto.createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function privacySafeRequestSettings(value) {
+  if (Array.isArray(value)) return value.map(privacySafeRequestSettings);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !/(?:api.?key|token|password|authorization|cookie|secret|credential)/i.test(key))
+    .map(([key, item]) => [key, privacySafeRequestSettings(item)]));
+}
+
+function publicModelIdentity(modelConfig) {
+  const provider = String(modelConfig?.provider || "");
+  const selected = modelConfig?.providers?.[provider] || {};
+  const endpoint = String(selected.baseUrl || "");
+  return {
+    provider,
+    model: String(selected.model || ""),
+    timeoutMs: Number(selected.timeoutMs || 0),
+    endpointSha256: crypto.createHash("sha256").update(endpoint).digest("hex"),
+    requestSettingsSha256: valueSha256(privacySafeRequestSettings(selected))
+  };
+}
+
+function rehashV4ProofWithoutHmac(value) {
+  const payload = { ...value };
+  delete payload.proofSha256;
+  delete payload.proofHmacSha256;
+  value.proofSha256 = valueSha256(payload);
 }
 
 function sourceContentHash(job) {
@@ -1352,6 +1381,290 @@ async function injectedLiveFlowSmoke(identityPath) {
       modules: { ...value.modules, openDb }
     };
   };
+  const flashThinkingConfig = structuredClone(fakeModelConfig);
+  Object.assign(flashThinkingConfig.providers["synthetic-provider"], {
+    model: "deepseek-v4-flash",
+    thinkingMode: "enabled",
+    reasoningEffort: "high",
+    apiKey: "synthetic-flash-secret-alpha"
+  });
+  const flashThinkingIdentity = publicModelIdentity(flashThinkingConfig);
+  const proEvidenceIdentity = portableEvidence.profile.modelIdentitySha256;
+  const v4Env = authorizedEnv({
+    PRIVATE_FULL_CHAIN_PORTABILITY_HMAC_KEY: V4_HMAC_KEY
+  });
+  const v4TargetRoot = privatePath("portability-target-v4-cross-model");
+  fs.cpSync(changedTargetRoot, v4TargetRoot, { recursive: true });
+  fs.rmSync(path.join(v4TargetRoot, "runs"), { recursive: true, force: true });
+  const v4ProofPath = path.join(v4TargetRoot, "input", "confirmed-evidence-portability.json");
+  fs.rmSync(v4ProofPath);
+  assert.strictEqual(
+    expectGateOk({
+      mode: "create-portability-proof",
+      privateRoot: v4TargetRoot,
+      sourcePrivateRoot: sourcePortabilityRoot,
+      output: v4ProofPath,
+      proofVersion: "confirmed-evidence-portability.v4",
+      modelSettingsRoot: externalRoot
+    }).request.proofVersion,
+    "confirmed-evidence-portability.v4"
+  );
+  const v4Proof = runner.createConfirmedEvidencePortability({
+    sourcePrivateRoot: sourcePortabilityRoot,
+    privateRoot: v4TargetRoot,
+    output: v4ProofPath,
+    proofVersion: "confirmed-evidence-portability.v4",
+    modelSettingsRoot: externalRoot
+  }, {
+    ...portabilitySeam,
+    modelConfig: flashThinkingConfig
+  }, v4Env);
+  assert.strictEqual(v4Proof.proofVersion, "confirmed-evidence-portability.v4");
+  assert.strictEqual(v4Proof.evidenceModelIdentitySha256, proEvidenceIdentity);
+  assert.strictEqual(v4Proof.matchModelIdentitySha256, valueSha256(flashThinkingIdentity));
+  assert.notStrictEqual(v4Proof.evidenceModelIdentitySha256, v4Proof.matchModelIdentitySha256);
+  assert.match(v4Proof.proofHmacSha256, /^[0-9a-f]{64}$/);
+  assert.deepStrictEqual(publicModelIdentity({
+    ...flashThinkingConfig,
+    providers: {
+      ...flashThinkingConfig.providers,
+      "synthetic-provider": {
+        ...flashThinkingConfig.providers["synthetic-provider"],
+        apiKey: "synthetic-flash-secret-beta"
+      }
+    }
+  }), flashThinkingIdentity, "API keys must not affect the public match identity");
+  for (const identity of [portableEvidence.profile.modelIdentity, flashThinkingIdentity]) {
+    assert(!/(?:api.?key|token|password|authorization|cookie|secret|credential)/i.test(JSON.stringify(identity)));
+  }
+  for (const forbidden of [
+    V4_HMAC_KEY,
+    "synthetic-flash-secret-alpha",
+    portableEvidence.profile.id,
+    portableEvidence.card.id,
+    changedJobs[0].description,
+    "Synthetic Candidate"
+  ]) {
+    assert(!JSON.stringify(v4Proof).includes(forbidden), `v4 proof must not contain ${forbidden}`);
+  }
+
+  for (const mode of ["profile-live", "card-live"]) {
+    expectGate("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", liveOptions(mode, "candidate", {
+      modelSettingsRoot: externalRoot,
+      portabilityProof: v4ProofPath,
+      ...(mode === "profile-live"
+        ? { resumeText: resumePath, identity: identityPath }
+        : { profile: profilePath })
+    }), v4Env);
+  }
+
+  const v3ChangedIdentityRoot = privatePath("portability-v3-current-model-change");
+  fs.cpSync(changedTargetRoot, v3ChangedIdentityRoot, { recursive: true });
+  fs.rmSync(path.join(v3ChangedIdentityRoot, "runs"), { recursive: true, force: true });
+  let v3ChangedIdentityModelCalls = 0;
+  const v3ChangedIdentitySeam = portableRunSeam("candidate");
+  v3ChangedIdentitySeam.modelConfig = flashThinkingConfig;
+  v3ChangedIdentitySeam.modules = {
+    ...v3ChangedIdentitySeam.modules,
+    createJobAnalysisRunner: (...args) => {
+      v3ChangedIdentityModelCalls += 1;
+      return createJobAnalysisRunner(...args);
+    }
+  };
+  await assert.rejects(
+    () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+      privateRoot: v3ChangedIdentityRoot,
+      output: path.join(v3ChangedIdentityRoot, "runs", "candidate"),
+      profile: path.join(v3ChangedIdentityRoot, "input", "confirmed-profile.private.json"),
+      matchingCard: path.join(v3ChangedIdentityRoot, "input", "confirmed-card.private.json"),
+      jobs: path.join(v3ChangedIdentityRoot, "input", "jobs.private.json"),
+      labels: path.join(v3ChangedIdentityRoot, "labels", "jobs.reviewed.json"),
+      portabilityProof: path.join(v3ChangedIdentityRoot, "input", "confirmed-evidence-portability.json"),
+      modelSettingsRoot: externalRoot
+    }), v4Env, v3ChangedIdentitySeam),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PROFILE_UNCONFIRMED",
+    "v3 must still reject a changed current model identity"
+  );
+  assert.strictEqual(v3ChangedIdentityModelCalls, 0, "v3 identity mismatch must precede model invocation");
+
+  const v4MatchOptions = (root, overrides = {}) => liveOptions("match-live", "candidate", {
+    privateRoot: root,
+    output: path.join(root, "runs", "candidate"),
+    profile: path.join(root, "input", "confirmed-profile.private.json"),
+    matchingCard: path.join(root, "input", "confirmed-card.private.json"),
+    jobs: path.join(root, "input", "jobs.private.json"),
+    labels: path.join(root, "labels", "jobs.reviewed.json"),
+    portabilityProof: path.join(root, "input", "confirmed-evidence-portability.json"),
+    modelSettingsRoot: externalRoot,
+    ...overrides
+  });
+  const v4RunSeam = (selectedModelConfig = flashThinkingConfig) => {
+    const value = portableRunSeam("candidate");
+    return { ...value, modelConfig: selectedModelConfig };
+  };
+  const v4Result = await runner.runPrivateFullChain(
+    v4MatchOptions(v4TargetRoot),
+    v4Env,
+    v4RunSeam({
+      ...flashThinkingConfig,
+      providers: {
+        ...flashThinkingConfig.providers,
+        "synthetic-provider": {
+          ...flashThinkingConfig.providers["synthetic-provider"],
+          apiKey: "synthetic-flash-secret-beta"
+        }
+      }
+    })
+  );
+  assert.strictEqual(v4Result.evidenceModelIdentitySha256, proEvidenceIdentity);
+  assert.strictEqual(v4Result.matchModelIdentitySha256, valueSha256(flashThinkingIdentity));
+  assert.deepStrictEqual(v4Result.modelIdentity, flashThinkingIdentity);
+  assert.strictEqual(v4Result.modelIdentitySha256, v4Result.matchModelIdentitySha256);
+  assert.strictEqual(v4Result.confirmedEvidencePortabilitySha256, v4Proof.proofSha256);
+  assert(!JSON.stringify(v4Result.modelIdentity).includes("synthetic-flash-secret-beta"));
+
+  const expectV4PreflightReject = async (name, mutate, selectedModelConfig = flashThinkingConfig, env = v4Env) => {
+    const root = privatePath(`portability-v4-run-${name}`);
+    fs.cpSync(v4TargetRoot, root, { recursive: true });
+    fs.rmSync(path.join(root, "runs"), { recursive: true, force: true });
+    mutate(root);
+    const counts = { openDb: 0, model: 0 };
+    const seam = v4RunSeam(selectedModelConfig);
+    seam.modules = {
+      ...seam.modules,
+      openDb: () => { counts.openDb += 1; throw new Error("SQLite must not open"); },
+      createJobAnalysisRunner: () => {
+        counts.model += 1;
+        throw new Error("model adapter must not initialize");
+      }
+    };
+    await assert.rejects(
+      () => runner.runPrivateFullChain(v4MatchOptions(root), env, seam),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      name
+    );
+    assert.deepStrictEqual(counts, { openDb: 0, model: 0 }, `${name} must fail before SQLite or model invocation`);
+  };
+  for (const [name, relativeFile] of [
+    ["profile-bytes", path.join("input", "confirmed-profile.private.json")],
+    ["card-bytes", path.join("input", "confirmed-card.private.json")],
+    ["resume-bytes", path.join("input", "resume.redacted.txt")],
+    ["identity-bytes", path.join("input", "identity.private.json")]
+  ]) {
+    await expectV4PreflightReject(name, (root) => fs.appendFileSync(path.join(root, relativeFile), " "));
+  }
+  for (const field of ["evidenceModelIdentitySha256", "matchModelIdentitySha256"]) {
+    await expectV4PreflightReject(`${field}-hmac`, (root) => {
+      const file = path.join(root, "input", "confirmed-evidence-portability.json");
+      const value = JSON.parse(fs.readFileSync(file, "utf8"));
+      value[field] = "f".repeat(64);
+      rehashV4ProofWithoutHmac(value);
+      fs.writeFileSync(file, JSON.stringify(value), "utf8");
+    });
+  }
+  await expectV4PreflightReject(
+    "wrong-hmac-key",
+    () => {},
+    flashThinkingConfig,
+    authorizedEnv({ PRIVATE_FULL_CHAIN_PORTABILITY_HMAC_KEY: "wrong-key-material-0123456789abcdef" })
+  );
+  for (const [field, changedValue] of [
+    ["thinkingMode", "disabled"],
+    ["reasoningEffort", "max"]
+  ]) {
+    const changedConfig = structuredClone(flashThinkingConfig);
+    changedConfig.providers["synthetic-provider"][field] = changedValue;
+    await expectV4PreflightReject(`${field}-after-proof`, () => {}, changedConfig);
+  }
+
+  const mismatchedEvidenceSource = privatePath("portability-v4-evidence-mismatch-source");
+  const mismatchedEvidenceTarget = privatePath("portability-v4-evidence-mismatch-target");
+  fs.cpSync(sourcePortabilityRoot, mismatchedEvidenceSource, { recursive: true });
+  fs.cpSync(changedTargetRoot, mismatchedEvidenceTarget, { recursive: true });
+  fs.rmSync(path.join(mismatchedEvidenceTarget, "input", "confirmed-evidence-portability.json"));
+  for (const root of [mismatchedEvidenceSource, mismatchedEvidenceTarget]) {
+    const file = path.join(root, "input", "confirmed-card.private.json");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.modelIdentity = flashThinkingIdentity;
+    value.modelIdentitySha256 = valueSha256(flashThinkingIdentity);
+    value.draft.modelIdentity = flashThinkingIdentity;
+    value.draft.modelIdentitySha256 = valueSha256(flashThinkingIdentity);
+    rehashCardDraft(value);
+    fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  }
+  assert.throws(
+    () => runner.createConfirmedEvidencePortability({
+      sourcePrivateRoot: mismatchedEvidenceSource,
+      privateRoot: mismatchedEvidenceTarget,
+      output: path.join(mismatchedEvidenceTarget, "input", "confirmed-evidence-portability.json"),
+      proofVersion: "confirmed-evidence-portability.v4",
+      modelSettingsRoot: externalRoot
+    }, {
+      ...portabilitySeam,
+      modelConfig: flashThinkingConfig
+    }, v4Env),
+    (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+    "v4 creation must reject profile/card envelopes with different evidence model identities"
+  );
+
+  const singleReadRoot = privatePath("portability-v4-single-read-hash-and-use");
+  fs.cpSync(v4TargetRoot, singleReadRoot, { recursive: true });
+  fs.rmSync(path.join(singleReadRoot, "runs"), { recursive: true, force: true });
+  const syntheticSettingsFile = path.join(externalRoot, "v4-single-read-model.json");
+  fs.mkdirSync(path.dirname(syntheticSettingsFile), { recursive: true });
+  fs.writeFileSync(syntheticSettingsFile, JSON.stringify(flashThinkingConfig), "utf8");
+  const singleReadSeam = portableRunSeam("candidate");
+  delete singleReadSeam.modelConfig;
+  let settingsReads = 0;
+  let adapterConfigs = 0;
+  let exactHashedConfig = null;
+  singleReadSeam.modules = {
+    ...singleReadSeam.modules,
+    resolveRuntimeModelConfig: ({ root }) => {
+      assert.strictEqual(path.resolve(root), path.resolve(externalRoot));
+      settingsReads += 1;
+      exactHashedConfig = JSON.parse(fs.readFileSync(syntheticSettingsFile, "utf8"));
+      const changedOnDisk = structuredClone(exactHashedConfig);
+      changedOnDisk.providers["synthetic-provider"].thinkingMode = "disabled";
+      fs.writeFileSync(syntheticSettingsFile, JSON.stringify(changedOnDisk), "utf8");
+      return { modelConfig: exactHashedConfig };
+    },
+    profileToRuntimeConfigs: (...args) => {
+      assert.strictEqual(args[0].model, exactHashedConfig, "runtime conversion must receive the hashed in-memory model config");
+      const configs = profileToRuntimeConfigs(...args);
+      assert.strictEqual(configs.model, exactHashedConfig, "runtime configs must retain the hashed in-memory model config");
+      return configs;
+    },
+    createJobAnalysisRunner: (configs, ...args) => {
+      adapterConfigs += 1;
+      assert.strictEqual(configs.model, exactHashedConfig, "model adapter must receive the hashed in-memory model config");
+      return createJobAnalysisRunner(configs, ...args);
+    }
+  };
+  const singleReadResult = await runner.runPrivateFullChain(v4MatchOptions(singleReadRoot), v4Env, singleReadSeam);
+  assert.strictEqual(settingsReads, 1, "v4 match-live must resolve model settings exactly once");
+  assert.strictEqual(adapterConfigs, 1, "v4 match-live must initialize one adapter from the hashed config");
+  assert.strictEqual(singleReadResult.matchModelIdentitySha256, v4Proof.matchModelIdentitySha256);
+
+  const observerRootV4 = privatePath("portability-v4-preflight-observer");
+  fs.cpSync(v4TargetRoot, observerRootV4, { recursive: true });
+  fs.rmSync(path.join(observerRootV4, "runs"), { recursive: true, force: true });
+  let observedPreflightV4 = null;
+  const observerSeamV4 = v4RunSeam();
+  observerSeamV4.onMatchPreflight = (preflight) => { observedPreflightV4 = preflight; };
+  await runner.runPrivateFullChain(v4MatchOptions(observerRootV4), v4Env, observerSeamV4);
+  assert(observedPreflightV4, "v4 match preflight observer must receive the completed preflight");
+  assert.doesNotThrow(() => JSON.stringify(observedPreflightV4), "v4 match preflight must be JSON serializable");
+  assert.notStrictEqual(observedPreflightV4.portability, observedPreflightV4);
+  assert.deepStrictEqual(Object.keys(observedPreflightV4.portability).sort(), [
+    "modelIdentity", "proofSha256", "proofVersion", "sourceHarness", "targetHarness"
+  ].sort());
+  assert.deepStrictEqual(observedPreflightV4.portability.modelIdentity, {
+    evidenceModelIdentitySha256: proEvidenceIdentity,
+    matchModelIdentitySha256: valueSha256(flashThinkingIdentity)
+  });
+  assert(!JSON.stringify(observedPreflightV4.portability).includes(V4_HMAC_KEY));
+
   const v3Result = await runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
     privateRoot: changedTargetRoot,
     output: path.join(changedTargetRoot, "runs", "candidate"),
