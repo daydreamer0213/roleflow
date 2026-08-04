@@ -2822,3 +2822,13 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - candidateEvaluatedCommit: $evaluated
 - aselineEvaluatedCommit: 52ca494c8c68e97974ac03423cf4523f24486a28
 - 绑定规则：product 是 evaluated 的严格祖先；后续私有 v4 manifest 必须原样使用以上完整 SHA。
+### 2026-08-04 v4.8 Flash continuation checkpoint
+
+- Product checkpoint: `9083abbc4bb02118a7c522a6f4de9c3bccb2f553`。
+- Evaluated checkpoint: `9bb986ec3eb68b65fe75bfbcf54586781580b234`；产品提交保持为其严格祖先。
+- 本次没有加入 few-shot 示例，也没有修改二维表和 70/30 权重；只增加了职责发散且模型 shadow 建议慎投时的慎投上限保护。
+- 全新 3 条复现目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-3-v4-retry-v1-20260804`；结果 SHA-256：`b70ba944a11fbd78495659dadabb4ad195eae41f2c9413d7c528b36fffb57959`。
+- 全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-20-v1-20260804`；结果 SHA-256：`a3d72a7e3dd5b2a0bc4b58b63c7f8fa54be791cc16098672aebad69d08562ac9`。
+- 当前行为门禁通过：主投/可投无遗漏；不推荐不进入默认沟通；慎投混入单独统计并按用户标准接受。
+- `npm.cmd test`：All 53 offline checks passed；`git diff --check`：通过。
+- 后续 docs/test binding commit 不替代 evaluated checkpoint，也不改变真实验收绑定。

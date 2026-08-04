@@ -985,3 +985,13 @@ The docs-only commit containing this section is the next candidate evaluated che
 - 通过双重复审的 evaluated checkpoint：`e2a2366403b1a1052a96a5f0be4a6318329a0413`。
 - 私有基线提交：`c1d32641bca2ccd4c82128f48f3cfac996310dfb`。
 - `e370b254125d9a838b3563ee39c75e9343868229` 已验证为 `e2a2366403b1a1052a96a5f0be4a6318329a0413` 的严格祖先；v4.6 真实 3 条与 20 条固定使用 `e2a2366403b1a1052a96a5f0be4a6318329a0413`，不使用本次记录提交替代被评估提交。
+### 2026-08-04 v4.8 Flash continuation checkpoint
+
+- Product checkpoint: `9083abbc4bb02118a7c522a6f4de9c3bccb2f553`。
+- Evaluated checkpoint: `9bb986ec3eb68b65fe75bfbcf54586781580b234`；产品提交保持为其严格祖先。
+- 本次没有加入 few-shot 示例，也没有修改二维表和 70/30 权重；只增加了职责发散且模型 shadow 建议慎投时的慎投上限保护。
+- 全新 3 条复现目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-3-v4-retry-v1-20260804`；结果 SHA-256：`b70ba944a11fbd78495659dadabb4ad195eae41f2c9413d7c528b36fffb57959`。
+- 全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-20-v1-20260804`；结果 SHA-256：`a3d72a7e3dd5b2a0bc4b58b63c7f8fa54be791cc16098672aebad69d08562ac9`。
+- 当前行为门禁通过：主投/可投无遗漏；不推荐不进入默认沟通；慎投混入单独统计并按用户标准接受。
+- `npm.cmd test`：All 53 offline checks passed；`git diff --check`：通过。
+- 后续 docs/test binding commit 不替代 evaluated checkpoint，也不改变真实验收绑定。
