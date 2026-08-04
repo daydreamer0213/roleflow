@@ -719,3 +719,17 @@ Expected: accepted checkpoint is present on the current GitHub branch; `main` is
 - [ ] No step accesses BOSS, jobs.sqlite, Cookies, or port 8787.
 - [ ] The matrix cannot be changed without explicit user confirmation.
 - [ ] There are no `TBD`, `TODO`, placeholders, or unspecified output paths.
+
+## Reviewed checkpoint
+
+- product checkpoint: `bde0c011a1af7bbffb18368def0c4edb0c6309c2`
+- 5 个聚焦测试通过；`npm test` 53 项通过；`git diff --check` clean。
+- 最终整分支复审：Critical 0 / Important 0 / Minor 0 / Spec PASS / Code quality APPROVED / Ready for live 3-job diagnostic Yes
+- proof schema: `confirmed-evidence-portability.v4`；旧 v1/v2/v3 兼容。
+- frozen pool：
+  - `D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730\input\jobs.private.json` SHA-256 `612547b099d71f13fc5dd58e78a31756b4b56c7ad9375f7b3d182d73b5e0d35b`
+  - `D:\DevData\RoleFlow-private-benchmark\confirmed-sample-pool-v1-20260730\labels\jobs.reviewed.json` SHA-256 `97b4e5830fbf0fad8a694a3cfc1fcedfd5918b3e9723b811ebba09f1fb46da39`
+- 诊断索引为零基 `4,9,10`。
+- 3 条新目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-thinking-high-first-3-v1-20260804`
+- 20 条新目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-thinking-high-first-20-v1-20260804`
+- `fatal: Needed a single revision` 为基线旧负向测试噪声，不是本次回归。
