@@ -124,6 +124,20 @@ assert.strictEqual(yieldOrdered.selectedKeywords[0].priority, "B");
 assert.strictEqual(yieldOrdered.selectedKeywords[1].word, "lower known yield");
 assert.strictEqual(yieldOrdered.selectedKeywords[1].priority, "A");
 
+const freshInheritedScope = planWorkflowRun(fixture({
+  keywords: [
+    keyword("AI应用开发工程师", "A", 0),
+    keyword("大模型应用开发工程师", "A", 1),
+    keyword("Agent开发工程师", "A", 2),
+    keyword("RAG开发工程师", "B", 3),
+    keyword("AI知识库开发", "B", 4)
+  ]
+}));
+assert.deepStrictEqual(
+  freshInheritedScope.selectedKeywords.map((item) => item.word),
+  ["AI应用开发工程师", "大模型应用开发工程师", "Agent开发工程师"]
+);
+
 const partiallyUsedBudget = planWorkflowRun(fixture({
   successfulToday: 30,
   completedRuns: 1,

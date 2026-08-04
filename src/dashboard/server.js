@@ -101,6 +101,7 @@ const {
   listWorkflowInventory,
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
+const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
@@ -825,7 +826,12 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   }
 }
 
-function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
+function buildWorkflowDashboardState(
+  db,
+  planRecord,
+  now = new Date(),
+  { searchScope = null, keywordSource = null } = {}
+) {
   if (!planRecord) throw appError("WORKFLOW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
   const localDay = chinaLocalDay(now);
   const runs = listWorkflowRuns(db, {
@@ -843,26 +849,49 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
   const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
   const budgetRuns = workflowRunsWithAccessUsage(db, runs, localDay);
   const usedBudget = consumedWorkflowBudget(budgetRuns);
-  const usedKeywords = new Set(runs.flatMap((run) => run.keywords || []).map((item) => String(item.word || item)));
-  const jobs = listDecisionPool(db, { planId: planRecord.id });
-  const keywordStats = new Map();
-  for (const job of jobs) {
-    const word = String(job.keyword || "").trim();
-    if (!word) continue;
-    const stats = keywordStats.get(word) || { sampleSize: 0, eligibleCount: 0 };
-    stats.sampleSize += 1;
-    const probe = { ...job, applicationStatus: "", applicationReasonCode: "", reviewAt: "" };
-    if (workflowEligibility(probe, { now: asIso(now) }).eligible) stats.eligibleCount += 1;
-    keywordStats.set(word, stats);
+  let keywordStats;
+  if (searchScope?.key) {
+    keywordStats = listScopedKeywordStats(db, {
+      profileId: planRecord.profileId,
+      scopeKey: searchScope.key,
+      localDay,
+      now: asIso(now)
+    });
+  } else {
+    const usedKeywords = new Set(runs.flatMap((run) => run.keywords || [])
+      .map((item) => String(item.word || item)));
+    keywordStats = new Map();
+    for (const job of listDecisionPool(db, { planId: planRecord.id })) {
+      const word = String(job.keyword || "").trim();
+      if (!word) continue;
+      const stats = keywordStats.get(word) || {
+        sampleSize: 0,
+        eligibleCount: 0,
+        usedToday: usedKeywords.has(word)
+      };
+      stats.sampleSize += 1;
+      const probe = { ...job, applicationStatus: "", applicationReasonCode: "", reviewAt: "" };
+      if (workflowEligibility(probe, { now: asIso(now) }).eligible) stats.eligibleCount += 1;
+      keywordStats.set(word, stats);
+    }
+    for (const word of usedKeywords) {
+      if (!keywordStats.has(word)) {
+        keywordStats.set(word, { sampleSize: 0, eligibleCount: 0, usedToday: true });
+      }
+    }
   }
-  const keywords = (planRecord.plan?.keywords || []).map((item, index) => {
-    const source = typeof item === "string" ? { word: item, priority: "B" } : item;
-    const stats = keywordStats.get(String(source.word || "")) || { sampleSize: 0, eligibleCount: 0 };
+  const catalog = keywordSource?.keywords?.length
+    ? keywordSource.keywords
+    : (planRecord.plan?.keywords || []);
+  const keywords = catalog.map((item, index) => {
+    const source = typeof item === "string" ? { word: item, priority: "B", reason: "" } : item;
+    const stats = keywordStats.get(String(source.word || "").trim())
+      || { sampleSize: 0, eligibleCount: 0, usedToday: false };
     return {
       word: String(source.word || "").trim(),
       priority: source.priority || "B",
+      reason: String(source.reason || ""),
       planOrder: index,
-      usedToday: usedKeywords.has(String(source.word || "").trim()),
       ...stats
     };
   }).filter((item) => item.word);
@@ -902,7 +931,9 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
       pages: Math.max(0, policy.dailyPageBudget - usedBudget.pages)
     },
     nextPlan,
-    keywords
+    keywords,
+    searchScope,
+    keywordSource
   };
 }
 

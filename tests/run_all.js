@@ -9,6 +9,7 @@ const tests = [
   "site_access_budget_smoke.js",
   "workflow_planner_smoke.js",
   "inherited_search_scope_smoke.js",
+  "scoped_keyword_stats_smoke.js",
   "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",
   "batch_state_consistency_smoke.js",
