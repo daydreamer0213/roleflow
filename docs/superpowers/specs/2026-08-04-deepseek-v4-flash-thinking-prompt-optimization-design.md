@@ -438,3 +438,11 @@ creation and `match-live`. That subprocess uses generated synthetic evidence,
 mock Git responses, and mock model modules only; it verifies success and
 failure exit codes plus privacy-safe stderr without accessing a real provider,
 real configuration, or private benchmark content.
+
+Early proof inspection is compatibility-sensitive. It may identify a parseable
+proof as v4, but it must not retain or pass an early snapshot for v1, v2, v3,
+unknown, or unparseable proofs. Those versions continue to read the current
+file at the original portability validation position, preserving their failure
+ordering and file-replacement semantics. Only an exact-schema, hash-verified,
+HMAC-authenticated v4 proof is retained and reused as the early snapshot; this
+keeps v4 authentication before Git while preserving v4 proof single-read.

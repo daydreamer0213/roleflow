@@ -2187,10 +2187,12 @@ async function runPrivateFullChain(options, env, testSeam = null) {
   let portabilityProofSnapshot = null;
   if (request.mode === "match-live" && request.portabilityProof) {
     const inspected = inspectPortabilityProofAuthentication(request.portabilityProof, env);
-    if (!inspected.parsed || (inspected.isV4 && !inspected.authenticated)) {
-      throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof schema or integrity check failed.");
+    if (inspected.isV4) {
+      if (!inspected.authenticated) {
+        throw runnerError("PRIVATE_FULL_CHAIN_PORTABILITY_INVALID", "The portability proof schema or integrity check failed.");
+      }
+      portabilityProofSnapshot = inspected.proof;
     }
-    portabilityProofSnapshot = inspected.proof;
   }
   if (request.mode === "profile-live" && request.side !== "candidate") {
     throw runnerError("PRIVATE_FULL_CHAIN_PROFILE_UNSUPPORTED", "The baseline product does not generate the canonical candidate profile.");

@@ -1748,6 +1748,34 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.strictEqual(adapterConfigs, 1, "v4 match-live must initialize one adapter from the hashed config");
   assert.strictEqual(singleReadResult.matchModelIdentitySha256, v4Proof.matchModelIdentitySha256);
 
+  const v4ProofSnapshotRoot = privatePath("portability-v4-proof-single-read");
+  fs.cpSync(v4TargetRoot, v4ProofSnapshotRoot, { recursive: true });
+  fs.rmSync(path.join(v4ProofSnapshotRoot, "runs"), { recursive: true, force: true });
+  const v4ProofSnapshotPath = path.join(v4ProofSnapshotRoot, "input", "confirmed-evidence-portability.json");
+  const originalV4ProofReadFileSync = fs.readFileSync;
+  let v4ProofReads = 0;
+  let v4ProofSnapshotResult;
+  fs.readFileSync = (target, ...args) => {
+    if (path.resolve(String(target)) !== path.resolve(v4ProofSnapshotPath)) {
+      return originalV4ProofReadFileSync(target, ...args);
+    }
+    v4ProofReads += 1;
+    const firstSnapshot = originalV4ProofReadFileSync(target, ...args);
+    if (v4ProofReads === 1) fs.writeFileSync(v4ProofSnapshotPath, "invalid replacement after authenticated v4 read", "utf8");
+    return firstSnapshot;
+  };
+  try {
+    v4ProofSnapshotResult = await runner.runPrivateFullChain(
+      v4MatchOptions(v4ProofSnapshotRoot),
+      v4Env,
+      v4RunSeam()
+    );
+  } finally {
+    fs.readFileSync = originalV4ProofReadFileSync;
+  }
+  assert.strictEqual(v4ProofReads, 1, "authenticated v4 proof must be read once and reused from its early snapshot");
+  assert.strictEqual(v4ProofSnapshotResult.confirmedEvidencePortabilitySha256, v4Proof.proofSha256);
+
   const observerRootV4 = privatePath("portability-v4-preflight-observer");
   fs.cpSync(v4TargetRoot, observerRootV4, { recursive: true });
   fs.rmSync(path.join(observerRootV4, "runs"), { recursive: true, force: true });
@@ -1877,6 +1905,40 @@ async function injectedLiveFlowSmoke(identityPath) {
   assert.deepStrictEqual(v3Result.rows.map((row) => row.id), changedJobs.map((job) => job.id));
   assert.strictEqual(v3Result.fixtureProfileId, portableEvidence.profile.id);
   assert.strictEqual(v3Result.fixtureMatchingCardId, portableEvidence.card.id);
+  const v3ProofRereadRoot = privatePath("portability-v3-proof-reread-at-validation");
+  fs.cpSync(changedTargetRoot, v3ProofRereadRoot, { recursive: true });
+  fs.rmSync(path.join(v3ProofRereadRoot, "runs"), { recursive: true, force: true });
+  const v3ProofRereadPath = path.join(v3ProofRereadRoot, "input", "confirmed-evidence-portability.json");
+  const originalV3ProofReadFileSync = fs.readFileSync;
+  let v3ProofReads = 0;
+  fs.readFileSync = (target, ...args) => {
+    if (path.resolve(String(target)) !== path.resolve(v3ProofRereadPath)) {
+      return originalV3ProofReadFileSync(target, ...args);
+    }
+    v3ProofReads += 1;
+    const inspectedBytes = originalV3ProofReadFileSync(target, ...args);
+    if (v3ProofReads === 1) fs.writeFileSync(v3ProofRereadPath, "invalid replacement before legacy validation", "utf8");
+    return inspectedBytes;
+  };
+  try {
+    await assert.rejects(
+      () => runner.runPrivateFullChain(liveOptions("match-live", "candidate", {
+        privateRoot: v3ProofRereadRoot,
+        output: path.join(v3ProofRereadRoot, "runs", "candidate"),
+        profile: path.join(v3ProofRereadRoot, "input", "confirmed-profile.private.json"),
+        matchingCard: path.join(v3ProofRereadRoot, "input", "confirmed-card.private.json"),
+        jobs: path.join(v3ProofRereadRoot, "input", "jobs.private.json"),
+        labels: path.join(v3ProofRereadRoot, "labels", "jobs.reviewed.json"),
+        portabilityProof: v3ProofRereadPath,
+        modelSettingsRoot: externalRoot
+      }), authorizedEnv(), portableRunSeam("candidate")),
+      (error) => error.code === "PRIVATE_FULL_CHAIN_PORTABILITY_INVALID",
+      "v3 must read the current proof file at the original portability validation position"
+    );
+  } finally {
+    fs.readFileSync = originalV3ProofReadFileSync;
+  }
+  assert.strictEqual(v3ProofReads, 2, "v3 early version inspection must not retain or pass a proof snapshot");
   const independentBaselineRepo = privatePath("portability-v3-independent-baseline-repo");
   fs.mkdirSync(path.join(independentBaselineRepo, "src", "core"), { recursive: true });
   fs.cpSync(path.resolve(__dirname, "..", "scripts"), path.join(independentBaselineRepo, "scripts"), { recursive: true });
