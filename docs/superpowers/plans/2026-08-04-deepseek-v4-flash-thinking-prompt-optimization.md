@@ -733,3 +733,9 @@ Expected: accepted checkpoint is present on the current GitHub branch; `main` is
 - 3 条新目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-thinking-high-first-3-v1-20260804`
 - 20 条新目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-thinking-high-first-20-v1-20260804`
 - `fatal: Needed a single revision` 为基线旧负向测试噪声，不是本次回归。
+
+## 精确 evaluated 绑定
+
+- candidate evaluated checkpoint R：`47b807d5036ade7af0562ca81040af6f71d5f3e3`
+- product `bde0c011a1af7bbffb18368def0c4edb0c6309c2` 是 R 的严格祖先。
+- manifest/proof/live 临时分支必须使用 R，不能使用下一绑定提交。
