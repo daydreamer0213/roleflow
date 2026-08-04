@@ -87,7 +87,7 @@ const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../c
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
-const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady } = require("../core/model_settings");
+const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady, supportsDeepSeekV4Thinking } = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
@@ -1994,7 +1994,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const settings = firstSetup
     ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000, thinkingMode: "disabled", reasoningEffort: "high" }
     : storedSettings;
-  const supportsThinking = settings.preset === "deepseek" && /^deepseek-v4-(?:pro|flash)$/.test(settings.model || "");
+  const supportsThinking = supportsDeepSeekV4Thinking(settings.preset, settings.model);
   const thinkingMode = settings.thinkingMode || "disabled";
   const reasoningEffort = settings.reasoningEffort || "high";
   const selectedPreset = presets.find((item) => item.id === settings.preset) || presets.find((item) => item.id === "custom");
@@ -2015,7 +2015,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const thinkingControls = [
     '      <div id="thinking-controls" class="settings-grid settings-field-wide"' + (supportsThinking ? "" : " hidden") + '>',
     '        <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode"' + (supportsThinking ? "" : " disabled") + '><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
-    '        <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (supportsThinking && thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8</option></select></label>',
+    '        <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (supportsThinking && thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8\uff08high\uff09</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8\uff08max\uff09</option></select><small>max \u66f4\u6162\uff0c\u63a8\u7406\u8f93\u51fa\u548c\u6210\u672c\u66f4\u9ad8\uff0c\u53ea\u5efa\u8bae\u7528\u4e8e\u5c0f\u6837\u672c\u8bca\u65ad\u3002</small></label>',
     "      </div>"
   ].join("");
   const body = [
@@ -2053,9 +2053,10 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     '    const thinkingControls = document.getElementById("thinking-controls");',
     '    const thinkingMode = document.getElementById("thinking-mode");',
     '    const reasoningEffort = document.getElementById("reasoning-effort");',
+    '    ' + supportsDeepSeekV4Thinking.toString(),
     "    function currentPreset() { return presets.find(function (item) { return item.id === presetSelect.value; }) || presets[0]; }",
     "    function syncThinkingControls() {",
-    '      const supported = currentPreset().id === "deepseek" && ["deepseek-v4-pro", "deepseek-v4-flash"].includes(modelName.value);',
+    '      const supported = supportsDeepSeekV4Thinking(currentPreset().id, modelName.value);',
     "      thinkingControls.hidden = !supported;",
     "      thinkingMode.disabled = !supported;",
     '      if (!supported) { thinkingMode.value = "disabled"; reasoningEffort.value = "high"; }',

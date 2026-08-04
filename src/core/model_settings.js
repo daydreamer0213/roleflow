@@ -9,7 +9,10 @@ const SECRET_ID = "model-api-key";
 const DEFAULT_MODEL_TIMEOUT_MS = 60000;
 const THINKING_MODES = new Set(["enabled", "disabled"]);
 const REASONING_EFFORTS = new Set(["high", "max"]);
-const DEEPSEEK_V4_MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
+
+function supportsDeepSeekV4Thinking(preset, model) {
+  return String(preset || "") === "deepseek" && ["deepseek-v4-pro", "deepseek-v4-flash"].includes(String(model || ""));
+}
 
 const MODEL_PRESETS = {
   deepseek: {
@@ -157,8 +160,7 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
       max_tokens: 16,
       response_format: { type: "json_object" }
     };
-    probeBody.thinking = { type: "disabled" };
-    delete probeBody.reasoning_effort;
+    if (supportsDeepSeekV4Thinking(normalized.preset, normalized.model)) probeBody.thinking = { type: "disabled" };
     response = await fetchImpl(`${normalized.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${String(apiKey).trim()}` },
@@ -223,7 +225,7 @@ function normalizeSettings(raw = {}) {
   const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
   if (preset.provider !== "mock" && !baseUrl) throw new Error("请填写兼容接口基础地址。");
   if (preset.provider !== "mock" && !model) throw new Error("请填写模型名称。");
-  const supportsThinking = presetId === "deepseek" && DEEPSEEK_V4_MODELS.has(model);
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
   const basic = {
     preset: presetId,
     provider: preset.provider,
@@ -384,6 +386,7 @@ module.exports = {
   normalizeSettings,
   normalizeThinkingMode,
   normalizeReasoningEffort,
+  supportsDeepSeekV4Thinking,
   secretIdForSettings,
   modelFingerprint,
   settingsPath

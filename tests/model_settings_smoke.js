@@ -144,15 +144,29 @@ async function connectionErrorSmoke() {
 }
 
 async function connectionProbeSmoke() {
-  let body;
-  await testModelConnection({
-    settings: { preset: "deepseek", model: "deepseek-v4-flash", thinkingMode: "enabled", reasoningEffort: "max" },
-    apiKey: "test",
-    fetchImpl: async (_url, options) => {
-      body = JSON.parse(options.body);
-      return new Response(JSON.stringify({ choices: [{ message: { content: "{\\\"ok\\\":true}" } }] }), { status: 200 });
+  const matrix = [
+    { name: "DeepSeek V4 Pro", settings: { preset: "deepseek", model: "deepseek-v4-pro", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: true },
+    { name: "DeepSeek V4 Flash", settings: { preset: "deepseek", model: "deepseek-v4-flash", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: true },
+    { name: "Qwen", settings: { preset: "qwen", model: "qwen-plus", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false },
+    { name: "custom compatible endpoint", settings: { preset: "custom", baseUrl: "https://model.invalid/v1", model: "compatible-model", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false },
+    { name: "non-V4 DeepSeek model", settings: { preset: "deepseek", model: "deepseek-v4-preview", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false }
+  ];
+
+  for (const probe of matrix) {
+    let body;
+    await testModelConnection({
+      settings: probe.settings,
+      apiKey: "test",
+      fetchImpl: async (_url, options) => {
+        body = JSON.parse(options.body);
+        return new Response(JSON.stringify({ choices: [{ message: { content: "{\\\"ok\\\":true}" } }] }), { status: 200 });
+      }
+    });
+    assert.strictEqual(Object.hasOwn(body, "reasoning_effort"), false, `${probe.name} probe must omit reasoning_effort`);
+    if (probe.expectsThinking) {
+      assert.deepStrictEqual(body.thinking, { type: "disabled" }, `${probe.name} probe must disable thinking`);
+    } else {
+      assert.strictEqual(Object.hasOwn(body, "thinking"), false, `${probe.name} probe must omit thinking`);
     }
-  });
-  assert.deepStrictEqual(body.thinking, { type: "disabled" });
-  assert.strictEqual(Object.hasOwn(body, "reasoning_effort"), false);
+  }
 }

@@ -55,6 +55,9 @@ async function main() {
   assert(settingsHtml.includes('id="thinking-controls"'));
   assert(settingsHtml.includes('modelName.addEventListener("input", syncThinkingControls)'));
   assert(settingsHtml.includes('thinkingMode.addEventListener("change", syncThinkingControls)'));
+  assert(settingsHtml.includes("\u9ad8\uff08high\uff09"));
+  assert(settingsHtml.includes("\u6700\u9ad8\uff08max\uff09"));
+  assert(settingsHtml.includes("max \u66f4\u6162\uff0c\u63a8\u7406\u8f93\u51fa\u548c\u6210\u672c\u66f4\u9ad8\uff0c\u53ea\u5efa\u8bae\u7528\u4e8e\u5c0f\u6837\u672c\u8bca\u65ad\u3002"));
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const saved = await fetch(baseUrl + "/api/settings/model", {
