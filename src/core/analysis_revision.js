@@ -5,7 +5,7 @@ const { normalizeThinkingMode, normalizeReasoningEffort } = require("./model_set
 const PIPELINE_VERSIONS = Object.freeze({
   understandJob: "job-understanding-v19",
   matchJob: "match-decision-v44",
-  decisionRules: "four-tier-weighted-v4.7",
+  decisionRules: "four-tier-weighted-v4.8",
   communication: "communication-v2"
 });
 

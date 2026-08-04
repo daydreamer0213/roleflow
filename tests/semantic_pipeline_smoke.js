@@ -809,7 +809,7 @@ async function initialFailureProvenanceSmoke() {
 async function pipelineVersionCacheSmoke() {
   assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v19");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.7");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.8");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -2256,7 +2256,7 @@ function staleAnalysisSmoke() {
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
     understandJob: "job-understanding-v19",
     matchJob: "match-decision-v44",
-    decisionRules: "four-tier-weighted-v4.7",
+    decisionRules: "four-tier-weighted-v4.8",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -3372,6 +3372,21 @@ function nonCentralMissingGuardSmoke() {
   assert.strictEqual(strongWithResponsibilitySprawl.recommendation, "apply",
     "责任范围偏宽是岗位质量提示，不得把证据充分的同方向岗位强降为待复核");
   assert.strictEqual(strongWithResponsibilitySprawl.decisionSource, "weighted_decision_matrix");
+
+  const shadowCautionResponsibilitySprawl = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    modelRecommendation: "caution",
+    jobQuality: {
+      level: "caution",
+      concerns: [{
+        type: "responsibility_sprawl",
+        evidence: "JD: one track includes several responsibilities"
+      }]
+    }
+  }, job);
+  assert.strictEqual(shadowCautionResponsibilitySprawl.recommendation, "caution",
+    "职责发散且模型 shadow 建议慎投时，不得进入默认沟通");
+  assert.strictEqual(shadowCautionResponsibilitySprawl.decisionSource, "model_quality_caution_guard");
 
   const strongWithSprawlAndMaterialRisk = applyRuleGuard({
     ...strongDirectLowConfidence,

@@ -432,6 +432,14 @@ function applyRuleGuard(analysis, job) {
       "indispensable_transferable_guard"
     );
   }
+  if (hasShadowResponsibilitySprawlCaution(analysis) && guarded.recommendation !== "not_recommended") {
+    guarded = capGuard(
+      guarded,
+      "caution",
+      "岗位存在职责发散，且模型语义建议慎投，最高归入慎投。",
+      "model_quality_caution_guard"
+    );
+  }
   const materialRisk = (analysis.hiddenRisks || []).find((risk) => (
     risk?.type !== "responsibility_sprawl"
       && ["medium", "high"].includes(risk?.severity)
@@ -470,6 +478,12 @@ function hasTransferableIndispensable(analysis) {
   return (analysis.requirementMatches || []).some((item) => (
     item?.state === "transferable" && item?.indispensable === true
   ));
+}
+
+function hasShadowResponsibilitySprawlCaution(analysis) {
+  return analysis?.modelRecommendation === "caution"
+    && analysis?.jobQuality?.level === "caution"
+    && (analysis.jobQuality.concerns || []).some((concern) => concern?.type === "responsibility_sprawl");
 }
 
 function missingEitherSideEvidence(analysis) {
