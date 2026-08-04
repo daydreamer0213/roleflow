@@ -50,6 +50,8 @@ async function main() {
   assert(settingsHtml.includes("https://api.deepseek.com"));
   assert(settingsHtml.includes("通义千问"));
   assert(settingsHtml.includes("模型名称"));
+  assert(settingsHtml.includes('name="thinkingMode"'));
+  assert(settingsHtml.includes('name="reasoningEffort"'));
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const saved = await fetch(baseUrl + "/api/settings/model", {
@@ -59,6 +61,8 @@ async function main() {
       preset: "deepseek",
       model: "deepseek-v4-flash",
       timeoutMs: "30000",
+      thinkingMode: "enabled",
+      reasoningEffort: "high",
       apiKey
     }).toString(),
     redirect: "manual"
@@ -81,6 +85,18 @@ async function main() {
 
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.baseUrl, "https://api.deepseek.com");
   assert.strictEqual(runtime.modelConfig.providers.openai_compatible.apiKey, apiKey);
+  assert.strictEqual(runtime.modelConfig.providers.openai_compatible.thinkingMode, "enabled");
+  assert.strictEqual(runtime.modelConfig.providers.openai_compatible.reasoningEffort, "high");
+  assert(afterHtml.includes('name="thinkingMode"'));
+  assert(afterHtml.includes('name="reasoningEffort"'));
+  assert(afterHtml.includes('id="reasoning-effort"'));
+  const invalid = await fetch(baseUrl + "/api/settings/model", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ preset: "deepseek", model: "deepseek-v4-flash", thinkingMode: "sometimes", reasoningEffort: "high" }).toString(),
+    redirect: "manual"
+  });
+  assert.notStrictEqual(invalid.status, 303);
   const afterSetup = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.strictEqual(afterSetup.status, 303);
   assert.strictEqual(afterSetup.headers.get("location"), "/onboarding");

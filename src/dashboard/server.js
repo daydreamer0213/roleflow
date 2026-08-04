@@ -1992,8 +1992,11 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const presets = listModelPresets({ includeAdvanced: showAdvanced });
   const firstSetup = modelState.source === "legacy" && storedSettings.provider === "mock" && !modelState.keyConfigured;
   const settings = firstSetup
-    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000 }
+    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000, thinkingMode: "disabled", reasoningEffort: "high" }
     : storedSettings;
+  const supportsThinking = settings.preset === "deepseek" && /^deepseek-v4-(?:pro|flash)$/.test(settings.model || "");
+  const thinkingMode = settings.thinkingMode || "disabled";
+  const reasoningEffort = settings.reasoningEffort || "high";
   const selectedPreset = presets.find((item) => item.id === settings.preset) || presets.find((item) => item.id === "custom");
   const presetOptions = presets.map((preset) => {
     const selected = preset.id === selectedPreset.id ? " selected" : "";
@@ -2009,6 +2012,10 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     : "尚未验证，保存时会发送一次极小连接测试";
   const next = safeSettingsNext(searchParams.get("next"));
   const presetJson = JSON.stringify(presets);
+  const thinkingControls = !supportsThinking ? "" : [
+    '      <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode" onchange="document.getElementById(\'reasoning-effort\').disabled=this.value!==\'enabled\'"><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
+    '      <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8</option></select></label>'
+  ].join("");
   const body = [
     '<style>.settings-page{max-width:960px;padding-top:32px}.settings-header{max-width:720px;margin:34px 0 24px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#0969da;font-size:13px;font-weight:700}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}.settings-form{max-width:none;padding:24px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.settings-field{display:grid;gap:7px;font-size:14px;font-weight:600}.settings-field[hidden]{display:none}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-security{display:grid;gap:3px;border-top:1px solid #d8dee4;margin-top:22px;padding-top:16px;font-size:13px;color:#57606a}.settings-security strong{color:#1f2328}.settings-clear{margin-top:14px}.settings-actions{display:flex;justify-content:flex-end;margin-top:20px}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:22px 0 18px}.settings-header h1{font-size:26px}.settings-form{padding:16px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}</style>',
     '<main class="settings-page">',
@@ -2021,6 +2028,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     saved,
     requiredNotice,
     '  <form class="panel settings-form" method="post" action="/api/settings/model">',
+    thinkingControls,
     '    <input type="hidden" name="next" value="' + escapeAttr(next) + '">',
     '    <div class="settings-grid">',
     '      <label class="settings-field">模型厂商<select id="model-preset" name="preset">' + presetOptions + "</select><small>常用接口地址已预设；每个厂商分别保存自己的 Key。</small></label>",
