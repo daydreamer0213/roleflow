@@ -94,17 +94,20 @@ function scoreJob(job, configs) {
     risks.push("地点待核验");
   }
 
-  if (days === null) {
-    score -= scoring.boss_activity?.unknown_penalty || 0;
-    qualityTags.push("activity_unverified");
-    risks.push("BOSS活跃未知");
-  } else if (days > (scoring.boss_activity?.max_active_days || 3)) {
-    score -= scoring.boss_activity?.inactive_penalty || 0;
-    qualityTags.push("inactive_boss");
-    risks.push(`BOSS非3日内活跃：${job.bossActiveText}`);
-  } else {
-    score += 2;
-    matches.push("3日内活跃");
+  const enforceBossActivity = scoring.boss_activity?.enforce !== false;
+  if (enforceBossActivity) {
+    if (days === null) {
+      score -= scoring.boss_activity?.unknown_penalty || 0;
+      qualityTags.push("activity_unverified");
+      risks.push("BOSS活跃未知");
+    } else if (days > (scoring.boss_activity?.max_active_days || 3)) {
+      score -= scoring.boss_activity?.inactive_penalty || 0;
+      qualityTags.push("inactive_boss");
+      risks.push(`BOSS非3日内活跃：${job.bossActiveText}`);
+    } else {
+      score += 2;
+      matches.push("3日内活跃");
+    }
   }
 
   if (job.detailRequired && !job.detailRead) {
@@ -225,7 +228,9 @@ function scoreJob(job, configs) {
     matches.push("3-5年可冲");
     qualityTags.push("experience_stretch");
     qualityTags.push("experience_stretch_low_salary");
-  } else if (!experienceFit.configured && /3-5年|3年以上|三年以上|5年以上|五年以上/.test(`${job.experience || ""} ${job.description || ""}`)) {
+  } else if (scoring.allowExperienceStretch !== false
+    && !experienceFit.configured
+    && /3-5年|3年以上|三年以上|5年以上|五年以上/.test(`${job.experience || ""} ${job.description || ""}`)) {
     qualityTags.push("experience_stretch");
     risks.push("经验门槛偏高");
   }

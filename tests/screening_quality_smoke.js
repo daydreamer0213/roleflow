@@ -304,6 +304,70 @@ const platformUnknown = scoreJob(job({
 }), inheritedBoundaryConfigs);
 assert.notStrictEqual(decisionState(platformUnknown), "blocked");
 
+const inheritedUnsetBoundaryPolicy = {
+  hash: "screening-platform-unset-policy",
+  filters: {
+    location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+    salary: { codes: [], labels: [], ranges: [] },
+    experience: { codes: [], labels: [] },
+    degree: { codes: [], labels: [] },
+    jobType: { codes: [], labels: [] },
+    acquisitionOnly: {}
+  },
+  unresolvedParams: [{ param: "industry", codes: ["100020"] }],
+  filterSummary: ["地点：全国", "未解析参数：industry"]
+};
+const staleBoundaryConfigs = applyPlatformRuntimePolicy({
+  ...configs,
+  searchPlan: {
+    directions: ["AI应用开发"],
+    keywords: [{ word: "RAG", priority: "A" }],
+    cities: ["广州"],
+    salary: { minK: 9, maxK: 14 },
+    experience: ["1-3年"],
+    jobTypes: ["全职"],
+    bossActiveDays: 1,
+    workSchedulePreference: "prefer_double_weekend",
+    allowExperienceStretch: true,
+    excludeWords: ["RAG"],
+    hardExcludes: ["RAG"]
+  },
+  targetPolicy: { directions: ["AI应用开发"], jobTypes: ["全职"], skills: ["Python"] },
+  scoring: {
+    ...configs.scoring,
+    risk_rules: [{ word: "RAG", penalty: 100, risk: "旧方案软排除" }],
+    exclude_words: ["RAG"],
+    boss_activity: { max_active_days: 1, unknown_penalty: 3, inactive_penalty: 100 },
+    work_schedule: { preference: "prefer_double_weekend", single_weekend_penalty: 100 },
+    allowExperienceStretch: true,
+    experience: { selected: ["1-3年"], allowStretch: true },
+    salary: {
+      ...configs.scoring.salary,
+      mode: "strict",
+      expected_min_k: 9,
+      expected_max_k: 14
+    },
+    experience_stretch_keywords: ["RAG"]
+  }
+}, inheritedUnsetBoundaryPolicy);
+const staleBoundaryJob = scoreJob(job({
+  title: "RAG 开发实习生",
+  location: "佛山",
+  salary: "5-6K",
+  experience: "5年以上",
+  education: "",
+  bossActiveText: "近半年活跃",
+  tags: ["实习", "单休"],
+  description: "RAG 外包项目，单休。"
+}), staleBoundaryConfigs);
+assert.strictEqual(decisionState(staleBoundaryJob), "ready");
+assert(staleBoundaryJob.qualityTags.includes("platform_filter_unresolved"));
+for (const staleTag of ["hard_exclude", "inactive_boss", "internship_role", "salary_out_of_range"]) {
+  assert(!staleBoundaryJob.qualityTags.includes(staleTag), `继承模式不得保留旧方案边界：${staleTag}`);
+}
+assert(!staleBoundaryJob.qualityTags.includes("experience_stretch"));
+assert(!staleBoundaryJob.matches.includes("3日内活跃"));
+
 const ready = scoreJob(job({ bossActiveText: "今日活跃", experience: "3-5年", salary: "10-16K" }), configs);
 assert.strictEqual(decisionState(ready), "ready");
 assert(ready.qualityTags.includes("experience_stretch"));

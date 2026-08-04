@@ -44,8 +44,9 @@ function compilePlatformRuntimePolicy({ searchScope, catalog, urlOptions = [], c
     const optionsByCode = new Map(field.options.map((option) => [option.code, option]));
     const selected = codes.map((code) => optionsByCode.get(code)).filter(Boolean);
     const missingCodes = codes.filter((code) => !optionsByCode.has(code));
-    if (missingCodes.length) {
-      unresolvedParams.push({ param: field.urlParam, codes: missingCodes });
+    if (missingCodes.length || !selected.every((option) => isSemanticallyDecodable(field.key, option.label))) {
+      unresolvedParams.push({ param: field.urlParam, codes });
+      continue;
     }
     const resolved = {
       codes: selected.map((option) => option.code),
@@ -100,8 +101,10 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
   const experience = filters.experience?.labels || [];
   const jobTypes = filters.jobType?.labels || [];
   const degrees = filters.degree?.labels || [];
+  const sourcePlan = configs.searchPlan || {};
   const projectedPlan = {
-    ...(configs.searchPlan || {}),
+    directions: sourcePlan.directions || [],
+    keywords: sourcePlan.keywords || [],
     cities,
     salary: salaryBounds,
     salaryMode: salaryBounds.maxK > 0 ? "strict" : "wide",
@@ -115,7 +118,8 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
     platformPolicy: policy,
     searchPlan: projectedPlan,
     targetPolicy: {
-      ...(configs.targetPolicy || {}),
+      directions: configs.targetPolicy?.directions || sourcePlan.directions || [],
+      skills: configs.targetPolicy?.skills || [],
       jobTypes,
       enforceJobTypes: jobTypes.length > 0
     },
@@ -129,10 +133,25 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
       }
     },
     scoring: {
-      ...(configs.scoring || {}),
+      positive_keywords: configs.scoring?.positive_keywords || [],
+      risk_rules: [],
+      exclude_words: [],
+      boss_activity: {
+        enforce: false,
+        max_active_days: Number.MAX_SAFE_INTEGER,
+        unknown_penalty: 0,
+        inactive_penalty: 0
+      },
+      work_schedule: {
+        preference: "no_preference",
+        double_weekend_bonus: 0,
+        alternating_weekend_penalty: 0,
+        single_weekend_penalty: 0
+      },
+      allowExperienceStretch: false,
       experience: { selected: [], allowStretch: false },
+      experience_stretch_keywords: [],
       salary: {
-        ...(configs.scoring?.salary || {}),
         mode: salaryBounds.maxK > 0 ? "strict" : "wide",
         expected_min_k: salaryBounds.minK,
         expected_max_k: salaryBounds.maxK,
@@ -156,6 +175,12 @@ function evaluatePlatformBoundaries(job = {}, policy = {}) {
   const tags = [];
   const risks = [];
   const filters = policy.filters || {};
+  if ((policy.unresolvedParams || []).length) {
+    tags.push("platform_filter_unresolved");
+    risks.push(`平台筛选参数未完全解析：${[
+      ...new Set(policy.unresolvedParams.map((item) => item.param).filter(Boolean))
+    ].join("、")}`);
+  }
   checkDistrict(job, filters.location, tags, risks);
   checkSalary(job, filters.salary, tags, risks);
   checkExperience(job, filters.experience, tags, risks);
@@ -229,7 +254,7 @@ function checkJobType(job, filter, tags, risks) {
     tags.push("platform_job_type_unverified");
     return;
   }
-  if (!filter.labels.some((label) => normalizeChoice(label) === normalizeChoice(actual))) {
+  if (!filter.labels.some((label) => jobTypeChoice(label) === actual)) {
     tags.push("platform_job_type_mismatch");
     risks.push(`求职类型不符合平台筛选：${filter.labels.join("、")}`);
   }
@@ -237,6 +262,14 @@ function checkJobType(job, filter, tags, risks) {
 
 function emptyFilter() {
   return { codes: [], labels: [] };
+}
+
+function isSemanticallyDecodable(fieldKey, label) {
+  if (fieldKey === "salary") return Boolean(salaryRange(label));
+  if (fieldKey === "experience") return Boolean(experienceBucket(label));
+  if (fieldKey === "degree") return isDegreeLabel(label);
+  if (fieldKey === "jobType") return Boolean(jobTypeChoice(label));
+  return true;
 }
 
 function parseSalaryRangeK(value) {
@@ -273,9 +306,9 @@ function unionSalaryBounds(ranges) {
 
 function experienceBucket(value) {
   const text = String(value || "");
-  if (/5-10年|5年以上|五年以上/.test(text)) return "senior";
+  if (/5-10年|5年以上|五年以上|10年以上|十年以上/.test(text)) return "senior";
   if (/3-5年|3年以上|三年以上/.test(text)) return "mid";
-  if (/0-1年|0-3年|1-3年|2-3年|1年以上|2年以上/.test(text)) return "junior";
+  if (/0-1年|0-3年|1-3年|2-3年|1年以内|1年以下|1年以上|2年以上/.test(text)) return "junior";
   if (/经验不限|无需经验|无经验|应届|在校/.test(text)) return "entry";
   return "";
 }
@@ -284,11 +317,23 @@ function normalizeDegree(value) {
   return String(value || "").replace(/\s+|及以上|以上/g, "").trim();
 }
 
+function isDegreeLabel(value) {
+  return /^(学历不限|不限|初中|中专|中技|高中|大专|本科|硕士|博士)$/.test(normalizeDegree(value));
+}
+
 function jobTypeLabel(job) {
   const text = `${job.title || ""} ${(job.tags || []).join(" ")} ${job.description || ""}`;
   if (/实习(?:生)?|intern/i.test(text)) return "实习";
   if (/兼职/.test(text)) return "兼职";
   if (/全职/.test(text)) return "全职";
+  return "";
+}
+
+function jobTypeChoice(value) {
+  const text = normalizeChoice(value);
+  if (["实习", "实习生", "intern"].includes(text)) return "实习";
+  if (text === "兼职") return "兼职";
+  if (text === "全职") return "全职";
   return "";
 }
 

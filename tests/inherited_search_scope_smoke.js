@@ -152,6 +152,69 @@ const unresolvedPolicy = compilePlatformRuntimePolicy({
 assert.deepStrictEqual(unresolvedPolicy.unresolvedParams, [
   { param: "industry", codes: ["100020"] }
 ]);
+assert(evaluatePlatformBoundaries({}, unresolvedPolicy).qualityTags.includes("platform_filter_unresolved"));
+
+const mixedSalaryScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405,999"
+}).searchScope;
+const mixedSalaryPolicy = compilePlatformRuntimePolicy({
+  searchScope: mixedSalaryScope,
+  catalog: platformCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(mixedSalaryPolicy.filters.salary.labels, []);
+assert.deepStrictEqual(mixedSalaryPolicy.unresolvedParams, [
+  { param: "salary", codes: ["405", "999"] }
+]);
+assert.deepStrictEqual(
+  evaluatePlatformBoundaries({ salary: "30-40K" }, mixedSalaryPolicy).qualityTags,
+  ["platform_filter_unresolved"]
+);
+
+const mixedExperienceScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&experience=104,999"
+}).searchScope;
+const mixedExperiencePolicy = compilePlatformRuntimePolicy({
+  searchScope: mixedExperienceScope,
+  catalog: platformCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(mixedExperiencePolicy.filters.experience.labels, []);
+assert.deepStrictEqual(mixedExperiencePolicy.unresolvedParams, [
+  { param: "experience", codes: ["104", "999"] }
+]);
+
+const unparseableCatalog = {
+  ...platformCatalog,
+  fields: {
+    ...platformCatalog.fields,
+    salary: {
+      ...platformCatalog.fields.salary,
+      options: [{ code: "499", label: "面议" }]
+    },
+    experience: {
+      ...platformCatalog.fields.experience,
+      options: [{ code: "199", label: "若干年" }]
+    }
+  }
+};
+const unparseableScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=499&experience=199"
+}).searchScope;
+const unparseablePolicy = compilePlatformRuntimePolicy({
+  searchScope: unparseableScope,
+  catalog: unparseableCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(unparseablePolicy.filters.salary.labels, []);
+assert.deepStrictEqual(unparseablePolicy.filters.experience.labels, []);
+assert.deepStrictEqual(unparseablePolicy.unresolvedParams, [
+  { param: "experience", codes: ["199"] },
+  { param: "salary", codes: ["499"] }
+]);
 
 const baseConfigs = {
   candidateProfile: { candidate: { targetTitles: ["AI应用开发工程师"] } },
@@ -162,11 +225,24 @@ const baseConfigs = {
     experience: ["经验不限"],
     jobTypes: ["实习"],
     degrees: ["硕士"],
-    directions: ["AI应用开发"]
+    directions: ["AI应用开发"],
+    keywords: [{ word: "RAG", priority: "A" }],
+    bossActiveDays: 1,
+    workSchedulePreference: "prefer_double_weekend",
+    allowExperienceStretch: true,
+    excludeWords: ["外包"],
+    hardExcludes: ["外包"]
   },
   targetPolicy: { directions: ["AI应用开发"], jobTypes: ["实习"], skills: ["Python"] },
   profile: { location: { target_cities: ["广州"] } },
   scoring: {
+    positive_keywords: [{ word: "RAG", weight: 4, label: "RAG" }],
+    risk_rules: [{ word: "外包", penalty: 10, risk: "旧方案软排除" }],
+    exclude_words: ["外包"],
+    boss_activity: { max_active_days: 1, unknown_penalty: 3, inactive_penalty: 10 },
+    work_schedule: { preference: "prefer_double_weekend", single_weekend_penalty: 6 },
+    allowExperienceStretch: true,
+    experience_stretch_keywords: ["RAG"],
     salary: { expected_min_k: 9, expected_max_k: 14, hard_max_k: 35 },
     experience: { selected: ["经验不限"], allowStretch: true }
   }
@@ -178,9 +254,26 @@ assert.deepStrictEqual(inheritedConfigs.searchPlan.salary, { minK: 10, maxK: 20 
 assert.deepStrictEqual(inheritedConfigs.searchPlan.experience, ["1-3年"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.jobTypes, ["全职"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.degrees, ["本科"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.directions, ["AI应用开发"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.keywords, [{ word: "RAG", priority: "A" }]);
+assert(!Object.hasOwn(inheritedConfigs.searchPlan, "bossActiveDays"));
+assert(!Object.hasOwn(inheritedConfigs.searchPlan, "workSchedulePreference"));
+assert(!Object.hasOwn(inheritedConfigs.searchPlan, "allowExperienceStretch"));
+assert(!Object.hasOwn(inheritedConfigs.searchPlan, "excludeWords"));
+assert(!Object.hasOwn(inheritedConfigs.searchPlan, "hardExcludes"));
 assert.deepStrictEqual(inheritedConfigs.targetPolicy.directions, ["AI应用开发"]);
 assert.strictEqual(inheritedConfigs.scoring.salary.expected_min_k, 10);
 assert.strictEqual(inheritedConfigs.scoring.salary.expected_max_k, 20);
+assert.deepStrictEqual(inheritedConfigs.scoring.positive_keywords, [
+  { word: "RAG", weight: 4, label: "RAG" }
+]);
+assert.deepStrictEqual(inheritedConfigs.scoring.risk_rules, []);
+assert.deepStrictEqual(inheritedConfigs.scoring.exclude_words, []);
+assert.strictEqual(inheritedConfigs.scoring.boss_activity.max_active_days, Number.MAX_SAFE_INTEGER);
+assert.strictEqual(inheritedConfigs.scoring.boss_activity.enforce, false);
+assert.strictEqual(inheritedConfigs.scoring.work_schedule.preference, "no_preference");
+assert.strictEqual(inheritedConfigs.scoring.allowExperienceStretch, false);
+assert.deepStrictEqual(inheritedConfigs.scoring.experience_stretch_keywords, []);
 
 assert.deepStrictEqual(
   evaluatePlatformBoundaries({
