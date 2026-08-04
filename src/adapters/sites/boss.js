@@ -392,9 +392,11 @@ class BossSiteAdapter {
     const selected = healthy.find((item) => item.isSearchPage);
     const fallback = selected || healthy[0];
     if (fallback) {
+      const safeLocation = bossLogLocation(fallback.url || fallback.tab.url);
       this.logger?.info("boss_browser_preflight_ok", {
         tabId: fallback.tabId,
-        url: fallback.url || fallback.tab.url,
+        origin: safeLocation.origin,
+        path: safeLocation.path,
         isSearchPage: fallback.isSearchPage,
         hasJobStructure: fallback.hasJobStructure,
         inspectedTabs: inspected.length
@@ -1764,6 +1766,18 @@ function bossTabRank(tab) {
   if (isBoss && tab?.active) return 2;
   if (isBoss) return 3;
   return 9;
+}
+
+function bossLogLocation(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl || ""));
+    return {
+      origin: url.origin,
+      path: url.pathname
+    };
+  } catch {
+    return { origin: "", path: "" };
+  }
 }
 
 function sleep(ms) {

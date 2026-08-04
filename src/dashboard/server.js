@@ -103,7 +103,12 @@ const {
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
-const { buildInheritedSearchScope, freezeKeywordSource, scopeShortId } = require("../core/inherited_search_scope");
+const {
+  buildInheritedSearchScope,
+  assertInheritedAcquisitionScope,
+  freezeKeywordSource,
+  scopeShortId
+} = require("../core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_policy");
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const boss = require("../adapters/sites/boss");
@@ -1028,7 +1033,13 @@ async function resolveLiveInheritedContext({
       platformPolicy
     };
   } catch (error) {
-    if (["BOSS_RISK_CONTROL", "BOSS_LOGIN_REQUIRED", "BOSS_TAB_REQUIRED", "BOSS_SEARCH_PAGE_INVALID"].includes(error?.code)
+    if ([
+      "BOSS_RISK_CONTROL",
+      "BOSS_LOGIN_REQUIRED",
+      "BOSS_TAB_REQUIRED",
+      "BOSS_SEARCH_PAGE_INVALID",
+      "INHERITED_SCOPE_FILTER_REQUIRED"
+    ].includes(error?.code)
       && !error.statusCode) {
       throw appError(error.code, error.message, { statusCode: 409, cause: error });
     }
@@ -1068,6 +1079,11 @@ async function handleWorkflowRunStart(req, res, {
       matchingContext,
       logger
     });
+    try {
+      assertInheritedAcquisitionScope(inheritedContext.searchScope);
+    } catch (error) {
+      throw appError(error.code, error.message, { statusCode: 409, cause: error });
+    }
     const state = buildWorkflowDashboardState(db, plan, new Date(), inheritedContext);
     if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
     if (state.nextPlan?.errorCode) {
@@ -1178,7 +1194,15 @@ async function handleWorkflowRunResume(req, res, {
     workflowRunId = String(params.workflowRunId || params.runId || "").trim();
     const workflow = getWorkflowRun(db, workflowRunId);
     if (!workflow) throw appError("WORKFLOW_RUN_NOT_FOUND", "本轮任务不存在。", { statusCode: 404 });
-    if (workflow.planner?.acquisitionMode === "inherited"
+    const acquisitionMode = String(workflow.planner?.acquisitionMode || "").trim();
+    if (!["generated", "inherited"].includes(acquisitionMode)) {
+      throw appError(
+        "WORKFLOW_ACQUISITION_MODE_INVALID",
+        "本轮任务的采集模式无效，不能安全恢复。",
+        { statusCode: 409 }
+      );
+    }
+    if (acquisitionMode === "inherited"
       && params.browserMode
       && params.browserMode !== "edge") {
       throw appError(

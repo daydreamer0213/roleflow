@@ -107,8 +107,13 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
 async function preflightSmoke() {
   const oldSearch = { id: "old-search", active: false, url: "https://www.zhipin.com/web/geek/jobs?query=old" };
   const activeChat = { id: "active-chat", active: true, url: "https://www.zhipin.com/web/geek/chat" };
-  const usableSearch = { ...activeBoss, active: false };
+  const usableSearch = {
+    ...activeBoss,
+    active: false,
+    url: "https://www.zhipin.com/web/geek/jobs?query=PRIVATE_QUERY&city=101280100&salary=405"
+  };
   const inspected = [];
+  const logs = [];
   const browser = {
     async listTabs() { return [activeChat, oldSearch, usableSearch]; },
     async activeTabId() { return activeChat.id; },
@@ -140,11 +145,24 @@ async function preflightSmoke() {
       };
     }
   };
-  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const adapter = new BossSiteAdapter({
+    browser,
+    logger: { info(event, details) { logs.push({ event, details }); } },
+    sleepFn: async () => {}
+  });
   const state = await adapter.preflight();
   assert.strictEqual(state.tabId, usableSearch.id);
   assert.strictEqual(state.loggedIn, true);
   assert.deepStrictEqual(inspected, [oldSearch.id, usableSearch.id, activeChat.id]);
+  const preflightLog = logs.find((item) => item.event === "boss_browser_preflight_ok");
+  assert(preflightLog);
+  assert.strictEqual(preflightLog.details.origin, "https://www.zhipin.com");
+  assert.strictEqual(preflightLog.details.path, "/web/geek/jobs");
+  const serializedLog = JSON.stringify(preflightLog);
+  assert(!serializedLog.includes(usableSearch.url));
+  assert(!serializedLog.includes("PRIVATE_QUERY"));
+  assert(!serializedLog.includes("101280100"));
+  assert(!serializedLog.includes("salary=405"));
 }
 
 async function inheritedPageInspectionSmoke() {

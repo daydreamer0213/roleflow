@@ -82,6 +82,16 @@ async function main() {
       platformPolicy: {}
     }
   }));
+  const missingMode = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-missing-acquisition-mode",
+    localDay: "2026-07-17",
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 }
+  }));
+  const unknownMode = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-unknown-acquisition-mode",
+    localDay: "2026-07-18",
+    planner: { acquisitionMode: "future-mode", remainingDailyTarget: 70, remainingRunSlots: 2 }
+  }));
   db.close();
   db = null;
 
@@ -107,6 +117,26 @@ async function main() {
   assert.strictEqual(getWorkflowRun(db, invalidInherited.id).errorCode, "WORKFLOW_INHERITED_SNAPSHOT_INVALID");
   db.close();
   db = null;
+
+  for (const [malformedWorkflow, runId] of [
+    [missingMode, "workflow-missing-acquisition-mode-process"],
+    [unknownMode, "workflow-unknown-acquisition-mode-process"]
+  ]) {
+    const malformedResult = spawnWorkflowScan({
+      dbPath,
+      planId: saved.planId,
+      workflowRunId: malformedWorkflow.id,
+      runId
+    });
+    assert.strictEqual(malformedResult.status, 1, malformedResult.stderr || malformedResult.stdout);
+    assert.match(malformedResult.stderr, /本轮任务的采集模式无效/);
+    db = openDb(dbPath);
+    assert.strictEqual(getScanRun(db, runId).stopCode, "WORKFLOW_ACQUISITION_MODE_INVALID");
+    assert.strictEqual(getWorkflowRun(db, malformedWorkflow.id).errorCode, "WORKFLOW_ACQUISITION_MODE_INVALID");
+    assert.strictEqual(getWorkflowRun(db, malformedWorkflow.id).scanBatchId, null);
+    db.close();
+    db = null;
+  }
 
   const result = spawnSync(process.execPath, [
     "--disable-warning=ExperimentalWarning",
@@ -193,6 +223,24 @@ async function main() {
   assert.strictEqual(modelPreserved.sequence, 1);
   assert.strictEqual(modelPreserved.scanBatchId, modelBatchId);
   assert.strictEqual(getScanRun(db, "workflow-model-interrupted-scan").status, "failed");
+}
+
+function spawnWorkflowScan({ dbPath, planId, workflowRunId, runId }) {
+  return spawnSync(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "scan",
+    "--db", dbPath,
+    "--input", path.join("data", "sample_jobs.json"),
+    "--plan", String(planId),
+    "--force-mock",
+    "--run-id", runId,
+    "--workflow-run", workflowRunId,
+    "--keywords", "AI application,RAG engineer",
+    "--max-cards", "50",
+    "--max-detail-total", "120",
+    "--browser-page-budget", "20"
+  ], { cwd: root, encoding: "utf8" });
 }
 
 function seedProfile(database) {

@@ -38,14 +38,17 @@ let server;
   const saved = seedProfile(db);
   const spawns = [];
   let inheritedFailureCode = "";
+  let inheritedResolutionCount = 0;
+  let emptyInheritedScope = false;
   const inheritedContextResolver = async ({ plan, matchingContext }) => {
+    inheritedResolutionCount += 1;
     if (inheritedFailureCode) {
       throw Object.assign(new Error(`blocked by ${inheritedFailureCode}`), {
         code: inheritedFailureCode,
         statusCode: 409
       });
     }
-    return {
+    const context = {
       acquisitionMode: "inherited",
       searchTemplate: {
         mode: "inherited",
@@ -82,6 +85,22 @@ let server;
         filterSummary: ["地点：全国", "薪资：10-20K"]
       },
       matchingContext
+    };
+    if (!emptyInheritedScope) return context;
+    return {
+      ...context,
+      searchTemplate: {
+        mode: "inherited",
+        url: "https://www.zhipin.com/web/geek/jobs",
+        cityCode: ""
+      },
+      searchScope: {
+        key: `boss:${plan.profileId}:empty-fixture-scope`,
+        site: "boss",
+        templateHash: "empty-fixture-scope",
+        templateUrl: "https://www.zhipin.com/web/geek/jobs",
+        filterParams: {}
+      }
     };
   };
   server = createDashboardServer({
@@ -126,6 +145,18 @@ let server;
     assert.strictEqual(spawns.length, 0);
   }
   inheritedFailureCode = "";
+
+  emptyInheritedScope = true;
+  const emptyScopeStart = await postForm(baseUrl, "/api/workflow-run", {
+    planId: saved.planId,
+    browserMode: "edge",
+    action: "start"
+  });
+  assert.strictEqual(emptyScopeStart.status, 409);
+  assert.match(emptyScopeStart.body, /INHERITED_SCOPE_FILTER_REQUIRED/);
+  assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 0);
+  assert.strictEqual(spawns.length, 0);
+  emptyInheritedScope = false;
 
   const portableStart = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
@@ -175,6 +206,27 @@ let server;
   assert.strictEqual(portableResume.status, 409);
   assert.match(portableResume.body, /INHERITED_EDGE_REQUIRED/);
   assert.strictEqual(spawns.length, spawnCountBeforePortableResume);
+
+  const frozenPlanner = workflow.planner;
+  const resolutionCountBeforeMalformedResume = inheritedResolutionCount;
+  for (const acquisitionMode of [undefined, "future-mode"]) {
+    const malformedPlanner = { ...frozenPlanner };
+    if (acquisitionMode === undefined) delete malformedPlanner.acquisitionMode;
+    else malformedPlanner.acquisitionMode = acquisitionMode;
+    db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+      .run(JSON.stringify(malformedPlanner), workflow.id);
+    const spawnCountBeforeMalformedResume = spawns.length;
+    const malformedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "edge"
+    });
+    assert.strictEqual(malformedResume.status, 409);
+    assert.match(malformedResume.body, /WORKFLOW_ACQUISITION_MODE_INVALID/);
+    assert.strictEqual(spawns.length, spawnCountBeforeMalformedResume);
+    assert.strictEqual(inheritedResolutionCount, resolutionCountBeforeMalformedResume);
+  }
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(frozenPlanner), workflow.id);
 
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,

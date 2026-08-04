@@ -79,7 +79,12 @@ const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
 const { stableHash } = require("./core/analysis_revision");
 const { matchingCardRevision } = require("./core/matching_card");
-const { buildInheritedSearchScope, freezeKeywordSource, scopeShortId } = require("./core/inherited_search_scope");
+const {
+  buildInheritedSearchScope,
+  assertInheritedAcquisitionScope,
+  freezeKeywordSource,
+  scopeShortId
+} = require("./core/inherited_search_scope");
 const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
@@ -378,7 +383,16 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
     configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   }
   const workflowRun = resolveWorkflowScanContext(db, args, planRecord);
-  const frozenInherited = workflowRun?.planner?.acquisitionMode === "inherited"
+  const workflowAcquisitionMode = workflowRun
+    ? String(workflowRun.planner?.acquisitionMode || "").trim()
+    : "";
+  if (workflowRun && !["generated", "inherited"].includes(workflowAcquisitionMode)) {
+    throw codedError(
+      "WORKFLOW_ACQUISITION_MODE_INVALID",
+      "本轮任务的采集模式无效，不能安全扫描或恢复。"
+    );
+  }
+  const frozenInherited = workflowAcquisitionMode === "inherited"
     ? {
       acquisitionMode: "inherited",
       searchTemplate: workflowRun.planner.searchTemplate,
@@ -398,6 +412,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       "本轮继承模式快照不完整，不能安全扫描或恢复。"
     );
   }
+  if (frozenInherited) assertInheritedAcquisitionScope(frozenInherited.searchScope);
   const planned = workflowRun
     ? {
       keywords: workflowRun.keywords.map((item) => item.word),
@@ -473,6 +488,9 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
       city: platformPolicy.filters?.location?.cities?.[0] || "",
       cityCode: searchTemplate.cityCode || "platform-default"
     }];
+  } else if (workflowAcquisitionMode === "generated") {
+    searchTemplate = { mode: "generated", url: "", cityCode: "" };
+    cityScopes = plannedCityScopes;
   } else {
     const searchContext = args.input
       ? { searchTemplate: { mode: "generated", url: "", cityCode: "" }, cityScopes: plannedCityScopes }
@@ -488,6 +506,7 @@ async function scan(db, args, { signal = null, execution = null } = {}) {
         searchScope = storedExecution.searchScope || {};
         keywordSource = storedExecution.keywordSource || {};
         platformPolicy = storedExecution.platformPolicy || {};
+        assertInheritedAcquisitionScope(searchScope);
       } else {
         const inspected = await adapter.inspectInheritedSearchPage({ tabId: browserState.tabId });
         ({ searchTemplate, searchScope } = buildInheritedSearchScope({

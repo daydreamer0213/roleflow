@@ -50,16 +50,29 @@ function buildInheritedSearchScope({ profileId, rawUrl } = {}) {
   for (const name of [...new Set(url.searchParams.keys())].sort()) {
     filterParams[name] = url.searchParams.getAll(name);
   }
-  return {
-    searchTemplate,
-    searchScope: {
-      key: `boss:${normalizedProfileId}:${templateHash}`,
-      site: "boss",
-      templateHash,
-      templateUrl: searchTemplate.url,
-      filterParams
-    }
+  const searchScope = {
+    key: `boss:${normalizedProfileId}:${templateHash}`,
+    site: "boss",
+    templateHash,
+    templateUrl: searchTemplate.url,
+    filterParams
   };
+  assertInheritedAcquisitionScope(searchScope);
+  return { searchTemplate, searchScope };
+}
+
+function assertInheritedAcquisitionScope(searchScope = {}) {
+  const retainedParams = Object.entries(searchScope.filterParams || {}).filter(([name, values]) =>
+    String(name || "").trim()
+    && (Array.isArray(values) ? values : [values]).some((value) => String(value || "").trim())
+  );
+  if (!retainedParams.length) {
+    throw scopeError(
+      "INHERITED_SCOPE_FILTER_REQUIRED",
+      "当前 BOSS 搜索页没有可继承的稳定筛选条件，请至少保留一个地点、薪资、经验或其他平台筛选条件。"
+    );
+  }
+  return searchScope;
 }
 
 function freezeKeywordSource({ planRecord, matchingCardRevision = "" } = {}) {
@@ -96,6 +109,7 @@ function scopeError(code, message, cause) {
 module.exports = {
   canonicalizeBossSearchTemplate,
   buildInheritedSearchScope,
+  assertInheritedAcquisitionScope,
   freezeKeywordSource,
   scopeShortId
 };

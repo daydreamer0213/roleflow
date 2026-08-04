@@ -47,6 +47,16 @@ assert.throws(
   () => canonicalizeBossSearchTemplate("https://www.zhipin.com/guangzhou/"),
   (error) => error.code === "BOSS_SEARCH_PAGE_INVALID"
 );
+for (const rawUrl of [
+  "https://www.zhipin.com/web/geek/jobs",
+  "https://www.zhipin.com/web/geek/jobs?query=RAG&page=3&ka=search&utm_source=test",
+  "https://www.zhipin.com/web/geek/jobs?city="
+]) {
+  assert.throws(
+    () => buildInheritedSearchScope({ profileId: 7, rawUrl }),
+    (error) => error.code === "INHERITED_SCOPE_FILTER_REQUIRED"
+  );
+}
 
 const keywordSource = freezeKeywordSource({
   planRecord: {
