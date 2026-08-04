@@ -132,6 +132,29 @@ const guangzhouPolicy = compilePlatformRuntimePolicy({
 });
 assert.deepStrictEqual(guangzhouPolicy.filters.location.cities, ["广州"]);
 
+const mixedNationwideCityScope = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&city=999"
+}).searchScope;
+const mixedNationwideCityPolicy = compilePlatformRuntimePolicy({
+  searchScope: mixedNationwideCityScope,
+  catalog: platformCatalog,
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(mixedNationwideCityPolicy.filters.location, {
+  mode: "unresolved",
+  codes: ["100010000", "999"],
+  cities: [],
+  districts: []
+});
+assert.deepStrictEqual(mixedNationwideCityPolicy.unresolvedParams, [
+  { param: "city", codes: ["100010000", "999"] }
+]);
+assert.deepStrictEqual(
+  evaluatePlatformBoundaries({ location: "佛山" }, mixedNationwideCityPolicy).qualityTags,
+  ["platform_filter_unresolved"]
+);
+
 const districtScope = buildInheritedSearchScope({
   profileId: 7,
   rawUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105"
@@ -226,7 +249,13 @@ const baseConfigs = {
     jobTypes: ["实习"],
     degrees: ["硕士"],
     directions: ["AI应用开发"],
-    keywords: [{ word: "RAG", priority: "A" }],
+    keywords: [
+      { word: " RAG ", priority: "A", reason: " 主方向 ", ignored: "not copied" },
+      { word: "Agent", priority: "invalid", reason: 42, extra: true },
+      " LangChain ",
+      { word: " ", priority: "A", ignored: "drop entire item" },
+      null
+    ],
     bossActiveDays: 1,
     workSchedulePreference: "prefer_double_weekend",
     allowExperienceStretch: true,
@@ -255,7 +284,21 @@ assert.deepStrictEqual(inheritedConfigs.searchPlan.experience, ["1-3年"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.jobTypes, ["全职"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.degrees, ["本科"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.directions, ["AI应用开发"]);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.keywords, [{ word: "RAG", priority: "A" }]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.keywords, [
+  { word: "RAG", priority: "A", reason: "主方向" },
+  { word: "Agent", priority: "B", reason: "42" },
+  { word: "LangChain", priority: "B", reason: "" }
+]);
+assert(!JSON.stringify(inheritedConfigs.searchPlan).includes("not copied"));
+assert(!JSON.stringify(inheritedConfigs.analysisContext).includes("not copied"));
+const cleanKeywordConfigs = applyPlatformRuntimePolicy({
+  ...baseConfigs,
+  searchPlan: {
+    ...baseConfigs.searchPlan,
+    keywords: inheritedConfigs.searchPlan.keywords
+  }
+}, nationwidePolicy);
+assert.deepStrictEqual(inheritedConfigs.analysisContext, cleanKeywordConfigs.analysisContext);
 assert(!Object.hasOwn(inheritedConfigs.searchPlan, "bossActiveDays"));
 assert(!Object.hasOwn(inheritedConfigs.searchPlan, "workSchedulePreference"));
 assert(!Object.hasOwn(inheritedConfigs.searchPlan, "allowExperienceStretch"));

@@ -15,9 +15,13 @@ function compilePlatformRuntimePolicy({ searchScope, catalog, urlOptions = [], c
     Object.entries(cityCodes).map(([label, code]) => [String(code), label])
   );
   const cityCodesSelected = splitCodes(params.getAll("city"));
-  const location = cityCodesSelected.includes(NATIONWIDE_CITY_CODE)
+  const nationwideOnly = cityCodesSelected.length === 1
+    && cityCodesSelected[0] === NATIONWIDE_CITY_CODE;
+  const allSpecificCities = cityCodesSelected.length > 0
+    && cityCodesSelected.every((code) => reverseCities.has(code));
+  const location = nationwideOnly
     ? { mode: "nationwide", codes: cityCodesSelected, cities: [], districts: [] }
-    : cityCodesSelected.length && cityCodesSelected.every((code) => reverseCities.has(code))
+    : allSpecificCities
       ? {
         mode: "specific",
         codes: cityCodesSelected,
@@ -104,7 +108,7 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
   const sourcePlan = configs.searchPlan || {};
   const projectedPlan = {
     directions: sourcePlan.directions || [],
-    keywords: sourcePlan.keywords || [],
+    keywords: projectConfirmedKeywords(sourcePlan.keywords),
     cities,
     salary: salaryBounds,
     salaryMode: salaryBounds.maxK > 0 ? "strict" : "wide",
@@ -270,6 +274,14 @@ function isSemanticallyDecodable(fieldKey, label) {
   if (fieldKey === "degree") return isDegreeLabel(label);
   if (fieldKey === "jobType") return Boolean(jobTypeChoice(label));
   return true;
+}
+
+function projectConfirmedKeywords(keywords) {
+  return (Array.isArray(keywords) ? keywords : []).map((item) => ({
+    word: String(typeof item === "string" ? item : item?.word || "").trim(),
+    priority: ["A", "B", "C"].includes(item?.priority) ? item.priority : "B",
+    reason: String(item?.reason || "").trim()
+  })).filter((item) => item.word);
 }
 
 function parseSalaryRangeK(value) {
