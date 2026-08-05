@@ -23,10 +23,13 @@ const { mapWithConcurrency } = require("../src/core/async_pool");
 require("./four_tier_decision_smoke");
 
 const root = path.resolve(__dirname, "..");
+const installer = fs.readFileSync(path.join(root, "scripts", "install.ps1"), "utf8");
 const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-workspace.ps1"), "utf8");
 const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1 must use a UTF-8 BOM for Windows PowerShell 5.1");
+assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs')"), "installer must resolve the production PDF parser dependency");
+assert(!installer.includes("pdf-parse"), "installer must not check the removed pdf-parse dependency");
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
 assert(!workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("项目专用 Edge"));

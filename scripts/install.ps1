@@ -139,7 +139,7 @@ function Test-ProjectDependencies {
   $PreviousPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    & $NodePath -e "try { require.resolve('pdf-parse') } catch { process.exit(1) }" 2>$null
+    & $NodePath -e "try { require.resolve('pdfjs-dist/legacy/build/pdf.mjs') } catch { process.exit(1) }" 2>$null
     return $LASTEXITCODE -eq 0
   } finally {
     $ErrorActionPreference = $PreviousPreference
@@ -195,9 +195,8 @@ if ($null -eq $Node) {
 }
 Write-Host "Node: $($Node.Path) $($Node.Version)"
 
-$PdfParser = Join-Path $ProjectRoot "node_modules\pdf-parse"
 if ($CheckOnly) {
-  if (-not (Test-Path -LiteralPath $PdfParser)) {
+  if (-not (Test-ProjectDependencies -NodePath $Node.Path)) {
     throw "Project dependencies not installed. Run scripts\install.ps1 without -CheckOnly."
   }
 } else {
