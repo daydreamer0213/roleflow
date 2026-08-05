@@ -43,7 +43,13 @@ function validateModelResult(kind, value, context) {
   }
   return validateModelResultRaw(kind, value, { jobUnderstanding: legacyFullTestContext(value) });
 }
-const { runtimeAnalysisContext, analysisStaleReasons, PIPELINE_VERSIONS } = require("../src/core/analysis_revision");
+const {
+  runtimeAnalysisContext,
+  buildAnalysisRevision,
+  modelInferenceVersion,
+  analysisStaleReasons,
+  PIPELINE_VERSIONS
+} = require("../src/core/analysis_revision");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
 const { scoreJob } = require("../src/core/scoring");
 const {
@@ -69,6 +75,7 @@ const db = openDb(dbPath);
     await multiTrackValidationIdempotenceSmoke();
     await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
+    await modelInferenceIsolationSmoke();
     await compactRoleEvidencePersistenceSmoke();
     await ruleGuardSmoke();
     await localEvidenceGuardSmoke();
@@ -800,9 +807,9 @@ async function initialFailureProvenanceSmoke() {
 }
 
 async function pipelineVersionCacheSmoke() {
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v19");
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44");
-  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.7");
+  assert.strictEqual(PIPELINE_VERSIONS.decisionRules, "four-tier-weighted-v4.8");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -921,6 +928,112 @@ async function pipelineVersionCacheSmoke() {
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v1", input, run });
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v2", input, run });
   assert.strictEqual(runs, 2, "pipelineVersion 变化必须使旧缓存失效");
+}
+
+async function modelInferenceIsolationSmoke() {
+  const fakeApiKey = "flash-task-3-fake-api-key";
+  const modelConfig = {
+    provider: "deepseek",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+    reasoningEffort: "high",
+    apiKey: fakeApiKey,
+    headers: { authorization: `Bearer ${fakeApiKey}` }
+  };
+  const disabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "disabled" });
+  const enabled = modelInferenceVersion({ ...modelConfig, thinkingMode: "enabled" });
+  const publicEndpoint = modelInferenceVersion({
+    ...modelConfig,
+    baseUrl: "https://example.com/path",
+    thinkingMode: "disabled"
+  });
+  const sensitiveEndpoint = modelInferenceVersion({
+    ...modelConfig,
+    baseUrl: "https://user:password@example.com/path?token=x#fragment",
+    thinkingMode: "disabled"
+  });
+  const revisionBase = {
+    profileVersion: "profile",
+    searchPlanVersion: "plan",
+    matchingCardVersion: null,
+    sourceContentHash: "job",
+    semanticMatchingMode: "split",
+    pipelineVersions: PIPELINE_VERSIONS
+  };
+
+  assert.notStrictEqual(disabled, enabled);
+  assert.strictEqual(
+    sensitiveEndpoint,
+    publicEndpoint,
+    "userinfo, query, and fragment must not affect the inference version"
+  );
+  assert.throws(
+    () => modelInferenceVersion({
+      ...modelConfig,
+      baseUrl: "https://user:password@example.com:bad-port/path?token=x#fragment",
+      thinkingMode: "disabled"
+    }),
+    (error) => error?.message === "MODEL_INFERENCE_BASE_URL_INVALID",
+    "an endpoint that cannot be safely normalized must not produce an inference version"
+  );
+  assert.deepStrictEqual(
+    analysisStaleReasons(
+      { revision: { ...revisionBase, modelInferenceVersion: disabled } },
+      { ...revisionBase, modelInferenceVersion: enabled }
+    ),
+    ["model_inference_changed"]
+  );
+  assert.deepStrictEqual(
+    analysisStaleReasons(
+      { revision: revisionBase },
+      { ...revisionBase, modelInferenceVersion: disabled }
+    ),
+    ["model_inference_changed"],
+    "legacy revisions without an inference version must be stale once"
+  );
+  const revision = buildAnalysisRevision({ model: { ...modelConfig, thinkingMode: "disabled" } }, "job");
+  assert(!JSON.stringify(revision).includes(fakeApiKey), "revision must not retain model secrets");
+
+  const configsFor = (thinkingMode) => ({
+    model: {
+      ...modelConfig,
+      thinkingMode,
+      providers: {
+        deepseek: {
+          ...modelConfig,
+          thinkingMode
+        }
+      }
+    }
+  });
+  const input = { job: { sourceId: "inference-isolation", description: "Python RAG" } };
+  let runs = 0;
+  const run = async () => {
+    runs += 1;
+    return understanding("inference-isolation");
+  };
+  await cachedModelCall({
+    db,
+    configs: configsFor("disabled"),
+    kind: "understandJob",
+    pipelineVersion: "inference-isolation-v1",
+    input,
+    run
+  });
+  await cachedModelCall({
+    db,
+    configs: configsFor("enabled"),
+    kind: "understandJob",
+    pipelineVersion: "inference-isolation-v1",
+    input,
+    run
+  });
+  assert.strictEqual(runs, 2, "thinking mode changes must miss the prior model cache");
+  const cacheMetadata = db.prepare(
+    "SELECT cache_key, kind, provider, model, input_hash, result_json FROM model_cache WHERE model = ?"
+  ).all("deepseek-v4-flash");
+  assert.strictEqual(cacheMetadata.length, 2, "each inference identity requires its own cache record");
+  assert(!JSON.stringify(cacheMetadata).includes(fakeApiKey), "cache metadata must not retain model secrets");
 }
 
 function understandingContractSmoke() {
@@ -1397,8 +1510,8 @@ async function multiTrackValidationIdempotenceSmoke() {
 
   assert.strictEqual(PIPELINE_VERSIONS.matchJob, "match-decision-v44",
     "joint-fit threshold changes must invalidate v43 match caches");
-  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v18",
-    "deterministic evidence sampling must invalidate v17 understandings");
+  assert.strictEqual(PIPELINE_VERSIONS.understandJob, "job-understanding-v19",
+    "foundation requirement extraction clarification must invalidate v18 understandings");
   const currentRevision = {
     profileVersion: "profile",
     searchPlanVersion: "plan",
@@ -1406,6 +1519,15 @@ async function multiTrackValidationIdempotenceSmoke() {
     sourceContentHash: "job",
     pipelineVersions: PIPELINE_VERSIONS
   };
+  assert(
+    analysisStaleReasons({
+      revision: {
+        ...currentRevision,
+        pipelineVersions: { ...PIPELINE_VERSIONS, understandJob: "job-understanding-v18" }
+      }
+    }, currentRevision).includes("job_understanding_pipeline_changed"),
+    "v18 understandings must become stale after the foundation requirement extraction clarification"
+  );
   assert(
     analysisStaleReasons({
       revision: {
@@ -2132,9 +2254,9 @@ function staleAnalysisSmoke() {
   const contractUpgradeReasons = analysisStaleReasons({ revision: oldPipelineRevision }, currentPipelineRevision);
   assert(contractUpgradeReasons.includes("decision_rules_changed"), "old revisions without local decision rules must be stale");
   assert.deepStrictEqual(PIPELINE_VERSIONS, {
-    understandJob: "job-understanding-v18",
+    understandJob: "job-understanding-v19",
     matchJob: "match-decision-v44",
-    decisionRules: "four-tier-weighted-v4.7",
+    decisionRules: "four-tier-weighted-v4.8",
     communication: "communication-v2"
   });
   const decisionRulesOnlyChanged = analysisStaleReasons({
@@ -2178,6 +2300,10 @@ function staleAnalysisSmoke() {
     revision: {
       ...runtimeAnalysisContext(candidate, initialPlan),
       sourceContentHash: require("../src/core/storage").sourceContentHash(source),
+      modelInferenceVersion: buildAnalysisRevision(
+        configs,
+        require("../src/core/storage").sourceContentHash(source)
+      ).modelInferenceVersion,
       pipelineVersions: require("../src/core/analysis_revision").PIPELINE_VERSIONS
     }
   };
@@ -3246,6 +3372,21 @@ function nonCentralMissingGuardSmoke() {
   assert.strictEqual(strongWithResponsibilitySprawl.recommendation, "apply",
     "责任范围偏宽是岗位质量提示，不得把证据充分的同方向岗位强降为待复核");
   assert.strictEqual(strongWithResponsibilitySprawl.decisionSource, "weighted_decision_matrix");
+
+  const shadowCautionResponsibilitySprawl = applyRuleGuard({
+    ...strongDirectLowConfidence,
+    modelRecommendation: "caution",
+    jobQuality: {
+      level: "caution",
+      concerns: [{
+        type: "responsibility_sprawl",
+        evidence: "JD: one track includes several responsibilities"
+      }]
+    }
+  }, job);
+  assert.strictEqual(shadowCautionResponsibilitySprawl.recommendation, "caution",
+    "职责发散且模型 shadow 建议慎投时，不得进入默认沟通");
+  assert.strictEqual(shadowCautionResponsibilitySprawl.decisionSource, "model_quality_caution_guard");
 
   const strongWithSprawlAndMaterialRisk = applyRuleGuard({
     ...strongDirectLowConfidence,

@@ -2806,3 +2806,29 @@ v4.2 小样本解决了索引 3 的上轮修复超时和索引 5 的机会遗漏
 - 3 ??????3/3???????/???? 0?
 - 20 ????????/?????????????2 ????????????????????????
 - ??????????????? v4.7.2 ??????????????????????????????????
+
+## 2026-08-04 DeepSeek V4 Flash v19 continuation checkpoint
+
+- 当前产品提交固定为 `141d6a639de38c4c0cd2c0e617cfdf54c36cbd1b`；产品提交必须是后续 evaluated commit 的严格祖先。
+- Flash thinking/high 在 3 条样本上因推理耗尽输出预算而 3/3 截断，因此当前候选路径改为 Flash non-thinking；不把增加调用次数或继续加重提示词作为第一修复手段。
+- Flash non-thinking 结构输出稳定，但首轮 3 条的 index 10 从人工确认 `apply` 降为 `caution`。根因已定位为支持性要求被误标 foundation，不是二维表错误。
+- foundation v19 采用通用字段边界修复，不针对 AI、Agent、K8s 或本批样本，不修改用户冻结的二维表和权重。
+- 完整离线回归 53/53，独立复审最终 `Spec PASS` / `Code quality APPROVED`。
+- 20 条尚未启动。继续沿用行为边界验收：人工确认的 `primary/apply` 不得遗漏；人工确认的 `caution/not_recommended` 不得混入默认沟通集合；exact 仅作次要观察指标。
+- 下一步顺序不可跳过：全新 index 10 -> 全新 3 条 `4,9,10` -> 全新 20 条；每轮禁止复用缓存或覆盖旧目录。
+### Exact evaluated binding
+
+- candidateProductCommit: $product
+- candidateEvaluatedCommit: $evaluated
+- aselineEvaluatedCommit: 52ca494c8c68e97974ac03423cf4523f24486a28
+- 绑定规则：product 是 evaluated 的严格祖先；后续私有 v4 manifest 必须原样使用以上完整 SHA。
+### 2026-08-04 v4.8 Flash continuation checkpoint
+
+- Product checkpoint: `9083abbc4bb02118a7c522a6f4de9c3bccb2f553`。
+- Evaluated checkpoint: `9bb986ec3eb68b65fe75bfbcf54586781580b234`；产品提交保持为其严格祖先。
+- 本次没有加入 few-shot 示例，也没有修改二维表和 70/30 权重；只增加了职责发散且模型 shadow 建议慎投时的慎投上限保护。
+- 全新 3 条复现目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-3-v4-retry-v1-20260804`；结果 SHA-256：`b70ba944a11fbd78495659dadabb4ad195eae41f2c9413d7c528b36fffb57959`。
+- 全新 20 条目录：`D:\DevData\RoleFlow-private-benchmark\deepseek-v4-flash-nonthinking-v20-sprawl-guard-first-20-v1-20260804`；结果 SHA-256：`a3d72a7e3dd5b2a0bc4b58b63c7f8fa54be791cc16098672aebad69d08562ac9`。
+- 当前行为门禁通过：主投/可投无遗漏；不推荐不进入默认沟通；慎投混入单独统计并按用户标准接受。
+- `npm.cmd test`：All 53 offline checks passed；`git diff --check`：通过。
+- 后续 docs/test binding commit 不替代 evaluated checkpoint，也不改变真实验收绑定。

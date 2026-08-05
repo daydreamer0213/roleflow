@@ -10,6 +10,10 @@ const {
   testModelConnection,
   resolveRuntimeModelConfig,
   isModelReady,
+  modelConfigFromSettings,
+  normalizeSettings,
+  normalizeThinkingMode,
+  normalizeReasoningEffort,
   secretIdForSettings,
   settingsPath
 } = require("../src/core/model_settings");
@@ -51,9 +55,43 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
       root,
       fallbackModelConfig: fallback,
       connectionTester: verified,
-      input: { preset: "deepseek", model: "deepseek-v4-pro", apiKey: "deepseek-key-not-public" }
+      input: {
+        preset: "deepseek",
+        model: "deepseek-v4-flash",
+        thinkingMode: "enabled",
+        reasoningEffort: "high",
+        apiKey: "deepseek-key-not-public"
+      }
     });
     assert.strictEqual(deepseek.settings.timeoutMs, 60000);
+    assert.strictEqual(deepseek.settings.thinkingMode, "enabled");
+    assert.strictEqual(deepseek.settings.reasoningEffort, "high");
+    assert.strictEqual(modelConfigFromSettings(deepseek.settings).providers.openai_compatible.thinkingMode, "enabled");
+    assert.strictEqual(modelConfigFromSettings(deepseek.settings).providers.openai_compatible.reasoningEffort, "high");
+    assert.throws(() => normalizeThinkingMode("sometimes"), /MODEL_THINKING_MODE_INVALID/);
+    assert.throws(() => normalizeReasoningEffort("medium"), /MODEL_REASONING_EFFORT_INVALID/);
+    assert.throws(() => normalizeSettings({
+      preset: "deepseek",
+      model: "deepseek-v4-flash",
+      thinkingMode: "sometimes",
+      reasoningEffort: "high"
+    }), /MODEL_THINKING_MODE_INVALID/);
+    const unofficialDeepSeek = normalizeSettings({
+      preset: "deepseek",
+      model: "deepseek-v4-preview",
+      thinkingMode: "enabled",
+      reasoningEffort: "max"
+    });
+    assert.strictEqual(unofficialDeepSeek.thinkingMode, "disabled");
+    assert.strictEqual(unofficialDeepSeek.reasoningEffort, "high");
+    const pollutedQwen = normalizeSettings({
+      preset: "qwen",
+      model: "qwen-plus",
+      thinkingMode: "sometimes",
+      reasoningEffort: "medium"
+    });
+    assert.strictEqual(pollutedQwen.thinkingMode, "disabled");
+    assert.strictEqual(pollutedQwen.reasoningEffort, "high");
     const deepseekSecretId = secretIdForSettings(deepseek.settings);
     assert.notStrictEqual(deepseekSecretId, qwenSecretId);
     assert.strictEqual(loadSecret(root, deepseekSecretId), "deepseek-key-not-public");
@@ -79,6 +117,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
     assert.strictEqual(isModelReady(corrupted), false);
 
     await connectionErrorSmoke();
+    await connectionProbeSmoke();
     console.log("model_settings_smoke ok");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -102,4 +141,32 @@ async function connectionErrorSmoke() {
     apiKey: "test",
     fetchImpl: async () => { const error = new Error("aborted"); error.name = "AbortError"; throw error; }
   }), (error) => error.code === "MODEL_CONNECTION_TIMEOUT");
+}
+
+async function connectionProbeSmoke() {
+  const matrix = [
+    { name: "DeepSeek V4 Pro", settings: { preset: "deepseek", model: "deepseek-v4-pro", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: true },
+    { name: "DeepSeek V4 Flash", settings: { preset: "deepseek", model: "deepseek-v4-flash", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: true },
+    { name: "Qwen", settings: { preset: "qwen", model: "qwen-plus", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false },
+    { name: "custom compatible endpoint", settings: { preset: "custom", baseUrl: "https://model.invalid/v1", model: "compatible-model", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false },
+    { name: "non-V4 DeepSeek model", settings: { preset: "deepseek", model: "deepseek-v4-preview", thinkingMode: "enabled", reasoningEffort: "max" }, expectsThinking: false }
+  ];
+
+  for (const probe of matrix) {
+    let body;
+    await testModelConnection({
+      settings: probe.settings,
+      apiKey: "test",
+      fetchImpl: async (_url, options) => {
+        body = JSON.parse(options.body);
+        return new Response(JSON.stringify({ choices: [{ message: { content: "{\\\"ok\\\":true}" } }] }), { status: 200 });
+      }
+    });
+    assert.strictEqual(Object.hasOwn(body, "reasoning_effort"), false, `${probe.name} probe must omit reasoning_effort`);
+    if (probe.expectsThinking) {
+      assert.deepStrictEqual(body.thinking, { type: "disabled" }, `${probe.name} probe must disable thinking`);
+    } else {
+      assert.strictEqual(Object.hasOwn(body, "thinking"), false, `${probe.name} probe must omit thinking`);
+    }
+  }
 }

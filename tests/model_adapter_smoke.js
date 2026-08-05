@@ -901,6 +901,18 @@ server.listen(0, "127.0.0.1", async () => {
       "通用能力不得冒充岗位主线"
     );
     assert(
+      understandPrompt.includes("稀缺的最低履职前提")
+        && understandPrompt.includes("不等于‘要求、精通、掌握’")
+        && understandPrompt.includes("仅支撑某个环节的工具、平台、部署、通用工程能力默认 false")
+        && understandPrompt.includes("工具或平台本身就是主要工作对象时")
+        && understandPrompt.includes("不能仅凭不可协商标为 foundation=true")
+        && understandPrompt.includes("要标为 foundation，该要求仍须直接决定主要工作对象、动作或交付结果")
+        && understandPrompt.includes("主要工作对象、动作或交付结果")
+        && understandPrompt.includes("JD 明确为不可协商前提")
+        && understandPrompt.includes("不确定时 false"),
+      "foundation=true 必须只标记稀缺的最低履职前提，不能放大支持性能力"
+    );
+    assert(
       ["编程语言", "操作系统", "数据库", "办公工具", "通用数据清洗", "基础 AI 概念"]
         .every((term) => understandPrompt.includes(term)),
       "understandJob prompt 必须明确列出不得单独作为 central 的通用能力"
@@ -1153,125 +1165,139 @@ server.listen(0, "127.0.0.1", async () => {
     assert(!JSON.stringify([...emptyFinalAttemptEvents, ...emptyRecoveryAttemptEvents]).includes("PRIVATE_RESPONSE_CONTENT_SENTINEL"));
 
     const originalFetch = global.fetch;
-    const deepSeekRequestBodies = [];
+    const flashThinkingBodies = [];
+    const response = (content) => new Response(JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify(content) } }]
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-request-id": "deepseek-thinking-test" }
+    });
+    let flashNonThinkingBody;
+    let nonDeepSeekBody;
+    let customEndpointBody;
     global.fetch = async (_url, options) => {
-      deepSeekRequestBodies.push(JSON.parse(options.body));
-      return new Response(JSON.stringify({
-        choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }]
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json", "x-request-id": "deepseek-thinking-test" }
-      });
+      const body = JSON.parse(options.body);
+      const modelInput = JSON.parse(body.messages[1].content);
+      const systemPrompt = body.messages[0].content;
+      if (body.model === "deepseek-v4-flash" && systemPrompt.includes("job ")) {
+        flashThinkingBodies.push(body);
+      }
+      if (body.model === "deepseek-v4-flash" && body.thinking?.type === "disabled") {
+        flashNonThinkingBody = body;
+      }
+      if (body.model === "other-model") nonDeepSeekBody = body;
+      if (body.model === "deepseek-v4-flash" && _url.startsWith("https://example.invalid")) {
+        customEndpointBody = body;
+      }
+      if (systemPrompt.includes("job evidence checker")) {
+        return response(modelInput.contractRepair
+          ? {
+            selectedTrackId: "T1",
+            roleAlignment: "insufficient_evidence",
+            roleResumeEvidence: [],
+            roleGaps: ["No responsibility evidence was provided"],
+            responsibilityMatches: [],
+            matches: [],
+            eligibility: []
+          }
+          : { malformed: true });
+      }
+      if (systemPrompt.includes("job responsibility evidence extractor")) {
+        return response(modelInput.contractRepair
+          ? { selectedTrackId: "T1", matches: [] }
+          : { malformed: true });
+      }
+      if (systemPrompt.includes("job requirement evidence extractor")) {
+        return response({ matches: [], eligibility: [] });
+      }
+      return response({ ok: true });
     };
     try {
-      for (const [adapterBaseUrl, model, kind, input] of [
-        ["https://api.deepseek.com", "deepseek-v4-pro", "understandJob", { test: true }],
-        ["https://api.deepseek.com", "deepseek-v4-flash", "understandJob", { test: true }],
-        [
-          "https://api.deepseek.com",
-          "deepseek-v4-pro",
-          "understandJob",
-          {
-            test: true,
-            contractRepair: {
-              reason: "synthetic contract failure",
-              invalidOutput: { requirements: [] }
-            }
-          }
-        ],
-        ["https://api.deepseek.com", "deepseek-v4-pro", "matchJob", { test: true }],
-        [
-          "https://api.deepseek.com",
-          "deepseek-v4-pro",
-          "matchJob",
-          {
-            test: true,
-            contractRepair: {
-              reason: "synthetic contract failure",
-              invalidOutput: { matches: [] }
-            }
-          }
-        ],
-        ["https://api.deepseek.com", "deepseek-v4-pro", "matchResponsibilities", { test: true }],
-        ["https://api.deepseek.com", "deepseek-v4-pro", "matchRequirements", { test: true }],
-        [
-          "https://api.deepseek.com",
-          "deepseek-v4-pro",
-          "matchResponsibilities",
-          { test: true, contractRepair: { reason: "synthetic" } }
-        ],
-        [
-          "https://api.deepseek.com",
-          "deepseek-v4-pro",
-          "matchRequirements",
-          { test: true, contractRepair: { reason: "synthetic" } }
-        ],
-        ["https://api.deepseek.com", "other-model", "understandJob", { test: true }],
-        ["https://example.invalid", "deepseek-v4-pro", "understandJob", { test: true }],
-        ["not-a-valid-url", "deepseek-v4-pro", "understandJob", { test: true }]
-      ]) {
-        const adapter = new OpenAICompatibleAdapter({
-          baseUrl: adapterBaseUrl,
-          apiKey: "test-key",
-          model,
-          jsonMode: false,
-          maxRetries: 0,
-          logger
-        });
-        assert.deepStrictEqual(
-          await adapter.chatJson("return json", input, { kind }),
-          { ok: true }
-        );
-      }
+      const flashAdapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://api.deepseek.com",
+        apiKey: "test-key",
+        model: "deepseek-v4-flash",
+        thinkingMode: "enabled",
+        reasoningEffort: "high",
+        jsonMode: false,
+        maxRetries: 0,
+        logger
+      });
+      const topLevelInput = {
+        ...splitInput,
+        semanticMatchingMode: "legacy",
+        modelRecommendationMode: "off"
+      };
+      const topLevelFailure = await rejectedError(() => flashAdapter.matchJob(topLevelInput));
+      assert.strictEqual(topLevelFailure.code, "MODEL_CONTRACT_INVALID");
+      await flashAdapter.matchJob({
+        ...topLevelInput,
+        contractRepair: {
+          reason: topLevelFailure.message,
+          invalidOutput: topLevelFailure.invalidOutput
+        }
+      });
+
+      await flashAdapter.matchJob({
+        ...topLevelInput,
+        semanticMatchingMode: "split"
+      });
+
+      const flashNonThinkingAdapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://api.deepseek.com",
+        apiKey: "test-key",
+        model: "deepseek-v4-flash",
+        thinkingMode: "disabled",
+        reasoningEffort: "high",
+        jsonMode: false,
+        maxRetries: 0,
+        logger
+      });
+      await flashNonThinkingAdapter.chatJson("return json", { test: true }, { kind: "understandJob" });
+
+      const nonDeepSeekAdapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://api.deepseek.com",
+        apiKey: "test-key",
+        model: "other-model",
+        thinkingMode: "enabled",
+        reasoningEffort: "high",
+        jsonMode: false,
+        maxRetries: 0,
+        logger
+      });
+      await nonDeepSeekAdapter.chatJson("return json", { test: true }, { kind: "understandJob" });
+
+      const customEndpointAdapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://example.invalid",
+        apiKey: "test-key",
+        model: "deepseek-v4-flash",
+        thinkingMode: "enabled",
+        reasoningEffort: "high",
+        jsonMode: false,
+        maxRetries: 0,
+        logger
+      });
+      await customEndpointAdapter.chatJson("return json", { test: true }, { kind: "understandJob" });
     } finally {
       global.fetch = originalFetch;
     }
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[0].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 Pro understandJob must disable thinking"
+    for (const body of flashThinkingBodies) {
+      assert.deepStrictEqual(body.thinking, { type: "enabled" });
+      assert.strictEqual(body.reasoning_effort, "high");
+      assert.strictEqual(Object.hasOwn(body, "temperature"), false);
+    }
+    assert.strictEqual(flashThinkingBodies.length, 5);
+    assert.strictEqual(
+      flashThinkingBodies.filter((body) =>
+        Object.hasOwn(JSON.parse(body.messages[1].content), "contractRepair")).length,
+      2,
+      "top-level and split repairs must both keep the selected thinking mode"
     );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[1].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 Flash understandJob must disable thinking"
-    );
-    assert(
-      !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[2], "thinking"),
-      "official DeepSeek V4 understandJob contract repair must restore default thinking"
-    );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[3].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 Pro matchJob must disable thinking in the A/B candidate"
-    );
-    assert(
-      !Object.prototype.hasOwnProperty.call(deepSeekRequestBodies[4], "thinking"),
-      "official DeepSeek V4 matchJob contract repair must restore default thinking"
-    );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[5].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 responsibility matching must disable thinking"
-    );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[6].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 requirement matching must disable thinking"
-    );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[7].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 responsibility repair must keep thinking disabled"
-    );
-    assert.deepStrictEqual(
-      deepSeekRequestBodies[8].thinking,
-      { type: "disabled" },
-      "official DeepSeek V4 requirement repair must keep thinking disabled"
-    );
-    for (const payload of deepSeekRequestBodies.slice(9)) {
-      assert(!Object.prototype.hasOwnProperty.call(payload, "thinking"),
-        "other models, custom endpoints, and invalid URLs must keep their existing request body");
+    assert.deepStrictEqual(flashNonThinkingBody.thinking, { type: "disabled" });
+    assert.strictEqual(flashNonThinkingBody.temperature, 0);
+    for (const body of [nonDeepSeekBody, customEndpointBody]) {
+      assert.strictEqual(Object.hasOwn(body, "thinking"), false);
+      assert.strictEqual(Object.hasOwn(body, "reasoning_effort"), false);
     }
     console.log("model_adapter_smoke ok");
   } catch (error) {

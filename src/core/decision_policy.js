@@ -21,7 +21,7 @@ const FIT_BANDS = Object.freeze([
 ]);
 
 const DECISION_POLICY = deepFreeze({
-  version: "four-tier-weighted-v4.7",
+  version: "four-tier-weighted-v4.8",
   recommendationSchemaVersion: RECOMMENDATION_SCHEMA_VERSION,
   recommendationTiers: [...RECOMMENDATION_TIERS],
   modelRecommendationMode: "shadow",

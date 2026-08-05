@@ -14,11 +14,13 @@ const {
   transitionWorkflowRun,
   createBatch,
   upsertJob,
+  recordCandidateJobEvent,
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -102,11 +104,134 @@ let server;
     searchPlanId: saved.planId
   });
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
-  for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
+  for (let index = 0; index < 6; index += 1) {
+    const seededJob = index === 0 ? layeredTalkJob() : job(index + 1);
+    if (index === 1) seededJob.title = "<script>health-xss</script>";
+    upsertJob(db, seededJob, batchId);
+  }
   upsertJob(db, lowRiskBackupJob(), batchId);
   upsertJob(db, layeredBackupJob(), batchId);
   transitionWorkflowRun(db, { id: workflow.id, status: "analyzing" });
-  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 1 });
+  transitionWorkflowRun(db, { id: workflow.id, status: "review_required", inventoryCount: 6 });
+
+  recordCandidateJobEvent(db, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    jobId: listWorkflowReviewCandidates(db, workflow.id)[0].id,
+    eventType: "review",
+    payload: {}
+  });
+  const workflowBeforeHealthPage = listWorkflowRuns(db, {
+    planId: saved.planId
+  }).map((run) => ({ ...run }));
+  const healthPage = await getText(
+    baseUrl,
+    `/workflow?runId=${encodeURIComponent(workflowBeforeHealthPage[0].id)}`
+  );
+
+  assert.strictEqual(healthPage.status, 200);
+  assert.match(healthPage.body, /\u6d41\u7a0b\u4f53\u68c0/);
+  assert.match(healthPage.body, /\u5df2\u68c0\u67e5\u5c97\u4f4d/);
+  assert.match(healthPage.body, /\u6700\u8fd1\u72b6\u6001\u53d8\u5316/);
+  assert.match(healthPage.body, /\u5c97\u4f4d\u7f3a\u5c11\u5b8c\u6574 JD|\u5f53\u524d\u672a\u53d1\u73b0\u6d41\u7a0b\u6570\u636e\u95ee\u9898/);
+  assert.deepStrictEqual(
+    listWorkflowRuns(db, { planId: saved.planId }),
+    workflowBeforeHealthPage,
+    "鎵撳紑浣撴鍖哄潡涓嶈兘鎺ㄨ繘鎴栦慨澶嶅伐浣滄祦"
+  );
+  assert(!healthPage.body.includes("<script>health-xss</script>"));
+  assert(healthPage.body.includes("&lt;script&gt;health-xss&lt;/script&gt;"));
+  const healthPanel = healthPage.body.match(/<section class="panel workflow-health">[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(healthPanel, /\u5f85\u590d\u6838/);
+  assert.match(healthPanel, /\u5c97\u4f4d #\d+/);
+
+  const unsafePanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 0, issueCount: 1 },
+    issues: [{
+      severity: "warning",
+      title: "unsafe href",
+      message: "fixture",
+      actionHref: "//external.example"
+    }],
+    recentEvents: [],
+    truncated: {}
+  });
+  assert(unsafePanel.includes('href="#"'));
+  assert(!unsafePanel.includes('href="//external.example"'));
+
+  const backslashPanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 0, issueCount: 1 },
+    issues: [{
+      severity: "warning",
+      title: "backslash href",
+      message: "fixture",
+      actionHref: "/\\external.example"
+    }],
+    recentEvents: [],
+    truncated: {}
+  });
+  assert(backslashPanel.includes('href="#"'));
+  assert(!backslashPanel.includes('href="/\\external.example"'));
+
+  const truncatedPanel = renderWorkflowHealthPanel({
+    status: "attention",
+    summary: { jobsChecked: 51, issueCount: 51 },
+    issues: Array.from({ length: 51 }, (_, index) => ({
+      severity: "warning",
+      title: `Issue ${index}`,
+      message: "fixture",
+      actionHref: "/queue"
+    })),
+    recentEvents: Array.from({ length: 21 }, (_, index) => ({
+      eventType: "review",
+      jobId: index + 1,
+      createdAt: "2026-08-03T08:00:00.000Z"
+    })),
+    truncated: { issues: true, recentEvents: true }
+  });
+  assert.match(truncatedPanel, /记录数量超过页面上限/);
+
+  const failOpenWarnings = [];
+  const failOpenServer = createDashboardServer({
+    db,
+    root,
+    dbPath,
+    forceMock: true,
+    allowOfflineMock: true,
+    logger: {
+      ...logger,
+      warn(event, metadata) { failOpenWarnings.push({ event, metadata }); }
+    },
+    workflowHealth: {
+      getSnapshot() {
+        const error = new Error("health fixture failure");
+        error.code = "C:\\Users\\Administrator\\secret.txt";
+        throw error;
+      }
+    }
+  });
+  const failOpenBaseUrl = await listen(failOpenServer);
+  try {
+    const failOpenPage = await getText(failOpenBaseUrl, started.location);
+    assert.strictEqual(failOpenPage.status, 200);
+    assert.match(failOpenPage.body, /\u786e\u8ba4\u672c\u8f6e\u6c9f\u901a\u6e05\u5355/);
+    assert.doesNotMatch(failOpenPage.body, /\u6d41\u7a0b\u4f53\u68c0/);
+    assert.strictEqual(failOpenWarnings.length, 1);
+    assert.deepStrictEqual(failOpenWarnings[0], {
+      event: "workflow_health_render_failed",
+      metadata: {
+        workflowRunId: workflow.id,
+        planId: saved.planId,
+        errorCode: "WORKFLOW_HEALTH_FAILED"
+      }
+    });
+    assert(!JSON.stringify(failOpenWarnings[0]).includes("health fixture failure"));
+    assert(!JSON.stringify(failOpenWarnings[0]).includes("secret.txt"));
+  } finally {
+    await new Promise((resolve) => failOpenServer.close(resolve));
+  }
 
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
