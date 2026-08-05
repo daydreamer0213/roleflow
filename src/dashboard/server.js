@@ -21,6 +21,7 @@ const {
   getSearchPlan,
   getActiveSearchPlan,
   getPlatformFilterCatalog,
+  savePlatformFilterCatalog,
   getSiteRuntimeState,
   getSiteScanLease,
   listSiteAccessEvents,
@@ -79,7 +80,7 @@ const {
 } = require("../core/communication_batches");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
-const { matchingCardFromProfile } = require("../core/matching_card");
+const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
@@ -94,6 +95,7 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 const { defaultSelectedForBatch } = require("../core/decision_policy");
 const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
 const { buildScanCliArgs } = require("../core/scan_execution");
+const { validateResumeBatch } = require("../core/scan_resume");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
 const { mapWithConcurrency } = require("../core/async_pool");
@@ -105,11 +107,21 @@ const {
 } = require("../core/workflow_inventory");
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
+const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
+const {
+  buildInheritedSearchScope,
+  assertInheritedAcquisitionScope,
+  assertCompleteInheritedContext,
+  freezeKeywordSource,
+  scopeShortId
+} = require("../core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_policy");
+const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {} }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext }) {
   const scanRuns = new Map();
   const resolvedWorkflowHealth = {
     getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
@@ -176,7 +188,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady(), logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady(), logger, requestId, spawnProcess, inheritedContextResolver });
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
@@ -835,7 +847,12 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
   }
 }
 
-function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
+function buildWorkflowDashboardState(
+  db,
+  planRecord,
+  now = new Date(),
+  { searchScope = null, keywordSource = null } = {}
+) {
   if (!planRecord) throw appError("WORKFLOW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
   const localDay = chinaLocalDay(now);
   const runs = listWorkflowRuns(db, {
@@ -853,26 +870,49 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
   const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
   const budgetRuns = workflowRunsWithAccessUsage(db, runs, localDay);
   const usedBudget = consumedWorkflowBudget(budgetRuns);
-  const usedKeywords = new Set(runs.flatMap((run) => run.keywords || []).map((item) => String(item.word || item)));
-  const jobs = listDecisionPool(db, { planId: planRecord.id });
-  const keywordStats = new Map();
-  for (const job of jobs) {
-    const word = String(job.keyword || "").trim();
-    if (!word) continue;
-    const stats = keywordStats.get(word) || { sampleSize: 0, eligibleCount: 0 };
-    stats.sampleSize += 1;
-    const probe = { ...job, applicationStatus: "", applicationReasonCode: "", reviewAt: "" };
-    if (workflowEligibility(probe, { now: asIso(now) }).eligible) stats.eligibleCount += 1;
-    keywordStats.set(word, stats);
+  let keywordStats;
+  if (searchScope?.key) {
+    keywordStats = listScopedKeywordStats(db, {
+      profileId: planRecord.profileId,
+      scopeKey: searchScope.key,
+      localDay,
+      now: asIso(now)
+    });
+  } else {
+    const usedKeywords = new Set(runs.flatMap((run) => run.keywords || [])
+      .map((item) => String(item.word || item)));
+    keywordStats = new Map();
+    for (const job of listDecisionPool(db, { planId: planRecord.id })) {
+      const word = String(job.keyword || "").trim();
+      if (!word) continue;
+      const stats = keywordStats.get(word) || {
+        sampleSize: 0,
+        eligibleCount: 0,
+        usedToday: usedKeywords.has(word)
+      };
+      stats.sampleSize += 1;
+      const probe = { ...job, applicationStatus: "", applicationReasonCode: "", reviewAt: "" };
+      if (workflowEligibility(probe, { now: asIso(now) }).eligible) stats.eligibleCount += 1;
+      keywordStats.set(word, stats);
+    }
+    for (const word of usedKeywords) {
+      if (!keywordStats.has(word)) {
+        keywordStats.set(word, { sampleSize: 0, eligibleCount: 0, usedToday: true });
+      }
+    }
   }
-  const keywords = (planRecord.plan?.keywords || []).map((item, index) => {
-    const source = typeof item === "string" ? { word: item, priority: "B" } : item;
-    const stats = keywordStats.get(String(source.word || "")) || { sampleSize: 0, eligibleCount: 0 };
+  const catalog = keywordSource?.keywords?.length
+    ? keywordSource.keywords
+    : (planRecord.plan?.keywords || []);
+  const keywords = catalog.map((item, index) => {
+    const source = typeof item === "string" ? { word: item, priority: "B", reason: "" } : item;
+    const stats = keywordStats.get(String(source.word || "").trim())
+      || { sampleSize: 0, eligibleCount: 0, usedToday: false };
     return {
       word: String(source.word || "").trim(),
       priority: source.priority || "B",
+      reason: String(source.reason || ""),
       planOrder: index,
-      usedToday: usedKeywords.has(String(source.word || "").trim()),
       ...stats
     };
   }).filter((item) => item.word);
@@ -912,7 +952,9 @@ function buildWorkflowDashboardState(db, planRecord, now = new Date()) {
       pages: Math.max(0, policy.dailyPageBudget - usedBudget.pages)
     },
     nextPlan,
-    keywords
+    keywords,
+    searchScope,
+    keywordSource
   };
 }
 
@@ -934,6 +976,89 @@ function workflowRunsWithAccessUsage(db, runs, localDay) {
   });
 }
 
+async function resolveLiveInheritedContext({
+  db,
+  plan,
+  matchingContext,
+  logger
+}) {
+  try {
+    const adapter = new boss.BossSiteAdapter({
+      browser: new EdgeControlAdapter(),
+      logger
+    });
+    const preflight = await adapter.preflight();
+    if (!preflight.isSearchPage) {
+      throw appError(
+        "BOSS_SEARCH_PAGE_INVALID",
+        "请先在现有 Edge 的 BOSS-SEARCH 标签页打开岗位搜索结果页。",
+        { statusCode: 409 }
+      );
+    }
+    const inspected = await adapter.inspectInheritedSearchPage({ tabId: preflight.tabId });
+    const { searchTemplate, searchScope } = buildInheritedSearchScope({
+      profileId: plan.profileId,
+      rawUrl: inspected.url
+    });
+    const inspectedFieldCount = Object.keys(inspected.catalog?.fields || {}).length;
+    if (inspectedFieldCount) {
+      savePlatformFilterCatalog(db, {
+        site: "boss",
+        catalog: inspected.catalog,
+        source: "live_dom",
+        discoveredAt: inspected.catalog.discoveredAt
+      });
+    }
+    const catalog = inspectedFieldCount
+      ? inspected.catalog
+      : getPlatformFilterCatalog(db, "boss")?.catalog || {};
+    const keywordSource = freezeKeywordSource({
+      planRecord: plan,
+      matchingCardRevision: matchingCardRevision(matchingContext.matchingCard)
+    });
+    const platformPolicy = compilePlatformRuntimePolicy({
+      searchScope,
+      catalog,
+      urlOptions: inspected.urlOptions,
+      cityCodes: CITY_CODES
+    });
+    logger.info("inherited_scope_resolved", {
+      site: "boss",
+      scopeId: scopeShortId(searchScope.key),
+      recognizedFilterCount: platformPolicy.filterSummary.length,
+      unresolvedFilterCount: platformPolicy.unresolvedParams.length,
+      keywordCatalogHash: keywordSource.catalogHash
+    });
+    for (const unresolved of platformPolicy.unresolvedParams) {
+      logger.warn("platform_filter_unresolved", {
+        site: "boss",
+        scopeId: scopeShortId(searchScope.key),
+        param: unresolved.param,
+        unresolvedValueCount: Array.isArray(unresolved.codes) ? unresolved.codes.length : 0
+      });
+    }
+    return {
+      acquisitionMode: "inherited",
+      searchTemplate,
+      searchScope,
+      keywordSource,
+      platformPolicy
+    };
+  } catch (error) {
+    if ([
+      "BOSS_RISK_CONTROL",
+      "BOSS_LOGIN_REQUIRED",
+      "BOSS_TAB_REQUIRED",
+      "BOSS_SEARCH_PAGE_INVALID",
+      "INHERITED_SCOPE_FILTER_REQUIRED"
+    ].includes(error?.code)
+      && !error.statusCode) {
+      throw appError(error.code, error.message, { statusCode: 409, cause: error });
+    }
+    throw error;
+  }
+}
+
 async function handleWorkflowRunStart(req, res, {
   db,
   root,
@@ -942,17 +1067,41 @@ async function handleWorkflowRunStart(req, res, {
   modelReady,
   logger,
   requestId,
-  spawnProcess
+  spawnProcess,
+  inheritedContextResolver
 }) {
   let planId = 0;
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    if (params.browserMode && params.browserMode !== "edge") {
+      throw appError(
+        "INHERITED_EDGE_REQUIRED",
+        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
+        { statusCode: 409 }
+      );
+    }
     planId = Number(params.planId || 0);
     const plan = getSearchPlan(db, planId);
     if (!plan || !getCandidateProfile(db, plan.profileId)) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
     const matchingContext = getCandidateMatchingContext(db, plan.profileId);
-    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, plan.id));
-    const state = buildWorkflowDashboardState(db, plan);
+    assertSearchPlanReady(
+      plan,
+      matchingContext?.candidateProfile || {},
+      getSearchPlanDependency(db, plan.id),
+      { validatePlatformCities: false }
+    );
+    const inheritedContext = await inheritedContextResolver({
+      db,
+      plan,
+      matchingContext,
+      logger
+    });
+    try {
+      assertInheritedAcquisitionScope(inheritedContext.searchScope);
+    } catch (error) {
+      throw appError(error.code, error.message, { statusCode: 409, cause: error });
+    }
+    const state = buildWorkflowDashboardState(db, plan, new Date(), inheritedContext);
     if (state.activeRun) return redirect(res, `/workflow?runId=${encodeURIComponent(state.activeRun.id)}`);
     if (state.nextPlan?.errorCode) {
       throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
@@ -972,7 +1121,14 @@ async function handleWorkflowRunStart(req, res, {
       scanNeeded: state.nextPlan.scanNeeded,
       keywords: state.nextPlan.selectedKeywords,
       budget: state.nextPlan.budget,
-      planner: state.nextPlan,
+      planner: {
+        ...state.nextPlan,
+        acquisitionMode: inheritedContext.acquisitionMode,
+        searchTemplate: inheritedContext.searchTemplate,
+        searchScope: inheritedContext.searchScope,
+        keywordSource: inheritedContext.keywordSource,
+        platformPolicy: inheritedContext.platformPolicy
+      },
       shortfallCode: state.nextPlan.shortfallReason || "",
       metrics: {
         planning: {
@@ -989,7 +1145,7 @@ async function handleWorkflowRunStart(req, res, {
         dbPath,
         planId: plan.id,
         cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
-        browserMode: params.browserMode === "portable" ? "portable" : "edge",
+        browserMode: "edge",
         scanKind: "daily",
         workflowRunId: workflow.id,
         logger,
@@ -1055,8 +1211,40 @@ async function handleWorkflowRunResume(req, res, {
     workflowRunId = String(params.workflowRunId || params.runId || "").trim();
     const workflow = getWorkflowRun(db, workflowRunId);
     if (!workflow) throw appError("WORKFLOW_RUN_NOT_FOUND", "本轮任务不存在。", { statusCode: 404 });
+    const acquisitionMode = String(workflow.planner?.acquisitionMode || "").trim();
+    if (!["generated", "inherited"].includes(acquisitionMode)) {
+      throw appError(
+        "WORKFLOW_ACQUISITION_MODE_INVALID",
+        "本轮任务的采集模式无效，不能安全恢复。",
+        { statusCode: 409 }
+      );
+    }
+    if (acquisitionMode === "inherited") {
+      try {
+        assertCompleteInheritedContext(workflow.planner, {
+          code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+          message: "本轮继承模式快照不完整，不能安全恢复。",
+          planId: workflow.planId
+        });
+      } catch (error) {
+        throw appError(
+          "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+          "本轮继承模式快照不完整，不能安全恢复。",
+          { statusCode: 409, cause: error }
+        );
+      }
+    }
+    const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
+    }
+    if (workflow.scanNeeded && workflow.scanBatchId) {
+      validateResumeBatch({
+        resumeBatchId: workflow.scanBatchId,
+        resumedBatch: getBatch(db, workflow.scanBatchId),
+        site: "boss",
+        planId: workflow.planId
+      });
     }
     if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
       if (workflow.scanNeeded) {
@@ -1067,7 +1255,7 @@ async function handleWorkflowRunResume(req, res, {
           dbPath,
           planId: workflow.planId,
           cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
-          browserMode: params.browserMode === "portable" ? "portable" : "edge",
+          browserMode,
           scanKind: "daily",
           resumeBatchId: workflow.scanBatchId,
           workflowRunId: workflow.id,
@@ -1088,6 +1276,34 @@ async function handleWorkflowRunResume(req, res, {
       fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
     });
   }
+}
+
+function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
+  const acquisitionMode = String(workflow?.planner?.acquisitionMode || "").trim();
+  const requested = String(requestedMode || "").trim().toLowerCase();
+  if (acquisitionMode === "inherited") {
+    if (requested && requested !== "edge") {
+      throw appError(
+        "INHERITED_EDGE_REQUIRED",
+        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
+        { statusCode: 409 }
+      );
+    }
+    return "edge";
+  }
+  if (requested && !["edge", "portable"].includes(requested)) {
+    throw appError(
+      "WORKFLOW_BROWSER_MODE_INVALID",
+      "浏览器模式必须是当前 Edge 或项目专用 Edge。",
+      { statusCode: 409 }
+    );
+  }
+  const stored = String(
+    workflow?.planner?.browserMode
+      || workflow?.planner?.browser?.mode
+      || ""
+  ).trim().toLowerCase();
+  return requested || (["edge", "portable"].includes(stored) ? stored : "edge");
 }
 
 function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
@@ -2133,6 +2349,9 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const run = scanStatus(scanRuns, planRecord.id, db);
   const resumableBatch = getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" });
   const validation = validateSearchPlan(plan, profile.profile);
+  const inheritedWorkflowValidation = validateSearchPlan(plan, profile.profile, {
+    validatePlatformCities: false
+  });
   const planDependency = getSearchPlanDependency(db, planRecord.id);
   const versionDiff = compareProfileVersions(db, profile.id);
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
@@ -2140,7 +2359,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const bossRuntimeBlock = communicationRuntimeBlock(db);
   const workflowState = buildWorkflowDashboardState(db, planRecord);
   const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock);
-  const workflowStartDisabled = !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
+  const workflowStartDisabled = !inheritedWorkflowValidation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
     || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
@@ -2215,7 +2434,8 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       : `<form class="workflow-start" method="post" action="/api/workflow-run">
           <input type="hidden" name="planId" value="${planRecord.id}">
           <input type="hidden" name="cdpPort" value="9222">
-          <select name="browserMode" aria-label="浏览器"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select>
+          <input type="hidden" name="browserMode" value="edge">
+          <span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span>
           <button class="workflow-primary" name="action" value="start"${disabled ? " disabled" : ""}>执行一轮</button>
         </form>`;
   const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode, next) : "可以开始新一轮";
@@ -2258,6 +2478,26 @@ function workflowHealthFailureCode(error) {
   return /^[A-Z0-9_]{1,80}$/.test(code) ? code : "WORKFLOW_HEALTH_FAILED";
 }
 
+function renderInheritedScopeSummary(workflow) {
+  if (workflow?.planner?.acquisitionMode !== "inherited") return "";
+  const scope = workflow.planner.searchScope || {};
+  const source = workflow.planner.keywordSource || {};
+  const policy = workflow.planner.platformPolicy || {};
+  const filters = (policy.filterSummary || [])
+    .map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const keywords = (source.keywords || [])
+    .map((item) => escapeHtml(item.word || "")).filter(Boolean).join("、");
+  const unresolved = (policy.unresolvedParams || []).map((item) => item.param).filter(Boolean);
+  return `<section class="workflow-scope">
+    <strong>筛选来源：BOSS 当前页面</strong>
+    <ul>${filters || "<li>使用平台默认筛选</li>"}</ul>
+    <p>范围：${escapeHtml(scopeShortId(scope.key))} · 关键词来源：Search Plan #${escapeHtml(source.searchPlanId || "")}</p>
+    <p>本轮关键词：${keywords || "无"}</p>
+    ${unresolved.length ? `<p class="workflow-alert">未解析平台筛选：${escapeHtml(unresolved.join("、"))}；采集 URL 已保留这些条件，本地不会猜值。</p>` : ""}
+    <p class="hint">修改 BOSS 筛选会创建新的统计范围；本轮恢复仍使用当前冻结范围。</p>
+  </section>`;
+}
+
 function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
@@ -2298,12 +2538,12 @@ function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth })
     ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
     : "";
   const style = `<style>
-    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason,.workflow-job-evidence{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-job-evidence{display:block}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.apply{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.caution{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
+    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-scope{max-width:100%;min-width:0;padding:14px 0;border-bottom:1px solid #ccd7dc;overflow-wrap:anywhere;word-break:break-word}.workflow-scope ul{margin:8px 0;padding-left:20px}.workflow-scope p{margin:8px 0}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason,.workflow-job-evidence{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-job-evidence{display:block}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.apply{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.caution{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
   </style>`;
   return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
     <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
       <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
-    </header>${healthPanel}${phase}</main>${polling}`);
+    </header>${renderInheritedScopeSummary(workflow)}${healthPanel}${phase}</main>${polling}`);
 }
 
 function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock }) {
@@ -2330,10 +2570,21 @@ function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtime
   if (workflow.status === "interrupted") {
     const communicationReview = workflow.communicationBatchId
       ? `<a class="button-link" href="/communication?batchId=${workflow.communicationBatchId}">检查沟通中断项</a>`
-      : `<form method="post" action="/api/workflow-run/resume"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button>继续本轮</button></form>`;
+      : renderWorkflowResumeForm(workflow);
     return `<section class="workflow-phase"><div class="workflow-alert"><strong>本轮已中断</strong><p>${escapeHtml(workflow.errorCode || "WORKFLOW_INTERRUPTED")} · ${escapeHtml(workflow.errorMessage || "请检查诊断后继续。")}</p></div><div class="workflow-actions">${communicationReview}</div></section>`;
   }
   return `<section class="workflow-phase"><div class="workflow-alert"><strong>${escapeHtml(workflowStatusLabel(workflow.status))}</strong><p>${escapeHtml(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。")}</p></div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a></div></section>`;
+}
+
+function renderWorkflowResumeForm(workflow) {
+  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222">`;
+  if (workflow.planner?.acquisitionMode === "inherited") {
+    return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="edge"><span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span><button>继续本轮</button></form>`;
+  }
+  const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
+  const edgeSelected = selectedMode === "edge" ? " selected" : "";
+  const portableSelected = selectedMode === "portable" ? " selected" : "";
+  return `<form method="post" action="/api/workflow-run/resume">${identity}<select name="browserMode"><option value="edge"${edgeSelected}>当前已登录 Edge</option><option value="portable"${portableSelected}>项目专用 Edge</option></select><button>继续本轮</button></form>`;
 }
 
 function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
@@ -3011,4 +3262,4 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-module.exports = { createDashboardServer, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };
+module.exports = { createDashboardServer, resolveLiveInheritedContext, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };

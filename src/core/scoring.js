@@ -1,3 +1,5 @@
+const { evaluatePlatformBoundaries } = require("./platform_runtime_policy");
+
 function salaryRangeK(salary) {
   const text = String(salary || "");
   const match = text.match(/(\d+)\s*[-~—]\s*(\d+)\s*K/i);
@@ -47,6 +49,9 @@ function scoreJob(job, configs) {
   const matches = [];
   const risks = [];
   const qualityTags = [];
+  const platformBoundary = evaluatePlatformBoundaries(job, configs.platformPolicy);
+  qualityTags.push(...platformBoundary.qualityTags);
+  risks.push(...platformBoundary.risks);
 
   for (const item of scoring.positive_keywords || []) {
     if (new RegExp(escapeRegExp(item.word), "i").test(text)) {
@@ -63,7 +68,8 @@ function scoreJob(job, configs) {
     }
   }
 
-  if (role.kind === "internship" && !acceptsInternship) {
+  const enforceJobTypes = configs.targetPolicy?.enforceJobTypes !== false;
+  if (role.kind === "internship" && enforceJobTypes && !acceptsInternship) {
     score -= 100;
     qualityTags.push("internship_role");
     risks.push("实习岗位不在当前社招目标内");
@@ -88,17 +94,20 @@ function scoreJob(job, configs) {
     risks.push("地点待核验");
   }
 
-  if (days === null) {
-    score -= scoring.boss_activity?.unknown_penalty || 0;
-    qualityTags.push("activity_unverified");
-    risks.push("BOSS活跃未知");
-  } else if (days > (scoring.boss_activity?.max_active_days || 3)) {
-    score -= scoring.boss_activity?.inactive_penalty || 0;
-    qualityTags.push("inactive_boss");
-    risks.push(`BOSS非3日内活跃：${job.bossActiveText}`);
-  } else {
-    score += 2;
-    matches.push("3日内活跃");
+  const enforceBossActivity = scoring.boss_activity?.enforce !== false;
+  if (enforceBossActivity) {
+    if (days === null) {
+      score -= scoring.boss_activity?.unknown_penalty || 0;
+      qualityTags.push("activity_unverified");
+      risks.push("BOSS活跃未知");
+    } else if (days > (scoring.boss_activity?.max_active_days || 3)) {
+      score -= scoring.boss_activity?.inactive_penalty || 0;
+      qualityTags.push("inactive_boss");
+      risks.push(`BOSS非3日内活跃：${job.bossActiveText}`);
+    } else {
+      score += 2;
+      matches.push("3日内活跃");
+    }
   }
 
   if (job.detailRequired && !job.detailRead) {
@@ -179,7 +188,7 @@ function scoreJob(job, configs) {
     && salary.max !== null
     && salary.max <= Number(scoring.salary?.experience_flex_max_k || 18)
     && score >= 6
-    && !(role.kind === "internship" && !acceptsInternship)
+    && !(role.kind === "internship" && enforceJobTypes && !acceptsInternship)
     && (!job.detailRequired || job.detailRead);
   if (!String(job.experience || "").trim()) {
     qualityTags.push("experience_unverified");
@@ -219,7 +228,9 @@ function scoreJob(job, configs) {
     matches.push("3-5年可冲");
     qualityTags.push("experience_stretch");
     qualityTags.push("experience_stretch_low_salary");
-  } else if (!experienceFit.configured && /3-5年|3年以上|三年以上|5年以上|五年以上/.test(`${job.experience || ""} ${job.description || ""}`)) {
+  } else if (scoring.allowExperienceStretch !== false
+    && !experienceFit.configured
+    && /3-5年|3年以上|三年以上|5年以上|五年以上/.test(`${job.experience || ""} ${job.description || ""}`)) {
     qualityTags.push("experience_stretch");
     risks.push("经验门槛偏高");
   }
@@ -239,7 +250,7 @@ function scoreJob(job, configs) {
   }
   if (score < 0) qualityTags.push("low_value_risk");
 
-  const roleBlocked = role.kind === "internship" && !acceptsInternship;
+  const roleBlocked = role.kind === "internship" && enforceJobTypes && !acceptsInternship;
   const level = roleBlocked
     ? "不建议"
     : canStretch ? "可冲" : score >= 12 ? "优先" : score >= 6 ? "可投" : "谨慎";
@@ -308,9 +319,21 @@ function parseWorkSchedule(value) {
 function decisionState(job) {
   const tags = new Set(job.qualityTags || []);
   // 本地硬边界只保留跨职业通用项：链接、地点、活跃、用户排除词、工作性质与薪资底线。
-  if (["missing_link", "invalid_job_link", "location_mismatch", "inactive_boss", "hard_exclude", "internship_role", "salary_out_of_range"].some((tag) => tags.has(tag))) {
-    return "blocked";
-  }
+  const hardBoundaryTags = [
+    "missing_link",
+    "invalid_job_link",
+    "location_mismatch",
+    "inactive_boss",
+    "hard_exclude",
+    "internship_role",
+    "salary_out_of_range",
+    "platform_district_mismatch",
+    "platform_salary_mismatch",
+    "platform_experience_mismatch",
+    "platform_degree_mismatch",
+    "platform_job_type_mismatch"
+  ];
+  if (hardBoundaryTags.some((tag) => tags.has(tag))) return "blocked";
   if (tags.has("activity_unverified") || tags.has("stale_or_unknown_active") || tags.has("detail_unverified")) return "refresh";
   return "ready";
 }

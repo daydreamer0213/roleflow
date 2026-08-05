@@ -1,6 +1,7 @@
 const fs = require("fs");
 const { parseBossActivityText } = require("../../core/activity_status");
 const { mergeJobMetadata } = require("../../core/job_metadata");
+const { canonicalizeBossSearchTemplate } = require("../../core/inherited_search_scope");
 const { normalizePlatformFilterCatalog } = require("../../core/platform_filters");
 const { PRODUCT_POLICY } = require("../../core/product_policy");
 
@@ -391,9 +392,11 @@ class BossSiteAdapter {
     const selected = healthy.find((item) => item.isSearchPage);
     const fallback = selected || healthy[0];
     if (fallback) {
+      const safeLocation = bossLogLocation(fallback.url || fallback.tab.url);
       this.logger?.info("boss_browser_preflight_ok", {
         tabId: fallback.tabId,
-        url: fallback.url || fallback.tab.url,
+        origin: safeLocation.origin,
+        path: safeLocation.path,
         isSearchPage: fallback.isSearchPage,
         hasJobStructure: fallback.hasJobStructure,
         inspectedTabs: inspected.length
@@ -402,6 +405,70 @@ class BossSiteAdapter {
     }
     if (inspected.some((item) => item.isBoss)) throw bossError("BOSS_LOGIN_REQUIRED", "已找到 BOSS 标签页，但未确认可用登录状态。请在搜索页完成登录后重试。");
     throw bossError("BOSS_TAB_REQUIRED", "Edge 中没有可用的 BOSS 直聘标签页。");
+  }
+
+  async inspectInheritedSearchPage({ tabId = null } = {}) {
+    if (!this.browser) {
+      throw bossError("BOSS_BROWSER_REQUIRED", "继承模式预检需要浏览器连接。");
+    }
+    const selectedTabId = tabId || await this.browser.activeTabId();
+    await this.assertSearchPage(selectedTabId);
+    const state = await this.browser.evalValue(selectedTabId, `(() => ({
+      url: location.href,
+      rawFields: Array.from(document.querySelectorAll(".condition-filter-select")).map((node) => ({
+        label: (node.querySelector(".current-select .placeholder-text")?.textContent || "").replace(/\\s+/g, " ").trim(),
+        options: Array.from(node.querySelectorAll("[ka*='sel-job-rec-']")).map((option) => ({
+          ka: option.getAttribute("ka") || "",
+          label: (option.textContent || "").replace(/\\s+/g, " ").trim()
+        }))
+      })),
+      currentOptions: Array.from(document.querySelectorAll(".condition-filter-select")).flatMap((field) =>
+        Array.from(field.querySelectorAll("[ka*='sel-job-rec-']")).flatMap((option) => {
+          const match = String(option.getAttribute("ka") || "").match(/^sel-job-rec-([A-Za-z]+)-([^\\s]+)$/);
+          const selected = option.matches?.(".active, .selected, [aria-selected='true'], [aria-current='true']")
+            || option.getAttribute("aria-selected") === "true"
+            || option.getAttribute("aria-current") === "true"
+            || Boolean(option.closest?.("li.active, li.selected, .filter-option.active, .filter-option.selected, [aria-selected='true'], [aria-current='true']"));
+          if (!match || !selected) return [];
+          const param = match[1] === "exp" ? "experience" : match[1];
+          const code = match[2].trim();
+          const currentCodes = location.href
+            ? new URL(location.href).searchParams.getAll(param)
+              .flatMap((value) => String(value).split(",").map((item) => item.trim()))
+            : [];
+          const label = String(option.textContent || "").replace(/\\s+/g, " ").trim();
+          return code && label && currentCodes.includes(code) ? [{ param, code, label }] : [];
+        })
+      ),
+      urlOptions: Array.from(document.querySelectorAll('a[href*="/web/geek/jobs"]')).flatMap((node) => {
+        try {
+          const currentUrl = new URL(location.href);
+          const optionUrl = new URL(node.href, location.href);
+          if (optionUrl.origin !== location.origin || !/^\\/web\\/geek\\/jobs\\/?$/i.test(optionUrl.pathname)) return [];
+          const label = String(node.textContent || "").replace(/\\s+/g, " ").trim();
+          if (!label) return [];
+          return [...optionUrl.searchParams.entries()]
+            .filter(([param, code]) => param !== "query" && param !== "page" && code)
+            .flatMap(([param, value]) => String(value).split(",")
+              .map((code) => ({ param, code: code.trim(), label }))
+              .filter((item) => item.code && !new Set(currentUrl.searchParams.getAll(param)
+                .flatMap((currentValue) => String(currentValue).split(",").map((code) => code.trim()))).has(item.code)));
+        } catch {
+          return [];
+        }
+      })
+    }))()`);
+    const searchTemplate = canonicalizeBossSearchTemplate(state?.url);
+    return {
+      tabId: selectedTabId,
+      url: String(state?.url || ""),
+      searchTemplate,
+      catalog: parseBossFilterCatalog(state?.rawFields || []),
+      urlOptions: dedupeBossUrlOptions([
+        ...(state?.urlOptions || []),
+        ...(state?.currentOptions || [])
+      ])
+    };
   }
 
   async scan(options = {}) {
@@ -1418,6 +1485,22 @@ function parseBossFilterCatalog(rawFields = []) {
   });
 }
 
+function dedupeBossUrlOptions(items = []) {
+  const unique = new Map();
+  for (const item of items) {
+    const normalized = {
+      param: String(item?.param || "").trim(),
+      code: String(item?.code || "").trim(),
+      label: String(item?.label || "").replace(/\s+/g, " ").trim()
+    };
+    if (!normalized.param || !normalized.code || !normalized.label) continue;
+    unique.set(`${normalized.param}:${normalized.code}`, normalized);
+  }
+  return [...unique.values()].sort((left, right) =>
+    left.param.localeCompare(right.param) || left.code.localeCompare(right.code)
+  );
+}
+
 function normalizePriority(value) {
   return ["A", "B", "C"].includes(value) ? value : "B";
 }
@@ -1445,18 +1528,7 @@ function buildBossSearchUrl({ keyword, cityCode, nativeFilters, searchTemplate }
 function normalizeBossSearchTemplate(value) {
   const raw = typeof value === "string" ? value : value?.url;
   try {
-    const url = new URL(String(raw || ""));
-    if (url.protocol !== "https:" || url.hostname !== "www.zhipin.com" || !/^\/web\/geek\/jobs\/?$/i.test(url.pathname)) {
-      return { mode: "generated", url: "", cityCode: "" };
-    }
-    url.searchParams.delete("query");
-    url.searchParams.delete("page");
-    url.hash = "";
-    return {
-      mode: "inherited",
-      url: url.toString(),
-      cityCode: url.searchParams.get("city") || ""
-    };
+    return canonicalizeBossSearchTemplate(raw);
   } catch {
     return { mode: "generated", url: "", cityCode: "" };
   }
@@ -1472,7 +1544,7 @@ function resolveBossSearchContext({ currentUrl = "", storedTemplate = null, city
     searchTemplate,
     cityScopes: [{
       city: matched?.city || "",
-      cityCode: searchTemplate.cityCode || matched?.cityCode || scopes[0]?.cityCode || ""
+      cityCode: searchTemplate.cityCode || "platform-default"
     }]
   };
 }
@@ -1715,6 +1787,18 @@ function bossTabRank(tab) {
   if (isBoss && tab?.active) return 2;
   if (isBoss) return 3;
   return 9;
+}
+
+function bossLogLocation(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl || ""));
+    return {
+      origin: url.origin,
+      path: url.pathname
+    };
+  } catch {
+    return { origin: "", path: "" };
+  }
 }
 
 function sleep(ms) {

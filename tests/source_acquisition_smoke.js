@@ -1,9 +1,13 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { BossSiteAdapter, buildBossScanTargets, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   openDb,
@@ -68,6 +72,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
 
 (async () => {
   await preflightSmoke();
+  await inheritedPageInspectionSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
   await delayedAppendAtBottomSmoke();
@@ -105,8 +110,13 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
 async function preflightSmoke() {
   const oldSearch = { id: "old-search", active: false, url: "https://www.zhipin.com/web/geek/jobs?query=old" };
   const activeChat = { id: "active-chat", active: true, url: "https://www.zhipin.com/web/geek/chat" };
-  const usableSearch = { ...activeBoss, active: false };
+  const usableSearch = {
+    ...activeBoss,
+    active: false,
+    url: "https://www.zhipin.com/web/geek/jobs?query=PRIVATE_QUERY&city=101280100&salary=405"
+  };
   const inspected = [];
+  const logs = [];
   const browser = {
     async listTabs() { return [activeChat, oldSearch, usableSearch]; },
     async activeTabId() { return activeChat.id; },
@@ -138,11 +148,131 @@ async function preflightSmoke() {
       };
     }
   };
-  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const adapter = new BossSiteAdapter({
+    browser,
+    logger: { info(event, details) { logs.push({ event, details }); } },
+    sleepFn: async () => {}
+  });
   const state = await adapter.preflight();
   assert.strictEqual(state.tabId, usableSearch.id);
   assert.strictEqual(state.loggedIn, true);
   assert.deepStrictEqual(inspected, [oldSearch.id, usableSearch.id, activeChat.id]);
+  const preflightLog = logs.find((item) => item.event === "boss_browser_preflight_ok");
+  assert(preflightLog);
+  assert.strictEqual(preflightLog.details.origin, "https://www.zhipin.com");
+  assert.strictEqual(preflightLog.details.path, "/web/geek/jobs");
+  const serializedLog = JSON.stringify(preflightLog);
+  assert(!serializedLog.includes(usableSearch.url));
+  assert(!serializedLog.includes("PRIVATE_QUERY"));
+  assert(!serializedLog.includes("101280100"));
+  assert(!serializedLog.includes("salary=405"));
+}
+
+async function inheritedPageInspectionSmoke() {
+  let navigations = 0;
+  let clicks = 0;
+  let sessionCreations = 0;
+  const fixture = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "fixtures", "boss_inherited_filter_dom.json"),
+    "utf8"
+  ));
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isSearchPage")) {
+        return {
+          url: fixture.url,
+          title: "全国招聘",
+          isBoss: true,
+          isLoginPage: false,
+          isRiskPage: false,
+          loggedIn: true,
+          isSearchPage: true,
+          hasJobStructure: true
+        };
+      }
+      if (expression.includes("condition-filter-select")) {
+        return vm.runInNewContext(expression, inheritedFilterDomSandbox(fixture));
+      }
+      return {
+        url: fixture.url,
+        path: "/web/geek/jobs",
+        isRiskPage: false,
+        isLoginPage: false,
+        hasJobStructure: true
+      };
+    },
+    async navigate() { navigations += 1; },
+    async clickAt() { clicks += 1; },
+    async createTab() { sessionCreations += 1; }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const inspected = await adapter.inspectInheritedSearchPage({ tabId: "BOSS-SEARCH" });
+  assert.strictEqual(navigations, 0);
+  assert.strictEqual(clicks, 0);
+  assert.strictEqual(sessionCreations, 0);
+  assert.strictEqual(inspected.tabId, "BOSS-SEARCH");
+  assert.strictEqual(inspected.searchTemplate.cityCode, "101280100");
+  assert.strictEqual(inspected.catalog.fields.salary.options[0].label, "10-20K");
+  assert.deepStrictEqual(inspected.urlOptions.filter((item) => item.label === "天河区"), [
+    { param: "district", code: "101280105", label: "天河区" }
+  ]);
+  assert.strictEqual(inspected.urlOptions.some((item) => item.param === "city" || item.param === "salary"), false);
+  assert.strictEqual(inspected.urlOptions.some((item) => item.param === "unknownStable"), false);
+  assert.deepStrictEqual(inspected.urlOptions.find((item) => item.param === "futureFilter"), {
+    param: "futureFilter",
+    code: "preview-9",
+    label: "未来筛选"
+  });
+  const inheritedScope = buildInheritedSearchScope({ profileId: 7, rawUrl: inspected.url });
+  const platformPolicy = compilePlatformRuntimePolicy({
+    searchScope: inheritedScope.searchScope,
+    catalog: inspected.catalog,
+    urlOptions: inspected.urlOptions,
+    cityCodes: CITY_CODES
+  });
+  assert.deepStrictEqual(platformPolicy.filters.location.districts, ["天河区"]);
+  assert.deepStrictEqual(platformPolicy.unresolvedParams, [
+    { param: "unknownStable", codes: ["opaque-7"] }
+  ]);
+}
+
+function inheritedFilterDomSandbox(fixture) {
+  const currentUrl = new URL(fixture.url);
+  const filterNodes = fixture.rawFields.map((field) => ({
+    querySelector(selector) {
+      return selector === ".current-select .placeholder-text" ? { textContent: field.label } : null;
+    },
+    querySelectorAll(selector) {
+      if (selector !== "[ka*='sel-job-rec-']") return [];
+      return field.options.map((option) => ({
+        textContent: option.label,
+        className: option.selected ? "selected" : "",
+        getAttribute(name) {
+          if (name === "ka") return option.ka;
+          if (name === "aria-selected") return option.selected ? "true" : null;
+          return null;
+        },
+        matches(selector) {
+          return option.selected && /selected|aria-selected/.test(selector);
+        },
+        closest(selector) {
+          return option.selected && /selected|aria-selected/.test(selector) ? this : null;
+        }
+      }));
+    }
+  }));
+  const linkNodes = fixture.links.map((link) => ({ href: link.href, textContent: link.label }));
+  return {
+    URL,
+    location: { href: currentUrl.href, origin: currentUrl.origin },
+    document: {
+      querySelectorAll(selector) {
+        if (selector === ".condition-filter-select") return filterNodes;
+        if (selector === 'a[href*="/web/geek/jobs"]') return linkNodes;
+        return [];
+      }
+    }
+  };
 }
 
 async function riskPreflightSmoke() {

@@ -20,6 +20,9 @@ const {
 } = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const {
+  applyPlatformRuntimePolicy
+} = require("../src/core/platform_runtime_policy");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
 const { applyRuleGuard } = require("../src/core/job_analysis");
 const { extractJobMetadata } = require("../src/core/job_metadata");
@@ -200,7 +203,7 @@ assert.strictEqual(extendedSearchUrl.searchParams.get("jobType"), "1901");
 const inheritedTemplate = normalizeBossSearchTemplate("https://www.zhipin.com/web/geek/jobs?query=old&page=3&city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020");
 assert.deepStrictEqual(inheritedTemplate, {
   mode: "inherited",
-  url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405&experience=101%2C104&degree=203&industry=100020",
+  url: "https://www.zhipin.com/web/geek/jobs?city=101280100&degree=203&district=101280105&experience=101%2C104&industry=100020&salary=405",
   cityCode: "101280100"
 });
 const inheritedSearchUrl = new URL(buildBossSearchUrl({
@@ -224,6 +227,14 @@ assert.deepStrictEqual(resolveBossSearchContext({
 }), {
   searchTemplate: inheritedTemplate,
   cityScopes: [{ city: "广州", cityCode: "101280100" }]
+});
+const inheritedTemplateWithoutCity = normalizeBossSearchTemplate("https://www.zhipin.com/web/geek/jobs?query=RAG&salary=405");
+assert.deepStrictEqual(resolveBossSearchContext({
+  currentUrl: inheritedTemplateWithoutCity.url,
+  cityScopes: [{ city: "广州", cityCode: "101280100" }]
+}), {
+  searchTemplate: inheritedTemplateWithoutCity,
+  cityScopes: [{ city: "", cityCode: "platform-default" }]
 });
 assert.deepStrictEqual(resolveBossSearchContext({
   currentUrl: "https://www.zhipin.com/guangzhou/",
@@ -267,6 +278,103 @@ const configs = {
     experience_stretch_keywords: ["Python", "RAG", "AI"]
   }
 };
+
+const inheritedBoundaryPolicy = {
+  hash: "screening-platform-policy",
+  filters: {
+    location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+    salary: { codes: ["405"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] },
+    experience: { codes: ["104"], labels: ["1-3年"] },
+    degree: { codes: ["203"], labels: ["本科"] },
+    jobType: { codes: ["1901"], labels: ["全职"] },
+    acquisitionOnly: {}
+  },
+  unresolvedParams: [],
+  filterSummary: ["地点：全国", "薪资：10-20K", "经验：1-3年", "学历：本科", "求职类型：全职"]
+};
+const inheritedBoundaryConfigs = applyPlatformRuntimePolicy(configs, inheritedBoundaryPolicy);
+const platformMismatch = scoreJob(job({
+  salary: "30-40K",
+  experience: "3-5年",
+  education: "硕士",
+  tags: ["实习"],
+  bossActiveText: "今日活跃"
+}), inheritedBoundaryConfigs);
+assert.strictEqual(decisionState(platformMismatch), "blocked");
+assert(platformMismatch.qualityTags.includes("platform_salary_mismatch"));
+
+const platformUnknown = scoreJob(job({
+  salary: "",
+  experience: "",
+  education: "",
+  tags: [],
+  bossActiveText: "今日活跃"
+}), inheritedBoundaryConfigs);
+assert.notStrictEqual(decisionState(platformUnknown), "blocked");
+
+const inheritedUnsetBoundaryPolicy = {
+  hash: "screening-platform-unset-policy",
+  filters: {
+    location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+    salary: { codes: [], labels: [], ranges: [] },
+    experience: { codes: [], labels: [] },
+    degree: { codes: [], labels: [] },
+    jobType: { codes: [], labels: [] },
+    acquisitionOnly: {}
+  },
+  unresolvedParams: [{ param: "industry", codes: ["100020"] }],
+  filterSummary: ["地点：全国", "未解析参数：industry"]
+};
+const staleBoundaryConfigs = applyPlatformRuntimePolicy({
+  ...configs,
+  searchPlan: {
+    directions: ["AI应用开发"],
+    keywords: [{ word: "RAG", priority: "A" }],
+    cities: ["广州"],
+    salary: { minK: 9, maxK: 14 },
+    experience: ["1-3年"],
+    jobTypes: ["全职"],
+    bossActiveDays: 1,
+    workSchedulePreference: "prefer_double_weekend",
+    allowExperienceStretch: true,
+    excludeWords: ["RAG"],
+    hardExcludes: ["RAG"]
+  },
+  targetPolicy: { directions: ["AI应用开发"], jobTypes: ["全职"], skills: ["Python"] },
+  scoring: {
+    ...configs.scoring,
+    risk_rules: [{ word: "RAG", penalty: 100, risk: "旧方案软排除" }],
+    exclude_words: ["RAG"],
+    boss_activity: { max_active_days: 1, unknown_penalty: 3, inactive_penalty: 100 },
+    work_schedule: { preference: "prefer_double_weekend", single_weekend_penalty: 100 },
+    allowExperienceStretch: true,
+    experience: { selected: ["1-3年"], allowStretch: true },
+    salary: {
+      ...configs.scoring.salary,
+      mode: "strict",
+      expected_min_k: 9,
+      expected_max_k: 14
+    },
+    experience_stretch_keywords: ["RAG"]
+  }
+}, inheritedUnsetBoundaryPolicy);
+const staleBoundaryJob = scoreJob(job({
+  title: "RAG 开发实习生",
+  location: "佛山",
+  salary: "5-6K",
+  experience: "5年以上",
+  education: "",
+  bossActiveText: "近半年活跃",
+  tags: ["实习", "单休"],
+  description: "RAG 外包项目，单休。"
+}), staleBoundaryConfigs);
+assert.strictEqual(decisionState(staleBoundaryJob), "ready");
+assert(staleBoundaryJob.qualityTags.includes("platform_filter_unresolved"));
+for (const staleTag of ["hard_exclude", "inactive_boss", "internship_role", "salary_out_of_range"]) {
+  assert(!staleBoundaryJob.qualityTags.includes(staleTag), `继承模式不得保留旧方案边界：${staleTag}`);
+}
+assert(!staleBoundaryJob.qualityTags.includes("experience_stretch"));
+assert(!staleBoundaryJob.matches.includes("3日内活跃"));
 
 const ready = scoreJob(job({ bossActiveText: "今日活跃", experience: "3-5年", salary: "10-16K" }), configs);
 assert.strictEqual(decisionState(ready), "ready");

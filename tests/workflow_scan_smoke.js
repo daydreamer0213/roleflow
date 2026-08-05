@@ -17,6 +17,9 @@ const {
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
+const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
@@ -71,8 +74,120 @@ async function main() {
   assert.deepStrictEqual(workflowAccessUsage(db, "usage-probe"), { details: 2, pages: 1, scrolls: 1 });
   const saved = seedProfile(db);
   const workflow = createWorkflowRun(db, workflowInput(saved));
+  const invalidInherited = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-invalid-inherited",
+    localDay: "2026-07-19",
+    planner: {
+      acquisitionMode: "inherited",
+      searchTemplate: { mode: "inherited", url: "", cityCode: "" },
+      searchScope: {},
+      keywordSource: {},
+      platformPolicy: {}
+    }
+  }));
+  const missingMode = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-missing-acquisition-mode",
+    localDay: "2026-07-17",
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 }
+  }));
+  const unknownMode = createWorkflowRun(db, workflowInput(saved, {
+    id: "workflow-unknown-acquisition-mode",
+    localDay: "2026-07-18",
+    planner: { acquisitionMode: "future-mode", remainingDailyTarget: 70, remainingRunSlots: 2 }
+  }));
   db.close();
   db = null;
+
+  const invalidResult = spawnSync(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "scan",
+    "--db", dbPath,
+    "--input", path.join("data", "sample_jobs.json"),
+    "--plan", String(saved.planId),
+    "--force-mock",
+    "--run-id", "workflow-invalid-inherited-process",
+    "--workflow-run", invalidInherited.id,
+    "--keywords", "AI application,RAG engineer",
+    "--max-cards", "50",
+    "--max-detail-total", "120",
+    "--browser-page-budget", "20"
+  ], { cwd: root, encoding: "utf8" });
+  assert.strictEqual(invalidResult.status, 1, invalidResult.stderr || invalidResult.stdout);
+  assert.match(invalidResult.stderr, /本轮继承模式快照不完整/);
+  db = openDb(dbPath);
+  assert.strictEqual(getScanRun(db, "workflow-invalid-inherited-process").stopCode, "WORKFLOW_INHERITED_SNAPSHOT_INVALID");
+  assert.strictEqual(getWorkflowRun(db, invalidInherited.id).errorCode, "WORKFLOW_INHERITED_SNAPSHOT_INVALID");
+  db.close();
+  db = null;
+
+  for (const [malformedWorkflow, runId] of [
+    [missingMode, "workflow-missing-acquisition-mode-process"],
+    [unknownMode, "workflow-unknown-acquisition-mode-process"]
+  ]) {
+    const malformedResult = spawnWorkflowScan({
+      dbPath,
+      planId: saved.planId,
+      workflowRunId: malformedWorkflow.id,
+      runId
+    });
+    assert.strictEqual(malformedResult.status, 1, malformedResult.stderr || malformedResult.stdout);
+    assert.match(malformedResult.stderr, /本轮任务的采集模式无效/);
+    db = openDb(dbPath);
+    assert.strictEqual(getScanRun(db, runId).stopCode, "WORKFLOW_ACQUISITION_MODE_INVALID");
+    assert.strictEqual(getWorkflowRun(db, malformedWorkflow.id).errorCode, "WORKFLOW_ACQUISITION_MODE_INVALID");
+    assert.strictEqual(getWorkflowRun(db, malformedWorkflow.id).scanBatchId, null);
+    db.close();
+    db = null;
+  }
+
+  db = openDb(dbPath);
+  const unsupportedSaved = seedProfile(db, {
+    city: "测试未映射城市",
+    fixtureId: "unsupported-inherited-city"
+  });
+  const inheritedScope = buildInheritedSearchScope({
+    profileId: unsupportedSaved.profileId,
+    rawUrl: "https://www.zhipin.com/web/geek/jobs?query=ignored&page=2"
+  });
+  const inheritedPolicy = compilePlatformRuntimePolicy({
+    searchScope: inheritedScope.searchScope,
+    catalog: {},
+    cityCodes: CITY_CODES
+  });
+  const unsupportedInherited = createWorkflowRun(db, workflowInput(unsupportedSaved, {
+    id: "workflow-inherited-unsupported-plan-city",
+    localDay: "2026-07-23",
+    planner: {
+      acquisitionMode: "inherited",
+      searchTemplate: inheritedScope.searchTemplate,
+      searchScope: inheritedScope.searchScope,
+      keywordSource: {
+        searchPlanId: unsupportedSaved.planId,
+        profileVersionId: unsupportedSaved.profileVersionId,
+        matchingCardRevision: "fixture-card",
+        catalogHash: "fixture-keywords",
+        keywords: [
+          { word: "AI application", priority: "A", reason: "" },
+          { word: "RAG engineer", priority: "B", reason: "" }
+        ]
+      },
+      platformPolicy: inheritedPolicy
+    }
+  }));
+  db.close();
+  db = null;
+  const inheritedUnsupportedResult = spawnWorkflowScan({
+    dbPath,
+    planId: unsupportedSaved.planId,
+    workflowRunId: unsupportedInherited.id,
+    runId: "workflow-inherited-unsupported-plan-city-process"
+  });
+  assert.strictEqual(
+    inheritedUnsupportedResult.status,
+    0,
+    inheritedUnsupportedResult.stderr || inheritedUnsupportedResult.stdout
+  );
 
   const result = spawnSync(process.execPath, [
     "--disable-warning=ExperimentalWarning",
@@ -161,9 +276,27 @@ async function main() {
   assert.strictEqual(getScanRun(db, "workflow-model-interrupted-scan").status, "failed");
 }
 
-function seedProfile(database) {
+function spawnWorkflowScan({ dbPath, planId, workflowRunId, runId }) {
+  return spawnSync(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "scan",
+    "--db", dbPath,
+    "--input", path.join("data", "sample_jobs.json"),
+    "--plan", String(planId),
+    "--force-mock",
+    "--run-id", runId,
+    "--workflow-run", workflowRunId,
+    "--keywords", "AI application,RAG engineer",
+    "--max-cards", "50",
+    "--max-detail-total", "120",
+    "--browser-page-budget", "20"
+  ], { cwd: root, encoding: "utf8" });
+}
+
+function seedProfile(database, { city = "广州", fixtureId = "workflow-scan" } = {}) {
   const profile = {
-    candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
+    candidate: { name: "Workflow Candidate", city, targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
     education: [{ school: "Test University", degree: "Bachelor", major: "Engineering" }],
     experiences: [],
     skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
@@ -172,8 +305,8 @@ function seedProfile(database) {
     strengths: []
   };
   const searchPlan = {
-    name: "Guangzhou AI",
-    cities: ["广州"],
+    name: `${city} AI`,
+    cities: [city],
     directions: ["AI应用开发"],
     keywords: [
       { word: "AI application", priority: "A" },
@@ -190,23 +323,23 @@ function seedProfile(database) {
     document: {
       originalFileName: "workflow-resume.txt",
       format: "text",
-      contentHash: "workflow-scan-resume",
+      contentHash: `${fixtureId}-resume`,
       text: "Python RAG LangGraph project experience. ".repeat(10),
       diagnostics: {}
     },
     searchPlan
   });
-  confirmSeededMatchingCard(database, saved, profile);
+  confirmSeededMatchingCard(database, saved, profile, `${fixtureId}-resume`);
   return saved;
 }
 
 // 扫描/工作流以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认，不走模型。
-function confirmSeededMatchingCard(database, saved, profile) {
+function confirmSeededMatchingCard(database, saved, profile, resumeContentHash) {
   const draft = createMatchingCardDraft(database, {
     profileId: saved.profileId,
     profileVersionId: saved.profileVersionId,
     resumeDocumentId: saved.resumeDocumentId,
-    resumeContentHash: "workflow-scan-resume",
+    resumeContentHash,
     card: matchingCardFromProfile(profile),
     source: "migration"
   });
@@ -228,7 +361,7 @@ function workflowInput(saved, overrides = {}) {
       { word: "RAG engineer", priority: "B", maxCards: 32, maxDetails: 30 }
     ],
     budget: { maxDetailTotal: 120, browserPageBudget: 20 },
-    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 },
+    planner: { acquisitionMode: "generated", remainingDailyTarget: 70, remainingRunSlots: 2 },
     ...overrides
   };
 }

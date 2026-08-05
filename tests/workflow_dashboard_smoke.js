@@ -7,9 +7,12 @@ const {
   saveProfileAnalysis,
   createMatchingCardDraft,
   confirmMatchingCard,
+  createWorkflowRun,
   listWorkflowRuns,
   getWorkflowRun,
   getLatestScanRun,
+  createScanRun,
+  finishScanRun,
   attachWorkflowScan,
   transitionWorkflowRun,
   createBatch,
@@ -19,6 +22,7 @@ const {
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
+const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
@@ -39,6 +43,59 @@ let server;
   db = openDb(dbPath);
   const saved = seedProfile(db);
   const spawns = [];
+  let inheritedFailureCode = "";
+  let inheritedResolutionCount = 0;
+  const inheritedContextResolver = async ({ plan, matchingContext }) => {
+    inheritedResolutionCount += 1;
+    if (inheritedFailureCode) {
+      throw Object.assign(new Error(`blocked by ${inheritedFailureCode}`), {
+        code: inheritedFailureCode,
+        statusCode: 409
+      });
+    }
+    const context = {
+      acquisitionMode: "inherited",
+      searchTemplate: {
+        mode: "inherited",
+        url: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405",
+        cityCode: "100010000"
+      },
+      searchScope: {
+        key: `boss:${plan.profileId}:fixture-scope`,
+        site: "boss",
+        templateHash: "fixture-scope",
+        templateUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&salary=405",
+        filterParams: { city: ["100010000"], salary: ["405"] }
+      },
+      keywordSource: {
+        searchPlanId: plan.id,
+        profileVersionId: plan.profileVersionId,
+        matchingCardRevision: "fixture-card",
+        catalogHash: "fixture-catalog",
+        keywords: [
+          ...plan.plan.keywords.map(({ word, priority, reason = "" }) => ({ word, priority, reason })),
+          { word: "Agent工程师", priority: "B", reason: "测试继承关键词展示" }
+        ]
+      },
+      platformPolicy: {
+        hash: "fixture-policy",
+        site: "boss",
+        templateHash: "fixture-scope",
+        filters: {
+          location: { mode: "nationwide", codes: ["100010000"], cities: [], districts: [] },
+          salary: { codes: ["405"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] },
+          experience: { codes: [], labels: [] },
+          degree: { codes: [], labels: [] },
+          jobType: { codes: [], labels: [] },
+          acquisitionOnly: {}
+        },
+        unresolvedParams: [],
+        filterSummary: ["地点：全国", "薪资：10-20K"]
+      },
+      matchingContext
+    };
+    return context;
+  };
   server = createDashboardServer({
     db,
     root,
@@ -46,6 +103,7 @@ let server;
     forceMock: true,
     allowOfflineMock: true,
     logger,
+    inheritedContextResolver,
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
@@ -61,8 +119,39 @@ let server;
   assert.match(planBefore.body, /今日进度<\/span><strong>0\s*\/\s*70/);
   assert.match(planBefore.body, /下一轮目标<\/span><strong>35/);
   assert.strictEqual((planBefore.body.match(/name="action" value="start"/g) || []).length, 1);
+  assert.match(
+    planBefore.body,
+    /<button class="workflow-primary" name="action" value="start">执行一轮<\/button>/
+  );
+  assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
+  assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
+
+  for (const code of [
+    "BOSS_RISK_CONTROL",
+    "BOSS_LOGIN_REQUIRED",
+    "BOSS_SEARCH_PAGE_INVALID"
+  ]) {
+    inheritedFailureCode = code;
+    const rejected = await postForm(baseUrl, "/api/workflow-run", {
+      planId: saved.planId,
+      browserMode: "edge",
+      action: "start"
+    });
+    assert.strictEqual(rejected.status, 409);
+    assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 0);
+    assert.strictEqual(spawns.length, 0);
+  }
+  inheritedFailureCode = "";
+
+  const portableStart = await postForm(baseUrl, "/api/workflow-run", {
+    planId: saved.planId,
+    browserMode: "portable",
+    action: "start"
+  });
+  assert.strictEqual(portableStart.status, 409);
+  assert.match(portableStart.body, /INHERITED_EDGE_REQUIRED/);
 
   const started = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
@@ -74,6 +163,13 @@ let server;
   const workflow = listWorkflowRuns(db, { planId: saved.planId })[0];
   assert.strictEqual(workflow.status, "scanning");
   assert.strictEqual(workflow.targetSuccessCount, 35);
+  assert.strictEqual(workflow.planner.acquisitionMode, "inherited");
+  assert.strictEqual(workflow.planner.searchScope.key, `boss:${saved.profileId}:fixture-scope`);
+  assert.strictEqual(workflow.planner.platformPolicy.hash, "fixture-policy");
+  assert.deepStrictEqual(
+    workflow.keywords.map((item) => item.word),
+    ["AI应用开发工程师", "大模型应用开发工程师", "Agent开发工程师"]
+  );
   assert.strictEqual(spawns.length, 1);
   assert(spawns[0].args.includes("--workflow-run"));
   assert(spawns[0].args.includes(workflow.id));
@@ -82,13 +178,191 @@ let server;
   assert.match(scanningPage.body, /正在筛选岗位/);
   assert.match(scanningPage.body, /本轮目标\s*<strong>35/);
   assert.doesNotMatch(scanningPage.body, /上午|下午/);
+  for (const text of [
+    "筛选来源：BOSS 当前页面",
+    "地点：全国",
+    "薪资：10-20K",
+    "范围：fixture-sc",
+    "关键词来源：Search Plan",
+    "AI应用开发工程师",
+    "RAG工程师",
+    "Agent工程师",
+    "修改 BOSS 筛选会创建新的统计范围"
+  ]) {
+    assert.match(scanningPage.body, new RegExp(text));
+  }
+  assert.doesNotMatch(scanningPage.body, /广州 AI.*目标城市/);
+  assert.doesNotMatch(scanningPage.body, /https:\/\/www\.zhipin\.com\/web\/geek\/jobs\?/);
+
+  const unresolvedPlanner = {
+    ...workflow.planner,
+    platformPolicy: {
+      ...workflow.planner.platformPolicy,
+      unresolvedParams: [{ param: "industry", codes: ["100020"] }]
+    },
+    browserState: {
+      cookie: "raw-authenticated-browser-state"
+    }
+  };
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(unresolvedPlanner), workflow.id);
+  const unresolvedPage = await getText(baseUrl, started.location);
+  assert.match(unresolvedPage.body, /未解析平台筛选：industry/);
+  assert.doesNotMatch(unresolvedPage.body, /100020/);
+  assert.doesNotMatch(unresolvedPage.body, /raw-authenticated-browser-state/);
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(workflow.planner), workflow.id);
 
   spawns[0].child.emit("error", new Error("spawn failed"));
   const interruptedWorkflow = getWorkflowRun(db, workflow.id);
   assert.strictEqual(interruptedWorkflow.status, "interrupted");
   assert.strictEqual(interruptedWorkflow.sequence, 1);
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
+  const inheritedInterruptedPage = await getText(baseUrl, started.location);
+  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+  assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
+  const spawnCountBeforePortableResume = spawns.length;
+  const portableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "portable"
+  });
+  assert.strictEqual(portableResume.status, 409);
+  assert.match(portableResume.body, /INHERITED_EDGE_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforePortableResume);
+
+  const frozenPlanner = workflow.planner;
+  const resolutionCountBeforeMalformedResume = inheritedResolutionCount;
+  for (const acquisitionMode of [undefined, "future-mode"]) {
+    const malformedPlanner = { ...frozenPlanner };
+    if (acquisitionMode === undefined) delete malformedPlanner.acquisitionMode;
+    else malformedPlanner.acquisitionMode = acquisitionMode;
+    db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+      .run(JSON.stringify(malformedPlanner), workflow.id);
+    const spawnCountBeforeMalformedResume = spawns.length;
+    const malformedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "edge"
+    });
+    assert.strictEqual(malformedResume.status, 409);
+    assert.match(malformedResume.body, /WORKFLOW_ACQUISITION_MODE_INVALID/);
+    assert.strictEqual(spawns.length, spawnCountBeforeMalformedResume);
+    assert.strictEqual(inheritedResolutionCount, resolutionCountBeforeMalformedResume);
+  }
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(frozenPlanner), workflow.id);
+
+  for (const plannerPatch of [
+    { searchScope: {} },
+    { keywordSource: {} },
+    { platformPolicy: {} }
+  ]) {
+    db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+      .run(JSON.stringify({ ...frozenPlanner, ...plannerPatch }), workflow.id);
+    const spawnCountBeforeCorruptInheritedResume = spawns.length;
+    const corruptInheritedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "edge"
+    });
+    assert.strictEqual(corruptInheritedResume.status, 409);
+    assert.match(corruptInheritedResume.body, /WORKFLOW_INHERITED_SNAPSHOT_INVALID/);
+    assert.strictEqual(spawns.length, spawnCountBeforeCorruptInheritedResume);
+    assert.strictEqual(inheritedResolutionCount, resolutionCountBeforeMalformedResume);
+    assert.strictEqual(getWorkflowRun(db, workflow.id).status, "interrupted");
+  }
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(frozenPlanner), workflow.id);
+
+  const validInheritedResumeSnapshot = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    runtimePolicyHash: "fixture-inherited-runtime",
+    searchTemplate: frozenPlanner.searchTemplate,
+    searchScope: frozenPlanner.searchScope,
+    keywordSource: frozenPlanner.keywordSource,
+    platformPolicy: frozenPlanner.platformPolicy,
+    cityScopes: [{ city: "", cityCode: "100010000" }],
+    keywordPlan: workflow.keywords,
+    nativeFilters: { site: "boss", params: {}, lanes: [] },
+    limits: {
+      maxCards: Math.max(...workflow.keywords.map((item) => Number(item.maxCards) || 0)),
+      maxDetailTotal: workflow.budget.maxDetailTotal,
+      browserPageBudget: workflow.budget.browserPageBudget,
+      detailLimits: { A: 40, B: 30, C: 20 }
+    }
+  });
+  const invalidAttachedBatches = [
+    {
+      expectedCode: "SCAN_RESUME_SNAPSHOT_MISSING",
+      filterSnapshot: {}
+    },
+    {
+      expectedCode: "SCAN_SNAPSHOT_MISMATCH",
+      filterSnapshot: {
+        execution: {
+          ...validInheritedResumeSnapshot,
+          runtimePolicyHash: "tampered-without-rehash"
+        }
+      }
+    }
+  ];
+  const attachInterruptedScanBatch = (scanBatchId, label) => {
+    db.prepare("UPDATE workflow_runs SET scan_run_id = NULL, scan_batch_id = NULL WHERE id = ?")
+      .run(workflow.id);
+    const scan = createScanRun(db, {
+      runId: `workflow-invalid-resume-${label}`,
+      site: "boss",
+      command: "daily",
+      planId: saved.planId,
+      batchId: scanBatchId
+    });
+    attachWorkflowScan(db, {
+      id: workflow.id,
+      scanRunId: scan.id,
+      scanBatchId
+    });
+    finishScanRun(db, {
+      runId: scan.id,
+      status: "interrupted",
+      stopCode: "INJECTED_RESUME_FIXTURE"
+    });
+  };
+  let invalidBatchIndex = 0;
+  for (const invalid of invalidAttachedBatches) {
+    invalidBatchIndex += 1;
+    const invalidBatchId = createBatch(db, "boss", "invalid-resume", "invalid attached resume", {
+      profileId: saved.profileId,
+      searchPlanId: saved.planId,
+      status: "interrupted",
+      filterSnapshot: invalid.filterSnapshot
+    });
+    attachInterruptedScanBatch(invalidBatchId, invalidBatchIndex);
+    const workflowRowBefore = db.prepare(
+      "SELECT status, updated_at, scan_run_id, scan_batch_id FROM workflow_runs WHERE id = ?"
+    ).get(workflow.id);
+    const scanRunCountBefore = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count);
+    const spawnCountBeforeInvalidBatchResume = spawns.length;
+    const invalidBatchResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "edge"
+    });
+    assert.strictEqual(invalidBatchResume.status, 409);
+    assert.match(invalidBatchResume.body, new RegExp(invalid.expectedCode));
+    assert.strictEqual(spawns.length, spawnCountBeforeInvalidBatchResume);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count), scanRunCountBefore);
+    assert.deepStrictEqual(
+      db.prepare("SELECT status, updated_at, scan_run_id, scan_batch_id FROM workflow_runs WHERE id = ?").get(workflow.id),
+      workflowRowBefore
+    );
+  }
+
+  const validInheritedResumeBatchId = createBatch(db, "boss", "valid-resume", "valid attached resume", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "interrupted",
+    filterSnapshot: { execution: validInheritedResumeSnapshot }
+  });
+  attachInterruptedScanBatch(validInheritedResumeBatchId, "valid");
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
     browserMode: "edge"
@@ -99,10 +373,7 @@ let server;
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
-  const batchId = createBatch(db, "boss", "workflow-dashboard", "workflow dashboard", {
-    profileId: saved.profileId,
-    searchPlanId: saved.planId
-  });
+  const batchId = validInheritedResumeBatchId;
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
   for (let index = 0; index < 6; index += 1) {
     const seededJob = index === 0 ? layeredTalkJob() : job(index + 1);
@@ -294,6 +565,62 @@ let server;
   assert.strictEqual(rejectedWhileScanExists.status, 409);
   assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 1);
 
+  spawns[1].child.emit("close", 0, null);
+  const generatedWorkflow = createWorkflowRun(db, {
+    id: "workflow-generated-portable-resume",
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2099-01-01",
+    sequence: 1,
+    targetSuccessCount: 5,
+    candidateGap: 5,
+    scanNeeded: true,
+    keywords: [{ word: "AI应用开发工程师", priority: "A", maxCards: 20 }],
+    budget: { maxDetailTotal: 20, browserPageBudget: 5 },
+    planner: {
+      acquisitionMode: "generated",
+      browserMode: "portable"
+    }
+  });
+  transitionWorkflowRun(db, { id: generatedWorkflow.id, status: "scanning" });
+  transitionWorkflowRun(db, {
+    id: generatedWorkflow.id,
+    status: "interrupted",
+    errorCode: "INJECTED_GENERATED_INTERRUPTION",
+    errorMessage: "generated portable resume fixture"
+  });
+  const generatedInterruptedPage = await getText(baseUrl, `/workflow?runId=${generatedWorkflow.id}`);
+  assert.match(generatedInterruptedPage.body, /<select name="browserMode">/);
+  assert.match(generatedInterruptedPage.body, /<option value="edge">当前已登录 Edge<\/option>/);
+  assert.match(generatedInterruptedPage.body, /<option value="portable" selected>项目专用 Edge<\/option>/);
+  assert.doesNotMatch(generatedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+
+  const generatedBeforeInvalidMode = getWorkflowRun(db, generatedWorkflow.id);
+  const spawnCountBeforeInvalidGeneratedMode = spawns.length;
+  const invalidGeneratedMode = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "chromium",
+    cdpPort: 9333
+  });
+  assert.strictEqual(invalidGeneratedMode.status, 409);
+  assert.match(invalidGeneratedMode.body, /WORKFLOW_BROWSER_MODE_INVALID/);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.deepStrictEqual(getWorkflowRun(db, generatedWorkflow.id), generatedBeforeInvalidMode);
+
+  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "portable",
+    cdpPort: 9333
+  });
+  assert.strictEqual(generatedPortableResume.status, 303);
+  assert.strictEqual(generatedPortableResume.location, `/workflow?runId=${generatedWorkflow.id}`);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode + 1);
+  assert.deepStrictEqual(
+    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
+    ["--browser", "portable", "--cdp-port", "9333"]
+  );
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
+
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -326,14 +653,15 @@ function seedProfile(database) {
       diagnostics: {}
     },
     searchPlan: {
-      name: "广州 AI",
-      cities: ["广州"],
+      name: "Inherited platform-default AI",
+      cities: ["测试未映射城市"],
       directions: ["AI应用开发"],
       keywords: [
         { word: "AI应用开发工程师", priority: "A", reason: "主方向" },
-        { word: "RAG工程师", priority: "A", reason: "主方向" },
-        { word: "Python AI后端", priority: "B", reason: "补充方向" },
-        { word: "Agent工程师", priority: "B", reason: "补充方向" }
+        { word: "大模型应用开发工程师", priority: "A", reason: "主方向" },
+        { word: "Agent开发工程师", priority: "A", reason: "主方向" },
+        { word: "RAG工程师", priority: "B", reason: "补充方向" },
+        { word: "AI知识库开发", priority: "B", reason: "补充方向" }
       ],
       salary: { minK: 10, maxK: 20 },
       experience: ["经验不限", "1-3年"],
