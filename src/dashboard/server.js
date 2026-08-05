@@ -1896,6 +1896,9 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   }) : logger;
   let child;
   try {
+    const portableCdpPort = batch.browserMode === "portable"
+      ? portableCommunicationCdpPort(batch)
+      : null;
     const commandArgs = [
       "--disable-warning=ExperimentalWarning",
       "src/cli.js",
@@ -1907,7 +1910,7 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
     if (batch.browserMode === "portable") {
       commandArgs.push(
         "--cdp-port",
-        String(batch.policySnapshot?.browser?.cdpPort || 9222)
+        String(portableCdpPort)
       );
     }
     child = spawnProcess(process.execPath, commandArgs, {
@@ -1937,6 +1940,19 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
     processLogger.info("communication_process_closed", { exitCode: code, signal: signal || null });
   });
   return child;
+}
+
+function portableCommunicationCdpPort(batch) {
+  const browserPolicy = batch.policySnapshot?.browser;
+  if (!browserPolicy) return PORTABLE_CDP_PORT;
+  if (!Number.isInteger(browserPolicy.cdpPort) || browserPolicy.cdpPort !== PORTABLE_CDP_PORT) {
+    throw appError(
+      "COMMUNICATION_PORTABLE_CDP_PORT_INVALID",
+      "portable communication requires fixed CDP port 9222",
+      { statusCode: 409 }
+    );
+  }
+  return browserPolicy.cdpPort;
 }
 
 async function handleCommunicationResolve(req, res, db) {

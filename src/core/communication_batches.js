@@ -29,6 +29,7 @@ const ITEM_TRANSITIONS = new Map([
   ["click_dispatched", new Set(["succeeded", "already_communicated", "ambiguous", "stopped"])],
   ["ambiguous", new Set(["succeeded", "stopped"])]
 ]);
+const PORTABLE_CDP_PORT = 9222;
 
 function createCommunicationBatch(db, input = {}) {
   const workflowRunId = String(input.workflowRunId || "").trim();
@@ -64,7 +65,9 @@ function createCommunicationBatch(db, input = {}) {
   const browserPolicy = {
     mode: browserMode,
     ...(browserMode === "portable"
-      ? { cdpPort: normalizeCdpPort(workflow?.planner?.cdpPort) }
+      ? { cdpPort: workflow
+        ? normalizeWorkflowPortableCdpPort(workflow.planner?.cdpPort)
+        : PORTABLE_CDP_PORT }
       : {})
   };
   const jobIds = normalizedJobIds(input.jobIds);
@@ -562,12 +565,14 @@ function nonNegativeInteger(value) {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
 }
 
-function normalizeCdpPort(value) {
-  const port = Number(value || 9222);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw codedError("COMMUNICATION_CDP_PORT_INVALID", "portable communication requires a valid CDP port");
+function normalizeWorkflowPortableCdpPort(value) {
+  if (!Number.isInteger(value) || value !== PORTABLE_CDP_PORT) {
+    throw codedError(
+      "WORKFLOW_COMMUNICATION_PORTABLE_CDP_PORT_INVALID",
+      "portable workflow communication requires fixed CDP port 9222"
+    );
   }
-  return port;
+  return value;
 }
 
 function parseJson(value, fallback) {

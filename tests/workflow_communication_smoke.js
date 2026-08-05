@@ -92,6 +92,23 @@ async function workflowCommunicationSmoke() {
       (error) => error.code === "WORKFLOW_COMMUNICATION_BROWSER_MISMATCH"
     );
 
+    for (const cdpPort of [9223, 0, null]) {
+      db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+        .run(JSON.stringify({ ...workflow.planner, cdpPort }), workflow.id);
+      assert.throws(
+        () => createCommunicationBatch(db, {
+          workflowRunId: workflow.id,
+          planId,
+          jobIds: selectedIds,
+          browserMode: "portable"
+        }),
+        (error) => error.code === "WORKFLOW_COMMUNICATION_PORTABLE_CDP_PORT_INVALID"
+      );
+      assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM communication_batches").get().count), 0);
+    }
+    db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+      .run(JSON.stringify(workflow.planner), workflow.id);
+
     const batch = createCommunicationBatch(db, {
       workflowRunId: workflow.id,
       planId,

@@ -81,6 +81,27 @@ let server;
     [fixture.backupId, "Backup role", "Company backup"]
   ]);
 
+  const tamperedPortable = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: [fixture.talkId],
+    browserMode: "portable"
+  });
+  assert.strictEqual(tamperedPortable.status, 200);
+  const tamperedBatchId = tamperedPortable.body.batch.id;
+  db.prepare("UPDATE communication_batches SET policy_json = ? WHERE id = ?").run(JSON.stringify({
+    ...tamperedPortable.body.batch.policySnapshot,
+    browser: { mode: "portable", cdpPort: 9223 }
+  }), tamperedBatchId);
+  const spawnsBeforeTamperedStart = spawns.length;
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId: tamperedBatchId, action: "start" },
+    "COMMUNICATION_PORTABLE_CDP_PORT_INVALID",
+    409
+  );
+  assert.strictEqual(spawns.length, spawnsBeforeTamperedStart);
+
   const review = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(review.body, /校准状态：calibrated/);
   assert.match(review.body, /name="action" value="start"/);
