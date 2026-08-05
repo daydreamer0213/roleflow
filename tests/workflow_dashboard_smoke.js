@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const {
   openDb,
@@ -135,6 +136,34 @@ let server;
   assert.match(gatedPlanPage.body, /\/api\/browser-readiness/);
   assert.match(gatedPlanPage.body, /5000/);
   assert.match(gatedPlanPage.body, /disabled[^>]*>执行一轮/);
+  const readinessScript = extractBrowserReadinessScript(gatedPlanPage.body);
+  await assertBrowserReadinessGate({ readinessScript, status: "login_required", baseDisabled: false, expectedDisabled: true });
+  await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: false, expectedDisabled: false });
+  await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: true, expectedDisabled: true });
+  await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
+  await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
+
+  const publicReadiness = {
+    status: "login_required",
+    ready: false,
+    message: "等待登录：请在 BOSS 标签页完成登录。",
+    checkedAt: "2099-01-01T00:00:01.000Z"
+  };
+  browserReadiness = {
+    ...publicReadiness,
+    url: "https://www.zhipin.com/web/geek/jobs?city=100010000",
+    dom: "<main>private fixture DOM</main>",
+    account: "fixture-account",
+    cookie: "session=private",
+    extra: { internal: true }
+  };
+  const sanitizedReadiness = await getJson(baseUrl, "/api/browser-readiness");
+  assert.strictEqual(sanitizedReadiness.status, 200);
+  assert.deepStrictEqual(sanitizedReadiness.body, publicReadiness);
+
+  browserReadiness = { ...publicReadiness, status: "unsupported_fixture_status" };
+  const unknownReadiness = await getText(baseUrl, "/api/browser-readiness");
+  assert.strictEqual(unknownReadiness.status, 500);
 
   browserReadiness = {
     status: "ready",
@@ -907,6 +936,53 @@ async function getText(baseUrl, pathname) {
 async function getJson(baseUrl, pathname) {
   const response = await fetch(`${baseUrl}${pathname}`);
   return { status: response.status, body: await response.json() };
+}
+
+function extractBrowserReadinessScript(page) {
+  const match = String(page).match(/<script>\s*(\(function\(\)\{[\s\S]*?setInterval\(refreshReadiness, 5000\);[\s\S]*?\}\)\(\);)\s*<\/script>/);
+  assert(match, "expected rendered plan page to include the browser-readiness polling script");
+  return match[1];
+}
+
+async function assertBrowserReadinessGate({ readinessScript, status = "login_required", baseDisabled = false, responseOk = true, fetchError = null, expectedDisabled }) {
+  let intervalCallback = null;
+  let intervalMs = null;
+  let formSubmitCalls = 0;
+  const form = {
+    submit() { formSubmitCalls += 1; },
+    requestSubmit() { formSubmitCalls += 1; }
+  };
+  const button = {
+    dataset: { browserBaseDisabled: String(baseDisabled) },
+    disabled: true,
+    form
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) { return selector === "[data-browser-readiness-button]" ? button : null; }
+    },
+    fetch() {
+      if (fetchError) return Promise.reject(fetchError);
+      return Promise.resolve({
+        ok: responseOk,
+        json: async () => ({ status, message: `fixture ${status}` })
+      });
+    },
+    setInterval(callback, interval) {
+      intervalCallback = callback;
+      intervalMs = interval;
+      return 1;
+    }
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(typeof intervalCallback, "function");
+  assert.strictEqual(intervalMs, 5000);
+  assert.strictEqual(button.disabled, expectedDisabled);
+  assert.strictEqual(formSubmitCalls, 0);
 }
 
 async function postForm(baseUrl, pathname, body) {

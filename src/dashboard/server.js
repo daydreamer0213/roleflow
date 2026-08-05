@@ -123,6 +123,14 @@ const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 const PORTABLE_CDP_PORT = 9222;
+const BROWSER_READINESS_STATUSES = new Set([
+  "browser_unavailable",
+  "boss_tab_missing",
+  "login_required",
+  "search_page_required",
+  "risk_control",
+  "ready"
+]);
 
 function normalizeCdpPort(value, fallback = PORTABLE_CDP_PORT) {
   const port = Number(value || fallback);
@@ -146,6 +154,18 @@ function createDashboardBrowserReadinessProbe({ logger }) {
       preflight: () => adapter.preflight()
     });
   };
+}
+
+function publicBrowserReadinessSnapshot(readiness) {
+  const { status, ready, message, checkedAt } = readiness || {};
+  if (!BROWSER_READINESS_STATUSES.has(status)
+    || typeof ready !== "boolean"
+    || ready !== (status === "ready")
+    || typeof message !== "string"
+    || typeof checkedAt !== "string") {
+    throw appError("BROWSER_READINESS_INVALID", "浏览器就绪状态无效。", { statusCode: 500 });
+  }
+  return { status, ready, message, checkedAt };
 }
 
 function resolveNewInheritedBrowser(input = {}) {
@@ -216,7 +236,10 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
-      if (req.method === "GET" && url.pathname === "/api/browser-readiness") return sendJson(res, 200, await resolvedBrowserReadinessProbe());
+      if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
+        const readiness = await resolvedBrowserReadinessProbe();
+        return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
+      }
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"), logger);
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
