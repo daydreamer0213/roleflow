@@ -155,14 +155,14 @@ async function main() {
   throw new Error(`未知命令：${command}`);
 }
 
-async function communicate(db, args) {
+async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
   const batchId = Number(args.batch);
   if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw new Error(`未找到沟通批次 #${batchId}`);
-  const browserMode = String(args.browser || batch.browserMode || "").trim().toLowerCase();
-  if (browserMode !== batch.browserMode) throw new Error(`沟通批次固定使用 ${batch.browserMode}，不能切换为 ${browserMode}。`);
-  const browser = createBrowser({ ...args, browser: browserMode });
+  const browserArgs = resolveCommunicationBrowserAuthority(batch, args);
+  const browserMode = browserArgs.browser;
+  const browser = createBrowserFn(browserArgs);
   if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
   const runId = `communication-${batchId}-${crypto.randomUUID()}`;
   const workflowRun = getWorkflowRunByCommunicationBatch(db, batchId);
@@ -212,6 +212,48 @@ async function communicate(db, args) {
   } finally {
     stopHeartbeat();
   }
+}
+
+function resolveCommunicationBrowserAuthority(batch, args = {}) {
+  const batchMode = String(batch?.browserMode || "").trim().toLowerCase();
+  const browserMode = String(args.browser || batchMode || "").trim().toLowerCase();
+  if (browserMode !== batchMode) {
+    throw new Error(`沟通批次固定使用 ${batchMode}，不能切换为 ${browserMode}。`);
+  }
+  if (batchMode !== "portable") return { ...args, browser: browserMode };
+
+  const policySnapshot = batch?.policySnapshot;
+  const hasBrowserPolicy = Boolean(
+    policySnapshot
+    && typeof policySnapshot === "object"
+    && Object.prototype.hasOwnProperty.call(policySnapshot, "browser")
+  );
+  const browserPolicy = hasBrowserPolicy ? policySnapshot.browser : null;
+  const frozenPort = hasBrowserPolicy ? browserPolicy?.cdpPort : 9222;
+  if (hasBrowserPolicy && (
+    !browserPolicy
+    || typeof browserPolicy !== "object"
+    || Array.isArray(browserPolicy)
+    || String(browserPolicy.mode || "").trim().toLowerCase() !== batchMode
+    || !Number.isInteger(browserPolicy.cdpPort)
+    || browserPolicy.cdpPort !== 9222
+  )) {
+    throw codedError(
+      "COMMUNICATION_PORTABLE_BROWSER_POLICY_INVALID",
+      "[COMMUNICATION_PORTABLE_BROWSER_POLICY_INVALID] portable 沟通批次缺少有效的冻结浏览器策略。"
+    );
+  }
+
+  const suppliedPort = args["cdp-port"];
+  const suppliedPortMatches = suppliedPort === frozenPort
+    || (typeof suppliedPort === "string" && suppliedPort.trim() === String(frozenPort));
+  if (suppliedPort !== undefined && !suppliedPortMatches) {
+    throw codedError(
+      "COMMUNICATION_PORTABLE_CDP_PORT_MISMATCH",
+      `[COMMUNICATION_PORTABLE_CDP_PORT_MISMATCH] --cdp-port 必须与沟通批次冻结端口 ${frozenPort} 完全一致。`
+    );
+  }
+  return { ...args, browser: browserMode, "cdp-port": frozenPort };
 }
 
 function startCommunicationHeartbeat(db, batchId, communicationLogger) {
@@ -1668,6 +1710,8 @@ function printHelp() {
 }
 
 module.exports = {
+  communicate,
+  resolveCommunicationBrowserAuthority,
   executeWithSiteScanLease,
   validateResumeBatchPreflight,
   resolveResumeBatch,

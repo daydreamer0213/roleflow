@@ -69,16 +69,21 @@ class CdpBrowserAdapter {
       background: true
     });
     if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
-    const createdWindowId = await this.windowIdForTarget(result.targetId);
-    if (String(createdWindowId) !== String(opener.windowId)) {
-      try {
-        await this.browserCommand("Target.closeTarget", { targetId: result.targetId });
-      } catch {
-        // The target was created by this call; preserve the primary window-mismatch error.
+    const targetId = result.targetId;
+    try {
+      const createdWindowId = await this.windowIdForTarget(targetId);
+      if (String(createdWindowId) !== String(opener.windowId)) {
+        throw browserError("BROWSER_COMMAND_FAILED", "CDP created the communication tab in a different browser window.");
       }
-      throw browserError("BROWSER_COMMAND_FAILED", "CDP created the communication tab in a different browser window.");
+      return targetId;
+    } catch (error) {
+      try {
+        await this.browserCommand("Target.closeTarget", { targetId });
+      } catch {
+        // Preserve the primary identity-verification error if best-effort cleanup also fails.
+      }
+      throw error;
     }
-    return result.targetId;
   }
 
   async bringToFront(tabId) {

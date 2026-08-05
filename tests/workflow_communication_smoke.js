@@ -9,10 +9,15 @@ const {
 } = require("../src/core/storage");
 const {
   createCommunicationBatch,
+  getCommunicationBatch,
   listCommunicationBatchItems
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
 const { listWorkflowInventory, listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
+const {
+  communicate,
+  resolveCommunicationBrowserAuthority
+} = require("../src/cli");
 
 async function workflowCommunicationSmoke() {
   const db = openDb(":memory:");
@@ -122,6 +127,61 @@ async function workflowCommunicationSmoke() {
     const confirmedWorkflow = getWorkflowRun(db, workflow.id);
     assert.strictEqual(confirmedWorkflow.metrics.selected, 5);
     assert.strictEqual(confirmedWorkflow.metrics.communication.selected, 5);
+
+    let browserFactoryCalls = 0;
+    await assert.rejects(
+      () => communicate(db, {
+        batch: batch.id,
+        browser: "portable",
+        "cdp-port": "9333"
+      }, {
+        createBrowserFn() {
+          browserFactoryCalls += 1;
+          throw new Error("browser factory must not be reached");
+        }
+      }),
+      (error) => error.code === "COMMUNICATION_PORTABLE_CDP_PORT_MISMATCH"
+    );
+    assert.strictEqual(browserFactoryCalls, 0);
+    assert.strictEqual(getCommunicationBatch(db, batch.id).status, "confirmed");
+    assert.deepStrictEqual(
+      listCommunicationBatchItems(db, batch.id).map((item) => item.status),
+      selectedIds.map(() => "pending")
+    );
+    assert.deepStrictEqual(
+      resolveCommunicationBrowserAuthority(batch, { browser: "portable", "cdp-port": "9222" }),
+      { browser: "portable", "cdp-port": 9222 }
+    );
+    assert.deepStrictEqual(
+      resolveCommunicationBrowserAuthority(batch, { browser: "portable" }),
+      { browser: "portable", "cdp-port": 9222 }
+    );
+    const legacyPolicySnapshot = { ...batch.policySnapshot };
+    delete legacyPolicySnapshot.browser;
+    assert.deepStrictEqual(
+      resolveCommunicationBrowserAuthority({
+        ...batch,
+        policySnapshot: legacyPolicySnapshot
+      }, { browser: "portable" }),
+      { browser: "portable", "cdp-port": 9222 }
+    );
+    assert.throws(
+      () => resolveCommunicationBrowserAuthority({
+        ...batch,
+        policySnapshot: {
+          ...batch.policySnapshot,
+          browser: { mode: "portable", cdpPort: "9222" }
+        }
+      }, { browser: "portable" }),
+      (error) => error.code === "COMMUNICATION_PORTABLE_BROWSER_POLICY_INVALID"
+    );
+    assert.throws(
+      () => resolveCommunicationBrowserAuthority(batch, {
+        browser: "portable",
+        "cdp-port": "9222.0"
+      }),
+      (error) => error.code === "COMMUNICATION_PORTABLE_CDP_PORT_MISMATCH"
+    );
 
     const states = ["ready", "job_unavailable", "ready", "ready"];
     let visits = 0;

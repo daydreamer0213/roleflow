@@ -195,6 +195,26 @@ async function main() {
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
     assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
 
+    websocket.mode = "created-window-identity-missing";
+    websocket.messages.length = 0;
+    const missingCreatedIdentityError = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/missing-window"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.match(missingCreatedIdentityError.message, /no reliable browser window identity: cdp-created-tab/);
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+
+    websocket.mode = "created-window-identity-error-close-fails";
+    websocket.messages.length = 0;
+    const failedCreatedIdentityError = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/identity-error"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.match(failedCreatedIdentityError.message, /Browser\.getWindowForTarget failed/);
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+
     websocket.mode = "respond";
     await cdp.bringToFront("cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
@@ -320,11 +340,18 @@ function installFakeWebSocket() {
         let result = {};
         let error = null;
         if (payload.method === "Browser.getWindowForTarget") {
-          if (control.mode === "window-identity-missing") result = {};
+          if (control.mode === "window-identity-missing"
+            || (control.mode === "created-window-identity-missing"
+              && payload.params.targetId === "cdp-created-tab")) result = {};
+          else if (control.mode === "created-window-identity-error-close-fails"
+            && payload.params.targetId === "cdp-created-tab") error = { message: "identity query failed" };
           else if (control.mode === "created-window-mismatch" && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
           else result = { windowId: 42 };
         } else if (payload.method === "Target.createTarget") {
           result = { targetId: "cdp-created-tab" };
+        } else if (payload.method === "Target.closeTarget"
+          && control.mode === "created-window-identity-error-close-fails") {
+          error = { message: "cleanup failed" };
         } else if (control.mode === "fail-third-dispatch"
           && payload.method === "Input.dispatchMouseEvent"
           && dispatchCount === 3) {
