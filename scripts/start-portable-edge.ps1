@@ -3,7 +3,7 @@ param(
   [string]$EdgePath = "",
   [int]$Port = 9222,
   [string]$ProfileDir = ".runtime\edge-profile",
-  [string]$StartUrl = "https://www.zhipin.com/guangzhou/?seoRefer=index",
+  [string]$StartUrl = "https://www.zhipin.com/web/geek/jobs",
   [switch]$CheckOnly,
   [int]$TimeoutSeconds = 15
 )
@@ -62,6 +62,7 @@ if ($null -eq $Version) {
   New-Item -ItemType Directory -Force -Path $ProfilePath | Out-Null
 
   $Args = @(
+    "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=$Port",
     "--remote-allow-origins=*",
     "--user-data-dir=$ProfilePath",
@@ -87,6 +88,6 @@ Write-Host "Portable Edge CDP: healthy"
 Write-Host "CDP URL: http://127.0.0.1:$Port"
 Write-Host "Profile dir: $ProfilePath"
 Write-Host "Browser: $($Version.Browser)"
-Write-Host "First use: log in to BOSS in this Edge window once."
+Write-Host "Project Edge is ready. First use: log in to BOSS once, then keep a BOSS search-results tab open."
 
 exit 0

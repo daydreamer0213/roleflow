@@ -23,6 +23,16 @@ const { mapWithConcurrency } = require("../src/core/async_pool");
 require("./four_tier_decision_smoke");
 
 const root = path.resolve(__dirname, "..");
+const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-workspace.ps1"), "utf8");
+const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
+const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+assert(workspaceLauncher.includes("start-portable-edge.ps1"));
+assert(!workspaceLauncher.includes("start-edge-control.ps1"));
+assert(workspaceLauncher.includes("项目专用 Edge"));
+assert(portableEdgeLauncher.includes("--remote-debugging-address=127.0.0.1"));
+assert(portableEdgeLauncher.includes("https://www.zhipin.com/web/geek/jobs"));
+assert(readme.includes("不需要 Edge Control 扩展"));
+assert(readme.includes("项目专用 Edge"));
 const selfCheckDir = path.join(root, ".runtime", "self-check");
 fs.mkdirSync(selfCheckDir, { recursive: true });
 const help = spawnSync(process.execPath, [path.join(root, "src", "cli.js"), "--help"], { encoding: "utf8" });

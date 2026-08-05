@@ -49,4 +49,6 @@ if (-not (Test-Dashboard -DashboardPort $Port)) {
 
 $url = "http://127.0.0.1:$Port/"
 Write-Host "RoleFlow is ready: $url"
+Write-Host "浏览器：项目专用 Edge（不需要 Edge Control 扩展）"
+Write-Host "下一步：在项目专用 Edge 登录 BOSS、打开岗位搜索结果页并设置筛选，然后在工作台点击“执行一轮”。"
 if (-not $NoOpen) { Start-Process $url }
