@@ -26,6 +26,7 @@ const root = path.resolve(__dirname, "..");
 const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-workspace.ps1"), "utf8");
 const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1 must use a UTF-8 BOM for Windows PowerShell 5.1");
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
 assert(!workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("项目专用 Edge"));
