@@ -96,6 +96,7 @@ const {
   remainingTargetKeys,
   summarizeResumePlan
 } = require("./core/scan_snapshot");
+const { validateResumeBatch } = require("./core/scan_resume");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -398,12 +399,15 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       "本轮任务的采集模式无效，不能安全扫描或恢复。"
     );
   }
+  let acquisitionMode = workflowAcquisitionMode
+    || resumeValidation?.acquisitionMode
+    || (args.input ? "generated" : "");
   if (planRecord) {
     assertSearchPlanReady(
       planRecord,
       matchingContext?.candidateProfile || {},
       getSearchPlanDependency(db, planRecord.id),
-      { validatePlatformCities: workflowAcquisitionMode !== "inherited" }
+      { validatePlatformCities: acquisitionMode === "generated" }
     );
     if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
     configs = profileToRuntimeConfigs(
@@ -475,7 +479,9 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
     ? createSiteAccessController({ db, site, runId: execution?.runId || "", logger: scanLogger, signal })
     : null;
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
-  const plannedCityScopes = frozenInherited ? null : resolveCityScopes(args, planRecord, configs);
+  let plannedCityScopes = acquisitionMode === "generated"
+    ? resolveCityScopes(args, planRecord, configs)
+    : null;
   let browserState = null;
   if (!args.input) {
     try {
@@ -496,6 +502,30 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
         });
       }
       throw error;
+    }
+  }
+  let directSearchContext = null;
+  if (!workflowRun && !args.input) {
+    directSearchContext = resolveBossSearchContext({
+      currentUrl: browserState?.url || browserState?.tab?.url || "",
+      storedTemplate: storedExecution?.searchTemplate,
+      cityScopes: plannedCityScopes || []
+    });
+    if (!acquisitionMode) acquisitionMode = directSearchContext.searchTemplate.mode;
+  }
+  if (acquisitionMode === "generated" && !plannedCityScopes) {
+    assertSearchPlanReady(
+      planRecord,
+      matchingContext?.candidateProfile || {},
+      getSearchPlanDependency(db, planRecord.id)
+    );
+    plannedCityScopes = resolveCityScopes(args, planRecord, configs);
+    if (directSearchContext) {
+      directSearchContext = resolveBossSearchContext({
+        currentUrl: browserState?.url || browserState?.tab?.url || "",
+        storedTemplate: storedExecution?.searchTemplate,
+        cityScopes: plannedCityScopes
+      });
     }
   }
   let searchTemplate;
@@ -519,10 +549,10 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   } else {
     const searchContext = args.input
       ? { searchTemplate: { mode: "generated", url: "", cityCode: "" }, cityScopes: plannedCityScopes }
-      : resolveBossSearchContext({
+      : directSearchContext || resolveBossSearchContext({
         currentUrl: browserState?.url || browserState?.tab?.url || "",
         storedTemplate: storedExecution?.searchTemplate,
-        cityScopes: plannedCityScopes
+        cityScopes: plannedCityScopes || []
       });
     searchTemplate = searchContext.searchTemplate;
     cityScopes = searchContext.cityScopes;
@@ -1294,35 +1324,12 @@ function prevalidateDirectScanResume(db, args = {}) {
 
 function validateResumeBatchPreflight(db, { resumeBatchId, site, planId }) {
   const resumedBatch = getBatch(db, resumeBatchId);
-  if (!resumedBatch) throw codedError("SCAN_RESUME_BATCH_NOT_FOUND", `恢复批次 #${resumeBatchId} 不存在。`);
-  if (resumedBatch.site !== site || resumedBatch.searchPlanId !== Number(planId || 0)) {
-    throw codedError("SCAN_RESUME_BATCH_MISMATCH", `批次 #${resumeBatchId} 不属于当前站点和 Search Plan。`);
-  }
-  if (!["partial", "failed", "interrupted"].includes(resumedBatch.status)) {
-    throw codedError("SCAN_RESUME_STATUS_INVALID", `批次 #${resumeBatchId} 当前状态为 ${resumedBatch.status}，不能恢复。`);
-  }
-  const storedSnapshot = resumedBatch.filterSnapshot?.execution;
-  if (!storedSnapshot) throw codedError("SCAN_RESUME_SNAPSHOT_MISSING", `批次 #${resumeBatchId} 没有执行快照，无法安全恢复。`);
-  assertScanSnapshotCompatible(storedSnapshot, storedSnapshot);
-  if (storedSnapshot.site !== site) {
-    throw codedError("SCAN_RESUME_BATCH_MISMATCH", `批次 #${resumeBatchId} 的执行快照不属于当前站点。`);
-  }
-  const acquisitionMode = String(storedSnapshot.searchTemplate?.mode || "").trim();
-  if (!["generated", "inherited"].includes(acquisitionMode)) {
-    throw codedError("SCAN_RESUME_ACQUISITION_MODE_INVALID", `批次 #${resumeBatchId} 的采集模式无效。`);
-  }
-  if (acquisitionMode === "inherited") {
-    assertCompleteInheritedContext(storedSnapshot, {
-      code: "SCAN_RESUME_INHERITED_SNAPSHOT_INVALID",
-      message: `批次 #${resumeBatchId} 的继承模式快照不完整，无法安全恢复。`,
-      planId
-    });
-  }
-  assertScanSnapshotCompatible(
-    storedSnapshot,
-    buildScanExecutionSnapshot(storedSnapshot)
-  );
-  return { resumeBatchId, resumedBatch, storedSnapshot, acquisitionMode };
+  return validateResumeBatch({
+    resumeBatchId,
+    resumedBatch,
+    site,
+    planId
+  });
 }
 
 function resolveResumeBatch(db, { resumeBatchId, site, planId, executionSnapshot }) {

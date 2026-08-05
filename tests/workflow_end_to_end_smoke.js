@@ -168,8 +168,8 @@ function seedProfile(database) {
       diagnostics: {}
     },
     searchPlan: {
-      name: "Guangzhou AI",
-      cities: ["广州"],
+      name: "Inherited platform-default AI",
+      cities: ["测试未映射城市"],
       directions: ["AI应用开发"],
       keywords: [
         { word: "AI application engineer", priority: "A" },

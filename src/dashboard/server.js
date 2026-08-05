@@ -93,6 +93,7 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 const { defaultSelectedForBatch } = require("../core/decision_policy");
 const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
 const { buildScanCliArgs } = require("../core/scan_execution");
+const { validateResumeBatch } = require("../core/scan_resume");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
 const { mapWithConcurrency } = require("../core/async_pool");
@@ -1073,7 +1074,12 @@ async function handleWorkflowRunStart(req, res, {
     const plan = getSearchPlan(db, planId);
     if (!plan || !getCandidateProfile(db, plan.profileId)) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
     const matchingContext = getCandidateMatchingContext(db, plan.profileId);
-    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, plan.id));
+    assertSearchPlanReady(
+      plan,
+      matchingContext?.candidateProfile || {},
+      getSearchPlanDependency(db, plan.id),
+      { validatePlatformCities: false }
+    );
     const inheritedContext = await inheritedContextResolver({
       db,
       plan,
@@ -1218,17 +1224,17 @@ async function handleWorkflowRunResume(req, res, {
         );
       }
     }
-    if (acquisitionMode === "inherited"
-      && params.browserMode
-      && params.browserMode !== "edge") {
-      throw appError(
-        "INHERITED_EDGE_REQUIRED",
-        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
-        { statusCode: 409 }
-      );
-    }
+    const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
+    }
+    if (workflow.scanNeeded && workflow.scanBatchId) {
+      validateResumeBatch({
+        resumeBatchId: workflow.scanBatchId,
+        resumedBatch: getBatch(db, workflow.scanBatchId),
+        site: "boss",
+        planId: workflow.planId
+      });
     }
     if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
       if (workflow.scanNeeded) {
@@ -1239,7 +1245,7 @@ async function handleWorkflowRunResume(req, res, {
           dbPath,
           planId: workflow.planId,
           cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
-          browserMode: "edge",
+          browserMode,
           scanKind: "daily",
           resumeBatchId: workflow.scanBatchId,
           workflowRunId: workflow.id,
@@ -1260,6 +1266,34 @@ async function handleWorkflowRunResume(req, res, {
       fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
     });
   }
+}
+
+function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
+  const acquisitionMode = String(workflow?.planner?.acquisitionMode || "").trim();
+  const requested = String(requestedMode || "").trim().toLowerCase();
+  if (acquisitionMode === "inherited") {
+    if (requested && requested !== "edge") {
+      throw appError(
+        "INHERITED_EDGE_REQUIRED",
+        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
+        { statusCode: 409 }
+      );
+    }
+    return "edge";
+  }
+  if (requested && !["edge", "portable"].includes(requested)) {
+    throw appError(
+      "WORKFLOW_BROWSER_MODE_INVALID",
+      "浏览器模式必须是当前 Edge 或项目专用 Edge。",
+      { statusCode: 409 }
+    );
+  }
+  const stored = String(
+    workflow?.planner?.browserMode
+      || workflow?.planner?.browser?.mode
+      || ""
+  ).trim().toLowerCase();
+  return requested || (["edge", "portable"].includes(stored) ? stored : "edge");
 }
 
 function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
@@ -2479,10 +2513,21 @@ function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtime
   if (workflow.status === "interrupted") {
     const communicationReview = workflow.communicationBatchId
       ? `<a class="button-link" href="/communication?batchId=${workflow.communicationBatchId}">检查沟通中断项</a>`
-      : `<form method="post" action="/api/workflow-run/resume"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222"><input type="hidden" name="browserMode" value="edge"><span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span><button>继续本轮</button></form>`;
+      : renderWorkflowResumeForm(workflow);
     return `<section class="workflow-phase"><div class="workflow-alert"><strong>本轮已中断</strong><p>${escapeHtml(workflow.errorCode || "WORKFLOW_INTERRUPTED")} · ${escapeHtml(workflow.errorMessage || "请检查诊断后继续。")}</p></div><div class="workflow-actions">${communicationReview}</div></section>`;
   }
   return `<section class="workflow-phase"><div class="workflow-alert"><strong>${escapeHtml(workflowStatusLabel(workflow.status))}</strong><p>${escapeHtml(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。")}</p></div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a></div></section>`;
+}
+
+function renderWorkflowResumeForm(workflow) {
+  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222">`;
+  if (workflow.planner?.acquisitionMode === "inherited") {
+    return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="edge"><span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span><button>继续本轮</button></form>`;
+  }
+  const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
+  const edgeSelected = selectedMode === "edge" ? " selected" : "";
+  const portableSelected = selectedMode === "portable" ? " selected" : "";
+  return `<form method="post" action="/api/workflow-run/resume">${identity}<select name="browserMode"><option value="edge"${edgeSelected}>当前已登录 Edge</option><option value="portable"${portableSelected}>项目专用 Edge</option></select><button>继续本轮</button></form>`;
 }
 
 function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {

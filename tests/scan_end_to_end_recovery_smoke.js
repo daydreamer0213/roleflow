@@ -39,6 +39,14 @@ async function main() {
       profileId,
       plan: { ...fixturePlan(), name: "Other recovery plan" }
     });
+    const unsupportedPlanId = storage.saveSearchPlan(db, {
+      profileId,
+      plan: {
+        ...fixturePlan(),
+        name: "Inherited unsupported Search Plan city",
+        cities: ["测试未映射城市"]
+      }
+    });
     db.close();
     db = null;
 
@@ -171,6 +179,48 @@ async function main() {
       "the target completed before interruption must not run again");
     assert.deepStrictEqual(storage.listLatestScanTargetResults(db, batchId).map((item) => item.status),
       snapshot.targets.map(() => "completed"));
+
+    db.close();
+    db = null;
+
+    const inheritedFirst = runScan(
+      dbPath,
+      unsupportedPlanId,
+      "scan-e2e-inherited-unsupported-first",
+      "interrupt-inherited-current"
+    );
+    assertExit(inheritedFirst, 1, "inherited current-page interruption");
+    assert.match(inheritedFirst.stderr, /injected offline browser timeout/);
+
+    db = storage.openDb(dbPath);
+    const inheritedBatch = storage.getLatestResumableBatch(db, {
+      planId: unsupportedPlanId,
+      site: "boss"
+    });
+    assert(inheritedBatch);
+    assert.strictEqual(inheritedBatch.filterSnapshot.execution.searchTemplate.mode, "inherited");
+    db.close();
+    db = null;
+
+    const inheritedResumed = runScan(
+      dbPath,
+      unsupportedPlanId,
+      "scan-e2e-inherited-unsupported-resumed",
+      "complete",
+      { resumeBatchId: inheritedBatch.id }
+    );
+    assertExit(inheritedResumed, 0, "inherited resume with unsupported Search Plan city");
+
+    const generatedUnsupported = runScan(
+      dbPath,
+      unsupportedPlanId,
+      "scan-e2e-generated-unsupported",
+      "complete"
+    );
+    assertExit(generatedUnsupported, 1, "generated unsupported Search Plan city rejection");
+    assert.match(generatedUnsupported.stderr, /BOSS 暂不支持这些城市：测试未映射城市/);
+
+    db = storage.openDb(dbPath);
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("scan_end_to_end_recovery_smoke ok");
   } finally {
@@ -259,7 +309,26 @@ function installOfflineBoundaries() {
 
   class OfflineBossSiteAdapter {
     async preflight() {
-      return { tabId: "offline-boss-tab" };
+      const inheritedCurrent = process.env.ROLEFLOW_SCAN_E2E_MODE?.includes("inherited-current");
+      return {
+        tabId: "offline-boss-tab",
+        url: inheritedCurrent
+          ? "https://www.zhipin.com/web/geek/jobs?query=offline&page=2"
+          : ""
+      };
+    }
+
+    async inspectInheritedSearchPage() {
+      return {
+        url: "https://www.zhipin.com/web/geek/jobs?query=offline&page=2",
+        catalog: {
+          site: "boss",
+          source: "offline-smoke",
+          discoveredAt: new Date().toISOString(),
+          fields: {}
+        },
+        urlOptions: []
+      };
     }
 
     async discoverFilterCatalog() {
@@ -270,7 +339,7 @@ function installOfflineBoundaries() {
       const requested = Array.isArray(options.targetKeys) ? new Set(options.targetKeys) : null;
       const targets = boss.buildBossScanTargets(options).filter((target) => !requested || requested.has(target.targetKey));
       assert(targets.length, "offline adapter received no scan targets");
-      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "interrupt") {
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE?.startsWith("interrupt")) {
         assert(targets.length >= 2, "interruption fixture needs at least two targets");
         await checkpoint(options, targets[0]);
         const error = new Error("injected offline browser timeout");

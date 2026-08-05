@@ -7,9 +7,12 @@ const {
   saveProfileAnalysis,
   createMatchingCardDraft,
   confirmMatchingCard,
+  createWorkflowRun,
   listWorkflowRuns,
   getWorkflowRun,
   getLatestScanRun,
+  createScanRun,
+  finishScanRun,
   attachWorkflowScan,
   transitionWorkflowRun,
   createBatch,
@@ -18,6 +21,7 @@ const {
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
+const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
@@ -206,6 +210,9 @@ let server;
   assert.strictEqual(interruptedWorkflow.status, "interrupted");
   assert.strictEqual(interruptedWorkflow.sequence, 1);
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
+  const inheritedInterruptedPage = await getText(baseUrl, started.location);
+  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+  assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
   const spawnCountBeforePortableResume = spawns.length;
   const portableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
@@ -258,6 +265,96 @@ let server;
   db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
     .run(JSON.stringify(frozenPlanner), workflow.id);
 
+  const validInheritedResumeSnapshot = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    runtimePolicyHash: "fixture-inherited-runtime",
+    searchTemplate: frozenPlanner.searchTemplate,
+    searchScope: frozenPlanner.searchScope,
+    keywordSource: frozenPlanner.keywordSource,
+    platformPolicy: frozenPlanner.platformPolicy,
+    cityScopes: [{ city: "", cityCode: "100010000" }],
+    keywordPlan: workflow.keywords,
+    nativeFilters: { site: "boss", params: {}, lanes: [] },
+    limits: {
+      maxCards: Math.max(...workflow.keywords.map((item) => Number(item.maxCards) || 0)),
+      maxDetailTotal: workflow.budget.maxDetailTotal,
+      browserPageBudget: workflow.budget.browserPageBudget,
+      detailLimits: { A: 40, B: 30, C: 20 }
+    }
+  });
+  const invalidAttachedBatches = [
+    {
+      expectedCode: "SCAN_RESUME_SNAPSHOT_MISSING",
+      filterSnapshot: {}
+    },
+    {
+      expectedCode: "SCAN_SNAPSHOT_MISMATCH",
+      filterSnapshot: {
+        execution: {
+          ...validInheritedResumeSnapshot,
+          runtimePolicyHash: "tampered-without-rehash"
+        }
+      }
+    }
+  ];
+  const attachInterruptedScanBatch = (scanBatchId, label) => {
+    db.prepare("UPDATE workflow_runs SET scan_run_id = NULL, scan_batch_id = NULL WHERE id = ?")
+      .run(workflow.id);
+    const scan = createScanRun(db, {
+      runId: `workflow-invalid-resume-${label}`,
+      site: "boss",
+      command: "daily",
+      planId: saved.planId,
+      batchId: scanBatchId
+    });
+    attachWorkflowScan(db, {
+      id: workflow.id,
+      scanRunId: scan.id,
+      scanBatchId
+    });
+    finishScanRun(db, {
+      runId: scan.id,
+      status: "interrupted",
+      stopCode: "INJECTED_RESUME_FIXTURE"
+    });
+  };
+  let invalidBatchIndex = 0;
+  for (const invalid of invalidAttachedBatches) {
+    invalidBatchIndex += 1;
+    const invalidBatchId = createBatch(db, "boss", "invalid-resume", "invalid attached resume", {
+      profileId: saved.profileId,
+      searchPlanId: saved.planId,
+      status: "interrupted",
+      filterSnapshot: invalid.filterSnapshot
+    });
+    attachInterruptedScanBatch(invalidBatchId, invalidBatchIndex);
+    const workflowRowBefore = db.prepare(
+      "SELECT status, updated_at, scan_run_id, scan_batch_id FROM workflow_runs WHERE id = ?"
+    ).get(workflow.id);
+    const scanRunCountBefore = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count);
+    const spawnCountBeforeInvalidBatchResume = spawns.length;
+    const invalidBatchResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "edge"
+    });
+    assert.strictEqual(invalidBatchResume.status, 409);
+    assert.match(invalidBatchResume.body, new RegExp(invalid.expectedCode));
+    assert.strictEqual(spawns.length, spawnCountBeforeInvalidBatchResume);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count), scanRunCountBefore);
+    assert.deepStrictEqual(
+      db.prepare("SELECT status, updated_at, scan_run_id, scan_batch_id FROM workflow_runs WHERE id = ?").get(workflow.id),
+      workflowRowBefore
+    );
+  }
+
+  const validInheritedResumeBatchId = createBatch(db, "boss", "valid-resume", "valid attached resume", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "interrupted",
+    filterSnapshot: { execution: validInheritedResumeSnapshot }
+  });
+  attachInterruptedScanBatch(validInheritedResumeBatchId, "valid");
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
     browserMode: "edge"
@@ -268,10 +365,7 @@ let server;
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
-  const batchId = createBatch(db, "boss", "workflow-dashboard", "workflow dashboard", {
-    profileId: saved.profileId,
-    searchPlanId: saved.planId
-  });
+  const batchId = validInheritedResumeBatchId;
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
   for (let index = 0; index < 6; index += 1) upsertJob(db, index === 0 ? layeredTalkJob() : job(index + 1), batchId);
   upsertJob(db, lowRiskBackupJob(), batchId);
@@ -339,6 +433,62 @@ let server;
   });
   assert.strictEqual(rejectedWhileScanExists.status, 409);
   assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 1);
+
+  spawns[1].child.emit("close", 0, null);
+  const generatedWorkflow = createWorkflowRun(db, {
+    id: "workflow-generated-portable-resume",
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2099-01-01",
+    sequence: 1,
+    targetSuccessCount: 5,
+    candidateGap: 5,
+    scanNeeded: true,
+    keywords: [{ word: "AI应用开发工程师", priority: "A", maxCards: 20 }],
+    budget: { maxDetailTotal: 20, browserPageBudget: 5 },
+    planner: {
+      acquisitionMode: "generated",
+      browserMode: "portable"
+    }
+  });
+  transitionWorkflowRun(db, { id: generatedWorkflow.id, status: "scanning" });
+  transitionWorkflowRun(db, {
+    id: generatedWorkflow.id,
+    status: "interrupted",
+    errorCode: "INJECTED_GENERATED_INTERRUPTION",
+    errorMessage: "generated portable resume fixture"
+  });
+  const generatedInterruptedPage = await getText(baseUrl, `/workflow?runId=${generatedWorkflow.id}`);
+  assert.match(generatedInterruptedPage.body, /<select name="browserMode">/);
+  assert.match(generatedInterruptedPage.body, /<option value="edge">当前已登录 Edge<\/option>/);
+  assert.match(generatedInterruptedPage.body, /<option value="portable" selected>项目专用 Edge<\/option>/);
+  assert.doesNotMatch(generatedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+
+  const generatedBeforeInvalidMode = getWorkflowRun(db, generatedWorkflow.id);
+  const spawnCountBeforeInvalidGeneratedMode = spawns.length;
+  const invalidGeneratedMode = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "chromium",
+    cdpPort: 9333
+  });
+  assert.strictEqual(invalidGeneratedMode.status, 409);
+  assert.match(invalidGeneratedMode.body, /WORKFLOW_BROWSER_MODE_INVALID/);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.deepStrictEqual(getWorkflowRun(db, generatedWorkflow.id), generatedBeforeInvalidMode);
+
+  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "portable",
+    cdpPort: 9333
+  });
+  assert.strictEqual(generatedPortableResume.status, 303);
+  assert.strictEqual(generatedPortableResume.location, `/workflow?runId=${generatedWorkflow.id}`);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode + 1);
+  assert.deepStrictEqual(
+    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
+    ["--browser", "portable", "--cdp-port", "9333"]
+  );
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
