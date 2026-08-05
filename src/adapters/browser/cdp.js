@@ -73,7 +73,7 @@ class CdpBrowserAdapter {
     try {
       const createdWindowId = await this.windowIdForTarget(targetId);
       if (String(createdWindowId) !== String(opener.windowId)) {
-        throw browserError("BROWSER_COMMAND_FAILED", "CDP created the communication tab in a different browser window.");
+        throw browserError("BROWSER_COMMAND_FAILED", "CDP created the tab in a different browser window.");
       }
       return targetId;
     } catch (error) {

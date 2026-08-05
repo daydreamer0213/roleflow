@@ -97,6 +97,8 @@ const {
   summarizeResumePlan
 } = require("./core/scan_snapshot");
 const { validateResumeBatch } = require("./core/scan_resume");
+const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
+const { prepareWorkspaceTabs } = require("./core/workspace_tabs");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -123,6 +125,7 @@ async function main() {
   if (["help", "--help", "-h"].includes(command) || args.help) return printHelp();
   logger.info("cli_command_started", { command, argKeys: Object.keys(args).sort() });
 
+  if (command === "workspace-tabs") return prepareWorkspaceTabsCommand(args);
   const db = openDb(path.resolve(args.db || DEFAULT_DB));
   if (command === "init-db") {
     console.log(`SQLite ready: ${path.resolve(args.db || DEFAULT_DB)}`);
@@ -153,6 +156,42 @@ async function main() {
   if (command === "mark-skipped") return mark(db, args, "skipped");
   if (command === "mark-no-reply") return mark(db, args, "no_reply");
   throw new Error(`未知命令：${command}`);
+}
+
+async function prepareWorkspaceTabsCommand(
+  args,
+  {
+    browserFactory = createBrowser,
+    siteAdapterFactory = createSiteAdapter,
+    prepareTabs = prepareWorkspaceTabs
+  } = {}
+) {
+  const browserMode = String(args.browser || "portable").trim().toLowerCase();
+  const cdpPort = Number(args["cdp-port"] || 9222);
+  if (browserMode !== "portable" || cdpPort !== 9222) {
+    const error = new Error("工作台同窗启动固定使用项目专用 Edge 的 9222 端口。");
+    error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
+    throw error;
+  }
+  const dashboardUrl = String(args["dashboard-url"] || "http://127.0.0.1:8787/");
+  const parsedDashboardUrl = new URL(dashboardUrl);
+  if (parsedDashboardUrl.protocol !== "http:"
+    || !["127.0.0.1", "localhost"].includes(parsedDashboardUrl.hostname)) {
+    const error = new Error("工作台 URL 必须是本机 HTTP 地址。");
+    error.code = "WORKSPACE_DASHBOARD_URL_INVALID";
+    throw error;
+  }
+  const browser = browserFactory({ browser: "portable", "cdp-port": 9222 });
+  const adapter = siteAdapterFactory("boss", { browser, logger });
+  const result = await prepareTabs({
+    browser,
+    dashboardUrl: parsedDashboardUrl.toString(),
+    inspectReadiness: () => inspectBossBrowserReadiness({
+      preflight: () => adapter.preflight()
+    })
+  });
+  console.log(`RoleFlow workspace tabs ready: ${result.status}`);
+  return result;
 }
 
 async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
@@ -1710,6 +1749,7 @@ function printHelp() {
 }
 
 module.exports = {
+  prepareWorkspaceTabsCommand,
   communicate,
   resolveCommunicationBrowserAuthority,
   executeWithSiteScanLease,
