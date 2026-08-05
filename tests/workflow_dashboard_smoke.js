@@ -46,6 +46,12 @@ let server;
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
   let inheritedResolutionInput = null;
+  let browserReadiness = {
+    status: "login_required",
+    ready: false,
+    message: "等待登录：请在 BOSS 标签页完成登录。",
+    checkedAt: "2099-01-01T00:00:00.000Z"
+  };
   const inheritedContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
     inheritedResolutionCount += 1;
     inheritedResolutionInput = { browserMode, cdpPort };
@@ -106,6 +112,7 @@ let server;
     allowOfflineMock: true,
     logger,
     inheritedContextResolver,
+    browserReadinessProbe: async () => ({ ...browserReadiness }),
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
@@ -117,14 +124,37 @@ let server;
   });
   const baseUrl = await listen(server);
 
+  const loginReadiness = await getJson(baseUrl, "/api/browser-readiness");
+  assert.strictEqual(loginReadiness.status, 200);
+  assert.deepStrictEqual(loginReadiness.body, browserReadiness);
+
+  const gatedPlanPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
+  assert.match(gatedPlanPage.body, /data-browser-readiness-button/);
+  assert.match(gatedPlanPage.body, /data-browser-base-disabled="false"/);
+  assert.match(gatedPlanPage.body, /id="browser-readiness-status"/);
+  assert.match(gatedPlanPage.body, /\/api\/browser-readiness/);
+  assert.match(gatedPlanPage.body, /5000/);
+  assert.match(gatedPlanPage.body, /disabled[^>]*>执行一轮/);
+
+  browserReadiness = {
+    status: "ready",
+    ready: true,
+    message: "继承模式已就绪，可以执行一轮。",
+    checkedAt: "2099-01-01T00:00:05.000Z"
+  };
+  const readyReadiness = await getJson(baseUrl, "/api/browser-readiness");
+  assert.deepStrictEqual(readyReadiness.body, browserReadiness);
+
+  const unconfirmed = seedProfile(db, { confirmCard: false });
+  const blockedPage = await getText(baseUrl, `/plan?planId=${unconfirmed.planId}`);
+  assert.match(blockedPage.body, /data-browser-base-disabled="true"/);
+
   const planBefore = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(planBefore.body, /今日进度<\/span><strong>0\s*\/\s*70/);
   assert.match(planBefore.body, /下一轮目标<\/span><strong>35/);
-  assert.strictEqual((planBefore.body.match(/name="action" value="start"/g) || []).length, 1);
-  assert.match(
-    planBefore.body,
-    /<button class="workflow-primary" name="action" value="start">执行一轮<\/button>/
-  );
+  assert.match(planBefore.body, /<button[^>]*data-browser-readiness-button[^>]*disabled>/);
+  assert.match(planBefore.body, /data-browser-readiness-button/);
+  assert.match(planBefore.body, /data-browser-base-disabled="false"/);
   assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
   assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
   assert.doesNotMatch(planBefore.body, /上午|下午/);
@@ -525,10 +555,19 @@ let server;
         error.code = "C:\\Users\\Administrator\\secret.txt";
         throw error;
       }
+    },
+    browserReadinessProbe: async () => {
+      throw Object.assign(new Error("fixture unexpected readiness failure"), {
+        code: "UNEXPECTED_READINESS_FAILURE"
+      });
     }
   });
   const failOpenBaseUrl = await listen(failOpenServer);
   try {
+    const failedReadiness = await getText(failOpenBaseUrl, "/api/browser-readiness");
+    assert.strictEqual(failedReadiness.status, 500);
+    const failedReadinessPlan = await getText(failOpenBaseUrl, `/plan?planId=${unconfirmed.planId}`);
+    assert.match(failedReadinessPlan.body, /data-browser-readiness-button[^>]*disabled/);
     const failOpenPage = await getText(failOpenBaseUrl, started.location);
     assert.strictEqual(failOpenPage.status, 200);
     assert.match(failOpenPage.body, /\u786e\u8ba4\u672c\u8f6e\u6c9f\u901a\u6e05\u5355/);
@@ -715,7 +754,7 @@ let server;
   }
 });
 
-function seedProfile(database) {
+function seedProfile(database, { confirmCard = true } = {}) {
   const profile = {
     candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
     education: [{ school: "Test University", degree: "本科", major: "电子信息工程" }],
@@ -762,7 +801,7 @@ function seedProfile(database) {
     card: matchingCardFromProfile(profile),
     source: "migration"
   });
-  confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
+  if (confirmCard) confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
   return saved;
 }
 
@@ -863,6 +902,11 @@ async function listen(target) {
 async function getText(baseUrl, pathname) {
   const response = await fetch(`${baseUrl}${pathname}`);
   return { status: response.status, body: await response.text() };
+}
+
+async function getJson(baseUrl, pathname) {
+  const response = await fetch(`${baseUrl}${pathname}`);
+  return { status: response.status, body: await response.json() };
 }
 
 async function postForm(baseUrl, pathname, body) {

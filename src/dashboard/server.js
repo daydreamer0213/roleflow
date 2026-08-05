@@ -119,6 +119,7 @@ const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_polic
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const boss = require("../adapters/sites/boss");
+const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 const PORTABLE_CDP_PORT = 9222;
@@ -135,6 +136,16 @@ function createDashboardBrowser({ browserMode, cdpPort }) {
   if (browserMode === "portable") return new CdpBrowserAdapter({ port: normalizeCdpPort(cdpPort) });
   if (browserMode === "edge") return new EdgeControlAdapter();
   throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式必须是当前 Edge 或项目专用 Edge。", { statusCode: 409 });
+}
+
+function createDashboardBrowserReadinessProbe({ logger }) {
+  return async () => {
+    const browser = new CdpBrowserAdapter({ port: PORTABLE_CDP_PORT });
+    const adapter = new boss.BossSiteAdapter({ browser, logger });
+    return inspectBossBrowserReadiness({
+      preflight: () => adapter.preflight()
+    });
+  };
 }
 
 function resolveNewInheritedBrowser(input = {}) {
@@ -157,8 +168,10 @@ function resolveNewInheritedBrowser(input = {}) {
   return { browserMode, cdpPort };
 }
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext, browserReadinessProbe = null }) {
   const scanRuns = new Map();
+  const resolvedBrowserReadinessProbe = browserReadinessProbe
+    || createDashboardBrowserReadinessProbe({ logger });
   const resolvedWorkflowHealth = {
     getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
     buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
@@ -203,6 +216,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
+      if (req.method === "GET" && url.pathname === "/api/browser-readiness") return sendJson(res, 200, await resolvedBrowserReadinessProbe());
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"), logger);
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
@@ -2532,7 +2546,13 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
           <input type="hidden" name="cdpPort" value="9222">
           <input type="hidden" name="browserMode" value="portable">
           <span class="hint">使用项目专用 Edge 的 BOSS 搜索页</span>
-          <button class="workflow-primary" name="action" value="start"${disabled ? " disabled" : ""}>执行一轮</button>
+          <button
+            class="workflow-primary"
+            name="action"
+            value="start"
+            data-browser-readiness-button
+            data-browser-base-disabled="${disabled ? "true" : "false"}"
+            disabled>执行一轮</button>
         </form>`;
   const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode, next) : "可以开始新一轮";
   return `<section class="workflow-launch" aria-labelledby="workflow-launch-title">
@@ -2544,6 +2564,31 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       <div><span>已用轮次</span><strong>${workflowState.slotsUsed} / ${workflowState.maxRuns}</strong></div>
     </div>
     <div class="workflow-budget">剩余详情读取预算 ${workflowState.remainingBudget.details} · 剩余搜索页预算 ${workflowState.remainingBudget.pages}${next?.shortfallReason ? ` · ${escapeHtml(workflowShortfallLabel(next.shortfallReason))}` : ""}</div>
+    <div id="browser-readiness-status" class="workflow-budget" role="status">正在检查项目专用 Edge 与 BOSS 登录状态…</div>
+    <script>
+    (function(){
+      const statusNode = document.getElementById('browser-readiness-status');
+      const button = document.querySelector('[data-browser-readiness-button]');
+      if (!statusNode || !button) return;
+      const baseDisabled = button.dataset.browserBaseDisabled === 'true';
+      async function refreshReadiness() {
+        try {
+          const response = await fetch('/api/browser-readiness', {cache:'no-store'});
+          if (!response.ok) throw new Error('readiness request failed');
+          const state = await response.json();
+          statusNode.textContent = state.message || '浏览器状态未知。';
+          statusNode.dataset.status = state.status || 'unknown';
+          button.disabled = baseDisabled || state.status !== 'ready';
+        } catch {
+          statusNode.textContent = '无法确认项目专用 Edge 状态，请检查本地服务。';
+          statusNode.dataset.status = 'browser_unavailable';
+          button.disabled = true;
+        }
+      }
+      refreshReadiness();
+      setInterval(refreshReadiness, 5000);
+    })();
+    </script>
   </section>`;
 }
 
