@@ -65,7 +65,12 @@ async function workflowCommunicationSmoke() {
       inventoryCount: 5,
       candidateGap: 0,
       scanNeeded: false,
-      planner: { replacementBuffer: 2 }
+      planner: {
+        acquisitionMode: "inherited",
+        browserMode: "portable",
+        cdpPort: 9222,
+        replacementBuffer: 2
+      }
     });
     transitionWorkflowRun(db, { id: workflow.id, status: "review_required", updatedAt: now });
 
@@ -77,15 +82,26 @@ async function workflowCommunicationSmoke() {
     assert.strictEqual(review.find((candidate) => candidate.id === roleCoreBackupId)?.defaultChecked, false);
     assert.strictEqual(typeof review.find((candidate) => candidate.id === roleCoreBackupId)?.workflowTier, "string");
 
+    assert.throws(
+      () => createCommunicationBatch(db, {
+        workflowRunId: workflow.id,
+        planId,
+        jobIds: selectedIds,
+        browserMode: "edge"
+      }),
+      (error) => error.code === "WORKFLOW_COMMUNICATION_BROWSER_MISMATCH"
+    );
+
     const batch = createCommunicationBatch(db, {
       workflowRunId: workflow.id,
       planId,
       jobIds: selectedIds,
-      browserMode: "edge",
+      browserMode: "portable",
       now
     });
     assert.strictEqual(getWorkflowRun(db, workflow.id).communicationBatchId, batch.id);
     assert.strictEqual(batch.policySnapshot.targetSuccessCount, 3);
+    assert.deepStrictEqual(batch.policySnapshot.browser, { mode: "portable", cdpPort: 9222 });
     const confirmedWorkflow = getWorkflowRun(db, workflow.id);
     assert.strictEqual(confirmedWorkflow.metrics.selected, 5);
     assert.strictEqual(confirmedWorkflow.metrics.communication.selected, 5);

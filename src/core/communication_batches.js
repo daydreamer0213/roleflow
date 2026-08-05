@@ -50,6 +50,23 @@ function createCommunicationBatch(db, input = {}) {
   if (!["edge", "portable"].includes(browserMode)) {
     throw codedError("COMMUNICATION_BROWSER_MODE_INVALID", "browserMode must be edge or portable");
   }
+  const workflowBrowserMode = workflow
+    ? String(workflow.planner?.browserMode
+      || (workflow.planner?.acquisitionMode === "inherited" ? "edge" : "")
+    ).trim().toLowerCase()
+    : "";
+  if (workflowBrowserMode && browserMode !== workflowBrowserMode) {
+    throw codedError(
+      "WORKFLOW_COMMUNICATION_BROWSER_MISMATCH",
+      "communication browser mode differs from the workflow browser authority"
+    );
+  }
+  const browserPolicy = {
+    mode: browserMode,
+    ...(browserMode === "portable"
+      ? { cdpPort: normalizeCdpPort(workflow?.planner?.cdpPort) }
+      : {})
+  };
   const jobIds = normalizedJobIds(input.jobIds);
   const now = timestamp(input.now);
   const replacementBuffer = workflow
@@ -60,6 +77,7 @@ function createCommunicationBatch(db, input = {}) {
   }
   const policyJson = JSON.stringify({
     ...(input.policySnapshot || {}),
+    browser: browserPolicy,
     ...(workflow ? {
       workflowRunId: workflow.id,
       targetSuccessCount: workflow.targetSuccessCount,
@@ -542,6 +560,14 @@ function positiveInteger(value, code, message) {
 function nonNegativeInteger(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
+}
+
+function normalizeCdpPort(value) {
+  const port = Number(value || 9222);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw codedError("COMMUNICATION_CDP_PORT_INVALID", "portable communication requires a valid CDP port");
+  }
+  return port;
 }
 
 function parseJson(value, fallback) {

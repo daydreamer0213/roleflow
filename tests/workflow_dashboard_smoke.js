@@ -551,6 +551,7 @@ let server;
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
+  assert.match(reviewPage.body, /name="browserMode" value="portable"/);
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
   assert.match(reviewPage.body, /有效候选\s*<strong>/);
@@ -573,7 +574,7 @@ let server;
   const confirmed = await postForm(baseUrl, "/api/communication-batch", {
     workflowRunId: workflow.id,
     planId: saved.planId,
-    browserMode: "edge",
+    browserMode: "portable",
     jobIds: selectedIds
   });
   assert.strictEqual(confirmed.status, 303);

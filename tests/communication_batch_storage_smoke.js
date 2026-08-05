@@ -71,7 +71,11 @@ try {
     listCommunicationBatchItems(db, selected.id).map((item) => item.status),
     ["pending", "pending", "pending"]
   );
-  const safeStop = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "edge" });
+  const safeStop = createCommunicationBatch(db, { planId, jobIds: [alreadyCommunicatedId], browserMode: "portable" });
+  assert.deepStrictEqual(safeStop.policySnapshot.browser, {
+    mode: "portable",
+    cdpPort: 9222
+  });
   const safeStopItem = listCommunicationBatchItems(db, safeStop.id)[0];
   assert.strictEqual(
     transitionCommunicationItem(db, { itemId: safeStopItem.id, expectedStatus: "pending", status: "stopped" }).status,

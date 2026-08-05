@@ -278,7 +278,7 @@ async function confirmAndStart(baseUrl, workflow, review) {
   const confirmed = await postForm(baseUrl, "/api/communication-batch", {
     workflowRunId: workflow.id,
     planId: workflow.planId,
-    browserMode: "edge",
+    browserMode: "portable",
     jobIds: selectedIds
   }, "application/json");
   assert.strictEqual(confirmed.status, 200, confirmed.body);

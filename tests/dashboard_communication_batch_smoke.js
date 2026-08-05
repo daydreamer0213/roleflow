@@ -73,7 +73,7 @@ let server;
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.skippedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
 
-  const created = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: [fixture.primaryId, fixture.backupId], browserMode: "edge", title: "forged", company: "forged", bucket: "not_recommended", url: "https://invalid.example" });
+  const created = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: [fixture.primaryId, fixture.backupId], browserMode: "portable", title: "forged", company: "forged", bucket: "not_recommended", url: "https://invalid.example" });
   assert.strictEqual(created.status, 200);
   const batchId = created.body.batch.id;
   assert.deepStrictEqual(listCommunicationBatchItems(db, batchId).map((item) => [item.jobId, item.titleSnapshot, item.companySnapshot]), [
@@ -93,6 +93,10 @@ let server;
   assert.strictEqual(started.status, 200);
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
+  assert.deepStrictEqual(
+    spawns[0].args.slice(spawns[0].args.indexOf("--browser")),
+    ["--browser", "portable", "--cdp-port", "9222"]
+  );
 
   setCommunicationBatchStatus(db, {
     batchId,
