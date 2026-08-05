@@ -139,7 +139,7 @@ function Test-ProjectDependencies {
   $PreviousPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    & $NodePath -e "try { require.resolve('pdfjs-dist/legacy/build/pdf.mjs') } catch { process.exit(1) }" 2>$null
+    & $NodePath -e "try { require.resolve('pdfjs-dist/legacy/build/pdf.mjs', { paths: [process.argv[1]] }) } catch { process.exit(1) }" $ProjectRoot 2>$null
     return $LASTEXITCODE -eq 0
   } finally {
     $ErrorActionPreference = $PreviousPreference

@@ -28,8 +28,9 @@ const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-work
 const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1 must use a UTF-8 BOM for Windows PowerShell 5.1");
-assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs')"), "installer must resolve the production PDF parser dependency");
+assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs',"), "installer must resolve the production PDF parser dependency");
 assert(!installer.includes("pdf-parse"), "installer must not check the removed pdf-parse dependency");
+assert(installer.includes("{ paths: [process.argv[1]] }"), "installer must anchor dependency resolution to its project root");
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
 assert(!workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("项目专用 Edge"));
