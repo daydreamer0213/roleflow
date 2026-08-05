@@ -17,15 +17,33 @@ class CdpBrowserAdapter {
     if (!Array.isArray(pages)) {
       throw browserError("BROWSER_COMMAND_FAILED", "CDP tab list response is not an array.");
     }
-    return pages
-      .filter((page) => page.type === "page" && page.webSocketDebuggerUrl)
-      .map((page, index) => ({
+    const pageTabs = pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
+    return Promise.all(pageTabs.map(async (page, index) => ({
         id: page.id,
         title: page.title || "",
         url: page.url || "",
         active: index === 0,
+        windowId: await this.windowIdForTarget(page.id),
         webSocketDebuggerUrl: page.webSocketDebuggerUrl
-      }));
+      })));
+  }
+
+  async browserCommand(method, params = {}) {
+    const version = await this.requestJson("/json/version");
+    if (!version?.webSocketDebuggerUrl) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP browser version response has no browser websocket URL.");
+    }
+    return sendCdp(version.webSocketDebuggerUrl, method, params, this.timeoutMs);
+  }
+
+  async windowIdForTarget(targetId) {
+    const result = await this.browserCommand("Browser.getWindowForTarget", {
+      targetId: String(targetId || "")
+    });
+    if (!Number.isInteger(result?.windowId)) {
+      throw browserError("BROWSER_COMMAND_FAILED", `CDP target has no reliable browser window identity: ${targetId}`);
+    }
+    return result.windowId;
   }
 
   async activeTabId() {
@@ -44,17 +62,22 @@ class CdpBrowserAdapter {
   }
 
   async createTab(openerTabId, url = "about:blank") {
-    const version = await this.requestJson("/json/version");
-    if (!version?.webSocketDebuggerUrl) {
-      throw browserError("BROWSER_COMMAND_FAILED", "CDP browser version response has no browser websocket URL.");
-    }
-    const result = await sendCdp(
-      version.webSocketDebuggerUrl,
-      "Target.createTarget",
-      { url: String(url || "about:blank") },
-      this.timeoutMs
-    );
+    const opener = await this.findTab(openerTabId);
+    const result = await this.browserCommand("Target.createTarget", {
+      url: String(url || "about:blank"),
+      newWindow: false,
+      background: true
+    });
     if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
+    const createdWindowId = await this.windowIdForTarget(result.targetId);
+    if (String(createdWindowId) !== String(opener.windowId)) {
+      try {
+        await this.browserCommand("Target.closeTarget", { targetId: result.targetId });
+      } catch {
+        // The target was created by this call; preserve the primary window-mismatch error.
+      }
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP created the communication tab in a different browser window.");
+    }
     return result.targetId;
   }
 

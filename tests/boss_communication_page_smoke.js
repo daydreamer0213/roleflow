@@ -393,6 +393,7 @@ function assertNoPreparationAction(browser, before) {
   await assert.rejects(
     () => new BossSiteAdapter({ browser: unknownSearchWindowBrowser, sleepFn: async () => {} }).prepareCommunicationTab("search"),
     (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
+      && /重新运行 Start\.bat/.test(error.message)
   );
   assert.deepStrictEqual(preparationCallCounts(unknownSearchWindowBrowser), {
     ...unknownSearchWindowCalls,
@@ -411,6 +412,7 @@ function assertNoPreparationAction(browser, before) {
   await assert.rejects(
     () => storedUnknownWindowAdapter.prepareCommunicationTab("search"),
     (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
+      && /重新运行 Start\.bat/.test(error.message)
   );
   assert.strictEqual(storedUnknownWindowBrowser.calls.createTab.length, storedUnknownWindowCalls.createTab);
   assert.strictEqual(storedUnknownWindowBrowser.calls.bringToFront.length, storedUnknownWindowCalls.bringToFront);
@@ -428,6 +430,7 @@ function assertNoPreparationAction(browser, before) {
   await assert.rejects(
     () => reusableUnknownWindowAdapter.prepareCommunicationTab("search"),
     (error) => error.code === "BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN"
+      && /重新运行 Start\.bat/.test(error.message)
   );
   assert.strictEqual(reusableUnknownWindowBrowser.calls.createTab.length, reusableUnknownWindowCalls.createTab);
   assert.strictEqual(reusableUnknownWindowBrowser.calls.navigate.length, reusableUnknownWindowCalls.navigate);

@@ -142,6 +142,18 @@ async function main() {
     const websocket = installFakeWebSocket();
     global.WebSocket = websocket.FakeWebSocket;
 
+    websocket.mode = "respond";
+    const identifiedTabs = await cdp.listTabs();
+    assert.strictEqual(identifiedTabs.length, 1);
+    assert.strictEqual(identifiedTabs[0].id, "cdp-tab");
+    assert.strictEqual(identifiedTabs[0].windowId, 42);
+    assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget"), 1);
+
+    websocket.mode = "window-identity-missing";
+    await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
+
+    websocket.mode = "respond";
+
     websocket.mode = "disconnect";
     await rejectsWithCode(
       () => cdp.navigate("cdp-tab", "https://example.test/cdp-once"),
@@ -168,19 +180,31 @@ async function main() {
     websocket.urls.length = 0;
     state.versionRequests = 0;
     assert.strictEqual(await cdp.createTab("cdp-tab", "https://example.test/new"), "cdp-created-tab");
-    assert.strictEqual(state.versionRequests, 1);
+    assert.strictEqual(state.versionRequests, 3);
     assert.strictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/browser/cdp-browser");
     assert.notStrictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/page/cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget") >= 2, true);
+
+    websocket.mode = "created-window-mismatch";
+    websocket.messages.length = 0;
+    await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/wrong-window"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+
+    websocket.mode = "respond";
     await cdp.bringToFront("cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
     await cdp.clickAt("cdp-tab", { x: 120, y: 48 });
     assert.deepStrictEqual(
-      websocket.messages.slice(-3).map((message) => message.method),
+      websocket.messages.filter((message) => message.method === "Input.dispatchMouseEvent").slice(-3).map((message) => message.method),
       ["Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent"]
     );
     assert.deepStrictEqual(
-      websocket.messages.slice(-3).map((message) => message.params.type),
+      websocket.messages.filter((message) => message.method === "Input.dispatchMouseEvent").slice(-3).map((message) => message.params.type),
       ["mouseMoved", "mousePressed", "mouseReleased"]
     );
     await rejectsWithCode(
@@ -291,19 +315,29 @@ function installFakeWebSocket() {
     send(message) {
       const payload = JSON.parse(message);
       control.messages.push(payload);
-      if (control.mode === "disconnect") {
-        queueMicrotask(() => this.emit("close", { code: 1006, reason: "test disconnect" }));
-        return;
-      }
-      if (control.mode === "timeout") return;
       queueMicrotask(() => {
         const dispatchCount = control.messages.filter((item) => item.method === "Input.dispatchMouseEvent").length;
-        const response = control.mode === "fail-third-dispatch"
+        let result = {};
+        let error = null;
+        if (payload.method === "Browser.getWindowForTarget") {
+          if (control.mode === "window-identity-missing") result = {};
+          else if (control.mode === "created-window-mismatch" && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
+          else result = { windowId: 42 };
+        } else if (payload.method === "Target.createTarget") {
+          result = { targetId: "cdp-created-tab" };
+        } else if (control.mode === "fail-third-dispatch"
           && payload.method === "Input.dispatchMouseEvent"
-          && dispatchCount === 3
-          ? { id: payload.id, error: { message: "dispatch failed" } }
-          : { id: payload.id, result: payload.method === "Target.createTarget" ? { targetId: "cdp-created-tab" } : {} };
-        this.emit("message", { data: JSON.stringify(response) });
+          && dispatchCount === 3) {
+          error = { message: "dispatch failed" };
+        } else if (control.mode === "disconnect") {
+          this.emit("close", { code: 1006, reason: "test disconnect" });
+          return;
+        } else if (control.mode === "timeout") {
+          return;
+        }
+        this.emit("message", {
+          data: JSON.stringify(error ? { id: payload.id, error } : { id: payload.id, result })
+        });
       });
     }
 

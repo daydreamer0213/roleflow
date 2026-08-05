@@ -1243,14 +1243,14 @@ class BossSiteAdapter {
       );
     }
     if (!hasKnownBossWindow(searchTab)) {
-      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "The fixed BOSS search tab has no reliable browser window identity.");
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认项目专用 Edge 标签页所属窗口。请关闭多余的项目专用 Edge 窗口后重新运行 Start.bat。");
     }
     await this.assertSearchPage(searchTab.id);
     this.communicationSearchTabId = searchTab.id;
 
     const reusableCandidates = tabs.filter(isReusableBossCommunicationTab);
     if (reusableCandidates.some((tab) => !hasKnownBossWindow(tab))) {
-      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "A reusable BOSS communication tab has no reliable browser window identity.");
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认项目专用 Edge 标签页所属窗口。请关闭多余的项目专用 Edge 窗口后重新运行 Start.bat。");
     }
 
     const stored = this.communicationTabId === null
