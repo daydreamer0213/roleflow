@@ -124,7 +124,8 @@ let server;
   assert.match(planPage.body, /70\s*\/\s*70/);
   const third = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "edge",
+    browserMode: "portable",
+    cdpPort: 9222,
     action: "start"
   });
   assert.strictEqual(third.status, 409);
@@ -223,7 +224,8 @@ async function resolveOfflineInheritedContext({ plan, matchingContext }) {
 async function startWorkflow(baseUrl, planId) {
   const response = await postForm(baseUrl, "/api/workflow-run", {
     planId,
-    browserMode: "edge",
+    browserMode: "portable",
+    cdpPort: 9222,
     action: "start"
   });
   assert.strictEqual(response.status, 303, response.body);

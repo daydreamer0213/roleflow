@@ -117,9 +117,45 @@ const {
 } = require("../core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_policy");
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
+const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const boss = require("../adapters/sites/boss");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
+const PORTABLE_CDP_PORT = 9222;
+
+function normalizeCdpPort(value, fallback = PORTABLE_CDP_PORT) {
+  const port = Number(value || fallback);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw appError("INVALID_SCAN_INPUT", "CDP 端口必须是 1 到 65535 之间的整数。", { statusCode: 409 });
+  }
+  return port;
+}
+
+function createDashboardBrowser({ browserMode, cdpPort }) {
+  if (browserMode === "portable") return new CdpBrowserAdapter({ port: normalizeCdpPort(cdpPort) });
+  if (browserMode === "edge") return new EdgeControlAdapter();
+  throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式必须是当前 Edge 或项目专用 Edge。", { statusCode: 409 });
+}
+
+function resolveNewInheritedBrowser(input = {}) {
+  const browserMode = String(input.browserMode || "portable").trim().toLowerCase();
+  if (browserMode !== "portable") {
+    throw appError(
+      "INHERITED_PORTABLE_REQUIRED",
+      "新的继承模式必须使用项目专用 Edge。",
+      { statusCode: 409 }
+    );
+  }
+  const cdpPort = normalizeCdpPort(input.cdpPort);
+  if (cdpPort !== PORTABLE_CDP_PORT) {
+    throw appError(
+      "INHERITED_PORTABLE_PORT_REQUIRED",
+      "新的继承模式固定使用项目专用 Edge 的 9222 端口。",
+      { statusCode: 409 }
+    );
+  }
+  return { browserMode, cdpPort };
+}
 
 function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext }) {
   const scanRuns = new Map();
@@ -980,18 +1016,21 @@ async function resolveLiveInheritedContext({
   db,
   plan,
   matchingContext,
-  logger
+  logger,
+  browserMode = "portable",
+  cdpPort = PORTABLE_CDP_PORT,
+  browserFactory = createDashboardBrowser
 }) {
   try {
     const adapter = new boss.BossSiteAdapter({
-      browser: new EdgeControlAdapter(),
+      browser: browserFactory({ browserMode, cdpPort }),
       logger
     });
     const preflight = await adapter.preflight();
     if (!preflight.isSearchPage) {
       throw appError(
         "BOSS_SEARCH_PAGE_INVALID",
-        "请先在现有 Edge 的 BOSS-SEARCH 标签页打开岗位搜索结果页。",
+        "请先在项目专用 Edge 打开 BOSS 岗位搜索结果页。",
         { statusCode: 409 }
       );
     }
@@ -1045,6 +1084,20 @@ async function resolveLiveInheritedContext({
       platformPolicy
     };
   } catch (error) {
+    if (error?.code === "BROWSER_DISCONNECTED") {
+      throw appError(
+        "PORTABLE_EDGE_REQUIRED",
+        "项目专用 Edge 未启动或已经断开。请重新运行 Start.bat。",
+        { statusCode: 409, cause: error }
+      );
+    }
+    if (error?.code === "BOSS_LOGIN_REQUIRED") {
+      throw appError(
+        "BOSS_LOGIN_REQUIRED",
+        "请先在项目专用 Edge 登录 BOSS。",
+        { statusCode: 409, cause: error }
+      );
+    }
     if ([
       "BOSS_RISK_CONTROL",
       "BOSS_LOGIN_REQUIRED",
@@ -1073,13 +1126,7 @@ async function handleWorkflowRunStart(req, res, {
   let planId = 0;
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
-    if (params.browserMode && params.browserMode !== "edge") {
-      throw appError(
-        "INHERITED_EDGE_REQUIRED",
-        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
-        { statusCode: 409 }
-      );
-    }
+    const browserAuthority = resolveNewInheritedBrowser(params);
     planId = Number(params.planId || 0);
     const plan = getSearchPlan(db, planId);
     if (!plan || !getCandidateProfile(db, plan.profileId)) throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
@@ -1094,7 +1141,9 @@ async function handleWorkflowRunStart(req, res, {
       db,
       plan,
       matchingContext,
-      logger
+      logger,
+      browserMode: browserAuthority.browserMode,
+      cdpPort: browserAuthority.cdpPort
     });
     try {
       assertInheritedAcquisitionScope(inheritedContext.searchScope);
@@ -1123,6 +1172,8 @@ async function handleWorkflowRunStart(req, res, {
       budget: state.nextPlan.budget,
       planner: {
         ...state.nextPlan,
+        browserMode: browserAuthority.browserMode,
+        cdpPort: browserAuthority.cdpPort,
         acquisitionMode: inheritedContext.acquisitionMode,
         searchTemplate: inheritedContext.searchTemplate,
         searchScope: inheritedContext.searchScope,
@@ -1144,8 +1195,8 @@ async function handleWorkflowRunStart(req, res, {
         root,
         dbPath,
         planId: plan.id,
-        cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
-        browserMode: "edge",
+        cdpPort: browserAuthority.cdpPort,
+        browserMode: browserAuthority.browserMode,
         scanKind: "daily",
         workflowRunId: workflow.id,
         logger,
@@ -1235,6 +1286,9 @@ async function handleWorkflowRunResume(req, res, {
       }
     }
     const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
+    const cdpPort = acquisitionMode === "inherited" && browserMode === "portable"
+      ? normalizeCdpPort(workflow.planner?.cdpPort)
+      : normalizeCdpPort(params.cdpPort);
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
     }
@@ -1254,7 +1308,7 @@ async function handleWorkflowRunResume(req, res, {
           root,
           dbPath,
           planId: workflow.planId,
-          cdpPort: Math.max(1, Math.min(65535, Number(params.cdpPort || 9222))),
+          cdpPort,
           browserMode,
           scanKind: "daily",
           resumeBatchId: workflow.scanBatchId,
@@ -1282,14 +1336,22 @@ function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
   const acquisitionMode = String(workflow?.planner?.acquisitionMode || "").trim();
   const requested = String(requestedMode || "").trim().toLowerCase();
   if (acquisitionMode === "inherited") {
-    if (requested && requested !== "edge") {
+    const stored = String(workflow?.planner?.browserMode || "edge").trim().toLowerCase();
+    if (!["edge", "portable"].includes(stored)) {
       throw appError(
-        "INHERITED_EDGE_REQUIRED",
-        "继承模式必须使用当前已登录 Edge 的 BOSS-SEARCH 标签页。",
+        "WORKFLOW_BROWSER_MODE_INVALID",
+        "本轮保存的浏览器模式无效。",
         { statusCode: 409 }
       );
     }
-    return "edge";
+    if (requested && requested !== stored) {
+      throw appError(
+        "WORKFLOW_BROWSER_MODE_MISMATCH",
+        `本轮已固定使用 ${stored}，不能切换浏览器。`,
+        { statusCode: 409 }
+      );
+    }
+    return stored;
   }
   if (requested && !["edge", "portable"].includes(requested)) {
     throw appError(
@@ -2434,8 +2496,8 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       : `<form class="workflow-start" method="post" action="/api/workflow-run">
           <input type="hidden" name="planId" value="${planRecord.id}">
           <input type="hidden" name="cdpPort" value="9222">
-          <input type="hidden" name="browserMode" value="edge">
-          <span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span>
+          <input type="hidden" name="browserMode" value="portable">
+          <span class="hint">使用项目专用 Edge 的 BOSS 搜索页</span>
           <button class="workflow-primary" name="action" value="start"${disabled ? " disabled" : ""}>执行一轮</button>
         </form>`;
   const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode, next) : "可以开始新一轮";
@@ -2579,7 +2641,11 @@ function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtime
 function renderWorkflowResumeForm(workflow) {
   const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222">`;
   if (workflow.planner?.acquisitionMode === "inherited") {
-    return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="edge"><span class="hint">使用当前 Edge 的 BOSS-SEARCH 标签页</span><button>继续本轮</button></form>`;
+    const browserMode = resolveWorkflowResumeBrowserMode(workflow);
+    const label = browserMode === "portable"
+      ? "使用项目专用 Edge 的 BOSS 搜索页"
+      : "使用旧版当前 Edge 的 BOSS-SEARCH 标签页";
+    return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="${browserMode}"><span class="hint">${label}</span><button>继续本轮</button></form>`;
   }
   const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
   const edgeSelected = selectedMode === "edge" ? " selected" : "";

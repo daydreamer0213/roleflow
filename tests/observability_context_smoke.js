@@ -117,6 +117,7 @@ async function main() {
     const originalPreflight = BossSiteAdapter.prototype.preflight;
     const originalInspectInheritedSearchPage = BossSiteAdapter.prototype.inspectInheritedSearchPage;
     const diagnosticEvents = [];
+    const browserFactoryCalls = [];
     try {
       BossSiteAdapter.prototype.preflight = async () => ({
         tabId: "fixture-search-tab",
@@ -142,6 +143,12 @@ async function main() {
           }
         },
         matchingContext: { matchingCard: {} },
+        browserMode: "portable",
+        cdpPort: 9222,
+        browserFactory(input) {
+          browserFactoryCalls.push(input);
+          return {};
+        },
         logger: {
           info(event, fields = {}) { diagnosticEvents.push({ event, fields }); },
           warn(event, fields = {}) { diagnosticEvents.push({ event, fields }); }
@@ -151,6 +158,25 @@ async function main() {
       BossSiteAdapter.prototype.preflight = originalPreflight;
       BossSiteAdapter.prototype.inspectInheritedSearchPage = originalInspectInheritedSearchPage;
     }
+    assert.deepStrictEqual(browserFactoryCalls, [{ browserMode: "portable", cdpPort: 9222 }]);
+
+    await assert.rejects(
+      () => resolveLiveInheritedContext({
+        db: {},
+        plan: {},
+        matchingContext: {},
+        logger: { info() {}, warn() {} },
+        browserMode: "portable",
+        cdpPort: 9222,
+        browserFactory() {
+          const error = new Error("fixture portable browser is stopped");
+          error.code = "BROWSER_DISCONNECTED";
+          throw error;
+        }
+      }),
+      (error) => error.code === "PORTABLE_EDGE_REQUIRED"
+        && /Start\.bat/.test(error.message)
+    );
 
     const scopeResolved = diagnosticEvents.find((row) => row.event === "inherited_scope_resolved");
     assert(scopeResolved);

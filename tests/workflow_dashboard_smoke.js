@@ -45,8 +45,10 @@ let server;
   const spawns = [];
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
-  const inheritedContextResolver = async ({ plan, matchingContext }) => {
+  let inheritedResolutionInput = null;
+  const inheritedContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
     inheritedResolutionCount += 1;
+    inheritedResolutionInput = { browserMode, cdpPort };
     if (inheritedFailureCode) {
       throw Object.assign(new Error(`blocked by ${inheritedFailureCode}`), {
         code: inheritedFailureCode,
@@ -136,7 +138,8 @@ let server;
     inheritedFailureCode = code;
     const rejected = await postForm(baseUrl, "/api/workflow-run", {
       planId: saved.planId,
-      browserMode: "edge",
+      browserMode: "portable",
+      cdpPort: 9222,
       action: "start"
     });
     assert.strictEqual(rejected.status, 409);
@@ -145,17 +148,18 @@ let server;
   }
   inheritedFailureCode = "";
 
-  const portableStart = await postForm(baseUrl, "/api/workflow-run", {
+  const edgeStart = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "portable",
+    browserMode: "edge",
     action: "start"
   });
-  assert.strictEqual(portableStart.status, 409);
-  assert.match(portableStart.body, /INHERITED_EDGE_REQUIRED/);
+  assert.strictEqual(edgeStart.status, 409);
+  assert.match(edgeStart.body, /INHERITED_PORTABLE_REQUIRED/);
 
   const started = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "edge",
+    browserMode: "portable",
+    cdpPort: 9222,
     action: "start"
   });
   assert.strictEqual(started.status, 303);
@@ -164,6 +168,9 @@ let server;
   assert.strictEqual(workflow.status, "scanning");
   assert.strictEqual(workflow.targetSuccessCount, 35);
   assert.strictEqual(workflow.planner.acquisitionMode, "inherited");
+  assert.deepStrictEqual(inheritedResolutionInput, { browserMode: "portable", cdpPort: 9222 });
+  assert.strictEqual(workflow.planner.browserMode, "portable");
+  assert.strictEqual(workflow.planner.cdpPort, 9222);
   assert.strictEqual(workflow.planner.searchScope.key, `boss:${saved.profileId}:fixture-scope`);
   assert.strictEqual(workflow.planner.platformPolicy.hash, "fixture-policy");
   assert.deepStrictEqual(
@@ -173,6 +180,10 @@ let server;
   assert.strictEqual(spawns.length, 1);
   assert(spawns[0].args.includes("--workflow-run"));
   assert(spawns[0].args.includes(workflow.id));
+  assert.deepStrictEqual(
+    spawns[0].args.slice(spawns[0].args.indexOf("--browser"), spawns[0].args.indexOf("--browser") + 4),
+    ["--browser", "portable", "--cdp-port", "9222"]
+  );
 
   const scanningPage = await getText(baseUrl, started.location);
   assert.match(scanningPage.body, /正在筛选岗位/);
@@ -219,7 +230,8 @@ let server;
   assert.strictEqual(interruptedWorkflow.sequence, 1);
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
   const inheritedInterruptedPage = await getText(baseUrl, started.location);
-  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="portable">/);
+  assert.match(inheritedInterruptedPage.body, /项目专用 Edge 的 BOSS 搜索页/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
   const spawnCountBeforePortableResume = spawns.length;
@@ -227,9 +239,10 @@ let server;
     workflowRunId: workflow.id,
     browserMode: "portable"
   });
-  assert.strictEqual(portableResume.status, 409);
-  assert.match(portableResume.body, /INHERITED_EDGE_REQUIRED/);
-  assert.strictEqual(spawns.length, spawnCountBeforePortableResume);
+  assert.strictEqual(portableResume.status, 303);
+  assert.strictEqual(portableResume.location, `/workflow?runId=${workflow.id}`);
+  assert.strictEqual(spawns.length, spawnCountBeforePortableResume + 1);
+  spawns.at(-1).child.emit("error", new Error("portable resume fixture"));
 
   const frozenPlanner = workflow.planner;
   const resolutionCountBeforeMalformedResume = inheritedResolutionCount;
@@ -242,7 +255,7 @@ let server;
     const spawnCountBeforeMalformedResume = spawns.length;
     const malformedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "edge"
+      browserMode: "portable"
     });
     assert.strictEqual(malformedResume.status, 409);
     assert.match(malformedResume.body, /WORKFLOW_ACQUISITION_MODE_INVALID/);
@@ -262,7 +275,7 @@ let server;
     const spawnCountBeforeCorruptInheritedResume = spawns.length;
     const corruptInheritedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "edge"
+      browserMode: "portable"
     });
     assert.strictEqual(corruptInheritedResume.status, 409);
     assert.match(corruptInheritedResume.body, /WORKFLOW_INHERITED_SNAPSHOT_INVALID/);
@@ -344,7 +357,7 @@ let server;
     const spawnCountBeforeInvalidBatchResume = spawns.length;
     const invalidBatchResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "edge"
+      browserMode: "portable"
     });
     assert.strictEqual(invalidBatchResume.status, 409);
     assert.match(invalidBatchResume.body, new RegExp(invalid.expectedCode));
@@ -365,12 +378,43 @@ let server;
   attachInterruptedScanBatch(validInheritedResumeBatchId, "valid");
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
-    browserMode: "edge"
+    browserMode: "portable"
   });
   assert.strictEqual(resumed.status, 303);
   assert.strictEqual(resumed.location, `/workflow?runId=${workflow.id}`);
-  assert.strictEqual(spawns.length, 2);
+  assert.strictEqual(spawns.length, 3);
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
+  assert.deepStrictEqual(
+    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
+    ["--browser", "portable", "--cdp-port", "9222"]
+  );
+  const legacyInherited = createWorkflowRun(db, {
+    id: "workflow-legacy-inherited-edge",
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2099-01-02",
+    sequence: 1,
+    targetSuccessCount: 1,
+    candidateGap: 1,
+    scanNeeded: true,
+    keywords: [{ word: "RAG工程师", priority: "A", maxCards: 10 }],
+    budget: { maxDetailTotal: 10, browserPageBudget: 2 },
+    planner: {
+      ...frozenPlanner,
+      browserMode: undefined,
+      cdpPort: undefined
+    }
+  });
+  transitionWorkflowRun(db, { id: legacyInherited.id, status: "scanning" });
+  transitionWorkflowRun(db, {
+    id: legacyInherited.id,
+    status: "interrupted",
+    errorCode: "LEGACY_EDGE_RECOVERY",
+    errorMessage: "legacy inherited browser authority"
+  });
+  const legacyPage = await getText(baseUrl, `/workflow?runId=${legacyInherited.id}`);
+  assert.match(legacyPage.body, /name="browserMode" value="edge"/);
+  assert.match(legacyPage.body, /旧版当前 Edge/);
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
   const batchId = validInheritedResumeBatchId;
@@ -397,7 +441,7 @@ let server;
   }).map((run) => ({ ...run }));
   const healthPage = await getText(
     baseUrl,
-    `/workflow?runId=${encodeURIComponent(workflowBeforeHealthPage[0].id)}`
+    `/workflow?runId=${encodeURIComponent(workflow.id)}`
   );
 
   assert.strictEqual(healthPage.status, 200);
@@ -563,9 +607,9 @@ let server;
     action: "start"
   });
   assert.strictEqual(rejectedWhileScanExists.status, 409);
-  assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 1);
+  assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 2);
 
-  spawns[1].child.emit("close", 0, null);
+  spawns.at(-1).child.emit("close", 0, null);
   const generatedWorkflow = createWorkflowRun(db, {
     id: "workflow-generated-portable-resume",
     profileId: saved.profileId,
