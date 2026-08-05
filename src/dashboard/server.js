@@ -2315,6 +2315,9 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const run = scanStatus(scanRuns, planRecord.id, db);
   const resumableBatch = getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" });
   const validation = validateSearchPlan(plan, profile.profile);
+  const inheritedWorkflowValidation = validateSearchPlan(plan, profile.profile, {
+    validatePlatformCities: false
+  });
   const planDependency = getSearchPlanDependency(db, planRecord.id);
   const versionDiff = compareProfileVersions(db, profile.id);
   const feedback = buildFeedbackSummary(db, { profileId: profile.id });
@@ -2322,7 +2325,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const bossRuntimeBlock = communicationRuntimeBlock(db);
   const workflowState = buildWorkflowDashboardState(db, planRecord);
   const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock);
-  const workflowStartDisabled = !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
+  const workflowStartDisabled = !inheritedWorkflowValidation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
     || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
   const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];

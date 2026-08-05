@@ -117,6 +117,12 @@ let server;
   assert.match(planBefore.body, /今日进度<\/span><strong>0\s*\/\s*70/);
   assert.match(planBefore.body, /下一轮目标<\/span><strong>35/);
   assert.strictEqual((planBefore.body.match(/name="action" value="start"/g) || []).length, 1);
+  assert.match(
+    planBefore.body,
+    /<button class="workflow-primary" name="action" value="start">执行一轮<\/button>/
+  );
+  assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
+  assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
 
@@ -522,8 +528,8 @@ function seedProfile(database) {
       diagnostics: {}
     },
     searchPlan: {
-      name: "广州 AI",
-      cities: ["广州"],
+      name: "Inherited platform-default AI",
+      cities: ["测试未映射城市"],
       directions: ["AI应用开发"],
       keywords: [
         { word: "AI应用开发工程师", priority: "A", reason: "主方向" },
