@@ -48,7 +48,6 @@ async function prepareWorkspaceTabs({ browser, dashboardUrl, inspectReadiness })
   if (!Number.isInteger(bossTab.windowId)) {
     throw workspaceError("BROWSER_COMMAND_FAILED", "BOSS 标签页没有可靠的窗口身份。");
   }
-
   const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
   const crossWindow = dashboardTabs.find((tab) =>
     String(tab.windowId) !== String(bossTab.windowId)
@@ -57,6 +56,12 @@ async function prepareWorkspaceTabs({ browser, dashboardUrl, inspectReadiness })
     throw workspaceError(
       "WORKSPACE_DASHBOARD_WINDOW_MISMATCH",
       "RoleFlow 工作台位于另一个项目 Edge 窗口，请关闭多余窗口后重试。"
+    );
+  }
+  if (tabs.some((tab) => !Number.isInteger(tab.windowId) || tab.windowId !== bossTab.windowId)) {
+    throw workspaceError(
+      "WORKSPACE_WINDOW_MISMATCH",
+      "项目专用 Edge 包含多个窗口或缺少可靠的窗口身份，请关闭多余窗口后重试。"
     );
   }
 

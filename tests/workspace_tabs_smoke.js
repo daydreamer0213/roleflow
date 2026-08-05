@@ -102,6 +102,23 @@ function fakeBrowser(initialTabs, createdTab = null) {
     (error) => error.code === "BOSS_WINDOW_MISMATCH"
   );
 
+  await assert.rejects(
+    () => prepareWorkspaceTabs({
+      browser: fakeBrowser([
+        boss,
+        dashboard,
+        {
+          id: "other-window-page",
+          url: "about:blank",
+          windowId: 99
+        }
+      ]),
+      dashboardUrl: dashboard.url,
+      inspectReadiness: async () => ({ status: "ready" })
+    }),
+    (error) => error.code === "WORKSPACE_WINDOW_MISMATCH"
+  );
+
   const commandBrowser = { kind: "portable-browser" };
   const commandCalls = { browser: [], adapter: [], preflight: 0 };
   const commandResult = await prepareWorkspaceTabsCommand({
