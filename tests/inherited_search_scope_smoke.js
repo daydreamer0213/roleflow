@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const {
   canonicalizeBossSearchTemplate,
   buildInheritedSearchScope,
+  assertInheritedAcquisitionScope,
   freezeKeywordSource,
   scopeShortId
 } = require("../src/core/inherited_search_scope");
@@ -32,6 +33,30 @@ assert.deepStrictEqual(first.searchScope.filterParams, {
 assert.match(first.searchScope.key, /^boss:7:[a-f0-9]{64}$/);
 assert.strictEqual(scopeShortId(first.searchScope.key), first.searchScope.templateHash.slice(0, 10));
 
+const platformDefault = buildInheritedSearchScope({
+  profileId: 7,
+  rawUrl: "https://www.zhipin.com/web/geek/jobs?query=RAG&page=3&ka=search&utm_source=test"
+});
+assert.deepStrictEqual(platformDefault.searchTemplate, {
+  mode: "inherited",
+  url: "https://www.zhipin.com/web/geek/jobs",
+  cityCode: ""
+});
+assert.deepStrictEqual(platformDefault.searchScope.filterParams, {});
+assert.match(platformDefault.searchScope.key, /^boss:7:[a-f0-9]{64}$/);
+const platformDefaultPolicy = compilePlatformRuntimePolicy({
+  searchScope: platformDefault.searchScope,
+  catalog: {},
+  cityCodes: CITY_CODES
+});
+assert.deepStrictEqual(platformDefaultPolicy.filters.location, {
+  mode: "unset",
+  codes: [],
+  cities: [],
+  districts: []
+});
+assert.deepStrictEqual(platformDefaultPolicy.unresolvedParams, []);
+
 assert.notStrictEqual(
   buildInheritedSearchScope({
     profileId: 7,
@@ -48,15 +73,22 @@ assert.throws(
   (error) => error.code === "BOSS_SEARCH_PAGE_INVALID"
 );
 for (const rawUrl of [
-  "https://www.zhipin.com/web/geek/jobs",
-  "https://www.zhipin.com/web/geek/jobs?query=RAG&page=3&ka=search&utm_source=test",
-  "https://www.zhipin.com/web/geek/jobs?city="
+  "https://example.com/web/geek/jobs",
+  "https://www.zhipin.com/web/geek/recommend"
 ]) {
   assert.throws(
     () => buildInheritedSearchScope({ profileId: 7, rawUrl }),
-    (error) => error.code === "INHERITED_SCOPE_FILTER_REQUIRED"
+    (error) => error.code === "BOSS_SEARCH_PAGE_INVALID"
   );
 }
+assert.throws(
+  () => buildInheritedSearchScope({ profileId: 0, rawUrl: platformDefault.searchTemplate.url }),
+  (error) => error.code === "INHERITED_SCOPE_PROFILE_INVALID"
+);
+assert.throws(
+  () => assertInheritedAcquisitionScope({ filterParams: {} }),
+  (error) => error.code === "INHERITED_SCOPE_INVALID"
+);
 
 const keywordSource = freezeKeywordSource({
   planRecord: {
@@ -353,6 +385,34 @@ assert.deepStrictEqual(
     "platform_degree_unverified",
     "platform_job_type_unverified"
   ]
+);
+
+function experienceBoundaryTags(actual, labels) {
+  return evaluatePlatformBoundaries(
+    { experience: actual },
+    { filters: { experience: { codes: [], labels } }, unresolvedParams: [] }
+  ).qualityTags;
+}
+
+assert.deepStrictEqual(
+  experienceBoundaryTags("1年以内", ["1-3年"]),
+  ["platform_experience_mismatch"]
+);
+assert.deepStrictEqual(
+  experienceBoundaryTags("10年以上", ["5-10年"]),
+  ["platform_experience_mismatch"]
+);
+assert.deepStrictEqual(experienceBoundaryTags("1年以下", ["1年以内"]), []);
+assert.deepStrictEqual(experienceBoundaryTags("应届生", ["应届"]), []);
+assert.deepStrictEqual(experienceBoundaryTags("无经验", ["经验不限"]), []);
+assert.deepStrictEqual(
+  experienceBoundaryTags("3年以上", ["3-5年"]),
+  ["platform_experience_unverified"]
+);
+assert.deepStrictEqual(experienceBoundaryTags("5-10年", ["3-5年", "5-10年"]), []);
+assert.deepStrictEqual(
+  experienceBoundaryTags("10年以上", ["3-5年", "5-10年"]),
+  ["platform_experience_mismatch"]
 );
 
 console.log("inherited_search_scope_smoke ok");

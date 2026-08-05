@@ -422,6 +422,24 @@ class BossSiteAdapter {
           label: (option.textContent || "").replace(/\\s+/g, " ").trim()
         }))
       })),
+      currentOptions: Array.from(document.querySelectorAll(".condition-filter-select")).flatMap((field) =>
+        Array.from(field.querySelectorAll("[ka*='sel-job-rec-']")).flatMap((option) => {
+          const match = String(option.getAttribute("ka") || "").match(/^sel-job-rec-([A-Za-z]+)-([^\\s]+)$/);
+          const selected = option.matches?.(".active, .selected, [aria-selected='true'], [aria-current='true']")
+            || option.getAttribute("aria-selected") === "true"
+            || option.getAttribute("aria-current") === "true"
+            || Boolean(option.closest?.("li.active, li.selected, .filter-option.active, .filter-option.selected, [aria-selected='true'], [aria-current='true']"));
+          if (!match || !selected) return [];
+          const param = match[1] === "exp" ? "experience" : match[1];
+          const code = match[2].trim();
+          const currentCodes = location.href
+            ? new URL(location.href).searchParams.getAll(param)
+              .flatMap((value) => String(value).split(",").map((item) => item.trim()))
+            : [];
+          const label = String(option.textContent || "").replace(/\\s+/g, " ").trim();
+          return code && label && currentCodes.includes(code) ? [{ param, code, label }] : [];
+        })
+      ),
       urlOptions: Array.from(document.querySelectorAll('a[href*="/web/geek/jobs"]')).flatMap((node) => {
         try {
           const currentUrl = new URL(location.href);
@@ -446,7 +464,10 @@ class BossSiteAdapter {
       url: String(state?.url || ""),
       searchTemplate,
       catalog: parseBossFilterCatalog(state?.rawFields || []),
-      urlOptions: dedupeBossUrlOptions(state?.urlOptions || [])
+      urlOptions: dedupeBossUrlOptions([
+        ...(state?.urlOptions || []),
+        ...(state?.currentOptions || [])
+      ])
     };
   }
 

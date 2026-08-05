@@ -5,6 +5,9 @@ const vm = require("vm");
 const { chooseAutomationTab } = require("../src/adapters/browser/edge_control");
 const { BossSiteAdapter, buildBossScanTargets, parseBossFilterCatalog } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   openDb,
@@ -214,11 +217,23 @@ async function inheritedPageInspectionSmoke() {
     { param: "district", code: "101280105", label: "天河区" }
   ]);
   assert.strictEqual(inspected.urlOptions.some((item) => item.param === "city" || item.param === "salary"), false);
+  assert.strictEqual(inspected.urlOptions.some((item) => item.param === "unknownStable"), false);
   assert.deepStrictEqual(inspected.urlOptions.find((item) => item.param === "futureFilter"), {
     param: "futureFilter",
     code: "preview-9",
     label: "未来筛选"
   });
+  const inheritedScope = buildInheritedSearchScope({ profileId: 7, rawUrl: inspected.url });
+  const platformPolicy = compilePlatformRuntimePolicy({
+    searchScope: inheritedScope.searchScope,
+    catalog: inspected.catalog,
+    urlOptions: inspected.urlOptions,
+    cityCodes: CITY_CODES
+  });
+  assert.deepStrictEqual(platformPolicy.filters.location.districts, ["天河区"]);
+  assert.deepStrictEqual(platformPolicy.unresolvedParams, [
+    { param: "unknownStable", codes: ["opaque-7"] }
+  ]);
 }
 
 function inheritedFilterDomSandbox(fixture) {
@@ -231,7 +246,18 @@ function inheritedFilterDomSandbox(fixture) {
       if (selector !== "[ka*='sel-job-rec-']") return [];
       return field.options.map((option) => ({
         textContent: option.label,
-        getAttribute(name) { return name === "ka" ? option.ka : null; }
+        className: option.selected ? "selected" : "",
+        getAttribute(name) {
+          if (name === "ka") return option.ka;
+          if (name === "aria-selected") return option.selected ? "true" : null;
+          return null;
+        },
+        matches(selector) {
+          return option.selected && /selected|aria-selected/.test(selector);
+        },
+        closest(selector) {
+          return option.selected && /selected|aria-selected/.test(selector) ? this : null;
+        }
       }));
     }
   }));

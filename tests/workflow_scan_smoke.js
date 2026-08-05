@@ -17,6 +17,9 @@ const {
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
+const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
@@ -138,6 +141,54 @@ async function main() {
     db = null;
   }
 
+  db = openDb(dbPath);
+  const unsupportedSaved = seedProfile(db, {
+    city: "测试未映射城市",
+    fixtureId: "unsupported-inherited-city"
+  });
+  const inheritedScope = buildInheritedSearchScope({
+    profileId: unsupportedSaved.profileId,
+    rawUrl: "https://www.zhipin.com/web/geek/jobs?query=ignored&page=2"
+  });
+  const inheritedPolicy = compilePlatformRuntimePolicy({
+    searchScope: inheritedScope.searchScope,
+    catalog: {},
+    cityCodes: CITY_CODES
+  });
+  const unsupportedInherited = createWorkflowRun(db, workflowInput(unsupportedSaved, {
+    id: "workflow-inherited-unsupported-plan-city",
+    localDay: "2026-07-23",
+    planner: {
+      acquisitionMode: "inherited",
+      searchTemplate: inheritedScope.searchTemplate,
+      searchScope: inheritedScope.searchScope,
+      keywordSource: {
+        searchPlanId: unsupportedSaved.planId,
+        profileVersionId: unsupportedSaved.profileVersionId,
+        matchingCardRevision: "fixture-card",
+        catalogHash: "fixture-keywords",
+        keywords: [
+          { word: "AI application", priority: "A", reason: "" },
+          { word: "RAG engineer", priority: "B", reason: "" }
+        ]
+      },
+      platformPolicy: inheritedPolicy
+    }
+  }));
+  db.close();
+  db = null;
+  const inheritedUnsupportedResult = spawnWorkflowScan({
+    dbPath,
+    planId: unsupportedSaved.planId,
+    workflowRunId: unsupportedInherited.id,
+    runId: "workflow-inherited-unsupported-plan-city-process"
+  });
+  assert.strictEqual(
+    inheritedUnsupportedResult.status,
+    0,
+    inheritedUnsupportedResult.stderr || inheritedUnsupportedResult.stdout
+  );
+
   const result = spawnSync(process.execPath, [
     "--disable-warning=ExperimentalWarning",
     "src/cli.js",
@@ -243,9 +294,9 @@ function spawnWorkflowScan({ dbPath, planId, workflowRunId, runId }) {
   ], { cwd: root, encoding: "utf8" });
 }
 
-function seedProfile(database) {
+function seedProfile(database, { city = "广州", fixtureId = "workflow-scan" } = {}) {
   const profile = {
-    candidate: { name: "Workflow Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
+    candidate: { name: "Workflow Candidate", city, targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
     education: [{ school: "Test University", degree: "Bachelor", major: "Engineering" }],
     experiences: [],
     skills: [{ name: "Python", evidence: ["KnowledgeFlow"] }, { name: "RAG", evidence: ["KnowledgeFlow"] }],
@@ -254,8 +305,8 @@ function seedProfile(database) {
     strengths: []
   };
   const searchPlan = {
-    name: "Guangzhou AI",
-    cities: ["广州"],
+    name: `${city} AI`,
+    cities: [city],
     directions: ["AI应用开发"],
     keywords: [
       { word: "AI application", priority: "A" },
@@ -272,23 +323,23 @@ function seedProfile(database) {
     document: {
       originalFileName: "workflow-resume.txt",
       format: "text",
-      contentHash: "workflow-scan-resume",
+      contentHash: `${fixtureId}-resume`,
       text: "Python RAG LangGraph project experience. ".repeat(10),
       diagnostics: {}
     },
     searchPlan
   });
-  confirmSeededMatchingCard(database, saved, profile);
+  confirmSeededMatchingCard(database, saved, profile, `${fixtureId}-resume`);
   return saved;
 }
 
 // 扫描/工作流以已确认匹配偏好卡为前提；离线种子用确定性映射直接确认，不走模型。
-function confirmSeededMatchingCard(database, saved, profile) {
+function confirmSeededMatchingCard(database, saved, profile, resumeContentHash) {
   const draft = createMatchingCardDraft(database, {
     profileId: saved.profileId,
     profileVersionId: saved.profileVersionId,
     resumeDocumentId: saved.resumeDocumentId,
-    resumeContentHash: "workflow-scan-resume",
+    resumeContentHash,
     card: matchingCardFromProfile(profile),
     source: "migration"
   });

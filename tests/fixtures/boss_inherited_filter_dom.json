@@ -1,20 +1,27 @@
 {
-  "url": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405",
+  "url": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&district=101280105&unknownStable=opaque-7",
   "rawFields": [
     {
       "label": "薪资待遇",
       "options": [
         { "ka": "sel-job-rec-salary-405", "label": "10-20K" }
       ]
+    },
+    {
+      "label": "区域",
+      "options": [
+        { "ka": "sel-job-rec-district-101280105", "label": "天河区", "selected": true },
+        { "ka": "sel-job-rec-district-101280104", "label": "越秀区" }
+      ]
     }
   ],
   "links": [
     {
-      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&district=101280105",
+      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&district=101280105&unknownStable=opaque-7",
       "label": "天河区"
     },
     {
-      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&futureFilter=preview-9",
+      "href": "https://www.zhipin.com/web/geek/jobs?query=RAG&page=2&city=101280100&salary=405&district=101280105&unknownStable=opaque-7&futureFilter=preview-9",
       "label": "未来筛选"
     }
   ]

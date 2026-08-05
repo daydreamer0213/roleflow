@@ -317,12 +317,18 @@ function unionSalaryBounds(ranges) {
 }
 
 function experienceBucket(value) {
-  const text = String(value || "");
-  if (/5-10年|5年以上|五年以上|10年以上|十年以上/.test(text)) return "senior";
-  if (/3-5年|3年以上|三年以上/.test(text)) return "mid";
-  if (/0-1年|0-3年|1-3年|2-3年|1年以内|1年以下|1年以上|2年以上/.test(text)) return "junior";
-  if (/经验不限|无需经验|无经验|应届|在校/.test(text)) return "entry";
-  return "";
+  const text = String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/[~—–至到]/g, "-");
+  const lanes = new Set();
+  if (/经验不限|无需经验|无经验/.test(text)) lanes.add("unlimited");
+  if (/应届(?:生)?|在校生?/.test(text)) lanes.add("graduate");
+  if (/0-1年|1年以内|1年以下|一年以内|一年以下/.test(text)) lanes.add("under-one");
+  if (/1-3年|一-三年/.test(text)) lanes.add("one-three");
+  if (/3-5年|三-五年/.test(text)) lanes.add("three-five");
+  if (/5-10年|五-十年/.test(text)) lanes.add("five-ten");
+  if (/10年(?:以上|及以上)|十年(?:以上|及以上)/.test(text)) lanes.add("ten-plus");
+  return lanes.size === 1 ? [...lanes][0] : "";
 }
 
 function normalizeDegree(value) {

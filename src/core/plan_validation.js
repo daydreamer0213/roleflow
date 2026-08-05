@@ -2,7 +2,7 @@ const { cityToBossCode } = require("./search_plan");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { appError } = require("./observability");
 
-function validateSearchPlan(plan = {}, candidateProfile = {}) {
+function validateSearchPlan(plan = {}, candidateProfile = {}, { validatePlatformCities = true } = {}) {
   const errors = [];
   const warnings = [];
   const cities = plan.cities || [];
@@ -10,7 +10,7 @@ function validateSearchPlan(plan = {}, candidateProfile = {}) {
   const directions = plan.directions || candidateProfile?.candidate?.targetTitles || [];
   const salary = plan.salary || {};
   if (!cities.length) errors.push("至少选择一个目标城市。");
-  if ((plan.platform?.site || "boss") === "boss") {
+  if (validatePlatformCities && (plan.platform?.site || "boss") === "boss") {
     const unsupportedCities = cities.filter((city) => !cityToBossCode(city));
     if (unsupportedCities.length) errors.push(`BOSS 暂不支持这些城市：${unsupportedCities.join("、")}。请从城市选项中选择。`);
   }
@@ -28,9 +28,9 @@ function validateSearchPlan(plan = {}, candidateProfile = {}) {
   return { valid: errors.length === 0, errors, warnings };
 }
 
-function assertSearchPlanReady(planRecord, candidateProfile = {}, dependency = {}) {
+function assertSearchPlanReady(planRecord, candidateProfile = {}, dependency = {}, options = {}) {
   if (!planRecord?.plan) throw new Error("Search Plan 不存在，请重新确认筛选条件。");
-  const validation = validateSearchPlan(planRecord.plan, candidateProfile);
+  const validation = validateSearchPlan(planRecord.plan, candidateProfile, options);
   if (!validation.valid) throw new Error(validation.errors.join("；"));
   if (dependency.matchingCardRequired) {
     throw appError("MATCHING_CARD_CONFIRMATION_REQUIRED", "扫描前需要先在工作台确认匹配偏好卡。", {

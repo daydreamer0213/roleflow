@@ -17,13 +17,19 @@ const {
   transitionWorkflowRun,
   upsertJob
 } = require("../src/core/storage");
-const { matchingCardFromProfile } = require("../src/core/matching_card");
+const { matchingCardFromProfile, matchingCardRevision } = require("../src/core/matching_card");
 const {
   getCommunicationBatch,
   listCommunicationBatchItems
 } = require("../src/core/communication_batches");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
+const {
+  buildInheritedSearchScope,
+  freezeKeywordSource
+} = require("../src/core/inherited_search_scope");
+const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
+const { CITY_CODES } = require("../src/core/search_plan");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
@@ -51,6 +57,7 @@ let server;
     forceMock: true,
     allowOfflineMock: true,
     logger,
+    inheritedContextResolver: resolveOfflineInheritedContext,
     spawnProcess(_file, args) {
       const child = new EventEmitter();
       child.pid = 8000 + children.length;
@@ -189,6 +196,28 @@ function seedProfile(database) {
   });
   confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
   return saved;
+}
+
+async function resolveOfflineInheritedContext({ plan, matchingContext }) {
+  const { searchTemplate, searchScope } = buildInheritedSearchScope({
+    profileId: plan.profileId,
+    rawUrl: "https://www.zhipin.com/web/geek/jobs?query=offline&page=2"
+  });
+  return {
+    acquisitionMode: "inherited",
+    searchTemplate,
+    searchScope,
+    keywordSource: freezeKeywordSource({
+      planRecord: plan,
+      matchingCardRevision: matchingCardRevision(matchingContext.matchingCard)
+    }),
+    platformPolicy: compilePlatformRuntimePolicy({
+      searchScope,
+      catalog: {},
+      cityCodes: CITY_CODES
+    }),
+    matchingContext
+  };
 }
 
 async function startWorkflow(baseUrl, planId) {

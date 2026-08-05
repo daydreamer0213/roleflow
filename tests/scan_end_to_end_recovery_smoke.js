@@ -62,6 +62,77 @@ async function main() {
     db.close();
     db = null;
 
+    db = storage.openDb(dbPath);
+    storage.setSiteRuntimeState(db, "boss", {
+      status: "blocked",
+      reasonCode: "STABLE_PRE_RESUME_BLOCK",
+      message: "must survive rejected resume"
+    });
+    const legacySnapshot = { ...snapshot, schemaVersion: 1 };
+    const legacyBatchId = storage.createBatch(db, "boss", "legacy-resume", "legacy snapshot", {
+      profileId,
+      searchPlanId: planId,
+      status: "interrupted",
+      filterSnapshot: { execution: legacySnapshot }
+    });
+    const tamperedSnapshot = { ...snapshot, runtimePolicyHash: "tampered-without-rehash" };
+    const tamperedBatchId = storage.createBatch(db, "boss", "tampered-resume", "tampered snapshot", {
+      profileId,
+      searchPlanId: planId,
+      status: "interrupted",
+      filterSnapshot: { execution: tamperedSnapshot }
+    });
+    const corruptInheritedSnapshot = {
+      ...snapshot,
+      searchTemplate: {
+        mode: "inherited",
+        url: "https://www.zhipin.com/web/geek/jobs",
+        cityCode: ""
+      },
+      searchScope: {},
+      keywordSource: {},
+      platformPolicy: {}
+    };
+    const corruptInheritedBatchId = storage.createBatch(db, "boss", "corrupt-inherited", "corrupt inherited snapshot", {
+      profileId,
+      searchPlanId: planId,
+      status: "interrupted",
+      filterSnapshot: { execution: corruptInheritedSnapshot }
+    });
+    db.close();
+    db = null;
+
+    const legacyResume = runScan(dbPath, planId, "scan-e2e-legacy-resume", "reject-browser-create", {
+      resumeBatchId: legacyBatchId
+    });
+    assertExit(legacyResume, 1, "legacy resume rejection");
+    assert.match(legacyResume.stderr, /SCAN_SNAPSHOT_MISMATCH|schemaVersion/);
+
+    const tamperedResume = runScan(dbPath, planId, "scan-e2e-tampered-resume", "reject-browser-create", {
+      resumeBatchId: tamperedBatchId
+    });
+    assertExit(tamperedResume, 1, "tampered resume rejection");
+    assert.match(tamperedResume.stderr, /SCAN_SNAPSHOT_MISMATCH|snapshotHash/);
+
+    const corruptInheritedResume = runScan(
+      dbPath,
+      planId,
+      "scan-e2e-corrupt-inherited-resume",
+      "reject-browser-create",
+      { resumeBatchId: corruptInheritedBatchId }
+    );
+    assertExit(corruptInheritedResume, 1, "corrupt inherited resume rejection");
+    assert.match(corruptInheritedResume.stderr, /继承模式快照不完整/);
+
+    db = storage.openDb(dbPath);
+    assert.strictEqual(storage.getScanRun(db, "scan-e2e-legacy-resume"), null);
+    assert.strictEqual(storage.getScanRun(db, "scan-e2e-tampered-resume"), null);
+    assert.strictEqual(storage.getScanRun(db, "scan-e2e-corrupt-inherited-resume"), null);
+    assert.strictEqual(storage.getSiteRuntimeState(db, "boss").reasonCode, "STABLE_PRE_RESUME_BLOCK");
+    storage.clearSiteRuntimeState(db, "boss");
+    db.close();
+    db = null;
+
     const wrongPlan = runScan(dbPath, otherPlanId, "scan-e2e-wrong-plan", "complete", {
       resumeBatchId: batchId
     });
@@ -74,12 +145,11 @@ async function main() {
     assertExit(changedSnapshot, 1, "changed-snapshot resume rejection");
 
     db = storage.openDb(dbPath);
-    assert.strictEqual(storage.getScanRun(db, "scan-e2e-wrong-plan").stopCode, "SCAN_RESUME_BATCH_MISMATCH");
-    assert.strictEqual(storage.getScanRun(db, "scan-e2e-wrong-plan").batchId, null);
+    assert.strictEqual(storage.getScanRun(db, "scan-e2e-wrong-plan"), null);
     assert.strictEqual(storage.getScanRun(db, "scan-e2e-changed-snapshot").stopCode, "SCAN_SNAPSHOT_MISMATCH");
     assert.strictEqual(storage.getScanRun(db, "scan-e2e-changed-snapshot").batchId, null);
     assert.strictEqual(storage.getBatch(db, batchId).status, "interrupted");
-    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM batches").get().count), 1);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM batches").get().count), 4);
     db.close();
     db = null;
 
@@ -93,7 +163,7 @@ async function main() {
     assert.strictEqual(storage.getScanRun(db, "scan-e2e-resumed").batchId, batchId);
     assert.strictEqual(storage.getScanRun(db, "scan-e2e-resumed").status, "completed");
     assert.strictEqual(storage.getBatch(db, batchId).status, "completed");
-    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM batches").get().count), 1);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM batches").get().count), 4);
     assert.strictEqual(results.length, snapshot.targets.length, "each target must checkpoint exactly once");
     assert.deepStrictEqual(results.map((item) => item.targetKey).sort(), snapshot.targets.map((item) => item.targetKey).sort());
     assert(results.every((item) => item.status === "completed" && item.attemptNumber === 1));
@@ -180,6 +250,7 @@ function installOfflineBoundaries() {
   const reportsPath = require.resolve("../src/reports/render");
   const observabilityPath = require.resolve("../src/core/observability");
   const modelSettingsPath = require.resolve("../src/core/model_settings");
+  const edgeControlPath = require.resolve("../src/adapters/browser/edge_control");
   const boss = require(bossPath);
   const observability = require(observabilityPath);
   const modelSettings = require(modelSettingsPath);
@@ -213,10 +284,21 @@ function installOfflineBoundaries() {
     }
   }
 
+  class OfflineEdgeControlAdapter {
+    constructor() {
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "reject-browser-create") {
+        const error = new Error("browser was created before resume validation");
+        error.code = "BROWSER_CREATED_TOO_EARLY";
+        throw error;
+      }
+    }
+  }
+
   Module._load = function load(request, parent, isMain) {
     let resolved;
     try { resolved = Module._resolveFilename(request, parent, isMain); } catch { /* use the original loader */ }
     if (resolved === bossPath) return { ...boss, BossSiteAdapter: OfflineBossSiteAdapter };
+    if (resolved === edgeControlPath) return { EdgeControlAdapter: OfflineEdgeControlAdapter };
     if (resolved === reportsPath) return { renderReports: () => ({ mdPath: "offline.md", htmlPath: "offline.html" }) };
     if (resolved === observabilityPath) return { ...observability, createLogger: () => logger };
     if (resolved === modelSettingsPath) return {

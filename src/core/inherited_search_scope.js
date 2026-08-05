@@ -62,17 +62,66 @@ function buildInheritedSearchScope({ profileId, rawUrl } = {}) {
 }
 
 function assertInheritedAcquisitionScope(searchScope = {}) {
-  const retainedParams = Object.entries(searchScope.filterParams || {}).filter(([name, values]) =>
-    String(name || "").trim()
-    && (Array.isArray(values) ? values : [values]).some((value) => String(value || "").trim())
-  );
-  if (!retainedParams.length) {
-    throw scopeError(
-      "INHERITED_SCOPE_FILTER_REQUIRED",
-      "当前 BOSS 搜索页没有可继承的稳定筛选条件，请至少保留一个地点、薪资、经验或其他平台筛选条件。"
-    );
+  const templateUrl = String(searchScope?.templateUrl || "");
+  const templateHash = String(searchScope?.templateHash || "");
+  const key = String(searchScope?.key || "");
+  if (
+    searchScope?.site !== "boss"
+    || !templateUrl
+    || !templateHash
+    || !key.startsWith("boss:")
+    || !key.endsWith(`:${templateHash}`)
+    || !Object.hasOwn(searchScope, "filterParams")
+    || !searchScope.filterParams
+    || typeof searchScope.filterParams !== "object"
+    || Array.isArray(searchScope.filterParams)
+  ) {
+    throw scopeError("INHERITED_SCOPE_INVALID", "继承范围数据不完整或格式无效。");
+  }
+  const canonical = canonicalizeBossSearchTemplate(templateUrl);
+  if (canonical.url !== templateUrl) {
+    throw scopeError("INHERITED_SCOPE_INVALID", "继承范围 URL 不是规范化的 BOSS 搜索页。");
   }
   return searchScope;
+}
+
+function assertCompleteInheritedContext(context = {}, {
+  code = "INHERITED_SNAPSHOT_INVALID",
+  message = "继承模式快照不完整，不能安全恢复。",
+  planId = null
+} = {}) {
+  const { searchTemplate, searchScope, keywordSource, platformPolicy } = context || {};
+  try {
+    assertInheritedAcquisitionScope(searchScope);
+  } catch (cause) {
+    throw scopeError(code, message, cause);
+  }
+  const expectedPlanId = planId === null || planId === undefined ? null : Number(planId);
+  const keywordPlanId = Number(keywordSource?.searchPlanId || 0);
+  if (
+    searchTemplate?.mode !== "inherited"
+    || String(searchTemplate?.url || "") !== String(searchScope.templateUrl || "")
+    || !Number.isInteger(keywordPlanId)
+    || keywordPlanId <= 0
+    || (expectedPlanId !== null && keywordPlanId !== expectedPlanId)
+    || !Number.isInteger(Number(keywordSource?.profileVersionId || 0))
+    || Number(keywordSource?.profileVersionId || 0) <= 0
+    || !String(keywordSource?.matchingCardRevision || "").trim()
+    || !String(keywordSource?.catalogHash || "").trim()
+    || !Array.isArray(keywordSource?.keywords)
+    || !keywordSource.keywords.length
+    || !String(platformPolicy?.hash || "").trim()
+    || platformPolicy?.site !== "boss"
+    || String(platformPolicy?.templateHash || "") !== String(searchScope.templateHash || "")
+    || !platformPolicy?.filters
+    || typeof platformPolicy.filters !== "object"
+    || Array.isArray(platformPolicy.filters)
+    || !Array.isArray(platformPolicy?.unresolvedParams)
+    || !Array.isArray(platformPolicy?.filterSummary)
+  ) {
+    throw scopeError(code, message);
+  }
+  return context;
 }
 
 function freezeKeywordSource({ planRecord, matchingCardRevision = "" } = {}) {
@@ -110,6 +159,7 @@ module.exports = {
   canonicalizeBossSearchTemplate,
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
+  assertCompleteInheritedContext,
   freezeKeywordSource,
   scopeShortId
 };

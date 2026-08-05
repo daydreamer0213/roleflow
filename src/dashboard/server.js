@@ -106,6 +106,7 @@ const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
 const {
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
+  assertCompleteInheritedContext,
   freezeKeywordSource,
   scopeShortId
 } = require("../core/inherited_search_scope");
@@ -1201,6 +1202,21 @@ async function handleWorkflowRunResume(req, res, {
         "本轮任务的采集模式无效，不能安全恢复。",
         { statusCode: 409 }
       );
+    }
+    if (acquisitionMode === "inherited") {
+      try {
+        assertCompleteInheritedContext(workflow.planner, {
+          code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+          message: "本轮继承模式快照不完整，不能安全恢复。",
+          planId: workflow.planId
+        });
+      } catch (error) {
+        throw appError(
+          "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+          "本轮继承模式快照不完整，不能安全恢复。",
+          { statusCode: 409, cause: error }
+        );
+      }
     }
     if (acquisitionMode === "inherited"
       && params.browserMode
