@@ -49,6 +49,16 @@ if (-not (Test-Dashboard -DashboardPort $Port)) {
 
 $url = "http://127.0.0.1:$Port/"
 Write-Host "RoleFlow is ready: $url"
-Write-Host "浏览器：项目专用 Edge（不需要 Edge Control 扩展）"
-Write-Host "下一步：在项目专用 Edge 登录 BOSS、打开岗位搜索结果页并设置筛选，然后在工作台点击“执行一轮”。"
-if (-not $NoOpen) { Start-Process $url }
+Write-Host "浏览器：工作台与 BOSS 位于同一个项目专用 Edge 窗口（不需要 Edge Control 扩展）"
+Write-Host "未登录时请先在 BOSS 标签页登录；设置好搜索条件后切回工作台。"
+
+if (-not $NoOpen) {
+  $workspaceArgs = @(
+    "workspace-tabs",
+    "--dashboard-url", $url,
+    "--browser", "portable",
+    "--cdp-port", [string]$CdpPort
+  )
+  & $RunScript @workspaceArgs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
