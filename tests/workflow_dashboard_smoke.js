@@ -609,36 +609,42 @@ let server;
   assert.strictEqual(rejectedWhileScanExists.status, 409);
   assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 2);
 
-  const corruptedPortableInherited = createWorkflowRun(db, {
-    id: "workflow-portable-inherited-wrong-port",
-    profileId: saved.profileId,
-    planId: saved.planId,
-    localDay: "2099-01-03",
-    sequence: 1,
-    targetSuccessCount: 1,
-    candidateGap: 1,
-    scanNeeded: true,
-    keywords: [{ word: "RAG工程师", priority: "A", maxCards: 10 }],
-    budget: { maxDetailTotal: 10, browserPageBudget: 2 },
-    planner: { ...frozenPlanner, browserMode: "portable", cdpPort: 9333 }
-  });
-  transitionWorkflowRun(db, { id: corruptedPortableInherited.id, status: "scanning" });
-  transitionWorkflowRun(db, {
-    id: corruptedPortableInherited.id,
-    status: "interrupted",
-    errorCode: "CORRUPTED_PORTABLE_PORT",
-    errorMessage: "stored portable port does not match project Edge"
-  });
-  const spawnCountBeforeWrongPortResume = spawns.length;
-  const wrongPortResume = await postForm(baseUrl, "/api/workflow-run/resume", {
-    workflowRunId: corruptedPortableInherited.id,
-    browserMode: "portable",
-    cdpPort: 9222
-  });
-  assert.strictEqual(wrongPortResume.status, 409);
-  assert.match(wrongPortResume.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
-  assert.strictEqual(spawns.length, spawnCountBeforeWrongPortResume);
-  assert.strictEqual(getWorkflowRun(db, corruptedPortableInherited.id).status, "interrupted");
+  for (const [index, { label, cdpPort }] of [
+    { label: "wrong-port", cdpPort: 9333 },
+    { label: "zero-port", cdpPort: 0 },
+    { label: "null-port", cdpPort: null }
+  ].entries()) {
+    const corruptedPortableInherited = createWorkflowRun(db, {
+      id: `workflow-portable-inherited-${label}`,
+      profileId: saved.profileId,
+      planId: saved.planId,
+      localDay: `2099-01-${String(3 + index).padStart(2, "0")}`,
+      sequence: 1,
+      targetSuccessCount: 1,
+      candidateGap: 1,
+      scanNeeded: true,
+      keywords: [{ word: "RAG工程师", priority: "A", maxCards: 10 }],
+      budget: { maxDetailTotal: 10, browserPageBudget: 2 },
+      planner: { ...frozenPlanner, browserMode: "portable", cdpPort }
+    });
+    transitionWorkflowRun(db, { id: corruptedPortableInherited.id, status: "scanning" });
+    transitionWorkflowRun(db, {
+      id: corruptedPortableInherited.id,
+      status: "interrupted",
+      errorCode: "CORRUPTED_PORTABLE_PORT",
+      errorMessage: "stored portable port does not match project Edge"
+    });
+    const spawnCountBeforeWrongPortResume = spawns.length;
+    const wrongPortResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: corruptedPortableInherited.id,
+      browserMode: "portable",
+      cdpPort: 9222
+    });
+    assert.strictEqual(wrongPortResume.status, 409);
+    assert.match(wrongPortResume.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+    assert.strictEqual(spawns.length, spawnCountBeforeWrongPortResume);
+    assert.strictEqual(getWorkflowRun(db, corruptedPortableInherited.id).status, "interrupted");
+  }
 
   spawns.at(-1).child.emit("close", 0, null);
   const generatedWorkflow = createWorkflowRun(db, {
