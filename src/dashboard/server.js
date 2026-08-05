@@ -1286,9 +1286,19 @@ async function handleWorkflowRunResume(req, res, {
       }
     }
     const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
-    const cdpPort = acquisitionMode === "inherited" && browserMode === "portable"
-      ? normalizeCdpPort(workflow.planner?.cdpPort)
-      : normalizeCdpPort(params.cdpPort);
+    let cdpPort;
+    if (acquisitionMode === "inherited" && browserMode === "portable") {
+      cdpPort = normalizeCdpPort(workflow.planner?.cdpPort);
+      if (cdpPort !== PORTABLE_CDP_PORT) {
+        throw appError(
+          "INHERITED_PORTABLE_PORT_REQUIRED",
+          "继承模式固定使用项目专用 Edge 的 9222 端口。",
+          { statusCode: 409 }
+        );
+      }
+    } else {
+      cdpPort = normalizeCdpPort(params.cdpPort);
+    }
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
     }
