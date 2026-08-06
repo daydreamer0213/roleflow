@@ -7,6 +7,7 @@ const { openDb } = require("../src/core/storage");
 const {
   ensureProgressCard,
   recordDiscoveredMessageClassification,
+  recordDiscoveredMessageGroupClassification,
   getProgressCardForJob,
   listProgressEvents
 } = require("../src/core/candidate_progress");
@@ -96,6 +97,69 @@ try {
     jobId: rollbackFixture.jobId
   }).threadKey, "");
   assert.strictEqual(listProgressEvents(db, rollbackCard.id).length, 0);
+
+  const groupFixture = createFixture(db, "group", now);
+  const groupCard = ensureProgressCard(db, {
+    ...groupFixture,
+    source: "boss",
+    now
+  });
+  const groupInput = {
+    cardId: groupCard.id,
+    platform: "boss",
+    threadKey: digest("group-thread"),
+    messageKeys: [digest("group-msg-1"), digest("group-msg-2")],
+    messageGroupKey: digest("group"),
+    messageCategory: "availability",
+    missingFactKey: "",
+    progressUpdate: {
+      stage: "reply_ready",
+      nextAction: "untrusted model text"
+    },
+    occurredAt: "2026-07-23T08:02:00.000Z"
+  };
+  const groupRecorded = recordDiscoveredMessageGroupClassification(db, groupInput);
+  assert.strictEqual(groupRecorded.stage, "reply_ready");
+  assert.strictEqual(groupRecorded.nextAction, "Review draft before manual send");
+  assert.strictEqual(
+    listProgressEvents(db, groupCard.id).length,
+    3,
+    "two message events plus one group event"
+  );
+  assert.strictEqual(recordDiscoveredMessageGroupClassification(db, groupInput).id, groupCard.id);
+  assert.strictEqual(
+    listProgressEvents(db, groupCard.id).length,
+    3,
+    "group retry must not duplicate events"
+  );
+  const groupRollbackFixture = createFixture(db, "group-rollback", now);
+  const groupRollbackCard = ensureProgressCard(db, {
+    ...groupRollbackFixture,
+    source: "boss",
+    now
+  });
+  assert.throws(
+    () => recordDiscoveredMessageGroupClassification(db, {
+      cardId: groupRollbackCard.id,
+      platform: "boss",
+      threadKey: digest("group-rollback-thread"),
+      messageKeys: [digest("group-rollback-msg")],
+      messageGroupKey: digest("group-rollback"),
+      messageCategory: "availability",
+      missingFactKey: "",
+      progressUpdate: {
+        stage: "interview_scheduled",
+        nextAction: ""
+      },
+      occurredAt: "2026-07-23T08:03:00.000Z"
+    }),
+    (error) => error.code === "PROGRESS_STAGE_TRANSITION_INVALID"
+  );
+  assert.strictEqual(getProgressCardForJob(db, {
+    profileId: groupRollbackFixture.profileId,
+    jobId: groupRollbackFixture.jobId
+  }).threadKey, "");
+  assert.strictEqual(listProgressEvents(db, groupRollbackCard.id).length, 0);
 
   console.log("candidate_progress_storage_smoke ok");
 } finally {
