@@ -13,6 +13,7 @@ const GUARDED_REASONS = new Set([
   "login_required",
   "row_drifted",
   "no_longer_unread",
+  "preview_drifted",
   "row_not_clickable"
 ]);
 
@@ -111,7 +112,13 @@ function assertSafeSnapshot(snapshot) {
 }
 
 function buildGuardedConversationClickExpression(target) {
-  const expected = JSON.stringify({ rowIndex: target.rowIndex, transientSignature: target.transientSignature, conversationKey: target.conversationKey });
+  const expected = JSON.stringify({
+    rowIndex: target.rowIndex,
+    transientSignature: target.transientSignature,
+    conversationKey: target.conversationKey,
+    operation: target.operation || "unread",
+    previewDigest: target.previewDigest || ""
+  });
   return `(() => {
     const operation = "${GUARDED_OPERATION}";
     const expected = ${expected};
@@ -151,12 +158,16 @@ function buildGuardedConversationClickExpression(target) {
     const row = rows[expected.rowIndex];
     if (!row || !row.isConnected) return fail("row_drifted");
     const unread = Boolean(row.querySelector(".notice-badge"));
-    if (!unread) return fail("no_longer_unread");
+    if (expected.operation === "unread" && !unread) return fail("no_longer_unread");
     const visible = lines(row.innerText);
     const rowTitle = normalize(row.querySelector(".title-box")?.textContent) || visible[0] || "";
     const preview = normalize(row.querySelector(".last-msg-text")?.textContent) || visible[visible.length - 1] || "";
     const actualSignature = "sha256:" + sha256(canonical([expected.rowIndex, rowTitle, preview, unread]));
     if (actualSignature !== expected.transientSignature) return fail("row_drifted");
+    if (expected.operation === "preview_changed") {
+      const previewDigest = "sha256:" + sha256(canonical(["preview", preview]));
+      if (previewDigest !== expected.previewDigest) return fail("preview_drifted");
+    }
     const conversationId = String(row.getAttribute("data-conversation-id") || row.getAttribute("data-encid") || "").trim();
     const actualConversationKey = "sha256:" + sha256(canonical(["conversation", conversationId ? "id:" + conversationId : "label:" + rowTitle]));
     if (actualConversationKey !== expected.conversationKey) return fail("row_drifted");
@@ -192,6 +203,7 @@ function guardedResultError(reason) {
     risk_control: "BOSS_RISK_CONTROL",
     login_required: "BOSS_LOGIN_REQUIRED",
     row_drifted: "BOSS_MESSAGE_ROW_DRIFTED",
+    preview_drifted: "BOSS_MESSAGE_PREVIEW_DRIFTED",
     row_not_clickable: "BOSS_MESSAGE_ROW_NOT_CLICKABLE"
   };
   return codedError(codes[reason] || "BOSS_MESSAGE_GUARD_RESULT_INVALID", "message selection guard stopped");
@@ -202,7 +214,9 @@ function selectedTargetMatches(snapshot, target) {
   return selected.length === 1
     && selected[0].rowIndex === target.rowIndex
     && selected[0].conversationKey === target.conversationKey
-    && conversationSignature({ ...selected[0], unread: true }) === target.transientSignature
+    && (target.operation === "preview_changed"
+      ? selected[0].transientSignature === target.transientSignature
+      : conversationSignature({ ...selected[0], unread: true }) === target.transientSignature)
     && Boolean(snapshot.headerText)
     && Boolean(snapshot.positionName)
     && snapshot.messages.length > 0
@@ -232,7 +246,8 @@ function assertBrowser(browser) {
 function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
   assertBrowser(browser);
   let activeTabId = null;
-  let activeTargets = new Set();
+  let activeRowKeys = new Set();
+  let activeUnreadTargets = new Set();
   let readerBusy = false;
   async function runExclusive(operation) {
     if (readerBusy) throw codedError("BOSS_MESSAGE_READER_BUSY", "message reader is busy");
@@ -244,29 +259,25 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
     }
   }
   return {
+    async scanConversationRows() {
+      return runExclusive(scanRows);
+    },
     async scanUnread() {
       return runExclusive(async () => {
-        const tabs = (await browser.listTabs()).filter((tab) => {
-          try {
-            return new URL(String(tab.url || "")).pathname === CHAT_PATH;
-          } catch {
-            return false;
-          }
-        });
-        if (tabs.length === 0) throw codedError("BOSS_MESSAGE_TAB_MISSING", "open the fixed BOSS message page");
-        if (tabs.length !== 1) throw codedError("BOSS_MESSAGE_TAB_AMBIGUOUS", "exactly one BOSS message tab is required");
-        const tabId = tabs[0].id;
-        const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
-        const queue = Object.freeze(buildUnreadConversationQueue(snapshot).map((target) => Object.freeze({ ...target, tabId })));
-        activeTabId = tabId;
-        activeTargets = new Set(queue);
-        return { tabId, queue };
+        const scan = await scanRows();
+        const queue = Object.freeze(buildUnreadConversationQueue({ rows: scan.rows })
+          .map((target) => Object.freeze({ ...target, tabId: scan.tabId })));
+        activeUnreadTargets = new Set(queue);
+        activeRowKeys = new Set();
+        return { tabId: scan.tabId, queue };
       });
     },
     async openQueuedConversation(target, signal) {
       return runExclusive(async () => {
-        if (!activeTargets.has(target) || target?.tabId !== activeTabId) {
-          throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active unread queue");
+        if (target?.tabId !== activeTabId
+          || (!activeRowKeys.has(`${activeTabId}:${target.rowIndex}:${target.conversationKey}`)
+            && !activeUnreadTargets.has(target))) {
+          throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active conversation scan");
         }
         throwIfAborted(signal);
         const guarded = normalizeGuardedClickResult(await browser.evalValue(target.tabId, buildGuardedConversationClickExpression(target)));
@@ -284,6 +295,25 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
       });
     }
   };
+
+  async function scanRows() {
+    const tabs = (await browser.listTabs()).filter((tab) => {
+      try {
+        return new URL(String(tab.url || "")).pathname === CHAT_PATH;
+      } catch {
+        return false;
+      }
+    });
+    if (tabs.length === 0) throw codedError("BOSS_MESSAGE_TAB_MISSING", "open the fixed BOSS message page");
+    if (tabs.length !== 1) throw codedError("BOSS_MESSAGE_TAB_AMBIGUOUS", "exactly one BOSS message tab is required");
+    const tabId = tabs[0].id;
+    const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
+    const rows = Object.freeze(snapshot.rows.map((row) => Object.freeze({ ...row })));
+    activeTabId = tabId;
+    activeRowKeys = new Set(rows.map((row) => `${tabId}:${row.rowIndex}:${row.conversationKey}`));
+    activeUnreadTargets = new Set();
+    return { tabId, path: snapshot.path, rows };
+  }
 }
 
 module.exports = {

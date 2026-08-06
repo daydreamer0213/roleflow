@@ -118,6 +118,50 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     assert.strictEqual(browser.calls.filter(([name]) => name === forbidden).length, 0);
   }
 
+  const rowsBrowser = fakeBrowser({ snapshots: [snapshot()] });
+  const rowsReader = createBossMessageReader({ browser: rowsBrowser, sleepFn: async () => {} });
+  const rowsScan = await rowsReader.scanConversationRows();
+  assert.strictEqual(rowsScan.tabId, "chat-tab");
+  assert.strictEqual(rowsScan.path, "/web/geek/chat");
+  assert.strictEqual(rowsScan.rows[0].conversationKey, initialSnapshot.rows[0].conversationKey);
+
+  const previewChangedSnapshot = snapshot({ rows: [row(0, { unread: false, previewText: "Changed preview" })] });
+  const previewBrowser = fakeBrowser({
+    snapshots: [
+      previewChangedSnapshot,
+      guardedSuccess,
+      snapshot({ rows: [row(0, { unread: false, previewText: "Changed preview" })] })
+    ]
+  });
+  const previewReader = createBossMessageReader({ browser: previewBrowser, sleepFn: async () => {} });
+  const previewScan = await previewReader.scanConversationRows();
+  const previewOpened = await previewReader.openQueuedConversation({
+    ...previewScan.rows[0],
+    operation: "preview_changed",
+    tabId: previewScan.tabId
+  });
+  assert.strictEqual(previewOpened.positionName, "Java Engineer");
+  assert.strictEqual(previewBrowser.guardedDomClicks, 1);
+
+  const previewDriftBrowser = fakeBrowser({
+    snapshots: [
+      previewChangedSnapshot,
+      { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "preview_drifted" }
+    ]
+  });
+  const previewDriftReader = createBossMessageReader({ browser: previewDriftBrowser, sleepFn: async () => {} });
+  const previewDriftScan = await previewDriftReader.scanConversationRows();
+  await assert.rejects(
+    () => previewDriftReader.openQueuedConversation({
+      ...previewDriftScan.rows[0],
+      operation: "preview_changed",
+      previewDigest: safeDigest(["preview", "drifted"]),
+      tabId: previewDriftScan.tabId
+    }),
+    (error) => error.code === "BOSS_MESSAGE_PREVIEW_DRIFTED"
+  );
+  assert.strictEqual(previewDriftBrowser.guardedDomClicks, 0);
+
   for (const [tabs, code] of [
     [[], "BOSS_MESSAGE_TAB_MISSING"],
     [[{ id: "one", url: chatUrl }, { id: "two", url: chatUrl }], "BOSS_MESSAGE_TAB_AMBIGUOUS"]

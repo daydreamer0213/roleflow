@@ -11,6 +11,10 @@ const {
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { factStatus } = require("../src/core/candidate_fact_policy");
+const {
+  listPreviewStates,
+  commitProcessedPreview
+} = require("../src/core/message_preview_state");
 
 const PRIVATE_BODY = "PRIVATE_HR_BODY";
 const PRIVATE_PREVIEW = "PRIVATE_CONVERSATION_PREVIEW";
@@ -36,6 +40,7 @@ async function main() {
   await identityStopsSmoke();
   await messageSelectionSmoke();
   await messageGroupBoundarySmoke();
+  await previewChannelSmoke();
   await classificationOutcomeSmoke();
   await readerStopSmoke();
   await abortAfterClassificationSmoke();
@@ -363,6 +368,101 @@ async function messageGroupBoundarySmoke() {
   assert.strictEqual(systemSummary.processed, 0);
 }
 
+async function previewChannelSmoke() {
+  const fixture = createFixture({ suffix: "preview-channel", title: "Preview Channel Engineer" });
+  const conversationKey = safeDigest(["conversation", "preview-channel"]);
+  const firstDigest = safeDigest(["preview", "first"]);
+  const changedDigest = safeDigest(["preview", "changed"]);
+  const row = (previewDigest) => ({
+    rowIndex: 0,
+    unread: false,
+    selected: false,
+    recruiterKey: safeDigest(["recruiter", "preview"]),
+    conversationKey,
+    previewDigest,
+    previewKind: "possible_hr_reply",
+    transientSignature: safeDigest(["row", previewDigest])
+  });
+  let opens = 0;
+  let scanCount = 0;
+  const reader = {
+    async scanConversationRows() {
+      scanCount += 1;
+      return { tabId: "fake-tab", path: "/web/geek/chat", rows: Object.freeze([Object.freeze(row(scanCount === 1 ? firstDigest : changedDigest))]) };
+    },
+    async openQueuedConversation(target) {
+      opens += 1;
+      assert.strictEqual(target.operation, "preview_changed");
+      return selectedConversation({
+        title: fixture.title,
+        messageId: opens === 1 ? "123456789012390" : "123456789012391"
+      });
+    }
+  };
+  let modelCalls = 0;
+  const first = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader,
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(first.status, "completed");
+  assert.strictEqual(first.processed, 0);
+  assert.strictEqual(modelCalls, 0);
+  assert.strictEqual(opens, 0);
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: fixture.profileId })[0].previewDigest,
+    firstDigest,
+    "first observation must only establish a baseline"
+  );
+
+  const second = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader,
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(second.status, "completed");
+  assert.strictEqual(second.processed, 1);
+  assert.strictEqual(modelCalls, 1);
+  assert.strictEqual(opens, 1);
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: fixture.profileId })[0].previewDigest,
+    changedDigest,
+    "processed preview change must advance the baseline"
+  );
+  commitProcessedPreview(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey,
+    previewDigest: firstDigest,
+    previewKind: "possible_hr_reply",
+    observedAt: NOW
+  });
+  const third = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader,
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(third.status, "completed");
+  assert.strictEqual(third.processed, 1, "a second preview change must be discovered again");
+  assert.strictEqual(modelCalls, 2);
+  assert.strictEqual(opens, 2);
+}
+
 async function classificationOutcomeSmoke() {
   const missing = createFixture({ suffix: "missing", title: "Missing Engineer" });
   let summary = await runBossMessageDiscovery({
@@ -403,11 +503,23 @@ async function readerStopSmoke() {
     const calls = [];
     const error = Object.assign(new Error("redacted reader stop"), { code });
     const reader = {
-      async scanUnread() {
-        return { queue: Object.freeze([{ index: 0 }, { index: 1 }]) };
+      async scanConversationRows() {
+        return {
+          tabId: "fake-tab",
+          path: "/web/geek/chat",
+          rows: Object.freeze([0, 1].map((index) => Object.freeze({
+            rowIndex: index,
+            unread: true,
+            selected: false,
+            conversationKey: safeDigest(["conversation", String(index)]),
+            previewDigest: safeDigest(["preview", String(index)]),
+            previewKind: "possible_hr_reply",
+            transientSignature: safeDigest(["row", String(index)])
+          })))
+        };
       },
       async openQueuedConversation(target) {
-        calls.push(target.index);
+        calls.push(target.rowIndex);
         throw error;
       }
     };
@@ -647,16 +759,29 @@ function fakeReader(conversations) {
   let active = 0;
   let maxActive = 0;
   return {
-    async scanUnread() {
+    async scanConversationRows() {
       return {
-        queue: Object.freeze(conversations.map((_, index) => Object.freeze({ index })))
+        tabId: "fake-tab",
+        path: "/web/geek/chat",
+        rows: Object.freeze(conversations.map((conversation, index) => Object.freeze({
+          rowIndex: index,
+          unread: true,
+          selected: false,
+          recruiterLabel: "recruiter",
+          previewText: `preview-${index}`,
+          recruiterKey: safeDigest(["recruiter", `recruiter-${index}`]),
+          conversationKey: safeDigest(["conversation", String(index)]),
+          previewDigest: safeDigest(["preview", `preview-${index}`]),
+          previewKind: "possible_hr_reply",
+          transientSignature: safeDigest(["row", String(index)])
+        })))
       };
     },
     async openQueuedConversation(target) {
       active += 1;
       maxActive = Math.max(maxActive, active);
       assert.strictEqual(maxActive, 1, "message discovery must remain serial");
-      const selected = conversations[target.index];
+      const selected = conversations[target.rowIndex];
       active -= 1;
       return selected;
     }

@@ -49,9 +49,21 @@ async function main() {
   const browsers = [];
   const readerCalls = [];
   const reader = {
-    async scanUnread() {
+    async scanConversationRows() {
       readerCalls.push("scan");
-      return { queue: Object.freeze([{ rowIndex: 0 }, { rowIndex: 1 }]) };
+      return {
+        tabId: "fake-tab",
+        path: "/web/geek/chat",
+        rows: Object.freeze([0, 1].map((index) => Object.freeze({
+          rowIndex: index,
+          unread: true,
+          selected: false,
+          conversationKey: `sha256:${"a".repeat(63)}${index}`,
+          previewDigest: `sha256:${"b".repeat(64)}`,
+          previewKind: "possible_hr_reply",
+          transientSignature: `sha256:${"c".repeat(64)}`
+        })))
+      };
     },
     async openQueuedConversation(target, signal) {
       throwIfAborted(signal);
@@ -433,11 +445,11 @@ function controlledPendingRun() {
     started,
     async run({ reader, signal, onStatus }) {
       onStatus({ status: "running", queued: 2, processed: 0, reasonCode: "", results: [] });
-      const { queue } = await reader.scanUnread();
-      await reader.openQueuedConversation(queue[0], signal);
+      const { rows } = await reader.scanConversationRows();
+      await reader.openQueuedConversation({ ...rows[0], operation: "unread" }, signal);
       markStarted();
       await waitForAbort(signal);
-      await reader.openQueuedConversation(queue[1], signal);
+      await reader.openQueuedConversation({ ...rows[1], operation: "unread" }, signal);
       throw new Error("the second click must be unreachable");
     }
   };

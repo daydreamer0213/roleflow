@@ -4,6 +4,12 @@ const {
 } = require("./candidate_progress");
 const { listCandidateFacts } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
+const {
+  listPreviewStates,
+  recordPreviewState,
+  planMessageDiscoveryQueue,
+  commitProcessedPreview
+} = require("./message_preview_state");
 
 const BOSS_MESSAGE_GROUP_LIMIT = 5;
 const BOSS_MESSAGE_GROUP_TEXT_LIMIT = 1000;
@@ -21,17 +27,31 @@ async function runBossMessageDiscovery({
   onStatus = () => {}
 }) {
   const candidates = listMessageDiscoveryCandidates(db, { profileId });
-  let queue;
+  let scan;
   try {
     throwIfAborted(signal);
-    ({ queue } = await reader.scanUnread());
+    scan = await reader.scanConversationRows();
   } catch (error) {
     if (shouldInterrupt(error, signal)) throw error;
     return emitStopped(errorCode(error), 0, [], logger, onStatus);
   }
-  if (!Array.isArray(queue)) {
+  if (!scan || !Array.isArray(scan.rows)) {
     return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus);
   }
+  const baselines = new Map(listPreviewStates(db, { profileId })
+    .map((state) => [state.conversationKey, state]));
+  const planned = planMessageDiscoveryQueue({ rows: scan.rows, baselines });
+  for (const baseline of planned.baselineWrites) {
+    recordPreviewState(db, {
+      profileId,
+      platform: "boss",
+      conversationKey: baseline.conversationKey,
+      previewDigest: baseline.previewDigest,
+      previewKind: baseline.previewKind,
+      observedAt: now()
+    });
+  }
+  const queue = planned.queue.map((target) => Object.freeze({ ...target, tabId: scan.tabId }));
 
   let results = [];
   let processed = 0;
@@ -49,6 +69,7 @@ async function runBossMessageDiscovery({
       return emitStopped(errorCode(error), queue.length, results, logger, onStatus);
     }
     if (selected?.skipped) {
+      commitBaseline(db, profileId, target, now());
       await paceBeforeNext({
         queueIndex,
         queueLength: queue.length,
@@ -81,6 +102,7 @@ async function runBossMessageDiscovery({
     if (!incoming.ok) {
       clearSelectedSnapshot(selected);
       if (incoming.skipped) {
+        commitBaseline(db, profileId, target, now());
         await paceBeforeNext({
           queueIndex,
           queueLength: queue.length,
@@ -93,6 +115,7 @@ async function runBossMessageDiscovery({
       }
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus);
     }
+    commitBaseline(db, profileId, target, now());
 
     let classification;
     try {
@@ -272,6 +295,18 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
     messageGroupKey: safeDigest(["message-group", threadKey, ...grouped.map((item) => item.messageKey)]),
     newMessageKeys
   };
+}
+
+function commitBaseline(db, profileId, target, occurredAt = new Date().toISOString()) {
+  if (!target?.conversationKey || !target?.previewDigest) return;
+  commitProcessedPreview(db, {
+    profileId,
+    platform: "boss",
+    conversationKey: target.conversationKey,
+    previewDigest: target.previewDigest,
+    previewKind: target.previewKind || "unknown",
+    observedAt: occurredAt
+  });
 }
 
 function clearMessageSources(messages) {
