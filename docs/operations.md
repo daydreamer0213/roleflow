@@ -165,3 +165,18 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 ## 边界
 
 扫描链路只读采集岗位。沟通链路只有在用户选择岗位、确认清单并明确点击开始后才会串行操作 BOSS；每项都要先核验岗位身份并在点击后验证结果。项目不会后台定时沟通，也不会自动填写或发送模型生成的定制文案。
+
+
+## 消息发现常见错误码
+
+| 错误码 | 含义 | 处理 |
+| --- | --- | --- |
+| `BOSS_MESSAGE_TAB_MISSING` | 没有已登录的 BOSS 消息页 | 打开唯一 `BOSS-COMMUNICATION` 消息页后重试 |
+| `BOSS_MESSAGE_TAB_AMBIGUOUS` | 检测到多个消息页 | 只保留一个消息页 |
+| `BOSS_MESSAGE_GROUP_LIMIT` | 连续 HR 消息超过 5 条 | 改用人工粘贴 |
+| `BOSS_MESSAGE_GROUP_TEXT_LIMIT` | 连续消息文本超过 1000 字符 | 改用人工粘贴 |
+| `BOSS_MESSAGE_CONTENT_UNSUPPORTED` | 含语音、图片或附件 | 改用人工粘贴 |
+| `BOSS_RISK_CONTROL` / `BOSS_LOGIN_REQUIRED` | 安全验证或登录失效 | 立即停止，处理后重试 |
+| `MESSAGE_DISCOVERY_LEASE_LOST` | BOSS 租约丢失 | 停止后重新启动 |
+
+恢复步骤：先安全停止，再检查便携 Edge 和消息页，最后重新开始一轮。出现登录、风控、页面漂移或身份不确定时立即停止，不重试点击。
