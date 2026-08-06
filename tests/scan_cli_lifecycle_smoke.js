@@ -16,6 +16,7 @@ const {
   createWorkflowRun,
   beginScanRun,
   getScanRun,
+  getWorkflowRun,
   getSiteScanLease,
   getLatestResumableBatch,
   recordScanTargetResult,
@@ -51,6 +52,7 @@ async function main() {
   await interruptedRunSmoke();
   await failedRunSmoke();
   await localInputRunSmoke();
+  await workflowControlledOuterSmoke();
   resumeBatchSmoke();
   terminalAggregationSmoke();
   scanLimitSmoke();
@@ -295,6 +297,80 @@ function workflowScanControlSmoke() {
     () => assertWorkflowScanControl(db, workflow.id),
     (error) => error.code === "WORKFLOW_STOP_REQUESTED"
   );
+}
+
+async function workflowControlledOuterSmoke() {
+  const pauseWorkflow = seedControlledWorkflow(db, "2026-09-20", "pause_requested");
+  const pauseResult = await executeWithSiteScanLease(db, {
+    "run-id": "cli-workflow-pause",
+    "workflow-run": pauseWorkflow.id,
+    plan: pauseWorkflow.planId
+  }, "scan", async () => {
+    assertWorkflowScanControl(db, pauseWorkflow.id);
+    return { status: "completed" };
+  });
+  assert.strictEqual(pauseResult.status, "paused");
+  assert.strictEqual(pauseResult.stopCode, "WORKFLOW_PAUSE_REQUESTED");
+  const pauseRun = getScanRun(db, "cli-workflow-pause");
+  assert.strictEqual(pauseRun.status, "interrupted");
+  assert.strictEqual(pauseRun.stopCode, "WORKFLOW_PAUSE_REQUESTED");
+  const pausedWorkflow = getWorkflowRun(db, pauseWorkflow.id);
+  assert.strictEqual(pausedWorkflow.status, "paused");
+  assert.strictEqual(pausedWorkflow.controlState, "none");
+  assert.strictEqual(pausedWorkflow.resumePhase, "scanning");
+  assert.strictEqual(getSiteScanLease(db, "boss"), null);
+
+  const stopWorkflow = seedControlledWorkflow(db, "2026-09-21", "stop_requested");
+  const stopResult = await executeWithSiteScanLease(db, {
+    "run-id": "cli-workflow-stop",
+    "workflow-run": stopWorkflow.id,
+    plan: stopWorkflow.planId
+  }, "scan", async () => {
+    assertWorkflowScanControl(db, stopWorkflow.id);
+    return { status: "completed" };
+  });
+  assert.strictEqual(stopResult.status, "stopped");
+  assert.strictEqual(stopResult.stopCode, "WORKFLOW_STOP_REQUESTED");
+  const stopRun = getScanRun(db, "cli-workflow-stop");
+  assert.strictEqual(stopRun.status, "interrupted");
+  assert.strictEqual(stopRun.stopCode, "WORKFLOW_STOP_REQUESTED");
+  const stoppedWorkflow = getWorkflowRun(db, stopWorkflow.id);
+  assert.strictEqual(stoppedWorkflow.status, "stopped");
+  assert.strictEqual(stoppedWorkflow.controlState, "none");
+  assert.strictEqual(getSiteScanLease(db, "boss"), null);
+}
+
+function seedControlledWorkflow(database, localDay, controlState) {
+  const now = new Date().toISOString();
+  const profileId = Number(database.prepare(`
+    INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at)
+    VALUES ('Workflow Outer Control Candidate', '{}', NULL, ?, ?)
+  `).run(now, now).lastInsertRowid);
+  const planId = Number(database.prepare(`
+    INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
+    VALUES (?, 'Workflow Outer Control Plan', '{}', NULL, 1, ?, ?)
+  `).run(profileId, now, now).lastInsertRowid);
+  const workflow = createWorkflowRun(database, {
+    profileId,
+    planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: 35,
+    successfulCount: 0,
+    inventoryCount: 0,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [{ word: "RAG", priority: "A" }],
+    budget: { maxDetailTotal: 120, browserPageBudget: 20 },
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 }
+  });
+  transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "scanning",
+    controlState,
+    resumePhase: controlState === "pause_requested" ? "scanning" : null
+  });
+  return { id: workflow.id, planId };
 }
 
 function refreshJob(sourceId, description) {

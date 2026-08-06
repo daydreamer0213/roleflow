@@ -36,11 +36,13 @@ try {
   testResumeModelRecheckGate();
   testResumeRecoveryGenerationTaskMigration();
   testResumeRejections();
+  testResumeRejectsStopAndSettlingControl();
   testStopConfirmationAndIdempotency();
   testExactLeaseReleaseOnlyTargetRun();
   testRunSlotSemantics();
   testActiveRunBlocksButIsNotDoubleCounted();
   testStopPreviewIsDatabaseDerived();
+  testFinalizePauseDoesNotTouchInterrupted();
   console.log("workflow_control_smoke ok");
 } finally {
   db.close();
@@ -364,6 +366,53 @@ function testResumeRejections() {
   );
 }
 
+function testResumeRejectsStopAndSettlingControl() {
+  const { profileId, planId } = seedPlan(db);
+
+  const stopping = seedAnalyzingWorkflow(db, { profileId, planId, localDay: "2026-08-24" });
+  transitionWorkflowRun(db, {
+    id: stopping.workflow.id,
+    status: "analyzing",
+    controlState: "stop_requested"
+  });
+  assert.throws(
+    () => resumeWorkflowRun(db, { workflowRunId: stopping.workflow.id, now: "2026-08-24T02:00:00.000Z" }),
+    (error) => error.code === "WORKFLOW_RESUME_NOT_ALLOWED"
+  );
+
+  const pausedStopping = seedAnalyzingWorkflow(db, { profileId, planId, localDay: "2026-08-25" });
+  transitionWorkflowRun(db, {
+    id: pausedStopping.workflow.id,
+    status: "paused",
+    controlState: "stop_requested",
+    resumePhase: "analyzing"
+  });
+  assert.throws(
+    () => resumeWorkflowRun(db, { workflowRunId: pausedStopping.workflow.id, now: "2026-08-25T02:00:00.000Z" }),
+    (error) => error.code === "WORKFLOW_RESUME_NOT_ALLOWED"
+  );
+
+  const settling = seedAnalyzingWorkflow(db, { profileId, planId, localDay: "2026-08-26" });
+  requestWorkflowPause(db, { workflowRunId: settling.workflow.id, now: "2026-08-26T02:00:00.000Z" });
+  assert.strictEqual(getWorkflowRun(db, settling.workflow.id).controlState, "pause_requested");
+  assert.throws(
+    () => resumeWorkflowRun(db, { workflowRunId: settling.workflow.id, now: "2026-08-26T02:00:01.000Z" }),
+    (error) => error.code === "WORKFLOW_RESUME_NOT_ALLOWED"
+  );
+
+  const interruptedStopping = seedAnalyzingWorkflow(db, { profileId, planId, localDay: "2026-08-27" });
+  transitionWorkflowRun(db, {
+    id: interruptedStopping.workflow.id,
+    status: "interrupted",
+    controlState: "stop_requested",
+    errorCode: "SCAN_RUN_ORPHANED"
+  });
+  assert.throws(
+    () => resumeWorkflowRun(db, { workflowRunId: interruptedStopping.workflow.id, now: "2026-08-27T02:00:00.000Z" }),
+    (error) => error.code === "WORKFLOW_RESUME_NOT_ALLOWED"
+  );
+}
+
 function testStopConfirmationAndIdempotency() {
   const { profileId, planId } = seedPlan(db);
   const scenario = seedAnalyzingWorkflow(db, {
@@ -590,6 +639,27 @@ function testStopPreviewIsDatabaseDerived() {
     () => workflowStopPreview(db, { workflowRunId: "missing-preview" }),
     (error) => error.code === "WORKFLOW_CONTROL_TARGET_MISMATCH"
   );
+}
+
+function testFinalizePauseDoesNotTouchInterrupted() {
+  const { profileId, planId } = seedPlan(db);
+  const scenario = seedAnalyzingWorkflow(db, { profileId, planId, localDay: "2026-08-28" });
+  transitionWorkflowRun(db, {
+    id: scenario.workflow.id,
+    status: "interrupted",
+    controlState: "pause_requested",
+    resumePhase: "analyzing",
+    errorCode: "SCAN_RUN_ORPHANED",
+    errorMessage: "scan heartbeat expired while pause was settling"
+  });
+  const result = finalizeWorkflowControl(db, {
+    workflowRunId: scenario.workflow.id,
+    now: "2026-08-28T02:05:00.000Z"
+  });
+  assert.strictEqual(result.status, "interrupted");
+  assert.strictEqual(result.controlState, "pause_requested");
+  assert.strictEqual(result.errorCode, "SCAN_RUN_ORPHANED");
+  assert.strictEqual(getWorkflowRun(db, scenario.workflow.id).status, "interrupted");
 }
 
 function seedPlan(database) {

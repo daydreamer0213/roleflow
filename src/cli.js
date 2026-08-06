@@ -90,6 +90,7 @@ const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./
 const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
 const { runCommunicationBatch } = require("./core/communication_executor");
+const { finalizeWorkflowControl } = require("./core/workflow_control");
 const {
   buildScanExecutionSnapshot,
   assertScanSnapshotCompatible,
@@ -406,6 +407,31 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
     runLogger.info("scan_run_finished", { batchId: finished.batchId, status: finished.status, stopCode: finished.stopCode });
     return result;
   } catch (error) {
+    if (error?.code === "WORKFLOW_PAUSE_REQUESTED" || error?.code === "WORKFLOW_STOP_REQUESTED") {
+      const finished = finishScanRun(db, {
+        runId,
+        leaseOwner: leaseOwner || undefined,
+        status: "interrupted",
+        stopCode: error.code,
+        stopMessage: error?.message || String(error)
+      });
+      runLogger.warn("scan_run_control_settled", {
+        batchId: finished.batchId,
+        status: finished.status,
+        stopCode: finished.stopCode,
+        workflowRunId: execution?.workflowRunId || ""
+      });
+      if (execution?.workflowRunId) {
+        finalizeWorkflowControl(db, {
+          workflowRunId: execution.workflowRunId,
+          now: new Date().toISOString()
+        });
+      }
+      return {
+        status: error.code === "WORKFLOW_PAUSE_REQUESTED" ? "paused" : "stopped",
+        stopCode: error.code
+      };
+    }
     const status = scanFailureStatus(error);
     transitionWorkflowScanFailure(db, execution?.workflowRunId, status, error);
     if (error?.code === "BOSS_RISK_CONTROL") {
@@ -991,6 +1017,29 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
         console.log(`HTML: ${report.htmlPath}`);
       }
     });
+    if (workflowAnalysisSummary.status === "paused" || workflowAnalysisSummary.status === "stopped") {
+      finalizeWorkflowControl(db, {
+        workflowRunId: workflowRun.id,
+        now: new Date().toISOString()
+      });
+      const controlledStopCode = workflowAnalysisSummary.status === "paused"
+        ? "WORKFLOW_PAUSE_REQUESTED"
+        : "WORKFLOW_STOP_REQUESTED";
+      return {
+        status: "interrupted",
+        batchId,
+        stopCode: controlledStopCode,
+        stopMessage: `workflow analysis ${workflowAnalysisSummary.status}`
+      };
+    }
+    if (workflowAnalysisSummary.status === "interrupted") {
+      return {
+        status: "interrupted",
+        batchId,
+        stopCode: workflowAnalysisSummary.errorCode || "SCAN_ABORTED",
+        stopMessage: "workflow analysis interrupted at a safe boundary"
+      };
+    }
     if (workflowAnalysisSummary.status === "drained" && finalStatus !== "completed") {
       const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
       const metrics = workflowMetrics({

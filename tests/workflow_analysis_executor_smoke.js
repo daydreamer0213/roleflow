@@ -61,6 +61,8 @@ const {
   await testRunWorkflowAnalysisPauseRequestedFinalizesPaused();
   await testRunWorkflowAnalysisStopRequestedFinalizesStopped();
   await testRunWorkflowAnalysisStopBeforeStartMarksAllStopped();
+  await testRunWorkflowAnalysisAbortsBetweenAttemptsWithoutReview();
+  await testControlledStopMidAttemptPreservesRunningTask();
   await testRunWorkflowAnalysisWaitsForFutureRetryNotFalseDrained();
   await testRunWorkflowAnalysisRejectsNonAnalyzingOrMissingRun();
   testAttemptLoggerChildAndUnknownKeysRedacted();
@@ -1338,6 +1340,149 @@ async function testRunWorkflowAnalysisStopBeforeStartMarksAllStopped() {
   }
 }
 
+async function testRunWorkflowAnalysisAbortsBetweenAttemptsWithoutReview() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-09-04",
+      modelConfigRevision: "exec-abort"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-abort",
+      now: "2026-09-04T00:00:00.000Z"
+    });
+    const controller = new AbortController();
+    const gates = [];
+    const running = runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        const gate = deferredGate();
+        gates.push({ job, gate });
+        return gate.promise;
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-09-04T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {},
+      signal: controller.signal
+    });
+    await waitFor(() => gates.length === 1);
+    controller.abort();
+    gates[0].gate.resolve(analyzedJob(gates[0].job));
+    const result = await withTimeout(running, 5000, "analysis did not converge after abort");
+    assert.deepStrictEqual(result, {
+      status: "interrupted",
+      errorCode: "SCAN_ABORTED",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "interrupted");
+    assert.strictEqual(workflow.controlState, "none");
+    assert.strictEqual(workflow.errorCode, "SCAN_ABORTED");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "pending"]);
+    assert.strictEqual(tasks[1].leaseOwner, null);
+  } finally {
+    db.close();
+  }
+}
+
+async function testControlledStopMidAttemptPreservesRunningTask() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-09-06",
+      modelConfigRevision: "exec-controlled-stop"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-controlled-stop",
+      now: "2026-09-06T00:00:00.000Z"
+    });
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async () => {
+        throw Object.assign(new Error("aborted"), { code: "SCAN_ABORTED" });
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-09-06T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "interrupted",
+      errorCode: "SCAN_ABORTED",
+      claimed: 1,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "interrupted");
+    assert.strictEqual(workflow.errorCode, "SCAN_ABORTED");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["running", "pending"]);
+    assert.strictEqual(tasks[0].leaseOwner, "worker-1");
+    assert.strictEqual(tasks[0].lastErrorCode, null);
+
+    // The preserved running task is recoverable on the production resume path.
+    await runWorkflowAnalysisPhaseResumeDrains(db, scenario);
+  } finally {
+    db.close();
+  }
+}
+
+async function runWorkflowAnalysisPhaseResumeDrains(db, scenario) {
+  const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
+  const reportJobs = db.prepare(`
+    SELECT o.job_id AS jobId, o.id AS observationId
+    FROM job_observations o
+    WHERE o.batch_id = ?
+    ORDER BY o.job_id ASC
+  `).all(scenario.batchId);
+  const resumed = await runWorkflowAnalysisPhase(db, {
+    workflowRun: getWorkflowRun(db, scenario.workflowId),
+    batchId: scenario.batchId,
+    jobsToAnalyze: reportJobs,
+    configs: {},
+    keywordPlan: [],
+    logger: silentLogger(),
+    signal: null,
+    modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+    createAnalyzeJob: () => async (job) => analyzedJob(job),
+    analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+    now: fixedClock("2026-09-06T00:20:00.000Z"),
+    retryBackoffMs: [0, 0],
+    random: () => 0,
+    sleep: async () => {}
+  });
+  assert.strictEqual(resumed.status, "drained");
+  const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+  assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "succeeded"]);
+}
+
 async function testRunWorkflowAnalysisWaitsForFutureRetryNotFalseDrained() {
   const db = openDb(":memory:");
   try {
@@ -1613,6 +1758,20 @@ async function waitFor(predicate, timeoutMs = 5000) {
       throw new Error(`waitFor timed out after ${timeoutMs}ms`);
     }
     await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} (${timeoutMs}ms)`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -12,6 +12,7 @@ const {
   communicationBatchSummary
 } = require("./communication_batches");
 const { workflowRunConsumesSlot } = require("./workflow_control");
+const { recoverExpiredWorkflowJobTasks } = require("./workflow_analysis_tasks");
 
 const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 
@@ -290,6 +291,8 @@ function recoverWorkflowRuns(db, input = {}) {
     workflowRunsCompleted: 0,
     reviewRunsPreserved: 0,
     activeRunsPreserved: 0,
+    tasksRecovered: 0,
+    tasksFailed: 0,
     browserActionsStarted: 0
   };
 
@@ -334,12 +337,22 @@ function recoverableRuns(db, input) {
   return listWorkflowRuns(db, {
     profileId: input.profileId,
     planId: input.planId,
-    statuses: ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted"],
+    statuses: ["created", "scanning", "analyzing", "paused", "review_required", "communicating", "interrupted"],
     limit: 500
   });
 }
 
 function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
+  if (run.status === "analyzing") {
+    // Recover expired running task leases before deciding the workflow fate.
+    // succeeded/skipped tasks are never touched by this recovery path.
+    const taskRecovery = recoverExpiredWorkflowJobTasks(db, {
+      workflowRunId: run.id,
+      now
+    });
+    report.tasksRecovered += taskRecovery.recovered;
+    report.tasksFailed += taskRecovery.failed;
+  }
   const scan = run.scanRunId ? getScanRun(db, run.scanRunId) : null;
   if (!scan) {
     if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {

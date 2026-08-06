@@ -57,10 +57,17 @@ function resumeWorkflowRun(db, {
     if (TERMINAL_STATUSES.has(run.status)) {
       throw controlError("WORKFLOW_RUN_TERMINAL", "workflow run is already terminal and cannot be resumed");
     }
+    if (run.controlState === "stop_requested") {
+      throw controlError(
+        "WORKFLOW_RESUME_NOT_ALLOWED",
+        "workflow stop was requested and cannot be resumed"
+      );
+    }
     if (run.status !== "paused") {
       // Repeated form submission after a successful resume is idempotent and
-      // must never create another recovery generation.
-      if (RESUME_TARGET_STATUSES.has(run.status)) return run;
+      // must never create another recovery generation. Idempotency only
+      // applies when the run is already active with no pending control.
+      if (RESUME_TARGET_STATUSES.has(run.status) && run.controlState === "none") return run;
       throw controlError(
         "WORKFLOW_RESUME_NOT_ALLOWED",
         `workflow run ${run.status} cannot be resumed; only paused runs can resume`
@@ -157,6 +164,9 @@ function finalizeWorkflowControl(db, { workflowRunId, now }) {
     const run = requiredWorkflowRun(db, workflowRunId);
     if (run.controlState === "none") return run;
     if (run.controlState === "pause_requested") {
+      // An interrupted run supersedes a stale pause request: never turn an
+      // orphaned run into paused from a finalize call. Recovery owns the run.
+      if (run.status === "interrupted") return run;
       if (run.status !== "paused") {
         releaseWorkflowScanLease(db, run);
         return transitionWorkflowRun(db, {

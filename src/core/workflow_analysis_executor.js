@@ -300,6 +300,19 @@ async function runWorkflowAnalysis(input) {
     });
     return { ...summary, status: "paused" };
   }
+  const controlledStop = workerResults.find(
+    (result) => result.status === "fulfilled" && result.value && result.value.controlledStop
+  );
+  if (controlledStop || signalAborted(context)) {
+    const code = String(controlledStop?.value?.controlledStop || controlledAbortCode(context) || "SCAN_ABORTED");
+    transitionWorkflowRun(context.db, {
+      id: context.workflowRunId,
+      status: "interrupted",
+      errorCode: code,
+      errorMessage: "workflow analysis stopped at a safe boundary; running tasks are recoverable"
+    });
+    return { ...summary, status: "interrupted", errorCode: code };
+  }
   const counts = countWorkflowJobTaskStatusesForRun(context.db, context.workflowRunId);
   if (counts.pending === 0 && counts.running === 0 && counts.retryPending === 0) {
     return { ...summary, status: "drained" };
@@ -320,7 +333,7 @@ async function workerLoop(context, workerIndex, summary) {
     : `workflow-analysis-worker-${workerIndex + 1}`;
   while (true) {
     const gate = getWorkflowRun(context.db, context.workflowRunId);
-    if (!gate || gate.status !== "analyzing" || gate.controlState !== "none") return;
+    if (!gate || gate.status !== "analyzing" || gate.controlState !== "none" || signalAborted(context)) return;
     const claimed = claimWorkflowJobTask(context.db, {
       workflowRunId: context.workflowRunId,
       leaseOwner,
@@ -344,7 +357,14 @@ async function workerLoop(context, workerIndex, summary) {
       return;
     }
     summary.claimed += 1;
-    await executeAttempt(context, claimed, leaseOwner, summary);
+    try {
+      await executeAttempt(context, claimed, leaseOwner, summary);
+    } catch (error) {
+      if (error && error.workflowControlledStop) {
+        return { controlledStop: String(error.code || "SCAN_ABORTED") };
+      }
+      throw error;
+    }
   }
 }
 
@@ -385,6 +405,12 @@ async function executeAttempt(context, claimed, leaseOwner, summary) {
   } catch (error) {
     if (isWorkflowFatalError(error)) throw error;
     const classified = classifyWorkflowAnalysisError(error);
+    if (classified.kind === WORKFLOW_ANALYSIS_ERROR_KINDS.CONTROLLED_STOP) {
+      // A controlled stop is not a task failure: never commit the task as
+      // terminal failed. Preserve the running lease so recovery can resume
+      // the attempt or settle it under explicit stop semantics.
+      throw Object.assign(error, { workflowControlledStop: true });
+    }
     const finishedAt = context.now();
     const attemptInGeneration = Number(claimed.attempt.attemptInGeneration || 0);
     const retryAt = classified.retryable && attemptInGeneration < 2
@@ -449,7 +475,8 @@ function normalizeRunContext(input = {}) {
       : PRODUCT_POLICY.operations.modelAnalysis.retryBackoffMs,
     workerIdFactory: typeof input.workerIdFactory === "function" ? input.workerIdFactory : null,
     leaseTtlMs: PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
-    workerCount
+    workerCount,
+    signal: input.signal && typeof input.signal === "object" ? input.signal : null
   };
 }
 
@@ -467,6 +494,18 @@ function assertAnalyzingRun(context) {
       `workflow run ${context.workflowRunId} status is ${workflow.status}; only analyzing runs can be executed`
     );
   }
+}
+
+function signalAborted(context) {
+  return Boolean(context.signal && context.signal.aborted);
+}
+
+function controlledAbortCode(signal) {
+  const reason = signal && signal.reason;
+  if (reason instanceof Error && String(reason.code || "").trim()) {
+    return String(reason.code).trim();
+  }
+  return "SCAN_ABORTED";
 }
 
 function waitMsUntilEarliestRetry(context) {

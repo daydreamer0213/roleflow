@@ -5,6 +5,13 @@ const {
   consumedWorkflowBudget,
   countSlotConsumingRuns
 } = require("../src/core/workflow_run");
+const {
+  openDb,
+  createWorkflowRun,
+  transitionWorkflowRun,
+  getWorkflowRun
+} = require("../src/core/storage");
+const { buildWorkflowDashboardState } = require("../src/dashboard/server");
 
 function fixture(overrides = {}) {
   return {
@@ -191,4 +198,89 @@ assert.strictEqual(
   "WORKFLOW_DAILY_RUN_LIMIT"
 );
 
+dashboardPlanningUsesSlotHelpers();
+
 console.log("workflow_planner_smoke ok");
+
+function dashboardPlanningUsesSlotHelpers() {
+  const database = openDb(":memory:");
+  try {
+    const createdAt = "2026-08-01T00:00:00.000Z";
+    const profileId = Number(database.prepare(`INSERT INTO candidate_profiles(
+      display_name, profile_json, source_hash, created_at, updated_at
+    ) VALUES ('Planner Dashboard Candidate', '{}', NULL, ?, ?)`).run(createdAt, createdAt).lastInsertRowid);
+    const planId = Number(database.prepare(`INSERT INTO search_plans(
+      profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+    ) VALUES (?, 'Planner Dashboard Plan', '{}', NULL, 1, ?, ?)`).run(profileId, createdAt, createdAt).lastInsertRowid);
+    const planRecord = {
+      id: planId,
+      profileId,
+      plan: { keywords: [{ word: "RAG", priority: "A" }] }
+    };
+    const seedRun = (sequence, status, localDay = "2026-08-21") => {
+      const workflow = createWorkflowRun(database, {
+        profileId,
+        planId,
+        sequence,
+        targetSuccessCount: 35,
+        inventoryCount: 0,
+        candidateGap: 35,
+        scanNeeded: true,
+        keywords: [{ word: "RAG", priority: "A" }],
+        budget: { maxDetailTotal: 120, browserPageBudget: 20 },
+        planner: { remainingDailyTarget: 70, remainingRunSlots: 2 },
+        localDay,
+        createdAt: `${localDay}T01:00:00.000Z`
+      });
+      return seedRunStatus(database, workflow, status, localDay);
+    };
+
+    seedRun(1, "stopped");
+    const postAccessStop = seedRun(2, "stopped");
+    seedRun(3, "completed");
+    database.prepare("UPDATE workflow_runs SET platform_access_started_at = ? WHERE id = ?")
+      .run("2026-08-21T01:30:00.000Z", postAccessStop.id);
+
+    const state = buildWorkflowDashboardState(database, planRecord, new Date("2026-08-21T02:00:00.000Z"));
+    assert.strictEqual(state.slotsUsed, 2);
+    assert.strictEqual(state.activeRun, null);
+    assert.strictEqual(state.nextPlan.completedRuns, 2);
+    assert.strictEqual(state.nextPlan.remainingRunSlots, 1);
+    assert.strictEqual(state.successfulToday, 0);
+
+    const paused = seedRun(1, "paused", "2026-08-22");
+    seedRun(2, "completed", "2026-08-22");
+    const withActive = buildWorkflowDashboardState(database, planRecord, new Date("2026-08-22T02:00:00.000Z"));
+    assert.strictEqual(withActive.slotsUsed, 1);
+    assert.strictEqual(withActive.activeRun.status, "paused");
+    assert.strictEqual(withActive.nextPlan, null);
+    assert.strictEqual(
+      countSlotConsumingRuns([paused, getWorkflowRun(database, postAccessStop.id)]),
+      1
+    );
+  } finally {
+    database.close();
+  }
+}
+
+function seedRunStatus(database, workflow, status, localDay = "2026-08-21") {
+  if (status === "stopped") {
+    transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+    transitionWorkflowRun(database, { id: workflow.id, status: "stopped" });
+  } else if (status === "completed") {
+    transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+    transitionWorkflowRun(database, { id: workflow.id, status: "analyzing" });
+    transitionWorkflowRun(database, { id: workflow.id, status: "review_required" });
+    transitionWorkflowRun(database, { id: workflow.id, status: "completed" });
+  } else if (status === "paused") {
+    transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+    transitionWorkflowRun(database, { id: workflow.id, status: "analyzing" });
+    transitionWorkflowRun(database, {
+      id: workflow.id,
+      status: "paused",
+      resumePhase: "analyzing",
+      controlState: "none"
+    });
+  }
+  return getWorkflowRun(database, workflow.id);
+}

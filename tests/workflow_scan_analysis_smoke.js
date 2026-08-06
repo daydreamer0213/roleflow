@@ -13,6 +13,7 @@ const {
 } = require("../src/core/storage");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
 const { listWorkflowJobTasks } = require("../src/core/workflow_analysis_tasks");
+const { finalizeWorkflowControl } = require("../src/core/workflow_control");
 
 (async () => {
   try {
@@ -20,6 +21,7 @@ const { listWorkflowJobTasks } = require("../src/core/workflow_analysis_tasks");
     await resumedBatchClaimsOnlyPendingSmoke();
     await reportOnlyAfterDrainedReviewSmoke();
     await runnerErrorModeSmoke();
+    await controlledAnalysisOuterFinalizeSmoke();
     console.log("workflow_scan_analysis_smoke ok");
   } catch (error) {
     console.error(error);
@@ -338,6 +340,84 @@ async function runnerErrorModeSmoke() {
     await assert.rejects(
       () => failingRepairRunner(completeJob("repair-fail")),
       (error) => error.phase === "contract_repair"
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function controlledAnalysisOuterFinalizeSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const stopScenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-09-07",
+      modelConfigRevision: "outer-stop"
+    });
+    db.prepare("UPDATE workflow_runs SET control_state = 'stop_requested' WHERE id = ?")
+      .run(stopScenario.workflowId);
+    const stopped = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, stopScenario.workflowId),
+      batchId: stopScenario.batchId,
+      jobsToAnalyze: reportJobsAscending(db, stopScenario.batchId),
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJob(job),
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-07T00:05:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(stopped.status, "stopped");
+    const finalizedStop = finalizeWorkflowControl(db, {
+      workflowRunId: stopScenario.workflowId,
+      now: "2026-09-07T00:06:00.000Z"
+    });
+    assert.strictEqual(finalizedStop.status, "stopped");
+    assert.strictEqual(finalizedStop.controlState, "none");
+    assert.deepStrictEqual(
+      listWorkflowJobTasks(db, { workflowRunId: stopScenario.workflowId }).map((task) => task.status),
+      ["stopped", "stopped"]
+    );
+
+    const pauseScenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-09-08",
+      modelConfigRevision: "outer-pause"
+    });
+    db.prepare("UPDATE workflow_runs SET control_state = 'pause_requested' WHERE id = ?")
+      .run(pauseScenario.workflowId);
+    const paused = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, pauseScenario.workflowId),
+      batchId: pauseScenario.batchId,
+      jobsToAnalyze: reportJobsAscending(db, pauseScenario.batchId),
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJob(job),
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-08T00:05:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(paused.status, "paused");
+    const finalizedPause = finalizeWorkflowControl(db, {
+      workflowRunId: pauseScenario.workflowId,
+      now: "2026-09-08T00:06:00.000Z"
+    });
+    assert.strictEqual(finalizedPause.status, "paused");
+    assert.strictEqual(finalizedPause.controlState, "none");
+    assert.strictEqual(finalizedPause.resumePhase, "analyzing");
+    assert.deepStrictEqual(
+      listWorkflowJobTasks(db, { workflowRunId: pauseScenario.workflowId }).map((task) => task.status),
+      ["pending", "pending"]
     );
   } finally {
     db.close();

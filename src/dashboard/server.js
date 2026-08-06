@@ -28,6 +28,7 @@ const {
   createScanRun,
   createWorkflowRun,
   getWorkflowRun,
+  getScanRun,
   getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
@@ -99,7 +100,13 @@ const { validateResumeBatch } = require("../core/scan_resume");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { createJobAnalysisRunner } = require("../core/job_analysis");
 const { mapWithConcurrency } = require("../core/async_pool");
-const { chinaLocalDay, planWorkflowRun, consumedWorkflowBudget, recoverWorkflowRuns } = require("../core/workflow_run");
+const {
+  chinaLocalDay,
+  planWorkflowRun,
+  consumedWorkflowBudget,
+  countSlotConsumingRuns,
+  recoverWorkflowRuns
+} = require("../core/workflow_run");
 const {
   workflowEligibility,
   listWorkflowInventory,
@@ -1020,7 +1027,7 @@ function buildWorkflowDashboardState(
     now,
     localDay,
     successfulToday,
-    completedRuns: runs.length,
+    completedRuns: countSlotConsumingRuns(runs),
     inventoryCount: inventory.length,
     dailyBudget: {
       details: policy.dailyDetailBudget,
@@ -1036,7 +1043,7 @@ function buildWorkflowDashboardState(
     activeRun,
     successfulToday,
     dailyTarget: policy.dailyTarget,
-    slotsUsed: runs.length,
+    slotsUsed: countSlotConsumingRuns(runs),
     maxRuns: policy.maxRunsPerDay,
     inventory,
     usedBudget,
@@ -1369,7 +1376,8 @@ async function handleWorkflowRunResume(req, res, {
         planId: workflow.planId
       });
     }
-    if (acquisitionMode === "inherited") {
+    const requiresBrowser = workflowResumeRequiresBrowser(db, workflow);
+    if (acquisitionMode === "inherited" && requiresBrowser) {
       const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({
         browserMode,
         cdpPort
@@ -1406,6 +1414,24 @@ async function handleWorkflowRunResume(req, res, {
       fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
     });
   }
+}
+
+function workflowResumeRequiresBrowser(db, workflow) {
+  if (!workflow) return false;
+  if (workflow.status === "created") return true;
+  const phase = String(workflow.resumePhase || "");
+  if (phase === "scanning") return true;
+  if (phase === "analyzing") return false;
+  // Crash recovery without an explicit resume phase: if analysis tasks were
+  // already initialized, the remaining work is local analysis only and must
+  // not require BOSS readiness. Otherwise the scan phase is still pending.
+  const hasAnalysisTasks = Boolean(
+    db.prepare("SELECT 1 FROM workflow_job_tasks WHERE workflow_run_id = ? LIMIT 1").get(workflow.id)
+  );
+  if (hasAnalysisTasks) return false;
+  const scan = workflow.scanRunId ? getScanRun(db, workflow.scanRunId) : null;
+  if (!scan) return true;
+  return ["running", "created", "scanning"].includes(String(scan.status || ""));
 }
 
 function assertWorkflowResumeBrowserReady(readiness) {
@@ -3480,4 +3506,17 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-module.exports = { createDashboardServer, resolveLiveInheritedContext, startPlanScan, scanStatus, handleMarkApi, handleFollowUpApi, getDashboardData, filterJobs, renderDashboard, renderQueuePage, renderPlanPage };
+module.exports = {
+  createDashboardServer,
+  buildWorkflowDashboardState,
+  resolveLiveInheritedContext,
+  startPlanScan,
+  scanStatus,
+  handleMarkApi,
+  handleFollowUpApi,
+  getDashboardData,
+  filterJobs,
+  renderDashboard,
+  renderQueuePage,
+  renderPlanPage
+};

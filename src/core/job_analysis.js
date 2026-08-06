@@ -12,6 +12,7 @@ const {
 const { runWorkflowAnalysis } = require("./workflow_analysis_executor");
 const {
   initializeWorkflowJobTasks,
+  recoverExpiredWorkflowJobTasks,
   countWorkflowJobTaskStatusesForRun
 } = require("./workflow_analysis_tasks");
 const { listWorkflowInventory } = require("./workflow_inventory");
@@ -164,6 +165,10 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
     modelConfigRevision: revision,
     now: now()
   });
+  // Production resume/analysis path: before claiming anything, recover any
+  // running task whose lease expired while a previous child disappeared, so
+  // the queue can drain instead of stalling on permanently running rows.
+  recoverExpiredWorkflowJobTasks(db, { workflowRunId: runId, now: now() });
 
   const keywordPlan = Array.isArray(input.keywordPlan) ? input.keywordPlan : [];
   const summary = await runWorkflowAnalysis({
@@ -182,7 +187,8 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
     sleep: typeof input.sleep === "function" ? input.sleep : undefined,
     random: typeof input.random === "function" ? input.random : undefined,
     retryBackoffMs: Array.isArray(input.retryBackoffMs) ? input.retryBackoffMs : undefined,
-    workerIdFactory: typeof input.workerIdFactory === "function" ? input.workerIdFactory : undefined
+    workerIdFactory: typeof input.workerIdFactory === "function" ? input.workerIdFactory : undefined,
+    signal: input.signal && typeof input.signal === "object" ? input.signal : null
   });
 
   if (summary.status !== "drained") return summary;
