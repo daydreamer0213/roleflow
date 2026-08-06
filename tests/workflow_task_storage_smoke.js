@@ -13,7 +13,9 @@ const {
   initializeWorkflowJobTasks,
   claimWorkflowJobTask,
   commitWorkflowJobTaskSuccess,
+  commitWorkflowJobTaskFailure,
   commitWorkflowJobTaskSkipped,
+  recoverExpiredWorkflowJobTasks,
   listWorkflowJobTasks,
   listJobAnalysisAttempts
 } = require("../src/core/workflow_analysis_tasks");
@@ -40,6 +42,15 @@ try {
   testNarrowInsertConflictBehavior();
   testClaimNormalizesNowToUtc();
   testListJobAnalysisAttemptsRejectsInvalidTaskId();
+  testFirstRetryableFailurePersistsCooldown();
+  testSecondOrdinaryFailureTerminalWithoutCounters();
+  testSecondTimeoutCountsOnceAndCannotDoubleCount();
+  testConfigErrorsPauseImmediatelyWithoutSecondAttempt();
+  testNonRetryableFirstFailureIsTerminal();
+  testExpiredLeaseRecoveryFirstAndSecondAttempts();
+  testRecoverySkipsTerminalAndRespectsGates();
+  testFailureOwnerMismatchAndRollback();
+  testFailureIdentityCannotOverrideClaim();
   console.log("workflow_task_storage_smoke ok");
 } finally {
   db.close();
@@ -1309,4 +1320,824 @@ function testListJobAnalysisAttemptsRejectsInvalidTaskId() {
       (error) => error.code === "WORKFLOW_TASK_INVALID_TASK_ID"
     );
   }
+}
+
+function testFirstRetryableFailurePersistsCooldown() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-24",
+    modelConfigRevision: "mrev-fail-1"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-fail-1",
+    now: "2026-08-24T00:00:00.000Z"
+  });
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-fail-1",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-24T00:05:00.000Z"
+  });
+  assert(claimed);
+  const startedAt = "2026-08-24T00:05:00.000Z";
+  const finishedAt = "2026-08-24T00:05:30.000Z";
+  const retryAt = "2026-08-24T00:10:00.000Z";
+  const result = commitWorkflowJobTaskFailure(db, {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-fail-1",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    telemetry: { modelCallCount: 1, promptTokens: 100, completionTokens: 20, totalTokens: 120 },
+    startedAt,
+    finishedAt
+  });
+  assert.strictEqual(result.outcome, "retry_pending");
+  assert.strictEqual(result.task.status, "retry_pending");
+  assert.strictEqual(result.task.attemptCountInGeneration, 1);
+  assert.strictEqual(result.task.totalAttemptCount, 1);
+  assert.strictEqual(result.task.availableAt, retryAt);
+  assert.strictEqual(result.task.priority, 20);
+  assert.strictEqual(result.task.finishedAt, null);
+  assert.strictEqual(result.task.startedAt, startedAt);
+  assert.strictEqual(result.task.leaseOwner, null);
+  assert.strictEqual(result.task.leaseExpiresAt, null);
+  assert.strictEqual(result.task.lastErrorCode, "MODEL_TIMEOUT");
+  assert.strictEqual(result.task.lastErrorStage, "analyze");
+  assert.strictEqual(result.task.lastErrorKind, "retryable");
+
+  const attempt = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: claimed.task.id
+  })[0];
+  assert.strictEqual(attempt.status, "failed");
+  assert.strictEqual(attempt.errorCode, "MODEL_TIMEOUT");
+  assert.strictEqual(attempt.errorStage, "analyze");
+  assert.strictEqual(attempt.retryable, 1);
+  assert.strictEqual(attempt.modelConfigRevision, "revision-1");
+  assert.strictEqual(attempt.provider, "deepseek");
+  assert.strictEqual(attempt.model, "deepseek-v4-flash");
+  assert.strictEqual(attempt.thinkingMode, "disabled");
+  assert.strictEqual(attempt.reasoningEffort, "high");
+  assert.strictEqual(attempt.backupUsed, 0);
+  assert.strictEqual(attempt.modelCallCount, 1);
+  assert.strictEqual(attempt.promptTokens, 100);
+  assert.strictEqual(attempt.completionTokens, 20);
+  assert.strictEqual(attempt.totalTokens, 120);
+  assert.strictEqual(attempt.latencyMs, 30000);
+  assert.strictEqual(attempt.finishedAt, finishedAt);
+
+  assert.strictEqual(result.workflow.progressRevision, 2);
+  assert.strictEqual(result.workflow.lastActivityAt, finishedAt);
+  const counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 0);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+
+  const early = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-fail-early",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-24T00:09:00.000Z"
+  });
+  assert.strictEqual(early, null);
+  const stillCooldown = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId })[0];
+  assert.strictEqual(stillCooldown.status, "retry_pending");
+  assert.strictEqual(stillCooldown.attemptCountInGeneration, 1);
+  assert.strictEqual(stillCooldown.availableAt, retryAt);
+
+  const due = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-fail-due",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-24T00:10:00.000Z"
+  });
+  assert(due);
+  assert.strictEqual(due.task.id, claimed.task.id);
+  assert.strictEqual(due.task.attemptCountInGeneration, 2);
+  assert.strictEqual(due.task.totalAttemptCount, 2);
+  assert.strictEqual(due.attempt.attemptInGeneration, 2);
+  assert.strictEqual(due.attempt.modelConfigRevision, "revision-2");
+}
+
+function testSecondOrdinaryFailureTerminalWithoutCounters() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-25",
+    modelConfigRevision: "mrev-fail-2"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-fail-2",
+    now: "2026-08-25T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-25T00:01:00.000Z";
+  const first = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-2a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const firstFail = commitWorkflowJobTaskFailure(db, {
+    taskId: first.task.id,
+    leaseOwner: "worker-2a",
+    errorCode: "HTTP_429",
+    retryable: true,
+    retryAt: "2026-08-25T00:01:01.000Z",
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-25T00:01:00.500Z"
+  });
+  assert.strictEqual(firstFail.outcome, "retry_pending");
+
+  const second = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-2b",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-25T00:01:01.000Z"
+  });
+  assert(second);
+  assert.strictEqual(second.task.attemptCountInGeneration, 2);
+  const secondFail = commitWorkflowJobTaskFailure(db, {
+    taskId: second.task.id,
+    leaseOwner: "worker-2b",
+    errorCode: "HTTP_429",
+    retryable: true,
+    retryAt: "2026-08-25T00:01:02.000Z",
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 2, totalAttemptNumber: 2 }),
+    startedAt: "2026-08-25T00:01:01.000Z",
+    finishedAt: "2026-08-25T00:01:01.700Z"
+  });
+  assert.strictEqual(secondFail.outcome, "failed");
+  assert.strictEqual(secondFail.task.status, "failed");
+  assert.strictEqual(secondFail.task.finishedAt, "2026-08-25T00:01:01.700Z");
+  assert.strictEqual(secondFail.task.attemptCountInGeneration, 2);
+  assert.strictEqual(secondFail.task.totalAttemptCount, 2);
+  assert.strictEqual(secondFail.task.availableAt, null);
+  assert.strictEqual(secondFail.task.leaseOwner, null);
+  assert.strictEqual(secondFail.task.lastErrorCode, "HTTP_429");
+  assert.strictEqual(secondFail.task.lastErrorKind, "retryable");
+  const counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 0);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+
+  const attempts = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: second.task.id
+  });
+  assert.strictEqual(attempts.length, 2);
+  assert.strictEqual(attempts[1].status, "failed");
+  assert.strictEqual(attempts[1].retryable, 1);
+  assert.strictEqual(attempts[1].errorCode, "HTTP_429");
+  assert.strictEqual(attempts[1].errorStage, "analyze");
+
+  assert.strictEqual(claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-2c",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-25T00:02:00.000Z"
+  }), null);
+}
+
+function testSecondTimeoutCountsOnceAndCannotDoubleCount() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-26",
+    modelConfigRevision: "mrev-timeout"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-timeout",
+    now: "2026-08-26T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-26T00:01:00.000Z";
+  const retryAt = "2026-08-26T00:02:00.000Z";
+  const first = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-t-a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const failureArgs = {
+    taskId: first.task.id,
+    leaseOwner: "worker-t-a",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-26T00:01:30.000Z"
+  };
+  const firstFail = commitWorkflowJobTaskFailure(db, failureArgs);
+  assert.strictEqual(firstFail.outcome, "retry_pending");
+  let counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 0);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+
+  const second = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-t-b",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: retryAt
+  });
+  assert(second);
+  assert.strictEqual(second.task.attemptCountInGeneration, 2);
+  const finalArgs = {
+    ...failureArgs,
+    taskId: second.task.id,
+    leaseOwner: "worker-t-b",
+    modelIdentity: modelIdentity({ attemptInGeneration: 2, totalAttemptNumber: 2 }),
+    startedAt: retryAt,
+    finishedAt: "2026-08-26T00:02:30.000Z"
+  };
+  const finalFail = commitWorkflowJobTaskFailure(db, finalArgs);
+  assert.strictEqual(finalFail.outcome, "failed");
+  assert.strictEqual(finalFail.task.status, "failed");
+  assert.strictEqual(finalFail.task.finishedAt, "2026-08-26T00:02:30.000Z");
+  assert.strictEqual(finalFail.task.lastErrorCode, "MODEL_TIMEOUT");
+  counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 1);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 1);
+  assert.strictEqual(finalFail.workflow.circuitTimeoutJobCount, 1);
+  assert.strictEqual(finalFail.workflow.lifetimeTimeoutJobCount, 1);
+
+  assert.throws(
+    () => commitWorkflowJobTaskFailure(db, finalArgs),
+    (error) => error.code === "WORKFLOW_TASK_NOT_RUNNING"
+  );
+  counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 1);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 1);
+
+  const recovered = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-26T00:05:00.000Z"
+  });
+  assert.deepStrictEqual(recovered, { recovered: 0, failed: 0 });
+  counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 1);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 1);
+
+  assert.strictEqual(claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-t-c",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-26T00:05:00.000Z"
+  }), null);
+}
+
+function testConfigErrorsPauseImmediatelyWithoutSecondAttempt() {
+  const pauseCodes = [
+    "MODEL_KEY_REQUIRED",
+    "MODEL_AUTH_FAILED",
+    "MODEL_ENDPOINT_OR_MODEL_NOT_FOUND",
+    "MODEL_CONFIGURATION_REQUIRED"
+  ];
+  pauseCodes.forEach((code, index) => {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}],
+      localDay: "2026-08-26",
+      modelConfigRevision: `mrev-pause-${index}`
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: `mrev-pause-${index}`,
+      now: "2026-08-26T00:00:00.000Z"
+    });
+    const claimNow = "2026-08-26T00:01:00.000Z";
+    const claimed = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: `worker-pause-${index}`,
+      leaseTtlMs: 60_000,
+      selectModelIdentity: modelIdentity,
+      now: claimNow
+    });
+    assert(claimed);
+    // Even when the executor marks a config error retryable, it must not trigger
+    // an automatic second attempt in this generation; the supplied retryAt is ignored.
+    const result = commitWorkflowJobTaskFailure(db, {
+      taskId: claimed.task.id,
+      leaseOwner: `worker-pause-${index}`,
+      errorCode: code,
+      retryable: index === 0,
+      retryAt: "2026-08-26T00:02:00.000Z",
+      errorStage: "analyze",
+      modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+      startedAt: claimNow,
+      finishedAt: "2026-08-26T00:01:10.000Z"
+    });
+    assert.strictEqual(result.outcome, "pause_requested");
+    assert.strictEqual(result.task.status, "retry_pending");
+    assert.strictEqual(result.task.attemptCountInGeneration, 1);
+    assert.strictEqual(result.task.totalAttemptCount, 1);
+    assert.strictEqual(result.task.availableAt, null);
+    assert.strictEqual(result.task.priority, 100);
+    assert.strictEqual(result.task.finishedAt, null);
+    assert.strictEqual(result.task.leaseOwner, null);
+    assert.strictEqual(result.task.lastErrorCode, code);
+    assert.strictEqual(result.task.lastErrorStage, "analyze");
+    assert.strictEqual(result.task.lastErrorKind, "configuration");
+
+    const attempt = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: claimed.task.id
+    })[0];
+    assert.strictEqual(attempt.status, "failed");
+    assert.strictEqual(attempt.errorCode, code);
+    assert.strictEqual(attempt.errorStage, "analyze");
+    assert.strictEqual(attempt.retryable, 0);
+
+    assert.strictEqual(result.workflow.controlState, "pause_requested");
+    assert.strictEqual(result.workflow.resumePhase, "analyzing");
+    assert.strictEqual(result.workflow.progressRevision, 2);
+    assert.strictEqual(result.workflow.lastActivityAt, "2026-08-26T00:01:10.000Z");
+    const counters = workflowTimeoutCounts(scenario.workflowId);
+    assert.strictEqual(counters.circuit_timeout_job_count, 0);
+    assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+
+    assert.strictEqual(claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: `worker-pause-again-${index}`,
+      leaseTtlMs: 60_000,
+      selectModelIdentity: modelIdentity,
+      now: "2026-08-26T00:05:00.000Z"
+    }), null);
+    assert.throws(
+      () => commitWorkflowJobTaskFailure(db, {
+        taskId: claimed.task.id,
+        leaseOwner: `worker-pause-${index}`,
+        errorCode: code,
+        retryable: false,
+        errorStage: "analyze",
+        startedAt: claimNow,
+        finishedAt: "2026-08-26T00:01:11.000Z"
+      }),
+      (error) => error.code === "WORKFLOW_TASK_NOT_RUNNING"
+    );
+  });
+  const attemptColumns = db.prepare("PRAGMA table_info(job_analysis_attempts)").all()
+    .map((column) => column.name);
+  assert(!attemptColumns.includes("error_message"));
+}
+
+function testNonRetryableFirstFailureIsTerminal() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-26",
+    modelConfigRevision: "mrev-terminal"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-terminal",
+    now: "2026-08-26T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-26T00:01:00.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-terminal",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const result = commitWorkflowJobTaskFailure(db, {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-terminal",
+    errorCode: "LOCAL_INPUT_INVALID",
+    retryable: false,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-26T00:01:02.000Z"
+  });
+  assert.strictEqual(result.outcome, "failed");
+  assert.strictEqual(result.task.status, "failed");
+  assert.strictEqual(result.task.finishedAt, "2026-08-26T00:01:02.000Z");
+  assert.strictEqual(result.task.availableAt, null);
+  assert.strictEqual(result.task.lastErrorCode, "LOCAL_INPUT_INVALID");
+  assert.strictEqual(result.task.lastErrorKind, "terminal");
+  const counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 0);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+  assert.strictEqual(claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-terminal-2",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-26T00:02:00.000Z"
+  }), null);
+}
+
+function testExpiredLeaseRecoveryFirstAndSecondAttempts() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}, {}],
+    localDay: "2026-08-27",
+    modelConfigRevision: "mrev-recover"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-recover",
+    now: "2026-08-27T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-27T00:00:00.000Z";
+  const first = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-r-a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const second = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-r-b",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  assert(first);
+  assert(second);
+  assert.notStrictEqual(first.task.id, second.task.id);
+
+  // Drive the second task to a second running attempt with an expired lease.
+  const retryAt = "2026-08-27T00:00:10.000Z";
+  commitWorkflowJobTaskFailure(db, {
+    taskId: second.task.id,
+    leaseOwner: "worker-r-b",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-27T00:00:05.000Z"
+  });
+  const secondAttempt = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-r-c",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: retryAt
+  });
+  assert(secondAttempt);
+  assert.strictEqual(secondAttempt.task.attemptCountInGeneration, 2);
+
+  const now = "2026-08-27T00:02:00.000Z";
+  const result = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    now
+  });
+  assert.deepStrictEqual(result, { recovered: 1, failed: 1 });
+
+  const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+  const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
+  const recoveredTask = byId[first.task.id];
+  assert.strictEqual(recoveredTask.status, "retry_pending");
+  assert.strictEqual(recoveredTask.attemptCountInGeneration, 1);
+  assert.strictEqual(recoveredTask.totalAttemptCount, 1);
+  assert.strictEqual(recoveredTask.priority, 20);
+  assert.strictEqual(recoveredTask.availableAt, null);
+  assert.strictEqual(recoveredTask.finishedAt, null);
+  assert.strictEqual(recoveredTask.leaseOwner, null);
+  assert.strictEqual(recoveredTask.leaseExpiresAt, null);
+  assert.strictEqual(recoveredTask.lastErrorCode, "LEASE_EXPIRED");
+  assert.strictEqual(recoveredTask.lastErrorStage, "execution");
+  assert.strictEqual(recoveredTask.lastErrorKind, "lease_expired");
+
+  const failedTask = byId[second.task.id];
+  assert.strictEqual(failedTask.status, "failed");
+  assert.strictEqual(failedTask.attemptCountInGeneration, 2);
+  assert.strictEqual(failedTask.totalAttemptCount, 2);
+  assert.strictEqual(failedTask.finishedAt, now);
+  assert.strictEqual(failedTask.leaseOwner, null);
+  assert.strictEqual(failedTask.lastErrorCode, "LEASE_EXPIRED");
+  assert.strictEqual(failedTask.lastErrorKind, "lease_expired");
+
+  const recoveredAttempt = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: first.task.id
+  })[0];
+  assert.strictEqual(recoveredAttempt.status, "failed");
+  assert.strictEqual(recoveredAttempt.errorCode, "LEASE_EXPIRED");
+  assert.strictEqual(recoveredAttempt.errorStage, "execution");
+  assert.strictEqual(recoveredAttempt.retryable, 1);
+  assert.strictEqual(recoveredAttempt.finishedAt, now);
+  assert.strictEqual(recoveredAttempt.latencyMs, 120000);
+
+  const counters = workflowTimeoutCounts(scenario.workflowId);
+  assert.strictEqual(counters.circuit_timeout_job_count, 0);
+  assert.strictEqual(counters.lifetime_timeout_job_count, 0);
+
+  const again = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    now
+  });
+  assert.deepStrictEqual(again, { recovered: 0, failed: 0 });
+
+  const reclaim = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-r-d",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now
+  });
+  assert(reclaim);
+  assert.strictEqual(reclaim.task.id, first.task.id);
+  assert.strictEqual(reclaim.task.attemptCountInGeneration, 2);
+  assert.strictEqual(reclaim.task.totalAttemptCount, 2);
+}
+
+function testRecoverySkipsTerminalAndRespectsGates() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}, {}, {}],
+    localDay: "2026-08-28",
+    modelConfigRevision: "mrev-recover-gate"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-recover-gate",
+    now: "2026-08-28T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-28T00:00:00.000Z";
+  const succeeded = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-rg-1",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  commitWorkflowJobTaskSuccess(db, {
+    taskId: succeeded.task.id,
+    leaseOwner: "worker-rg-1",
+    analyzedJob: { ...succeeded.job, analysis: { semanticStatus: "complete", decisionSource: "model" } },
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-28T00:00:03.000Z"
+  });
+  const failed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-rg-2",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  commitWorkflowJobTaskFailure(db, {
+    taskId: failed.task.id,
+    leaseOwner: "worker-rg-2",
+    errorCode: "HTTP_429",
+    retryable: false,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-28T00:00:04.000Z"
+  });
+  const running = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-rg-3",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  assert(running);
+
+  const now = "2026-08-28T00:05:00.000Z";
+  const result = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    now
+  });
+  assert.deepStrictEqual(result, { recovered: 1, failed: 0 });
+  const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+  const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
+  assert.strictEqual(byId[succeeded.task.id].status, "succeeded");
+  assert.strictEqual(byId[failed.task.id].status, "failed");
+  assert.strictEqual(byId[running.task.id].status, "retry_pending");
+
+  const paused = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-28",
+    modelConfigRevision: "mrev-recover-paused"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: paused.workflowId,
+    batchId: paused.batchId,
+    jobs: observationEntries(db, paused.batchId),
+    modelConfigRevision: "mrev-recover-paused",
+    now: "2026-08-28T01:00:00.000Z"
+  });
+  claimWorkflowJobTask(db, {
+    workflowRunId: paused.workflowId,
+    leaseOwner: "worker-rp",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-28T01:00:00.000Z"
+  });
+  db.prepare("UPDATE workflow_runs SET control_state = 'pause_requested' WHERE id = ?").run(paused.workflowId);
+  const pausedRecovery = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: paused.workflowId,
+    now: "2026-08-28T01:05:00.000Z"
+  });
+  assert.deepStrictEqual(pausedRecovery, { recovered: 0, failed: 0 });
+  const pausedTask = listWorkflowJobTasks(db, { workflowRunId: paused.workflowId })[0];
+  assert.strictEqual(pausedTask.status, "running");
+  assert.strictEqual(pausedTask.leaseOwner, "worker-rp");
+
+  const scanning = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-28",
+    modelConfigRevision: "mrev-recover-scanning"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scanning.workflowId,
+    batchId: scanning.batchId,
+    jobs: observationEntries(db, scanning.batchId),
+    modelConfigRevision: "mrev-recover-scanning",
+    now: "2026-08-28T02:00:00.000Z"
+  });
+  claimWorkflowJobTask(db, {
+    workflowRunId: scanning.workflowId,
+    leaseOwner: "worker-rs",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-28T02:00:00.000Z"
+  });
+  db.prepare("UPDATE workflow_runs SET status = 'scanning' WHERE id = ?").run(scanning.workflowId);
+  const scanningRecovery = recoverExpiredWorkflowJobTasks(db, {
+    workflowRunId: scanning.workflowId,
+    now: "2026-08-28T02:05:00.000Z"
+  });
+  assert.deepStrictEqual(scanningRecovery, { recovered: 0, failed: 0 });
+  assert.strictEqual(listWorkflowJobTasks(db, { workflowRunId: scanning.workflowId })[0].status, "running");
+}
+
+function testFailureOwnerMismatchAndRollback() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-29",
+    modelConfigRevision: "mrev-fail-owner"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-fail-owner",
+    now: "2026-08-29T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-29T00:01:00.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-fail-a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const base = {
+    taskId: claimed.task.id,
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt: "2026-08-29T00:06:00.000Z",
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-08-29T00:01:30.000Z"
+  };
+  assert.throws(
+    () => commitWorkflowJobTaskFailure(db, { ...base, leaseOwner: "worker-other" }),
+    (error) => error.code === "WORKFLOW_TASK_LEASE_OWNER_MISMATCH"
+  );
+  const afterMismatch = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId })[0];
+  assert.strictEqual(afterMismatch.status, "running");
+  assert.strictEqual(afterMismatch.leaseOwner, "worker-fail-a");
+  assert.strictEqual(
+    db.prepare("SELECT progress_revision FROM workflow_runs WHERE id = ?").get(scenario.workflowId).progress_revision,
+    1
+  );
+
+  db.exec(`
+    CREATE TEMP TRIGGER fail_workflow_activity
+    BEFORE UPDATE ON workflow_runs
+    WHEN NEW.id = '${scenario.workflowId}'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected workflow activity failure');
+    END
+  `);
+  try {
+    assert.throws(
+      () => commitWorkflowJobTaskFailure(db, { ...base, leaseOwner: "worker-fail-a" }),
+      /injected workflow activity failure/
+    );
+  } finally {
+    db.exec("DROP TRIGGER IF EXISTS fail_workflow_activity");
+  }
+  const afterRollback = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId })[0];
+  assert.strictEqual(afterRollback.status, "running");
+  assert.strictEqual(afterRollback.leaseOwner, "worker-fail-a");
+  assert.strictEqual(afterRollback.leaseExpiresAt, "2026-08-29T00:02:00.000Z");
+  const attempt = db.prepare("SELECT * FROM job_analysis_attempts WHERE task_id = ?").get(claimed.task.id);
+  assert.strictEqual(attempt.status, "running");
+  assert.strictEqual(attempt.finished_at, null);
+  assert.strictEqual(attempt.updated_at, attempt.created_at);
+  const workflow = db.prepare(
+    "SELECT progress_revision, last_activity_at, control_state, resume_phase FROM workflow_runs WHERE id = ?"
+  ).get(scenario.workflowId);
+  assert.strictEqual(workflow.progress_revision, 1);
+  assert.strictEqual(workflow.control_state, "none");
+  assert.strictEqual(workflow.resume_phase, null);
+
+  const ok = commitWorkflowJobTaskFailure(db, { ...base, leaseOwner: "worker-fail-a" });
+  assert.strictEqual(ok.outcome, "retry_pending");
+  assert.strictEqual(ok.task.status, "retry_pending");
+  assert.strictEqual(ok.task.availableAt, "2026-08-29T00:06:00.000Z");
+}
+
+function testFailureIdentityCannotOverrideClaim() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-30",
+    modelConfigRevision: "mrev-fail-id"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-fail-id",
+    now: "2026-08-30T00:00:00.000Z"
+  });
+  const claimNow = "2026-08-30T00:01:00.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-fail-id",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  const base = {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-fail-id",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt: "2026-08-30T00:06:00.000Z",
+    errorStage: "analyze",
+    startedAt: claimNow,
+    finishedAt: "2026-08-30T00:01:30.000Z"
+  };
+  const wrong = modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 });
+  wrong.model = "some-other-model";
+  assert.throws(
+    () => commitWorkflowJobTaskFailure(db, { ...base, modelIdentity: wrong }),
+    (error) => error.code === "WORKFLOW_TASK_MODEL_IDENTITY_MISMATCH"
+  );
+  const attempt = db.prepare("SELECT * FROM job_analysis_attempts WHERE task_id = ?").get(claimed.task.id);
+  assert.strictEqual(attempt.status, "running");
+  assert.strictEqual(attempt.model, "deepseek-v4-flash");
+  assert.strictEqual(attempt.model_config_revision, "revision-1");
+  assert.strictEqual(attempt.updated_at, attempt.created_at);
+
+  const result = commitWorkflowJobTaskFailure(db, {
+    ...base,
+    modelIdentity: { provider: "deepseek" }
+  });
+  assert.strictEqual(result.outcome, "retry_pending");
+  const persisted = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: claimed.task.id
+  })[0];
+  assert.strictEqual(persisted.status, "failed");
+  assert.strictEqual(persisted.provider, "deepseek");
+  assert.strictEqual(persisted.model, "deepseek-v4-flash");
+  assert.strictEqual(persisted.modelConfigRevision, "revision-1");
+  assert.strictEqual(persisted.thinkingMode, "disabled");
+  assert.strictEqual(persisted.reasoningEffort, "high");
+  assert.strictEqual(persisted.backupUsed, 0);
+}
+
+function workflowTimeoutCounts(workflowId) {
+  return db.prepare(
+    "SELECT circuit_timeout_job_count, lifetime_timeout_job_count FROM workflow_runs WHERE id = ?"
+  ).get(workflowId);
 }

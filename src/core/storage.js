@@ -1678,6 +1678,9 @@ function finishJobAnalysisAttemptRow(db, {
   completionTokens,
   totalTokens,
   latencyMs,
+  errorCode,
+  errorStage,
+  retryable,
   finishedAt,
   now
 }) {
@@ -1694,6 +1697,9 @@ function finishJobAnalysisAttemptRow(db, {
       prompt_tokens = ?,
       completion_tokens = ?,
       total_tokens = ?,
+      error_code = ?,
+      error_stage = ?,
+      retryable = ?,
       finished_at = ?,
       latency_ms = ?,
       updated_at = ?
@@ -1710,11 +1716,89 @@ function finishJobAnalysisAttemptRow(db, {
     promptTokens,
     completionTokens,
     totalTokens,
+    errorCode || null,
+    errorStage || null,
+    retryable ? 1 : 0,
     finishedAt,
     latencyMs,
     now,
     attemptId
   );
+}
+
+function failWorkflowJobTaskRow(db, {
+  taskId,
+  leaseOwner,
+  status,
+  errorCode,
+  errorStage,
+  errorKind,
+  priority,
+  availableAt,
+  finishedAt,
+  now
+}) {
+  const hasPriority = priority !== undefined && priority !== null;
+  return db.prepare(`
+    UPDATE workflow_job_tasks SET
+      status = ?,
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      available_at = ?,
+      priority = CASE WHEN ? IS NULL THEN priority ELSE ? END,
+      last_error_code = ?,
+      last_error_stage = ?,
+      last_error_kind = ?,
+      finished_at = ?,
+      updated_at = ?
+    WHERE id = ? AND status = 'running' AND lease_owner = ?
+  `).run(
+    status,
+    availableAt || null,
+    hasPriority ? priority : null,
+    hasPriority ? priority : null,
+    errorCode || null,
+    errorStage || null,
+    errorKind || null,
+    finishedAt || null,
+    now,
+    taskId,
+    leaseOwner
+  );
+}
+
+function incrementWorkflowTimeoutCounters(db, { workflowRunId, now }) {
+  db.prepare(`
+    UPDATE workflow_runs SET
+      circuit_timeout_job_count = circuit_timeout_job_count + 1,
+      lifetime_timeout_job_count = lifetime_timeout_job_count + 1,
+      updated_at = ?
+    WHERE id = ?
+  `).run(now, workflowRunId);
+}
+
+function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
+  db.prepare(`
+    UPDATE workflow_runs SET
+      control_state = 'pause_requested',
+      resume_phase = 'analyzing',
+      progress_revision = progress_revision + 1,
+      last_activity_at = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(now, now, workflowRunId);
+}
+
+function selectExpiredLeaseWorkflowJobTaskRows(db, { workflowRunId, now }) {
+  return db.prepare(`
+    SELECT * FROM workflow_job_tasks
+    WHERE workflow_run_id = ?
+      AND status = 'running'
+      AND lease_expires_at IS NOT NULL
+      AND lease_expires_at <= ?
+    ORDER BY position ASC, id ASC
+  `).all(workflowRunId, now).map(workflowJobTaskRow);
 }
 
 function completeWorkflowJobTaskRow(db, {
@@ -4313,6 +4397,10 @@ module.exports = {
   getWorkflowJobTaskRow,
   getRunningJobAnalysisAttemptRow,
   finishJobAnalysisAttemptRow,
+  failWorkflowJobTaskRow,
+  incrementWorkflowTimeoutCounters,
+  requestWorkflowRunConfigurationPause,
+  selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
   backfillHistoricalCommunicationOutcomes,
   createMatchingCardDraft,

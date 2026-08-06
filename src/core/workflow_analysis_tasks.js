@@ -13,6 +13,10 @@ const {
   getWorkflowJobTaskRow,
   getRunningJobAnalysisAttemptRow,
   finishJobAnalysisAttemptRow,
+  failWorkflowJobTaskRow,
+  incrementWorkflowTimeoutCounters,
+  requestWorkflowRunConfigurationPause,
+  selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
@@ -20,6 +24,15 @@ const {
   listJobAnalysisAttemptRows,
   upsertJob
 } = require("./storage");
+
+const CONFIG_PAUSE_CODES = new Set([
+  "MODEL_KEY_REQUIRED",
+  "MODEL_AUTH_FAILED",
+  "MODEL_ENDPOINT_OR_MODEL_NOT_FOUND",
+  "MODEL_CONFIGURATION_REQUIRED"
+]);
+const LEASE_EXPIRED_ERROR_CODE = "LEASE_EXPIRED";
+const LEASE_EXPIRED_ERROR_STAGE = "execution";
 
 function initializeWorkflowJobTasks(db, {
   workflowRunId,
@@ -338,6 +351,211 @@ function commitWorkflowJobTaskSkipped(db, {
   });
 }
 
+function commitWorkflowJobTaskFailure(db, {
+  taskId,
+  leaseOwner,
+  errorCode,
+  retryable,
+  retryAt,
+  errorStage,
+  modelIdentity,
+  telemetry,
+  startedAt,
+  finishedAt
+}) {
+  const taskIdNum = requiredTaskId(taskId);
+  const owner = requiredLeaseOwner(leaseOwner);
+  const code = String(errorCode || "").trim();
+  if (!code) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_ERROR_CODE_REQUIRED",
+      "失败提交必须提供稳定的公开 errorCode"
+    );
+  }
+  const started = requiredIsoTime(startedAt, "startedAt");
+  const finished = requiredIsoTime(finishedAt, "finishedAt");
+  const stage = errorStage === undefined || errorStage === null
+    ? null
+    : String(errorStage).trim() || null;
+  const isRetryable = Number(retryable) === 1;
+  const identity = modelIdentity ? requiredModelIdentity(modelIdentity) : null;
+
+  return immediateTransaction(db, () => {
+    const taskRow = requireRunningTaskRow(db, taskIdNum, owner);
+    requireWorkflowExists(db, taskRow.workflow_run_id);
+    const attemptRow = getRunningJobAnalysisAttemptRow(db, taskIdNum);
+    if (!attemptRow) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_ATTEMPT_NOT_RUNNING",
+        `任务 ${taskIdNum} 没有 running 的尝试记录，无法提交失败`
+      );
+    }
+    if (identity) validateCommitIdentity(identity, attemptRow);
+    validateStartedAtMatchesAttempt(started, attemptRow);
+
+    const attemptInGeneration = Number(taskRow.attempt_count_in_generation || 0);
+    const usage = normalizeTelemetry(telemetry);
+    const latencyMs = latencyBetween(attemptRow.started_at, finished);
+    const isConfigPause = CONFIG_PAUSE_CODES.has(code);
+
+    let outcome;
+    let taskStatus;
+    let availableAt = null;
+    let priority = null;
+    let finishedForTask = finished;
+    let errorKind;
+    if (isConfigPause) {
+      outcome = "pause_requested";
+      taskStatus = "retry_pending";
+      finishedForTask = null;
+      errorKind = "configuration";
+    } else if (attemptInGeneration <= 1 && isRetryable) {
+      const retryMs = Date.parse(retryAt);
+      if (!Number.isFinite(retryMs)) {
+        throw workflowTaskError(
+          "WORKFLOW_TASK_RETRY_AT_REQUIRED",
+          "可重试失败必须提供有效的 retryAt 冷却时间"
+        );
+      }
+      outcome = "retry_pending";
+      taskStatus = "retry_pending";
+      availableAt = new Date(retryMs).toISOString();
+      priority = 20;
+      finishedForTask = null;
+      errorKind = "retryable";
+    } else {
+      outcome = "failed";
+      taskStatus = "failed";
+      errorKind = attemptInGeneration >= 2 && isRetryable ? "retryable" : "terminal";
+    }
+
+    finishJobAnalysisAttemptRow(db, {
+      attemptId: Number(attemptRow.id),
+      status: "failed",
+      provider: attemptRow.provider,
+      model: attemptRow.model,
+      modelConfigRevision: attemptRow.model_config_revision,
+      thinkingMode: attemptRow.thinking_mode,
+      reasoningEffort: attemptRow.reasoning_effort,
+      backupUsed: attemptRow.backup_used,
+      modelCallCount: usage.modelCallCount,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      latencyMs,
+      errorCode: code,
+      errorStage: stage,
+      retryable: isConfigPause ? 0 : (isRetryable ? 1 : 0),
+      finishedAt: finished,
+      now: finished
+    });
+
+    const taskUpdate = failWorkflowJobTaskRow(db, {
+      taskId: taskIdNum,
+      leaseOwner: owner,
+      status: taskStatus,
+      errorCode: code,
+      errorStage: stage,
+      errorKind,
+      priority,
+      availableAt,
+      finishedAt: finishedForTask,
+      now: finished
+    });
+    if (Number(taskUpdate.changes) !== 1) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_NOT_RUNNING",
+        `任务 ${taskIdNum} 不再是 running，失败提交未生效`
+      );
+    }
+
+    if (outcome === "pause_requested") {
+      requestWorkflowRunConfigurationPause(db, {
+        workflowRunId: taskRow.workflow_run_id,
+        now: finished
+      });
+    } else {
+      if (outcome === "failed" && code === "MODEL_TIMEOUT" && attemptInGeneration >= 2) {
+        incrementWorkflowTimeoutCounters(db, {
+          workflowRunId: taskRow.workflow_run_id,
+          now: finished
+        });
+      }
+      incrementWorkflowRunActivity(db, {
+        workflowRunId: taskRow.workflow_run_id,
+        now: finished
+      });
+    }
+
+    return {
+      task: workflowJobTaskRow(getWorkflowJobTaskRow(db, taskIdNum)),
+      workflow: getWorkflowRun(db, taskRow.workflow_run_id),
+      outcome
+    };
+  });
+}
+
+function recoverExpiredWorkflowJobTasks(db, { workflowRunId, now }) {
+  const normalizedNow = requiredIsoTime(now, "now");
+  return immediateTransaction(db, () => {
+    const workflow = getWorkflowRun(db, workflowRunId);
+    if (!workflow || workflow.status !== "analyzing" || workflow.controlState !== "none") {
+      return { recovered: 0, failed: 0 };
+    }
+    const rows = selectExpiredLeaseWorkflowJobTaskRows(db, {
+      workflowRunId,
+      now: normalizedNow
+    });
+    let recovered = 0;
+    let failed = 0;
+    for (const row of rows) {
+      const attemptRow = getRunningJobAnalysisAttemptRow(db, row.id);
+      if (!attemptRow) continue;
+      const attemptInGeneration = Number(row.attemptCountInGeneration || 0);
+      const isRetryable = attemptInGeneration < 2;
+      const taskStatus = isRetryable ? "retry_pending" : "failed";
+
+      finishJobAnalysisAttemptRow(db, {
+        attemptId: Number(attemptRow.id),
+        status: "failed",
+        provider: attemptRow.provider,
+        model: attemptRow.model,
+        modelConfigRevision: attemptRow.model_config_revision,
+        thinkingMode: attemptRow.thinking_mode,
+        reasoningEffort: attemptRow.reasoning_effort,
+        backupUsed: attemptRow.backup_used,
+        modelCallCount: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        latencyMs: latencyBetween(attemptRow.started_at, normalizedNow),
+        errorCode: LEASE_EXPIRED_ERROR_CODE,
+        errorStage: LEASE_EXPIRED_ERROR_STAGE,
+        retryable: 1,
+        finishedAt: normalizedNow,
+        now: normalizedNow
+      });
+
+      const taskUpdate = failWorkflowJobTaskRow(db, {
+        taskId: row.id,
+        leaseOwner: String(row.leaseOwner || ""),
+        status: taskStatus,
+        errorCode: LEASE_EXPIRED_ERROR_CODE,
+        errorStage: LEASE_EXPIRED_ERROR_STAGE,
+        errorKind: "lease_expired",
+        priority: isRetryable ? 20 : null,
+        availableAt: null,
+        finishedAt: isRetryable ? null : normalizedNow,
+        now: normalizedNow
+      });
+      if (Number(taskUpdate.changes) !== 1) continue;
+      if (isRetryable) recovered += 1;
+      else failed += 1;
+    }
+    return { recovered, failed };
+  });
+}
+
 function listWorkflowJobTasks(db, options = {}) {
   return listWorkflowJobTaskRows(db, {
     workflowRunId: options.workflowRunId,
@@ -531,7 +749,9 @@ module.exports = {
   initializeWorkflowJobTasks,
   claimWorkflowJobTask,
   commitWorkflowJobTaskSuccess,
+  commitWorkflowJobTaskFailure,
   commitWorkflowJobTaskSkipped,
+  recoverExpiredWorkflowJobTasks,
   listWorkflowJobTasks,
   listJobAnalysisAttempts
 };
