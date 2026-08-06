@@ -133,5 +133,7 @@ RoleFlow 的验收者应先读取该提交的 diff、相关测试和计划任务
 已知未覆盖风险：
 
 - `startup_scripts_smoke` 需要 8787 端口空闲；真实工作台运行时全量测试会因此失败。
-- live calibration 与 live acceptance 未执行，需要用户打开唯一 `BOSS-COMMUNICATION` 消息页后单独授权。
-- 独立只读复审尚未由新会话执行，完成前不建议合并。
+- live calibration 已完成两轮：确认了会话行 `.title-box`/`.last-msg-text`、预览状态 `.status-read`/`.status-delivery`、公司名 `.base-info > span:not(.base-title)`、职位 `.chat-position-content .position-name`、消息项 `.message-item` 与 15 位 `data-mid`。
+- live acceptance 已完成一次空队列只读运行：状态 `completed`、`queued=0`、`processed=0`、租约已释放；未触发点击和模型调用，因为当前没有未读标记或待处理预览变化。
+- 未读标记 `.notice-badge` 尚未在真实未读会话上验证；已通过预览变化通道补充“已读但未回复”的恢复能力。
+- 独立只读复审尚未由新会话执行，完成前不建议合并或推送。
