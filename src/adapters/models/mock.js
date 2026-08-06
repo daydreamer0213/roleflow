@@ -396,4 +396,38 @@ function inferSeniority(text) {
   return "unknown";
 }
 
+MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup({
+  profile,
+  job,
+  messages = [],
+  facts = []
+} = {}) {
+  const text = messages.map((message) => String(message.text || "")).join(" ");
+  const messageCategory = /面试|邀约|interview/i.test(text)
+    ? "interview_invitation"
+    : /到岗|入职|什么时候|availability/i.test(text)
+      ? "availability"
+      : /薪资|salary|期望/i.test(text)
+        ? "salary"
+        : "qualification";
+  const factMap = new Map((facts || []).map((fact) => [String(fact.key || ""), fact]));
+  const required = messageCategory === "availability"
+    ? ["employment_status", "availability_date"]
+    : [];
+  const missing = required.find((key) => !factMap.has(key));
+  return {
+    messageCategory,
+    requiredFactKeys: required,
+    usedFactKeys: required.filter((key) => factMap.has(key)),
+    responseItems: required.map((id) => ({ id, kind: "question", required: true })),
+    coverage: required.map((id) => ({ responseItemId: id, covered: factMap.has(id) })),
+    missingFact: missing ? { key: missing, question: "请确认到岗相关事实" } : null,
+    messages: messageCategory === "interview_invitation" || missing ? [] : ["mock message reply draft"],
+    progressUpdate: {
+      stage: messageCategory === "interview_invitation" || missing ? "needs_user_action" : "reply_ready",
+      nextAction: "ignored provider text"
+    }
+  };
+};
+
 module.exports = { MockModelAdapter };

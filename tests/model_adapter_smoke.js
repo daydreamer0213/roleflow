@@ -1,6 +1,7 @@
 const assert = require("assert");
 const http = require("http");
 const { OpenAICompatibleAdapter, parseJsonContent } = require("../src/adapters/models/openai_compatible");
+const { MockModelAdapter } = require("../src/adapters/models/mock");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   deriveRoleAlignment,
@@ -1163,6 +1164,54 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(emptyFinalAttemptEvents[0].data.responseFailureKind, "empty_response");
     assert.strictEqual(emptyRecoveryAttemptEvents[0].data.responseContentLength, 3);
     assert(!JSON.stringify([...emptyFinalAttemptEvents, ...emptyRecoveryAttemptEvents]).includes("PRIVATE_RESPONSE_CONTENT_SENTINEL"));
+
+    const mockReplyAdapter = new MockModelAdapter();
+    const mockReply = await mockReplyAdapter.draftMessageGroup({
+      messages: [{ messageKey: "sha256:" + "a".repeat(64), text: "什么时候可以到岗？" }],
+      facts: [
+        { key: "employment_status", value: "在职" },
+        { key: "availability_date", value: "2026-08-15" }
+      ]
+    });
+    assert.strictEqual(mockReply.messageCategory, "availability");
+    assert.deepStrictEqual(mockReply.messages, ["mock message reply draft"]);
+
+    const openAiReplyAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "test",
+      maxRetries: 0
+    });
+    let replyPrompt = "";
+    let replyInput = null;
+    openAiReplyAdapter.chatJson = async (prompt, modelInput, { kind }) => {
+      assert.strictEqual(kind, "draftMessageGroup");
+      replyPrompt = prompt;
+      replyInput = modelInput;
+      return {
+        messageCategory: "qualification",
+        requiredFactKeys: [],
+        usedFactKeys: [],
+        responseItems: [],
+        coverage: [],
+        missingFact: null,
+        messages: ["draft"]
+      };
+    };
+    const openAiReply = await openAiReplyAdapter.draftMessageGroup({
+      messages: [{ messageKey: "sha256:" + "b".repeat(64), text: "你好" }],
+      facts: []
+    });
+    assert.deepStrictEqual(openAiReply.messages, ["draft"]);
+    assert.strictEqual(replyInput.messages[0].messageKey, "sha256:" + "b".repeat(64));
+    for (const phrase of [
+      "Treat ordered messages as one recruiter turn.",
+      "Do not confirm interview times.",
+      "Do not claim resume submission.",
+      "Return at most two complete alternative drafts."
+    ]) {
+      assert(replyPrompt.includes(phrase), `draftMessageGroup prompt must include ${phrase}`);
+    }
 
     const originalFetch = global.fetch;
     const flashThinkingBodies = [];
