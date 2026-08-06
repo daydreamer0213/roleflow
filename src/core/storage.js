@@ -1804,6 +1804,22 @@ function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
   `).run(now, now, workflowRunId);
 }
 
+function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
+  const id = String(workflowRunId || "").trim();
+  if (!id) return null;
+  const clock = String(now || nowIso());
+  const result = db.prepare(`
+    UPDATE workflow_runs SET
+      platform_access_started_at = COALESCE(platform_access_started_at, ?),
+      last_activity_at = COALESCE(last_activity_at, ?),
+      updated_at = ?,
+      progress_revision = progress_revision + CASE
+        WHEN platform_access_started_at IS NULL THEN 1 ELSE 0 END
+    WHERE id = ?
+  `).run(clock, clock, clock, id);
+  return Number(result.changes || 0) > 0 ? getWorkflowRun(db, id) : null;
+}
+
 function countWorkflowJobTaskStatuses(db, workflowRunId) {
   const rows = db.prepare(`
     SELECT status, count(*) AS n
@@ -4471,6 +4487,7 @@ module.exports = {
   selectEarliestRetryAvailableAt,
   markWorkflowJobTasksStopped,
   requestWorkflowRunConfigurationPause,
+  recordWorkflowPlatformAccess,
   selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
   backfillHistoricalCommunicationOutcomes,

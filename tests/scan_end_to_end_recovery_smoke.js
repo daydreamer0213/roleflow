@@ -220,16 +220,38 @@ async function main() {
     assertExit(generatedUnsupported, 1, "generated unsupported Search Plan city rejection");
     assert.match(generatedUnsupported.stderr, /BOSS 暂不支持这些城市：测试未映射城市/);
 
+    await workflowPlatformAccessSmoke(storage);
+
     db = storage.openDb(dbPath);
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("scan_end_to_end_recovery_smoke ok");
   } finally {
     db?.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    rmRecursive(tempDir);
   }
 }
 
-function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards = 10 } = {}) {
+function rmRecursive(target) {
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error.code !== "EBUSY" && error.code !== "EPERM") throw error;
+      if (Date.now() >= deadline) throw error;
+      const blocker = new Int32Array(new SharedArrayBuffer(4));
+      Atomics.wait(blocker, 0, 0, 100);
+    }
+  }
+}
+
+function runScan(dbPath, planId, runId, mode, {
+  resumeBatchId = null,
+  maxCards = 10,
+  workflowRunId = null,
+  keywords = null
+} = {}) {
   const args = [
     "--require", __filename,
     path.join(root, "src", "cli.js"),
@@ -245,6 +267,10 @@ function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards =
     "--refresh-platform-filters"
   ];
   if (resumeBatchId) args.push("--resume-batch", String(resumeBatchId));
+  if (workflowRunId) {
+    args.push("--workflow-run", workflowRunId);
+    args.push("--keywords", (Array.isArray(keywords) ? keywords : []).join(","));
+  }
   return spawnSync(process.execPath, args, {
     cwd: root,
     encoding: "utf8",
@@ -252,9 +278,193 @@ function runScan(dbPath, planId, runId, mode, { resumeBatchId = null, maxCards =
     env: {
       ...process.env,
       ROLEFLOW_SCAN_E2E_ADAPTER: "1",
-      ROLEFLOW_SCAN_E2E_MODE: mode
+      ROLEFLOW_SCAN_E2E_MODE: mode,
+      ROLEFLOW_SCAN_E2E_DB: dbPath,
+      ROLEFLOW_SCAN_E2E_WORKFLOW: workflowRunId || ""
     }
   });
+}
+
+async function workflowPlatformAccessSmoke(storage) {
+  const { workflowRunConsumesSlot } = require("../src/core/workflow_control");
+  await scenarioStopBeforeAccess(storage, workflowRunConsumesSlot);
+  await scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot);
+  await scenarioRepeatedEntry(storage);
+}
+
+async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-pre-stop-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-01", "stop_requested");
+    const result = runScan(scenario.dbPath, scenario.planId, "wf-pre-access-stop", "complete", {
+      workflowRunId: scenario.workflow.id,
+      keywords: ["RAG", "Agent"]
+    });
+    assertExit(result, 0, "pre-access workflow stop");
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const stopped = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert.strictEqual(stopped.status, "stopped");
+      assert.strictEqual(stopped.controlState, "none");
+      assert.strictEqual(stopped.platformAccessStartedAt, null);
+      assert.strictEqual(workflowRunConsumesSlot(stopped), false);
+      // seed revision 0 + finalize stop +1; the pre-access stop never wrote
+      // the platform access marker, so its revision must not include it.
+      assert.strictEqual(stopped.progressRevision, 1);
+      assert.strictEqual(
+        storage.getScanRun(db, "wf-pre-access-stop").stopCode,
+        "WORKFLOW_STOP_REQUESTED"
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
+}
+
+async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-stop-after-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-02", "none");
+    const result = runScan(
+      scenario.dbPath,
+      scenario.planId,
+      "wf-stop-after-first",
+      "workflow-stop-after-first-target",
+      {
+        workflowRunId: scenario.workflow.id,
+        keywords: ["RAG", "Agent"]
+      }
+    );
+    assertExit(result, 0, "workflow stop after first target");
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const stopped = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert(stopped.platformAccessStartedAt, "platform access must be recorded before adapter scan");
+      assert.strictEqual(stopped.status, "stopped");
+      assert.strictEqual(stopped.controlState, "none");
+      assert.strictEqual(workflowRunConsumesSlot(stopped), true);
+      // seed 0 + platform access marker +1 + finalize stop +1. If the marker
+      // were written twice, this would be 3.
+      assert.strictEqual(stopped.progressRevision, 2);
+      assert.strictEqual(
+        storage.getScanRun(db, "wf-stop-after-first").stopCode,
+        "WORKFLOW_STOP_REQUESTED"
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
+}
+
+async function scenarioRepeatedEntry(storage) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-repeat-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-03", "none");
+    const firstCrash = runScan(scenario.dbPath, scenario.planId, "wf-repeat-first", "interrupt", {
+      workflowRunId: scenario.workflow.id,
+      keywords: ["RAG", "Agent"]
+    });
+    assertExit(firstCrash, 1, "first workflow entry interruption");
+    let db = storage.openDb(scenario.dbPath);
+    let afterFirst;
+    let persistedBatchId;
+    try {
+      afterFirst = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert(afterFirst.platformAccessStartedAt, "first entry must record platform access before adapter scan");
+      assert.strictEqual(afterFirst.status, "interrupted");
+      persistedBatchId = Number(afterFirst.scanBatchId);
+      assert(persistedBatchId > 0, "first workflow entry must persist a scan batch");
+    } finally {
+      db.close();
+    }
+
+    const resumed = runScan(scenario.dbPath, scenario.planId, "wf-repeat-resumed", "complete", {
+      workflowRunId: scenario.workflow.id,
+      keywords: ["RAG", "Agent"],
+      resumeBatchId: persistedBatchId
+    });
+    assertExit(resumed, 0, "second workflow entry");
+    db = storage.openDb(scenario.dbPath);
+    try {
+      const afterSecond = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert.strictEqual(afterSecond.platformAccessStartedAt, afterFirst.platformAccessStartedAt);
+      assert(afterSecond.progressRevision >= afterFirst.progressRevision);
+      assert.strictEqual(afterSecond.status, "review_required");
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
+}
+
+function seedScenario(storage, root, localDay, controlState) {
+  const { matchingCardFromProfile } = require("../src/core/matching_card");
+  const fixture = fixtureProfile();
+  const dbPath = path.join(root, "jobs.sqlite");
+  const db = storage.openDb(dbPath);
+  try {
+    const saved = storage.saveProfileAnalysis(db, fixture);
+    const draft = storage.createMatchingCardDraft(db, {
+      profileId: saved.profileId,
+      profileVersionId: saved.profileVersionId,
+      resumeDocumentId: saved.resumeDocumentId,
+      resumeContentHash: fixture.document.contentHash,
+      card: matchingCardFromProfile(fixture.profile),
+      source: "migration"
+    });
+    storage.confirmMatchingCard(db, { profileId: saved.profileId, cardId: draft.id });
+    const workflow = seedWorkflowRun(storage, db, {
+      profileId: saved.profileId,
+      planId: saved.planId,
+      localDay,
+      controlState
+    });
+    return {
+      dbPath,
+      planId: saved.planId,
+      workflow
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function seedWorkflowRun(storage, database, { profileId, planId, localDay, controlState = "none" }) {
+  const now = new Date().toISOString();
+  const workflow = storage.createWorkflowRun(database, {
+    profileId,
+    planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: 35,
+    inventoryCount: 0,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [
+      { word: "RAG", priority: "A", maxCards: 10, maxDetails: 4 },
+      { word: "Agent", priority: "B", maxCards: 10, maxDetails: 4 }
+    ],
+    budget: { maxDetailTotal: 4, browserPageBudget: 20 },
+    planner: {
+      remainingDailyTarget: 70,
+      remainingRunSlots: 2,
+      acquisitionMode: "generated"
+    },
+    modelConfigRevision: "wf-platform-access",
+    createdAt: now
+  });
+  storage.transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "scanning",
+    controlState,
+    updatedAt: now
+  });
+  return storage.getWorkflowRun(database, workflow.id);
 }
 
 function assertExit(result, expected, label) {
@@ -339,6 +549,13 @@ function installOfflineBoundaries() {
       const requested = Array.isArray(options.targetKeys) ? new Set(options.targetKeys) : null;
       const targets = boss.buildBossScanTargets(options).filter((target) => !requested || requested.has(target.targetKey));
       assert(targets.length, "offline adapter received no scan targets");
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-stop-after-first-target") {
+        assert(targets.length >= 2, "workflow stop fixture needs at least two targets");
+        await checkpoint(options, targets[0]);
+        markWorkflowStopRequested();
+        await checkpoint(options, targets[1]);
+        return [];
+      }
       if (process.env.ROLEFLOW_SCAN_E2E_MODE?.startsWith("interrupt")) {
         assert(targets.length >= 2, "interruption fixture needs at least two targets");
         await checkpoint(options, targets[0]);
@@ -373,7 +590,18 @@ function installOfflineBoundaries() {
     if (resolved === modelSettingsPath) return {
       ...modelSettings,
       resolveRuntimeModelConfig: () => ({
-        modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } }
+        revision: "offline-e2e-rev",
+        concurrency: 1,
+        modelConfig: {
+          provider: "mock",
+          providers: {
+            mock: {
+              model: "offline-structured-mock",
+              thinkingMode: "disabled",
+              reasoningEffort: "high"
+            }
+          }
+        }
       })
     };
     return originalLoad.call(this, request, parent, isMain);
@@ -392,6 +620,21 @@ async function checkpoint(options, target) {
     jobs
   });
   return jobs;
+}
+
+function markWorkflowStopRequested() {
+  const storage = require("../src/core/storage");
+  const database = storage.openDb(process.env.ROLEFLOW_SCAN_E2E_DB);
+  try {
+    database.prepare(`
+      UPDATE workflow_runs SET
+        control_state = 'stop_requested',
+        updated_at = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), process.env.ROLEFLOW_SCAN_E2E_WORKFLOW);
+  } finally {
+    database.close();
+  }
 }
 
 function offlineJob(target) {

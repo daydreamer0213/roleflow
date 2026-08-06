@@ -41,6 +41,7 @@ const {
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,
+  recordWorkflowPlatformAccess,
   listReusableJobDetails,
   recordJobRefreshAttempt,
   getLatestJobRefreshAttempt,
@@ -904,6 +905,16 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
+  if (workflowRun && !args.input) {
+    // Exact safe boundary: BOSS readiness and the workflow/scan run are
+    // confirmed and the adapter is about to start its first platform action.
+    // Idempotent: the first timestamp is never rewritten and only the first
+    // write bumps the progress revision.
+    recordWorkflowPlatformAccess(db, {
+      workflowRunId: workflowRun.id,
+      now: new Date().toISOString()
+    });
+  }
   const rawJobs = await adapter.scan({
     input: args.input,
     tabId: browserState?.tabId,
