@@ -347,6 +347,7 @@ class BossSiteAdapter {
 
     const inspected = [];
     const healthy = [];
+    const readErrors = [];
     for (const tab of candidates) {
       try {
         const state = await this.browser.evalValue(tab.id, `(() => {
@@ -383,7 +384,13 @@ class BossSiteAdapter {
         inspected.push(result);
         if (result.isBoss && !result.isLoginPage && !result.isRiskPage && result.loggedIn) healthy.push(result);
       } catch (error) {
-        inspected.push({ tabId: tab.id, url: tab.url || "", error: error.message || String(error) });
+        readErrors.push(error);
+        inspected.push({
+          tabId: tab.id,
+          url: tab.url || "",
+          error: error.message || String(error),
+          errorCode: error?.code || ""
+        });
       }
     }
     if (inspected.some((item) => item.isRiskPage)) {
@@ -403,7 +410,9 @@ class BossSiteAdapter {
       });
       return fallback;
     }
-    if (inspected.some((item) => item.isBoss)) throw bossError("BOSS_LOGIN_REQUIRED", "已找到 BOSS 标签页，但未确认可用登录状态。请在搜索页完成登录后重试。");
+    const successfullyInspected = inspected.filter((item) => !item.error);
+    if (!successfullyInspected.length && readErrors.length) throw selectBossPreflightReadError(readErrors);
+    if (successfullyInspected.some((item) => item.isBoss)) throw bossError("BOSS_LOGIN_REQUIRED", "已找到 BOSS 标签页，但未确认可用登录状态。请在搜索页完成登录后重试。");
     throw bossError("BOSS_TAB_REQUIRED", "Edge 中没有可用的 BOSS 直聘标签页。");
   }
 
@@ -1809,6 +1818,18 @@ function bossError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function selectBossPreflightReadError(errors) {
+  const priority = [
+    "BROWSER_DISCONNECTED",
+    "BROWSER_TIMEOUT",
+    "BROWSER_COMMAND_FAILED",
+    "BOSS_SEARCH_PAGE_LOST",
+    "BOSS_DETAIL_PAGE_LOST"
+  ];
+  return priority.map((code) => errors.find((error) => error?.code === code)).find(Boolean)
+    || errors[0];
 }
 
 function isFatalBrowserError(error) {

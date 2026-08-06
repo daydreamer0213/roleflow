@@ -3,6 +3,7 @@ const { spawnSync } = require("node:child_process");
 
 const tests = [
   "self_check.js",
+  "startup_scripts_smoke.js",
   "scoring_url_smoke.js",
   "browser_transport_smoke.js",
   "browser_readiness_smoke.js",

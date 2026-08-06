@@ -10,7 +10,9 @@ const state = {
   versionRequests: 0,
   edgeNavigateResult: { id: "edge-created-tab" },
   edgeCdpFailureAt: null,
-  edgeCdpDispatchCount: 0
+  edgeCdpDispatchCount: 0,
+  cdpCreatedTargetListed: false,
+  cdpListInvalidAfterCreate: false
 };
 
 const server = http.createServer(async (req, res) => {
@@ -71,13 +73,27 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "bad request" }));
       return;
     }
-    res.end(JSON.stringify([{
+    if (state.cdpListInvalidAfterCreate) {
+      res.end(JSON.stringify({ error: "fixture target list unavailable" }));
+      return;
+    }
+    const pages = [{
       id: "cdp-tab",
       type: "page",
       title: "Jobs",
       url: "https://www.zhipin.com/web/geek/jobs",
       webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-tab"
-    }]));
+    }];
+    if (state.cdpCreatedTargetListed) {
+      pages.push({
+        id: "cdp-created-tab",
+        type: "page",
+        title: "Created",
+        url: "about:blank",
+        webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-created-tab"
+      });
+    }
+    res.end(JSON.stringify(pages));
     return;
   }
 
@@ -215,7 +231,42 @@ async function main() {
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
     assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
 
+    websocket.mode = "close-false-target-persists";
+    websocket.messages.length = 0;
+    const persistentCleanupError = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/persistent-cleanup"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.match(persistentCleanupError.message, /Browser\.getWindowForTarget failed/, "the window identity error must remain the primary cause");
+    assert.match(persistentCleanupError.message, /清理失败/);
+    assert.match(persistentCleanupError.message, /关闭.*标签页/);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+
+    websocket.mode = "close-false-target-disappears";
+    websocket.messages.length = 0;
+    state.cdpCreatedTargetListed = false;
+    const tabRequestsBeforeDisappearedCleanup = state.tabRequests;
+    const disappearedCleanupError = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/disappeared-cleanup"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.match(disappearedCleanupError.message, /Browser\.getWindowForTarget failed/);
+    assert.doesNotMatch(disappearedCleanupError.message, /清理失败/);
+    assert.strictEqual(state.tabRequests, tabRequestsBeforeDisappearedCleanup + 2, "cleanup must re-read targets after closeTarget success=false");
+
+    websocket.mode = "close-false-target-list-invalid";
+    websocket.messages.length = 0;
+    state.cdpListInvalidAfterCreate = false;
+    const unconfirmedCleanupError = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/unconfirmed-cleanup"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.match(unconfirmedCleanupError.message, /Browser\.getWindowForTarget failed/);
+    assert.match(unconfirmedCleanupError.message, /清理失败/);
+    assert.match(unconfirmedCleanupError.message, /无法确认残留标签页是否已关闭/);
+
     websocket.mode = "respond";
+    state.cdpListInvalidAfterCreate = false;
     await cdp.bringToFront("cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
     await cdp.clickAt("cdp-tab", { x: 120, y: 48 });
@@ -315,6 +366,8 @@ function reset(mode) {
   state.edgeNavigateResult = { id: "edge-created-tab" };
   state.edgeCdpFailureAt = null;
   state.edgeCdpDispatchCount = 0;
+  state.cdpCreatedTargetListed = false;
+  state.cdpListInvalidAfterCreate = false;
 }
 
 function installFakeWebSocket() {
@@ -343,15 +396,21 @@ function installFakeWebSocket() {
           if (control.mode === "window-identity-missing"
             || (control.mode === "created-window-identity-missing"
               && payload.params.targetId === "cdp-created-tab")) result = {};
-          else if (control.mode === "created-window-identity-error-close-fails"
+          else if (["created-window-identity-error-close-fails", "close-false-target-persists", "close-false-target-disappears", "close-false-target-list-invalid"].includes(control.mode)
             && payload.params.targetId === "cdp-created-tab") error = { message: "identity query failed" };
           else if (control.mode === "created-window-mismatch" && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
           else result = { windowId: 42 };
         } else if (payload.method === "Target.createTarget") {
           result = { targetId: "cdp-created-tab" };
+          state.cdpCreatedTargetListed = control.mode === "close-false-target-persists";
+          state.cdpListInvalidAfterCreate = control.mode === "close-false-target-list-invalid";
         } else if (payload.method === "Target.closeTarget"
           && control.mode === "created-window-identity-error-close-fails") {
           error = { message: "cleanup failed" };
+        } else if (payload.method === "Target.closeTarget"
+          && ["close-false-target-persists", "close-false-target-disappears", "close-false-target-list-invalid"].includes(control.mode)) {
+          result = { success: false };
+          if (control.mode === "close-false-target-disappears") state.cdpCreatedTargetListed = false;
         } else if (control.mode === "fail-third-dispatch"
           && payload.method === "Input.dispatchMouseEvent"
           && dispatchCount === 3) {

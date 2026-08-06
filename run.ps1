@@ -27,33 +27,33 @@ $Node = Resolve-Node
 $CliArgs = $args
 
 if ($CliArgs.Count -gt 0 -and $CliArgs[0] -eq "check") {
-  & $Node --disable-warning=ExperimentalWarning tests/self_check.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\self_check.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/observability_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\observability_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/model_adapter_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\model_adapter_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/model_settings_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\model_settings_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/model_settings_ui_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\model_settings_ui_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/profile_quality_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\profile_quality_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/screening_quality_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\screening_quality_smoke.js")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & $Node --disable-warning=ExperimentalWarning tests/onboarding_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\onboarding_smoke.js")
   exit $LASTEXITCODE
 }
 
 if ($CliArgs.Count -gt 0 -and $CliArgs[0] -eq "flow-smoke") {
-  & $Node --disable-warning=ExperimentalWarning tests/flow_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\flow_smoke.js")
   exit $LASTEXITCODE
 }
 
 if ($CliArgs.Count -gt 0 -and $CliArgs[0] -eq "ui-smoke") {
-  & $Node --disable-warning=ExperimentalWarning tests/onboarding_smoke.js
+  & $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\onboarding_smoke.js")
   exit $LASTEXITCODE
 }
 
-& $Node --disable-warning=ExperimentalWarning src/cli.js @CliArgs
+& $Node --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "src\cli.js") @CliArgs
 exit $LASTEXITCODE

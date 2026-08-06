@@ -47,6 +47,8 @@ let server;
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
   let inheritedResolutionInput = null;
+  let resumeBrowserReadinessStatus = "ready";
+  const resumeBrowserProbeInputs = [];
   let browserReadiness = {
     status: "login_required",
     ready: false,
@@ -114,6 +116,15 @@ let server;
     logger,
     inheritedContextResolver,
     browserReadinessProbe: async () => ({ ...browserReadiness }),
+    workflowResumeBrowserReadinessProbe: async ({ browserMode, cdpPort }) => {
+      resumeBrowserProbeInputs.push({ browserMode, cdpPort });
+      return {
+        status: resumeBrowserReadinessStatus,
+        ready: resumeBrowserReadinessStatus === "ready",
+        message: `fixture resume ${resumeBrowserReadinessStatus}`,
+        checkedAt: "2099-01-01T00:00:06.000Z"
+      };
+    },
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
@@ -124,6 +135,12 @@ let server;
     }
   });
   const baseUrl = await listen(server);
+
+  const health = await getJson(baseUrl, "/health");
+  assert.strictEqual(health.status, 200);
+  assert.strictEqual(health.body.ok, true);
+  assert.strictEqual(health.body.projectRoot, path.resolve(root));
+  assert.strictEqual(health.body.pid, process.pid);
 
   const loginReadiness = await getJson(baseUrl, "/api/browser-readiness");
   assert.strictEqual(loginReadiness.status, 200);
@@ -142,6 +159,7 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: true, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
+  await assertOutOfOrderBrowserReadinessGate(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -293,6 +311,67 @@ let server;
   assert.match(inheritedInterruptedPage.body, /项目专用 Edge 的 BOSS 搜索页/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
+  const frozenPlanner = workflow.planner;
+  for (const status of [
+    "browser_unavailable",
+    "login_required",
+    "search_page_required",
+    "risk_control"
+  ]) {
+    resumeBrowserReadinessStatus = status;
+    const workflowRowBefore = db.prepare(
+      "SELECT status, updated_at, scan_run_id, scan_batch_id, planner_json FROM workflow_runs WHERE id = ?"
+    ).get(workflow.id);
+    const scanRunCountBefore = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count);
+    const spawnCountBeforeRejectedResume = spawns.length;
+    const rejectedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "portable"
+    });
+    assert.strictEqual(rejectedResume.status, 409);
+    assert.match(rejectedResume.body, new RegExp({
+      browser_unavailable: "BROWSER_UNAVAILABLE",
+      login_required: "BOSS_LOGIN_REQUIRED",
+      search_page_required: "BOSS_SEARCH_PAGE_INVALID",
+      risk_control: "BOSS_RISK_CONTROL"
+    }[status]));
+    assert.strictEqual(spawns.length, spawnCountBeforeRejectedResume);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count), scanRunCountBefore);
+    assert.deepStrictEqual(
+      db.prepare("SELECT status, updated_at, scan_run_id, scan_batch_id, planner_json FROM workflow_runs WHERE id = ?").get(workflow.id),
+      workflowRowBefore
+    );
+    assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "portable", cdpPort: 9222 });
+  }
+
+  const noScanInherited = createWorkflowRun(db, {
+    id: "workflow-inherited-no-scan-preflight",
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2099-01-03",
+    sequence: 1,
+    targetSuccessCount: 1,
+    candidateGap: 0,
+    scanNeeded: false,
+    keywords: workflow.keywords,
+    budget: workflow.budget,
+    planner: frozenPlanner
+  });
+  resumeBrowserReadinessStatus = "login_required";
+  const noScanRowBefore = db.prepare("SELECT status, updated_at FROM workflow_runs WHERE id = ?").get(noScanInherited.id);
+  const rejectedNoScanResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: noScanInherited.id,
+    browserMode: "portable"
+  });
+  assert.strictEqual(rejectedNoScanResume.status, 409);
+  assert.deepStrictEqual(
+    db.prepare("SELECT status, updated_at FROM workflow_runs WHERE id = ?").get(noScanInherited.id),
+    noScanRowBefore,
+    "read-only browser preflight must happen before a no-scan workflow changes state"
+  );
+  db.prepare("DELETE FROM workflow_runs WHERE id = ?").run(noScanInherited.id);
+
+  resumeBrowserReadinessStatus = "ready";
   const spawnCountBeforePortableResume = spawns.length;
   const portableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
@@ -303,7 +382,6 @@ let server;
   assert.strictEqual(spawns.length, spawnCountBeforePortableResume + 1);
   spawns.at(-1).child.emit("error", new Error("portable resume fixture"));
 
-  const frozenPlanner = workflow.planner;
   const resolutionCountBeforeMalformedResume = inheritedResolutionCount;
   for (const acquisitionMode of [undefined, "future-mode"]) {
     const malformedPlanner = { ...frozenPlanner };
@@ -460,7 +538,7 @@ let server;
     budget: { maxDetailTotal: 10, browserPageBudget: 2 },
     planner: {
       ...frozenPlanner,
-      browserMode: undefined,
+      browserMode: "edge",
       cdpPort: undefined
     }
   });
@@ -474,6 +552,17 @@ let server;
   const legacyPage = await getText(baseUrl, `/workflow?runId=${legacyInherited.id}`);
   assert.match(legacyPage.body, /name="browserMode" value="edge"/);
   assert.match(legacyPage.body, /旧版当前 Edge/);
+  resumeBrowserReadinessStatus = "login_required";
+  const spawnCountBeforeLegacyPreflight = spawns.length;
+  const rejectedLegacyResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: legacyInherited.id,
+    browserMode: "edge"
+  });
+  assert.strictEqual(rejectedLegacyResume.status, 409);
+  assert.match(rejectedLegacyResume.body, /BOSS_LOGIN_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforeLegacyPreflight);
+  assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: 9222 });
+  resumeBrowserReadinessStatus = "ready";
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
   const batchId = validInheritedResumeBatchId;
@@ -983,6 +1072,71 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
   assert.strictEqual(intervalMs, 5000);
   assert.strictEqual(button.disabled, expectedDisabled);
   assert.strictEqual(formSubmitCalls, 0);
+}
+
+async function assertOutOfOrderBrowserReadinessGate(readinessScript) {
+  const requests = [];
+  let intervalCallback = null;
+  const button = {
+    dataset: { browserBaseDisabled: "false" },
+    disabled: true
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) { return selector === "[data-browser-readiness-button]" ? button : null; }
+    },
+    fetch() {
+      const request = deferred();
+      requests.push(request);
+      return request.promise;
+    },
+    setInterval(callback) {
+      intervalCallback = callback;
+      return 1;
+    }
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(button.disabled, true);
+
+  button.disabled = false;
+  const newerRequest = intervalCallback();
+  assert.strictEqual(requests.length, 2);
+  assert.strictEqual(button.disabled, true, "each readiness request must fail closed before awaiting its response");
+
+  requests[1].resolve(readinessResponse("risk_control"));
+  await newerRequest;
+  assert.strictEqual(statusNode.dataset.status, "risk_control");
+  assert.strictEqual(button.disabled, true);
+
+  requests[0].resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.strictEqual(statusNode.dataset.status, "risk_control", "an older ready response must not replace newer risk control");
+  assert.strictEqual(button.disabled, true, "an older ready response must not re-enable the workflow button");
+}
+
+function readinessResponse(status) {
+  return {
+    ok: true,
+    json: async () => ({ status, message: `fixture ${status}` })
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushPromises() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 async function postForm(baseUrl, pathname, body) {

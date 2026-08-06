@@ -10,6 +10,7 @@ const BROWSER_READINESS_MESSAGES = Object.freeze({
 const CODE_TO_STATUS = Object.freeze({
   BROWSER_DISCONNECTED: "browser_unavailable",
   BROWSER_TIMEOUT: "browser_unavailable",
+  BROWSER_COMMAND_FAILED: "browser_unavailable",
   BOSS_TAB_REQUIRED: "boss_tab_missing",
   BOSS_LOGIN_REQUIRED: "login_required",
   BOSS_RISK_CONTROL: "risk_control",

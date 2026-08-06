@@ -9,15 +9,29 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RunScript = Join-Path $ProjectRoot "run.ps1"
+. (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
 
 function Test-Dashboard {
   param([int]$DashboardPort)
   try {
     $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:$DashboardPort/health" -TimeoutSec 2
-    return $health.ok -eq $true
   } catch {
     return $false
   }
+  $listenerPid = Get-RoleFlowListenerPid -Port $DashboardPort
+  if ($health.ok -ne $true -or
+      $null -eq $listenerPid -or
+      $null -eq $health.pid -or
+      [int]$health.pid -ne [int]$listenerPid -or
+      [string]::IsNullOrWhiteSpace([string]$health.projectRoot)) {
+    throw "Dashboard identity check failed on port ${DashboardPort}: health identity or listener PID is missing or mismatched."
+  }
+  $expectedRoot = Resolve-RoleFlowNormalizedPath -Path $ProjectRoot
+  $actualRoot = Resolve-RoleFlowNormalizedPath -Path ([string]$health.projectRoot)
+  if (-not [string]::Equals($expectedRoot, $actualRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Dashboard identity check failed on port ${DashboardPort}: listener belongs to another project, not the current project."
+  }
+  return $true
 }
 
 & (Join-Path $PSScriptRoot "install.ps1") -CheckOnly
@@ -32,11 +46,11 @@ if (-not (Test-Dashboard -DashboardPort $Port)) {
   $arguments = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", $RunScript,
+    "-File", ('"{0}"' -f $RunScript),
     "dashboard",
     "--port", [string]$Port
   )
-  Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+  Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null
   $deadline = (Get-Date).AddSeconds(15)
   do {
     Start-Sleep -Milliseconds 300

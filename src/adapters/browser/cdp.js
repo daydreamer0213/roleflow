@@ -77,10 +77,33 @@ class CdpBrowserAdapter {
       }
       return targetId;
     } catch (error) {
+      let closeResult = null;
+      let closeError = null;
       try {
-        await this.browserCommand("Target.closeTarget", { targetId });
-      } catch {
-        // Preserve the primary identity-verification error if best-effort cleanup also fails.
+        closeResult = await this.browserCommand("Target.closeTarget", { targetId });
+      } catch (cleanupError) {
+        closeError = cleanupError;
+      }
+      if (closeResult?.success !== true) {
+        try {
+          const targets = await this.requestJson("/json/list");
+          if (!Array.isArray(targets)) {
+            throw browserError("BROWSER_COMMAND_FAILED", "CDP target list response is not an array.");
+          }
+          const stillExists = targets.some((target) => String(target?.id || "") === String(targetId));
+          if (stillExists) appendTargetCleanupFailure(error, {
+            targetId,
+            closeResult,
+            closeError
+          });
+        } catch (confirmationError) {
+          appendTargetCleanupFailure(error, {
+            targetId,
+            closeResult,
+            closeError,
+            confirmationError
+          });
+        }
       }
       throw error;
     }
@@ -248,6 +271,26 @@ function browserError(code, message, cause) {
   const error = cause ? new Error(message, { cause }) : new Error(message);
   error.code = code;
   return error;
+}
+
+function appendTargetCleanupFailure(primaryError, {
+  targetId,
+  closeResult = null,
+  closeError = null,
+  confirmationError = null
+}) {
+  const detail = confirmationError
+    ? `无法确认残留标签页是否已关闭：${confirmationError.message || confirmationError}`
+    : closeError
+      ? `Target.closeTarget 失败：${closeError.message || closeError}`
+      : `Target.closeTarget 返回 success=${String(closeResult?.success)}`;
+  const guidance = "请在项目专用 Edge 中手动关闭本次残留标签页；如出现额外窗口，也请关闭多余窗口后重新运行 Start.bat。";
+  primaryError.message = `${primaryError.message}\n\n清理失败：${detail}。${guidance}`;
+  primaryError.cleanupError = {
+    code: "BROWSER_TARGET_CLEANUP_FAILED",
+    targetId: String(targetId || ""),
+    message: detail
+  };
 }
 
 function positiveTimeout(value) {

@@ -147,13 +147,24 @@ function createDashboardBrowser({ browserMode, cdpPort }) {
 }
 
 function createDashboardBrowserReadinessProbe({ logger }) {
-  return async () => {
-    const browser = new CdpBrowserAdapter({ port: PORTABLE_CDP_PORT });
-    const adapter = new boss.BossSiteAdapter({ browser, logger });
-    return inspectBossBrowserReadiness({
-      preflight: () => adapter.preflight()
-    });
-  };
+  return () => inspectDashboardBossBrowserReadiness({
+    browserMode: "portable",
+    cdpPort: PORTABLE_CDP_PORT,
+    logger
+  });
+}
+
+async function inspectDashboardBossBrowserReadiness({
+  browserMode,
+  cdpPort,
+  logger,
+  browserFactory = createDashboardBrowser
+}) {
+  const browser = browserFactory({ browserMode, cdpPort });
+  const adapter = new boss.BossSiteAdapter({ browser, logger });
+  return inspectBossBrowserReadiness({
+    preflight: () => adapter.preflight()
+  });
 }
 
 function publicBrowserReadinessSnapshot(readiness) {
@@ -188,10 +199,12 @@ function resolveNewInheritedBrowser(input = {}) {
   return { browserMode, cdpPort };
 }
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext, browserReadinessProbe = null }) {
+function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext, browserReadinessProbe = null, workflowResumeBrowserReadinessProbe = null }) {
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
     || createDashboardBrowserReadinessProbe({ logger });
+  const resolvedWorkflowResumeBrowserReadinessProbe = workflowResumeBrowserReadinessProbe
+    || ((authority) => inspectDashboardBossBrowserReadiness({ ...authority, logger }));
   const resolvedWorkflowHealth = {
     getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
     buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
@@ -235,7 +248,14 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
-      if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, logging: "enabled" });
+      if (req.method === "GET" && url.pathname === "/health") {
+        return sendJson(res, 200, {
+          ok: true,
+          logging: "enabled",
+          projectRoot: path.resolve(root),
+          pid: process.pid
+        });
+      }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
         const readiness = await resolvedBrowserReadinessProbe();
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
@@ -262,7 +282,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady(), logger, requestId, spawnProcess, inheritedContextResolver });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
       if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
     } catch (error) {
@@ -1291,7 +1311,8 @@ async function handleWorkflowRunResume(req, res, {
   scanRuns,
   logger,
   requestId,
-  spawnProcess
+  spawnProcess,
+  browserReadinessProbe
 }) {
   let workflowRunId = "";
   try {
@@ -1348,6 +1369,13 @@ async function handleWorkflowRunResume(req, res, {
         planId: workflow.planId
       });
     }
+    if (acquisitionMode === "inherited") {
+      const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({
+        browserMode,
+        cdpPort
+      }));
+      assertWorkflowResumeBrowserReady(readiness);
+    }
     if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
       if (workflow.scanNeeded) {
         assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
@@ -1378,6 +1406,18 @@ async function handleWorkflowRunResume(req, res, {
       fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
     });
   }
+}
+
+function assertWorkflowResumeBrowserReady(readiness) {
+  if (readiness.ready && readiness.status === "ready") return;
+  const code = {
+    browser_unavailable: "BROWSER_UNAVAILABLE",
+    boss_tab_missing: "BOSS_TAB_REQUIRED",
+    login_required: "BOSS_LOGIN_REQUIRED",
+    search_page_required: "BOSS_SEARCH_PAGE_INVALID",
+    risk_control: "BOSS_RISK_CONTROL"
+  }[readiness.status] || "BROWSER_READINESS_INVALID";
+  throw appError(code, readiness.message, { statusCode: 409 });
 }
 
 function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
@@ -2594,15 +2634,20 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       const button = document.querySelector('[data-browser-readiness-button]');
       if (!statusNode || !button) return;
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
+      let readinessGeneration = 0;
       async function refreshReadiness() {
+        const generation = ++readinessGeneration;
+        button.disabled = true;
         try {
           const response = await fetch('/api/browser-readiness', {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
+          if (generation !== readinessGeneration) return;
           statusNode.textContent = state.message || '浏览器状态未知。';
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
+          if (generation !== readinessGeneration) return;
           statusNode.textContent = '无法确认项目专用 Edge 状态，请检查本地服务。';
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;

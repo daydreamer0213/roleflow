@@ -10,6 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
 
 function Resolve-ProjectPath {
   param([string]$Value)
@@ -50,11 +51,15 @@ function Get-CdpVersion {
   }
 }
 
-$ProfilePath = Resolve-ProjectPath -Value $ProfileDir
+$ProfilePath = Resolve-RoleFlowNormalizedPath -Path (Resolve-ProjectPath -Value $ProfileDir)
 $Version = Get-CdpVersion
 
 if ($null -eq $Version -and $CheckOnly) {
   throw "Portable Edge CDP is not running on port $Port."
+}
+
+if ($null -ne $Version) {
+  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath)
 }
 
 if ($null -eq $Version) {
@@ -65,13 +70,13 @@ if ($null -eq $Version) {
     "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=$Port",
     "--remote-allow-origins=*",
-    "--user-data-dir=$ProfilePath",
+    ('"--user-data-dir={0}"' -f $ProfilePath),
     "--no-first-run",
     "--no-default-browser-check",
     $StartUrl
   )
 
-  Start-Process -FilePath $ResolvedEdgePath -ArgumentList $Args | Out-Null
+  Start-Process -FilePath $ResolvedEdgePath -ArgumentList $Args -WorkingDirectory $ProjectRoot | Out-Null
 
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
@@ -82,6 +87,7 @@ if ($null -eq $Version) {
   if ($null -eq $Version) {
     throw "Started Edge, but CDP did not become ready on port $Port."
   }
+  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath)
 }
 
 Write-Host "Portable Edge CDP: healthy"
