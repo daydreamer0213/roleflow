@@ -101,6 +101,15 @@ const db = openDb(dbPath);
     coreRequirementScoreSmoke();
     decisionMatrixSmoke();
     nonCentralMissingGuardSmoke();
+    const isolatedReply = await new MockModelAdapter().draftMessageGroup({
+      messages: [{ text: "什么时候可以到岗？" }],
+      facts: [
+        { key: "employment_status", value: "在职" },
+        { key: "availability_date", value: "2026-08-15" }
+      ]
+    });
+    assert.strictEqual(isolatedReply.messageCategory, "availability");
+    assert.strictEqual(isolatedReply.messages[0], "mock message reply draft");
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
