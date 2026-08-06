@@ -60,6 +60,7 @@ const tests = [
   "message_preview_state_smoke.js",
   "message_discovery_smoke.js",
   "message_reply_contract_smoke.js",
+  "dashboard_message_discovery_smoke.js",
   "activity_status_smoke.js",
   "data_visibility_smoke.js",
   "screening_quality_smoke.js",
