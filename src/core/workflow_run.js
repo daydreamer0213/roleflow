@@ -11,6 +11,7 @@ const {
   setCommunicationBatchStatus,
   communicationBatchSummary
 } = require("./communication_batches");
+const { workflowRunConsumesSlot } = require("./workflow_control");
 
 const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 
@@ -129,6 +130,10 @@ function consumedWorkflowBudget(runs = []) {
       pages: sum.pages + nonNegativeInteger(reservePlannedBudget ? run?.budget?.browserPageBudget : access.pages)
     };
   }, { details: 0, pages: 0 });
+}
+
+function countSlotConsumingRuns(runs = []) {
+  return (Array.isArray(runs) ? runs : []).filter(workflowRunConsumesSlot).length;
 }
 
 function scanInterval(input, policy) {
@@ -488,6 +493,7 @@ module.exports = {
   planWorkflowRun,
   selectKeywords,
   consumedWorkflowBudget,
+  countSlotConsumingRuns,
   recoverWorkflowRuns,
   communicationWorkflowMetrics
 };

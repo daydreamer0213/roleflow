@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const {
   chinaLocalDay,
   planWorkflowRun,
-  consumedWorkflowBudget
+  consumedWorkflowBudget,
+  countSlotConsumingRuns
 } = require("../src/core/workflow_run");
 
 function fixture(overrides = {}) {
@@ -160,5 +161,34 @@ assert.deepStrictEqual(consumedWorkflowBudget([
     metrics: { access: { details: 4, pages: 1, scrolls: 2 } }
   }
 ]), { details: 124, pages: 9 });
+
+const slotRuns = [
+  { status: "stopped" },
+  { status: "stopped", platformAccessStartedAt: "2026-07-21T01:00:00.000Z" },
+  { status: "stopped", metrics: { access: { details: 1, pages: 0, scrolls: 0 } } },
+  { status: "completed" },
+  { status: "failed" },
+  { status: "paused" },
+  { status: "interrupted" },
+  { status: "created" }
+];
+assert.strictEqual(countSlotConsumingRuns(slotRuns), 4);
+assert.strictEqual(countSlotConsumingRuns([{ status: "stopped" }, { status: "paused" }]), 0);
+assert.strictEqual(countSlotConsumingRuns([]), 0);
+const twoSlotRuns = [
+  { status: "stopped", platformAccessStartedAt: "2026-07-21T01:00:00.000Z" },
+  { status: "completed" },
+  { status: "paused" },
+  { status: "stopped" }
+];
+assert.strictEqual(countSlotConsumingRuns(twoSlotRuns), 2);
+assert.strictEqual(
+  planWorkflowRun(fixture({ completedRuns: countSlotConsumingRuns(twoSlotRuns) })).errorCode,
+  null
+);
+assert.strictEqual(
+  planWorkflowRun(fixture({ completedRuns: countSlotConsumingRuns(twoSlotRuns) + 1 })).errorCode,
+  "WORKFLOW_DAILY_RUN_LIMIT"
+);
 
 console.log("workflow_planner_smoke ok");
