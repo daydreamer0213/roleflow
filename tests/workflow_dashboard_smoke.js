@@ -159,7 +159,7 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: true, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
-  await assertOutOfOrderBrowserReadinessGate(readinessScript);
+  await assertSerializedSlowBrowserReadinessGate(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -1074,9 +1074,10 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
   assert.strictEqual(formSubmitCalls, 0);
 }
 
-async function assertOutOfOrderBrowserReadinessGate(readinessScript) {
+async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
   const requests = [];
   let intervalCallback = null;
+  let intervalMs = null;
   const button = {
     dataset: { browserBaseDisabled: "false" },
     disabled: true
@@ -1092,29 +1093,37 @@ async function assertOutOfOrderBrowserReadinessGate(readinessScript) {
       requests.push(request);
       return request.promise;
     },
-    setInterval(callback) {
+    setInterval(callback, interval) {
       intervalCallback = callback;
+      intervalMs = interval;
       return 1;
     }
   });
   new vm.Script(readinessScript).runInContext(context);
   assert.strictEqual(requests.length, 1);
   assert.strictEqual(button.disabled, true);
+  assert.strictEqual(intervalMs, 5000);
 
-  button.disabled = false;
-  const newerRequest = intervalCallback();
-  assert.strictEqual(requests.length, 2);
-  assert.strictEqual(button.disabled, true, "each readiness request must fail closed before awaiting its response");
-
-  requests[1].resolve(readinessResponse("risk_control"));
-  await newerRequest;
-  assert.strictEqual(statusNode.dataset.status, "risk_control");
-  assert.strictEqual(button.disabled, true);
+  const overlappingTick = intervalCallback();
+  assert.strictEqual(
+    requests.length,
+    1,
+    "a 5000ms timer tick must not start another readiness request while the first is still in flight"
+  );
+  await overlappingTick;
 
   requests[0].resolve(readinessResponse("ready"));
   await flushPromises();
-  assert.strictEqual(statusNode.dataset.status, "risk_control", "an older ready response must not replace newer risk control");
-  assert.strictEqual(button.disabled, true, "an older ready response must not re-enable the workflow button");
+  assert.strictEqual(statusNode.dataset.status, "ready", "a slow first response must still update the status");
+  assert.strictEqual(button.disabled, false, "a slow ready response must still enable an otherwise eligible workflow");
+
+  const nextRequest = intervalCallback();
+  assert.strictEqual(requests.length, 2, "the next timer tick may start only after the first request completes");
+  assert.strictEqual(button.disabled, true, "each readiness request must fail closed before awaiting its response");
+  requests[1].resolve(readinessResponse("risk_control"));
+  await nextRequest;
+  assert.strictEqual(statusNode.dataset.status, "risk_control");
+  assert.strictEqual(button.disabled, true);
 }
 
 function readinessResponse(status) {

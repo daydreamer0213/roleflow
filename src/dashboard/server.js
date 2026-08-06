@@ -2634,23 +2634,24 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       const button = document.querySelector('[data-browser-readiness-button]');
       if (!statusNode || !button) return;
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
-      let readinessGeneration = 0;
+      let readinessInFlight = false;
       async function refreshReadiness() {
-        const generation = ++readinessGeneration;
+        if (readinessInFlight) return;
+        readinessInFlight = true;
         button.disabled = true;
         try {
           const response = await fetch('/api/browser-readiness', {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
-          if (generation !== readinessGeneration) return;
           statusNode.textContent = state.message || '浏览器状态未知。';
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
-          if (generation !== readinessGeneration) return;
           statusNode.textContent = '无法确认项目专用 Edge 状态，请检查本地服务。';
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;
+        } finally {
+          readinessInFlight = false;
         }
       }
       refreshReadiness();

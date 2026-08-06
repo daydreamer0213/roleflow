@@ -18,26 +18,47 @@ const tempRoot = fs.mkdtempSync(path.join(tempParent, "RoleFlow startup smoke ")
 const projectRoot = path.join(tempRoot, "project with spaces");
 const outsideCwd = path.join(tempRoot, "outside cwd");
 const children = new Set();
+const processRegistry = new Map();
 
-main()
+runSmoke()
   .then(() => console.log("startup_scripts_smoke ok"))
   .catch((error) => {
     console.error(error.stack || error.message);
     process.exitCode = 1;
-  })
-  .finally(async () => {
-    for (const child of children) stopChild(child);
-    await waitForPortClosed(8787, 5000).catch(() => {});
-    await waitForPortClosed(9222, 5000).catch(() => {});
-    const expectedPrefix = path.join(tempParent, "RoleFlow startup smoke ");
-    assert(
-      path.resolve(tempRoot).startsWith(path.resolve(expectedPrefix)),
-      `refusing to remove unexpected startup smoke directory: ${tempRoot}`
-    );
-    fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+async function runSmoke() {
+  let primaryError = null;
+  try {
+    await main();
+  } catch (error) {
+    primaryError = error;
+  }
+
+  let cleanupError = null;
+  try {
+    await cleanupResources();
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  if (primaryError && cleanupError) {
+    throw new AggregateError(
+      [primaryError, cleanupError],
+      `${primaryError.message}\nCleanup failure: ${cleanupError.message}`,
+      { cause: primaryError }
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+}
+
 async function main() {
+  const cleanupProbe = process.env.ROLEFLOW_STARTUP_CLEANUP_PROBE || "";
+  if (cleanupProbe === "aggregate") {
+    throw new Error("STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE");
+  }
+
   assert(fs.existsSync(powershell), "Windows PowerShell 5.1 is required for startup script tests");
   fs.mkdirSync(projectRoot, { recursive: true });
   fs.mkdirSync(outsideCwd, { recursive: true });
@@ -45,11 +66,17 @@ async function main() {
 
   await assertPortFree(8787);
   await assertPortFree(9222);
+  if (cleanupProbe === "processes") {
+    await runIntentionalCleanupProcessProbe();
+    return;
+  }
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
   await testForeignDashboardIdentityRejected();
   await testForeignCdpIdentityRejected();
   await testPortableEdgeProfileArgumentWithSpaces();
+  await testFailurePathCleansStartedProcesses();
+  testCleanupFailureIsAggregated();
 }
 
 function createProjectFixture() {
@@ -119,11 +146,15 @@ async function testWorkspaceStartupFromSpacePath() {
   const dashboard = records.find((item) => item.command === "dashboard");
   const workspaceTabs = records.find((item) => item.command === "workspace-tabs");
   assert(dashboard, "dashboard command did not reach the fixture project CLI");
+  registerProcess(dashboard.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
   assert(workspaceTabs, "workspace-tabs command did not reach the fixture project CLI");
   assert.strictEqual(normalizePath(dashboard.cwd), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(dashboard.projectRoot), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(workspaceTabs.projectRoot), normalizePath(projectRoot));
-  stopPid(dashboard.pid);
+  await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(8787);
 }
 
@@ -147,7 +178,7 @@ async function testForeignDashboardIdentityRejected() {
     });
     assert.notStrictEqual(result.status, 0, `${mode} health listener must be rejected`);
     assert.match(combinedOutput(result), /identity|current project|listener PID/i);
-    stopChild(child);
+    await stopChild(child);
     await waitForPortClosed(8787);
   }
 }
@@ -166,7 +197,7 @@ async function testForeignCdpIdentityRejected() {
   });
   assert.notStrictEqual(result.status, 0, "a foreign CDP responder must be rejected");
   assert.match(combinedOutput(result), /msedge|identity|listener PID/i);
-  stopChild(foreign);
+  await stopChild(foreign);
   await waitForPortClosed(9222);
 
   const edgeExe = compileEdgeStub();
@@ -195,7 +226,7 @@ async function testForeignCdpIdentityRejected() {
     });
     assert.notStrictEqual(result.status, 0, "an msedge listener with incomplete or foreign authority must be rejected");
     assert.match(combinedOutput(result), /profile|address|identity/i);
-    stopChild(edge);
+    await stopChild(edge);
     await waitForPortClosed(9222);
   }
 }
@@ -219,14 +250,132 @@ async function testPortableEdgeProfileArgumentWithSpaces() {
   await waitForFile(recordPath);
   const lines = fs.readFileSync(recordPath, "utf8").split(/\r?\n/).filter(Boolean);
   const pid = Number(lines[0]);
+  registerProcess(pid, {
+    kind: "edge",
+    expectedCommandFragment: edgeExe
+  });
   const cwd = lines[1];
   const args = lines.slice(2);
   assert.strictEqual(normalizePath(cwd), normalizePath(projectRoot));
   assert(args.includes("--remote-debugging-address=127.0.0.1"));
   assert(args.includes("--remote-debugging-port=9222"));
   assert(args.includes(`--user-data-dir=${path.join(projectRoot, ".runtime", "edge-profile")}`));
-  stopPid(pid);
+  await stopRegisteredProcess(pid);
   await waitForPortClosed(9222);
+}
+
+async function runIntentionalCleanupProcessProbe() {
+  const auditPath = process.env.ROLEFLOW_STARTUP_CLEANUP_AUDIT;
+  assert(auditPath, "cleanup process probe requires an audit path");
+
+  const dashboardRecord = path.join(tempRoot, "cleanup-probe-dashboard.jsonl");
+  const dashboardResult = runPowerShell([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", "8787",
+    "-NoBrowser",
+    "-NoOpen"
+  ], {
+    cwd: outsideCwd,
+    env: fixtureEnv({ ROLEFLOW_STARTUP_RECORD: dashboardRecord }),
+    timeout: 30000
+  });
+  assert.strictEqual(dashboardResult.status, 0, combinedOutput(dashboardResult));
+  const dashboard = readJsonLines(dashboardRecord).find((item) => item.command === "dashboard");
+  assert(dashboard, "cleanup process probe did not record the Dashboard PID");
+  registerProcess(dashboard.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
+
+  const edgeExe = compileEdgeStub();
+  const edgeRecord = path.join(tempRoot, "cleanup-probe-edge.txt");
+  const edgeResult = runPowerShell([
+    "-File", path.join(projectRoot, "scripts", "start-portable-edge.ps1"),
+    "-EdgePath", edgeExe,
+    "-Port", "9222",
+    "-ProfileDir", ".runtime\\edge-profile",
+    "-TimeoutSeconds", "8"
+  ], {
+    cwd: outsideCwd,
+    env: fixtureEnv({ ROLEFLOW_EDGE_STUB_RECORD: edgeRecord }),
+    timeout: 15000
+  });
+  assert.strictEqual(edgeResult.status, 0, combinedOutput(edgeResult));
+  await waitForFile(edgeRecord);
+
+  throw new Error("STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE");
+}
+
+async function testFailurePathCleansStartedProcesses() {
+  const auditPath = path.join(tempRoot, "cleanup-probe-audit.jsonl");
+  const result = spawnSync(process.execPath, [__filename], {
+    cwd: outsideCwd,
+    env: fixtureEnv({
+      ROLEFLOW_STARTUP_CLEANUP_PROBE: "processes",
+      ROLEFLOW_STARTUP_CLEANUP_AUDIT: auditPath
+    }),
+    encoding: "utf8",
+    timeout: 60000,
+    windowsHide: true
+  });
+  assert.notStrictEqual(result.status, 0, "the intentional cleanup probe must preserve its primary failure");
+  assert.match(combinedOutput(result), /STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE/);
+  const audited = readJsonLines(auditPath);
+  assert.deepStrictEqual(audited.map((item) => item.kind).sort(), ["dashboard", "edge"]);
+
+  let verificationError = null;
+  try {
+    for (const entry of audited) {
+      await waitForProcessExited(entry.pid, 1500);
+    }
+    await waitForPortClosed(8787, 1500);
+    await waitForPortClosed(9222, 1500);
+  } catch (error) {
+    verificationError = error;
+  }
+
+  const emergencyCleanupErrors = [];
+  for (const entry of audited) {
+    registerProcess(entry.pid, {
+      kind: entry.kind,
+      expectedCommandFragment: entry.expectedCommandFragment,
+      audit: false
+    });
+    await stopRegisteredProcess(entry.pid).catch((error) => emergencyCleanupErrors.push(error));
+  }
+  for (const entry of audited) {
+    await waitForProcessExited(entry.pid, 5000).catch((error) => emergencyCleanupErrors.push(error));
+  }
+  await waitForPortClosed(8787, 5000).catch((error) => emergencyCleanupErrors.push(error));
+  await waitForPortClosed(9222, 5000).catch((error) => emergencyCleanupErrors.push(error));
+
+  if (verificationError && emergencyCleanupErrors.length) {
+    throw new AggregateError(
+      [verificationError, ...emergencyCleanupErrors],
+      `${verificationError.message}; emergency cleanup also failed`
+    );
+  }
+  if (verificationError) throw verificationError;
+  if (emergencyCleanupErrors.length) {
+    throw new AggregateError(emergencyCleanupErrors, "cleanup probe emergency cleanup failed");
+  }
+}
+
+function testCleanupFailureIsAggregated() {
+  const result = spawnSync(process.execPath, [__filename], {
+    cwd: outsideCwd,
+    env: fixtureEnv({
+      ROLEFLOW_STARTUP_CLEANUP_PROBE: "aggregate",
+      ROLEFLOW_STARTUP_FORCE_CLEANUP_FAILURE: "1"
+    }),
+    encoding: "utf8",
+    timeout: 30000,
+    windowsHide: true
+  });
+  const output = combinedOutput(result);
+  assert.notStrictEqual(result.status, 0);
+  assert.match(output, /STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE/);
+  assert.match(output, /STARTUP_CLEANUP_FORCED_FAILURE/);
 }
 
 function compileEdgeStub() {
@@ -253,6 +402,11 @@ function startEdgeStub(edgeExe, args, recordPath) {
     windowsHide: true
   });
   children.add(child);
+  registerProcess(child.pid, {
+    kind: "edge",
+    expectedCommandFragment: edgeExe,
+    child
+  });
   return child;
 }
 
@@ -264,6 +418,11 @@ function startNodeServer(script, args) {
     windowsHide: true
   });
   children.add(child);
+  registerProcess(child.pid, {
+    kind: "node-stub",
+    expectedCommandFragment: script,
+    child
+  });
   return child;
 }
 
@@ -315,22 +474,205 @@ function normalizePath(value) {
   return path.resolve(String(value || "")).replace(/[\\/]+$/, "").toLowerCase();
 }
 
-function stopChild(child) {
-  if (!child || child.exitCode !== null) {
-    if (child) children.delete(child);
-    return;
+function registerProcess(pid, {
+  kind,
+  expectedCommandFragment,
+  child = null,
+  audit = true
+}) {
+  const processId = Number(pid);
+  if (!Number.isInteger(processId) || processId <= 0) {
+    throw new Error(`cannot register invalid ${kind || "fixture"} PID: ${pid}`);
   }
-  try {
-    child.kill();
-  } catch {}
-  children.delete(child);
+  const expected = String(expectedCommandFragment || "").trim();
+  if (!expected) {
+    throw new Error(`cannot register fixture PID ${processId} without an expected command identity`);
+  }
+  const existing = processRegistry.get(processId);
+  if (existing) {
+    if (child) existing.child = child;
+    return existing;
+  }
+  const entry = {
+    pid: processId,
+    kind: String(kind || "fixture"),
+    expectedCommandFragment: expected,
+    child
+  };
+  processRegistry.set(processId, entry);
+  const auditPath = process.env.ROLEFLOW_STARTUP_CLEANUP_AUDIT;
+  if (audit && auditPath) {
+    fs.appendFileSync(auditPath, `${JSON.stringify({
+      kind: entry.kind,
+      pid: entry.pid,
+      expectedCommandFragment: entry.expectedCommandFragment
+    })}\n`, "utf8");
+  }
+  return entry;
 }
 
-function stopPid(pid) {
-  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return;
+async function stopChild(child) {
+  if (!child) return;
+  const entry = processRegistry.get(Number(child.pid));
+  if (!entry) {
+    throw new Error(`direct fixture child ${child.pid} was not registered`);
+  }
+  await stopRegisteredProcess(entry.pid);
+}
+
+async function stopRegisteredProcess(pid) {
+  const processId = Number(pid);
+  const entry = processRegistry.get(processId);
+  if (!entry) throw new Error(`fixture PID ${pid} is not registered`);
+  if (!isProcessRunning(processId)) {
+    processRegistry.delete(processId);
+    if (entry.child) children.delete(entry.child);
+    return;
+  }
+
+  const identity = readWindowsProcessIdentity(processId);
+  if (!identity && !isProcessRunning(processId)) {
+    processRegistry.delete(processId);
+    if (entry.child) children.delete(entry.child);
+    return;
+  }
+  const identityText = `${identity?.executablePath || ""}\n${identity?.commandLine || ""}`.toLowerCase();
+  if (!identityText.includes(entry.expectedCommandFragment.toLowerCase())) {
+    throw new Error(
+      `refusing to terminate PID ${processId}: process identity does not match registered ${entry.kind} fixture`
+    );
+  }
+
+  process.kill(processId);
+  await waitForProcessExited(processId, 5000);
+  processRegistry.delete(processId);
+  if (entry.child) children.delete(entry.child);
+}
+
+function readWindowsProcessIdentity(pid) {
+  const processId = Number(pid);
+  const script = [
+    `$item = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${processId}" -ErrorAction SilentlyContinue`,
+    "if ($null -ne $item) {",
+    "  [pscustomobject]@{ executablePath = [string]$item.ExecutablePath; commandLine = [string]$item.CommandLine } | ConvertTo-Json -Compress",
+    "}"
+  ].join("\n");
+  const result = spawnSync(powershell, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script
+  ], {
+    encoding: "utf8",
+    timeout: 10000,
+    windowsHide: true
+  });
+  if (result.error) {
+    throw new Error(`failed to inspect registered fixture PID ${processId}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`failed to inspect registered fixture PID ${processId}: ${combinedOutput(result)}`);
+  }
+  const output = String(result.stdout || "").trim();
+  return output ? JSON.parse(output) : null;
+}
+
+async function cleanupResources() {
+  const cleanupErrors = [];
   try {
-    process.kill(Number(pid));
-  } catch {}
+    recoverRecordedProcesses();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  for (const child of children) {
+    if (processRegistry.has(Number(child.pid))) continue;
+    cleanupErrors.push(new Error(`direct fixture child ${child.pid} was not registered`));
+  }
+  for (const entry of [...processRegistry.values()]) {
+    try {
+      await stopRegisteredProcess(entry.pid);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  for (const port of [8787, 9222]) {
+    try {
+      await waitForPortClosed(port, 5000);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (process.env.ROLEFLOW_STARTUP_FORCE_CLEANUP_FAILURE === "1") {
+    cleanupErrors.push(new Error("STARTUP_CLEANUP_FORCED_FAILURE"));
+  }
+
+  try {
+    const expectedPrefix = path.join(tempParent, "RoleFlow startup smoke ");
+    assert(
+      path.resolve(tempRoot).startsWith(path.resolve(expectedPrefix)),
+      `refusing to remove unexpected startup smoke directory: ${tempRoot}`
+    );
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  if (cleanupErrors.length) {
+    throw new AggregateError(
+      cleanupErrors,
+      `STARTUP_CLEANUP_FAILED: ${cleanupErrors.map((error) => error.message).join(" | ")}`
+    );
+  }
+}
+
+function recoverRecordedProcesses() {
+  if (!fs.existsSync(tempRoot)) return;
+  for (const filePath of listFilesRecursively(tempRoot)) {
+    const filename = path.basename(filePath).toLowerCase();
+    if (filename.endsWith(".jsonl")) {
+      for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean)) {
+        let record;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (record.expectedCommandFragment && record.pid) {
+          registerProcess(record.pid, {
+            kind: record.kind || "recovered-fixture",
+            expectedCommandFragment: record.expectedCommandFragment
+          });
+        } else if (record.command === "dashboard" && record.pid && record.scriptPath) {
+          registerProcess(record.pid, {
+            kind: "dashboard",
+            expectedCommandFragment: record.scriptPath
+          });
+        }
+      }
+      continue;
+    }
+    if (filename.endsWith(".txt") && filename.includes("edge")) {
+      const pid = Number(fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean)[0]);
+      if (Number.isInteger(pid) && pid > 0) {
+        registerProcess(pid, {
+          kind: "edge",
+          expectedCommandFragment: path.join(tempRoot, "edge stub with spaces", "msedge.exe")
+        });
+      }
+    }
+  }
+}
+
+function listFilesRecursively(directory) {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...listFilesRecursively(fullPath));
+    else if (entry.isFile()) files.push(fullPath);
+  }
+  return files;
 }
 
 async function assertPortFree(port) {
@@ -375,6 +717,24 @@ async function waitForPortClosed(port, timeoutMs = 5000) {
       return false;
     }
   }, timeoutMs, `port ${port} did not close`);
+}
+
+async function waitForProcessExited(pid, timeoutMs = 5000) {
+  await waitFor(
+    () => !isProcessRunning(pid),
+    timeoutMs,
+    `process ${pid} did not exit`
+  );
+}
+
+function isProcessRunning(pid) {
+  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitFor(predicate, timeoutMs, failureMessage) {
