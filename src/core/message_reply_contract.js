@@ -29,7 +29,10 @@ function validateMessageReply(value, context = {}) {
   const requiredStates = normalized.requiredFactKeys.map((key) => {
     const fact = validFacts.get(key);
     if (!fact) return { key, status: "missing" };
-    if (isStableFactKey(key) && !stableSubjectMatches(key, fact, context)) {
+    if (isStableFactKey(key) && !stableFactMatchesScope(key, fact)) {
+      return { key, status: "missing" };
+    }
+    if (isStableFactKey(key) && !requestedSubjectMatches(key, context)) {
       return { key, status: "missing" };
     }
     return { key, status: factStatus(now, fact).status };
@@ -166,13 +169,22 @@ function isStableFactKey(key) {
   return STABLE_FACT_PREFIXES.some((prefix) => String(key || "").startsWith(prefix));
 }
 
-function stableSubjectMatches(key, fact, context) {
+function stableFactMatchesScope(key, fact) {
+  const subject = stableSubjectFromKey(key);
+  return String(fact.key || "") === key
+    || String(fact.subjectKey || "") === subject;
+}
+
+function requestedSubjectMatches(key, context) {
   const requestedSubjects = Array.isArray(context.requestedSubjectKeys)
     ? context.requestedSubjectKeys
     : [];
   if (!requestedSubjects.length) return true;
-  const factSubject = String(fact.subjectKey || "");
-  return requestedSubjects.some((subject) => String(subject) === factSubject);
+  return requestedSubjects.some((subject) => String(subject) === stableSubjectFromKey(key));
+}
+
+function stableSubjectFromKey(key) {
+  return String(key || "").split(".").slice(1).join(".");
 }
 
 function stringArray(value, name) {

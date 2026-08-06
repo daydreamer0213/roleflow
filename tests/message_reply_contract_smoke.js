@@ -113,6 +113,19 @@ async function main() {
     }, { facts: stableFacts, now: NOW, requestedSubjectKeys: ["2025-01_2025-06"] }),
     (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED"
   );
+  assert.throws(
+    () => validateMessageReply({
+      messageCategory: "qualification",
+      requiredFactKeys: ["gap.2025-01_2025-06"],
+      usedFactKeys: ["gap.2025-01_2025-06"],
+      responseItems: [{ id: "gap.2025-01_2025-06", kind: "statement", required: true }],
+      coverage: [{ responseItemId: "gap.2025-01_2025-06", covered: true }],
+      missingFact: null,
+      messages: ["wrong scoped draft"]
+    }, { facts: stableFacts, now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_FACT_NOT_SUPPLIED",
+    "a required stable scoped key must not reuse a fact from a different subject period"
+  );
 
   const analyzer = createMessageReplyAnalyzer({ adapter: new MockModelAdapter() });
   const messages = [{ messageKey: "sha256:" + "a".repeat(64), text: "什么时候可以到岗？" }];
