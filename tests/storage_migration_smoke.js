@@ -8,6 +8,7 @@ const MATCHING_CARD_VERSION = 5;
 const DURABLE_WORKFLOW_VERSION = 6;
 const CANDIDATE_PROGRESS_VERSION = 7;
 const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
+const MESSAGE_PREVIEW_VERSION = 9;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -27,10 +28,11 @@ try {
       { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1", backup_path: null },
       { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1", backup_path: null },
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1", backup_path: null },
-      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null }
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null },
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_progress_event_idempotency");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_preview_states_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -68,8 +70,12 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_preview_states'").get().n,
+    1
+  );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MESSAGE_PREVIEW_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -99,7 +105,8 @@ try {
       { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1" },
       { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1" },
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1" },
-      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" }
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" },
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -125,6 +132,10 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_preview_states'").get().n,
     1
   );
   db.close();

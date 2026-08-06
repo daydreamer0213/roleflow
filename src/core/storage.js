@@ -635,6 +635,20 @@ CREATE INDEX IF NOT EXISTS idx_candidate_progress_events_card
   ON candidate_progress_events(card_id, occurred_at);
 `;
 
+const MESSAGE_PREVIEW_STATES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_preview_states (
+  profile_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  preview_digest TEXT NOT NULL,
+  preview_kind TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(profile_id, platform, conversation_key),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -710,6 +724,13 @@ const MIGRATIONS = [
           SELECT RAISE(ABORT, 'candidate progress event idempotency required');
         END;
       `);
+    }
+  },
+  {
+    version: 9,
+    name: "message_preview_states_v1",
+    apply(db) {
+      db.exec(MESSAGE_PREVIEW_STATES_SCHEMA);
     }
   }
 ];
