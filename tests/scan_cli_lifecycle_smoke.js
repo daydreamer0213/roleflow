@@ -7,11 +7,13 @@ const {
   resolveScanTerminalStatus,
   resolveScanLimit,
   persistRefreshAttempt,
-  assertScanLimitOverridesAllowed
+  assertScanLimitOverridesAllowed,
+  assertWorkflowScanControl
 } = require("../src/cli");
 const {
   openDb,
   createBatch,
+  createWorkflowRun,
   beginScanRun,
   getScanRun,
   getSiteScanLease,
@@ -19,6 +21,7 @@ const {
   recordScanTargetResult,
   upsertJob,
   listReportJobs,
+  transitionWorkflowRun,
   getLatestJobRefreshAttempt
 } = require("../src/core/storage");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
@@ -52,6 +55,7 @@ async function main() {
   terminalAggregationSmoke();
   scanLimitSmoke();
   refreshCheckpointSmoke();
+  workflowScanControlSmoke();
 }
 
 async function completedRunSmoke() {
@@ -253,6 +257,44 @@ function refreshCheckpointSmoke() {
   }, { batchId: failedBatchId }), /injected refresh checkpoint failure/);
   assert.strictEqual(getLatestJobRefreshAttempt(db, failedJobId), null);
   db.exec("DROP TRIGGER fail_refresh_observation");
+}
+
+function workflowScanControlSmoke() {
+  const now = new Date().toISOString();
+  const profileId = Number(db.prepare(`
+    INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at)
+    VALUES ('Workflow Control Candidate', '{}', NULL, ?, ?)
+  `).run(now, now).lastInsertRowid);
+  const planId = Number(db.prepare(`
+    INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
+    VALUES (?, 'Workflow Control Plan', '{}', NULL, 1, ?, ?)
+  `).run(profileId, now, now).lastInsertRowid);
+  const workflow = createWorkflowRun(db, {
+    profileId,
+    planId,
+    localDay: "2026-09-10",
+    sequence: 1,
+    targetSuccessCount: 35,
+    successfulCount: 0,
+    inventoryCount: 0,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [{ word: "RAG", priority: "A" }],
+    budget: { maxDetailTotal: 120, browserPageBudget: 20 },
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 }
+  });
+  assert.doesNotThrow(() => assertWorkflowScanControl(db, workflow.id));
+  assert.doesNotThrow(() => assertWorkflowScanControl(db, "missing-workflow"));
+  transitionWorkflowRun(db, { id: workflow.id, status: "scanning", controlState: "pause_requested" });
+  assert.throws(
+    () => assertWorkflowScanControl(db, workflow.id),
+    (error) => error.code === "WORKFLOW_PAUSE_REQUESTED"
+  );
+  transitionWorkflowRun(db, { id: workflow.id, status: "scanning", controlState: "stop_requested" });
+  assert.throws(
+    () => assertWorkflowScanControl(db, workflow.id),
+    (error) => error.code === "WORKFLOW_STOP_REQUESTED"
+  );
 }
 
 function refreshJob(sourceId, description) {

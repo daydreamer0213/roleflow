@@ -7,7 +7,7 @@ const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
 const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("./adapters/sites/boss");
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
-const { createJobAnalysisRunner } = require("./core/job_analysis");
+const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
 const {
   CITY_CODES,
@@ -72,7 +72,7 @@ const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
 const { createLogger, errorMeta, workflowLogContext } = require("./core/observability");
-const { resolveRuntimeModelConfig } = require("./core/model_settings");
+const { resolveRuntimeModelConfig, resolveRuntimeBatchBackup } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
@@ -458,9 +458,21 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
     profile: args.profile,
     resumeVersions: args["resume-versions"]
   });
-  configs.model = args["force-mock"] === true
-    ? offlineMockModelConfig()
-    : resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
+  let primaryState;
+  let backupState;
+  if (args["force-mock"] === true) {
+    primaryState = { revision: "force-mock", concurrency: 1, modelConfig: offlineMockModelConfig() };
+    backupState = null;
+    configs.model = offlineMockModelConfig();
+  } else {
+    primaryState = resolveRuntimeModelConfig({
+      root: ROOT,
+      fallbackModelConfig: configs.model,
+      taskProfile: "batch_screening"
+    });
+    backupState = resolveRuntimeBatchBackup({ root: ROOT, fallbackModelConfig: configs.model });
+    configs.model = primaryState.modelConfig;
+  }
   let planRecord = null;
   let matchingContext = null;
   if (args.plan) {
@@ -862,8 +874,10 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       jobCount: result.jobCount,
       checkpointed
     });
+    if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
   };
 
+  if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
   const rawJobs = await adapter.scan({
     input: args.input,
     tabId: browserState?.tabId,
@@ -916,44 +930,24 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       && !["BOSS_DETAIL_SAFETY_LIMIT", "BOSS_DETAIL_FAIR_SHARE_PENDING"].includes(job.detailErrorCode)).length
   };
   if (detailCoverage) scanLogger.info("boss_detail_coverage", { batchId, ...detailCoverage });
-  const analysisCandidates = new Map();
-  if (resumeBatchId) {
-    for (const job of listReportJobs(db, { batchId, limit: 10000 })) {
-      if (job.analysis?.semanticStatus === "pending" || job.analysis?.decisionSource === "analysis_pending") {
-        analysisCandidates.set(job.sourceId || job.url || String(job.id), job);
+  let jobsToAnalyze;
+  if (workflowRun) {
+    if (args.input) {
+      for (const raw of rawJobs) upsertJob(db, checkpointScannedJob(raw, configs), batchId);
+    }
+    jobsToAnalyze = listReportJobs(db, { batchId, limit: 10000 });
+  } else {
+    const analysisCandidates = new Map();
+    if (resumeBatchId) {
+      for (const job of listReportJobs(db, { batchId, limit: 10000 })) {
+        if (job.analysis?.semanticStatus === "pending" || job.analysis?.decisionSource === "analysis_pending") {
+          analysisCandidates.set(job.sourceId || job.url || String(job.id), job);
+        }
       }
     }
+    for (const job of rawJobs) analysisCandidates.set(job.sourceId || job.url, job);
+    jobsToAnalyze = [...analysisCandidates.values()];
   }
-  for (const job of rawJobs) analysisCandidates.set(job.sourceId || job.url, job);
-  const jobsToAnalyze = [...analysisCandidates.values()];
-  if (workflowRun) {
-    const access = workflowAccessUsage(db, execution?.runId || workflowRun.scanRunId);
-    transitionWorkflowRun(db, {
-      id: workflowRun.id,
-      status: "analyzing",
-      metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0, access })
-    });
-  }
-  scanLogger.info("job_analysis_started", { batchId, jobCount: jobsToAnalyze.length, analysisConcurrency, resumedPending: Math.max(0, jobsToAnalyze.length - rawJobs.length) });
-  const analyzedJobs = await mapWithConcurrency(jobsToAnalyze, analysisConcurrency, (raw) => {
-    assertScanActive(signal);
-    return analyzeScannedJob(raw, { configs, analyzeJob });
-  });
-  assertScanActive(signal);
-  let saved = 0;
-  for (const job of analyzedJobs) {
-    upsertJob(db, job, batchId);
-    saved += 1;
-  }
-  scanLogger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
-  const report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
-  scanLogger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
-  console.log(`导入 ${saved} 个岗位`);
-  if (detailCoverage) {
-    console.log(`详情覆盖：应读 ${detailCoverage.detailRequired}，成功 ${detailCoverage.detailRead}，待补 ${detailCoverage.detailPending}；左栏明确排除 ${detailCoverage.hardFiltered}`);
-  }
-  console.log(`Markdown: ${report.mdPath}`);
-  console.log(`HTML: ${report.htmlPath}`);
   const targetSummary = executionSnapshot
     ? summarizeResumePlan(executionSnapshot, listLatestScanTargetResults(db, batchId))
     : null;
@@ -961,18 +955,52 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   const defaultStopCode = finalStatus === "partial"
     ? "SCAN_TARGETS_PARTIAL"
     : finalStatus === "failed" ? "SCAN_TARGETS_FAILED" : "";
+  scanLogger.info("job_analysis_started", { batchId, jobCount: jobsToAnalyze.length, analysisConcurrency, resumedPending: Math.max(0, jobsToAnalyze.length - rawJobs.length) });
+
+  let workflowAnalysisSummary = null;
+  let report = null;
   if (workflowRun) {
-    const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
     const access = workflowAccessUsage(db, execution?.runId || workflowRun.scanRunId);
-    const metrics = workflowMetrics({ detailCoverage, rawJobs, analyzed: analyzedJobs.length, saved, inventoryCount, access });
-    if (finalStatus === "completed") {
-      transitionWorkflowRun(db, {
-        id: workflowRun.id,
-        status: "review_required",
+    assertScanActive(signal);
+    workflowAnalysisSummary = await runWorkflowAnalysisPhase(db, {
+      workflowRun,
+      batchId,
+      jobsToAnalyze,
+      configs,
+      keywordPlan,
+      logger: scanLogger,
+      signal,
+      modelRuntimes: { primary: primaryState, backup: backupState },
+      analyzeScannedJob: (raw, { configs: runtimeConfigs, analyzeJob }) => analyzeScannedJob(raw, {
+        configs: { ...configs, model: runtimeConfigs?.model || configs.model },
+        analyzeJob
+      }),
+      metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0, access }),
+      reviewIfDrained: finalStatus === "completed",
+      renderReports: (phaseDb, phaseBatchId, { counts }) => {
+        const savedCount = counts.succeeded + counts.skipped;
+        report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), path.join(ROOT, "reports"));
+        scanLogger.info("scan_completed", {
+          batchId: phaseBatchId,
+          saved: savedCount,
+          reportMarkdown: path.basename(report.mdPath),
+          reportHtml: path.basename(report.htmlPath)
+        });
+        console.log(`导入 ${savedCount} 个岗位`);
+        console.log(`Markdown: ${report.mdPath}`);
+        console.log(`HTML: ${report.htmlPath}`);
+      }
+    });
+    if (workflowAnalysisSummary.status === "drained" && finalStatus !== "completed") {
+      const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
+      const metrics = workflowMetrics({
+        detailCoverage,
+        rawJobs,
+        analyzed: workflowAnalysisSummary.succeeded + workflowAnalysisSummary.skipped,
+        saved: workflowAnalysisSummary.succeeded + workflowAnalysisSummary.skipped,
         inventoryCount,
-        metrics
+        access
       });
-    } else {
       transitionWorkflowRun(db, {
         id: workflowRun.id,
         status: "interrupted",
@@ -982,6 +1010,26 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
         errorMessage: scanSummary?.fatalErrorMessage || "scan did not complete all planned targets"
       });
     }
+  } else {
+    const analyzedJobs = await mapWithConcurrency(jobsToAnalyze, analysisConcurrency, (raw) => {
+      assertScanActive(signal);
+      return analyzeScannedJob(raw, { configs, analyzeJob });
+    });
+    assertScanActive(signal);
+    let saved = 0;
+    for (const job of analyzedJobs) {
+      upsertJob(db, job, batchId);
+      saved += 1;
+    }
+    scanLogger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
+    report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
+    scanLogger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
+    console.log(`导入 ${saved} 个岗位`);
+    console.log(`Markdown: ${report.mdPath}`);
+    console.log(`HTML: ${report.htmlPath}`);
+  }
+  if (detailCoverage) {
+    console.log(`详情覆盖：应读 ${detailCoverage.detailRequired}，成功 ${detailCoverage.detailRead}，待补 ${detailCoverage.detailPending}；左栏明确排除 ${detailCoverage.hardFiltered}`);
   }
   return {
     status: finalStatus,
@@ -1213,6 +1261,24 @@ function assertScanActive(signal) {
   const error = new Error("扫描已中止。");
   error.code = "SCAN_ABORTED";
   throw error;
+}
+
+function assertWorkflowScanControl(db, workflowRunId) {
+  if (!workflowRunId) return;
+  const run = getWorkflowRun(db, workflowRunId);
+  if (!run) return;
+  if (run.controlState === "pause_requested") {
+    throw codedError(
+      "WORKFLOW_PAUSE_REQUESTED",
+      "workflow pause requested at a safe scan boundary; checkpoint preserved"
+    );
+  }
+  if (run.controlState === "stop_requested") {
+    throw codedError(
+      "WORKFLOW_STOP_REQUESTED",
+      "workflow stop requested at a safe scan boundary; checkpoint preserved"
+    );
+  }
 }
 
 function normalizeScanTerminalStatus(status) {
@@ -1763,5 +1829,6 @@ module.exports = {
   assertScanLimitOverridesAllowed,
   workflowMetrics,
   workflowAccessUsage,
-  resolveAnalysisConcurrency
+  resolveAnalysisConcurrency,
+  assertWorkflowScanControl
 };

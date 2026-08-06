@@ -19,6 +19,7 @@ const tests = [
   "batch_state_consistency_smoke.js",
   "scan_cli_lifecycle_smoke.js",
   "workflow_scan_smoke.js",
+  "workflow_scan_analysis_smoke.js",
   "scan_end_to_end_recovery_smoke.js",
   "storage_migration_smoke.js",
   "matching_card_smoke.js",

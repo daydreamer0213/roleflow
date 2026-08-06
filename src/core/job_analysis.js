@@ -2,7 +2,19 @@ const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
 const { explainJobMatch } = require("./match_explainer");
 const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
-const { getModelCache, saveModelCache, sourceContentHash } = require("./storage");
+const {
+  getModelCache,
+  saveModelCache,
+  sourceContentHash,
+  transitionWorkflowRun,
+  getWorkflowRun
+} = require("./storage");
+const { runWorkflowAnalysis } = require("./workflow_analysis_executor");
+const {
+  initializeWorkflowJobTasks,
+  countWorkflowJobTaskStatusesForRun
+} = require("./workflow_analysis_tasks");
+const { listWorkflowInventory } = require("./workflow_inventory");
 const { decisionState } = require("./scoring");
 const { PIPELINE_VERSIONS, buildAnalysisRevision, modelInferenceVersion } = require("./analysis_revision");
 const { deriveMatrixDecision } = require("./four_tier_decision");
@@ -13,7 +25,15 @@ const {
   capRecommendationTier
 } = require("./decision_policy");
 
-function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyzer: injectedAnalyzer = null, logger = null } = {}) {
+function createJobAnalysisRunner(configs, keywordPlan = [], {
+  db = null,
+  analyzer: injectedAnalyzer = null,
+  logger = null,
+  errorMode = "result"
+} = {}) {
+  if (!["result", "throw"].includes(errorMode)) {
+    throw new Error(`createJobAnalysisRunner errorMode must be "result" or "throw", got ${errorMode}`);
+  }
   const analyzer = injectedAnalyzer || createLlmAnalyzer({ modelConfig: configs.model, logger });
   const provider = configs.model?.provider || "mock";
   const ruleOnly = !injectedAnalyzer && provider === "mock";
@@ -27,7 +47,19 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
     const revision = buildAnalysisRevision(configs, contentHash);
     if (ruleOnly) return createRuleOnlyAnalysis(configs, job, ruleMatch, revision);
     if (!candidateProfile || typeof candidateProfile !== "object") {
-      return failedAnalysis(configs, job, revision, Object.assign(new Error("候选人画像不存在，无法执行语义匹配。"), { code: "CANDIDATE_PROFILE_REQUIRED" }));
+      const missingProfileError = Object.assign(
+        new Error("候选人画像不存在，无法执行语义匹配。"),
+        { code: "CANDIDATE_PROFILE_REQUIRED" }
+      );
+      if (errorMode === "throw") {
+        logger?.warn("job_analysis_failed", {
+          jobId: job.sourceId || job.url || "",
+          errorCode: missingProfileError.code,
+          errorMessage: missingProfileError.message
+        });
+        throw missingProfileError;
+      }
+      return failedAnalysis(configs, job, revision, missingProfileError);
     }
 
     try {
@@ -66,9 +98,125 @@ function createJobAnalysisRunner(configs, keywordPlan = [], { db = null, analyze
         errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
         errorMessage: error?.message || String(error)
       });
+      if (errorMode === "throw") {
+        if (!error.stage && error.modelStage) error.stage = error.modelStage;
+        if (!error.phase && error.modelPhase) error.phase = error.modelPhase;
+        throw error;
+      }
       return applyRuleGuard(failedAnalysis(configs, job, revision, error), job);
     }
   };
+}
+
+async function runWorkflowAnalysisPhase(db, input = {}) {
+  const workflowRun = input.workflowRun;
+  const runId = String(workflowRun?.id || "").trim();
+  if (!runId) {
+    throw workflowPhaseError(
+      "WORKFLOW_PHASE_RUN_ID_REQUIRED",
+      "runWorkflowAnalysisPhase requires workflowRun.id"
+    );
+  }
+  const batchId = Number(input.batchId);
+  if (!Number.isInteger(batchId) || batchId <= 0) {
+    throw workflowPhaseError(
+      "WORKFLOW_PHASE_BATCH_ID_REQUIRED",
+      "runWorkflowAnalysisPhase requires a numeric batchId"
+    );
+  }
+  const jobs = Array.isArray(input.jobsToAnalyze) ? input.jobsToAnalyze : [];
+  const modelRuntimes = input.modelRuntimes && typeof input.modelRuntimes === "object"
+    ? input.modelRuntimes
+    : {};
+  const primaryRuntime = modelRuntimes.primary && typeof modelRuntimes.primary === "object"
+    ? modelRuntimes.primary
+    : {};
+  const backupRuntime = modelRuntimes.backup && typeof modelRuntimes.backup === "object"
+    ? modelRuntimes.backup
+    : null;
+  const logger = input.logger && typeof input.logger === "object" ? input.logger : {};
+  const now = typeof input.now === "function" ? input.now : () => new Date().toISOString();
+  const revision = String(
+    primaryRuntime.revision || workflowRun.modelConfigRevision || "cli-batch-scan"
+  ).trim();
+  const metrics = input.metrics && typeof input.metrics === "object" ? input.metrics : {};
+
+  const entries = jobs
+    .map((job) => ({
+      jobId: Number(job.id ?? job.jobId),
+      observationId: Number(job.observationId ?? job.observation_id)
+    }))
+    .filter((entry) => (
+      Number.isInteger(entry.jobId) && entry.jobId > 0
+      && Number.isInteger(entry.observationId) && entry.observationId > 0
+    ));
+
+  transitionWorkflowRun(db, {
+    id: runId,
+    status: "analyzing",
+    modelConfigRevision: revision,
+    metrics
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: runId,
+    batchId,
+    jobs: entries,
+    modelConfigRevision: revision,
+    now: now()
+  });
+
+  const keywordPlan = Array.isArray(input.keywordPlan) ? input.keywordPlan : [];
+  const summary = await runWorkflowAnalysis({
+    db,
+    workflowRunId: runId,
+    primaryRuntime,
+    backupRuntime,
+    createAnalyzeJob: input.createAnalyzeJob || ((runtime, options) => createJobAnalysisRunner(
+      { ...(input.configs || {}), model: runtime?.modelConfig || input.configs?.model },
+      keywordPlan,
+      { db, logger: options?.logger || logger, errorMode: "throw" }
+    )),
+    analyzeScannedJob: input.analyzeScannedJob || (async (raw, { analyzeJob }) => analyzeJob(raw)),
+    logger,
+    now,
+    sleep: typeof input.sleep === "function" ? input.sleep : undefined,
+    random: typeof input.random === "function" ? input.random : undefined,
+    retryBackoffMs: Array.isArray(input.retryBackoffMs) ? input.retryBackoffMs : undefined,
+    workerIdFactory: typeof input.workerIdFactory === "function" ? input.workerIdFactory : undefined
+  });
+
+  if (summary.status !== "drained") return summary;
+  const counts = countWorkflowJobTaskStatusesForRun(db, runId);
+  if (counts.pending > 0 || counts.running > 0 || counts.retryPending > 0) {
+    throw workflowPhaseError(
+      "WORKFLOW_PHASE_QUEUE_NOT_DRAINED",
+      `workflow ${runId} analysis queue is not drained`
+    );
+  }
+  if (input.reviewIfDrained === false) return summary;
+
+  const inventoryCount = listWorkflowInventory(db, { planId: workflowRun.planId }).length;
+  const reviewedMetrics = {
+    ...metrics,
+    analyzed: counts.succeeded + counts.skipped,
+    saved: counts.succeeded + counts.skipped,
+    inventoryCount,
+    eligible: inventoryCount
+  };
+  const reviewed = transitionWorkflowRun(db, {
+    id: runId,
+    status: "review_required",
+    inventoryCount,
+    metrics: reviewedMetrics
+  });
+  if (typeof input.renderReports === "function") {
+    input.renderReports(db, batchId, { workflow: reviewed, counts });
+  }
+  return summary;
+}
+
+function workflowPhaseError(code, message) {
+  return Object.assign(new Error(message), { code });
 }
 
 function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysisRevision(configs, sourceContentHash(jobFacts(job)))) {
@@ -596,6 +744,7 @@ function resumeVersionName(resumeVersions, id) {
 
 module.exports = {
   createJobAnalysisRunner,
+  runWorkflowAnalysisPhase,
   compactAnalysis,
   createRuleOnlyAnalysis,
   cachedModelCall,
