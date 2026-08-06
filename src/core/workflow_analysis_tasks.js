@@ -31,6 +31,10 @@ const CONFIG_PAUSE_CODES = new Set([
   "MODEL_ENDPOINT_OR_MODEL_NOT_FOUND",
   "MODEL_CONFIGURATION_REQUIRED"
 ]);
+const WORKFLOW_PAUSE_CODES = new Set([
+  "MODEL_AUTH_REQUIRED",
+  "MODEL_CONFIGURATION_REQUIRED"
+]);
 const LEASE_EXPIRED_ERROR_CODE = "LEASE_EXPIRED";
 const LEASE_EXPIRED_ERROR_STAGE = "execution";
 
@@ -378,6 +382,12 @@ function commitWorkflowJobTaskFailure(db, {
   const pauseReason = pauseCode === undefined || pauseCode === null
     ? null
     : String(pauseCode).trim() || null;
+  if (pauseReason && !WORKFLOW_PAUSE_CODES.has(pauseReason)) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_PAUSE_CODE_INVALID",
+      `pauseCode 只允许 MODEL_AUTH_REQUIRED / MODEL_CONFIGURATION_REQUIRED：${pauseReason}`
+    );
+  }
   const stage = errorStage === undefined || errorStage === null
     ? null
     : String(errorStage).trim() || null;

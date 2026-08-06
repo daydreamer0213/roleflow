@@ -14,6 +14,8 @@ try {
   testErrorKindConstants();
   testRetryableCodeMapping();
   testHttpStatusMapping();
+  testStableCodeTakesPriorityOverHttpStatus();
+  testBareAuthHttpStatusMapsToConfiguration();
   testConfigurationPauseMapping();
   testTerminalAndLocalInputMapping();
   testControlledStopMapping();
@@ -22,6 +24,7 @@ try {
   testTelemetryAggregatesCompletedCallsOnly();
   testTelemetryIgnoresUnrelatedEventsAndFields();
   testTelemetryForwardsEveryEvent();
+  testTelemetryForwardingRedactsSensitiveFields();
   testTelemetryChildSharesAccumulator();
   testPrimaryBackupSelection();
   testSelectionDoesNotMutatePrimaryRuntime();
@@ -77,6 +80,43 @@ function testHttpStatusMapping() {
   assert.strictEqual(classifyWorkflowAnalysisError(Object.assign(new Error("404"), { status: 404 })).kind,
     WORKFLOW_ANALYSIS_ERROR_KINDS.TERMINAL);
   assert.strictEqual(classifyWorkflowAnalysisError(Object.assign(new Error("400"), { status: 400 })).retryable, false);
+}
+
+function testStableCodeTakesPriorityOverHttpStatus() {
+  const contract = classifyWorkflowAnalysisError(Object.assign(new Error("contract"), { code: "MODEL_CONTRACT_INVALID", status: 500 }));
+  assert.strictEqual(contract.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.TERMINAL);
+  assert.strictEqual(contract.code, "MODEL_CONTRACT_INVALID");
+  assert.strictEqual(contract.retryable, false);
+
+  const auth = classifyWorkflowAnalysisError(Object.assign(new Error("auth"), { code: "MODEL_AUTH_FAILED", status: 500 }));
+  assert.strictEqual(auth.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.CONFIGURATION);
+  assert.strictEqual(auth.code, "MODEL_AUTH_FAILED");
+  assert.strictEqual(auth.pauseCode, "MODEL_AUTH_REQUIRED");
+
+  const aborted = classifyWorkflowAnalysisError(Object.assign(new Error("aborted"), { code: "SCAN_ABORTED", status: 500 }));
+  assert.strictEqual(aborted.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.CONTROLLED_STOP);
+  assert.strictEqual(aborted.code, "SCAN_ABORTED");
+
+  const timeout = classifyWorkflowAnalysisError(Object.assign(new Error("timeout"), { code: "MODEL_TIMEOUT", status: 500 }));
+  assert.strictEqual(timeout.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.RETRYABLE);
+  assert.strictEqual(timeout.code, "MODEL_TIMEOUT");
+
+  const unknown = classifyWorkflowAnalysisError(Object.assign(new Error("unknown"), { code: "SOME_UNKNOWN_CODE", status: 500 }));
+  assert.strictEqual(unknown.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.RETRYABLE);
+  assert.strictEqual(unknown.code, "HTTP_500");
+  assert.strictEqual(unknown.retryable, true);
+}
+
+function testBareAuthHttpStatusMapsToConfiguration() {
+  for (const status of [401, 403]) {
+    for (const field of ["status", "statusCode", "httpStatus"]) {
+      const result = classifyWorkflowAnalysisError(Object.assign(new Error("auth"), { [field]: status }));
+      assert.strictEqual(result.kind, WORKFLOW_ANALYSIS_ERROR_KINDS.CONFIGURATION, `${field}=${status}`);
+      assert.strictEqual(result.code, "MODEL_AUTH_FAILED", `${field}=${status}`);
+      assert.strictEqual(result.pauseCode, "MODEL_AUTH_REQUIRED", `${field}=${status}`);
+      assert.strictEqual(result.retryable, false, `${field}=${status}`);
+    }
+  }
 }
 
 function testConfigurationPauseMapping() {
@@ -198,16 +238,35 @@ function testTelemetryForwardsEveryEvent() {
   };
   const telemetry = createAttemptTelemetry();
   const logger = createAttemptTelemetryLogger(base, telemetry);
-  const completed = { attempts: 1, usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 }, input: "raw", output: "raw" };
-  const failed = { errorMessage: "boom", attempts: 7 };
+  const completed = {
+    attempts: 1,
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    input: "raw resume input",
+    output: "raw model output"
+  };
+  const failed = { errorMessage: "boom secret", attempts: 7, httpStatus: 500, kind: "matchJob", stage: "analyze" };
   logger.info("model_call_completed", completed);
   logger.warn("model_call_failed", failed);
-  logger.error("executor_worker_crashed", { message: "unexpected" });
-  assert.deepStrictEqual(forwarded, [
-    { level: "info", event: "model_call_completed", data: completed },
-    { level: "warn", event: "model_call_failed", data: failed },
-    { level: "error", event: "executor_worker_crashed", data: { message: "unexpected" } }
-  ]);
+  logger.error("executor_worker_crashed", { message: "unexpected raw stack", stage: "execute" });
+  assert.strictEqual(forwarded.length, 3);
+  assert.strictEqual(forwarded[0].event, "model_call_completed");
+  assert.strictEqual(forwarded[0].data.attempts, 1);
+  assert.deepStrictEqual(forwarded[0].data.usage, { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 });
+  assert.strictEqual(forwarded[0].data.input, "[REDACTED]");
+  assert.strictEqual(forwarded[0].data.output, "[REDACTED]");
+  assert.strictEqual(forwarded[1].event, "model_call_failed");
+  assert.strictEqual(forwarded[1].data.errorMessage, "[REDACTED]");
+  assert.strictEqual(forwarded[1].data.attempts, 7);
+  assert.strictEqual(forwarded[1].data.httpStatus, 500);
+  assert.strictEqual(forwarded[1].data.kind, "matchJob");
+  assert.strictEqual(forwarded[1].data.stage, "analyze");
+  assert.strictEqual(forwarded[2].event, "executor_worker_crashed");
+  assert.strictEqual(forwarded[2].data.message, "[REDACTED]");
+  assert.strictEqual(forwarded[2].data.stage, "execute");
+  assert(!JSON.stringify(forwarded).includes("raw resume input"));
+  assert(!JSON.stringify(forwarded).includes("raw model output"));
+  assert(!JSON.stringify(forwarded).includes("boom secret"));
+  assert(!JSON.stringify(forwarded).includes("unexpected raw stack"));
   assert.deepStrictEqual(telemetry, {
     modelCallCount: 1,
     promptTokens: 3,
@@ -217,6 +276,56 @@ function testTelemetryForwardsEveryEvent() {
 
   const silent = createAttemptTelemetryLogger(null, createAttemptTelemetry());
   silent.info("model_call_completed", { attempts: 4, usage: { prompt_tokens: 9 } });
+}
+
+function testTelemetryForwardingRedactsSensitiveFields() {
+  const forwarded = [];
+  const base = {
+    info: (event, data) => forwarded.push(data),
+    warn: () => {},
+    error: () => {}
+  };
+  const telemetry = createAttemptTelemetry();
+  const logger = createAttemptTelemetryLogger(base, telemetry);
+  logger.info("model_call_completed", {
+    type: "metric",
+    kind: "understandJob",
+    stage: "analyze",
+    attempts: 2,
+    usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+    provider: "openai_compatible",
+    model: "deepseek-v4-flash",
+    httpStatus: 200,
+    latencyMs: 150,
+    time: "2026-08-06T00:00:00.000Z",
+    errorCode: "MODEL_TIMEOUT",
+    input: { resume: "private resume" },
+    output: { analysis: "private output" },
+    prompt: "private prompt",
+    resume: "private resume text",
+    raw: { response: "private response" },
+    request: { body: "private body" },
+    response: "private response text",
+    errorMessage: "private error"
+  });
+  assert.strictEqual(forwarded.length, 1);
+  const safe = forwarded[0];
+  assert.strictEqual(safe.type, "metric");
+  assert.strictEqual(safe.kind, "understandJob");
+  assert.strictEqual(safe.stage, "analyze");
+  assert.strictEqual(safe.attempts, 2);
+  assert.deepStrictEqual(safe.usage, { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 });
+  assert.strictEqual(safe.provider, "openai_compatible");
+  assert.strictEqual(safe.model, "deepseek-v4-flash");
+  assert.strictEqual(safe.httpStatus, 200);
+  assert.strictEqual(safe.latencyMs, 150);
+  assert.strictEqual(safe.time, "2026-08-06T00:00:00.000Z");
+  assert.strictEqual(safe.errorCode, "MODEL_TIMEOUT");
+  for (const key of ["input", "output", "prompt", "resume", "raw", "request", "response", "errorMessage"]) {
+    assert.strictEqual(safe[key], "[REDACTED]", key);
+  }
+  const serialized = JSON.stringify(forwarded);
+  assert(!serialized.includes("private"), serialized);
 }
 
 function testTelemetryChildSharesAccumulator() {

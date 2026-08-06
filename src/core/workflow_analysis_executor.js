@@ -30,30 +30,50 @@ const LOCAL_INPUT_ERROR_CODES = new Set([
 ]);
 
 const FALLBACK_ERROR_CODE = "MODEL_ANALYSIS_FAILED";
+const REDACTED_LABEL = "[REDACTED]";
+
+// Key-based filter applied before forwarding any event context downstream.
+// Never rely on the caller having sanitized the payload already.
+const FORWARD_SENSITIVE_KEY = /^(input|output|prompt|resume|raw|request|response|errorMessage|message|stack|content|body|text|description|preview|note|payload|invalidOutput|error|cause)$/i;
+const FORWARD_SAFE_METRIC_KEY = /^(prompt|completion|total)_tokens$/i;
 
 function classifyWorkflowAnalysisError(error) {
   const code = String(error?.code || "").trim();
   const status = httpStatus(error);
-  if (isRetryableCode(code) || isRetryableHttp(status)) {
-    return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.RETRYABLE, stableCode(code, status), true, null);
+  if (code) {
+    if (isRetryableCode(code)) {
+      return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.RETRYABLE, code, true, null);
+    }
+    if (code === "SCAN_ABORTED") {
+      return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.CONTROLLED_STOP, "SCAN_ABORTED", false, null);
+    }
+    if (CONFIGURATION_PAUSE_CODES.has(code)) {
+      return classification(
+        WORKFLOW_ANALYSIS_ERROR_KINDS.CONFIGURATION,
+        code,
+        false,
+        CONFIGURATION_PAUSE_CODES.get(code)
+      );
+    }
+    if (isTerminalCode(code)) {
+      return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.TERMINAL, code, false, null);
+    }
   }
-  if (code === "SCAN_ABORTED") {
-    return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.CONTROLLED_STOP, "SCAN_ABORTED", false, null);
-  }
-  if (CONFIGURATION_PAUSE_CODES.has(code)) {
+  // Bare or unrecognized errors fall back to HTTP status only.
+  if (status === 401 || status === 403) {
     return classification(
       WORKFLOW_ANALYSIS_ERROR_KINDS.CONFIGURATION,
-      code,
+      "MODEL_AUTH_FAILED",
       false,
-      CONFIGURATION_PAUSE_CODES.get(code)
+      "MODEL_AUTH_REQUIRED"
     );
   }
-  if (isTerminalCode(code)) {
-    return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.TERMINAL, code, false, null);
+  if (isRetryableHttp(status)) {
+    return classification(WORKFLOW_ANALYSIS_ERROR_KINDS.RETRYABLE, `HTTP_${status}`, true, null);
   }
   return classification(
     WORKFLOW_ANALYSIS_ERROR_KINDS.TERMINAL,
-    code || FALLBACK_ERROR_CODE,
+    code || (Number.isFinite(status) ? `HTTP_${status}` : FALLBACK_ERROR_CODE),
     false,
     null
   );
@@ -84,12 +104,6 @@ function isTerminalCode(code) {
   return code === "MODEL_CONTRACT_INVALID" || LOCAL_INPUT_ERROR_CODES.has(code);
 }
 
-function stableCode(code, status) {
-  if (code) return code;
-  if (Number.isFinite(status)) return `HTTP_${status}`;
-  return FALLBACK_ERROR_CODE;
-}
-
 function createAttemptTelemetry() {
   return {
     modelCallCount: 0,
@@ -105,14 +119,14 @@ function createAttemptTelemetryLogger(logger, telemetry) {
 
   function info(event, context) {
     observeCompletedEvent(event, context, aggregate);
-    if (typeof forward.info === "function") return forward.info(event, context);
+    if (typeof forward.info === "function") return forward.info(event, sanitizeForwarded(context));
     return undefined;
   }
 
   return {
     info,
-    warn: (event, context) => (typeof forward.warn === "function" ? forward.warn(event, context) : undefined),
-    error: (event, context) => (typeof forward.error === "function" ? forward.error(event, context) : undefined),
+    warn: (event, context) => (typeof forward.warn === "function" ? forward.warn(event, sanitizeForwarded(context)) : undefined),
+    error: (event, context) => (typeof forward.error === "function" ? forward.error(event, sanitizeForwarded(context)) : undefined),
     child: (context) => createAttemptTelemetryLogger(
       typeof forward.child === "function" ? forward.child(context) : forward,
       aggregate
@@ -134,6 +148,36 @@ function nonNegativeFinite(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.floor(parsed);
+}
+
+function sanitizeForwarded(value, key = "") {
+  if (FORWARD_SAFE_METRIC_KEY.test(key)) return value;
+  if (FORWARD_SENSITIVE_KEY.test(key)) return REDACTED_LABEL;
+  if (value instanceof Error) {
+    return {
+      name: String(value.name || "Error"),
+      code: String(value.code || ""),
+      stage: String(value.stage || ""),
+      statusCode: finiteOrNull(value.statusCode),
+      status: finiteOrNull(value.status),
+      httpStatus: finiteOrNull(value.httpStatus),
+      retryable: typeof value.retryable === "boolean" ? value.retryable : null
+    };
+  }
+  if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeForwarded(item, key));
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).slice(0, 50).map(([name, item]) => [name, sanitizeForwarded(item, name)])
+    );
+  }
+  return String(value);
+}
+
+function finiteOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function selectAttemptRuntime({ attemptInGeneration, primaryRuntime, backupRuntime }) {
