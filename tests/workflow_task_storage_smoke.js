@@ -34,6 +34,9 @@ try {
   testRollbackOnObservationWriteFailure();
   testSkippedCommit();
   testTelemetryWithAndWithoutUsage();
+  testAnalyzedJobSourceMismatchRejected();
+  testModelIdentityMismatchRejected();
+  testStartedAtMismatchRejected();
   testNarrowInsertConflictBehavior();
   testClaimNormalizesNowToUtc();
   testListJobAnalysisAttemptsRejectsInvalidTaskId();
@@ -962,6 +965,255 @@ function testTelemetryWithAndWithoutUsage() {
   assert.strictEqual(withUsage.completionTokens, 50);
   assert.strictEqual(withUsage.totalTokens, 150);
   assert.strictEqual(withUsage.latencyMs, 6000);
+}
+
+function testAnalyzedJobSourceMismatchRejected() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{ semanticStatus: "pending", decisionSource: "scan", note: "before" }],
+    localDay: "2026-08-21",
+    modelConfigRevision: "mrev-source"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-source",
+    now: "2026-08-21T00:00:00.000Z"
+  });
+  const startedAt = "2026-08-21T00:01:00.000Z";
+  const finishedAt = "2026-08-21T00:01:05.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-source",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: startedAt
+  });
+  assert(claimed);
+
+  const mismatchedJob = {
+    ...claimed.job,
+    sourceId: "wrong-source-id",
+    analysis: { semanticStatus: "complete", decisionSource: "model", summary: "must not persist" }
+  };
+  const beforeTask = db.prepare("SELECT * FROM workflow_job_tasks WHERE id = ?").get(claimed.task.id);
+  const beforeAttempt = db.prepare(
+    "SELECT * FROM job_analysis_attempts WHERE task_id = ?"
+  ).get(claimed.task.id);
+  const beforeJobAnalysis = db.prepare("SELECT analysis_json FROM jobs WHERE id = ?")
+    .get(scenario.jobIds[0]).analysis_json;
+  const beforeObservationAnalysis = db.prepare("SELECT analysis_json FROM job_observations WHERE id = ?")
+    .get(claimed.task.observationId).analysis_json;
+  const beforeWorkflow = db.prepare(
+    "SELECT progress_revision, last_activity_at, updated_at FROM workflow_runs WHERE id = ?"
+  ).get(scenario.workflowId);
+
+  const successArgs = {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-source",
+    analyzedJob: mismatchedJob,
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    telemetry: { modelCallCount: 1 },
+    startedAt,
+    finishedAt
+  };
+  assert.throws(
+    () => commitWorkflowJobTaskSuccess(db, successArgs),
+    (error) => error.code === "WORKFLOW_TASK_ANALYZED_JOB_MISMATCH"
+  );
+  assert.strictEqual(
+    db.prepare("SELECT id FROM jobs WHERE source = ? AND source_id = ?")
+      .get("boss", "wrong-source-id"),
+    undefined
+  );
+
+  assert.throws(
+    () => commitWorkflowJobTaskSkipped(db, {
+      taskId: claimed.task.id,
+      leaseOwner: "worker-source",
+      analyzedJob: mismatchedJob,
+      reasonCode: "DETAIL_MISSING",
+      startedAt,
+      finishedAt
+    }),
+    (error) => error.code === "WORKFLOW_TASK_ANALYZED_JOB_MISMATCH"
+  );
+  assert.strictEqual(
+    db.prepare("SELECT id FROM jobs WHERE source = ? AND source_id = ?")
+      .get("boss", "wrong-source-id"),
+    undefined
+  );
+
+  const afterTask = db.prepare("SELECT * FROM workflow_job_tasks WHERE id = ?").get(claimed.task.id);
+  assert.strictEqual(afterTask.status, beforeTask.status);
+  assert.strictEqual(afterTask.lease_owner, beforeTask.lease_owner);
+  assert.strictEqual(afterTask.updated_at, beforeTask.updated_at);
+  const afterAttempt = db.prepare(
+    "SELECT * FROM job_analysis_attempts WHERE task_id = ?"
+  ).get(claimed.task.id);
+  assert.strictEqual(afterAttempt.status, beforeAttempt.status);
+  assert.strictEqual(afterAttempt.updated_at, beforeAttempt.updated_at);
+  assert.strictEqual(
+    db.prepare("SELECT analysis_json FROM jobs WHERE id = ?").get(scenario.jobIds[0]).analysis_json,
+    beforeJobAnalysis
+  );
+  assert.strictEqual(
+    db.prepare("SELECT analysis_json FROM job_observations WHERE id = ?")
+      .get(claimed.task.observationId).analysis_json,
+    beforeObservationAnalysis
+  );
+  const afterWorkflow = db.prepare(
+    "SELECT progress_revision, last_activity_at, updated_at FROM workflow_runs WHERE id = ?"
+  ).get(scenario.workflowId);
+  assert.deepStrictEqual(afterWorkflow, beforeWorkflow);
+
+  const completed = commitWorkflowJobTaskSuccess(db, {
+    ...successArgs,
+    analyzedJob: {
+      ...claimed.job,
+      analysis: { semanticStatus: "complete", decisionSource: "model", summary: "recovered" }
+    }
+  });
+  assert.strictEqual(completed.task.status, "succeeded");
+}
+
+function testModelIdentityMismatchRejected() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}, {}],
+    localDay: "2026-08-22",
+    modelConfigRevision: "mrev-identity"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-identity",
+    now: "2026-08-22T00:00:00.000Z"
+  });
+  const startedAt = "2026-08-22T00:01:00.000Z";
+  const finishedAt = "2026-08-22T00:01:03.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-identity",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: startedAt
+  });
+  assert(claimed);
+  const base = {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-identity",
+    analyzedJob: { ...claimed.job, analysis: { semanticStatus: "complete", decisionSource: "model" } },
+    telemetry: { modelCallCount: 1 },
+    startedAt,
+    finishedAt
+  };
+
+  const wrongModel = modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 });
+  wrongModel.model = "other-model";
+  assert.throws(
+    () => commitWorkflowJobTaskSuccess(db, { ...base, modelIdentity: wrongModel }),
+    (error) => error.code === "WORKFLOW_TASK_MODEL_IDENTITY_MISMATCH"
+  );
+
+  const wrongBackup = modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 });
+  wrongBackup.backupUsed = 1;
+  assert.throws(
+    () => commitWorkflowJobTaskSuccess(db, { ...base, modelIdentity: wrongBackup }),
+    (error) => error.code === "WORKFLOW_TASK_MODEL_IDENTITY_MISMATCH"
+  );
+
+  const afterAttempt = db.prepare(
+    "SELECT * FROM job_analysis_attempts WHERE task_id = ?"
+  ).get(claimed.task.id);
+  assert.strictEqual(afterAttempt.status, "running");
+  assert.strictEqual(afterAttempt.model, "deepseek-v4-flash");
+  assert.strictEqual(afterAttempt.model_config_revision, "revision-1");
+  assert.strictEqual(afterAttempt.thinking_mode, "disabled");
+  assert.strictEqual(afterAttempt.reasoning_effort, "high");
+  assert.strictEqual(afterAttempt.backup_used, 0);
+  assert.strictEqual(afterAttempt.finished_at, null);
+  assert.strictEqual(
+    db.prepare("SELECT progress_revision FROM workflow_runs WHERE id = ?").get(scenario.workflowId).progress_revision,
+    1
+  );
+
+  const partialIdentity = { provider: "deepseek" };
+  const completed = commitWorkflowJobTaskSuccess(db, {
+    ...base,
+    modelIdentity: partialIdentity
+  });
+  assert.strictEqual(completed.task.status, "succeeded");
+  const persistedAttempt = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: claimed.task.id
+  })[0];
+  assert.strictEqual(persistedAttempt.provider, "deepseek");
+  assert.strictEqual(persistedAttempt.model, "deepseek-v4-flash");
+  assert.strictEqual(persistedAttempt.modelConfigRevision, "revision-1");
+  assert.strictEqual(persistedAttempt.thinkingMode, "disabled");
+  assert.strictEqual(persistedAttempt.reasoningEffort, "high");
+  assert.strictEqual(persistedAttempt.backupUsed, 0);
+}
+
+function testStartedAtMismatchRejected() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-23",
+    modelConfigRevision: "mrev-started"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-started",
+    now: "2026-08-23T00:00:00.000Z"
+  });
+  const startedAt = "2026-08-23T00:01:00.000Z";
+  const finishedAt = "2026-08-23T00:01:03.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-started",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: startedAt
+  });
+  assert(claimed);
+  assert.strictEqual(claimed.attempt.startedAt, startedAt);
+
+  const args = {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-started",
+    analyzedJob: { ...claimed.job, analysis: { semanticStatus: "complete", decisionSource: "model" } },
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    telemetry: { modelCallCount: 1 },
+    startedAt: "2026-08-23T00:02:00.000Z",
+    finishedAt
+  };
+  assert.throws(
+    () => commitWorkflowJobTaskSuccess(db, args),
+    (error) => error.code === "WORKFLOW_TASK_STARTED_AT_MISMATCH"
+  );
+  const afterAttempt = db.prepare(
+    "SELECT * FROM job_analysis_attempts WHERE task_id = ?"
+  ).get(claimed.task.id);
+  assert.strictEqual(afterAttempt.status, "running");
+  assert.strictEqual(afterAttempt.started_at, startedAt);
+  assert.strictEqual(afterAttempt.latency_ms, null);
+  assert.strictEqual(
+    db.prepare("SELECT progress_revision FROM workflow_runs WHERE id = ?").get(scenario.workflowId).progress_revision,
+    1
+  );
+
+  const completed = commitWorkflowJobTaskSuccess(db, { ...args, startedAt });
+  assert.strictEqual(completed.task.status, "succeeded");
+  const attempt = listJobAnalysisAttempts(db, {
+    workflowRunId: scenario.workflowId,
+    taskId: claimed.task.id
+  })[0];
+  assert.strictEqual(attempt.startedAt, startedAt);
+  assert.strictEqual(attempt.finishedAt, finishedAt);
+  assert.strictEqual(attempt.latencyMs, 3000);
 }
 
 function testNarrowInsertConflictBehavior() {

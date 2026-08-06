@@ -211,20 +211,23 @@ function commitWorkflowJobTaskSuccess(db, {
         `任务 ${taskIdNum} 没有 running 的尝试记录，无法提交成功`
       );
     }
+    validateAnalyzedJobIdentity(db, taskRow, analyzedJob, "commitWorkflowJobTaskSuccess");
+    validateCommitIdentity(identity, attemptRow);
+    validateStartedAtMatchesAttempt(started, attemptRow);
 
     upsertJob(db, analyzedJob, Number(taskRow.batch_id));
 
     const usage = normalizeTelemetry(telemetry);
-    const latencyMs = latencyBetween(started, finished);
+    const latencyMs = latencyBetween(attemptRow.started_at, finished);
     finishJobAnalysisAttemptRow(db, {
       attemptId: Number(attemptRow.id),
       status: "succeeded",
-      provider: String(identity.provider ?? attemptRow.provider),
-      model: String(identity.model ?? attemptRow.model),
-      modelConfigRevision: String(identity.modelConfigRevision ?? attemptRow.model_config_revision),
-      thinkingMode: String(identity.thinkingMode ?? attemptRow.thinking_mode),
-      reasoningEffort: String(identity.reasoningEffort ?? attemptRow.reasoning_effort),
-      backupUsed: identity.backupUsed ?? attemptRow.backup_used,
+      provider: attemptRow.provider,
+      model: attemptRow.model,
+      modelConfigRevision: attemptRow.model_config_revision,
+      thinkingMode: attemptRow.thinking_mode,
+      reasoningEffort: attemptRow.reasoning_effort,
+      backupUsed: attemptRow.backup_used,
       modelCallCount: usage.modelCallCount,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
@@ -285,9 +288,11 @@ function commitWorkflowJobTaskSkipped(db, {
         `任务 ${taskIdNum} 没有 running 的尝试记录，无法提交跳过`
       );
     }
+    validateStartedAtMatchesAttempt(started, attemptRow);
 
     if (analyzedJob) {
       requireAnalyzedJob(analyzedJob, "commitWorkflowJobTaskSkipped");
+      validateAnalyzedJobIdentity(db, taskRow, analyzedJob, "commitWorkflowJobTaskSkipped");
       upsertJob(db, analyzedJob, Number(taskRow.batch_id));
     }
 
@@ -428,6 +433,57 @@ function requireAnalyzedJob(analyzedJob, caller) {
     throw workflowTaskError(
       "WORKFLOW_TASK_ANALYZED_JOB_INVALID",
       `${caller} 的 analyzedJob 缺少 source/sourceId/title`
+    );
+  }
+}
+
+function validateAnalyzedJobIdentity(db, taskRow, analyzedJob, caller) {
+  const authoritative = getWorkflowObservationJob(db, Number(taskRow.observation_id));
+  if (!authoritative) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_OBSERVATION_NOT_FOUND",
+      `任务 ${taskRow.id} 的固定 observation 不存在，无法校验 analyzedJob`
+    );
+  }
+  const source = String(analyzedJob.source || "");
+  const sourceId = String(analyzedJob.sourceId || "");
+  if (String(authoritative.source || "") !== source || String(authoritative.sourceId || "") !== sourceId) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_ANALYZED_JOB_MISMATCH",
+      `${caller} 的 analyzedJob source/sourceId 与任务固定 job/observation 不一致`
+    );
+  }
+}
+
+function validateCommitIdentity(identity, attemptRow) {
+  const stringFields = [
+    ["provider", "provider"],
+    ["model", "model"],
+    ["modelConfigRevision", "model_config_revision"],
+    ["thinkingMode", "thinking_mode"],
+    ["reasoningEffort", "reasoning_effort"]
+  ];
+  for (const [key, column] of stringFields) {
+    if (identity[key] !== undefined && String(identity[key]) !== String(attemptRow[column])) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_MODEL_IDENTITY_MISMATCH",
+        `modelIdentity.${key} 与 running attempt 已持久化的 ${column} 不一致`
+      );
+    }
+  }
+  if (identity.backupUsed !== undefined && Number(identity.backupUsed) !== Number(attemptRow.backup_used)) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_MODEL_IDENTITY_MISMATCH",
+      "modelIdentity.backupUsed 与 running attempt 已持久化的 backup_used 不一致"
+    );
+  }
+}
+
+function validateStartedAtMatchesAttempt(startedAt, attemptRow) {
+  if (startedAt !== attemptRow.started_at) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_STARTED_AT_MISMATCH",
+      `startedAt 与 running attempt 已持久化的 started_at（${attemptRow.started_at}）不一致`
     );
   }
 }
