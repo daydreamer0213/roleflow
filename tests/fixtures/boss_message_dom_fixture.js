@@ -72,4 +72,4 @@ function createBossMessageDomFixture() {
   };
 }
 
-module.exports = { createBossMessageDomFixture };
+module.exports = { createBossMessageDomFixture, FixtureElement };

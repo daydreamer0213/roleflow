@@ -9,7 +9,7 @@ const {
   BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION,
   BOSS_MESSAGE_SNAPSHOT_EXPRESSION
 } = require("../src/adapters/sites/boss_message_dom");
-const { createBossMessageDomFixture } = require("./fixtures/boss_message_dom_fixture");
+const { createBossMessageDomFixture, FixtureElement } = require("./fixtures/boss_message_dom_fixture");
 
 const documentLike = createBossMessageDomFixture();
 const snapshot = snapshotBossMessagePage(documentLike, "https://www.zhipin.com/web/geek/chat");
@@ -19,6 +19,23 @@ assert.strictEqual(snapshot.companyName, "Fixture Company");
 assert.deepStrictEqual(snapshot.rows.map((row) => row.unread), [true, false, true]);
 assert.match(snapshot.rows[0].conversationKey, /^sha256:[a-f0-9]{64}$/);
 assert.strictEqual(snapshot.rows[0].previewKind, "possible_hr_reply");
+
+const statusDocument = createBossMessageDomFixture();
+statusDocument.querySelectorAll(".friend-content-warp")[0].children[".status-read"] = new FixtureElement({ classes: ["status-read"] });
+const statusSnapshot = snapshotBossMessagePage(statusDocument, "https://www.zhipin.com/web/geek/chat");
+assert.strictEqual(
+  statusSnapshot.rows[0].previewKind,
+  "self_read",
+  "a live-calibrated .status-read row must classify as self_read"
+);
+const deliveredDocument = createBossMessageDomFixture();
+deliveredDocument.querySelectorAll(".friend-content-warp")[0].children[".status-delivery"] = new FixtureElement({ classes: ["status-delivery"] });
+const deliveredSnapshot = snapshotBossMessagePage(deliveredDocument, "https://www.zhipin.com/web/geek/chat");
+assert.strictEqual(
+  deliveredSnapshot.rows[0].previewKind,
+  "self_delivered",
+  "a live-calibrated .status-delivery row must classify as self_delivered"
+);
 assert.deepStrictEqual(snapshot.rows.map((row) => row.transientSignature), [
   safeDigest([0, "Alex Example", "Please share availability", true]),
   safeDigest([1, "Blair Example", "Thanks for the update", false]),

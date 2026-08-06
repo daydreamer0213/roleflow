@@ -43,7 +43,9 @@ function conversationKey(row, label) {
   return safeDigest(["conversation", id ? `id:${id}` : `label:${normalizedText(label)}`]);
 }
 
-function previewKind(value) {
+function previewKind(row, value) {
+  if (row?.querySelector?.(".status-read")) return "self_read";
+  if (row?.querySelector?.(".status-delivery")) return "self_delivered";
   const text = normalizedText(value);
   if (/^\[送达\]/.test(text)) return "self_delivered";
   if (/^\[已读\]/.test(text)) return "self_read";
@@ -111,7 +113,7 @@ function snapshotBossMessagePage(documentLike, locationHref) {
         recruiterKey: recruiterKey(row, lines[0] || ""),
         conversationKey: conversationKey(row, lines[0] || ""),
         previewDigest: safeDigest(["preview", lines.at(-1) || ""]),
-        previewKind: previewKind(lines.at(-1) || "")
+        previewKind: previewKind(row, lines.at(-1) || "")
       };
       return { ...snapshotRow, transientSignature: transientSignature(snapshotRow) };
     });
@@ -182,7 +184,7 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     }
     return hash.map((number) => number.toString(16).padStart(8, "0")).join("");
   };
-  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); }; const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label); const conversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label); const previewKind = (value) => { const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; }; const contentKind = (item) => { if (item.matches(".item-voice")) return "voice"; if (item.matches(".item-image")) return "image"; if (item.matches(".item-attachment")) return "attachment"; return "text"; }; const signature = (row) => "sha256:" + sha256(canonical([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]));
+  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); }; const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label); const conversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label); const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; }; const contentKind = (item) => { if (item.matches(".item-voice")) return "voice"; if (item.matches(".item-image")) return "image"; if (item.matches(".item-attachment")) return "attachment"; return "text"; }; const signature = (row) => "sha256:" + sha256(canonical([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]));
   const visible = (element) => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; };
   window.__bossMessageSnapshot = function() {
     const path = location.pathname;
@@ -191,7 +193,7 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       const bodyText = text(document.body.innerText).slice(0, 3000);
       const risk = /\/web\/passport\/zp\/(?:verify|403)/i.test(path) || new URLSearchParams(location.search).get("code") === "32" || /\u5b89\u5168\u9a8c\u8bc1|\u8bbf\u95ee\u5f02\u5e38|\u884c\u4e3a\u9a8c\u8bc1|\u8bbf\u95ee\u53d7\u9650/.test(document.title || "") || /\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a|\u6682\u65f6\u65e0\u6cd5\u8bbf\u95ee\u6b64\u9875\u9762|\u8bf7\u52ff\u9891\u7e41\u63d0\u4ea4\u5237\u65b0\u8bf7\u6c42/.test(bodyText);
       const login = /\/web\/user\//i.test(path) || Array.from(document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")).some(visible) || /\u6ca1\u6709\u66f4\u591a\u804c\u4f4d.{0,20}\u767b\u5f55\u67e5\u770b\u5168\u90e8\u804c\u4f4d|\u767b\u5f55\u540e\u53ef\u67e5\u770b/.test(bodyText);
-      const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel: rowLines[0] || "", previewText: rowLines.at(-1) || "", recruiterKey: recruiterKey(row, rowLines[0] || ""), conversationKey: conversationKey(row, rowLines[0] || ""), previewDigest: "sha256:" + sha256(canonical(["preview", rowLines.at(-1) || ""])), previewKind: previewKind(rowLines.at(-1) || "") }; return { ...value, transientSignature: signature(value) }; });
+      const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel: rowLines[0] || "", previewText: rowLines.at(-1) || "", recruiterKey: recruiterKey(row, rowLines[0] || ""), conversationKey: conversationKey(row, rowLines[0] || ""), previewDigest: "sha256:" + sha256(canonical(["preview", rowLines.at(-1) || ""])), previewKind: previewKind(row, rowLines.at(-1) || "") }; return { ...value, transientSignature: signature(value) }; });
       const messages = Array.from(document.querySelectorAll(selectors.message)).map((item) => { const messageId = String(item.getAttribute("data-mid") == null ? "" : item.getAttribute("data-mid")); if (!/^\d{15}$/.test(messageId)) throw coded("BOSS_MESSAGE_ID_INVALID", "message id is invalid"); return { direction: item.matches(".item-friend") ? "friend" : item.matches(".item-myself") ? "myself" : "system", messageId, text: text(item.textContent), contentKind: contentKind(item) }; });
       return { path, rows, headerText: lines(document.querySelector(selectors.header)?.innerText)[0] || "", positionName: text(document.querySelector(selectors.position)?.textContent), companyName: text(document.querySelector(selectors.company)?.textContent), salary: text(document.querySelector(selectors.salary)?.textContent), city: text(document.querySelector(selectors.city)?.textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
     } catch (error) {
