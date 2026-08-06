@@ -169,6 +169,9 @@ function resolveUniqueCandidate(candidates, selected) {
   if (conflicts(candidate.city, selected.city)) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_CITY_MISMATCH" };
   }
+  if (conflicts(candidate.company, selected.companyName)) {
+    return { ok: false, reasonCode: "BOSS_MESSAGE_COMPANY_MISMATCH" };
+  }
   const threadKey = safeDigest(["boss", selected.headerText, selected.positionName]);
   if (candidate.threadKey && candidate.threadKey !== threadKey) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_THREAD_MISMATCH" };
@@ -361,6 +364,7 @@ function clearSelectedIdentity(selected) {
   if (!selected || typeof selected !== "object") return;
   selected.headerText = "";
   selected.positionName = "";
+  selected.companyName = "";
   selected.salary = "";
   selected.city = "";
   if (Array.isArray(selected.rows)) {

@@ -217,6 +217,15 @@ async function identityStopsSmoke() {
   });
   assertStopped(summary, "BOSS_MESSAGE_CITY_MISMATCH");
 
+  const company = createFixture({ suffix: "company", title: "Company Engineer" });
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: company.profileId,
+    reader: fakeReader([selectedConversation({ title: company.title, companyName: "Different Company" })]),
+    classifyMessageGroup
+  });
+  assertStopped(summary, "BOSS_MESSAGE_COMPANY_MISMATCH");
+
   const thread = createFixture({ suffix: "thread", title: "Thread Engineer" });
   db.prepare("UPDATE candidate_progress_cards SET thread_key = ? WHERE id = ?")
     .run(safeDigest(["boss", "another recruiter", thread.title]), thread.card.id);
@@ -575,7 +584,8 @@ function createFixture({
   planId = null,
   title,
   salary = "20-30K",
-  city = "Guangzhou"
+  city = "Guangzhou",
+  company = "Fixture Company"
 }) {
   if (!profileId) {
     profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -589,16 +599,17 @@ function createFixture({
   }
   const jobId = Number(db.prepare(`INSERT INTO jobs(
     source, source_id, title, company, location, salary, first_seen_at, last_seen_at
-  ) VALUES ('boss', ?, ?, 'Fixture Company', ?, ?, ?, ?)`)
-    .run(`job-${suffix}`, title, city, salary, NOW, NOW).lastInsertRowid);
+  ) VALUES ('boss', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(`job-${suffix}`, title, company, city, salary, NOW, NOW).lastInsertRowid);
   const card = ensureProgressCard(db, { profileId, planId, jobId, source: "boss", now: NOW });
-  return { profileId, planId, jobId, card, title, salary, city };
+  return { profileId, planId, jobId, card, title, salary, city, company };
 }
 
 function selectedConversation({
   title,
   salary = "20-30K",
   city = "Guangzhou",
+  companyName = "Fixture Company",
   messageId = "123456789012345",
   messages = null
 }) {
@@ -609,6 +620,7 @@ function selectedConversation({
     positionName: title,
     salary,
     city,
+    companyName,
     risk: false,
     login: false,
     rows: [{

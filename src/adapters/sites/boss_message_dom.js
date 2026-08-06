@@ -133,7 +133,7 @@ function snapshotBossMessagePage(documentLike, locationHref) {
       rows,
       headerText: visibleLines(documentLike.querySelector(SELECTORS.header)?.innerText)[0] || "",
       positionName: normalizedText(documentLike.querySelector(SELECTORS.position)?.textContent),
-      companyName: normalizedText(documentLike.querySelector(SELECTORS.company)?.textContent),
+      companyName: readCompanyName(documentLike),
       salary: normalizedText(documentLike.querySelector(SELECTORS.salary)?.textContent),
       city: normalizedText(documentLike.querySelector(SELECTORS.city)?.textContent),
       risk: readExistingBossRiskSignal(documentLike, path, url.search),
@@ -145,6 +145,20 @@ function snapshotBossMessagePage(documentLike, locationHref) {
     if (error?.code === "BOSS_MESSAGE_ID_INVALID" || error?.code === "BOSS_MESSAGE_STRUCTURE_CHANGED") throw error;
     throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message page structure changed");
   }
+}
+
+function readCompanyName(documentLike) {
+  const baseInfo = documentLike.querySelector(".base-info");
+  if (baseInfo && baseInfo.children) {
+    const children = Array.isArray(baseInfo.children)
+      ? baseInfo.children
+      : Object.values(baseInfo.children || {});
+    const companySpan = children.find((child) => child
+      && String(child.tagName || "").toLowerCase() === "span"
+      && !child.matches?.(".base-title"));
+    if (companySpan) return normalizedText(companySpan.textContent);
+  }
+  return normalizedText(documentLike.querySelector(SELECTORS.company)?.textContent);
 }
 
 function buildUnreadConversationQueue(snapshot) {
@@ -191,12 +205,12 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     const path = location.pathname;
     if (path !== "/web/geek/chat") return { state: "snapshot_helper_missing" };
     try {
-      const bodyText = text(document.body.innerText).slice(0, 3000);
+      const baseInfo = document.querySelector(".base-info"); const companySpan = baseInfo ? Array.from(baseInfo.children || []).find((child) => child.tagName === "SPAN" && !child.classList.contains("base-title")) : null; const companyName = companySpan ? text(companySpan.textContent) : text(document.querySelector(selectors.company)?.textContent); const bodyText = text(document.body.innerText).slice(0, 3000);
       const risk = /\/web\/passport\/zp\/(?:verify|403)/i.test(path) || new URLSearchParams(location.search).get("code") === "32" || /\u5b89\u5168\u9a8c\u8bc1|\u8bbf\u95ee\u5f02\u5e38|\u884c\u4e3a\u9a8c\u8bc1|\u8bbf\u95ee\u53d7\u9650/.test(document.title || "") || /\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a|\u6682\u65f6\u65e0\u6cd5\u8bbf\u95ee\u6b64\u9875\u9762|\u8bf7\u52ff\u9891\u7e41\u63d0\u4ea4\u5237\u65b0\u8bf7\u6c42/.test(bodyText);
       const login = /\/web\/user\//i.test(path) || Array.from(document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")).some(visible) || /\u6ca1\u6709\u66f4\u591a\u804c\u4f4d.{0,20}\u767b\u5f55\u67e5\u770b\u5168\u90e8\u804c\u4f4d|\u767b\u5f55\u540e\u53ef\u67e5\u770b/.test(bodyText);
       const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const recruiterLabel = text(row.querySelector(selectors.rowTitle)?.textContent) || rowLines[0] || ""; const previewText = text(row.querySelector(selectors.lastMsg)?.textContent) || rowLines.at(-1) || ""; const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel, previewText, recruiterKey: recruiterKey(row, recruiterLabel), conversationKey: conversationKey(row, recruiterLabel), previewDigest: "sha256:" + sha256(canonical(["preview", previewText])), previewKind: previewKind(row, previewText) }; return { ...value, transientSignature: signature(value) }; });
       const messages = Array.from(document.querySelectorAll(selectors.message)).map((item) => { const messageId = String(item.getAttribute("data-mid") == null ? "" : item.getAttribute("data-mid")); if (!/^\d{15}$/.test(messageId)) throw coded("BOSS_MESSAGE_ID_INVALID", "message id is invalid"); return { direction: item.matches(".item-friend") ? "friend" : item.matches(".item-myself") ? "myself" : "system", messageId, text: text(item.textContent), contentKind: contentKind(item) }; });
-      return { path, rows, headerText: lines(document.querySelector(selectors.header)?.innerText)[0] || "", positionName: text(document.querySelector(selectors.position)?.textContent), companyName: text(document.querySelector(selectors.company)?.textContent), salary: text(document.querySelector(selectors.salary)?.textContent), city: text(document.querySelector(selectors.city)?.textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
+      return { path, rows, headerText: lines(document.querySelector(selectors.header)?.innerText)[0] || "", positionName: text(document.querySelector(selectors.position)?.textContent), companyName, salary: text(document.querySelector(selectors.salary)?.textContent), city: text(document.querySelector(selectors.city)?.textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
     } catch (error) {
       if (error && (error.code === "BOSS_MESSAGE_ID_INVALID" || error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED")) throw error;
       throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message page structure changed");
