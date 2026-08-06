@@ -4,6 +4,10 @@ const os = require("os");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
+const MATCHING_CARD_VERSION = 5;
+const DURABLE_WORKFLOW_VERSION = 6;
+const CANDIDATE_PROGRESS_VERSION = 7;
+const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -20,11 +24,13 @@ try {
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
       { version: 4, name: "workflow_runs_three_slots", backup_path: null },
-      { version: 5, name: "candidate_matching_cards_v1", backup_path: null },
-      { version: 6, name: "durable_workflow_progress_v1", backup_path: null }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1", backup_path: null },
+      { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1", backup_path: null },
+      { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1", backup_path: null },
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "durable_workflow_progress_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_progress_event_idempotency");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -54,8 +60,16 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_workflow_job_tasks_claim'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
+    1
+  );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, 6);
+  assert.strictEqual(SCHEMA_VERSION, CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -82,8 +96,10 @@ try {
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
       { version: 4, name: "workflow_runs_three_slots" },
-      { version: 5, name: "candidate_matching_cards_v1" },
-      { version: 6, name: "durable_workflow_progress_v1" }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1" },
+      { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1" },
+      { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1" },
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -101,6 +117,14 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
     1
   );
   db.close();
@@ -361,8 +385,8 @@ try {
   ) VALUES (?, ?, ?, ?)`).run(v4ProfileId, v4DocumentId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
   db.exec(`
     DROP TABLE candidate_matching_cards;
-    DELETE FROM schema_migrations WHERE version = 5;
-    PRAGMA user_version = 4;
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4LegacyPath);
@@ -401,8 +425,8 @@ try {
   ) VALUES (?, ?, NULL, 'hash-has-card', ?, 'draft', 'model', NULL, ?, ?)`)
     .run(hasCardProfileId, hasCardVersionId, JSON.stringify({ targetDirections: ["用户运营"], strongEvidence: [], transferableCapabilities: [], cautionTransitions: [], userNotes: [], source: "model" }), v4Now, v4Now);
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = 5;
-    PRAGMA user_version = 4;
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4MixedPath);
@@ -531,7 +555,7 @@ try {
   const durableBackupDir = path.join(path.dirname(durableV5Path), "backups");
   const durableBackupsBefore = fs.readdirSync(durableBackupDir).filter((name) => name.endsWith(".sqlite"));
   db = openDb(durableV5Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 1);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM job_observations").get().n, 3);
