@@ -1,11 +1,23 @@
 "use strict";
 
+const { PRODUCT_POLICY } = require("./product_policy");
+const { getWorkflowRun, transitionWorkflowRun } = require("./storage");
+const {
+  claimWorkflowJobTask,
+  commitWorkflowJobTaskSuccess,
+  commitWorkflowJobTaskSkipped,
+  commitWorkflowJobTaskFailure
+} = require("./workflow_analysis_tasks");
+
 const WORKFLOW_ANALYSIS_ERROR_KINDS = Object.freeze({
   RETRYABLE: "retryable",
   CONFIGURATION: "configuration",
   TERMINAL: "terminal",
   CONTROLLED_STOP: "controlled_stop"
 });
+
+const WORKFLOW_EXECUTOR_CRASH_CODE = "WORKFLOW_EXECUTOR_CRASH";
+const LOCAL_RULE_SKIP_CODE = "LOCAL_RULE_SKIP";
 
 const RETRYABLE_ERROR_CODES = new Set([
   "MODEL_TIMEOUT",
@@ -36,6 +48,59 @@ const REDACTED_LABEL = "[REDACTED]";
 // Never rely on the caller having sanitized the payload already.
 const FORWARD_SENSITIVE_KEY = /^(input|output|prompt|resume|raw|request|response|errorMessage|message|stack|content|body|text|description|preview|note|payload|invalidOutput|error|cause)$/i;
 const FORWARD_SAFE_METRIC_KEY = /^(prompt|completion|total)_tokens$/i;
+
+// Explicit allowlist for non-metric event fields. Unknown keys are not
+// forwarded as-is; they are collapsed to [REDACTED] instead.
+const FORWARD_SAFE_KEY = new Set([
+  "type",
+  "kind",
+  "stage",
+  "phase",
+  "attempts",
+  "provider",
+  "model",
+  "modelConfigRevision",
+  "profileKind",
+  "thinkingMode",
+  "reasoningEffort",
+  "backupUsed",
+  "attemptInGeneration",
+  "totalAttemptNumber",
+  "taskId",
+  "workerId",
+  "jobId",
+  "position",
+  "batchId",
+  "workflowRunId",
+  "status",
+  "code",
+  "errorCode",
+  "errorKind",
+  "pauseCode",
+  "retryable",
+  "statusCode",
+  "httpStatus",
+  "latencyMs",
+  "latency",
+  "time",
+  "cacheHit",
+  "jsonMode",
+  "jsonModeFallback",
+  "requestedMaxTokens",
+  "contentLength",
+  "finishReason",
+  "responseFailureKind",
+  "responseContentTypeKind",
+  "responseEnvelopeKind",
+  "responseParseFailureKind",
+  "responseHadUtf8Bom",
+  "responseJsonModeApplied",
+  "providerRequestId",
+  "name",
+  "usage",
+  "revision",
+  "reasonCode"
+]);
 
 function classifyWorkflowAnalysisError(error) {
   const code = String(error?.code || "").trim();
@@ -128,7 +193,9 @@ function createAttemptTelemetryLogger(logger, telemetry) {
     warn: (event, context) => (typeof forward.warn === "function" ? forward.warn(event, sanitizeForwarded(context)) : undefined),
     error: (event, context) => (typeof forward.error === "function" ? forward.error(event, sanitizeForwarded(context)) : undefined),
     child: (context) => createAttemptTelemetryLogger(
-      typeof forward.child === "function" ? forward.child(context) : forward,
+      typeof forward.child === "function"
+        ? forward.child(sanitizeForwarded(context))
+        : forward,
       aggregate
     )
   };
@@ -164,6 +231,7 @@ function sanitizeForwarded(value, key = "") {
       retryable: typeof value.retryable === "boolean" ? value.retryable : null
     };
   }
+  if (key && !FORWARD_SAFE_KEY.has(key)) return REDACTED_LABEL;
   if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeForwarded(item, key));
@@ -173,6 +241,225 @@ function sanitizeForwarded(value, key = "") {
     );
   }
   return String(value);
+}
+
+async function runWorkflowAnalysis(input) {
+  const context = normalizeRunContext(input);
+  const summary = { claimed: 0, succeeded: 0, failed: 0, skipped: 0 };
+  const workerResults = await Promise.allSettled(
+    Array.from({ length: context.workerCount }, (_, index) => workerLoop(context, index, summary))
+  );
+  const rejections = workerResults.filter((result) => result.status === "rejected");
+  if (rejections.length > 0) {
+    transitionWorkflowRun(context.db, {
+      id: context.workflowRunId,
+      status: "interrupted",
+      errorCode: WORKFLOW_EXECUTOR_CRASH_CODE,
+      errorMessage: "workflow analysis worker crashed; running tasks are recoverable"
+    });
+    return { ...summary, status: "interrupted", rejected: rejections.length };
+  }
+  const workflow = getWorkflowRun(context.db, context.workflowRunId);
+  if (workflow?.controlState === "pause_requested") {
+    return { ...summary, status: "paused" };
+  }
+  if (workflow?.controlState === "stop_requested") {
+    return { ...summary, status: "stopped" };
+  }
+  return { ...summary, status: "drained" };
+}
+
+async function workerLoop(context, workerIndex, summary) {
+  const leaseOwner = context.workerIdFactory
+    ? String(context.workerIdFactory(workerIndex, context.workerCount))
+    : `workflow-analysis-worker-${workerIndex + 1}`;
+  while (true) {
+    const claimed = claimWorkflowJobTask(context.db, {
+      workflowRunId: context.workflowRunId,
+      leaseOwner,
+      leaseTtlMs: context.leaseTtlMs,
+      selectModelIdentity: ({ attemptInGeneration }) => selectAttemptRuntime({
+        attemptInGeneration,
+        primaryRuntime: context.primaryRuntime,
+        backupRuntime: context.backupRuntime
+      }).identity,
+      now: context.now()
+    });
+    if (!claimed) return;
+    summary.claimed += 1;
+    await executeAttempt(context, claimed, leaseOwner, summary);
+  }
+}
+
+async function executeAttempt(context, claimed, leaseOwner, summary) {
+  const runtime = runtimeForAttempt(claimed.attempt, context);
+  const telemetry = createAttemptTelemetry();
+  const attemptLogger = createAttemptTelemetryLogger(context.logger, telemetry);
+  const startedAt = claimed.attempt.startedAt;
+  try {
+    const analyzeJob = context.createAnalyzeJob(runtime, { logger: attemptLogger });
+    const analyzedJob = await context.analyzeScannedJob(claimed.job, {
+      configs: { model: runtime.modelConfig },
+      analyzeJob
+    });
+    const finishedAt = context.now();
+    if (isLocalRuleSkip(analyzedJob)) {
+      commitWorkflowJobTaskSkipped(context.db, {
+        taskId: claimed.task.id,
+        leaseOwner,
+        analyzedJob,
+        reasonCode: LOCAL_RULE_SKIP_CODE,
+        startedAt,
+        finishedAt
+      });
+      summary.skipped += 1;
+      return;
+    }
+    commitWorkflowJobTaskSuccess(context.db, {
+      taskId: claimed.task.id,
+      leaseOwner,
+      analyzedJob,
+      modelIdentity: identityFromAttempt(claimed.attempt),
+      telemetry,
+      startedAt,
+      finishedAt
+    });
+    summary.succeeded += 1;
+  } catch (error) {
+    if (isWorkflowFatalError(error)) throw error;
+    const classified = classifyWorkflowAnalysisError(error);
+    const finishedAt = context.now();
+    const attemptInGeneration = Number(claimed.attempt.attemptInGeneration || 0);
+    const retryAt = classified.retryable && attemptInGeneration < 2
+      ? retryAtFromContext(context, attemptInGeneration, finishedAt)
+      : null;
+    commitWorkflowJobTaskFailure(context.db, {
+      taskId: claimed.task.id,
+      leaseOwner,
+      errorCode: classified.code,
+      pauseCode: classified.pauseCode,
+      retryable: classified.retryable ? 1 : 0,
+      retryAt,
+      errorStage: String(error?.stage || error?.phase || "analysis"),
+      modelIdentity: identityFromAttempt(claimed.attempt),
+      telemetry,
+      startedAt,
+      finishedAt
+    });
+    summary.failed += 1;
+    if (retryAt) {
+      const waitMs = Math.max(0, Date.parse(retryAt) - Date.parse(context.now()));
+      if (waitMs > 0) await context.sleep(waitMs);
+    }
+  }
+}
+
+function normalizeRunContext(input = {}) {
+  const db = input.db;
+  if (!db || typeof db.prepare !== "function") {
+    throw contextError("WORKFLOW_EXECUTOR_DB_REQUIRED", "runWorkflowAnalysis requires a sqlite db");
+  }
+  const workflowRunId = String(input.workflowRunId || "").trim();
+  if (!workflowRunId) {
+    throw contextError("WORKFLOW_EXECUTOR_RUN_ID_REQUIRED", "runWorkflowAnalysis requires workflowRunId");
+  }
+  if (typeof input.createAnalyzeJob !== "function") {
+    throw contextError("WORKFLOW_EXECUTOR_CREATE_ANALYZE_JOB_REQUIRED", "runWorkflowAnalysis requires createAnalyzeJob");
+  }
+  if (typeof input.analyzeScannedJob !== "function") {
+    throw contextError("WORKFLOW_EXECUTOR_ANALYZE_SCANNED_JOB_REQUIRED", "runWorkflowAnalysis requires analyzeScannedJob");
+  }
+  const primaryRuntime = input.primaryRuntime && typeof input.primaryRuntime === "object"
+    ? input.primaryRuntime
+    : {};
+  const backupRuntime = input.backupRuntime && typeof input.backupRuntime === "object"
+    ? input.backupRuntime
+    : null;
+  const workerCount = clampConcurrency(Number(primaryRuntime.concurrency ?? 2));
+  return {
+    db,
+    workflowRunId,
+    primaryRuntime,
+    backupRuntime,
+    createAnalyzeJob: input.createAnalyzeJob,
+    analyzeScannedJob: input.analyzeScannedJob,
+    logger: input.logger && typeof input.logger === "object" ? input.logger : {},
+    now: typeof input.now === "function" ? input.now : () => new Date().toISOString(),
+    sleep: typeof input.sleep === "function" ? input.sleep : defaultSleep,
+    random: typeof input.random === "function" ? input.random : Math.random,
+    retryBackoffMs: Array.isArray(input.retryBackoffMs) && input.retryBackoffMs.length > 0
+      ? input.retryBackoffMs
+      : PRODUCT_POLICY.operations.modelAnalysis.retryBackoffMs,
+    workerIdFactory: typeof input.workerIdFactory === "function" ? input.workerIdFactory : null,
+    leaseTtlMs: PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
+    workerCount
+  };
+}
+
+function clampConcurrency(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return 2;
+  return Math.max(1, Math.min(2, parsed));
+}
+
+function defaultSleep(ms) {
+  const wait = Math.max(0, Number(ms) || 0);
+  return new Promise((resolve) => setTimeout(resolve, wait));
+}
+
+function runtimeForAttempt(attempt, context) {
+  if (Number(attempt?.backupUsed || 0) === 1 && isVerifiedBackupRuntime(context.backupRuntime)) {
+    return context.backupRuntime;
+  }
+  return context.primaryRuntime;
+}
+
+function identityFromAttempt(attempt) {
+  return {
+    profileKind: String(attempt.profileKind || "batch_screening"),
+    modelConfigRevision: String(attempt.modelConfigRevision || ""),
+    provider: String(attempt.provider || ""),
+    model: String(attempt.model || ""),
+    thinkingMode: String(attempt.thinkingMode || ""),
+    reasoningEffort: String(attempt.reasoningEffort || ""),
+    backupUsed: Number(attempt.backupUsed || 0)
+  };
+}
+
+function retryAtFromContext(context, attemptInGeneration, finishedAt) {
+  const range = context.retryBackoffMs;
+  const index = Math.min(Math.max(0, attemptInGeneration - 1), range.length - 1);
+  const min = Number(range[index]);
+  const max = index + 1 < range.length ? Number(range[index + 1]) : min;
+  if (!Number.isFinite(min) || min < 0) {
+    return new Date(Date.parse(finishedAt) + 1000).toISOString();
+  }
+  const span = Number.isFinite(max) && max > min ? max - min : 0;
+  const jitter = typeof context.random === "function" ? boundedUnit(context.random()) : 0.5;
+  const delayMs = Math.max(0, Math.round(min + span * jitter));
+  return new Date(Date.parse(finishedAt) + delayMs).toISOString();
+}
+
+function boundedUnit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0.5;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function isLocalRuleSkip(analyzedJob) {
+  const analysis = analyzedJob?.analysis && typeof analyzedJob.analysis === "object"
+    ? analyzedJob.analysis
+    : {};
+  return String(analysis.decisionSource || "") === "local_rules"
+    || String(analysis.semanticStatus || "") === "rule_only";
+}
+
+function isWorkflowFatalError(error) {
+  return Boolean(error && (error.workflowFatal === true || String(error.code || "") === WORKFLOW_EXECUTOR_CRASH_CODE));
+}
+
+function contextError(code, message) {
+  return Object.assign(new Error(message), { code });
 }
 
 function finiteOrNull(value) {
@@ -218,5 +505,6 @@ module.exports = {
   classifyWorkflowAnalysisError,
   createAttemptTelemetry,
   createAttemptTelemetryLogger,
-  selectAttemptRuntime
+  selectAttemptRuntime,
+  runWorkflowAnalysis
 };

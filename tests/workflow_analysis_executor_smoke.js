@@ -3,14 +3,32 @@
 const assert = require("node:assert/strict");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
+  openDb,
+  createBatch,
+  createScanRun,
+  createWorkflowRun,
+  attachWorkflowScan,
+  transitionWorkflowRun,
+  upsertJob,
+  getWorkflowRun
+} = require("../src/core/storage");
+const {
+  initializeWorkflowJobTasks,
+  claimWorkflowJobTask,
+  listWorkflowJobTasks,
+  listJobAnalysisAttempts
+} = require("../src/core/workflow_analysis_tasks");
+const {
   WORKFLOW_ANALYSIS_ERROR_KINDS,
   classifyWorkflowAnalysisError,
   createAttemptTelemetry,
   createAttemptTelemetryLogger,
-  selectAttemptRuntime
+  selectAttemptRuntime,
+  runWorkflowAnalysis
 } = require("../src/core/workflow_analysis_executor");
 
-try {
+(async () => {
+  try {
   testErrorKindConstants();
   testRetryableCodeMapping();
   testHttpStatusMapping();
@@ -29,11 +47,21 @@ try {
   testPrimaryBackupSelection();
   testSelectionDoesNotMutatePrimaryRuntime();
   testProductPolicyModelAnalysisFixedValues();
+  await testRunWorkflowAnalysisPrimarySuccessNeverConstructsBackup();
+  await testRunWorkflowAnalysisRetryUsesPrimaryOrVerifiedBackup();
+  await testRunWorkflowAnalysisWorkflowFatalPreservesIncrementalResults();
+  await testRunWorkflowAnalysisPersistsTelemetryOnAttempt();
+  await testRunWorkflowAnalysisTwoWorkersClaimDistinctTasks();
+  await testRunWorkflowAnalysisRetryCooldownCannotBeBypassed();
+  await testRunWorkflowAnalysisConfigurationPauseStopsClaiming();
+  await testRunWorkflowAnalysisQueueDrainedCounts();
+  testAttemptLoggerChildAndUnknownKeysRedacted();
   console.log("workflow_analysis_executor_smoke ok");
 } catch (error) {
   console.error(error);
   process.exit(1);
 }
+})();
 
 function testErrorKindConstants() {
   assert.deepStrictEqual(WORKFLOW_ANALYSIS_ERROR_KINDS, {
@@ -465,4 +493,652 @@ function deepFreeze(value) {
     Object.freeze(value);
   }
   return value;
+}
+
+async function testRunWorkflowAnalysisPrimarySuccessNeverConstructsBackup() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{ semanticStatus: "pending", decisionSource: "scan" }],
+      localDay: "2026-08-20",
+      modelConfigRevision: "exec-primary"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-primary",
+      now: "2026-08-20T00:00:00.000Z"
+    });
+    const constructed = [];
+    const calls = [];
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: primaryRuntime(),
+      backupRuntime: { ...backupRuntime(), connection: { status: "verified" } },
+      createAnalyzeJob: (runtime) => {
+        constructed.push(runtime.revision);
+        return async (job) => {
+          calls.push(runtime.revision);
+          return analyzedJob(job);
+        };
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-20T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(constructed, ["primary-rev-1"]);
+    assert.deepStrictEqual(calls, ["primary-rev-1"]);
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 1);
+    assert.strictEqual(tasks[0].status, "succeeded");
+    const attempts = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: tasks[0].id
+    });
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].status, "succeeded");
+    assert.strictEqual(attempts[0].backupUsed, 0);
+    assert.strictEqual(attempts[0].modelConfigRevision, "primary-rev-1");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisRetryUsesPrimaryOrVerifiedBackup() {
+  await retryScenario({
+    label: "backup-disabled-uses-primary",
+    localDay: "2026-08-21",
+    backupRuntime: { ...backupRuntime(), enabled: false },
+    expectedConstructed: ["primary-rev-1", "primary-rev-1"],
+    expectedBackupUsed: [0, 0]
+  });
+  await retryScenario({
+    label: "verified-backup-used-on-attempt-two",
+    localDay: "2026-08-22",
+    backupRuntime: { ...backupRuntime(), connection: { status: "verified" } },
+    expectedConstructed: ["primary-rev-1", "backup-rev-1"],
+    expectedBackupUsed: [0, 1]
+  });
+}
+
+async function retryScenario({
+  label,
+  localDay,
+  backupRuntime: scenarioBackup,
+  expectedConstructed,
+  expectedBackupUsed
+}) {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{ semanticStatus: "pending", decisionSource: "scan" }],
+      localDay,
+      modelConfigRevision: `exec-${label}`
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: `exec-${label}`,
+      now: `${localDay}T00:00:00.000Z`
+    });
+    const constructed = [];
+    const clock = fakeClock(`${localDay}T00:00:00.000Z`);
+    let attempt = 0;
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: primaryRuntime(),
+      backupRuntime: scenarioBackup,
+      createAnalyzeJob: (runtime) => {
+        constructed.push(runtime.revision);
+        return async (job) => {
+          attempt += 1;
+          if (attempt === 1) {
+            throw Object.assign(new Error("model timeout"), { code: "MODEL_TIMEOUT" });
+          }
+          return analyzedJob(job);
+        };
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: clock.now,
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [1000, 3000],
+      random: () => 0,
+      sleep: async (ms) => clock.advance(ms)
+    });
+    assert.deepStrictEqual(constructed, expectedConstructed, label);
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 2,
+      succeeded: 1,
+      failed: 1,
+      skipped: 0
+    }, label);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 1, label);
+    assert.strictEqual(tasks[0].status, "succeeded", label);
+    const attempts = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: tasks[0].id
+    });
+    assert.strictEqual(attempts.length, 2, label);
+    assert.deepStrictEqual(attempts.map((attemptRow) => attemptRow.backupUsed), expectedBackupUsed, label);
+    assert.strictEqual(attempts[0].status, "failed", label);
+    assert.strictEqual(attempts[0].errorCode, "MODEL_TIMEOUT", label);
+    assert.strictEqual(attempts[1].status, "succeeded", label);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisWorkflowFatalPreservesIncrementalResults() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}, {}],
+      localDay: "2026-08-23",
+      modelConfigRevision: "exec-fatal"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-fatal",
+      now: "2026-08-23T00:00:00.000Z"
+    });
+    let callIndex = 0;
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        callIndex += 1;
+        if (callIndex === 2) {
+          throw Object.assign(new Error("executor crashed"), {
+            code: "WORKFLOW_EXECUTOR_CRASH",
+            stage: "execute"
+          });
+        }
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-23T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(result.status, "interrupted");
+    assert.deepStrictEqual(
+      {
+        claimed: result.claimed,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        skipped: result.skipped
+      },
+      { claimed: 2, succeeded: 1, failed: 0, skipped: 0 }
+    );
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 3);
+    assert.strictEqual(tasks[0].status, "succeeded");
+    const savedObservation = db.prepare(
+      "SELECT analysis_json FROM job_observations WHERE job_id = ?"
+    ).get(scenario.jobIds[0]);
+    assert.strictEqual(JSON.parse(savedObservation.analysis_json).semanticStatus, "complete");
+    assert.strictEqual(tasks[1].status, "running");
+    assert(tasks[1].leaseOwner);
+    assert(tasks[1].leaseExpiresAt);
+    assert.strictEqual(tasks[2].status, "pending");
+    assert.strictEqual(getWorkflowRun(db, scenario.workflowId).status, "interrupted");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisPersistsTelemetryOnAttempt() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{ semanticStatus: "pending", decisionSource: "scan" }],
+      localDay: "2026-08-24",
+      modelConfigRevision: "exec-telemetry"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-telemetry",
+      now: "2026-08-24T00:00:00.000Z"
+    });
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: (_runtime, { logger }) => async (job) => {
+        logger.info("model_call_completed", {
+          attempts: 2,
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }
+        });
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-24T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    const attempts = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: tasks[0].id
+    });
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].status, "succeeded");
+    assert.strictEqual(attempts[0].modelCallCount, 2);
+    assert.strictEqual(attempts[0].promptTokens, 10);
+    assert.strictEqual(attempts[0].completionTokens, 3);
+    assert.strictEqual(attempts[0].totalTokens, 13);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisTwoWorkersClaimDistinctTasks() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-08-25",
+      modelConfigRevision: "exec-two-workers"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-two-workers",
+      now: "2026-08-25T00:00:00.000Z"
+    });
+    const analyzedSourceIds = [];
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 2 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        analyzedSourceIds.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-25T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 2,
+      succeeded: 2,
+      failed: 0,
+      skipped: 0
+    });
+    assert.strictEqual(analyzedSourceIds.length, 2);
+    assert.strictEqual(new Set(analyzedSourceIds).size, 2);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 2);
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "succeeded"]);
+    for (const task of tasks) {
+      const attempts = listJobAnalysisAttempts(db, {
+        workflowRunId: scenario.workflowId,
+        taskId: task.id
+      });
+      assert.strictEqual(attempts.length, 1);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisRetryCooldownCannotBeBypassed() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{ semanticStatus: "pending", decisionSource: "scan" }],
+      localDay: "2026-08-26",
+      modelConfigRevision: "exec-cooldown"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-cooldown",
+      now: "2026-08-26T00:00:00.000Z"
+    });
+    const clock = fakeClock("2026-08-26T00:00:00.000Z");
+    let calls = 0;
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async () => {
+        calls += 1;
+        throw Object.assign(new Error("timeout"), { code: "MODEL_TIMEOUT" });
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: clock.now,
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [1000, 3000],
+      random: () => 0,
+      sleep: async (ms) => clock.advance(Math.floor(ms / 2))
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 1,
+      succeeded: 0,
+      failed: 1,
+      skipped: 0
+    });
+    assert.strictEqual(calls, 1);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks[0].status, "retry_pending");
+    assert.strictEqual(tasks[0].availableAt, "2026-08-26T00:00:01.000Z");
+    assert.strictEqual(tasks[0].attemptCountInGeneration, 1);
+    assert.strictEqual(tasks[0].totalAttemptCount, 1);
+
+    const due = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: "worker-due",
+      leaseTtlMs: 60_000,
+      selectModelIdentity: ({ attemptInGeneration }) => selectAttemptRuntime({
+        attemptInGeneration,
+        primaryRuntime: primaryRuntime(),
+        backupRuntime: null
+      }).identity,
+      now: "2026-08-26T00:00:01.000Z"
+    });
+    assert(due);
+    assert.strictEqual(due.task.attemptCountInGeneration, 2);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisConfigurationPauseStopsClaiming() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}, {}],
+      localDay: "2026-08-27",
+      modelConfigRevision: "exec-config-pause"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-config-pause",
+      now: "2026-08-27T00:00:00.000Z"
+    });
+    let calls = 0;
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: { ...backupRuntime(), connection: { status: "verified" } },
+      createAnalyzeJob: () => async () => {
+        calls += 1;
+        throw Object.assign(new Error("auth failed"), { code: "MODEL_AUTH_FAILED" });
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-27T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "paused",
+      claimed: 1,
+      succeeded: 0,
+      failed: 1,
+      skipped: 0
+    });
+    assert.strictEqual(calls, 1);
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.controlState, "pause_requested");
+    assert.strictEqual(workflow.errorCode, "MODEL_AUTH_REQUIRED");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["retry_pending", "pending", "pending"]);
+    const attempts = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: tasks[0].id
+    });
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].errorCode, "MODEL_AUTH_FAILED");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisQueueDrainedCounts() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}, {}, {}],
+      localDay: "2026-08-28",
+      modelConfigRevision: "exec-drained"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-drained",
+      now: "2026-08-28T00:00:00.000Z"
+    });
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 2 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        const sourceId = String(job.sourceId || "");
+        if (sourceId.endsWith("-job-2")) {
+          return { ...job, analysis: {
+            semanticStatus: "rule_only",
+            decisionSource: "local_rules",
+            fitReasons: [],
+            revision: "test-rev"
+          } };
+        }
+        if (sourceId.endsWith("-job-3")) {
+          throw Object.assign(new Error("contract invalid"), { code: "MODEL_CONTRACT_INVALID" });
+        }
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-28T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 4,
+      succeeded: 2,
+      failed: 1,
+      skipped: 1
+    });
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "skipped", "failed", "succeeded"]);
+    const skippedObservation = db.prepare(
+      "SELECT analysis_json FROM job_observations WHERE job_id = ?"
+    ).get(scenario.jobIds[1]);
+    assert.strictEqual(JSON.parse(skippedObservation.analysis_json).decisionSource, "local_rules");
+  } finally {
+    db.close();
+  }
+}
+
+function testAttemptLoggerChildAndUnknownKeysRedacted() {
+  const childContexts = [];
+  const forwarded = [];
+  const base = {
+    info: (event, data) => forwarded.push({ event, data }),
+    warn: () => {},
+    error: () => {},
+    child: (context) => {
+      childContexts.push(context);
+      return { info: (event, data) => forwarded.push({ event, data }), warn: () => {}, error: () => {} };
+    }
+  };
+  const logger = createAttemptTelemetryLogger(base, createAttemptTelemetry());
+  logger.child({ taskId: 7, resume: "private resume", unknownKey: "x" });
+  assert.deepStrictEqual(childContexts, [{
+    taskId: 7,
+    resume: "[REDACTED]",
+    unknownKey: "[REDACTED]"
+  }]);
+  logger.info("executor_event", { attempts: 1, company: "Acme", prompt: "private prompt" });
+  assert.strictEqual(forwarded.length, 1);
+  assert.strictEqual(forwarded[0].event, "executor_event");
+  assert.strictEqual(forwarded[0].data.attempts, 1);
+  assert.strictEqual(forwarded[0].data.company, "[REDACTED]");
+  assert.strictEqual(forwarded[0].data.prompt, "[REDACTED]");
+  assert(!JSON.stringify(forwarded).includes("Acme"));
+  assert(!JSON.stringify(forwarded).includes("private prompt"));
+}
+
+function seedWorkflow(database, { analyses, localDay, modelConfigRevision, titleOverride = "" }) {
+  const now = new Date().toISOString();
+  const profileId = Number(database.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Workflow Executor Candidate', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
+  const planId = Number(database.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Workflow Executor Plan', '{}', NULL, 1, ?, ?)`).run(profileId, now, now).lastInsertRowid);
+  const batchId = createBatch(database, "boss", "RAG", "workflow executor smoke", {
+    profileId,
+    searchPlanId: planId
+  });
+  const sourceIds = [];
+  const jobIds = [];
+  analyses.forEach((analysis, index) => {
+    const sourceId = `${localDay}-job-${index + 1}`;
+    const jobId = upsertJob(database, {
+      source: "boss",
+      sourceId,
+      title: titleOverride || `Job ${index + 1} (${localDay})`,
+      analysis
+    }, batchId);
+    sourceIds.push(sourceId);
+    jobIds.push(Number(jobId));
+  });
+  const workflowId = createWorkflowRun(database, {
+    profileId,
+    planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: 35,
+    inventoryCount: 0,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [{ word: "RAG", priority: "A" }],
+    budget: { maxDetailTotal: 120, browserPageBudget: 20 },
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 },
+    modelConfigRevision
+  }).id;
+  const scanRun = createScanRun(database, {
+    runId: `scan-${localDay}-${profileId}`,
+    planId,
+    batchId
+  });
+  transitionWorkflowRun(database, { id: workflowId, status: "scanning" });
+  attachWorkflowScan(database, {
+    id: workflowId,
+    scanRunId: scanRun.id,
+    scanBatchId: batchId
+  });
+  transitionWorkflowRun(database, { id: workflowId, status: "analyzing" });
+  return { workflowId, batchId, profileId, planId, jobIds, sourceIds };
+}
+
+function observationEntries(database, batchId) {
+  return database.prepare(`
+    SELECT id AS observationId, job_id AS jobId
+    FROM job_observations
+    WHERE batch_id = ?
+    ORDER BY id
+  `).all(batchId).map((row) => ({
+    jobId: Number(row.jobId),
+    observationId: Number(row.observationId)
+  }));
+}
+
+function analyzedJob(job) {
+  return {
+    ...job,
+    analysis: {
+      semanticStatus: "complete",
+      decisionSource: "model",
+      recommendation: "yes",
+      revision: "test-rev",
+      note: "ok"
+    }
+  };
+}
+
+function silentLogger() {
+  return {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    child: () => silentLogger()
+  };
+}
+
+function fixedClock(iso) {
+  return () => iso;
+}
+
+function fakeClock(startIso) {
+  let current = Date.parse(startIso);
+  return {
+    now: () => new Date(current).toISOString(),
+    advance: (ms) => {
+      current += ms;
+      return new Date(current).toISOString();
+    }
+  };
 }
