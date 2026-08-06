@@ -28,18 +28,30 @@ function createBossMessageDomFixture() {
     new FixtureElement({
       classes: ["friend-content-warp"],
       innerText: "Alex Example\nPlease share availability",
-      children: { ".notice-badge": new FixtureElement() },
+      children: {
+        ".notice-badge": new FixtureElement(),
+        ".title-box": new FixtureElement({ textContent: "Alex Example" }),
+        ".last-msg-text": new FixtureElement({ textContent: "Please share availability" })
+      },
       attributes: { "data-conversation-id": "conv-alex", "data-recruiter-id": "recruiter-alex" }
     }),
     new FixtureElement({
       classes: ["friend-content-warp", "selected"],
       innerText: "Blair Example\nThanks for the update",
+      children: {
+        ".title-box": new FixtureElement({ textContent: "Blair Example" }),
+        ".last-msg-text": new FixtureElement({ textContent: "Thanks for the update" })
+      },
       attributes: { "data-conversation-id": "conv-blair", "data-recruiter-id": "recruiter-blair" }
     }),
     new FixtureElement({
       classes: ["friend-content-warp"],
       innerText: "Casey Example\nInterview details attached",
-      children: { ".notice-badge": new FixtureElement() },
+      children: {
+        ".notice-badge": new FixtureElement(),
+        ".title-box": new FixtureElement({ textContent: "Casey Example" }),
+        ".last-msg-text": new FixtureElement({ textContent: "Interview details attached" })
+      },
       attributes: { "data-conversation-id": "conv-casey", "data-recruiter-id": "recruiter-casey" }
     })
   ];

@@ -153,10 +153,12 @@ function buildGuardedConversationClickExpression(target) {
     const unread = Boolean(row.querySelector(".notice-badge"));
     if (!unread) return fail("no_longer_unread");
     const visible = lines(row.innerText);
-    const actualSignature = "sha256:" + sha256(canonical([expected.rowIndex, visible[0] || "", visible[visible.length - 1] || "", unread]));
+    const rowTitle = normalize(row.querySelector(".title-box")?.textContent) || visible[0] || "";
+    const preview = normalize(row.querySelector(".last-msg-text")?.textContent) || visible[visible.length - 1] || "";
+    const actualSignature = "sha256:" + sha256(canonical([expected.rowIndex, rowTitle, preview, unread]));
     if (actualSignature !== expected.transientSignature) return fail("row_drifted");
     const conversationId = String(row.getAttribute("data-conversation-id") || row.getAttribute("data-encid") || "").trim();
-    const actualConversationKey = "sha256:" + sha256(canonical(["conversation", conversationId ? "id:" + conversationId : "label:" + (visible[0] || "")]));
+    const actualConversationKey = "sha256:" + sha256(canonical(["conversation", conversationId ? "id:" + conversationId : "label:" + rowTitle]));
     if (actualConversationKey !== expected.conversationKey) return fail("row_drifted");
     const rect = row.getBoundingClientRect();
     const style = getComputedStyle(row);

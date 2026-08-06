@@ -2,28 +2,30 @@
 
 ## Status
 
-Offline fixture calibration completed. A live read-only calibration ran on 2026-08-06 against the user's single open `/web/geek/chat` tab. It confirmed the list and preview structures below, but the right pane showed `chat-no-data`, so no conversation was open. Company, position, and message-item calibration remains pending until the user manually opens one conversation. No tab was created, navigated, or brought to the front; no recruiter text, message text, screenshot, cookie, localStorage, or sensitive URL was saved.
+Offline fixture calibration completed. Live read-only calibration ran on 2026-08-06 against the user's single open `/web/geek/chat` tab. The first pass confirmed the list and preview structures; after the user manually opened one conversation, the second pass confirmed the selected row, position, message items, and `data-mid`. No tab was created, navigated, or brought to the front; no recruiter text, message text, screenshot, cookie, localStorage, or sensitive URL was saved.
 
 ## Approved fallback evidence
 
 | Evidence | Selector / attribute | Decision |
 | --- | --- | --- |
 | Conversation row | `.friend-content-warp` | Live-confirmed; 41 rows present. |
-| Row inner structure | `.friend-content > .friend-top > .figure/.text`, `.text > .title-box/.name-box`, `.last-msg > .last-msg-text` | Live-confirmed for recruiter label and preview text. |
+| Row title / recruiter label | `.title-box` inside the row | Live-confirmed. The first `innerText` line is time, not recruiter, so title-box is required. |
+| Row preview | `.last-msg-text` | Live-confirmed. |
+| Row inner structure | `.friend-content > .friend-top > .figure/.text`, `.text > .title-box/.name-box`, `.last-msg > .last-msg-text` | Live-confirmed. |
 | Delivered preview | `.message-status.status-delivery` | Live-confirmed; replaces the text `[送达]` fallback when present. |
 | Read preview | `.message-status.status-read` | Live-confirmed; replaces the text `[已读]` fallback when present. |
 | Unread marker | `.notice-badge` | Not live-confirmed (no badge class was present in the open list); approved fallback only. |
 | Selected row | `.selected, .friend-top` | Live list had one `.selected` element elsewhere; row-level selected behavior must be confirmed after a conversation is opened. |
-| Position name | `.chat-position-content .position-name` | Not live-confirmed; right pane was `chat-no-data`. Pending. |
-| Company name | `.company-name` | Not live-confirmed; right pane was `chat-no-data`. Pending. |
-| Message item | `.message-item` | Not live-confirmed; right pane was `chat-no-data`. Pending. |
-| Message id | `data-mid` | Not live-confirmed; pending. |
+| Position name | `.chat-position-content .position-name` | Live-confirmed after a conversation was opened. |
+| Company name | `.company-name` | Not present in the live page. The header exposes position, salary, and city, but no dedicated company element or attribute was found. Approved fallback is no company field. |
+| Message item | `.message-item` | Live-confirmed; 7 items visible in the opened conversation. |
+| Message id | `data-mid` | Live-confirmed; values are 15 digits. |
 | Stable conversation id | `data-conversation-id` or `data-encid` | Not present in the live list; rows exposed only `data-v-*` scoped attributes, so the approved fallback is a digest of normalized recruiter label plus preview text. |
 | Stable recruiter id | `data-recruiter-id` or `data-geek-id` | Not present in the live list; approved label-digest fallback. |
-| Voice content | `.item-voice` | Not live-confirmed; pending. |
-| Image content | `.item-image` | Not live-confirmed; pending. |
-| Attachment content | `.item-attachment` | Not live-confirmed; pending. |
-| Text/system content | no media class | Pending until message items are visible. |
+| Voice content | `.item-voice` | Not observed in the calibrated conversation; fallback only. |
+| Image content | `.item-image` | Not observed in the calibrated conversation; fallback only. |
+| Attachment content | `.item-attachment` | Not observed in the calibrated conversation; fallback only. |
+| Text/system content | `.item-friend`, `.item-myself`, `.item-system` | Live-confirmed as message-item direction classes; text fallback remains. |
 
 When neither stable conversation nor recruiter identifier exists, the approved fallback is a digest of the normalized recruiter label plus preview text. This key changes when the label or preview changes, so the reader fails closed instead of clicking a drifted row.
 

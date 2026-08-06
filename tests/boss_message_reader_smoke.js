@@ -75,7 +75,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function runGuardedExpression(expression, { innerText, unread = true, snapshotResult }) {
+function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null }) {
   let clicks = 0;
   const row = {
     isConnected: true,
@@ -83,6 +83,8 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     getAttribute: () => null,
     querySelector(selector) {
       if (selector === ".notice-badge") return unread ? {} : null;
+      if (selector === ".title-box") return titleBox ? { textContent: titleBox } : null;
+      if (selector === ".last-msg-text") return lastMsg ? { textContent: lastMsg } : null;
       throw new Error(`unexpected selector: ${selector}`);
     },
     getBoundingClientRect: () => ({ width: 100, height: 40 }),
@@ -133,7 +135,9 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     "snapshot.login === true",
     "rows[expected.rowIndex]",
     "transientSignature",
-    ".notice-badge"
+    ".notice-badge",
+    ".title-box",
+    ".last-msg-text"
   ]) assert(expression.includes(expected), `guard must recheck ${expected}`);
   assert.strictEqual((expression.match(/\.click\(\)/g) || []).length, 1);
   assert.doesNotMatch(expression, /chat-input|btn-send|querySelectorAll\(["'](?:button|a)["']/);
@@ -160,6 +164,14 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(directDomMatch.result)), guardedSuccess);
   assert.strictEqual(directDomMatch.clicks, 1, "a matching Task1 signature must click the target row exactly once");
+  const liveRowShape = runGuardedExpression(expression, {
+    innerText: "10:30\nAlex Example\nPlease share availability",
+    titleBox: "Alex Example",
+    lastMsg: "Please share availability",
+    snapshotResult: forgedHelperResult
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(liveRowShape.result)), guardedSuccess);
+  assert.strictEqual(liveRowShape.clicks, 1, "a live row with time on its first line must still match title-box and last-msg-text");
 
   const driftBrowser = fakeBrowser({ snapshots: [snapshot(), { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "row_drifted" }] });
   const drift = await scan(driftBrowser);
