@@ -160,9 +160,15 @@ server.listen(0, "127.0.0.1", async () => {
   const logger = { info: (event, data) => metrics.push({ level: "info", event, data }), warn: (event, data) => metrics.push({ level: "warn", event, data }) };
   try {
     assert.deepStrictEqual(PRODUCT_POLICY.operations.modelAnalysis, {
-      scanConcurrency: 1,
+      scanConcurrency: 2,
       retryConcurrency: 2,
-      maxRetryJobs: 50
+      maxRetryJobs: 50,
+      maxAttemptsPerGeneration: 2,
+      timeoutCircuitThreshold: 10,
+      taskLeaseTtlMs: 180000,
+      retryBackoffMs: [1000, 3000],
+      etaSampleMinimum: 3,
+      etaSampleLimit: 10
     });
     const fallbackAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", maxRetries: 0, logger });
     assert.strictEqual(fallbackAdapter.timeoutMs, 60000);
