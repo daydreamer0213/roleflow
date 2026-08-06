@@ -62,6 +62,8 @@ const tests = [
   "generic_evidence_matching_smoke.js",
   "source_acquisition_smoke.js",
   "boss_communication_page_smoke.js",
+  "boss_message_dom_smoke.js",
+  "boss_message_reader_smoke.js",
   "activity_status_smoke.js",
   "data_visibility_smoke.js",
   "screening_quality_smoke.js",
