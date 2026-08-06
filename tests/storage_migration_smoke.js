@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
+const MATCHING_CARD_VERSION = SCHEMA_VERSION - 2;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -20,10 +21,12 @@ try {
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
       { version: 4, name: "workflow_runs_three_slots", backup_path: null },
-      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1", backup_path: null }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1", backup_path: null },
+      { version: MATCHING_CARD_VERSION + 1, name: "candidate_progress_v1", backup_path: null },
+      { version: SCHEMA_VERSION, name: "candidate_progress_event_idempotency", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_matching_cards_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_progress_event_idempotency");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -39,6 +42,14 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
     1
   );
   assert(SCHEMA_VERSION >= 3);
@@ -68,7 +79,9 @@ try {
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
       { version: 4, name: "workflow_runs_three_slots" },
-      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1" }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1" },
+      { version: MATCHING_CARD_VERSION + 1, name: "candidate_progress_v1" },
+      { version: SCHEMA_VERSION, name: "candidate_progress_event_idempotency" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -86,6 +99,14 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
     1
   );
   db.close();
@@ -346,8 +367,8 @@ try {
   ) VALUES (?, ?, ?, ?)`).run(v4ProfileId, v4DocumentId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
   db.exec(`
     DROP TABLE candidate_matching_cards;
-    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
-    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4LegacyPath);
@@ -386,8 +407,8 @@ try {
   ) VALUES (?, ?, NULL, 'hash-has-card', ?, 'draft', 'model', NULL, ?, ?)`)
     .run(hasCardProfileId, hasCardVersionId, JSON.stringify({ targetDirections: ["用户运营"], strongEvidence: [], transferableCapabilities: [], cautionTransitions: [], userNotes: [], source: "model" }), v4Now, v4Now);
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
-    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4MixedPath);
