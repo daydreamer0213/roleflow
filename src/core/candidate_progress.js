@@ -40,7 +40,8 @@ const ALLOWED_METADATA_KEYS = new Set([
   "source",
   "platform",
   "threadKey",
-  "messageKey"
+  "messageKey",
+  "messageGroupKey"
 ]);
 const TRANSITIONS = new Map([
   ["contact_started", new Set(["waiting_reply", "needs_user_action", "reply_ready", "interview_invited", "closed"])],
@@ -89,6 +90,8 @@ function persistProgressEvent(db, input = {}, { keyKind = "external" } = {}) {
     ? communicationIdempotencyKey(input.idempotencyKey)
     : keyKind === "message"
       ? messageIdempotencyKey(input.platform, input.messageKey)
+      : keyKind === "message-group"
+        ? messageGroupIdempotencyKey(input.platform, input.messageGroupKey)
       : progressIdempotencyKey(input.idempotencyKey);
   const type = shortText(input.type, 80);
   const actor = shortText(input.actor, 40);
@@ -361,6 +364,100 @@ function recordDiscoveredMessageClassification(db, input = {}) {
       db.exec("COMMIT");
       return getProgressCard(db, cardId);
     }
+    transitionProgressCard(db, {
+      cardId,
+      expectedStage: card.stage,
+      stage,
+      nextAction: safeDiscoveredNextAction(stage),
+      now: occurredAt
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return getProgressCard(db, cardId);
+}
+
+function recordDiscoveredMessageGroupClassification(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const platform = String(input.platform || "").trim().toLowerCase();
+  const threadKey = safeDigestKey(input.threadKey, "threadKey");
+  const messageKeys = normalizedMessageKeys(input.messageKeys);
+  const messageGroupKey = safeDigestKey(input.messageGroupKey, "messageGroupKey");
+  const messageCategory = String(input.messageCategory || "").trim();
+  if (!MESSAGE_CATEGORIES.has(messageCategory)) {
+    throw progressError("PROGRESS_MESSAGE_CATEGORY_INVALID", "message category is invalid");
+  }
+  const progressUpdate = input.progressUpdate && typeof input.progressUpdate === "object"
+    ? input.progressUpdate
+    : {};
+  const stage = legalStage(progressUpdate.stage);
+  const missingFactKey = safeMissingFactKey(input.missingFactKey);
+  const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
+  const classificationMetadata = {
+    platform,
+    threadKey,
+    messageGroupKey,
+    messageCategory,
+    missingFactKey,
+    stage
+  };
+  const groupIdempotencyKey = messageGroupIdempotencyKey(platform, messageGroupKey);
+  const existingGroup = getProgressEventByKey(db, cardId, groupIdempotencyKey);
+  if (existingGroup) {
+    assertEventIntent(existingGroup, {
+      type: "message_group_classified",
+      actor: "system",
+      summary,
+      metadata: classificationMetadata
+    });
+    return getProgressCard(db, cardId);
+  }
+  const occurredAt = isoText(input.occurredAt);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const binding = db.prepare(`UPDATE candidate_progress_cards
+      SET thread_key = ?, updated_at = ?
+      WHERE id = ? AND thread_key = ''`)
+      .run(threadKey, occurredAt, cardId);
+    if (Number(binding.changes) !== 1) {
+      const current = getProgressCard(db, cardId);
+      if (!current || current.threadKey !== threadKey) {
+        throw progressError("PROGRESS_THREAD_CONFLICT", "progress card is bound to a different thread");
+      }
+    }
+    for (const messageKey of messageKeys) {
+      persistProgressEvent(db, {
+        cardId,
+        platform,
+        messageKey,
+        type: "incoming_message_classified",
+        actor: "system",
+        summary,
+        metadata: {
+          platform,
+          threadKey,
+          messageKey,
+          messageCategory,
+          missingFactKey,
+          stage
+        },
+        occurredAt
+      }, { keyKind: "message" });
+    }
+    persistProgressEvent(db, {
+      cardId,
+      platform,
+      messageGroupKey,
+      type: "message_group_classified",
+      actor: "system",
+      summary,
+      metadata: classificationMetadata,
+      occurredAt
+    }, { keyKind: "message-group" });
     transitionProgressCard(db, {
       cardId,
       expectedStage: card.stage,
@@ -733,6 +830,20 @@ function messageIdempotencyKey(platform, messageKey) {
   return `message:boss:${safeDigestKey(messageKey, "messageKey").slice(7)}`;
 }
 
+function messageGroupIdempotencyKey(platform, messageGroupKey) {
+  if (platform !== "boss") {
+    throw progressError("PROGRESS_PLATFORM_INVALID", "message platform is invalid");
+  }
+  return `message-group:boss:${safeDigestKey(messageGroupKey, "messageGroupKey").slice(7)}`;
+}
+
+function normalizedMessageKeys(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw progressError("PROGRESS_MESSAGE_KEYS_REQUIRED", "message keys are required");
+  }
+  return [...new Set(value.map((item) => safeDigestKey(item, "messageKey")))];
+}
+
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
@@ -752,6 +863,7 @@ module.exports = {
   recordVerifiedCommunicationStart,
   recordIncomingMessageClassification,
   recordDiscoveredMessageClassification,
+  recordDiscoveredMessageGroupClassification,
   recordManualProgressAction,
   sanitizedMessageSummary,
   getProgressCardForJob,

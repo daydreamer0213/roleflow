@@ -58,6 +58,7 @@ const tests = [
   "boss_message_dom_smoke.js",
   "boss_message_reader_smoke.js",
   "message_preview_state_smoke.js",
+  "message_discovery_smoke.js",
   "activity_status_smoke.js",
   "data_visibility_smoke.js",
   "screening_quality_smoke.js",
