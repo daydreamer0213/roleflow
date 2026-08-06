@@ -17,7 +17,7 @@ Offline fixture calibration completed. Live read-only calibration ran on 2026-08
 | Unread marker | `.notice-badge` | Not live-confirmed (no badge class was present in the open list); approved fallback only. |
 | Selected row | `.selected, .friend-top` | Live list had one `.selected` element elsewhere; row-level selected behavior must be confirmed after a conversation is opened. |
 | Position name | `.chat-position-content .position-name` | Live-confirmed after a conversation was opened. |
-| Company name | `.company-name` | Not present in the live page. The header exposes position, salary, and city, but no dedicated company element or attribute was found. Approved fallback is no company field. |
+| Company name | `.base-info > span:not(.base-title)` | Live-confirmed after the user pointed out the grey text beside the recruiter name. The header `.base-info` contains an unclassed span with the company name, followed by a `.base-title` span with the recruiter role. |
 | Message item | `.message-item` | Live-confirmed; 7 items visible in the opened conversation. |
 | Message id | `data-mid` | Live-confirmed; values are 15 digits. |
 | Stable conversation id | `data-conversation-id` or `data-encid` | Not present in the live list; rows exposed only `data-v-*` scoped attributes, so the approved fallback is a digest of normalized recruiter label plus preview text. |

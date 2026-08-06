@@ -1,5 +1,6 @@
 class FixtureElement {
-  constructor({ classes = [], innerText = "", textContent, attributes = {}, children = {} } = {}) {
+  constructor({ classes = [], innerText = "", textContent, attributes = {}, children = {}, tagName = "div" } = {}) {
+    this.tagName = tagName;
     this.classes = new Set(classes);
     this.innerText = innerText;
     this.textContent = textContent ?? innerText;
@@ -63,7 +64,13 @@ function createBossMessageDomFixture() {
   const single = {
     ".top-info-content": new FixtureElement({ innerText: "Alex Example\nOnline" }),
     ".chat-position-content .position-name": new FixtureElement({ textContent: "Fake Role" }),
-    ".company-name": new FixtureElement({ textContent: "Fixture Company" }),
+    ".base-info": new FixtureElement({
+      tagName: "div",
+      children: [
+        new FixtureElement({ tagName: "span", textContent: "Fixture Company" }),
+        new FixtureElement({ tagName: "span", classes: ["base-title"], textContent: "\u62db\u8058\u8005" })
+      ]
+    }),
     ".salary": new FixtureElement({ textContent: "15K-20K" }),
     ".city": new FixtureElement({ textContent: "Example City" }),
     ".chat-input": new FixtureElement(),
