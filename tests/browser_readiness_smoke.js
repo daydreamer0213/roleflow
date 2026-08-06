@@ -4,6 +4,8 @@ const {
   inspectBossBrowserReadiness
 } = require("../src/core/browser_readiness");
 const { BossSiteAdapter } = require("../src/adapters/sites/boss");
+const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
+const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 
 function codedError(code) {
   const error = new Error(code);
@@ -83,6 +85,13 @@ async function inspect(result) {
     (error) => error.code === "BROWSER_COMMAND_FAILED"
       && /fixture DOM transport failed/.test(error.message)
   );
+  assert.strictEqual(new CdpBrowserAdapter({ port: 9222 }).port, 9222, "portable CDP must use fixed port 9222");
+  assert.strictEqual(typeof createMessageDiscoveryController({
+    db: null,
+    acquireLease() {},
+    renewLease() {},
+    releaseLease() {}
+  }).start, "function", "message discovery controller must expose start");
   console.log("browser_readiness_smoke ok");
 })().catch((error) => {
   console.error(error);
