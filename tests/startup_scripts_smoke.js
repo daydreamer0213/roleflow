@@ -865,6 +865,6 @@ public static class Program {
   }
 }
 '@
-Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $OutputPath -OutputType ConsoleApplication
+Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $OutputPath -OutputType WindowsApplication
 `;
 }

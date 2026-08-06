@@ -72,7 +72,7 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
     const invalid = spawnSync(powershell, [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, script),
       "-PlanId", "1", `-${parameter}`, value
-    ], { encoding: "utf8" });
+    ], { encoding: "utf8", windowsHide: true });
     assert.notStrictEqual(invalid.status, 0, `${script} must reject invalid ${parameter}`);
     assert(
       normalizePowerShellParameterDiagnostic(invalid.stdout + invalid.stderr).includes(parameter),
@@ -82,7 +82,7 @@ for (const script of ["scripts/scan-portable.ps1", "scripts/scan-boss.ps1"]) {
   const dailyOverride = spawnSync(powershell, [
     "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, script),
     "-PlanId", "1", "-ScanMode", "daily", "-MaxCards", "50"
-  ], { encoding: "utf8" });
+  ], { encoding: "utf8", windowsHide: true });
   assert.notStrictEqual(dailyOverride.status, 0, `${script} must reject daily budget overrides`);
   assert((dailyOverride.stdout + dailyOverride.stderr).includes("only supported in broad mode"));
 }
@@ -253,7 +253,7 @@ async function checkMockAnalyzer() {
   assert.strictEqual(getCandidateProfile(db, savedProfile.profileId).profile.candidate.city, "Shenzhen");
 
   const docxPath = path.join(selfCheckDir, `resume-parser-${Date.now()}.docx`);
-  const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8" });
+  const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8", windowsHide: true });
   assert.strictEqual(docxFixture.status, 0, docxFixture.stderr || docxFixture.stdout);
   try {
     const docx = await parseResumeUpload({ fileName: "fixture.docx", buffer: fs.readFileSync(docxPath), root });

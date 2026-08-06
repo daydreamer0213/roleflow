@@ -104,7 +104,7 @@ const generatedReports = [];
   assert(profileId > 0 && cardId > 0, "match-card redirect must carry profileId and cardId");
 
   const docxPath = path.join(smokeDir, `onboarding-${Date.now()}.docx`);
-  const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8" });
+  const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8", windowsHide: true });
   assert.strictEqual(docxFixture.status, 0, docxFixture.stderr || docxFixture.stdout);
   let pastedProfileId = 0;
   let pastedCardId = 0;
