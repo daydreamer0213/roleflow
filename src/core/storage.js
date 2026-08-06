@@ -1787,7 +1787,7 @@ function incrementWorkflowTimeoutCounters(db, { workflowRunId, now, circuitThres
         progress_revision = progress_revision + 1,
         last_activity_at = ?,
         updated_at = ?
-      WHERE id = ? AND circuit_timeout_job_count >= ?
+      WHERE id = ? AND circuit_timeout_job_count >= ? AND control_state = 'none'
     `).run(WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE, now, now, workflowRunId, threshold);
   }
 }

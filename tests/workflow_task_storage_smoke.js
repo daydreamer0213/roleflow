@@ -46,6 +46,7 @@ try {
   testSecondOrdinaryFailureTerminalWithoutCounters();
   testSecondTimeoutCountsOnceAndCannotDoubleCount();
   testTimeoutCircuitOpensAtThresholdInSameTransaction();
+  testSiblingFinalTimeoutAfterCircuitOpenDoesNotReopen();
   testConfigErrorsPauseImmediatelyWithoutSecondAttempt();
   testConfigPauseSeparatesOriginalCodeFromPauseReason();
   testInvalidPauseCodeRejectedWithoutMutation();
@@ -1728,6 +1729,173 @@ function testTimeoutCircuitOpensAtThresholdInSameTransaction() {
   );
 }
 
+function testSiblingFinalTimeoutAfterCircuitOpenDoesNotReopen() {
+  const scenario = seedWorkflow(db, {
+    analyses: Array.from({ length: 11 }, () => ({})),
+    localDay: "2026-08-26",
+    modelConfigRevision: "mrev-circuit-sibling"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-circuit-sibling",
+    now: "2026-08-26T00:00:00.000Z"
+  });
+  const t0 = "2026-08-26T00:01:00.000Z";
+  const t1 = "2026-08-26T00:02:00.000Z";
+  const t2 = "2026-08-26T00:02:30.000Z";
+
+  // Jobs 1..9 become unique final timeouts while control stays none.
+  for (let index = 0; index < 9; index += 1) {
+    const first = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: `worker-sib-a-${index}`,
+      leaseTtlMs: 60_000,
+      selectModelIdentity: modelIdentity,
+      now: t0
+    });
+    commitWorkflowJobTaskFailure(db, {
+      taskId: first.task.id,
+      leaseOwner: `worker-sib-a-${index}`,
+      errorCode: "MODEL_TIMEOUT",
+      retryable: true,
+      retryAt: t1,
+      errorStage: "analyze",
+      modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+      startedAt: t0,
+      finishedAt: "2026-08-26T00:01:10.000Z"
+    });
+    const second = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: `worker-sib-b-${index}`,
+      leaseTtlMs: 60_000,
+      selectModelIdentity: modelIdentity,
+      now: t1
+    });
+    const result = commitWorkflowJobTaskFailure(db, {
+      taskId: second.task.id,
+      leaseOwner: `worker-sib-b-${index}`,
+      errorCode: "MODEL_TIMEOUT",
+      retryable: false,
+      errorStage: "analyze",
+      modelIdentity: modelIdentity({ attemptInGeneration: 2, totalAttemptNumber: 2 }),
+      startedAt: t1,
+      finishedAt: t2
+    });
+    assert.strictEqual(result.workflow.controlState, "none", `final timeout ${index + 1} must stay control none`);
+    assert.strictEqual(result.workflow.circuitTimeoutJobCount, index + 1);
+  }
+
+  // Jobs 10 and 11 both begin their final attempts while control is still none,
+  // mirroring two in-flight workers at the circuit boundary.
+  const tenthFirst = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-sib-10-a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: t0
+  });
+  commitWorkflowJobTaskFailure(db, {
+    taskId: tenthFirst.task.id,
+    leaseOwner: "worker-sib-10-a",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt: t1,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: t0,
+    finishedAt: "2026-08-26T00:01:10.000Z"
+  });
+  const tenth = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-sib-10-b",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: t1
+  });
+  const eleventhFirst = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-sib-11-a",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: t0
+  });
+  commitWorkflowJobTaskFailure(db, {
+    taskId: eleventhFirst.task.id,
+    leaseOwner: "worker-sib-11-a",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: true,
+    retryAt: t1,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: t0,
+    finishedAt: "2026-08-26T00:01:10.000Z"
+  });
+  const eleventh = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-sib-11-b",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: t1
+  });
+  assert(tenth);
+  assert(eleventh);
+
+  // The 10th unique final timeout opens the circuit inside its commit:
+  // the failure activity revision plus the circuit-open revision (+2 total).
+  const progressBeforeTenthCommit = progressRevision(scenario.workflowId);
+  const tenthCommit = commitWorkflowJobTaskFailure(db, {
+    taskId: tenth.task.id,
+    leaseOwner: "worker-sib-10-b",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: false,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 2, totalAttemptNumber: 2 }),
+    startedAt: t1,
+    finishedAt: t2
+  });
+  assert.strictEqual(tenthCommit.workflow.controlState, "pause_requested");
+  assert.strictEqual(tenthCommit.workflow.errorCode, "MODEL_TIMEOUT_CIRCUIT_OPEN");
+  assert.strictEqual(tenthCommit.workflow.resumePhase, "analyzing");
+  assert.strictEqual(tenthCommit.workflow.circuitTimeoutJobCount, 10);
+  assert.strictEqual(tenthCommit.workflow.lifetimeTimeoutJobCount, 10);
+  const progressAfterTenthCommit = progressRevision(scenario.workflowId);
+  assert.strictEqual(progressAfterTenthCommit, progressBeforeTenthCommit + 2);
+
+  // The 11th in-flight final timeout still counts as a unique final timeout,
+  // but must not re-run the circuit-open revision: only the failure activity
+  // revision is added (+1), and control/error/generation stay untouched.
+  const progressBeforeEleventhCommit = progressAfterTenthCommit;
+  const eleventhCommit = commitWorkflowJobTaskFailure(db, {
+    taskId: eleventh.task.id,
+    leaseOwner: "worker-sib-11-b",
+    errorCode: "MODEL_TIMEOUT",
+    retryable: false,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 2, totalAttemptNumber: 2 }),
+    startedAt: t1,
+    finishedAt: t2
+  });
+  assert.strictEqual(eleventhCommit.workflow.controlState, "pause_requested");
+  assert.strictEqual(eleventhCommit.workflow.errorCode, "MODEL_TIMEOUT_CIRCUIT_OPEN");
+  assert.strictEqual(eleventhCommit.workflow.resumePhase, "analyzing");
+  assert.strictEqual(eleventhCommit.workflow.recoveryGeneration, 0);
+  assert.strictEqual(eleventhCommit.workflow.circuitTimeoutJobCount, 11);
+  assert.strictEqual(eleventhCommit.workflow.lifetimeTimeoutJobCount, 11);
+  const progressAfterEleventhCommit = progressRevision(scenario.workflowId);
+  assert.strictEqual(progressAfterEleventhCommit, progressBeforeEleventhCommit + 1);
+
+  // The circuit stays closed: no further claims are possible.
+  assert.strictEqual(claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-sib-after",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: t2
+  }), null);
+}
+
 function testConfigErrorsPauseImmediatelyWithoutSecondAttempt() {
   const pauseCodes = [
     "MODEL_KEY_REQUIRED",
@@ -2420,4 +2588,10 @@ function workflowTimeoutCounts(workflowId) {
   return db.prepare(
     "SELECT circuit_timeout_job_count, lifetime_timeout_job_count FROM workflow_runs WHERE id = ?"
   ).get(workflowId);
+}
+
+function progressRevision(workflowId) {
+  return Number(db.prepare(
+    "SELECT progress_revision FROM workflow_runs WHERE id = ?"
+  ).get(workflowId).progress_revision);
 }
