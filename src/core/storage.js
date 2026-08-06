@@ -35,6 +35,7 @@ const WORKFLOW_RUN_STATUSES = [
 const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted", "paused"];
 const TERMINAL_WORKFLOW_RUN_STATUSES = new Set(["completed", "failed", "stopped"]);
 const WORKFLOW_CONTROL_STATES = new Set(["none", "pause_requested", "stop_requested"]);
+const WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE = "MODEL_TIMEOUT_CIRCUIT_OPEN";
 const WORKFLOW_TRANSITIONS = Object.freeze({
   created: new Set(["scanning", "review_required", "interrupted", "failed", "stopped"]),
   scanning: new Set(["analyzing", "paused", "interrupted", "failed", "stopped"]),
@@ -1768,7 +1769,7 @@ function failWorkflowJobTaskRow(db, {
   );
 }
 
-function incrementWorkflowTimeoutCounters(db, { workflowRunId, now }) {
+function incrementWorkflowTimeoutCounters(db, { workflowRunId, now, circuitThreshold }) {
   db.prepare(`
     UPDATE workflow_runs SET
       circuit_timeout_job_count = circuit_timeout_job_count + 1,
@@ -1776,6 +1777,19 @@ function incrementWorkflowTimeoutCounters(db, { workflowRunId, now }) {
       updated_at = ?
     WHERE id = ?
   `).run(now, workflowRunId);
+  const threshold = Number(circuitThreshold);
+  if (Number.isInteger(threshold) && threshold > 0) {
+    db.prepare(`
+      UPDATE workflow_runs SET
+        control_state = 'pause_requested',
+        resume_phase = 'analyzing',
+        error_code = ?,
+        progress_revision = progress_revision + 1,
+        last_activity_at = ?,
+        updated_at = ?
+      WHERE id = ? AND circuit_timeout_job_count >= ?
+    `).run(WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE, now, now, workflowRunId, threshold);
+  }
 }
 
 function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
@@ -1787,6 +1801,59 @@ function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
       last_activity_at = ?,
       updated_at = ?
     WHERE id = ?
+  `).run(now, now, workflowRunId);
+}
+
+function countWorkflowJobTaskStatuses(db, workflowRunId) {
+  const rows = db.prepare(`
+    SELECT status, count(*) AS n
+    FROM workflow_job_tasks
+    WHERE workflow_run_id = ?
+    GROUP BY status
+  `).all(workflowRunId);
+  const counts = {
+    pending: 0,
+    running: 0,
+    retryPending: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    stopped: 0,
+    total: 0
+  };
+  for (const row of rows) {
+    const key = row.status === "retry_pending" ? "retryPending" : row.status;
+    if (Object.hasOwn(counts, key)) {
+      counts[key] = Number(row.n);
+      counts.total += Number(row.n);
+    }
+  }
+  return counts;
+}
+
+function selectEarliestRetryAvailableAt(db, { workflowRunId, now }) {
+  const row = db.prepare(`
+    SELECT MIN(available_at) AS earliest
+    FROM workflow_job_tasks
+    WHERE workflow_run_id = ?
+      AND status = 'retry_pending'
+      AND available_at IS NOT NULL
+      AND available_at > ?
+  `).get(workflowRunId, now);
+  return row && row.earliest ? row.earliest : null;
+}
+
+function markWorkflowJobTasksStopped(db, { workflowRunId, now }) {
+  return db.prepare(`
+    UPDATE workflow_job_tasks SET
+      status = 'stopped',
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      available_at = NULL,
+      finished_at = COALESCE(finished_at, ?),
+      updated_at = ?
+    WHERE workflow_run_id = ? AND status IN ('pending', 'retry_pending')
   `).run(now, now, workflowRunId);
 }
 
@@ -4399,6 +4466,10 @@ module.exports = {
   finishJobAnalysisAttemptRow,
   failWorkflowJobTaskRow,
   incrementWorkflowTimeoutCounters,
+  WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE,
+  countWorkflowJobTaskStatuses,
+  selectEarliestRetryAvailableAt,
+  markWorkflowJobTasksStopped,
   requestWorkflowRunConfigurationPause,
   selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,

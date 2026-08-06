@@ -15,6 +15,7 @@ const {
 const {
   initializeWorkflowJobTasks,
   claimWorkflowJobTask,
+  commitWorkflowJobTaskFailure,
   listWorkflowJobTasks,
   listJobAnalysisAttempts
 } = require("../src/core/workflow_analysis_tasks");
@@ -55,6 +56,13 @@ const {
   await testRunWorkflowAnalysisRetryCooldownCannotBeBypassed();
   await testRunWorkflowAnalysisConfigurationPauseStopsClaiming();
   await testRunWorkflowAnalysisQueueDrainedCounts();
+  await testRunWorkflowAnalysisNineFinalTimeoutsStayAnalyzing();
+  await testRunWorkflowAnalysisTenthFinalTimeoutOpensCircuitWithSibling();
+  await testRunWorkflowAnalysisPauseRequestedFinalizesPaused();
+  await testRunWorkflowAnalysisStopRequestedFinalizesStopped();
+  await testRunWorkflowAnalysisStopBeforeStartMarksAllStopped();
+  await testRunWorkflowAnalysisWaitsForFutureRetryNotFalseDrained();
+  await testRunWorkflowAnalysisRejectsNonAnalyzingOrMissingRun();
   testAttemptLoggerChildAndUnknownKeysRedacted();
   console.log("workflow_analysis_executor_smoke ok");
 } catch (error) {
@@ -849,9 +857,12 @@ async function testRunWorkflowAnalysisRetryCooldownCannotBeBypassed() {
       workflowRunId: scenario.workflowId,
       primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
       backupRuntime: null,
-      createAnalyzeJob: () => async () => {
+      createAnalyzeJob: () => async (job) => {
         calls += 1;
-        throw Object.assign(new Error("timeout"), { code: "MODEL_TIMEOUT" });
+        if (calls === 1) {
+          throw Object.assign(new Error("timeout"), { code: "MODEL_TIMEOUT" });
+        }
+        return analyzedJob(job);
       },
       analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
       logger: silentLogger(),
@@ -859,35 +870,20 @@ async function testRunWorkflowAnalysisRetryCooldownCannotBeBypassed() {
       workerIdFactory: (index) => `worker-${index + 1}`,
       retryBackoffMs: [1000, 3000],
       random: () => 0,
-      sleep: async (ms) => clock.advance(Math.floor(ms / 2))
+      sleep: async (ms) => clock.advance(ms)
     });
     assert.deepStrictEqual(result, {
       status: "drained",
-      claimed: 1,
-      succeeded: 0,
+      claimed: 2,
+      succeeded: 1,
       failed: 1,
       skipped: 0
     });
-    assert.strictEqual(calls, 1);
+    assert.strictEqual(calls, 2);
     const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
-    assert.strictEqual(tasks[0].status, "retry_pending");
-    assert.strictEqual(tasks[0].availableAt, "2026-08-26T00:00:01.000Z");
-    assert.strictEqual(tasks[0].attemptCountInGeneration, 1);
-    assert.strictEqual(tasks[0].totalAttemptCount, 1);
-
-    const due = claimWorkflowJobTask(db, {
-      workflowRunId: scenario.workflowId,
-      leaseOwner: "worker-due",
-      leaseTtlMs: 60_000,
-      selectModelIdentity: ({ attemptInGeneration }) => selectAttemptRuntime({
-        attemptInGeneration,
-        primaryRuntime: primaryRuntime(),
-        backupRuntime: null
-      }).identity,
-      now: "2026-08-26T00:00:01.000Z"
-    });
-    assert(due);
-    assert.strictEqual(due.task.attemptCountInGeneration, 2);
+    assert.strictEqual(tasks[0].status, "succeeded");
+    assert.strictEqual(tasks[0].attemptCountInGeneration, 2);
+    assert.strictEqual(tasks[0].totalAttemptCount, 2);
   } finally {
     db.close();
   }
@@ -935,8 +931,12 @@ async function testRunWorkflowAnalysisConfigurationPauseStopsClaiming() {
     });
     assert.strictEqual(calls, 1);
     const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "paused");
     assert.strictEqual(workflow.controlState, "pause_requested");
     assert.strictEqual(workflow.errorCode, "MODEL_AUTH_REQUIRED");
+    assert.strictEqual(workflow.resumePhase, "analyzing");
+    assert.strictEqual(workflow.recoveryGeneration, 0);
+    assert.strictEqual(workflow.circuitTimeoutJobCount, 0);
     const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
     assert.deepStrictEqual(tasks.map((task) => task.status), ["retry_pending", "pending", "pending"]);
     const attempts = listJobAnalysisAttempts(db, {
@@ -1006,6 +1006,459 @@ async function testRunWorkflowAnalysisQueueDrainedCounts() {
       "SELECT analysis_json FROM job_observations WHERE job_id = ?"
     ).get(scenario.jobIds[1]);
     assert.strictEqual(JSON.parse(skippedObservation.analysis_json).decisionSource, "local_rules");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisNineFinalTimeoutsStayAnalyzing() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: Array.from({ length: 9 }, () => ({})),
+      localDay: "2026-08-28",
+      modelConfigRevision: "exec-circuit-nine"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-circuit-nine",
+      now: "2026-08-28T00:00:00.000Z"
+    });
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 2 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async () => {
+        throw timeoutError();
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-28T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 18,
+      succeeded: 0,
+      failed: 18,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "analyzing");
+    assert.strictEqual(workflow.controlState, "none");
+    assert.strictEqual(workflow.errorCode, "");
+    assert.strictEqual(workflow.circuitTimeoutJobCount, 9);
+    assert.strictEqual(workflow.lifetimeTimeoutJobCount, 9);
+    assert.strictEqual(workflow.recoveryGeneration, 0);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), Array.from({ length: 9 }, () => "failed"));
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisTenthFinalTimeoutOpensCircuitWithSibling() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: Array.from({ length: 11 }, () => ({})),
+      localDay: "2026-08-28",
+      modelConfigRevision: "exec-circuit-sibling"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-circuit-sibling",
+      now: "2026-08-28T00:00:00.000Z"
+    });
+    const callCounts = new Map();
+    const gates = [];
+    const running = runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 2 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        const sourceId = String(job.sourceId || "");
+        const n = (callCounts.get(sourceId) || 0) + 1;
+        callCounts.set(sourceId, n);
+        const isJob10SecondAttempt = sourceId.endsWith("-job-10") && n === 2;
+        const isJob11FirstAttempt = sourceId.endsWith("-job-11") && n === 1;
+        if (isJob10SecondAttempt || isJob11FirstAttempt) {
+          const gate = deferredGate();
+          gates.push({ sourceId, n, job, gate });
+          return gate.promise;
+        }
+        throw timeoutError();
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-28T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    await waitFor(() => gates.length === 2);
+    const job10 = gates.find((entry) => entry.sourceId.endsWith("-job-10"));
+    const job11 = gates.find((entry) => entry.sourceId.endsWith("-job-11"));
+    assert(job10, "job 10 second attempt must be in flight");
+    assert(job11, "job 11 sibling must be in flight");
+    let mid = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(mid.status, "analyzing");
+    assert.strictEqual(mid.controlState, "none");
+    assert.strictEqual(mid.circuitTimeoutJobCount, 9);
+    assert.strictEqual(mid.errorCode, "");
+
+    // The 10th unique final timeout opens the circuit atomically with the commit.
+    job10.gate.reject(timeoutError());
+    await waitFor(() => getWorkflowRun(db, scenario.workflowId).controlState === "pause_requested");
+    mid = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(mid.status, "analyzing");
+    assert.strictEqual(mid.errorCode, "MODEL_TIMEOUT_CIRCUIT_OPEN");
+    assert.strictEqual(mid.circuitTimeoutJobCount, 10);
+    assert.strictEqual(mid.lifetimeTimeoutJobCount, 10);
+    assert.strictEqual(mid.recoveryGeneration, 0);
+
+    // The already-running sibling finishes its current attempt and persists.
+    job11.gate.resolve(analyzedJob(job11.job));
+    const result = await running;
+    assert.deepStrictEqual(result, {
+      status: "paused",
+      claimed: 21,
+      succeeded: 1,
+      failed: 20,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "paused");
+    assert.strictEqual(workflow.controlState, "pause_requested");
+    assert.strictEqual(workflow.resumePhase, "analyzing");
+    assert.strictEqual(workflow.errorCode, "MODEL_TIMEOUT_CIRCUIT_OPEN");
+    assert.strictEqual(workflow.recoveryGeneration, 0);
+    assert.strictEqual(workflow.circuitTimeoutJobCount, 10);
+    assert.strictEqual(workflow.lifetimeTimeoutJobCount, 10);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 11);
+    assert.deepStrictEqual(
+      tasks.map((task) => task.status),
+      Array.from({ length: 10 }, () => "failed").concat(["succeeded"])
+    );
+    const job11Task = tasks.find((task) => String(task.jobId) === String(scenario.jobIds[10]));
+    const attempts = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: job11Task.id
+    });
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].status, "succeeded");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisPauseRequestedFinalizesPaused() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}, {}],
+      localDay: "2026-08-29",
+      modelConfigRevision: "exec-manual-pause"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-manual-pause",
+      now: "2026-08-29T00:00:00.000Z"
+    });
+    const gates = [];
+    const running = runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        const gate = deferredGate();
+        gates.push({ job, gate });
+        return gate.promise;
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-29T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    await waitFor(() => gates.length === 1);
+    db.prepare("UPDATE workflow_runs SET control_state = 'pause_requested' WHERE id = ?").run(scenario.workflowId);
+    gates[0].gate.resolve(analyzedJob(gates[0].job));
+    const result = await running;
+    assert.deepStrictEqual(result, {
+      status: "paused",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "paused");
+    assert.strictEqual(workflow.controlState, "pause_requested");
+    assert.strictEqual(workflow.resumePhase, "analyzing");
+    assert.strictEqual(workflow.errorCode, "");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "pending", "pending"]);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisStopRequestedFinalizesStopped() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}, {}],
+      localDay: "2026-08-29",
+      modelConfigRevision: "exec-manual-stop"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-manual-stop",
+      now: "2026-08-29T00:00:00.000Z"
+    });
+    db.prepare(`
+      UPDATE workflow_job_tasks SET
+        status = 'retry_pending',
+        attempt_count_in_generation = 1,
+        total_attempt_count = 1,
+        priority = 20,
+        available_at = '2026-08-29T01:00:00.000Z',
+        last_error_code = 'MODEL_TIMEOUT',
+        last_error_kind = 'retryable',
+        updated_at = '2026-08-29T00:00:00.000Z'
+      WHERE workflow_run_id = ? AND position = 3
+    `).run(scenario.workflowId);
+    const gates = [];
+    const running = runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        const gate = deferredGate();
+        gates.push({ job, gate });
+        return gate.promise;
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-29T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    await waitFor(() => gates.length === 1);
+    db.prepare("UPDATE workflow_runs SET control_state = 'stop_requested' WHERE id = ?").run(scenario.workflowId);
+    gates[0].gate.resolve(analyzedJob(gates[0].job));
+    const result = await running;
+    assert.deepStrictEqual(result, {
+      status: "stopped",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "stopped");
+    assert.strictEqual(workflow.controlState, "stop_requested");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "stopped", "stopped"]);
+    const stoppedRetry = tasks.find((task) => task.position === 3);
+    assert.strictEqual(stoppedRetry.availableAt, null);
+    assert.strictEqual(stoppedRetry.leaseOwner, null);
+    assert.strictEqual(stoppedRetry.finishedAt, "2026-08-29T00:05:00.000Z");
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisStopBeforeStartMarksAllStopped() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}, {}],
+      localDay: "2026-08-29",
+      modelConfigRevision: "exec-stop-preset"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-stop-preset",
+      now: "2026-08-29T00:00:00.000Z"
+    });
+    db.prepare("UPDATE workflow_runs SET control_state = 'stop_requested' WHERE id = ?").run(scenario.workflowId);
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 2 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => analyzedJob(job),
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-29T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.deepStrictEqual(result, {
+      status: "stopped",
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0
+    });
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.status, "stopped");
+    assert.strictEqual(workflow.controlState, "stop_requested");
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["stopped", "stopped"]);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisWaitsForFutureRetryNotFalseDrained() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{ semanticStatus: "pending", decisionSource: "scan" }],
+      localDay: "2026-08-30",
+      modelConfigRevision: "exec-future-retry"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-future-retry",
+      now: "2026-08-30T00:00:00.000Z"
+    });
+    const claimNow = "2026-08-30T00:01:00.000Z";
+    const claimed = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: "pre-worker-future",
+      leaseTtlMs: 60_000,
+      selectModelIdentity: ({ attemptInGeneration }) => selectAttemptRuntime({
+        attemptInGeneration,
+        primaryRuntime: primaryRuntime(),
+        backupRuntime: null
+      }).identity,
+      now: claimNow
+    });
+    commitWorkflowJobTaskFailure(db, {
+      taskId: claimed.task.id,
+      leaseOwner: "pre-worker-future",
+      errorCode: "MODEL_TIMEOUT",
+      retryable: true,
+      retryAt: "2026-08-30T00:01:30.000Z",
+      errorStage: "analyze",
+      modelIdentity: selectAttemptRuntime({
+        attemptInGeneration: 1,
+        primaryRuntime: primaryRuntime(),
+        backupRuntime: null
+      }).identity,
+      startedAt: claimNow,
+      finishedAt: claimNow
+    });
+    const clock = fakeClock("2026-08-30T00:01:00.000Z");
+    let secondAttemptCalls = 0;
+    const result = await runWorkflowAnalysis({
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async (job) => {
+        secondAttemptCalls += 1;
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: clock.now,
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async (ms) => clock.advance(ms)
+    });
+    assert.deepStrictEqual(result, {
+      status: "drained",
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0
+    });
+    assert.strictEqual(secondAttemptCalls, 1);
+    const task = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId })[0];
+    assert.strictEqual(task.status, "succeeded");
+    assert.strictEqual(task.attemptCountInGeneration, 2);
+  } finally {
+    db.close();
+  }
+}
+
+async function testRunWorkflowAnalysisRejectsNonAnalyzingOrMissingRun() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}],
+      localDay: "2026-08-31",
+      modelConfigRevision: "exec-entry"
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: "exec-entry",
+      now: "2026-08-31T00:00:00.000Z"
+    });
+    const options = {
+      db,
+      workflowRunId: scenario.workflowId,
+      primaryRuntime: { ...primaryRuntime(), concurrency: 1 },
+      backupRuntime: null,
+      createAnalyzeJob: () => async () => analyzedJob({ source: "boss", sourceId: "x", title: "x" }),
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      logger: silentLogger(),
+      now: fixedClock("2026-08-31T00:05:00.000Z"),
+      workerIdFactory: (index) => `worker-${index + 1}`,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    };
+    await assert.rejects(
+      runWorkflowAnalysis({ ...options, workflowRunId: "missing-workflow-run" }),
+      (error) => error.code === "WORKFLOW_EXECUTOR_RUN_NOT_FOUND"
+    );
+    db.prepare("UPDATE workflow_runs SET status = 'scanning' WHERE id = ?").run(scenario.workflowId);
+    await assert.rejects(
+      runWorkflowAnalysis(options),
+      (error) => error.code === "WORKFLOW_EXECUTOR_RUN_NOT_ANALYZING"
+    );
+    transitionWorkflowRun(db, { id: scenario.workflowId, status: "analyzing" });
+    transitionWorkflowRun(db, { id: scenario.workflowId, status: "paused" });
+    await assert.rejects(
+      runWorkflowAnalysis(options),
+      (error) => error.code === "WORKFLOW_EXECUTOR_RUN_NOT_ANALYZING"
+    );
   } finally {
     db.close();
   }
@@ -1141,4 +1594,28 @@ function fakeClock(startIso) {
       return new Date(current).toISOString();
     }
   };
+}
+
+function deferredGate() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+function timeoutError() {
+  return Object.assign(new Error("model timeout"), { code: "MODEL_TIMEOUT" });
 }

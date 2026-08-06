@@ -1,5 +1,6 @@
 "use strict";
 
+const { PRODUCT_POLICY } = require("./product_policy");
 const {
   getWorkflowRun,
   immediateTransaction,
@@ -15,6 +16,9 @@ const {
   finishJobAnalysisAttemptRow,
   failWorkflowJobTaskRow,
   incrementWorkflowTimeoutCounters,
+  countWorkflowJobTaskStatuses,
+  selectEarliestRetryAvailableAt,
+  markWorkflowJobTasksStopped,
   requestWorkflowRunConfigurationPause,
   selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
@@ -362,6 +366,7 @@ function commitWorkflowJobTaskFailure(db, {
   pauseCode,
   retryable,
   retryAt,
+  timeoutCircuitThreshold,
   errorStage,
   modelIdentity,
   telemetry,
@@ -496,7 +501,10 @@ function commitWorkflowJobTaskFailure(db, {
       if (outcome === "failed" && code === "MODEL_TIMEOUT" && attemptInGeneration >= 2) {
         incrementWorkflowTimeoutCounters(db, {
           workflowRunId: taskRow.workflow_run_id,
-          now: finished
+          now: finished,
+          circuitThreshold: timeoutCircuitThreshold === undefined || timeoutCircuitThreshold === null
+            ? PRODUCT_POLICY.operations.modelAnalysis.timeoutCircuitThreshold
+            : Number(timeoutCircuitThreshold)
         });
       }
       incrementWorkflowRunActivity(db, {
@@ -511,6 +519,19 @@ function commitWorkflowJobTaskFailure(db, {
       outcome
     };
   });
+}
+
+function countWorkflowJobTaskStatusesForRun(db, workflowRunId) {
+  return countWorkflowJobTaskStatuses(db, workflowRunId);
+}
+
+function earliestRetryAvailableAt(db, { workflowRunId, now }) {
+  return selectEarliestRetryAvailableAt(db, { workflowRunId, now });
+}
+
+function markRemainingWorkflowJobTasksStopped(db, { workflowRunId, now }) {
+  const result = markWorkflowJobTasksStopped(db, { workflowRunId, now });
+  return { stopped: Number(result.changes || 0) };
 }
 
 function recoverExpiredWorkflowJobTasks(db, { workflowRunId, now }) {
@@ -770,6 +791,9 @@ module.exports = {
   commitWorkflowJobTaskFailure,
   commitWorkflowJobTaskSkipped,
   recoverExpiredWorkflowJobTasks,
+  countWorkflowJobTaskStatusesForRun,
+  earliestRetryAvailableAt,
+  markRemainingWorkflowJobTasksStopped,
   listWorkflowJobTasks,
   listJobAnalysisAttempts
 };

@@ -1,12 +1,15 @@
 "use strict";
 
 const { PRODUCT_POLICY } = require("./product_policy");
-const { getWorkflowRun, transitionWorkflowRun } = require("./storage");
+const { getWorkflowRun, immediateTransaction, transitionWorkflowRun } = require("./storage");
 const {
   claimWorkflowJobTask,
   commitWorkflowJobTaskSuccess,
   commitWorkflowJobTaskSkipped,
-  commitWorkflowJobTaskFailure
+  commitWorkflowJobTaskFailure,
+  countWorkflowJobTaskStatusesForRun,
+  earliestRetryAvailableAt,
+  markRemainingWorkflowJobTasksStopped
 } = require("./workflow_analysis_tasks");
 
 const WORKFLOW_ANALYSIS_ERROR_KINDS = Object.freeze({
@@ -17,6 +20,9 @@ const WORKFLOW_ANALYSIS_ERROR_KINDS = Object.freeze({
 });
 
 const WORKFLOW_EXECUTOR_CRASH_CODE = "WORKFLOW_EXECUTOR_CRASH";
+const WORKFLOW_EXECUTOR_RUN_NOT_FOUND = "WORKFLOW_EXECUTOR_RUN_NOT_FOUND";
+const WORKFLOW_EXECUTOR_RUN_NOT_ANALYZING = "WORKFLOW_EXECUTOR_RUN_NOT_ANALYZING";
+const WORKFLOW_EXECUTOR_QUEUE_NOT_DRAINED = "WORKFLOW_EXECUTOR_QUEUE_NOT_DRAINED";
 const LOCAL_RULE_SKIP_CODE = "LOCAL_RULE_SKIP";
 
 const RETRYABLE_ERROR_CODES = new Set([
@@ -245,6 +251,7 @@ function sanitizeForwarded(value, key = "") {
 
 async function runWorkflowAnalysis(input) {
   const context = normalizeRunContext(input);
+  assertAnalyzingRun(context);
   const summary = { claimed: 0, succeeded: 0, failed: 0, skipped: 0 };
   const workerResults = await Promise.allSettled(
     Array.from({ length: context.workerCount }, (_, index) => workerLoop(context, index, summary))
@@ -260,13 +267,51 @@ async function runWorkflowAnalysis(input) {
     return { ...summary, status: "interrupted", rejected: rejections.length };
   }
   const workflow = getWorkflowRun(context.db, context.workflowRunId);
-  if (workflow?.controlState === "pause_requested") {
-    return { ...summary, status: "paused" };
+  const finishedAt = context.now();
+  if (!workflow) {
+    transitionWorkflowRun(context.db, {
+      id: context.workflowRunId,
+      status: "interrupted",
+      errorCode: WORKFLOW_EXECUTOR_RUN_NOT_FOUND,
+      errorMessage: "workflow run disappeared while workers were running"
+    });
+    return { ...summary, status: "interrupted" };
   }
-  if (workflow?.controlState === "stop_requested") {
+  if (workflow.controlState === "stop_requested") {
+    immediateTransaction(context.db, () => {
+      markRemainingWorkflowJobTasksStopped(context.db, {
+        workflowRunId: context.workflowRunId,
+        now: finishedAt
+      });
+      transitionWorkflowRun(context.db, {
+        id: context.workflowRunId,
+        status: "stopped",
+        updatedAt: finishedAt
+      });
+    });
     return { ...summary, status: "stopped" };
   }
-  return { ...summary, status: "drained" };
+  if (workflow.controlState === "pause_requested") {
+    transitionWorkflowRun(context.db, {
+      id: context.workflowRunId,
+      status: "paused",
+      resumePhase: workflow.resumePhase || "analyzing",
+      updatedAt: finishedAt
+    });
+    return { ...summary, status: "paused" };
+  }
+  const counts = countWorkflowJobTaskStatusesForRun(context.db, context.workflowRunId);
+  if (counts.pending === 0 && counts.running === 0 && counts.retryPending === 0) {
+    return { ...summary, status: "drained" };
+  }
+  // Defensive: all workers exited with control none while unfinished work remains.
+  transitionWorkflowRun(context.db, {
+    id: context.workflowRunId,
+    status: "interrupted",
+    errorCode: WORKFLOW_EXECUTOR_QUEUE_NOT_DRAINED,
+    errorMessage: "workflow analysis workers exited before the queue was drained"
+  });
+  return { ...summary, status: "interrupted" };
 }
 
 async function workerLoop(context, workerIndex, summary) {
@@ -274,6 +319,8 @@ async function workerLoop(context, workerIndex, summary) {
     ? String(context.workerIdFactory(workerIndex, context.workerCount))
     : `workflow-analysis-worker-${workerIndex + 1}`;
   while (true) {
+    const gate = getWorkflowRun(context.db, context.workflowRunId);
+    if (!gate || gate.status !== "analyzing" || gate.controlState !== "none") return;
     const claimed = claimWorkflowJobTask(context.db, {
       workflowRunId: context.workflowRunId,
       leaseOwner,
@@ -285,7 +332,17 @@ async function workerLoop(context, workerIndex, summary) {
       }).identity,
       now: context.now()
     });
-    if (!claimed) return;
+    if (!claimed) {
+      const counts = countWorkflowJobTaskStatusesForRun(context.db, context.workflowRunId);
+      if (counts.pending === 0 && counts.running === 0 && counts.retryPending === 0) return;
+      const waitMs = waitMsUntilEarliestRetry(context);
+      if (waitMs > 0) {
+        await context.sleep(waitMs);
+        continue;
+      }
+      // The only remaining unfinished tasks are leased by sibling workers.
+      return;
+    }
     summary.claimed += 1;
     await executeAttempt(context, claimed, leaseOwner, summary);
   }
@@ -394,6 +451,33 @@ function normalizeRunContext(input = {}) {
     leaseTtlMs: PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
     workerCount
   };
+}
+
+function assertAnalyzingRun(context) {
+  const workflow = getWorkflowRun(context.db, context.workflowRunId);
+  if (!workflow) {
+    throw contextError(
+      WORKFLOW_EXECUTOR_RUN_NOT_FOUND,
+      `workflow run ${context.workflowRunId} does not exist`
+    );
+  }
+  if (workflow.status !== "analyzing") {
+    throw contextError(
+      WORKFLOW_EXECUTOR_RUN_NOT_ANALYZING,
+      `workflow run ${context.workflowRunId} status is ${workflow.status}; only analyzing runs can be executed`
+    );
+  }
+}
+
+function waitMsUntilEarliestRetry(context) {
+  const counts = countWorkflowJobTaskStatusesForRun(context.db, context.workflowRunId);
+  if (counts.retryPending === 0) return 0;
+  const earliest = earliestRetryAvailableAt(context.db, {
+    workflowRunId: context.workflowRunId,
+    now: context.now()
+  });
+  if (!earliest) return 0;
+  return Math.max(0, Date.parse(earliest) - Date.parse(context.now()));
 }
 
 function clampConcurrency(value) {
