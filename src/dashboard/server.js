@@ -78,6 +78,16 @@ const {
   communicationBatchSummary,
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
+const {
+  PROGRESS_STAGES,
+  ensureProgressCard,
+  transitionProgressCard,
+  correctProgressStage,
+  getProgressCardForJob,
+  getProgressCardById,
+  recordManualProgressAction,
+  listProgressCardsWithEvents
+} = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
@@ -108,6 +118,57 @@ const {
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
+
+const PROGRESS_ACTIONS = Object.freeze({
+  reply_confirmed_sent: {
+    stage: "waiting_reply",
+    eventType: "reply_confirmed_sent",
+    summary: "用户确认已手动发送",
+    nextAction: "等待招聘方回复"
+  },
+  mark_needs_user_action: {
+    stage: "needs_user_action",
+    eventType: "manual_review_requested",
+    summary: "用户标记需要处理",
+    nextAction: "请用户确认下一步"
+  },
+  mark_interview_invited: {
+    stage: "interview_invited",
+    eventType: "interview_invited",
+    summary: "用户确认收到面试邀约",
+    nextAction: "请用户决定是否接受并安排时间"
+  },
+  mark_interview_scheduled: {
+    stage: "interview_scheduled",
+    eventType: "interview_scheduled",
+    summary: "",
+    nextAction: "按已确认时间参加面试"
+  },
+  mark_resume_submitted: {
+    stage: "resume_submitted",
+    eventType: "resume_submitted",
+    summary: "用户确认已投递简历",
+    nextAction: "等待招聘方后续反馈"
+  },
+  mark_rejected: {
+    stage: "rejected",
+    eventType: "rejected",
+    summary: "用户确认已拒绝",
+    nextAction: ""
+  },
+  close_opportunity: {
+    stage: "closed",
+    eventType: "opportunity_closed",
+    summary: "用户关闭机会",
+    nextAction: ""
+  },
+  reopen_opportunity: {
+    stage: "needs_user_action",
+    eventType: "opportunity_reopened",
+    summary: "用户重新开启机会",
+    nextAction: "请用户确认下一步"
+  }
+});
 const {
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
@@ -270,6 +331,7 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
@@ -1870,6 +1932,56 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
   }
 }
 
+async function handleProgress(req, res, db) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const card = getProgressCardById(db, params.cardId);
+    if (!card) throw appError("PROGRESS_CARD_NOT_FOUND", "进展卡不存在。", { statusCode: 404 });
+    const action = String(params.action || "").trim();
+    if (action === "correct_stage") {
+      const targetStage = String(params.targetStage || "").trim();
+      if (!PROGRESS_STAGES.has(targetStage)) throw appError("PROGRESS_STAGE_INVALID", "目标阶段无效。", { statusCode: 400 });
+      correctProgressStage(db, {
+        cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
+        expectedStage: card.stage,
+        toStage: targetStage,
+        reason: params.reason
+      });
+    } else {
+      const definition = PROGRESS_ACTIONS[action];
+      if (!definition) throw appError("PROGRESS_ACTION_INVALID", "进展操作无效。", { statusCode: 400 });
+      const enteredSummary = String(params.summary || "").trim();
+      if (action === "mark_interview_scheduled" && !enteredSummary) {
+        throw appError("PROGRESS_INTERVIEW_SUMMARY_REQUIRED", "请填写你确认的面试安排摘要。", { statusCode: 400 });
+      }
+      let scheduledAt = String(params.scheduledAt || "").trim();
+      if (action === "mark_interview_scheduled") {
+        if (!Number.isFinite(Date.parse(scheduledAt))) {
+          throw appError("PROGRESS_INTERVIEW_TIME_INVALID", "面试时间必须是有效日期时间。", { statusCode: 400 });
+        }
+        scheduledAt = new Date(scheduledAt).toISOString();
+      }
+      recordManualProgressAction(db, {
+        cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
+        stage: definition.stage,
+        eventType: definition.eventType,
+        summary: enteredSummary || definition.summary,
+        nextAction: definition.nextAction,
+        scheduledAt
+      });
+    }
+    redirect(res, `/queue?planId=${card.planId}`);
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "PROGRESS_UPDATE_FAILED" });
+    const statusCode = Number(issue.statusCode) >= 400 && Number(issue.statusCode) < 500
+      ? issue.statusCode
+      : 400;
+    sendJson(res, statusCode, { error: issue.message, errorCode: issue.code });
+  }
+}
+
 function canGenerateGreeting(job) {
   const analysis = job.analysis || {};
   return ["primary", "apply"].includes(job.decisionBucket) && analysis.semanticStatus === "complete"
@@ -3068,13 +3180,18 @@ function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = ge
 }
 
 function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
-  const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
+  const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended", "waiting_reply", "needs_user_action", "interview"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
-  const fullPool = listDecisionPool(db, { planId: plan.id });
+  const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
+  const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
+  const fullPool = listDecisionPool(db, { planId: plan.id })
+    .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
   const allCandidates = fullPool.filter(compactAwaitingAction);
   const noReplyCandidates = fullPool.filter((job) => job.applicationStatus === "no_reply");
-  const poolBase = pool === "no_reply" ? noReplyCandidates : allCandidates;
+  const progressCandidates = fullPool.filter((job) => job.progressCard);
+  const progressPools = new Set(["waiting_reply", "needs_user_action", "interview"]);
+  const poolBase = pool === "no_reply" ? noReplyCandidates : progressPools.has(pool) ? progressCandidates : allCandidates;
   const scopeCounts = Object.fromEntries(["all", "new", "repeated", "backlog"].map((key) => [key, poolBase.filter((job) => key === "all" || queueScopeForJob(job, latestMainBatchId) === key).length]));
   const candidates = poolBase.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
   const scopedAwaiting = allCandidates.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
@@ -3083,12 +3200,19 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   counts.detail_pending = refreshable.filter((job) => (job.qualityTags || []).includes("detail_unverified")).length;
   counts.activity_pending = refreshable.filter((job) => ((job.qualityTags || []).includes("activity_unverified") || (job.qualityTags || []).includes("stale_or_unknown_active")) && !(job.qualityTags || []).includes("detail_unverified")).length;
   counts.no_reply = noReplyCandidates.length;
+  const scopedProgress = progressCandidates.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
+  counts.waiting_reply = scopedProgress.filter((job) => job.progressCard.stage === "waiting_reply").length;
+  counts.needs_user_action = scopedProgress.filter((job) => ["needs_user_action", "reply_ready"].includes(job.progressCard.stage)).length;
+  counts.interview = scopedProgress.filter((job) => ["interview_invited", "interview_scheduled"].includes(job.progressCard.stage)).length;
   const wanted = pool === "focus" ? new Set(["primary", "apply"]) : new Set([pool]);
   const filtered = candidates.filter((job) => {
     const tags = job.qualityTags || [];
     if (pool === "no_reply") return true;
     if (pool === "detail_pending") return job.decisionBucket === "refresh" && tags.includes("detail_unverified");
     if (pool === "activity_pending") return job.decisionBucket === "refresh" && (tags.includes("activity_unverified") || tags.includes("stale_or_unknown_active")) && !tags.includes("detail_unverified");
+    if (pool === "waiting_reply") return job.progressCard?.stage === "waiting_reply";
+    if (pool === "needs_user_action") return ["needs_user_action", "reply_ready"].includes(job.progressCard?.stage);
+    if (pool === "interview") return ["interview_invited", "interview_scheduled"].includes(job.progressCard?.stage);
     return wanted.has(job.decisionBucket);
   });
   const pageSize = 30;
@@ -3099,8 +3223,12 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
     jobs,
     filters: { status: "all", level: "all", fresh: "all", decision: "all", q: "", planId: plan.id, batch: "latest", batchId: null, queuePool: pool, queueScope: scope, queuePage: page, latestMainBatchId },
     latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
-    title: pool === "no_reply" ? "无回复待跟进" : "当前待处理岗位",
-    hint: pool === "no_reply" ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。" : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
+    title: pool === "no_reply" ? "无回复待跟进" : progressPools.has(pool) ? "求职进展" : "当前待处理岗位",
+    hint: pool === "no_reply"
+      ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。"
+      : progressPools.has(pool)
+        ? "进展操作只更新本地记录；回复、投递、面试确认仍由你在平台上手动完成。"
+        : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
     queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId },
     outcomeAnalyticsPanel
   });
@@ -3271,7 +3399,7 @@ ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=
 
 function renderCompactPoolTabs(queue, planId) {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
-  const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
+  const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["waiting_reply", "等待回复", queue.counts.waiting_reply || 0], ["needs_user_action", "需要处理", queue.counts.needs_user_action || 0], ["interview", "面试进展", queue.counts.interview || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
     + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`;
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
@@ -3297,6 +3425,12 @@ function renderCompactFilters(filters) {
 }
 
 function renderCompactJob(job, filters) {
+  const html = renderCompactJobBase(job, filters);
+  if (!job.progressCard) return html;
+  return html.replace("</details></article>", `</details>${renderProgressPanel(job.progressCard)}</article>`);
+}
+
+function renderCompactJobBase(job, filters) {
   const analysis = job.analysis || {};
   const query = compactQuery(filters);
   const context = `${job.profileId ? `<input type="hidden" name="profileId" value="${escapeAttr(job.profileId)}">` : ""}${job.searchPlanId ? `<input type="hidden" name="planId" value="${escapeAttr(job.searchPlanId)}">` : ""}`;
@@ -3314,6 +3448,45 @@ function renderCompactJob(job, filters) {
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(job.risks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+}
+
+function renderProgressPanel(card) {
+  const eventTimeline = (card.events || []).slice(-5)
+    .map((event) => `<li>${escapeHtml(compactDateTime(event.occurredAt))} · ${escapeHtml(event.summary)}</li>`)
+    .join("");
+  const context = `<input type="hidden" name="cardId" value="${card.id}">`;
+  const requestKey = () => `<input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}">`;
+  const actionButton = (action, label) => `<form method="post" action="/api/progress">${context}${requestKey()}<button name="action" value="${action}">${label}</button></form>`;
+  const stageAction = card.stage === "reply_ready"
+    ? actionButton("reply_confirmed_sent", "已手动发送")
+    : card.stage === "interview_invited"
+      ? `<form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
+      : "";
+  const controls = card.stage === "closed"
+    ? actionButton("reopen_opportunity", "重新开启机会")
+    : `${stageAction}${actionButton("mark_needs_user_action", "标记需要处理")}${actionButton("mark_resume_submitted", "标记已投递简历")}${actionButton("close_opportunity", "关闭机会")}`;
+  const correctionOptions = [...PROGRESS_STAGES]
+    .map((stage) => `<option value="${stage}">${escapeHtml(progressStageLabel(stage))}</option>`)
+    .join("");
+  return `<section class="progress-card" style="margin-top:12px;padding:12px;border:1px solid #86b9ad;border-radius:7px;background:#f3faf8"><strong>${escapeHtml(progressStageLabel(card.stage))}</strong><div class="line">下一步：${escapeHtml(card.nextAction || "等待用户确认")}${card.scheduledAt ? ` · ${escapeHtml(compactDateTime(card.scheduledAt))}` : ""}</div>${eventTimeline ? `<ol>${eventTimeline}</ol>` : ""}<p class="line">所有按钮只更新本地记录，不会自动填写或发送。</p><div class="quick-actions">${controls}</div><details><summary>纠正阶段</summary><form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="correct_stage"><select name="targetStage">${correctionOptions}</select><input name="reason" placeholder="纠正原因" required><button>保存纠正</button></form></details></section>`;
+}
+
+function newProgressRequestKey() {
+  return `progress:${randomUUID()}`;
+}
+
+function progressStageLabel(stage) {
+  return {
+    contact_started: "已发起沟通",
+    waiting_reply: "已发起沟通",
+    needs_user_action: "需要你处理",
+    reply_ready: "回复草稿已就绪",
+    interview_invited: "收到面试邀约",
+    interview_scheduled: "面试已安排",
+    resume_submitted: "已投递简历",
+    rejected: "已拒绝",
+    closed: "已关闭"
+  }[stage] || "求职进展";
 }
 
 function compactSeenLabel(job, latestMainBatchId) {

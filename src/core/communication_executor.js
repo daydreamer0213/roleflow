@@ -1,5 +1,6 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const { reconcileCommunicationOutcome } = require("./workflow_inventory");
+const { recordVerifiedCommunicationStart } = require("./candidate_progress");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
 const { getWorkflowRunByCommunicationBatch, transitionWorkflowRun } = require("./storage");
 const { communicationWorkflowMetrics } = require("./workflow_run");
@@ -110,9 +111,12 @@ async function runCommunicationBatch({
         executionGate
       });
     } else if (state === "already_communicated") {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "already_communicated" });
-      reconcileCommunicationOutcome(db, {
-        batch: getCommunicationBatch(db, batchId), item, status: "already_communicated", note: `RoleFlow batch #${batchId}`
+      commitVerifiedCommunication(db, {
+        batch: getCommunicationBatch(db, batchId),
+        item,
+        expectedStatus: "opening",
+        status: "already_communicated",
+        outcome: "already_communicated"
       });
       recordAudit(db, item, "communication_result", "already_communicated");
     } else {
@@ -194,9 +198,31 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
       logger
     );
   }
-  transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "succeeded" });
-  reconcileCommunicationOutcome(db, { batch, item, status: "succeeded", note: `RoleFlow batch #${batch.id}` });
+  commitVerifiedCommunication(db, {
+    batch,
+    item,
+    expectedStatus: "click_dispatched",
+    status: "succeeded",
+    outcome: "succeeded"
+  });
   recordAudit(db, item, "communication_result", "succeeded");
+}
+
+function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, outcome }) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      batchId: batch.id,
+      expectedStatus,
+      status
+    });
+    recordVerifiedCommunicationStart(db, { batch, item, outcome });
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
 }
 
 async function paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal }) {
