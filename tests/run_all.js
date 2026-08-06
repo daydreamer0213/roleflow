@@ -41,6 +41,7 @@ const tests = [
   "resume_privacy_smoke.js",
   "analyzer_initialization_smoke.js",
   "model_settings_smoke.js",
+  "model_task_profiles_smoke.js",
   "model_settings_ui_smoke.js",
   "observability_smoke.js",
   "observability_context_smoke.js",

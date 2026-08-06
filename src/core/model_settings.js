@@ -6,9 +6,29 @@ const { secretPath, hasSecret, saveSecret, loadSecret, inspectSecret, clearSecre
 
 const SETTINGS_RELATIVE_PATH = path.join(".runtime", "settings", "model.json");
 const SECRET_ID = "model-api-key";
+const SETTINGS_SCHEMA_VERSION = 2;
 const DEFAULT_MODEL_TIMEOUT_MS = 60000;
 const THINKING_MODES = new Set(["enabled", "disabled"]);
 const REASONING_EFFORTS = new Set(["high", "max"]);
+const CREDENTIAL_REFS = new Set(["shared", "independent"]);
+const MODEL_TASK_PROFILE_IDS = ["deep_analysis", "batch_screening"];
+
+const RECOMMENDED_TASK_PROFILES = Object.freeze({
+  deep_analysis: Object.freeze({
+    model: "deepseek-v4-pro",
+    timeoutMs: 120000,
+    thinkingMode: "enabled",
+    reasoningEffort: "high",
+    concurrency: 1
+  }),
+  batch_screening: Object.freeze({
+    model: "deepseek-v4-flash",
+    timeoutMs: 90000,
+    thinkingMode: "disabled",
+    reasoningEffort: "high",
+    concurrency: 2
+  })
+});
 
 function supportsDeepSeekV4Thinking(preset, model) {
   return String(preset || "") === "deepseek" && ["deepseek-v4-pro", "deepseek-v4-flash"].includes(String(model || ""));
@@ -76,12 +96,31 @@ function listModelPresets({ includeAdvanced = true } = {}) {
   }));
 }
 
+function listModelTaskProfiles() {
+  return MODEL_TASK_PROFILE_IDS.map((id) => ({
+    id,
+    label: id === "deep_analysis" ? "深度分析" : "批量筛选",
+    recommended: { ...RECOMMENDED_TASK_PROFILES[id] }
+  }));
+}
+
 function loadModelSettings({ root, fallbackModelConfig }) {
   const file = settingsPath(root);
   const stored = readJson(file);
-  const source = stored ? "runtime" : "legacy";
-  const settings = normalizeSettings(stored || settingsFromLegacyConfig(fallbackModelConfig));
-  const migrationError = stored ? migrateLegacySecret(root, settings) : "";
+  let settings;
+  let source;
+  if (stored) {
+    settings = normalizeSettings(stored);
+    source = stored.schemaVersion === 2 ? "runtime" : "migrated_v1";
+  } else if (isMockFallback(fallbackModelConfig)) {
+    settings = defaultSettings();
+    source = "new_install";
+  } else {
+    settings = settingsFromLegacyConfig(fallbackModelConfig);
+    source = "legacy";
+  }
+  const migrationError = stored && stored.schemaVersion !== 2 ? migrateLegacySecret(root, settings) : "";
+  const primary = settings.taskProfiles.deep_analysis;
   const secretId = secretIdForSettings(settings);
   const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
   const keyErrorCode = keyState.errorCode || migrationError;
@@ -93,7 +132,7 @@ function loadModelSettings({ root, fallbackModelConfig }) {
     keyConfigured: Boolean(keyState.configured),
     keyReadable: Boolean(keyState.readable),
     keyErrorCode,
-    connectionStatus: settings.connection?.status || "unverified",
+    connectionStatus: primary.connection?.status || "unverified",
     modelConfig: modelConfigFromSettings(settings, "", source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : "ZHIPPING_MODEL_API_KEY")
   };
 }
@@ -106,27 +145,43 @@ function saveModelSettings({ root, input, fallbackModelConfig }) {
 }
 
 async function saveVerifiedModelConfiguration({ root, input, fallbackModelConfig, connectionTester = testModelConnection }) {
+  return saveVerifiedModelTaskProfile({
+    root,
+    taskProfile: "deep_analysis",
+    fallbackModelConfig,
+    connectionTester,
+    input
+  });
+}
+
+async function saveVerifiedModelTaskProfile({
+  root,
+  taskProfile,
+  input,
+  fallbackModelConfig,
+  connectionTester = testModelConnection
+}) {
+  const profileId = normalizeTaskProfileId(taskProfile);
   const current = loadModelSettings({ root, fallbackModelConfig });
-  const proposed = normalizeSettings({ ...current.settings, ...input, connection: null });
-  const targetSecretId = secretIdForSettings(proposed);
+  const proposedSettings = applyTaskProfileInput(current.settings, profileId, input);
+  const profile = proposedSettings.taskProfiles[profileId];
+  const targetSecretId = secretIdForSettings(proposedSettings, profileId);
   const suppliedKey = String(input.apiKey || "").trim();
   const clearRequested = input.clearApiKey === true || input.clearApiKey === "on";
   let apiKey = suppliedKey;
+  const effective = effectiveTaskProfile(proposedSettings, profileId);
 
-  if (proposed.provider !== "mock") {
+  if (effective.provider !== "mock") {
     if (clearRequested) throw appError("MODEL_KEY_REQUIRED", "当前模型需要 API Key，不能在保存并验证时删除密钥。", { statusCode: 400 });
     if (!apiKey && targetSecretId && inspectSecret(root, targetSecretId).configured) apiKey = loadSecret(root, targetSecretId);
     if (!apiKey) throw appError("MODEL_KEY_REQUIRED", "请填写当前模型厂商的 API Key。切换厂商时不会复用上一家的密钥。", { statusCode: 400 });
   }
 
-  const verification = proposed.provider === "mock"
+  const verification = effective.provider === "mock"
     ? { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 }
-    : await connectionTester({ settings: proposed, apiKey });
-  const settings = normalizeSettings({
-    ...proposed,
-    connection: { ...verification, fingerprint: modelFingerprint(proposed) }
-  });
-
+    : await connectionTester({ settings: { ...effective, taskProfile: profileId }, apiKey });
+  profile.connection = { ...verification, fingerprint: profileFingerprint(effective) };
+  const settings = normalizeSettings(proposedSettings);
   const settingsFile = settingsPath(root);
   const oldSettings = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
   const targetFile = targetSecretId ? secretPath(root, targetSecretId) : "";
@@ -143,25 +198,96 @@ async function saveVerifiedModelConfiguration({ root, input, fallbackModelConfig
   return loadModelSettings({ root, fallbackModelConfig });
 }
 
+async function saveVerifiedBatchBackup({ root, input, fallbackModelConfig, connectionTester = testModelConnection }) {
+  const current = loadModelSettings({ root, fallbackModelConfig });
+  const settings = normalizeSettings({ ...current.settings });
+  const previous = settings.batchBackup;
+  const presetId = input.preset ? normalizePresetId(input.preset) : previous.preset;
+  const preset = MODEL_PRESETS[presetId];
+  const isCustom = presetId === "custom";
+  const model = input.model !== undefined && input.model !== null
+    ? String(input.model).trim().slice(0, 160)
+    : previous.model;
+  const baseUrl = isCustom
+    ? normalizeBaseUrl(input.baseUrl || previous.baseUrl)
+    : normalizeBaseUrl(preset.baseUrl);
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
+  const backup = {
+    enabled: Boolean(input.enabled),
+    credentialRef: input.credentialRef ? normalizeCredentialRef(input.credentialRef) : previous.credentialRef,
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl,
+    model,
+    timeoutMs: normalizeTimeout(input.timeoutMs),
+    thinkingMode: supportsThinking ? normalizeThinkingMode(input.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(input.reasoningEffort) : "high"
+  };
+  const targetSecretId = secretIdForBatchBackup(settings, backup);
+  const suppliedKey = String(input.apiKey || "").trim();
+  let apiKey = suppliedKey;
+  if (backup.provider !== "mock" && !apiKey && targetSecretId && inspectSecret(root, targetSecretId).configured) {
+    apiKey = loadSecret(root, targetSecretId);
+  }
+  if (backup.provider !== "mock" && !apiKey && backup.enabled) {
+    throw appError("MODEL_KEY_REQUIRED", "请填写当前模型厂商的 API Key。切换厂商时不会复用上一家的密钥。", { statusCode: 400 });
+  }
+  const verification = backup.provider === "mock"
+    ? { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 }
+    : await connectionTester({
+      settings: {
+        preset: backup.preset,
+        baseUrl: backup.baseUrl,
+        model: backup.model,
+        timeoutMs: backup.timeoutMs,
+        thinkingMode: backup.thinkingMode,
+        reasoningEffort: backup.reasoningEffort
+      },
+      apiKey
+    });
+  backup.connection = { ...verification, fingerprint: profileFingerprint(backup) };
+  backup.revision = profileFingerprint(backup);
+  settings.batchBackup = backup;
+  settings.revision = settingsFingerprint(settings);
+  const settingsFile = settingsPath(root);
+  const oldSettings = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
+  const targetFile = targetSecretId ? secretPath(root, targetSecretId) : "";
+  const oldSecret = targetFile && fs.existsSync(targetFile) ? fs.readFileSync(targetFile) : null;
+  try {
+    if (targetSecretId && suppliedKey) saveSecret(root, targetSecretId, suppliedKey);
+    writeSettings(root, settings);
+  } catch (error) {
+    restoreFile(settingsFile, oldSettings);
+    if (targetFile) restoreFile(targetFile, oldSecret);
+    throw appError("MODEL_SETTINGS_SAVE_FAILED", "模型已验证，但本机配置保存失败；原配置已恢复，请重试。", { cause: error, statusCode: 500 });
+  }
+  return loadModelSettings({ root, fallbackModelConfig });
+}
+
 async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
-  const normalized = normalizeSettings(settings);
-  if (normalized.provider === "mock") return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 };
+  const profileId = settings?.taskProfile && MODEL_TASK_PROFILE_IDS.includes(String(settings.taskProfile))
+    ? String(settings.taskProfile)
+    : "deep_analysis";
+  const profile = settings?.taskProfiles
+    ? effectiveTaskProfile(normalizeSettings(settings), profileId)
+    : normalizeProbeProfile(settings);
+  if (profile.provider === "mock") return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 };
   if (!String(apiKey || "").trim()) throw appError("MODEL_KEY_REQUIRED", "请填写当前模型厂商的 API Key。", { statusCode: 400 });
   const controller = new AbortController();
   const startedAt = Date.now();
-  const timer = setTimeout(() => controller.abort(), normalized.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), profile.timeoutMs);
   let response;
   let payload;
   try {
     const probeBody = {
-      model: normalized.model,
+      model: profile.model,
       messages: [{ role: "user", content: "Return JSON: {\\\"ok\\\":true}" }],
       temperature: 0,
       max_tokens: 16,
       response_format: { type: "json_object" }
     };
-    if (supportsDeepSeekV4Thinking(normalized.preset, normalized.model)) probeBody.thinking = { type: "disabled" };
-    response = await fetchImpl(`${normalized.baseUrl}/chat/completions`, {
+    if (supportsDeepSeekV4Thinking(profile.preset, profile.model)) probeBody.thinking = { type: "disabled" };
+    response = await fetchImpl(`${profile.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${String(apiKey).trim()}` },
       body: JSON.stringify(probeBody),
@@ -170,7 +296,7 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
     const body = await response.text();
     try { payload = body ? JSON.parse(body) : {}; } catch { payload = {}; }
   } catch (error) {
-    if (error?.name === "AbortError") throw appError("MODEL_CONNECTION_TIMEOUT", `模型连接超过 ${normalized.timeoutMs}ms，请检查网络或提高高级设置中的超时时间。`, { cause: error, statusCode: 408 });
+    if (error?.name === "AbortError") throw appError("MODEL_CONNECTION_TIMEOUT", `模型连接超过 ${profile.timeoutMs}ms，请检查网络或提高高级设置中的超时时间。`, { cause: error, statusCode: 408 });
     throw appError("MODEL_CONNECTION_FAILED", "无法连接模型接口，请检查网络和接口地址。", { cause: error, statusCode: 502 });
   } finally {
     clearTimeout(timer);
@@ -183,45 +309,136 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
   return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: Date.now() - startedAt, httpStatus: response.status };
 }
 
-function resolveRuntimeModelConfig({ root, fallbackModelConfig }) {
+function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile }) {
   const loaded = loadModelSettings({ root, fallbackModelConfig });
-  if (loaded.settings.provider === "mock") return { ...loaded, modelConfig: modelConfigFromSettings(loaded.settings) };
-  const apiKey = loaded.keyConfigured ? loadSecret(root, loaded.secretId) : "";
+  const profileId = normalizeTaskProfileId(taskProfile || "deep_analysis");
+  const profile = loaded.settings.taskProfiles[profileId];
+  const secretId = secretIdForSettings(loaded.settings, profileId);
+  const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  const effective = effectiveTaskProfile(loaded.settings, profileId);
+  const base = {
+    ...loaded,
+    secretId,
+    concurrency: profile.concurrency,
+    revision: profile.revision,
+    keyStored: Boolean(keyState.stored),
+    keyConfigured: Boolean(keyState.configured),
+    keyReadable: Boolean(keyState.readable),
+    keyErrorCode: keyState.errorCode || ""
+  };
+  if (effective.provider === "mock") {
+    return { ...base, modelConfig: modelConfigFromProfile(effective, "") };
+  }
+  const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
   const apiKeyEnv = loaded.source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : "ZHIPPING_MODEL_API_KEY";
-  return { ...loaded, modelConfig: modelConfigFromSettings(loaded.settings, apiKey, apiKeyEnv) };
+  return { ...base, modelConfig: modelConfigFromProfile(effective, apiKey, apiKeyEnv) };
 }
 
-function isModelReady(modelState) {
-  if (!modelState?.settings) return false;
-  if (modelState.settings.provider === "mock") return modelState.source === "runtime" && modelState.settings.connection?.status === "verified";
-  return Boolean(modelState.keyConfigured && modelState.keyReadable && modelState.settings.connection?.status === "verified"
-    && modelState.settings.connection?.fingerprint === modelFingerprint(modelState.settings));
-}
-
-function modelConfigFromSettings(settings, apiKey = "", apiKeyEnv = "ZHIPPING_MODEL_API_KEY") {
-  if (settings.provider === "mock") return { provider: "mock", providers: { mock: { model: settings.model || "offline-structured-mock" } } };
+function resolveRuntimeBatchBackup({ root, fallbackModelConfig }) {
+  const loaded = loadModelSettings({ root, fallbackModelConfig });
+  const backup = loaded.settings.batchBackup;
+  if (!backup.enabled) return null;
+  if (backup.connection?.status !== "verified" || backup.connection.fingerprint !== profileFingerprint(backup)) return null;
+  const secretId = secretIdForBatchBackup(loaded.settings, backup);
+  const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
   return {
-    provider: "openai_compatible",
-    providers: {
-      openai_compatible: {
-        baseUrl: settings.baseUrl,
-        model: settings.model,
-        timeoutMs: settings.timeoutMs,
-        thinkingMode: settings.thinkingMode,
-        reasoningEffort: settings.reasoningEffort,
-        apiKey: apiKey || "",
-        apiKeyEnv
-      }
-    }
+    ...loaded,
+    secretId,
+    concurrency: 1,
+    revision: backup.revision,
+    keyStored: Boolean(keyState.stored),
+    keyConfigured: Boolean(keyState.configured),
+    keyReadable: Boolean(keyState.readable),
+    keyErrorCode: keyState.errorCode || "",
+    modelConfig: modelConfigFromProfile(backup, apiKey, "ZHIPPING_MODEL_API_KEY")
   };
 }
 
+function isModelReady(modelState, { taskProfile = "deep_analysis", checkedAfter = "" } = {}) {
+  if (!modelState?.settings?.taskProfiles) return false;
+  const profileId = normalizeTaskProfileId(taskProfile);
+  const profile = modelState.settings.taskProfiles[profileId];
+  if (!profile) return false;
+  const effective = effectiveTaskProfile(modelState.settings, profileId);
+  const keyOk = effective.provider === "mock"
+    ? modelState.source === "runtime"
+    : Boolean(modelState.keyConfigured && modelState.keyReadable);
+  if (!keyOk) return false;
+  const verified = profile.connection?.status === "verified"
+    && profile.connection?.fingerprint === profileFingerprint(effective);
+  if (!verified) return false;
+  if (checkedAfter) {
+    const checkedAt = Date.parse(profile.connection.checkedAt || "");
+    if (!Number.isFinite(checkedAt) || checkedAt < Date.parse(checkedAfter)) return false;
+  }
+  return true;
+}
+
+function restoreRecommendedTaskProfile({ root, taskProfile, fallbackModelConfig }) {
+  const profileId = normalizeTaskProfileId(taskProfile);
+  const current = loadModelSettings({ root, fallbackModelConfig }).settings;
+  const settings = normalizeSettings({ ...current });
+  const recommended = RECOMMENDED_TASK_PROFILES[profileId];
+  const profile = settings.taskProfiles[profileId];
+  profile.model = recommended.model;
+  profile.timeoutMs = recommended.timeoutMs;
+  profile.thinkingMode = recommended.thinkingMode;
+  profile.reasoningEffort = recommended.reasoningEffort;
+  profile.concurrency = recommended.concurrency;
+  profile.connection = { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint: "" };
+  profile.revision = profileFingerprint(profile);
+  settings.revision = settingsFingerprint(settings);
+  writeSettings(root, settings);
+  return loadModelSettings({ root, fallbackModelConfig });
+}
+
+function modelConfigFromSettings(settings, apiKey = "", apiKeyEnv = "ZHIPPING_MODEL_API_KEY") {
+  const normalized = normalizeSettings(settings);
+  return modelConfigFromProfile(effectiveTaskProfile(normalized, "deep_analysis"), apiKey, apiKeyEnv);
+}
+
 function normalizeSettings(raw = {}) {
-  const presetId = MODEL_PRESETS[String(raw.preset || "").trim()] ? String(raw.preset).trim() : "custom";
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("模型设置必须是对象。");
+  if (raw.schemaVersion === 2 && raw.taskProfiles) {
+    const sharedCredential = normalizeCredential(raw.sharedCredential || raw.shared || {});
+    const taskProfiles = {};
+    for (const id of MODEL_TASK_PROFILE_IDS) {
+      const input = raw.taskProfiles[id] || {};
+      const independent = raw.independentCredentials?.[id] && String(input.credentialRef || "").trim() === "independent";
+      const credential = independent ? raw.independentCredentials[id] : sharedCredential;
+      taskProfiles[id] = normalizeTaskProfile(id, {
+        ...input,
+        preset: input.preset || credential.preset,
+        baseUrl: input.baseUrl || credential.baseUrl,
+        provider: input.provider || credential.provider
+      });
+    }
+    const independentCredentials = {
+      deep_analysis: raw.independentCredentials?.deep_analysis ? normalizeCredential(raw.independentCredentials.deep_analysis) : null,
+      batch_screening: raw.independentCredentials?.batch_screening ? normalizeCredential(raw.independentCredentials.batch_screening) : null
+    };
+    const batchBackup = normalizeBatchBackup(raw.batchBackup || {});
+    const settings = {
+      schemaVersion: 2,
+      credentialMode: raw.credentialMode === "independent" ? "independent" : "shared",
+      sharedCredential,
+      taskProfiles,
+      independentCredentials,
+      batchBackup,
+      revision: ""
+    };
+    settings.revision = settingsFingerprint(settings);
+    return withPublicAliases(settings);
+  }
+  return settingsFromLegacyV1(raw);
+}
+
+function settingsFromLegacyV1(raw = {}) {
+  const presetId = normalizePresetId(raw.preset);
   const preset = MODEL_PRESETS[presetId];
   const isCustom = presetId === "custom";
-  const requestedModel = String(raw.customModel || raw.model || preset.defaultModel || "").trim().slice(0, 160);
-  const model = requestedModel || preset.defaultModel;
+  const model = String(raw.customModel || raw.model || preset.defaultModel || "").trim().slice(0, 160) || preset.defaultModel;
   const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
   if (preset.provider !== "mock" && !baseUrl) throw new Error("请填写兼容接口基础地址。");
   if (preset.provider !== "mock" && !model) throw new Error("请填写模型名称。");
@@ -235,8 +452,432 @@ function normalizeSettings(raw = {}) {
     thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
     reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high"
   };
-  const connection = normalizeConnection(raw.connection, modelFingerprint(basic));
-  return { ...basic, connection };
+  const rawConnection = raw.connection && typeof raw.connection === "object" && !Array.isArray(raw.connection) ? raw.connection : {};
+  const shared = {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl
+  };
+  const taskProfiles = {};
+  for (const id of MODEL_TASK_PROFILE_IDS) {
+    const concurrency = id === "deep_analysis" ? 1 : 2;
+    const profile = { ...basic, concurrency, credentialRef: "shared" };
+    const fingerprint = profileFingerprint(profile);
+    profile.revision = fingerprint;
+    profile.connection = rawConnection.status === "verified"
+      ? {
+        status: "verified",
+        checkedAt: String(rawConnection.checkedAt || ""),
+        latencyMs: Number.isFinite(Number(rawConnection.latencyMs)) ? Number(rawConnection.latencyMs) : null,
+        httpStatus: Number.isFinite(Number(rawConnection.httpStatus)) ? Number(rawConnection.httpStatus) : null,
+        fingerprint
+      }
+      : { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint };
+    taskProfiles[id] = {
+      model: profile.model,
+      timeoutMs: profile.timeoutMs,
+      thinkingMode: profile.thinkingMode,
+      reasoningEffort: profile.reasoningEffort,
+      concurrency: profile.concurrency,
+      credentialRef: profile.credentialRef,
+      revision: profile.revision,
+      connection: profile.connection
+    };
+  }
+  const settings = {
+    schemaVersion: 2,
+    credentialMode: "shared",
+    sharedCredential: shared,
+    taskProfiles,
+    independentCredentials: { deep_analysis: null, batch_screening: null },
+    batchBackup: defaultBatchBackup(),
+    revision: ""
+  };
+  settings.revision = settingsFingerprint(settings);
+  return withPublicAliases(settings);
+}
+
+function defaultSettings() {
+  const sharedCredential = normalizeCredential({ preset: "deepseek" });
+  const taskProfiles = {};
+  for (const id of MODEL_TASK_PROFILE_IDS) {
+    const recommended = RECOMMENDED_TASK_PROFILES[id];
+    taskProfiles[id] = normalizeTaskProfile(id, {
+      ...recommended,
+      preset: sharedCredential.preset,
+      baseUrl: sharedCredential.baseUrl,
+      provider: sharedCredential.provider,
+      credentialRef: "shared"
+    });
+  }
+  const settings = {
+    schemaVersion: 2,
+    credentialMode: "shared",
+    sharedCredential,
+    taskProfiles,
+    independentCredentials: { deep_analysis: null, batch_screening: null },
+    batchBackup: defaultBatchBackup(),
+    revision: ""
+  };
+  settings.revision = settingsFingerprint(settings);
+  return withPublicAliases(settings);
+}
+
+function defaultBatchBackup() {
+  const preset = MODEL_PRESETS.deepseek;
+  const basic = {
+    enabled: false,
+    credentialRef: "shared",
+    preset: "deepseek",
+    provider: preset.provider,
+    baseUrl: preset.baseUrl,
+    model: "deepseek-v4-pro",
+    timeoutMs: 90000,
+    thinkingMode: "disabled",
+    reasoningEffort: "high"
+  };
+  const fingerprint = profileFingerprint(basic);
+  return {
+    ...basic,
+    revision: fingerprint,
+    connection: { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint }
+  };
+}
+
+function settingsFromLegacyConfig(config = {}) {
+  const provider = String(config.provider || "mock");
+  if (provider === "mock") return defaultSettings();
+  const legacy = config.providers?.openai_compatible || {};
+  const baseUrl = normalizeBaseUrl(legacy.baseUrl);
+  const preset = matchedPresetId(baseUrl);
+  return normalizeSettings({
+    preset,
+    model: legacy.model || "",
+    timeoutMs: legacy.timeoutMs,
+    thinkingMode: legacy.thinkingMode,
+    reasoningEffort: legacy.reasoningEffort
+  });
+}
+
+function normalizeTaskProfile(id, raw = {}) {
+  const presetId = normalizePresetId(raw.preset);
+  const preset = MODEL_PRESETS[presetId];
+  const isCustom = presetId === "custom";
+  const model = String(raw.customModel || raw.model || preset.defaultModel || "").trim().slice(0, 160) || preset.defaultModel;
+  const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
+  if (preset.provider !== "mock" && !baseUrl) throw new Error("请填写兼容接口基础地址。");
+  if (preset.provider !== "mock" && !model) throw new Error("请填写模型名称。");
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
+  const basic = {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl,
+    model,
+    timeoutMs: normalizeTimeout(raw.timeoutMs),
+    thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high",
+    concurrency: normalizeConcurrency(raw.concurrency, id),
+    credentialRef: normalizeCredentialRef(raw.credentialRef)
+  };
+  const fingerprint = profileFingerprint(basic);
+  const connection = normalizeConnection(raw.connection, fingerprint);
+  return {
+    model: basic.model,
+    timeoutMs: basic.timeoutMs,
+    thinkingMode: basic.thinkingMode,
+    reasoningEffort: basic.reasoningEffort,
+    concurrency: basic.concurrency,
+    credentialRef: basic.credentialRef,
+    revision: fingerprint,
+    connection
+  };
+}
+
+function effectiveTaskProfile(settings, profileId) {
+  const profile = settings?.taskProfiles?.[profileId];
+  if (!profile) return null;
+  const independent = profile.credentialRef === "independent" && settings.independentCredentials?.[profileId];
+  const credential = independent || settings.sharedCredential || {};
+  return {
+    preset: credential.preset,
+    provider: credential.provider,
+    baseUrl: credential.baseUrl,
+    model: profile.model,
+    timeoutMs: profile.timeoutMs,
+    thinkingMode: profile.thinkingMode,
+    reasoningEffort: profile.reasoningEffort,
+    concurrency: profile.concurrency,
+    credentialRef: profile.credentialRef
+  };
+}
+
+function normalizeProbeProfile(raw = {}) {
+  const presetId = normalizePresetId(raw.preset);
+  const preset = MODEL_PRESETS[presetId];
+  const isCustom = presetId === "custom";
+  const model = String(raw.customModel || raw.model || preset.defaultModel || "").trim().slice(0, 160) || preset.defaultModel;
+  const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
+  return {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl,
+    model,
+    timeoutMs: normalizeTimeout(raw.timeoutMs),
+    thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high",
+    concurrency: 1
+  };
+}
+
+function withPublicAliases(settings) {
+  const deep = effectiveTaskProfile(settings, "deep_analysis") || {};
+  return {
+    ...settings,
+    preset: deep.preset || "custom",
+    provider: deep.provider || "openai_compatible",
+    baseUrl: deep.baseUrl || "",
+    model: deep.model || "",
+    timeoutMs: deep.timeoutMs ?? DEFAULT_MODEL_TIMEOUT_MS,
+    thinkingMode: deep.thinkingMode || "disabled",
+    reasoningEffort: deep.reasoningEffort || "high",
+    connection: settings.taskProfiles.deep_analysis.connection
+  };
+}
+
+function normalizeTaskProfileId(value) {
+  const id = String(value || "").trim();
+  if (!MODEL_TASK_PROFILE_IDS.includes(id)) throw new Error("MODEL_TASK_PROFILE_INVALID");
+  return id;
+}
+
+function normalizeConcurrency(value, id) {
+  if (id !== "batch_screening") return 1;
+  const number = Number(value);
+  if (Number.isFinite(number)) return Math.max(1, Math.min(2, Math.round(number)));
+  return RECOMMENDED_TASK_PROFILES.batch_screening.concurrency;
+}
+
+function normalizeCredentialRef(value) {
+  const ref = String(value || "shared").trim().toLowerCase();
+  if (!CREDENTIAL_REFS.has(ref)) throw new Error("MODEL_CREDENTIAL_REF_INVALID");
+  return ref;
+}
+
+function normalizeCredential(raw = {}) {
+  const presetId = normalizePresetId(raw.preset);
+  const preset = MODEL_PRESETS[presetId];
+  return {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl: presetId === "custom" ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl)
+  };
+}
+
+function normalizeBatchBackup(raw = {}) {
+  const presetId = raw.preset ? normalizePresetId(raw.preset) : "deepseek";
+  const preset = MODEL_PRESETS[presetId];
+  const isCustom = presetId === "custom";
+  const model = String(raw.model || preset.defaultModel || "").trim().slice(0, 160);
+  const baseUrl = isCustom ? normalizeBaseUrl(raw.baseUrl) : normalizeBaseUrl(preset.baseUrl);
+  const supportsThinking = supportsDeepSeekV4Thinking(presetId, model);
+  const basic = {
+    enabled: Boolean(raw.enabled),
+    credentialRef: normalizeCredentialRef(raw.credentialRef),
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl,
+    model,
+    timeoutMs: normalizeTimeout(raw.timeoutMs),
+    thinkingMode: supportsThinking ? normalizeThinkingMode(raw.thinkingMode) : "disabled",
+    reasoningEffort: supportsThinking ? normalizeReasoningEffort(raw.reasoningEffort) : "high"
+  };
+  const fingerprint = profileFingerprint(basic);
+  const connection = normalizeConnection(raw.connection, fingerprint);
+  return { ...basic, revision: fingerprint, connection };
+}
+
+function applyTaskProfileInput(settings, profileId, input = {}) {
+  const result = normalizeSettings({ ...settings });
+  const profile = result.taskProfiles[profileId];
+  const independent = String(input.credentialRef || profile.credentialRef || "shared").trim().toLowerCase() === "independent";
+  if (independent) {
+    if (input.preset) {
+      const presetId = normalizePresetId(input.preset);
+      const preset = MODEL_PRESETS[presetId];
+      const credential = {
+        preset: presetId,
+        provider: preset.provider,
+        baseUrl: presetId === "custom" ? normalizeBaseUrl(input.baseUrl || profile.baseUrl) : normalizeBaseUrl(preset.baseUrl)
+      };
+      result.independentCredentials[profileId] = credential;
+      profile.preset = credential.preset;
+      profile.provider = credential.provider;
+      profile.baseUrl = credential.baseUrl;
+    } else if (input.baseUrl) {
+      const current = result.independentCredentials[profileId] || result.sharedCredential;
+      const credential = {
+        preset: current.preset,
+        provider: current.provider,
+        baseUrl: normalizeBaseUrl(input.baseUrl)
+      };
+      result.independentCredentials[profileId] = credential;
+      profile.preset = credential.preset;
+      profile.provider = credential.provider;
+      profile.baseUrl = credential.baseUrl;
+    } else if (!result.independentCredentials[profileId]) {
+      result.independentCredentials[profileId] = { ...result.sharedCredential };
+      profile.preset = result.independentCredentials[profileId].preset;
+      profile.provider = result.independentCredentials[profileId].provider;
+      profile.baseUrl = result.independentCredentials[profileId].baseUrl;
+    }
+    profile.credentialRef = "independent";
+  } else {
+    profile.credentialRef = "shared";
+    if (input.preset) {
+      const presetId = normalizePresetId(input.preset);
+      const preset = MODEL_PRESETS[presetId];
+      result.sharedCredential = {
+        preset: presetId,
+        provider: preset.provider,
+        baseUrl: presetId === "custom" ? normalizeBaseUrl(input.baseUrl || profile.baseUrl) : normalizeBaseUrl(preset.baseUrl)
+      };
+    } else if (input.baseUrl) {
+      result.sharedCredential.baseUrl = normalizeBaseUrl(input.baseUrl);
+    }
+    result.independentCredentials[profileId] = null;
+    profile.preset = result.sharedCredential.preset;
+    profile.provider = result.sharedCredential.provider;
+    profile.baseUrl = result.sharedCredential.baseUrl;
+  }
+  if (input.model !== undefined && input.model !== null) profile.model = String(input.model).trim().slice(0, 160);
+  if (input.timeoutMs !== undefined && input.timeoutMs !== null) profile.timeoutMs = normalizeTimeout(input.timeoutMs);
+  if (input.concurrency !== undefined && input.concurrency !== null) profile.concurrency = normalizeConcurrency(input.concurrency, profileId);
+  const supportsThinking = supportsDeepSeekV4Thinking(profile.preset, profile.model);
+  if (input.thinkingMode !== undefined && input.thinkingMode !== null && supportsThinking) {
+    profile.thinkingMode = normalizeThinkingMode(input.thinkingMode);
+  }
+  if (input.reasoningEffort !== undefined && input.reasoningEffort !== null && supportsThinking) {
+    profile.reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
+  }
+  if (!supportsThinking) {
+    profile.thinkingMode = "disabled";
+    profile.reasoningEffort = "high";
+  }
+  profile.connection = { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint: "" };
+  profile.revision = profileFingerprint(profile);
+  const finalized = normalizeSettings(result);
+  finalized.revision = settingsFingerprint(finalized);
+  return finalized;
+}
+
+function secretIdForSettings(settings = {}, taskProfile = "") {
+  const normalized = normalizeSettings(settings);
+  if (taskProfile) {
+    const profileId = normalizeTaskProfileId(taskProfile);
+    const profile = normalized.taskProfiles[profileId];
+    if (!profile) return "";
+    if (profile.credentialRef === "independent" && normalized.independentCredentials?.[profileId]) {
+      return secretIdForCredential(`model-api-key-${profileId}`, normalized.independentCredentials[profileId]);
+    }
+    if (profile.credentialRef === "independent") return "";
+    return secretIdForCredential("model-api-key-shared", normalized.sharedCredential);
+  }
+  const primary = normalized.taskProfiles.deep_analysis;
+  if (!primary) return "";
+  if (primary.credentialRef === "independent" && normalized.independentCredentials?.deep_analysis) {
+    return secretIdForCredential("model-api-key-deep_analysis", normalized.independentCredentials.deep_analysis);
+  }
+  if (primary.credentialRef === "independent") return "";
+  return secretIdForCredential("model-api-key-shared", normalized.sharedCredential);
+}
+
+function secretIdForBatchBackup(settings, backup) {
+  if (!backup || backup.provider === "mock") return "";
+  return secretIdForCredential("model-api-key-batch_backup", backup);
+}
+
+function secretIdForCredential(prefix, credential) {
+  if (!credential || credential.provider === "mock") return "";
+  const safePrefix = String(prefix || "").replace(/_/g, "-");
+  if (credential.preset && credential.preset !== "custom") return `${safePrefix}-${credential.preset}`;
+  const hash = crypto.createHash("sha256").update(String(credential.baseUrl || "custom")).digest("hex").slice(0, 12);
+  return `${safePrefix}-custom-${hash}`;
+}
+
+function migrateLegacySecret(root, settings) {
+  const targetId = secretIdForSettings(settings);
+  const legacyPresetId = legacySecretIdForSettings(settings);
+  if (!targetId || !legacyPresetId || hasSecret(root, targetId) || !hasSecret(root, legacyPresetId)) return "";
+  try {
+    const value = loadSecret(root, legacyPresetId);
+    if (!value) return "SECRET_EMPTY";
+    saveSecret(root, targetId, value);
+    return "";
+  } catch {
+    return "SECRET_UNREADABLE";
+  }
+}
+
+function legacySecretIdForSettings(settings) {
+  const primary = settings.taskProfiles?.deep_analysis;
+  const effective = primary ? effectiveTaskProfile(settings, "deep_analysis") : null;
+  if (!effective || effective.provider === "mock") return "";
+  if (effective.preset && effective.preset !== "custom") return `model-api-key-${effective.preset}`;
+  const hash = crypto.createHash("sha256").update(String(effective.baseUrl || "custom")).digest("hex").slice(0, 12);
+  return `model-api-key-custom-${hash}`;
+}
+
+function profileFingerprint(profile = {}) {
+  return crypto.createHash("sha256").update([
+    profile.provider,
+    profile.baseUrl,
+    profile.model,
+    profile.thinkingMode,
+    profile.reasoningEffort,
+    profile.timeoutMs,
+    profile.concurrency
+  ].join("|")).digest("hex").slice(0, 64);
+}
+
+function legacyProfileFingerprint(profile = {}) {
+  return crypto.createHash("sha256").update([
+    profile.provider,
+    profile.baseUrl,
+    profile.model,
+    profile.thinkingMode,
+    profile.reasoningEffort
+  ].join("|")).digest("hex").slice(0, 20);
+}
+
+function settingsFingerprint(settings) {
+  const parts = [
+    settings.credentialMode,
+    settings.sharedCredential?.provider,
+    settings.sharedCredential?.baseUrl,
+    settings.sharedCredential?.preset
+  ];
+  for (const id of MODEL_TASK_PROFILE_IDS) {
+    const profile = settings.taskProfiles?.[id] || {};
+    const credential = profile.credentialRef === "independent" && settings.independentCredentials?.[id]
+      ? settings.independentCredentials[id]
+      : settings.sharedCredential || {};
+    parts.push(
+      id,
+      credential.provider,
+      credential.baseUrl,
+      credential.preset,
+      profile.model,
+      profile.thinkingMode,
+      profile.reasoningEffort,
+      profile.timeoutMs,
+      profile.concurrency,
+      profile.credentialRef
+    );
+  }
+  const backup = settings.batchBackup || {};
+  parts.push("backup", backup.enabled, backup.provider, backup.baseUrl, backup.model, backup.thinkingMode, backup.reasoningEffort, backup.timeoutMs, backup.credentialRef);
+  return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
 }
 
 function normalizeConnection(value, fingerprint) {
@@ -251,44 +892,22 @@ function normalizeConnection(value, fingerprint) {
   };
 }
 
-function settingsFromLegacyConfig(config = {}) {
-  const provider = String(config.provider || "mock");
-  if (provider === "mock") return { preset: "mock" };
-  const legacy = config.providers?.openai_compatible || {};
-  const baseUrl = normalizeBaseUrl(legacy.baseUrl);
-  const matched = Object.values(MODEL_PRESETS).find((preset) => preset.provider === "openai_compatible" && preset.baseUrl === baseUrl);
-  return { preset: matched ? matched.id : "custom", baseUrl, model: legacy.model || "", timeoutMs: legacy.timeoutMs };
-}
-
-function secretIdForSettings(settings = {}) {
-  if (settings.provider === "mock") return "";
-  if (settings.preset && settings.preset !== "custom") return `model-api-key-${settings.preset}`;
-  const hash = crypto.createHash("sha256").update(String(settings.baseUrl || "custom")).digest("hex").slice(0, 12);
-  return `model-api-key-custom-${hash}`;
-}
-
-function migrateLegacySecret(root, settings) {
-  const targetId = secretIdForSettings(settings);
-  if (!targetId || hasSecret(root, targetId) || !hasSecret(root, SECRET_ID)) return "";
-  try {
-    const value = loadSecret(root, SECRET_ID);
-    if (!value) return "SECRET_EMPTY";
-    saveSecret(root, targetId, value);
-    clearSecret(root, SECRET_ID);
-    return "";
-  } catch {
-    return "SECRET_UNREADABLE";
-  }
-}
-
-function modelFingerprint(settings = {}) {
-  return crypto.createHash("sha256").update([
-    settings.provider,
-    settings.baseUrl,
-    settings.model,
-    settings.thinkingMode,
-    settings.reasoningEffort
-  ].join("|")).digest("hex").slice(0, 20);
+function modelConfigFromProfile(profile, apiKey = "", apiKeyEnv = "ZHIPPING_MODEL_API_KEY") {
+  if (profile.provider === "mock") return { provider: "mock", providers: { mock: { model: profile.model || "offline-structured-mock" } } };
+  return {
+    provider: "openai_compatible",
+    providers: {
+      openai_compatible: {
+        baseUrl: profile.baseUrl,
+        model: profile.model,
+        timeoutMs: profile.timeoutMs,
+        thinkingMode: profile.thinkingMode,
+        reasoningEffort: profile.reasoningEffort,
+        apiKey: apiKey || "",
+        apiKeyEnv
+      }
+    }
+  };
 }
 
 function normalizeThinkingMode(value, fallback = "disabled") {
@@ -321,6 +940,16 @@ function legacyApiKeyEnv(config = {}) {
   return String(config.providers?.openai_compatible?.apiKeyEnv || "OPENAI_API_KEY");
 }
 
+function normalizePresetId(value) {
+  const id = String(value || "").trim();
+  return MODEL_PRESETS[id] ? id : "custom";
+}
+
+function matchedPresetId(baseUrl) {
+  const matched = Object.values(MODEL_PRESETS).find((preset) => preset.provider === "openai_compatible" && preset.baseUrl === baseUrl);
+  return matched ? matched.id : "custom";
+}
+
 function normalizeBaseUrl(value) {
   const raw = String(value || "").trim().replace(/\/+$/, "");
   if (!raw) return "";
@@ -334,6 +963,10 @@ function normalizeTimeout(value) {
   const number = Number(value || DEFAULT_MODEL_TIMEOUT_MS);
   if (!Number.isFinite(number)) return DEFAULT_MODEL_TIMEOUT_MS;
   return Math.max(3000, Math.min(120000, Math.round(number)));
+}
+
+function isMockFallback(config = {}) {
+  return String(config.provider || "mock") === "mock";
 }
 
 function settingsPath(root) {
@@ -373,14 +1006,25 @@ function restoreFile(file, content) {
   fs.renameSync(temp, file);
 }
 
+function modelFingerprint(value = {}) {
+  const normalized = normalizeSettings(value);
+  return legacyProfileFingerprint(effectiveTaskProfile(normalized, "deep_analysis") || {});
+}
+
 module.exports = {
   SECRET_ID,
+  SETTINGS_SCHEMA_VERSION,
   listModelPresets,
+  listModelTaskProfiles,
   loadModelSettings,
   saveModelSettings,
   saveVerifiedModelConfiguration,
+  saveVerifiedModelTaskProfile,
+  saveVerifiedBatchBackup,
+  restoreRecommendedTaskProfile,
   testModelConnection,
   resolveRuntimeModelConfig,
+  resolveRuntimeBatchBackup,
   isModelReady,
   modelConfigFromSettings,
   normalizeSettings,

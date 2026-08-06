@@ -39,6 +39,13 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
       input: { preset: "qwen", model: "qwen-plus-new", apiKey: "qwen-key-not-public" }
     });
     assert.strictEqual(qwen.settings.model, "qwen-plus-new", "预设厂商应允许填写新模型名");
+    assert.strictEqual(qwen.settings.timeoutMs, 120000, "兼容别名 timeoutMs 必须镜像 deep_analysis 推荐超时");
+    assert.strictEqual(qwen.connectionStatus, "verified", "兼容别名 connectionStatus 必须镜像 deep_analysis");
+    assert.strictEqual(qwen.modelConfig.providers.openai_compatible.model, "qwen-plus-new", "兼容别名 modelConfig 必须镜像 deep_analysis");
+    assert.strictEqual(qwen.modelConfig.providers.openai_compatible.apiKey, "", "公开 modelConfig 不得携带明文 Key");
+    assert.strictEqual(qwen.settings.taskProfiles.deep_analysis.model, "qwen-plus-new", "兼容包装必须写入 deep_analysis 任务配置");
+    assert.strictEqual(qwen.settings.taskProfiles.deep_analysis.thinkingMode, "disabled");
+    assert.strictEqual(qwen.settings.taskProfiles.batch_screening.model, "deepseek-v4-flash", "保存深度分析不得改写批量筛选任务配置");
     assert.strictEqual(isModelReady(qwen), true);
     const qwenSecretId = secretIdForSettings(qwen.settings);
     assert.strictEqual(loadSecret(root, qwenSecretId), "qwen-key-not-public");
@@ -63,9 +70,11 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
         apiKey: "deepseek-key-not-public"
       }
     });
-    assert.strictEqual(deepseek.settings.timeoutMs, 60000);
+    assert.strictEqual(deepseek.settings.timeoutMs, 120000, "未显式指定超时时保持任务配置当前超时");
     assert.strictEqual(deepseek.settings.thinkingMode, "enabled");
     assert.strictEqual(deepseek.settings.reasoningEffort, "high");
+    assert.strictEqual(deepseek.settings.taskProfiles.deep_analysis.model, "deepseek-v4-flash", "兼容别名 model 必须镜像 deep_analysis");
+    assert.strictEqual(deepseek.settings.connection.status, "verified", "兼容别名 connection 必须镜像 deep_analysis");
     assert.strictEqual(modelConfigFromSettings(deepseek.settings).providers.openai_compatible.thinkingMode, "enabled");
     assert.strictEqual(modelConfigFromSettings(deepseek.settings).providers.openai_compatible.reasoningEffort, "high");
     assert.throws(() => normalizeThinkingMode("sometimes"), /MODEL_THINKING_MODE_INVALID/);
