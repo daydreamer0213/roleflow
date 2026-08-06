@@ -41,3 +41,14 @@ When neither stable conversation nor recruiter identifier exists, the approved f
 ## Privacy constraints
 
 The live probe returned only tab id, title, and URL. It saved no screenshot, recruiter text, message text, cookie, localStorage, or sensitive URL. Future calibration must hash text-bearing values inside the page expression and record only selector/attribute names, presence booleans, and fallback decisions.
+
+## Live acceptance (read-only)
+
+A manual one-run acceptance completed on the same day using the portable Edge message tab, a temporary SQLite database, the mock model, and dashboard port 8788. It verified:
+
+- `POST /api/message-discovery` returned `202`.
+- The run transitioned to `completed` with `queued: 0` and `processed: 0`.
+- The BOSS lease was released in `finally`.
+- No draft or message text appeared in public status JSON.
+
+The current page had no unread marker and no pending preview change, so no conversation click or model call was performed. The unread selector `.notice-badge` remains unverified on a page with actual unread state; until then the discovery can still recover via the preview-change channel after a first baseline.
