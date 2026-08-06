@@ -35,9 +35,15 @@ const PRODUCT_POLICY = Object.freeze({
   }),
   operations: Object.freeze({
     modelAnalysis: Object.freeze({
-      scanConcurrency: 1,
+      scanConcurrency: 2,
       retryConcurrency: 2,
-      maxRetryJobs: 50
+      maxRetryJobs: 50,
+      maxAttemptsPerGeneration: 2,
+      timeoutCircuitThreshold: 10,
+      taskLeaseTtlMs: 3 * 60 * 1000,
+      retryBackoffMs: Object.freeze([1000, 3000]),
+      etaSampleMinimum: 3,
+      etaSampleLimit: 10
     }),
     workflow: Object.freeze({
       dailyTarget: 70,

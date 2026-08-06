@@ -355,6 +355,7 @@ function commitWorkflowJobTaskFailure(db, {
   taskId,
   leaseOwner,
   errorCode,
+  pauseCode,
   retryable,
   retryAt,
   errorStage,
@@ -374,6 +375,9 @@ function commitWorkflowJobTaskFailure(db, {
   }
   const started = requiredIsoTime(startedAt, "startedAt");
   const finished = requiredIsoTime(finishedAt, "finishedAt");
+  const pauseReason = pauseCode === undefined || pauseCode === null
+    ? null
+    : String(pauseCode).trim() || null;
   const stage = errorStage === undefined || errorStage === null
     ? null
     : String(errorStage).trim() || null;
@@ -474,6 +478,10 @@ function commitWorkflowJobTaskFailure(db, {
         workflowRunId: taskRow.workflow_run_id,
         now: finished
       });
+      if (pauseReason) {
+        db.prepare("UPDATE workflow_runs SET error_code = ? WHERE id = ?")
+          .run(pauseReason, taskRow.workflow_run_id);
+      }
     } else {
       if (outcome === "failed" && code === "MODEL_TIMEOUT" && attemptInGeneration >= 2) {
         incrementWorkflowTimeoutCounters(db, {

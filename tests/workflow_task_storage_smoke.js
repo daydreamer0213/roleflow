@@ -46,6 +46,7 @@ try {
   testSecondOrdinaryFailureTerminalWithoutCounters();
   testSecondTimeoutCountsOnceAndCannotDoubleCount();
   testConfigErrorsPauseImmediatelyWithoutSecondAttempt();
+  testConfigPauseSeparatesOriginalCodeFromPauseReason();
   testNonRetryableFirstFailureIsTerminal();
   testExpiredLeaseRecoveryFirstAndSecondAttempts();
   testRecoverySkipsTerminalAndRespectsGates();
@@ -1700,6 +1701,101 @@ function testConfigErrorsPauseImmediatelyWithoutSecondAttempt() {
   const attemptColumns = db.prepare("PRAGMA table_info(job_analysis_attempts)").all()
     .map((column) => column.name);
   assert(!attemptColumns.includes("error_message"));
+}
+
+function testConfigPauseSeparatesOriginalCodeFromPauseReason() {
+  const cases = [
+    {
+      errorCode: "MODEL_AUTH_FAILED",
+      pauseCode: "MODEL_AUTH_REQUIRED",
+      localDay: "2026-08-31"
+    },
+    {
+      errorCode: "MODEL_ENDPOINT_OR_MODEL_NOT_FOUND",
+      pauseCode: "MODEL_CONFIGURATION_REQUIRED",
+      localDay: "2026-09-01"
+    }
+  ];
+  cases.forEach((item, index) => {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}],
+      localDay: item.localDay,
+      modelConfigRevision: `mrev-pause-sep-${index}`
+    });
+    initializeWorkflowJobTasks(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobs: observationEntries(db, scenario.batchId),
+      modelConfigRevision: `mrev-pause-sep-${index}`,
+      now: `${item.localDay}T00:00:00.000Z`
+    });
+    const claimNow = `${item.localDay}T00:01:00.000Z`;
+    const claimed = claimWorkflowJobTask(db, {
+      workflowRunId: scenario.workflowId,
+      leaseOwner: `worker-pause-sep-${index}`,
+      leaseTtlMs: 60_000,
+      selectModelIdentity: modelIdentity,
+      now: claimNow
+    });
+    assert(claimed);
+    const result = commitWorkflowJobTaskFailure(db, {
+      taskId: claimed.task.id,
+      leaseOwner: `worker-pause-sep-${index}`,
+      errorCode: item.errorCode,
+      retryable: false,
+      pauseCode: item.pauseCode,
+      errorStage: "analyze",
+      modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+      startedAt: claimNow,
+      finishedAt: `${item.localDay}T00:01:10.000Z`
+    });
+    assert.strictEqual(result.outcome, "pause_requested", item.errorCode);
+    assert.strictEqual(result.task.lastErrorCode, item.errorCode, item.errorCode);
+    assert.strictEqual(result.task.lastErrorKind, "configuration", item.errorCode);
+    assert.strictEqual(result.workflow.controlState, "pause_requested", item.errorCode);
+    assert.strictEqual(result.workflow.errorCode, item.pauseCode, item.errorCode);
+    const attempt = listJobAnalysisAttempts(db, {
+      workflowRunId: scenario.workflowId,
+      taskId: claimed.task.id
+    })[0];
+    assert.strictEqual(attempt.errorCode, item.errorCode, item.errorCode);
+  });
+
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-09-02",
+    modelConfigRevision: "mrev-pause-sep-legacy"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-pause-sep-legacy",
+    now: "2026-09-02T00:00:00.000Z"
+  });
+  const claimNow = "2026-09-02T00:01:00.000Z";
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-pause-sep-legacy",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: claimNow
+  });
+  assert(claimed);
+  const result = commitWorkflowJobTaskFailure(db, {
+    taskId: claimed.task.id,
+    leaseOwner: "worker-pause-sep-legacy",
+    errorCode: "MODEL_KEY_REQUIRED",
+    retryable: false,
+    errorStage: "analyze",
+    modelIdentity: modelIdentity({ attemptInGeneration: 1, totalAttemptNumber: 1 }),
+    startedAt: claimNow,
+    finishedAt: "2026-09-02T00:01:10.000Z"
+  });
+  assert.strictEqual(result.outcome, "pause_requested");
+  assert.strictEqual(result.task.lastErrorCode, "MODEL_KEY_REQUIRED");
+  assert.strictEqual(result.workflow.controlState, "pause_requested");
+  assert.strictEqual(result.workflow.errorCode, "", "pauseCode 未传时必须保持现有行为，不写入 workflow error_code");
 }
 
 function testNonRetryableFirstFailureIsTerminal() {
