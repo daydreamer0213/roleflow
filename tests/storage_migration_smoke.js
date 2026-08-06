@@ -20,10 +20,11 @@ try {
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
       { version: 4, name: "workflow_runs_three_slots", backup_path: null },
-      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1", backup_path: null }
+      { version: 5, name: "candidate_matching_cards_v1", backup_path: null },
+      { version: 6, name: "durable_workflow_progress_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_matching_cards_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "durable_workflow_progress_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -41,7 +42,20 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_job_tasks'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='job_analysis_attempts'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_workflow_job_tasks_claim'").get().n,
+    1
+  );
   assert(SCHEMA_VERSION >= 3);
+  assert.strictEqual(SCHEMA_VERSION, 6);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -68,7 +82,8 @@ try {
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
       { version: 4, name: "workflow_runs_three_slots" },
-      { version: SCHEMA_VERSION, name: "candidate_matching_cards_v1" }
+      { version: 5, name: "candidate_matching_cards_v1" },
+      { version: 6, name: "durable_workflow_progress_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -346,8 +361,8 @@ try {
   ) VALUES (?, ?, ?, ?)`).run(v4ProfileId, v4DocumentId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
   db.exec(`
     DROP TABLE candidate_matching_cards;
-    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
-    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+    DELETE FROM schema_migrations WHERE version = 5;
+    PRAGMA user_version = 4;
   `);
   db.close();
   db = openDb(v4LegacyPath);
@@ -386,8 +401,8 @@ try {
   ) VALUES (?, ?, NULL, 'hash-has-card', ?, 'draft', 'model', NULL, ?, ?)`)
     .run(hasCardProfileId, hasCardVersionId, JSON.stringify({ targetDirections: ["用户运营"], strongEvidence: [], transferableCapabilities: [], cautionTransitions: [], userNotes: [], source: "model" }), v4Now, v4Now);
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = ${SCHEMA_VERSION};
-    PRAGMA user_version = ${SCHEMA_VERSION - 1};
+    DELETE FROM schema_migrations WHERE version = 5;
+    PRAGMA user_version = 4;
   `);
   db.close();
   db = openDb(v4MixedPath);
@@ -401,6 +416,210 @@ try {
   assert.strictEqual(kept[0].source, "model");
   assert.deepStrictEqual(JSON.parse(kept[0].card_json).targetDirections, ["用户运营"]);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+
+  const durableV5Path = path.join(root, "durable-v5.sqlite");
+  db = openDb(durableV5Path);
+  const v5Now = "2026-07-25T00:00:00.000Z";
+  const v5ProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Durable Candidate', '{}', 'durable-hash', ?, ?)`).run(v5Now, v5Now).lastInsertRowid);
+  const v5PlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Durable Plan', '{}', NULL, 1, ?, ?)`).run(v5ProfileId, v5Now, v5Now).lastInsertRowid);
+  const v5BatchId = Number(db.prepare(`INSERT INTO batches(
+    site, keyword, started_at, note, profile_id, search_plan_id, filter_snapshot_json, status
+  ) VALUES ('boss', 'RAG', ?, 'durable v5', ?, ?, '{}', 'completed')`).run(v5Now, v5ProfileId, v5PlanId).lastInsertRowid);
+  const v5JobRows = [
+    { sourceId: "durable-succeeded", title: "Durable Succeeded", analysis: { semanticStatus: "complete", decisionSource: "model", recommendation: "apply" } },
+    { sourceId: "durable-skipped", title: "Durable Skipped", analysis: { semanticStatus: "rule_only", decisionSource: "local_rules" } },
+    { sourceId: "durable-pending", title: "Durable Pending", analysis: { semanticStatus: "pending", decisionSource: "analysis_pending" } }
+  ];
+  const v5JobIds = v5JobRows.map((row) => Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at, batch_id
+  ) VALUES ('boss', ?, ?, ?, ?, ?)`).run(row.sourceId, row.title, v5Now, v5Now, v5BatchId).lastInsertRowid));
+  v5JobRows.forEach((row, index) => {
+    db.prepare(`INSERT INTO job_observations(
+      job_id, batch_id, title, description, analysis_json, content_hash, content_hash_version, seen_at
+    ) VALUES (?, ?, ?, 'JD text', ?, 'durable-hash', 1, ?)`)
+      .run(v5JobIds[index], v5BatchId, row.title, JSON.stringify(row.analysis), v5Now);
+  });
+  const v5WorkflowAnalyzingId = "durable-v5-analyzing";
+  db.prepare(`INSERT INTO workflow_runs(
+    id, profile_id, plan_id, local_day, sequence, status, target_success_count,
+    scan_needed, keywords_json, budget_json, planner_json, metrics_json,
+    scan_batch_id, created_at, updated_at
+  ) VALUES (?, ?, ?, '2026-07-25', 1, 'analyzing', 35, 1, '[]', '{}', '{}', '{}', ?, ?, ?)`)
+    .run(v5WorkflowAnalyzingId, v5ProfileId, v5PlanId, v5BatchId, v5Now, v5Now);
+  db.prepare(`INSERT INTO workflow_runs(
+    id, profile_id, plan_id, local_day, sequence, status, target_success_count,
+    scan_needed, keywords_json, budget_json, planner_json, metrics_json,
+    created_at, updated_at
+  ) VALUES ('durable-v5-completed', ?, ?, '2026-07-25', 2, 'completed', 35, 0, '[]', '{}', '{}', '{}', ?, ?)`)
+    .run(v5ProfileId, v5PlanId, v5Now, v5Now);
+  db.prepare(`INSERT INTO model_cache(cache_key, kind, provider, model, input_hash, result_json, created_at)
+    VALUES ('durable-cache-key', 'matchJob', 'deepseek', 'deepseek-v4-flash', 'hash', '{}', ?)`).run(v5Now);
+  const v5CommBatchId = Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'portable', 'completed', '{}', ?, ?, ?)`)
+    .run(v5ProfileId, v5PlanId, v5Now, v5Now, v5Now).lastInsertRowid);
+  db.prepare(`INSERT INTO communication_batch_items(
+    batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+    status, click_count, finished_at, updated_at
+  ) VALUES (?, ?, 1, 'https://www.zhipin.com/job_detail/durable-v5.html',
+    'Durable Succeeded', 'Durable Co', 'succeeded', 1, ?, ?)`)
+    .run(v5CommBatchId, v5JobIds[0], v5Now, v5Now);
+  const v5WorkflowSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_runs'").get().sql;
+  db.exec(`
+    DROP TABLE job_analysis_attempts;
+    DROP TABLE workflow_job_tasks;
+    DROP INDEX idx_workflow_runs_active;
+    DROP INDEX idx_workflow_runs_daily;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_v6;
+    CREATE TABLE workflow_runs (
+      id TEXT PRIMARY KEY,
+      profile_id INTEGER NOT NULL,
+      plan_id INTEGER NOT NULL,
+      local_day TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),
+      status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','completed','interrupted','failed','stopped')),
+      target_success_count INTEGER NOT NULL CHECK(target_success_count >= 0),
+      successful_count INTEGER NOT NULL DEFAULT 0 CHECK(successful_count >= 0),
+      inventory_count INTEGER NOT NULL DEFAULT 0 CHECK(inventory_count >= 0),
+      candidate_gap INTEGER NOT NULL DEFAULT 0 CHECK(candidate_gap >= 0),
+      scan_needed INTEGER NOT NULL DEFAULT 1 CHECK(scan_needed IN (0, 1)),
+      keywords_json TEXT NOT NULL DEFAULT '[]',
+      budget_json TEXT NOT NULL DEFAULT '{}',
+      planner_json TEXT NOT NULL DEFAULT '{}',
+      metrics_json TEXT NOT NULL DEFAULT '{}',
+      scan_run_id TEXT,
+      scan_batch_id INTEGER,
+      communication_batch_id INTEGER,
+      shortfall_code TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      review_ready_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(profile_id, local_day, sequence)
+    );
+    INSERT INTO workflow_runs(
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    )
+    SELECT
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    FROM workflow_runs_v6;
+    DROP TABLE workflow_runs_v6;
+    DELETE FROM schema_migrations WHERE version = 6;
+    PRAGMA user_version = 5;
+  `);
+  db.close();
+
+  const durableBackupDir = path.join(path.dirname(durableV5Path), "backups");
+  const durableBackupsBefore = fs.readdirSync(durableBackupDir).filter((name) => name.endsWith(".sqlite"));
+  db = openDb(durableV5Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM job_observations").get().n, 3);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM model_cache").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM communication_batches").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM communication_batch_items").get().n, 1);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM workflow_runs").get().n, 2);
+  const analyzing = db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(v5WorkflowAnalyzingId);
+  assert.strictEqual(analyzing.control_state, "none");
+  assert.strictEqual(Number(analyzing.recovery_generation), 0);
+  assert.strictEqual(Number(analyzing.progress_revision), 0);
+  assert.strictEqual(Number(analyzing.circuit_timeout_job_count), 0);
+  assert.strictEqual(Number(analyzing.lifetime_timeout_job_count), 0);
+  assert.strictEqual(analyzing.model_config_revision, null);
+  const durableBackfilled = db.prepare(`
+    SELECT o.analysis_json AS analysis_json, t.status AS task_status
+    FROM workflow_job_tasks t
+    JOIN job_observations o ON o.id = t.observation_id
+    WHERE t.workflow_run_id = ?
+    ORDER BY t.position
+  `).all(v5WorkflowAnalyzingId);
+  assert.strictEqual(durableBackfilled.length, 3);
+  assert.deepStrictEqual(durableBackfilled.map((row) => row.task_status), ["succeeded", "skipped", "pending"]);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM job_analysis_attempts").get().n,
+    0,
+    "历史结果不得伪造 job_analysis_attempts"
+  );
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.prepare("UPDATE workflow_runs SET status = 'paused' WHERE id = ?").run(v5WorkflowAnalyzingId);
+  assert.strictEqual(
+    db.prepare("SELECT status FROM workflow_runs WHERE id = ?").get(v5WorkflowAnalyzingId).status,
+    "paused"
+  );
+  assert.throws(
+    () => db.prepare(`INSERT INTO workflow_job_tasks(
+      workflow_run_id, batch_id, job_id, observation_id, position, status,
+      recovery_generation, attempt_count_in_generation, total_attempt_count,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 4, 'pending', 0, 3, 0, ?, ?)`)
+      .run(v5WorkflowAnalyzingId, v5BatchId, v5JobIds[0], db.prepare("SELECT id FROM job_observations WHERE job_id = ?").get(v5JobIds[0]).id, v5Now, v5Now),
+    /CHECK/
+  );
+  assert.throws(
+    () => db.prepare(`INSERT INTO workflow_job_tasks(
+      workflow_run_id, batch_id, job_id, observation_id, position, status,
+      recovery_generation, attempt_count_in_generation, total_attempt_count,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 5, 'pending', 0, 1, 0, ?, ?)`)
+      .run(v5WorkflowAnalyzingId, v5BatchId, v5JobIds[0], db.prepare("SELECT id FROM job_observations WHERE job_id = ?").get(v5JobIds[0]).id, v5Now, v5Now),
+    /UNIQUE/
+  );
+  db.close();
+  const durableBackups = fs.readdirSync(durableBackupDir).filter((name) => name.endsWith(".sqlite"));
+  assert.strictEqual(durableBackups.length, durableBackupsBefore.length + 1, "v5→v6 迁移必须产生一个备份");
+  db = openDb(durableV5Path);
+  db.close();
+  assert.deepStrictEqual(
+    fs.readdirSync(durableBackupDir).filter((name) => name.endsWith(".sqlite")),
+    durableBackups,
+    "重新打开 v6 不得创建第二个备份"
+  );
+
+  const durableRollbackPath = path.join(root, "durable-rollback.sqlite");
+  const durableV5Backup = durableBackups.find((name) => !durableBackupsBefore.includes(name));
+  assert.ok(durableV5Backup, "v5→v6 迁移后必须产生新的 v5 备份");
+  fs.copyFileSync(path.join(durableBackupDir, durableV5Backup), durableRollbackPath);
+  db = new DatabaseSync(durableRollbackPath);
+  db.exec(`
+    DROP TABLE schema_migrations;
+    CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);
+  `);
+  db.close();
+  let durableMigrationError;
+  try {
+    openDb(durableRollbackPath);
+  } catch (error) {
+    durableMigrationError = error;
+  }
+  assert.strictEqual(durableMigrationError?.code, "DB_MIGRATION_FAILED");
+  db = new DatabaseSync(durableRollbackPath, { readOnly: true });
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 5);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='workflow_job_tasks'").get().n,
+    0,
+    "v6 迁移失败必须回滚新表"
+  );
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
   db.close();
 
   const futurePath = path.join(root, "future.sqlite");

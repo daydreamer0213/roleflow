@@ -26,20 +26,23 @@ const WORKFLOW_RUN_STATUSES = [
   "analyzing",
   "review_required",
   "communicating",
+  "paused",
   "completed",
   "interrupted",
   "failed",
   "stopped"
 ];
-const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted"];
+const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "review_required", "communicating", "interrupted", "paused"];
 const TERMINAL_WORKFLOW_RUN_STATUSES = new Set(["completed", "failed", "stopped"]);
+const WORKFLOW_CONTROL_STATES = new Set(["none", "pause_requested", "stop_requested"]);
 const WORKFLOW_TRANSITIONS = Object.freeze({
-  created: new Set(["scanning", "review_required", "interrupted", "stopped"]),
-  scanning: new Set(["analyzing", "interrupted", "failed", "stopped"]),
-  analyzing: new Set(["review_required", "interrupted", "failed", "stopped"]),
-  review_required: new Set(["communicating", "stopped"]),
+  created: new Set(["scanning", "review_required", "interrupted", "failed", "stopped"]),
+  scanning: new Set(["analyzing", "paused", "interrupted", "failed", "stopped"]),
+  analyzing: new Set(["paused", "review_required", "interrupted", "failed", "stopped"]),
+  paused: new Set(["scanning", "analyzing", "stopped"]),
+  review_required: new Set(["communicating", "completed", "stopped"]),
   communicating: new Set(["completed", "interrupted", "failed", "stopped"]),
-  interrupted: new Set(["scanning", "review_required", "communicating", "stopped"]),
+  interrupted: new Set(["scanning", "analyzing", "review_required", "communicating", "failed", "stopped"]),
   completed: new Set(),
   failed: new Set(),
   stopped: new Set()
@@ -99,7 +102,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   plan_id INTEGER NOT NULL,
   local_day TEXT NOT NULL,
   sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),
-  status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','completed','interrupted','failed','stopped')),
+  status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','paused','completed','interrupted','failed','stopped')),
   target_success_count INTEGER NOT NULL CHECK(target_success_count >= 0),
   successful_count INTEGER NOT NULL DEFAULT 0 CHECK(successful_count >= 0),
   inventory_count INTEGER NOT NULL DEFAULT 0 CHECK(inventory_count >= 0),
@@ -109,6 +112,15 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   budget_json TEXT NOT NULL DEFAULT '{}',
   planner_json TEXT NOT NULL DEFAULT '{}',
   metrics_json TEXT NOT NULL DEFAULT '{}',
+  control_state TEXT NOT NULL DEFAULT 'none' CHECK(control_state IN ('none','pause_requested','stop_requested')),
+  resume_phase TEXT CHECK(resume_phase IS NULL OR resume_phase IN ('scanning','analyzing')),
+  recovery_generation INTEGER NOT NULL DEFAULT 0 CHECK(recovery_generation >= 0),
+  circuit_timeout_job_count INTEGER NOT NULL DEFAULT 0 CHECK(circuit_timeout_job_count >= 0),
+  lifetime_timeout_job_count INTEGER NOT NULL DEFAULT 0 CHECK(lifetime_timeout_job_count >= 0),
+  progress_revision INTEGER NOT NULL DEFAULT 0 CHECK(progress_revision >= 0),
+  last_activity_at TEXT,
+  model_config_revision TEXT,
+  platform_access_started_at TEXT,
   scan_run_id TEXT,
   scan_batch_id INTEGER,
   communication_batch_id INTEGER,
@@ -132,6 +144,87 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_active
   ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_daily
   ON workflow_runs(profile_id, local_day, sequence);
+`;
+
+const WORKFLOW_TASK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS workflow_job_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id TEXT NOT NULL,
+  batch_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  observation_id INTEGER NOT NULL,
+  position INTEGER NOT NULL CHECK(position > 0),
+  status TEXT NOT NULL CHECK(status IN (
+    'pending','running','retry_pending','succeeded','failed','skipped','stopped'
+  )),
+  recovery_generation INTEGER NOT NULL DEFAULT 0 CHECK(recovery_generation >= 0),
+  attempt_count_in_generation INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count_in_generation BETWEEN 0 AND 2),
+  total_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(total_attempt_count >= 0),
+  priority INTEGER NOT NULL DEFAULT 100,
+  available_at TEXT,
+  lease_owner TEXT,
+  leased_at TEXT,
+  lease_expires_at TEXT,
+  model_config_revision TEXT,
+  last_attempt_model_revision TEXT,
+  last_error_code TEXT,
+  last_error_stage TEXT,
+  last_error_kind TEXT,
+  total_latency_ms INTEGER NOT NULL DEFAULT 0 CHECK(total_latency_ms >= 0),
+  started_at TEXT,
+  finished_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workflow_run_id, job_id),
+  FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id),
+  FOREIGN KEY(batch_id) REFERENCES batches(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id),
+  FOREIGN KEY(observation_id) REFERENCES job_observations(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_job_tasks_claim
+  ON workflow_job_tasks(workflow_run_id, status, priority, position);
+CREATE INDEX IF NOT EXISTS idx_workflow_job_tasks_lease
+  ON workflow_job_tasks(status, lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS job_analysis_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id TEXT NOT NULL,
+  task_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  recovery_generation INTEGER NOT NULL CHECK(recovery_generation >= 0),
+  attempt_in_generation INTEGER NOT NULL CHECK(attempt_in_generation BETWEEN 1 AND 2),
+  total_attempt_number INTEGER NOT NULL CHECK(total_attempt_number > 0),
+  profile_kind TEXT NOT NULL CHECK(profile_kind = 'batch_screening'),
+  model_config_revision TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  thinking_mode TEXT NOT NULL,
+  reasoning_effort TEXT NOT NULL,
+  backup_used INTEGER NOT NULL DEFAULT 0 CHECK(backup_used IN (0,1)),
+  status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+  error_code TEXT,
+  error_stage TEXT,
+  retryable INTEGER NOT NULL DEFAULT 0 CHECK(retryable IN (0,1)),
+  model_call_count INTEGER NOT NULL DEFAULT 0 CHECK(model_call_count >= 0),
+  prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK(prompt_tokens >= 0),
+  completion_tokens INTEGER NOT NULL DEFAULT 0 CHECK(completion_tokens >= 0),
+  total_tokens INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  latency_ms INTEGER CHECK(latency_ms IS NULL OR latency_ms >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id, recovery_generation, attempt_in_generation),
+  FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id),
+  FOREIGN KEY(task_id) REFERENCES workflow_job_tasks(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_analysis_attempts_progress
+  ON job_analysis_attempts(workflow_run_id, model_config_revision, finished_at);
+CREATE INDEX IF NOT EXISTS idx_job_analysis_attempts_task
+  ON job_analysis_attempts(task_id, recovery_generation, attempt_in_generation);
 `;
 
 const SCHEMA = `
@@ -521,6 +614,13 @@ const MIGRATIONS = [
       db.exec(MATCHING_CARD_SCHEMA);
       backfillMigrationMatchingCards(db);
     }
+  },
+  {
+    version: 6,
+    name: "durable_workflow_progress_v1",
+    apply(db) {
+      migrateWorkflowRunDurability(db);
+    }
   }
 ];
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -636,6 +736,95 @@ function migrateWorkflowRunSlots(db) {
     FROM workflow_runs_two_slots;
     DROP TABLE workflow_runs_two_slots;
   `);
+}
+
+function migrateWorkflowRunDurability(db) {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_runs'").get();
+  if (!table) {
+    db.exec(WORKFLOW_SCHEMA);
+    db.exec(WORKFLOW_TASK_SCHEMA);
+    return;
+  }
+  if (/control_state/i.test(String(table.sql || ""))) {
+    db.exec(WORKFLOW_TASK_SCHEMA);
+    backfillWorkflowAnalysisTasks(db);
+    return;
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_workflow_runs_active;
+    DROP INDEX IF EXISTS idx_workflow_runs_daily;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_v5;
+  `);
+  db.exec(WORKFLOW_SCHEMA);
+  db.exec(`
+    INSERT INTO workflow_runs(
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    )
+    SELECT
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json,
+      scan_run_id, scan_batch_id, communication_batch_id,
+      shortfall_code, error_code, error_message,
+      created_at, started_at, review_ready_at, finished_at, updated_at
+    FROM workflow_runs_v5;
+    DROP TABLE workflow_runs_v5;
+  `);
+  db.exec(WORKFLOW_TASK_SCHEMA);
+  backfillWorkflowAnalysisTasks(db);
+}
+
+// 旧工作流补建任务：不调用模型、网络或真实平台。只按已有 observation 的分析状态保守推断，
+// 不把旧规则结果伪装成新模型成功，也不写入任何 job_analysis_attempts 历史。
+function backfillWorkflowAnalysisTasks(db) {
+  const workflows = db.prepare(`
+    SELECT id, scan_batch_id
+    FROM workflow_runs
+    WHERE scan_batch_id IS NOT NULL
+    ORDER BY created_at, id
+  `).all();
+  for (const workflow of workflows) {
+    const rows = db.prepare(`
+      SELECT o.id AS observation_id, o.job_id AS job_id, o.analysis_json AS analysis_json
+      FROM job_observations o
+      WHERE o.batch_id = ?
+      ORDER BY o.seen_at, o.id
+    `).all(workflow.scan_batch_id);
+    const insertTask = db.prepare(`
+      INSERT OR IGNORE INTO workflow_job_tasks(
+        workflow_run_id, batch_id, job_id, observation_id, position, status,
+        recovery_generation, attempt_count_in_generation, total_attempt_count, priority,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 100, ?, ?)
+    `);
+    let position = 0;
+    for (const row of rows) {
+      const analysis = parseJson(row.analysis_json, {});
+      const semantic = String(analysis.semanticStatus || "");
+      const source = String(analysis.decisionSource || "");
+      let status = "pending";
+      if (semantic === "complete" && source === "model") status = "succeeded";
+      else if (source === "local_rules" || semantic === "rule_only") status = "skipped";
+      position += 1;
+      const now = nowIso();
+      insertTask.run(
+        workflow.id,
+        workflow.scan_batch_id,
+        row.job_id,
+        row.observation_id,
+        position,
+        status,
+        now,
+        now
+      );
+    }
+  }
 }
 
 // 旧数据补卡：不调用模型、网络或真实平台，只为尚无任何 draft/confirmed 卡的候选人，
@@ -909,8 +1098,8 @@ function createWorkflowRun(db, input = {}) {
       id, profile_id, plan_id, local_day, sequence, status,
       target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
       keywords_json, budget_json, planner_json, metrics_json,
-      shortfall_code, error_code, error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      shortfall_code, error_code, error_message, model_config_revision, last_activity_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         id,
         profileId,
@@ -929,6 +1118,8 @@ function createWorkflowRun(db, input = {}) {
         nullableText(input.shortfallCode),
         nullableText(input.errorCode),
         nullableText(input.errorMessage, 2000),
+        nullableText(input.modelConfigRevision),
+        now,
         now,
         now
       );
@@ -999,7 +1190,8 @@ function transitionWorkflowRun(db, input = {}) {
     throw workflowRunError("WORKFLOW_TRANSITION_INVALID", `workflow run cannot transition from ${current.status} to ${nextStatus}`);
   }
   const now = String(input.updatedAt || nowIso());
-  const resumed = current.status === "interrupted" && ["scanning", "review_required", "communicating"].includes(nextStatus);
+  const resumed = (current.status === "interrupted" || current.status === "paused")
+    && ["scanning", "analyzing", "review_required", "communicating"].includes(nextStatus);
   const errorCode = resumed ? null
     : Object.hasOwn(input, "errorCode") ? nullableText(input.errorCode)
       : nullableText(current.errorCode);
@@ -1007,6 +1199,39 @@ function transitionWorkflowRun(db, input = {}) {
     : Object.hasOwn(input, "errorMessage") ? nullableText(input.errorMessage, 2000)
       : nullableText(current.errorMessage, 2000);
   const metrics = Object.hasOwn(input, "metrics") ? input.metrics : current.metrics;
+  const controlState = Object.hasOwn(input, "controlState")
+    ? String(input.controlState || "none")
+    : current.controlState || "none";
+  if (!WORKFLOW_CONTROL_STATES.has(controlState)) {
+    throw workflowRunError("WORKFLOW_CONTROL_INVALID", "workflow run control state is invalid");
+  }
+  const resumePhase = Object.hasOwn(input, "resumePhase")
+    ? (input.resumePhase ? String(input.resumePhase) : null)
+    : (current.resumePhase || null);
+  if (resumePhase && !["scanning", "analyzing"].includes(resumePhase)) {
+    throw workflowRunError("WORKFLOW_RESUME_PHASE_INVALID", "workflow run resume phase is invalid");
+  }
+  const progressRevision = Object.hasOwn(input, "progressRevision")
+    ? nonNegativeInteger(input.progressRevision)
+    : current.progressRevision;
+  const recoveryGeneration = Object.hasOwn(input, "recoveryGeneration")
+    ? nonNegativeInteger(input.recoveryGeneration)
+    : current.recoveryGeneration;
+  const circuitTimeoutJobCount = Object.hasOwn(input, "circuitTimeoutJobCount")
+    ? nonNegativeInteger(input.circuitTimeoutJobCount)
+    : current.circuitTimeoutJobCount;
+  const lifetimeTimeoutJobCount = Object.hasOwn(input, "lifetimeTimeoutJobCount")
+    ? nonNegativeInteger(input.lifetimeTimeoutJobCount)
+    : current.lifetimeTimeoutJobCount;
+  const modelConfigRevision = Object.hasOwn(input, "modelConfigRevision")
+    ? nullableText(input.modelConfigRevision)
+    : nullableText(current.modelConfigRevision);
+  const lastActivityAt = Object.hasOwn(input, "lastActivityAt")
+    ? String(input.lastActivityAt || now)
+    : String(current.lastActivityAt || now);
+  const platformAccessStartedAt = Object.hasOwn(input, "platformAccessStartedAt")
+    ? (input.platformAccessStartedAt ? String(input.platformAccessStartedAt) : null)
+    : String(current.platformAccessStartedAt || "");
   db.prepare(`UPDATE workflow_runs SET
       status = ?,
       successful_count = ?,
@@ -1015,6 +1240,15 @@ function transitionWorkflowRun(db, input = {}) {
       shortfall_code = ?,
       error_code = ?,
       error_message = ?,
+      control_state = ?,
+      resume_phase = ?,
+      recovery_generation = ?,
+      circuit_timeout_job_count = ?,
+      lifetime_timeout_job_count = ?,
+      progress_revision = ?,
+      last_activity_at = ?,
+      model_config_revision = ?,
+      platform_access_started_at = ?,
       started_at = CASE WHEN ? IN ('scanning','review_required') THEN COALESCE(started_at, ?) ELSE started_at END,
       review_ready_at = CASE WHEN ? = 'review_required' THEN COALESCE(review_ready_at, ?) ELSE review_ready_at END,
       finished_at = CASE WHEN ? IN ('completed','failed','stopped') THEN COALESCE(finished_at, ?) ELSE finished_at END,
@@ -1028,6 +1262,15 @@ function transitionWorkflowRun(db, input = {}) {
       Object.hasOwn(input, "shortfallCode") ? nullableText(input.shortfallCode) : nullableText(current.shortfallCode),
       errorCode,
       errorMessage,
+      controlState,
+      resumePhase,
+      recoveryGeneration,
+      circuitTimeoutJobCount,
+      lifetimeTimeoutJobCount,
+      progressRevision,
+      lastActivityAt,
+      modelConfigRevision,
+      platformAccessStartedAt || null,
       nextStatus,
       now,
       nextStatus,
@@ -1114,6 +1357,15 @@ function workflowRunRow(row) {
     shortfallCode: row.shortfall_code || "",
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
+    controlState: row.control_state || "none",
+    resumePhase: row.resume_phase || null,
+    recoveryGeneration: Number(row.recovery_generation || 0),
+    circuitTimeoutJobCount: Number(row.circuit_timeout_job_count || 0),
+    lifetimeTimeoutJobCount: Number(row.lifetime_timeout_job_count || 0),
+    progressRevision: Number(row.progress_revision || 0),
+    lastActivityAt: row.last_activity_at || null,
+    modelConfigRevision: row.model_config_revision || "",
+    platformAccessStartedAt: row.platform_access_started_at || null,
     createdAt: row.created_at,
     startedAt: row.started_at || null,
     reviewReadyAt: row.review_ready_at || null,

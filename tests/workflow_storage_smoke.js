@@ -100,6 +100,53 @@ try {
   const resumed = transitionWorkflowRun(db, { id: second.id, status: "scanning" });
   assert.strictEqual(resumed.status, "scanning");
   assert.strictEqual(resumed.errorCode, "");
+  const pausedRun = createWorkflowRun(db, input({
+    profileId,
+    planId,
+    localDay: "2026-07-21",
+    sequence: 1,
+    modelConfigRevision: "durable-revision"
+  }));
+  transitionWorkflowRun(db, { id: pausedRun.id, status: "scanning" });
+  transitionWorkflowRun(db, { id: pausedRun.id, status: "analyzing" });
+  const pauseRequested = transitionWorkflowRun(db, {
+    id: pausedRun.id,
+    status: "analyzing",
+    controlState: "pause_requested",
+    progressRevision: 7,
+    lastActivityAt: "2026-07-21T00:00:05.000Z"
+  });
+  assert.strictEqual(pauseRequested.controlState, "pause_requested");
+  assert.strictEqual(pauseRequested.progressRevision, 7);
+  const paused = transitionWorkflowRun(db, {
+    id: pausedRun.id,
+    status: "paused",
+    controlState: "none",
+    resumePhase: "analyzing",
+    circuitTimeoutJobCount: 10,
+    lifetimeTimeoutJobCount: 10
+  });
+  assert.strictEqual(paused.status, "paused");
+  assert.strictEqual(paused.resumePhase, "analyzing");
+  assert.strictEqual(paused.circuitTimeoutJobCount, 10);
+  assert.strictEqual(paused.lifetimeTimeoutJobCount, 10);
+  assert.strictEqual(paused.modelConfigRevision, "durable-revision");
+  assert.strictEqual(paused.lastActivityAt, "2026-07-21T00:00:05.000Z");
+  assert.strictEqual(getActiveWorkflowRun(db, { profileId, planId, localDay: "2026-07-21" }).id, pausedRun.id);
+  const resumedAnalyzing = transitionWorkflowRun(db, {
+    id: pausedRun.id,
+    status: "analyzing",
+    controlState: "none",
+    resumePhase: null,
+    recoveryGeneration: 1
+  });
+  assert.strictEqual(resumedAnalyzing.status, "analyzing");
+  assert.strictEqual(resumedAnalyzing.recoveryGeneration, 1);
+  transitionWorkflowRun(db, { id: pausedRun.id, status: "stopped" });
+  assert.strictEqual(
+    getActiveWorkflowRun(db, { profileId, planId, localDay: "2026-07-21" }),
+    null
+  );
   transitionWorkflowRun(db, { id: second.id, status: "stopped" });
   transitionWorkflowRun(db, { id: third.id, status: "stopped" });
 
