@@ -1495,11 +1495,12 @@ function insertWorkflowJobTaskRow(db, {
   now
 }) {
   return db.prepare(`
-    INSERT OR IGNORE INTO workflow_job_tasks(
+    INSERT INTO workflow_job_tasks(
       workflow_run_id, batch_id, job_id, observation_id, position, status,
       recovery_generation, attempt_count_in_generation, total_attempt_count, priority,
       model_config_revision, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 100, ?, ?, ?)
+    ON CONFLICT(workflow_run_id, job_id) DO NOTHING
   `).run(
     workflowRunId,
     batchId,
@@ -1650,16 +1651,117 @@ function listWorkflowJobTaskRows(db, { workflowRunId, statuses, limit }) {
   return rows.map(workflowJobTaskRow);
 }
 
+function getWorkflowJobTaskRow(db, taskId) {
+  return db.prepare("SELECT * FROM workflow_job_tasks WHERE id = ?").get(taskId) || null;
+}
+
+function getRunningJobAnalysisAttemptRow(db, taskId) {
+  return db.prepare(`
+    SELECT * FROM job_analysis_attempts
+    WHERE task_id = ? AND status = 'running'
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(taskId) || null;
+}
+
+function finishJobAnalysisAttemptRow(db, {
+  attemptId,
+  status,
+  provider,
+  model,
+  modelConfigRevision,
+  thinkingMode,
+  reasoningEffort,
+  backupUsed,
+  modelCallCount,
+  promptTokens,
+  completionTokens,
+  totalTokens,
+  latencyMs,
+  finishedAt,
+  now
+}) {
+  return db.prepare(`
+    UPDATE job_analysis_attempts SET
+      status = ?,
+      provider = ?,
+      model = ?,
+      model_config_revision = ?,
+      thinking_mode = ?,
+      reasoning_effort = ?,
+      backup_used = ?,
+      model_call_count = ?,
+      prompt_tokens = ?,
+      completion_tokens = ?,
+      total_tokens = ?,
+      finished_at = ?,
+      latency_ms = ?,
+      updated_at = ?
+    WHERE id = ? AND status = 'running'
+  `).run(
+    status,
+    provider,
+    model,
+    modelConfigRevision,
+    thinkingMode,
+    reasoningEffort,
+    backupUsed ? 1 : 0,
+    modelCallCount,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    finishedAt,
+    latencyMs,
+    now,
+    attemptId
+  );
+}
+
+function completeWorkflowJobTaskRow(db, {
+  taskId,
+  leaseOwner,
+  status,
+  reasonCode,
+  reasonKind,
+  finishedAt,
+  now
+}) {
+  return db.prepare(`
+    UPDATE workflow_job_tasks SET
+      status = ?,
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      available_at = NULL,
+      last_error_code = ?,
+      last_error_stage = NULL,
+      last_error_kind = ?,
+      finished_at = ?,
+      updated_at = ?
+    WHERE id = ? AND status = 'running' AND lease_owner = ?
+  `).run(
+    status,
+    reasonCode || null,
+    reasonKind || null,
+    finishedAt,
+    now,
+    taskId,
+    leaseOwner
+  );
+}
+
 function listJobAnalysisAttemptRows(db, { workflowRunId, taskId, limit }) {
   const cap = Math.max(1, Math.min(10000, Number(limit) || 10000));
-  const taskClause = Number.isInteger(Number(taskId)) && Number(taskId) > 0 ? "AND task_id = ?" : "";
-  const params = taskClause ? [workflowRunId, Number(taskId), cap] : [workflowRunId, cap];
+  const taskIdNum = Number(taskId);
+  if (!Number.isInteger(taskIdNum) || taskIdNum <= 0) {
+    throw new Error(`listJobAnalysisAttemptRows requires a positive integer taskId, got ${taskId}`);
+  }
   const rows = db.prepare(`
     SELECT * FROM job_analysis_attempts
-    WHERE workflow_run_id = ? ${taskClause}
+    WHERE workflow_run_id = ? AND task_id = ?
     ORDER BY total_attempt_number ASC, id ASC
     LIMIT ?
-  `).all(...params);
+  `).all(workflowRunId, taskIdNum, cap);
   return rows.map(jobAnalysisAttemptRow);
 }
 
@@ -4208,6 +4310,10 @@ module.exports = {
   getWorkflowObservationJob,
   listWorkflowJobTaskRows,
   listJobAnalysisAttemptRows,
+  getWorkflowJobTaskRow,
+  getRunningJobAnalysisAttemptRow,
+  finishJobAnalysisAttemptRow,
+  completeWorkflowJobTaskRow,
   backfillHistoricalCommunicationOutcomes,
   createMatchingCardDraft,
   getMatchingCard,

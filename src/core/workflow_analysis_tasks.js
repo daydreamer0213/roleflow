@@ -10,10 +10,15 @@ const {
   insertJobAnalysisAttemptRow,
   incrementWorkflowRunActivity,
   getWorkflowObservationJob,
+  getWorkflowJobTaskRow,
+  getRunningJobAnalysisAttemptRow,
+  finishJobAnalysisAttemptRow,
+  completeWorkflowJobTaskRow,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
   listWorkflowJobTaskRows,
-  listJobAnalysisAttemptRows
+  listJobAnalysisAttemptRows,
+  upsertJob
 } = require("./storage");
 
 function initializeWorkflowJobTasks(db, {
@@ -99,6 +104,7 @@ function claimWorkflowJobTask(db, {
   if (!Number.isFinite(clockMs)) {
     throw workflowTaskError("WORKFLOW_TASK_INVALID_TIME", `now 无效：${now}`);
   }
+  const normalizedClock = new Date(clockMs).toISOString();
   if (typeof selectModelIdentity !== "function") {
     throw workflowTaskError("WORKFLOW_TASK_MODEL_IDENTITY_REQUIRED", "必须提供 selectModelIdentity");
   }
@@ -108,7 +114,7 @@ function claimWorkflowJobTask(db, {
     if (!workflow || workflow.status !== "analyzing" || workflow.controlState !== "none") {
       return null;
     }
-    const candidate = selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now: clock });
+    const candidate = selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now: normalizedClock });
     if (!candidate) return null;
 
     const attemptInGeneration = Number(candidate.attempt_count_in_generation || 0) + 1;
@@ -138,12 +144,12 @@ function claimWorkflowJobTask(db, {
     const update = claimWorkflowJobTaskRow(db, {
       taskId: Number(candidate.id),
       leaseOwner: owner,
-      leasedAt: clock,
+      leasedAt: normalizedClock,
       leaseExpiresAt,
       attemptCountInGeneration: attemptInGeneration,
       totalAttemptCount: totalAttemptNumber,
       lastAttemptModelRevision: modelConfigRevision,
-      now: clock
+      now: normalizedClock
     });
     if (Number(update.changes) !== 1) return null;
 
@@ -161,10 +167,10 @@ function claimWorkflowJobTask(db, {
       thinkingMode,
       reasoningEffort,
       backupUsed: Number(identity.backupUsed || 0) === 1,
-      startedAt: clock,
-      now: clock
+      startedAt: normalizedClock,
+      now: normalizedClock
     });
-    incrementWorkflowRunActivity(db, { workflowRunId, now: clock });
+    incrementWorkflowRunActivity(db, { workflowRunId, now: normalizedClock });
 
     const taskRow = db.prepare("SELECT * FROM workflow_job_tasks WHERE id = ?").get(candidate.id);
     const attemptRow = db.prepare(`
@@ -179,6 +185,154 @@ function claimWorkflowJobTask(db, {
   });
 }
 
+function commitWorkflowJobTaskSuccess(db, {
+  taskId,
+  leaseOwner,
+  analyzedJob,
+  modelIdentity,
+  telemetry,
+  startedAt,
+  finishedAt
+}) {
+  const taskIdNum = requiredTaskId(taskId);
+  const owner = requiredLeaseOwner(leaseOwner);
+  const started = requiredIsoTime(startedAt, "startedAt");
+  const finished = requiredIsoTime(finishedAt, "finishedAt");
+  const identity = requiredModelIdentity(modelIdentity);
+  requireAnalyzedJob(analyzedJob, "commitWorkflowJobTaskSuccess");
+
+  return immediateTransaction(db, () => {
+    const taskRow = requireRunningTaskRow(db, taskIdNum, owner);
+    requireWorkflowExists(db, taskRow.workflow_run_id);
+    const attemptRow = getRunningJobAnalysisAttemptRow(db, taskIdNum);
+    if (!attemptRow) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_ATTEMPT_NOT_RUNNING",
+        `任务 ${taskIdNum} 没有 running 的尝试记录，无法提交成功`
+      );
+    }
+
+    upsertJob(db, analyzedJob, Number(taskRow.batch_id));
+
+    const usage = normalizeTelemetry(telemetry);
+    const latencyMs = latencyBetween(started, finished);
+    finishJobAnalysisAttemptRow(db, {
+      attemptId: Number(attemptRow.id),
+      status: "succeeded",
+      provider: String(identity.provider ?? attemptRow.provider),
+      model: String(identity.model ?? attemptRow.model),
+      modelConfigRevision: String(identity.modelConfigRevision ?? attemptRow.model_config_revision),
+      thinkingMode: String(identity.thinkingMode ?? attemptRow.thinking_mode),
+      reasoningEffort: String(identity.reasoningEffort ?? attemptRow.reasoning_effort),
+      backupUsed: identity.backupUsed ?? attemptRow.backup_used,
+      modelCallCount: usage.modelCallCount,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      latencyMs,
+      finishedAt: finished,
+      now: finished
+    });
+
+    const taskUpdate = completeWorkflowJobTaskRow(db, {
+      taskId: taskIdNum,
+      leaseOwner: owner,
+      status: "succeeded",
+      reasonCode: null,
+      reasonKind: null,
+      finishedAt: finished,
+      now: finished
+    });
+    if (Number(taskUpdate.changes) !== 1) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_NOT_RUNNING",
+        `任务 ${taskIdNum} 不再是 running，成功提交未生效`
+      );
+    }
+    incrementWorkflowRunActivity(db, { workflowRunId: taskRow.workflow_run_id, now: finished });
+
+    return {
+      task: workflowJobTaskRow(getWorkflowJobTaskRow(db, taskIdNum)),
+      workflow: getWorkflowRun(db, taskRow.workflow_run_id)
+    };
+  });
+}
+
+function commitWorkflowJobTaskSkipped(db, {
+  taskId,
+  leaseOwner,
+  analyzedJob,
+  reasonCode,
+  startedAt,
+  finishedAt
+}) {
+  const taskIdNum = requiredTaskId(taskId);
+  const owner = requiredLeaseOwner(leaseOwner);
+  const started = requiredIsoTime(startedAt, "startedAt");
+  const finished = requiredIsoTime(finishedAt, "finishedAt");
+  const reason = String(reasonCode || "").trim();
+  if (!reason) {
+    throw workflowTaskError("WORKFLOW_TASK_REASON_CODE_REQUIRED", "跳过提交必须提供稳定的 reasonCode");
+  }
+
+  return immediateTransaction(db, () => {
+    const taskRow = requireRunningTaskRow(db, taskIdNum, owner);
+    requireWorkflowExists(db, taskRow.workflow_run_id);
+    const attemptRow = getRunningJobAnalysisAttemptRow(db, taskIdNum);
+    if (!attemptRow) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_ATTEMPT_NOT_RUNNING",
+        `任务 ${taskIdNum} 没有 running 的尝试记录，无法提交跳过`
+      );
+    }
+
+    if (analyzedJob) {
+      requireAnalyzedJob(analyzedJob, "commitWorkflowJobTaskSkipped");
+      upsertJob(db, analyzedJob, Number(taskRow.batch_id));
+    }
+
+    finishJobAnalysisAttemptRow(db, {
+      attemptId: Number(attemptRow.id),
+      status: "succeeded",
+      provider: attemptRow.provider,
+      model: attemptRow.model,
+      modelConfigRevision: attemptRow.model_config_revision,
+      thinkingMode: attemptRow.thinking_mode,
+      reasoningEffort: attemptRow.reasoning_effort,
+      backupUsed: attemptRow.backup_used,
+      modelCallCount: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      latencyMs: latencyBetween(started, finished),
+      finishedAt: finished,
+      now: finished
+    });
+
+    const taskUpdate = completeWorkflowJobTaskRow(db, {
+      taskId: taskIdNum,
+      leaseOwner: owner,
+      status: "skipped",
+      reasonCode: reason,
+      reasonKind: "skipped",
+      finishedAt: finished,
+      now: finished
+    });
+    if (Number(taskUpdate.changes) !== 1) {
+      throw workflowTaskError(
+        "WORKFLOW_TASK_NOT_RUNNING",
+        `任务 ${taskIdNum} 不再是 running，跳过提交未生效`
+      );
+    }
+    incrementWorkflowRunActivity(db, { workflowRunId: taskRow.workflow_run_id, now: finished });
+
+    return {
+      task: workflowJobTaskRow(getWorkflowJobTaskRow(db, taskIdNum)),
+      workflow: getWorkflowRun(db, taskRow.workflow_run_id)
+    };
+  });
+}
+
 function listWorkflowJobTasks(db, options = {}) {
   return listWorkflowJobTaskRows(db, {
     workflowRunId: options.workflowRunId,
@@ -188,11 +342,113 @@ function listWorkflowJobTasks(db, options = {}) {
 }
 
 function listJobAnalysisAttempts(db, options = {}) {
+  const taskId = Number(options.taskId);
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_INVALID_TASK_ID",
+      `taskId 必须是正整数：${options.taskId}，不允许退化为列出整个 workflow 的 attempts`
+    );
+  }
   return listJobAnalysisAttemptRows(db, {
     workflowRunId: options.workflowRunId,
-    taskId: options.taskId,
+    taskId,
     limit: options.limit
   });
+}
+
+function requireRunningTaskRow(db, taskId, owner) {
+  const row = getWorkflowJobTaskRow(db, taskId);
+  if (!row) {
+    throw workflowTaskError("WORKFLOW_TASK_NOT_FOUND", `任务 ${taskId} 不存在`);
+  }
+  if (row.status !== "running") {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_NOT_RUNNING",
+      `任务 ${taskId} 状态为 ${row.status}，无法提交完成`
+    );
+  }
+  if (String(row.lease_owner || "") !== owner) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_LEASE_OWNER_MISMATCH",
+      `任务 ${taskId} 的租约属于其他 worker，无法提交完成`
+    );
+  }
+  return row;
+}
+
+function requireWorkflowExists(db, workflowRunId) {
+  const row = db.prepare("SELECT id FROM workflow_runs WHERE id = ?").get(workflowRunId);
+  if (!row) {
+    throw workflowTaskError("WORKFLOW_TASK_WORKFLOW_NOT_FOUND", `工作流 ${workflowRunId} 不存在`);
+  }
+}
+
+function requiredTaskId(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw workflowTaskError("WORKFLOW_TASK_ID_INVALID", `taskId 必须是正整数：${value}`);
+  }
+  return parsed;
+}
+
+function requiredLeaseOwner(value) {
+  const owner = String(value || "").trim();
+  if (!owner) {
+    throw workflowTaskError("WORKFLOW_TASK_LEASE_OWNER_REQUIRED", "提交任务必须提供 leaseOwner");
+  }
+  return owner;
+}
+
+function requiredIsoTime(value, label) {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw workflowTaskError("WORKFLOW_TASK_INVALID_TIME", `${label} 必须是有效时间：${value}`);
+  }
+  return new Date(ms).toISOString();
+}
+
+function requiredModelIdentity(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_MODEL_IDENTITY_INVALID",
+      "成功提交必须提供 modelIdentity 对象"
+    );
+  }
+  return identity;
+}
+
+function requireAnalyzedJob(analyzedJob, caller) {
+  if (!analyzedJob || typeof analyzedJob !== "object" || Array.isArray(analyzedJob)) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_ANALYZED_JOB_INVALID",
+      `${caller} 必须提供 analyzedJob 对象`
+    );
+  }
+  if (!String(analyzedJob.source || "") || !String(analyzedJob.sourceId || "") || !String(analyzedJob.title || "")) {
+    throw workflowTaskError(
+      "WORKFLOW_TASK_ANALYZED_JOB_INVALID",
+      `${caller} 的 analyzedJob 缺少 source/sourceId/title`
+    );
+  }
+}
+
+function normalizeTelemetry(telemetry) {
+  const usage = telemetry && typeof telemetry === "object" ? telemetry : {};
+  return {
+    modelCallCount: nonNegativeInt(usage.modelCallCount),
+    promptTokens: nonNegativeInt(usage.promptTokens),
+    completionTokens: nonNegativeInt(usage.completionTokens),
+    totalTokens: nonNegativeInt(usage.totalTokens)
+  };
+}
+
+function nonNegativeInt(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function latencyBetween(startedAt, finishedAt) {
+  return Math.max(0, Math.round(Date.parse(finishedAt) - Date.parse(startedAt)));
 }
 
 function initialTaskStatus(analysis) {
@@ -218,6 +474,8 @@ function workflowTaskError(code, message) {
 module.exports = {
   initializeWorkflowJobTasks,
   claimWorkflowJobTask,
+  commitWorkflowJobTaskSuccess,
+  commitWorkflowJobTaskSkipped,
   listWorkflowJobTasks,
   listJobAnalysisAttempts
 };
