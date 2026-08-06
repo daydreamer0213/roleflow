@@ -140,6 +140,24 @@ async function main() {
   assert.strictEqual(analyzed.progressUpdate.stage, "reply_ready");
   assert.strictEqual(messages[0].text, "", "analyzer must clear ephemeral message text");
 
+  const storedShapeAnalyzer = createMessageReplyAnalyzer({ adapter: new MockModelAdapter() });
+  const storedMessages = [{ messageKey: "sha256:" + "c".repeat(64), text: "什么时候可以到岗？" }];
+  const storedShapeAnalyzed = await storedShapeAnalyzer({
+    profile: { id: 1 },
+    job: { id: 2, title: "Java Engineer" },
+    messages: storedMessages,
+    facts: [
+      { factKey: "employment_status", factValue: "在职", source: "user_provided", updatedAt: "2026-08-01T00:00:00.000Z" },
+      { factKey: "availability_date", factValue: "2026-08-15", source: "user_provided", updatedAt: "2026-08-01T00:00:00.000Z" }
+    ],
+    now: NOW
+  });
+  assert.strictEqual(
+    storedShapeAnalyzed.progressUpdate.stage,
+    "reply_ready",
+    "storage-shaped facts must be normalized before the reply contract"
+  );
+
   console.log("message_reply_contract_smoke ok");
 }
 

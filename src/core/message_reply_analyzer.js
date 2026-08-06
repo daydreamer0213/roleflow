@@ -5,6 +5,12 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
     throw new Error("message reply analyzer requires adapter.draftMessageGroup");
   }
   return async function analyzeMessageGroup({ profile, job, messages = [], facts = [], now } = {}) {
+    const normalizedFacts = (facts || []).map((fact) => ({
+      key: String(fact.key || fact.factKey || ""),
+      value: fact.value !== undefined ? fact.value : fact.factValue,
+      subjectKey: fact.subjectKey || "",
+      updatedAt: fact.updatedAt || fact.confirmedAt || ""
+    }));
     const input = {
       profile,
       job,
@@ -12,7 +18,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
         messageKey: message.messageKey,
         text: String(message.text || "")
       })),
-      facts: facts || []
+      facts: normalizedFacts
     };
     try {
       const result = await adapter.draftMessageGroup(input);

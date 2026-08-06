@@ -341,8 +341,43 @@ async function main() {
   );
   server = null;
 
+  await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function leaseConstraintSmoke(database, root, dbPath, logger, profileId) {
+  const constraintServer = createDashboardServer({
+    db: database,
+    root,
+    dbPath,
+    forceMock: true,
+    logger,
+    messageDiscoveryDependencies: {
+      acquireLease() {
+        const error = new Error("UNIQUE constraint failed: site_scan_leases.site");
+        error.code = "ERR_SQLITE_CONSTRAINT";
+        throw error;
+      }
+    }
+  });
+  await new Promise((resolve, reject) => {
+    constraintServer.once("error", reject);
+    constraintServer.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const base = `http://127.0.0.1:${constraintServer.address().port}`;
+    const response = await fetch(`${base}/api/message-discovery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "start", profileId })
+    });
+    assert.strictEqual(response.status, 409);
+    const body = await response.json();
+    assert.strictEqual(body.errorCode, "MESSAGE_DISCOVERY_LEASE_BUSY");
+  } finally {
+    await new Promise((resolve) => constraintServer.close(resolve));
+  }
 }
 
 function createFixture() {

@@ -58,7 +58,7 @@ function planMessageDiscoveryQueue({ rows = [], baselines = new Map() } = {}) {
       continue;
     }
     if (baseline.previewDigest === previewDigest) continue;
-    if (previewKind === "possible_hr_reply") {
+    if (previewKind === "possible_hr_reply" || previewKind === "unsupported") {
       queue.push(queueTarget("preview_changed", row, conversationKey, previewDigest, previewKind));
       continue;
     }

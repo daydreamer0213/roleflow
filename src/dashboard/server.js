@@ -4435,7 +4435,7 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
   const fullPool = listDecisionPool(db, { planId: plan.id })
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
-  const allCandidates = fullPool.filter(compactAwaitingAction);
+  const allCandidates = fullPool.filter((job) => compactAwaitingAction(job) && !job.progressCard);
   const noReplyCandidates = fullPool.filter((job) => job.applicationStatus === "no_reply");
   const progressCandidates = fullPool.filter((job) => job.progressCard);
   const progressPools = new Set(["waiting_reply", "needs_user_action", "interview"]);

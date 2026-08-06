@@ -76,14 +76,14 @@ try {
   assert.deepStrictEqual(
     inventory.map((item) => [item.sourceId, item.workflowTier]),
     [
-      ["progress-active", "primary"],
       ["primary", "primary"],
       ["talk", "apply"]
     ]
   );
   assert.strictEqual(
-    inventory.find((item) => item.id === ids.progressActive).progressCard.stage,
-    "contact_started"
+    inventory.some((item) => item.id === ids.progressActive),
+    false,
+    "an active progress card must remove the job from the communication inventory"
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
   assert.deepStrictEqual(

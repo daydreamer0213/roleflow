@@ -156,8 +156,8 @@ function correctProgressStage(db, input = {}) {
       type: "manual_correction",
       actor: "user",
       summary: reason,
-      metadata: { toStage }
-    }, ["toStage"]);
+      metadata: { fromStage: expectedStage, toStage }
+    }, ["fromStage", "toStage"]);
     return card;
   }
   if (card.stage !== expectedStage) {
