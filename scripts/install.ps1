@@ -210,9 +210,11 @@ if (-not $EdgePath) {
 Write-Host "Edge: $EdgePath"
 
 $env:ZHIPPING_NODE = $Node.Path
-& $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\run_all.js")
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
+if (-not $CheckOnly) {
+  & $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\run_all.js")
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
 }
 
 if ($StartBrowser) {

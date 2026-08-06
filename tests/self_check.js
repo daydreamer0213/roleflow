@@ -31,6 +31,11 @@ assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1
 assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs',"), "installer must resolve the production PDF parser dependency");
 assert(!installer.includes("pdf-parse"), "installer must not check the removed pdf-parse dependency");
 assert(installer.includes("{ paths: [process.argv[1]] }"), "installer must anchor dependency resolution to its project root");
+assert.match(
+  installer,
+  /if \(-not \$CheckOnly\) \{\s*& \$Node\.Path --disable-warning=ExperimentalWarning \(Join-Path \$ProjectRoot "tests\\run_all\.js"\)/,
+  "startup dependency checks must not run the full offline suite"
+);
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
 assert(!workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("项目专用 Edge"));
