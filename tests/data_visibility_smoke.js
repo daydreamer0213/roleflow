@@ -164,11 +164,11 @@ function queueUiSmoke({ profileId, planId }) {
   const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "all", page: "5" }) });
   assert(lastPage.includes("当前待处理岗位"));
   assert(
-    lastPage.includes("当前显示 121-132 / 共 132 条"),
+    lastPage.includes("当前显示 121-131 / 共 131 条"),
     `分页摘要不符：${lastPage.match(/当前显示[^<]*/)?.[0] || lastPage.match(/共 \d+ 条/)?.[0] || "未找到摘要"}`
   );
   assert(lastPage.includes("上一页"));
-  assert(lastPage.includes("本轮新增 1"));
+  assert(lastPage.includes("本轮新增 0"));
   assert(lastPage.includes("本轮重复 1"));
   assert(
     lastPage.includes("历史未处理 131"),
@@ -176,10 +176,7 @@ function queueUiSmoke({ profileId, planId }) {
   );
 
   const newest = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "new" }) });
-  assert(newest.includes("本轮新增岗位"));
-  assert(newest.includes("首次 "));
-  assert(newest.includes("最近 "));
-  assert(newest.includes("7 天后再看"));
+  assert(!newest.includes("本轮新增岗位"), "communicated jobs must not appear in the apply/new pool");
 
   const repeated = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "repeated" }) });
   assert(repeated.includes("本轮再次出现岗位"));

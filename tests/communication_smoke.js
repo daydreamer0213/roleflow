@@ -96,7 +96,7 @@ let server;
     const base = `http://127.0.0.1:${server.address().port}`;
 
     const queueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}`)).text();
-    assert(queueHtml.includes("生成定制招呼语"));
+    assert(!queueHtml.includes("生成定制招呼语"), "communicated jobs must move out of the focus pool");
     assert(queueHtml.includes("等待回复"));
 
     transitionProgressCard(db, {

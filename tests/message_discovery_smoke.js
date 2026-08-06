@@ -6,9 +6,10 @@ const { openDb } = require("../src/core/storage");
 const {
   ensureProgressCard,
   listProgressEvents,
-  transitionProgressCard
+  transitionProgressCard,
+  recordDiscoveredMessageGroupClassification
 } = require("../src/core/candidate_progress");
-const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
+const { safeDigest, messageKey } = require("../src/adapters/sites/boss_message_dom");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { factStatus } = require("../src/core/candidate_fact_policy");
 const {
@@ -41,6 +42,7 @@ async function main() {
   await messageSelectionSmoke();
   await messageGroupBoundarySmoke();
   await previewChannelSmoke();
+  await unsupportedPreviewSmoke();
   await classificationOutcomeSmoke();
   await readerStopSmoke();
   await abortAfterClassificationSmoke();
@@ -366,6 +368,46 @@ async function messageGroupBoundarySmoke() {
   });
   assert.strictEqual(systemSummary.status, "completed");
   assert.strictEqual(systemSummary.processed, 0);
+
+  const incremental = createFixture({ suffix: "group-incremental", title: "Group Incremental Engineer" });
+  const incrementalThreadKey = safeDigest(["boss", PRIVATE_RECRUITER, incremental.title]);
+  const processedKeys = Array.from({ length: 5 }, (_, index) => messageKey({
+    platform: "boss",
+    threadKey: incrementalThreadKey,
+    messageId: String(910000000000000 + index)
+  }));
+  recordDiscoveredMessageGroupClassification(db, {
+    cardId: incremental.card.id,
+    platform: "boss",
+    threadKey: incrementalThreadKey,
+    messageKeys: processedKeys,
+    messageGroupKey: safeDigest(["message-group", incrementalThreadKey, ...processedKeys]),
+    messageCategory: "qualification",
+    missingFactKey: "",
+    progressUpdate: { stage: "reply_ready" },
+    occurredAt: NOW
+  });
+  const incrementalSummary = await runBossMessageDiscovery({
+    db,
+    profileId: incremental.profileId,
+    reader: fakeReader([selectedConversation({
+      title: incremental.title,
+      messages: [
+        ...processedKeys.map((key, index) => message("friend", String(910000000000000 + index), `old ${index}`)),
+        message("friend", "910000000000005", "new follow-up")
+      ]
+    })]),
+    classifyMessageGroup: async ({ messages }) => {
+      assert.strictEqual(messages.length, 6, "processed context messages must remain for the model");
+      assert.strictEqual(messages.at(-1).text, "new follow-up");
+      return classification();
+    }
+  });
+  assert.strictEqual(
+    incrementalSummary.processed,
+    1,
+    "group limit must apply only to unprocessed messages"
+  );
 }
 
 async function previewChannelSmoke() {
@@ -395,7 +437,7 @@ async function previewChannelSmoke() {
       assert.strictEqual(target.operation, "preview_changed");
       return selectedConversation({
         title: fixture.title,
-        messageId: opens === 1 ? "123456789012390" : "123456789012391"
+        messageId: opens === 1 || opens === 2 ? "123456789012390" : "123456789012391"
       });
     }
   };
@@ -420,6 +462,25 @@ async function previewChannelSmoke() {
     "first observation must only establish a baseline"
   );
 
+  await assert.rejects(
+    () => runBossMessageDiscovery({
+      db,
+      profileId: fixture.profileId,
+      reader,
+      classifyMessageGroup: async () => {
+        throw new Error("model failed");
+      },
+      sleepFn: async () => {}
+    }),
+    /model failed/
+  );
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: fixture.profileId })[0].previewDigest,
+    firstDigest,
+    "a failed classification must not advance the preview baseline"
+  );
+  assert.strictEqual(opens, 1, "the failed run must open the conversation but must not commit it");
+
   const second = await runBossMessageDiscovery({
     db,
     profileId: fixture.profileId,
@@ -433,7 +494,7 @@ async function previewChannelSmoke() {
   assert.strictEqual(second.status, "completed");
   assert.strictEqual(second.processed, 1);
   assert.strictEqual(modelCalls, 1);
-  assert.strictEqual(opens, 1);
+  assert.strictEqual(opens, 2);
   assert.strictEqual(
     listPreviewStates(db, { profileId: fixture.profileId })[0].previewDigest,
     changedDigest,
@@ -460,7 +521,53 @@ async function previewChannelSmoke() {
   assert.strictEqual(third.status, "completed");
   assert.strictEqual(third.processed, 1, "a second preview change must be discovered again");
   assert.strictEqual(modelCalls, 2);
-  assert.strictEqual(opens, 2);
+  assert.strictEqual(opens, 3);
+}
+
+async function unsupportedPreviewSmoke() {
+  const fixture = createFixture({ suffix: "preview-unsupported", title: "Preview Unsupported Engineer" });
+  const conversationKey = safeDigest(["conversation", "preview-unsupported"]);
+  commitProcessedPreview(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey,
+    previewDigest: safeDigest(["preview", "text"]),
+    previewKind: "possible_hr_reply",
+    observedAt: NOW
+  });
+  let opens = 0;
+  const reader = {
+    async scanConversationRows() {
+      return {
+        tabId: "fake-tab",
+        path: "/web/geek/chat",
+        rows: Object.freeze([Object.freeze({
+          rowIndex: 0,
+          unread: false,
+          selected: false,
+          conversationKey,
+          previewDigest: safeDigest(["preview", "voice"]),
+          previewKind: "unsupported",
+          transientSignature: safeDigest(["row", "unsupported"])
+        })])
+      };
+    },
+    async openQueuedConversation() {
+      opens += 1;
+      throw new Error("unsupported preview must stop before clicking");
+    }
+  };
+  const summary = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader,
+    classifyMessageGroup: async () => {
+      throw new Error("unsupported preview must not call the model");
+    },
+    sleepFn: async () => {}
+  });
+  assertStopped(summary, "BOSS_MESSAGE_CONTENT_UNSUPPORTED");
+  assert.strictEqual(opens, 0);
 }
 
 async function classificationOutcomeSmoke() {

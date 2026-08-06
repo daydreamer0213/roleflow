@@ -55,7 +55,8 @@ function createMessageDiscoveryController(deps = {}) {
     try {
       acquireLease(db, { site: "boss", owner, command: "discover-messages", planId: null });
     } catch (error) {
-      if (error?.code === "SCAN_ALREADY_RUNNING") {
+      if (error?.code === "SCAN_ALREADY_RUNNING"
+        || /constraint|locked|lease/i.test(String(error?.message || ""))) {
         throw messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_BUSY", "BOSS is already in use", 409);
       }
       throw error;

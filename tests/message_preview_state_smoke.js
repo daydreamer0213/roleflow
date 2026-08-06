@@ -83,6 +83,20 @@ try {
   assert.strictEqual(planned.queue[0].operation, "unread");
   assert.strictEqual(planned.queue[0].conversationKey, digest("conversation-b"));
 
+  planned = planMessageDiscoveryQueue({
+    rows: [readRow(digest("conversation-a"), digest("voice"), "unsupported")],
+    baselines: new Map([[digest("conversation-a"), {
+      previewDigest: digest("text"),
+      previewKind: "possible_hr_reply"
+    }]])
+  });
+  assert.strictEqual(
+    planned.queue[0].operation,
+    "preview_changed",
+    "unsupported preview changes must queue for manual handling"
+  );
+  assert.strictEqual(planned.queue[0].previewKind, "unsupported");
+
   const withoutKey = planMessageDiscoveryQueue({
     rows: [{ ...readRow("", digest("orphan")), conversationKey: "" }],
     baselines: new Map()

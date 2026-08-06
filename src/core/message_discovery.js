@@ -60,6 +60,9 @@ async function runBossMessageDiscovery({
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
     const target = queue[queueIndex];
     throwIfAborted(signal);
+    if (target.previewKind === "unsupported") {
+      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus);
+    }
     let selected;
     try {
       openedCount += 1;
@@ -69,7 +72,6 @@ async function runBossMessageDiscovery({
       return emitStopped(errorCode(error), queue.length, results, logger, onStatus);
     }
     if (selected?.skipped) {
-      commitBaseline(db, profileId, target, now());
       await paceBeforeNext({
         queueIndex,
         queueLength: queue.length,
@@ -115,7 +117,6 @@ async function runBossMessageDiscovery({
       }
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus);
     }
-    commitBaseline(db, profileId, target, now());
 
     let classification;
     try {
@@ -141,6 +142,7 @@ async function runBossMessageDiscovery({
       progressUpdate: classification.progressUpdate,
       occurredAt: now()
     });
+    commitBaseline(db, profileId, target, now());
     results = results.filter((item) => item.cardId !== card.id);
     processed += 1;
     results.push(safeResult(card, classification));
@@ -229,7 +231,6 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
     if (messages[index]?.direction === "myself") lastMyself = index;
   }
   const candidates = [];
-  let totalTextLength = 0;
   for (let index = lastMyself + 1; index < messages.length; index += 1) {
     const item = messages[index];
     if (!item || typeof item !== "object") continue;
@@ -248,47 +249,43 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
       item.text = "";
       continue;
     }
-    candidates.push({ item, text });
-    totalTextLength += text.length;
-  }
-  if (candidates.length > BOSS_MESSAGE_GROUP_LIMIT) {
-    clearMessageSources(messages);
-    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_LIMIT" };
-  }
-  if (totalTextLength > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
-    clearMessageSources(messages);
-    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
-  }
-  const grouped = [];
-  for (const candidate of candidates) {
     let digest;
     try {
       digest = messageKey({
         platform: "boss",
         threadKey,
-        messageId: candidate.item.messageId
+        messageId: item.messageId
       });
     } finally {
-      candidate.item.messageId = "";
+      item.messageId = "";
     }
     const idempotencyKey = `message:boss:${digest.slice(7)}`;
     const exists = db.prepare(`SELECT 1 AS found FROM candidate_progress_events
       WHERE card_id = ? AND idempotency_key = ?`).get(cardId, idempotencyKey);
-    grouped.push({
+    candidates.push({
       messageKey: digest,
-      text: candidate.text,
+      text,
       isNew: !exists
     });
-    candidate.item.text = "";
+    item.text = "";
   }
   for (const item of messages) {
     item.messageId = "";
     item.text = "";
   }
-  const newMessageKeys = grouped.filter((item) => item.isNew).map((item) => item.messageKey);
+  const processed = candidates.filter((item) => !item.isNew);
+  const unprocessed = candidates.filter((item) => item.isNew);
+  if (unprocessed.length > BOSS_MESSAGE_GROUP_LIMIT) {
+    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_LIMIT" };
+  }
+  if (unprocessed.reduce((sum, item) => sum + item.text.length, 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
+    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
+  }
+  const newMessageKeys = unprocessed.map((item) => item.messageKey);
   if (newMessageKeys.length === 0) {
     return { ok: false, skipped: true, reasonCode: "BOSS_MESSAGE_ALREADY_PROCESSED" };
   }
+  const grouped = [...processed, ...unprocessed];
   return {
     ok: true,
     messages: grouped.map(({ messageKey: itemKey, text }) => ({ messageKey: itemKey, text })),

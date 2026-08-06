@@ -67,7 +67,8 @@ function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = 
     .map((job) => {
       const result = workflowEligibility(job, {
         now,
-        communicationStatus: communicationStates.get(Number(job.id)) || ""
+        communicationStatus: communicationStates.get(Number(job.id)) || "",
+        progressStage: progressCards.get(Number(job.id))?.stage || ""
       });
       return {
         ...job,

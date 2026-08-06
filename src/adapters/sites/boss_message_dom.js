@@ -105,16 +105,18 @@ function snapshotBossMessagePage(documentLike, locationHref) {
     }
     const rows = [...documentLike.querySelectorAll(SELECTORS.row)].map((row, rowIndex) => {
       const lines = visibleLines(row.innerText);
+      const recruiterLabel = normalizedText(row.querySelector(SELECTORS.rowTitle)?.textContent) || lines[0] || "";
+      const previewText = normalizedText(row.querySelector(SELECTORS.lastMsg)?.textContent) || lines.at(-1) || "";
       const snapshotRow = {
         rowIndex,
         unread: Boolean(row.querySelector(SELECTORS.unread)),
         selected: row.matches(SELECTORS.selected) || Boolean(row.querySelector(SELECTORS.selected)),
-        recruiterLabel: normalizedText(row.querySelector(SELECTORS.rowTitle)?.textContent) || lines[0] || "",
-        previewText: normalizedText(row.querySelector(SELECTORS.lastMsg)?.textContent) || lines.at(-1) || "",
-        recruiterKey: recruiterKey(row, lines[0] || ""),
-        conversationKey: conversationKey(row, lines[0] || ""),
-        previewDigest: safeDigest(["preview", lines.at(-1) || ""]),
-        previewKind: previewKind(row, lines.at(-1) || "")
+        recruiterLabel,
+        previewText,
+        recruiterKey: recruiterKey(row, recruiterLabel),
+        conversationKey: conversationKey(row, recruiterLabel),
+        previewDigest: safeDigest(["preview", previewText]),
+        previewKind: previewKind(row, previewText)
       };
       return { ...snapshotRow, transientSignature: transientSignature(snapshotRow) };
     });

@@ -36,6 +36,28 @@ assert.strictEqual(
   "self_delivered",
   "a live-calibrated .status-delivery row must classify as self_delivered"
 );
+
+const liveRowDocument = createBossMessageDomFixture();
+const liveRow = liveRowDocument.querySelectorAll(".friend-content-warp")[0];
+liveRow.innerText = "10:30\nAlex Example\nPlease share availability";
+delete liveRow.attributes["data-conversation-id"];
+delete liveRow.attributes["data-recruiter-id"];
+const liveRowSnapshot = snapshotBossMessagePage(liveRowDocument, "https://www.zhipin.com/web/geek/chat");
+assert.strictEqual(
+  liveRowSnapshot.rows[0].recruiterLabel,
+  "Alex Example",
+  "a live row with time on its first line must use .title-box for the recruiter label"
+);
+assert.strictEqual(
+  liveRowSnapshot.rows[0].conversationKey,
+  safeDigest(["conversation", "label:Alex Example"]),
+  "conversationKey must use the .title-box label, not the time line"
+);
+assert.strictEqual(
+  liveRowSnapshot.rows[0].previewDigest,
+  safeDigest(["preview", "Please share availability"]),
+  "previewDigest must use .last-msg-text, not the last innerText line"
+);
 assert.deepStrictEqual(snapshot.rows.map((row) => row.transientSignature), [
   safeDigest([0, "Alex Example", "Please share availability", true]),
   safeDigest([1, "Blair Example", "Thanks for the update", false]),

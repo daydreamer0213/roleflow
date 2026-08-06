@@ -8,6 +8,7 @@ const {
   ensureProgressCard,
   recordDiscoveredMessageClassification,
   recordDiscoveredMessageGroupClassification,
+  correctProgressStage,
   getProgressCardForJob,
   listProgressEvents
 } = require("../src/core/candidate_progress");
@@ -160,6 +161,34 @@ try {
     jobId: groupRollbackFixture.jobId
   }).threadKey, "");
   assert.strictEqual(listProgressEvents(db, groupRollbackCard.id).length, 0);
+
+  const correctionFixture = createFixture(db, "correction", now);
+  const correctionCard = ensureProgressCard(db, {
+    ...correctionFixture,
+    source: "boss",
+    now
+  });
+  const correctionKey = "progress:00000000-0000-4000-8000-000000000001";
+  correctProgressStage(db, {
+    cardId: correctionCard.id,
+    idempotencyKey: correctionKey,
+    expectedStage: "contact_started",
+    toStage: "interview_scheduled",
+    reason: "用户确认阶段应为已安排面试",
+    now: "2026-07-23T08:04:00.000Z"
+  });
+  assert.throws(
+    () => correctProgressStage(db, {
+      cardId: correctionCard.id,
+      idempotencyKey: correctionKey,
+      expectedStage: "waiting_reply",
+      toStage: "interview_scheduled",
+      reason: "用户确认阶段应为已安排面试",
+      now: "2026-07-23T08:04:01.000Z"
+    }),
+    (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT",
+    "the same correction idempotency key must include the expected from stage"
+  );
 
   console.log("candidate_progress_storage_smoke ok");
 } finally {
