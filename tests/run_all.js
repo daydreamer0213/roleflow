@@ -23,6 +23,7 @@ const tests = [
   "storage_migration_smoke.js",
   "matching_card_smoke.js",
   "workflow_storage_smoke.js",
+  "workflow_task_storage_smoke.js",
   "workflow_inventory_smoke.js",
   "workflow_health_smoke.js",
   "workflow_communication_smoke.js",

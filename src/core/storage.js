@@ -1374,6 +1374,295 @@ function workflowRunRow(row) {
   };
 }
 
+function immediateTransaction(db, work) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = work();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+function workflowJobTaskRow(row) {
+  return {
+    id: Number(row.id),
+    workflowRunId: row.workflow_run_id,
+    batchId: Number(row.batch_id),
+    jobId: Number(row.job_id),
+    observationId: Number(row.observation_id),
+    position: Number(row.position),
+    status: row.status,
+    recoveryGeneration: Number(row.recovery_generation || 0),
+    attemptCountInGeneration: Number(row.attempt_count_in_generation || 0),
+    totalAttemptCount: Number(row.total_attempt_count || 0),
+    priority: Number(row.priority || 100),
+    availableAt: row.available_at || null,
+    leaseOwner: row.lease_owner || null,
+    leasedAt: row.leased_at || null,
+    leaseExpiresAt: row.lease_expires_at || null,
+    modelConfigRevision: row.model_config_revision || null,
+    lastAttemptModelRevision: row.last_attempt_model_revision || null,
+    lastErrorCode: row.last_error_code || null,
+    lastErrorStage: row.last_error_stage || null,
+    lastErrorKind: row.last_error_kind || null,
+    totalLatencyMs: Number(row.total_latency_ms || 0),
+    startedAt: row.started_at || null,
+    finishedAt: row.finished_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function jobAnalysisAttemptRow(row) {
+  return {
+    id: Number(row.id),
+    workflowRunId: row.workflow_run_id,
+    taskId: Number(row.task_id),
+    jobId: Number(row.job_id),
+    recoveryGeneration: Number(row.recovery_generation || 0),
+    attemptInGeneration: Number(row.attempt_in_generation),
+    totalAttemptNumber: Number(row.total_attempt_number),
+    profileKind: row.profile_kind,
+    modelConfigRevision: row.model_config_revision,
+    provider: row.provider,
+    model: row.model,
+    thinkingMode: row.thinking_mode,
+    reasoningEffort: row.reasoning_effort,
+    backupUsed: Number(row.backup_used || 0),
+    status: row.status,
+    errorCode: row.error_code || null,
+    errorStage: row.error_stage || null,
+    retryable: Number(row.retryable || 0),
+    modelCallCount: Number(row.model_call_count || 0),
+    promptTokens: Number(row.prompt_tokens || 0),
+    completionTokens: Number(row.completion_tokens || 0),
+    totalTokens: Number(row.total_tokens || 0),
+    startedAt: row.started_at,
+    finishedAt: row.finished_at || null,
+    latencyMs: row.latency_ms === null || row.latency_ms === undefined ? null : Number(row.latency_ms),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function workflowObservationJobRow(row) {
+  return {
+    id: Number(row.job_id),
+    source: row.source,
+    sourceId: row.source_id,
+    observationId: Number(row.id),
+    batchId: Number(row.batch_id),
+    keyword: row.keyword || null,
+    title: row.title,
+    company: row.company || null,
+    location: row.location || null,
+    salary: row.salary || null,
+    experience: row.experience || null,
+    education: row.education || null,
+    bossActiveText: row.boss_active_text || null,
+    bossActiveDays: row.boss_active_days ?? null,
+    url: row.url || null,
+    tags: parseJson(row.tags_json, []),
+    description: row.description || null,
+    score: Number(row.score || 0),
+    level: row.level || null,
+    matches: parseJson(row.matches_json, []),
+    risks: parseJson(row.risks_json, []),
+    qualityTags: parseJson(row.quality_tags_json, []),
+    greeting: row.greeting || null,
+    analysis: parseJson(row.analysis_json, {})
+  };
+}
+
+function countWorkflowJobTasks(db, workflowRunId) {
+  return Number(db.prepare(
+    "SELECT count(*) AS n FROM workflow_job_tasks WHERE workflow_run_id = ?"
+  ).get(workflowRunId).n);
+}
+
+function insertWorkflowJobTaskRow(db, {
+  workflowRunId,
+  batchId,
+  jobId,
+  observationId,
+  position,
+  status,
+  recoveryGeneration,
+  modelConfigRevision,
+  now
+}) {
+  return db.prepare(`
+    INSERT OR IGNORE INTO workflow_job_tasks(
+      workflow_run_id, batch_id, job_id, observation_id, position, status,
+      recovery_generation, attempt_count_in_generation, total_attempt_count, priority,
+      model_config_revision, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 100, ?, ?, ?)
+  `).run(
+    workflowRunId,
+    batchId,
+    jobId,
+    observationId,
+    position,
+    status,
+    recoveryGeneration,
+    modelConfigRevision || null,
+    now,
+    now
+  );
+}
+
+function selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now }) {
+  return db.prepare(`
+    SELECT * FROM workflow_job_tasks
+    WHERE workflow_run_id = ?
+      AND status IN ('pending', 'retry_pending')
+      AND attempt_count_in_generation < 2
+      AND (available_at IS NULL OR available_at <= ?)
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+    ORDER BY priority ASC, position ASC, id ASC
+    LIMIT 1
+  `).get(workflowRunId, now, now) || null;
+}
+
+function claimWorkflowJobTaskRow(db, {
+  taskId,
+  leaseOwner,
+  leasedAt,
+  leaseExpiresAt,
+  attemptCountInGeneration,
+  totalAttemptCount,
+  lastAttemptModelRevision,
+  now
+}) {
+  return db.prepare(`
+    UPDATE workflow_job_tasks SET
+      status = 'running',
+      lease_owner = ?,
+      leased_at = ?,
+      lease_expires_at = ?,
+      attempt_count_in_generation = ?,
+      total_attempt_count = ?,
+      last_attempt_model_revision = ?,
+      started_at = ?,
+      updated_at = ?
+    WHERE id = ?
+      AND status IN ('pending', 'retry_pending')
+      AND attempt_count_in_generation = ?
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+      AND (available_at IS NULL OR available_at <= ?)
+  `).run(
+    leaseOwner,
+    leasedAt,
+    leaseExpiresAt,
+    attemptCountInGeneration,
+    totalAttemptCount,
+    lastAttemptModelRevision,
+    now,
+    now,
+    taskId,
+    attemptCountInGeneration - 1,
+    now,
+    now
+  );
+}
+
+function insertJobAnalysisAttemptRow(db, {
+  workflowRunId,
+  taskId,
+  jobId,
+  recoveryGeneration,
+  attemptInGeneration,
+  totalAttemptNumber,
+  profileKind,
+  modelConfigRevision,
+  provider,
+  model,
+  thinkingMode,
+  reasoningEffort,
+  backupUsed,
+  startedAt,
+  now
+}) {
+  return db.prepare(`
+    INSERT INTO job_analysis_attempts(
+      workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation,
+      total_attempt_number, profile_kind, model_config_revision, provider, model,
+      thinking_mode, reasoning_effort, backup_used, status, retryable, model_call_count,
+      prompt_tokens, completion_tokens, total_tokens, started_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, 0, 0, 0, 0, ?, ?, ?)
+  `).run(
+    workflowRunId,
+    taskId,
+    jobId,
+    recoveryGeneration,
+    attemptInGeneration,
+    totalAttemptNumber,
+    profileKind,
+    modelConfigRevision,
+    provider,
+    model,
+    thinkingMode,
+    reasoningEffort,
+    backupUsed ? 1 : 0,
+    startedAt,
+    now,
+    now
+  );
+}
+
+function incrementWorkflowRunActivity(db, { workflowRunId, now }) {
+  db.prepare(`
+    UPDATE workflow_runs SET
+      progress_revision = progress_revision + 1,
+      last_activity_at = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(now, now, workflowRunId);
+}
+
+function getWorkflowObservationJob(db, observationId) {
+  const row = db.prepare(`
+    SELECT o.id, o.job_id, o.batch_id, o.keyword, o.title, o.company, o.location, o.salary,
+      o.experience, o.education, o.boss_active_text, o.boss_active_days, o.url, o.tags_json,
+      o.description, o.score, o.level, o.matches_json, o.risks_json, o.quality_tags_json,
+      o.greeting, o.analysis_json, j.source, j.source_id
+    FROM job_observations o
+    JOIN jobs j ON j.id = o.job_id
+    WHERE o.id = ?
+  `).get(observationId);
+  return row ? workflowObservationJobRow(row) : null;
+}
+
+function listWorkflowJobTaskRows(db, { workflowRunId, statuses, limit }) {
+  const cap = Math.max(1, Math.min(10000, Number(limit) || 10000));
+  const statusClause = Array.isArray(statuses) && statuses.length > 0
+    ? `AND status IN (${statuses.map(() => "?").join(", ")})`
+    : "";
+  const rows = db.prepare(`
+    SELECT * FROM workflow_job_tasks
+    WHERE workflow_run_id = ? ${statusClause}
+    ORDER BY position ASC, id ASC
+    LIMIT ?
+  `).all(workflowRunId, ...(Array.isArray(statuses) ? statuses : []), cap);
+  return rows.map(workflowJobTaskRow);
+}
+
+function listJobAnalysisAttemptRows(db, { workflowRunId, taskId, limit }) {
+  const cap = Math.max(1, Math.min(10000, Number(limit) || 10000));
+  const taskClause = Number.isInteger(Number(taskId)) && Number(taskId) > 0 ? "AND task_id = ?" : "";
+  const params = taskClause ? [workflowRunId, Number(taskId), cap] : [workflowRunId, cap];
+  const rows = db.prepare(`
+    SELECT * FROM job_analysis_attempts
+    WHERE workflow_run_id = ? ${taskClause}
+    ORDER BY total_attempt_number ASC, id ASC
+    LIMIT ?
+  `).all(...params);
+  return rows.map(jobAnalysisAttemptRow);
+}
+
 function nonNegativeInteger(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
@@ -3907,6 +4196,18 @@ module.exports = {
   SCAN_RUN_STATUSES,
   WORKFLOW_RUN_STATUSES,
   openDb,
+  immediateTransaction,
+  workflowJobTaskRow,
+  jobAnalysisAttemptRow,
+  countWorkflowJobTasks,
+  insertWorkflowJobTaskRow,
+  selectClaimableWorkflowJobTaskRow,
+  claimWorkflowJobTaskRow,
+  insertJobAnalysisAttemptRow,
+  incrementWorkflowRunActivity,
+  getWorkflowObservationJob,
+  listWorkflowJobTaskRows,
+  listJobAnalysisAttemptRows,
   backfillHistoricalCommunicationOutcomes,
   createMatchingCardDraft,
   getMatchingCard,
