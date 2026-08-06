@@ -12,16 +12,19 @@ assertHiddenPowerShell(selfCheck, "const dailyOverride = spawnSync(powershell,",
 assertHiddenPowerShell(selfCheck, 'const docxFixture = spawnSync("powershell.exe",', "self-check DOCX fixture");
 assertHiddenPowerShell(onboarding, 'const docxFixture = spawnSync("powershell.exe",', "onboarding DOCX fixture");
 
-assert.match(
-  startupScripts,
-  /-OutputType WindowsApplication/,
-  "the fake Edge used by startup tests must not create a console window"
+assert.throws(
+  () => assertFakeEdgeBuildIsWindowed(`
+function edgeCompileSource() {
+  return String.raw\`
+Add-Type -TypeDefinition $source -OutputAssembly $OutputPath
+\`;
+}
+const unrelatedFixture = "-OutputType WindowsApplication";
+`),
+  /fake Edge build/,
+  "an unrelated WindowsApplication token must not satisfy the fake Edge build contract"
 );
-assert.doesNotMatch(
-  startupScripts,
-  /-OutputType ConsoleApplication/,
-  "the fake Edge used by startup tests must not be a console application"
-);
+assertFakeEdgeBuildIsWindowed(startupScripts);
 
 console.log("background_process_visibility_smoke ok");
 
@@ -38,5 +41,27 @@ function assertHiddenPowerShell(source, marker, label) {
     source.slice(start, end + 2),
     /windowsHide:\s*true/,
     `${label} must not show a command window`
+  );
+}
+
+function assertFakeEdgeBuildIsWindowed(source) {
+  const functionMarker = "function edgeCompileSource() {";
+  const functionStart = source.indexOf(functionMarker);
+  assert.notStrictEqual(functionStart, -1, "missing fake Edge build function");
+  const templateMarker = "return String.raw`";
+  const templateStart = source.indexOf(templateMarker, functionStart);
+  assert.notStrictEqual(templateStart, -1, "missing fake Edge build template");
+  const templateEnd = source.indexOf("`;", templateStart + templateMarker.length);
+  assert.notStrictEqual(templateEnd, -1, "missing fake Edge build template end");
+  const buildTemplate = source.slice(templateStart, templateEnd + 2);
+  assert.match(
+    buildTemplate,
+    /Add-Type[^\r\n]*-OutputType WindowsApplication/,
+    "fake Edge build must use WindowsApplication in its Add-Type command"
+  );
+  assert.doesNotMatch(
+    buildTemplate,
+    /-OutputType ConsoleApplication/,
+    "fake Edge build must not use ConsoleApplication"
   );
 }
