@@ -15,6 +15,7 @@ const {
   listWorkflowReviewCandidates,
   reconcileCommunicationOutcome
 } = require("../src/core/workflow_inventory");
+const { ensureProgressCard } = require("../src/core/candidate_progress");
 
 const db = openDb(":memory:");
 
@@ -41,6 +42,7 @@ try {
   ids.invalid = insert("invalid", {}, batchId);
   ids.futureLater = insert("future-later", {}, batchId);
   ids.ambiguous = insert("ambiguous", {}, batchId);
+  ids.progressActive = insert("progress-active", {}, batchId);
   ids.staleActivity = insert("stale-activity", { bossActiveDays: 7 }, batchId);
   ids.missingDetail = insert("missing-detail", { qualityTags: ["detail_unverified"], description: "short" }, batchId);
   ids.staleAnalysis = insert("stale-analysis", { analysis: { ...completeAnalysis(), semanticStatus: "stale" } }, batchId);
@@ -62,14 +64,26 @@ try {
     jobId: ids.primary,
     now
   });
+  ensureProgressCard(db, {
+    profileId,
+    planId,
+    jobId: ids.progressActive,
+    source: "boss",
+    now
+  });
 
   const inventory = listWorkflowInventory(db, { planId, now });
   assert.deepStrictEqual(
     inventory.map((item) => [item.sourceId, item.workflowTier]),
     [
+      ["progress-active", "primary"],
       ["primary", "primary"],
       ["talk", "apply"]
     ]
+  );
+  assert.strictEqual(
+    inventory.find((item) => item.id === ids.progressActive).progressCard.stage,
+    "contact_started"
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
   assert.deepStrictEqual(
@@ -112,6 +126,10 @@ try {
       qualityTags: ["salary_target_high", "experience_salary_overlap"]
     }), { now }).reasonCode,
     "WORKFLOW_DECISION_CAUTION"
+  );
+  assert.strictEqual(
+    workflowEligibility(job("progress-active"), { now, progressStage: "waiting_reply" }).reasonCode,
+    "WORKFLOW_PROGRESS_ACTIVE"
   );
   assert.strictEqual(
     workflowEligibility(job("model-rejected", {
@@ -221,8 +239,8 @@ try {
   reconcileCommunicationOutcome(db, { batch: communicationBatch, item: { jobId: outcomeJobIds.mismatch }, status: "target_mismatch", now });
   reconcileCommunicationOutcome(db, { batch: communicationBatch, item: { jobId: outcomeJobIds.actionUnavailable }, status: "action_unavailable", now });
 
-  assert.strictEqual(state(outcomeJobIds.succeeded).status, "applied");
-  assert.strictEqual(state(outcomeJobIds.already).status, "applied");
+  assert.strictEqual(state(outcomeJobIds.succeeded), undefined);
+  assert.strictEqual(state(outcomeJobIds.already), undefined);
   assert.strictEqual(state(outcomeJobIds.unavailable).status, "invalid");
   assert.strictEqual(state(outcomeJobIds.mismatch).status, "review");
   assert.strictEqual(state(outcomeJobIds.actionUnavailable).status, "later");

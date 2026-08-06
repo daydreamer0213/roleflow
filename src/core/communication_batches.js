@@ -10,6 +10,7 @@ const { isBossJobUrl } = require("./scoring");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { chinaDayStartMs } = require("./site_access_budget");
 const { listWorkflowReviewCandidates, reconcileCommunicationOutcome } = require("./workflow_inventory");
+const { recordVerifiedCommunicationStart } = require("./candidate_progress");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
@@ -431,12 +432,11 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
       }), resolvedAt);
     if (status === "succeeded") {
       const batch = getCommunicationBatch(db, item.batchId);
-      reconcileCommunicationOutcome(db, {
+      recordVerifiedCommunicationStart(db, {
         batch,
         item,
-        status,
-        now: resolvedAt,
-        note: `RoleFlow 批量沟通 #${batch.id}`
+        outcome: status,
+        now: resolvedAt
       });
     }
     db.exec("COMMIT");

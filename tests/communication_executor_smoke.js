@@ -13,6 +13,10 @@ const {
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
+const {
+  getProgressCardForJob,
+  listProgressEvents
+} = require("../src/core/candidate_progress");
 
 function runPermittedBatch(input) {
   return runCommunicationBatch({ ...input, executionGate: () => true });
@@ -42,11 +46,16 @@ async function successFlowSmoke() {
   ]);
   assert.strictEqual(summary.batchStatus, "completed");
   assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.clickCount), [1, 1]);
-  assert.deepStrictEqual(candidateStatuses(fixture), ["applied", "applied"]);
+  assert.deepStrictEqual(candidateStatuses(fixture), ["", ""]);
+  for (const jobId of fixture.jobIds) {
+    const card = getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId });
+    assert.strictEqual(card.stage, "waiting_reply");
+    assert.deepStrictEqual(listProgressEvents(fixture.db, card.id).map((event) => event.type), ["contact_started"]);
+  }
   assert.deepStrictEqual(
     fixture.db.prepare("SELECT payload_json FROM candidate_job_events WHERE event_type = 'applied' ORDER BY id").all()
       .map((event) => JSON.parse(event.payload_json).note),
-    [`RoleFlow batch #${fixture.batch.id}`, `RoleFlow batch #${fixture.batch.id}`]
+    []
   );
   fixture.close();
 }
@@ -67,7 +76,13 @@ async function alreadyCommunicatedSmoke() {
   });
   assert.strictEqual(dispatches, 0);
   assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "already_communicated");
-  assert.deepStrictEqual(candidateStatuses(fixture), ["applied"]);
+  assert.deepStrictEqual(candidateStatuses(fixture), [""]);
+  const card = getProgressCardForJob(fixture.db, {
+    profileId: fixture.profileId,
+    jobId: fixture.jobIds[0]
+  });
+  assert.strictEqual(card.stage, "waiting_reply");
+  assert.deepStrictEqual(listProgressEvents(fixture.db, card.id).map((event) => event.type), ["contact_already_exists"]);
   fixture.close();
 }
 
@@ -96,7 +111,51 @@ async function unavailableAndMismatchContinueSmoke() {
   assert.deepStrictEqual(items[0].evidence, {
     inspection: { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" }
   });
-  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", "applied"]);
+  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", ""]);
+  assert.strictEqual(getProgressCardForJob(fixture.db, {
+    profileId: fixture.profileId,
+    jobId: fixture.jobIds[0]
+  }), null);
+  assert.strictEqual(getProgressCardForJob(fixture.db, {
+    profileId: fixture.profileId,
+    jobId: fixture.jobIds[1]
+  }), null);
+  assert.strictEqual(getProgressCardForJob(fixture.db, {
+    profileId: fixture.profileId,
+    jobId: fixture.jobIds[2]
+  }).stage, "waiting_reply");
+  fixture.close();
+}
+
+async function atomicProgressFailureSmoke() {
+  const fixture = createFixture(1);
+  fixture.db.exec(`CREATE TRIGGER fail_progress_event
+    BEFORE INSERT ON candidate_progress_events
+    BEGIN SELECT RAISE(ABORT, 'forced progress failure'); END`);
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    }),
+    /forced progress failure/
+  );
+  assert.strictEqual(
+    listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status,
+    "click_dispatched",
+    "communication success must roll back when progress persistence fails"
+  );
+  assert.strictEqual(
+    fixture.db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_cards").get().count,
+    0,
+    "progress card and success status must commit together"
+  );
   fixture.close();
 }
 
@@ -594,6 +653,7 @@ function job(index) {
 
 Promise.resolve()
   .then(successFlowSmoke)
+  .then(atomicProgressFailureSmoke)
   .then(alreadyCommunicatedSmoke)
   .then(unavailableAndMismatchContinueSmoke)
   .then(ambiguousAndFatalStopSmoke)

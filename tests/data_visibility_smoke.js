@@ -14,6 +14,10 @@ const {
 const { classifyExperienceFit } = require("../src/core/scoring");
 const boss = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
+const {
+  ensureProgressCard,
+  transitionProgressCard
+} = require("../src/core/candidate_progress");
 const { handleMarkApi, getDashboardData, renderPlanPage, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
@@ -142,6 +146,21 @@ function queueUiSmoke({ profileId, planId }) {
   const latestBatchId = createBatch(db, "boss", "latest-main", "queue-scope", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
   const newJobId = upsertJob(db, job("latest-new", { title: "本轮新增岗位" }), latestBatchId);
   upsertJob(db, job("old-0", { title: "本轮再次出现岗位" }), latestBatchId);
+  const progressCard = ensureProgressCard(db, {
+    profileId,
+    planId,
+    jobId: newJobId,
+    source: "boss"
+  });
+  transitionProgressCard(db, {
+    cardId: progressCard.id,
+    expectedStage: "contact_started",
+    stage: "waiting_reply",
+    nextAction: "等待招聘方回复"
+  });
+  const progressHtml = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "waiting_reply" }) });
+  assert(progressHtml.includes("求职进展"));
+  assert(progressHtml.includes("已发起沟通"));
   const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "all", page: "5" }) });
   assert(lastPage.includes("当前待处理岗位"));
   assert(
