@@ -591,6 +591,11 @@ function recoverExpiredWorkflowJobTasks(db, { workflowRunId, now }) {
       if (isRetryable) recovered += 1;
       else failed += 1;
     }
+    // Recovery changes persisted task counts; advance the run snapshot once
+    // per batch (never per task) so UI polling refreshes on the next read.
+    if (recovered > 0 || failed > 0) {
+      incrementWorkflowRunActivity(db, { workflowRunId, now: normalizedNow });
+    }
     return { recovered, failed };
   });
 }
