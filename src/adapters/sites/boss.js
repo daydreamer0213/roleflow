@@ -747,6 +747,7 @@ class BossSiteAdapter {
             for (const entry of detailEntries) {
               throwIfAborted(options.signal);
               console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
+              let detailOutcome = { outcome: "succeeded", errorCode: "" };
               try {
                 const detail = await this.readCardDetail(tabId, entry.job, entry.index, options.signal);
                 throwIfAborted(options.signal);
@@ -777,7 +778,9 @@ class BossSiteAdapter {
                 mergeScanCandidate(candidates, { ...entry, job: failedJob });
                 if (isFatalBrowserError(error)) throw error;
                 await this.waitAfterDetailAction();
+                detailOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
               }
+              await emitDetailResult(options.onDetailResult, detailOutcome);
             }
 
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
@@ -1855,6 +1858,15 @@ function throwIfAborted(signal) {
   const error = new Error("扫描已中止。");
   error.code = "SCAN_ABORTED";
   throw error;
+}
+
+async function emitDetailResult(callback, { outcome, errorCode = "" } = {}) {
+  if (typeof callback !== "function") return;
+  const succeeded = outcome === "succeeded";
+  await callback({
+    outcome: succeeded ? "succeeded" : "failed",
+    errorCode: succeeded ? "" : String(errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+  });
 }
 
 function normalizedComparableText(value) {

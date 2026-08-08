@@ -90,6 +90,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await changedCardFactsRejectCacheSmoke();
   await detailSafetyLimitSmoke();
   await detailFailureDedupeSmoke();
+  await detailOutcomeAuditSmoke();
   await targetIsolationSmoke();
   await scanTargetPlanSmoke();
   await scanTargetResumeFilterSmoke();
@@ -1060,6 +1061,38 @@ async function detailFailureDedupeSmoke() {
   assert.strictEqual(jobs[0].detailRequired, true);
   assert.strictEqual(jobs[0].detailRead, false);
   assert.strictEqual(jobs[0].detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
+}
+
+async function detailOutcomeAuditSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("audit-success"), card("audit-failure")];
+  adapter.readCardDetail = async (_tabId, job) => {
+    if (job.title === "audit-failure") {
+      throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
+    }
+    return { description: "Complete detail Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  const outcomes = [];
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["audit"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 2,
+    onDetailResult: async (outcome) => outcomes.push(outcome)
+  });
+  assert.deepStrictEqual(outcomes, [
+    { outcome: "succeeded", errorCode: "" },
+    { outcome: "failed", errorCode: "BOSS_PANE_SWITCH_TIMEOUT" }
+  ]);
+  assert.strictEqual(jobs.find((job) => job.title === "audit-failure").detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
+  assert(!JSON.stringify(outcomes).includes("audit-failure"));
 }
 
 async function refreshSafetySmoke() {
