@@ -17,15 +17,15 @@ const { recoverWorkflowRuns } = require("../src/core/workflow_run");
 const {
   requestWorkflowPause,
   requestWorkflowStop,
-  resumeWorkflowRun
+  resumeWorkflowRun,
+  finalizeWorkflowControl
 } = require("../src/core/workflow_control");
 const { createDashboardServer } = require("../src/dashboard/server");
 const {
   initializeWorkflowJobTasks,
   claimWorkflowJobTask,
   commitWorkflowJobTaskSuccess,
-  listWorkflowJobTasks,
-  listJobAnalysisAttempts
+  listWorkflowJobTasks
 } = require("../src/core/workflow_analysis_tasks");
 const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
 
@@ -192,6 +192,8 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
 
   dashboardStartupRecovery();
   await crashExpiredLeaseResumeE2E();
+  await manualPauseConcurrencyTwoE2E();
+  await timeoutCircuitRecoveryE2E();
   pausedRecoveryNoBrowserNoChild();
   orphanAnalyzingTaskRecoveryCounts();
   activeAnalysisExecutionRecoverySmoke();
@@ -285,7 +287,7 @@ async function crashExpiredLeaseResumeE2E() {
       searchPlanId: planId
     });
     const jobIds = [];
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 8; index += 1) {
       const sourceId = `crash-job-${index + 1}`;
       jobIds.push(Number(upsertJob(database, {
         source: "boss",
@@ -349,10 +351,12 @@ async function crashExpiredLeaseResumeE2E() {
       modelConfigRevision: "crash-rev",
       now: `${localDay}T01:06:00.000Z`
     });
-    assert.strictEqual(initialized.inserted, 3);
+    assert.strictEqual(initialized.inserted, 8);
 
     const claims = [];
-    for (let index = 0; index < 3; index += 1) {
+    // Only the first four tasks were claimed when the child disappeared;
+    // the remaining four are still pending and must survive the recovery.
+    for (let index = 0; index < 4; index += 1) {
       claims.push(claimWorkflowJobTask(database, {
         workflowRunId: workflow.id,
         leaseOwner: `crash-worker-${index + 1}`,
@@ -361,8 +365,8 @@ async function crashExpiredLeaseResumeE2E() {
         now: `${localDay}T01:06:00.000Z`
       }));
     }
-    assert.strictEqual(claims.length, 3);
-    for (let index = 0; index < 2; index += 1) {
+    assert.strictEqual(claims.length, 4);
+    for (let index = 0; index < 3; index += 1) {
       commitWorkflowJobTaskSuccess(database, {
         taskId: claims[index].task.id,
         leaseOwner: `crash-worker-${index + 1}`,
@@ -375,11 +379,11 @@ async function crashExpiredLeaseResumeE2E() {
     }
 
     // Simulate the child disappearing: the scan heartbeat is stale and the
-    // third task lease expired while its attempt was still running.
+    // fourth task lease expired while its attempt was still running.
     database.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?")
       .run(`${localDay}T01:07:00.000Z`, scan.id);
     database.prepare("UPDATE workflow_job_tasks SET lease_expires_at = ? WHERE id = ?")
-      .run(`${localDay}T01:06:30.000Z`, claims[2].task.id);
+      .run(`${localDay}T01:06:30.000Z`, claims[3].task.id);
 
     const report = recoverWorkflowRuns(database, {
       now: new Date(`${localDay}T02:00:00.000Z`),
@@ -389,12 +393,15 @@ async function crashExpiredLeaseResumeE2E() {
     assert.strictEqual(report.workflowRunsInterrupted, 1);
     assert.strictEqual(report.tasksRecovered, 1);
     assert.strictEqual(report.tasksFailed, 0);
-    assert.strictEqual(getWorkflowRun(database, workflow.id).status, "interrupted");
+    const recoveredWorkflow = getWorkflowRun(database, workflow.id);
+    assert.strictEqual(recoveredWorkflow.status, "interrupted");
+    assert.strictEqual(recoveredWorkflow.recoveryGeneration, 0);
+    assert.strictEqual(recoveredWorkflow.circuitTimeoutJobCount, 0);
     assert.deepStrictEqual(
       workflowTasks(database, workflow.id).map((task) => task.status),
-      ["succeeded", "succeeded", "retry_pending"]
+      ["succeeded", "succeeded", "succeeded", "retry_pending", "pending", "pending", "pending", "pending"]
     );
-    for (const jobId of [jobIds[0], jobIds[1]]) {
+    for (const jobId of jobIds.slice(0, 3)) {
       const observation = database.prepare(
         "SELECT analysis_json FROM job_observations WHERE job_id = ? AND batch_id = ?"
       ).get(jobId, batchId);
@@ -402,7 +409,9 @@ async function crashExpiredLeaseResumeE2E() {
     }
 
     const resumed = await runWorkflowAnalysisPhase(database, {
-      workflowRun: getWorkflowRun(database, workflow.id),
+      // Re-enter the same persisted workflow. A crash recovery must not
+      // create a new daily run or advance the recovery generation.
+      workflowRun: recoveredWorkflow,
       batchId,
       jobsToAnalyze: reportJobsAscending(database, batchId),
       configs: {},
@@ -418,20 +427,347 @@ async function crashExpiredLeaseResumeE2E() {
       sleep: async () => {}
     });
     assert.strictEqual(resumed.status, "drained");
-    assert.strictEqual(resumed.claimed, 1);
-    assert.strictEqual(resumed.succeeded, 1);
+    assert.strictEqual(resumed.claimed, 5);
+    assert.strictEqual(resumed.succeeded, 5);
     assert.strictEqual(getWorkflowRun(database, workflow.id).status, "review_required");
     const finalTasks = workflowTasks(database, workflow.id);
-    assert.deepStrictEqual(finalTasks.map((task) => task.status), ["succeeded", "succeeded", "succeeded"]);
-    const attempts = listJobAnalysisAttempts(database, {
-      workflowRunId: workflow.id,
-      taskId: finalTasks[2].id
-    });
-    assert.strictEqual(attempts.length, 2);
-    assert.deepStrictEqual(attempts.map((attempt) => attempt.status).sort(), ["failed", "succeeded"]);
+    assert.deepStrictEqual(finalTasks.map((task) => task.status), [
+      "succeeded", "succeeded", "succeeded", "succeeded",
+      "succeeded", "succeeded", "succeeded", "succeeded"
+    ]);
+    assert.strictEqual(finalTasks.filter((task) => task.finished_at).length, 8);
+    assert.strictEqual(finalTasks.filter((task) => task.recovery_generation !== 0).length, 0);
+
+    const attempts = database.prepare(`
+      SELECT task_id, COUNT(*) AS count,
+             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+             SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded
+      FROM job_analysis_attempts
+      WHERE workflow_run_id = ?
+      GROUP BY task_id
+      ORDER BY task_id
+    `).all(workflow.id);
+    assert.strictEqual(attempts.length, 8);
+    assert.deepStrictEqual(attempts.map((row) => [row.count, row.failed, row.succeeded]), [
+      [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 1, 1],
+      [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1]
+    ]);
+    assert.strictEqual(Number(database.prepare(
+      "SELECT COUNT(*) AS count FROM job_analysis_attempts WHERE workflow_run_id = ?"
+    ).get(workflow.id).count), 9);
   } finally {
     database.close();
   }
+}
+
+async function manualPauseConcurrencyTwoE2E() {
+  const database = openDb(":memory:");
+  try {
+    const fixture = seedAnalysisWorkflow(database, {
+      localDay: "2026-09-13",
+      revision: "pause-rev",
+      count: 5
+    });
+    const started = [];
+    let release;
+    const releaseGate = new Promise((resolve) => { release = resolve; });
+    let startedResolve;
+    const startedReady = new Promise((resolve) => { startedResolve = resolve; });
+    let analysisNow = "2026-09-13T01:05:00.000Z";
+
+    const runPromise = runWorkflowAnalysisPhase(database, {
+      workflowRun: fixture.workflow,
+      batchId: fixture.batchId,
+      jobsToAnalyze: fixture.jobs,
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...runtimeFor("pause-rev", 2) }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJobFor(job),
+      analyzeScannedJob: async (raw) => {
+        started.push(raw.sourceId);
+        if (started.length === 2) startedResolve();
+        await releaseGate;
+        return analyzedJobFor(raw);
+      },
+      now: () => analysisNow,
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+
+    await startedReady;
+    const beforePause = getWorkflowRun(database, fixture.workflow.id);
+    assert.strictEqual(beforePause.status, "analyzing");
+    assert.strictEqual(beforePause.controlState, "none");
+    assert.strictEqual(started.length, 2, "exactly two workers must be in flight before pause");
+
+    const requested = requestWorkflowPause(database, {
+      workflowRunId: fixture.workflow.id,
+      now: "2026-09-13T01:05:30.000Z"
+    });
+    assert.strictEqual(requested.controlState, "pause_requested");
+    assert.strictEqual(requested.resumePhase, "analyzing");
+
+    // Both in-flight model calls settle and persist. The control flag is
+    // already durable, so neither worker may claim task three afterwards.
+    analysisNow = "2026-09-13T01:05:45.000Z";
+    release();
+    const pausedSummary = await runPromise;
+    assert.strictEqual(pausedSummary.status, "paused");
+    assert.strictEqual(started.length, 2, "manual pause must prevent a third claim");
+    assert.deepStrictEqual(
+      workflowTasks(database, fixture.workflow.id).map((task) => task.status),
+      ["succeeded", "succeeded", "pending", "pending", "pending"]
+    );
+
+    const paused = getWorkflowRun(database, fixture.workflow.id);
+    assert.strictEqual(paused.status, "paused");
+    assert.strictEqual(paused.controlState, "pause_requested");
+    finalizeWorkflowControl(database, {
+      workflowRunId: fixture.workflow.id,
+      now: "2026-09-13T01:06:00.000Z"
+    });
+    const resumed = resumeWorkflowRun(database, {
+      workflowRunId: fixture.workflow.id,
+      now: "2026-09-13T01:07:00.000Z"
+    });
+    assert.strictEqual(resumed.id, fixture.workflow.id);
+    assert.strictEqual(resumed.sequence, fixture.workflow.sequence);
+    assert.strictEqual(resumed.localDay, fixture.workflow.localDay);
+    assert.strictEqual(resumed.recoveryGeneration, fixture.workflow.recoveryGeneration);
+
+    const resumedSourceIds = [];
+    const drain = await runWorkflowAnalysisPhase(database, {
+      workflowRun: resumed,
+      batchId: fixture.batchId,
+      jobsToAnalyze: fixture.jobs,
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...runtimeFor("pause-rev", 2) }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJobFor(job),
+      analyzeScannedJob: async (raw) => {
+        resumedSourceIds.push(raw.sourceId);
+        return analyzedJobFor(raw);
+      },
+      now: fixedClock("2026-09-13T01:07:30.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(drain.status, "drained");
+    assert.strictEqual(resumedSourceIds.length, 3);
+    assert.deepStrictEqual(
+      workflowTasks(database, fixture.workflow.id).map((task) => task.status),
+      ["succeeded", "succeeded", "succeeded", "succeeded", "succeeded"]
+    );
+    assert.strictEqual(listWorkflowRuns(database, { profileId: fixture.workflow.profileId, limit: 10 }).length, 1);
+    assert.strictEqual(database.prepare(
+      "SELECT COUNT(*) AS count FROM job_analysis_attempts WHERE workflow_run_id = ?"
+    ).get(fixture.workflow.id).count, 5);
+  } finally {
+    database.close();
+  }
+}
+
+async function timeoutCircuitRecoveryE2E() {
+  const database = openDb(":memory:");
+  try {
+    const fixture = seedAnalysisWorkflow(database, {
+      localDay: "2026-09-14",
+      revision: "timeout-rev-1",
+      count: 12
+    });
+    const timeoutSourceIds = fixture.sourceIds.slice(0, 10);
+    const untouchedSourceIds = fixture.sourceIds.slice(10);
+    let firstPhaseCalls = 0;
+    const first = await runWorkflowAnalysisPhase(database, {
+      workflowRun: fixture.workflow,
+      batchId: fixture.batchId,
+      jobsToAnalyze: fixture.jobs,
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...runtimeFor("timeout-rev-1", 1) }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJobFor(job),
+      analyzeScannedJob: async () => {
+        firstPhaseCalls += 1;
+        const error = new Error("offline model timeout");
+        error.code = "MODEL_TIMEOUT";
+        throw error;
+      },
+      now: fixedClock("2026-09-14T01:10:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(first.status, "paused");
+    assert.strictEqual(firstPhaseCalls, 20, "ten jobs must each reach a final timeout");
+    const paused = getWorkflowRun(database, fixture.workflow.id);
+    assert.strictEqual(paused.status, "paused");
+    assert.strictEqual(paused.controlState, "pause_requested");
+    assert.strictEqual(paused.errorCode, "MODEL_TIMEOUT_CIRCUIT_OPEN");
+    assert.strictEqual(paused.circuitTimeoutJobCount, 10);
+    assert.strictEqual(paused.lifetimeTimeoutJobCount, 10);
+    assert.strictEqual(paused.recoveryGeneration, 0);
+    assert.deepStrictEqual(
+      workflowTasks(database, fixture.workflow.id).map((task) => task.status),
+      ["failed", "failed", "failed", "failed", "failed", "failed", "failed", "failed", "failed", "failed", "pending", "pending"]
+    );
+
+    assert.throws(
+      () => resumeWorkflowRun(database, {
+        workflowRunId: fixture.workflow.id,
+        now: "2026-09-14T01:11:00.000Z"
+      }),
+      (error) => error.code === "WORKFLOW_MODEL_RECHECK_REQUIRED"
+    );
+
+    const resumed = resumeWorkflowRun(database, {
+      workflowRunId: fixture.workflow.id,
+      batchModelRevision: "timeout-rev-2",
+      batchModelVerifiedAt: "2026-09-14T01:11:00.000Z",
+      now: "2026-09-14T01:12:00.000Z"
+    });
+    assert.strictEqual(resumed.recoveryGeneration, 1);
+    assert.strictEqual(resumed.circuitTimeoutJobCount, 0);
+    assert.strictEqual(resumed.lifetimeTimeoutJobCount, 10);
+    const migrated = workflowTasks(database, fixture.workflow.id);
+    assert(migrated.slice(0, 10).every((task) => (
+      task.status === "retry_pending"
+      && task.recovery_generation === 1
+      && task.priority === 10
+    )));
+    assert(migrated.slice(10).every((task) => (
+      task.status === "pending"
+      && task.recovery_generation === 0
+      && task.priority === 100
+    )));
+
+    const resumedSourceIds = [];
+    const drained = await runWorkflowAnalysisPhase(database, {
+      workflowRun: resumed,
+      batchId: fixture.batchId,
+      jobsToAnalyze: fixture.jobs,
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...runtimeFor("timeout-rev-2", 1) }, backup: null },
+      createAnalyzeJob: () => async (job) => analyzedJobFor(job),
+      analyzeScannedJob: async (raw) => {
+        resumedSourceIds.push(raw.sourceId);
+        return analyzedJobFor(raw);
+      },
+      now: fixedClock("2026-09-14T01:12:30.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    assert.strictEqual(drained.status, "drained");
+    assert.deepStrictEqual(resumedSourceIds, [...timeoutSourceIds, ...untouchedSourceIds]);
+    const completed = getWorkflowRun(database, fixture.workflow.id);
+    assert.strictEqual(completed.status, "review_required");
+    assert.strictEqual(completed.recoveryGeneration, 1);
+    assert.strictEqual(completed.circuitTimeoutJobCount, 0);
+    assert.strictEqual(completed.lifetimeTimeoutJobCount, 10);
+    assert(workflowTasks(database, fixture.workflow.id).every((task) => task.status === "succeeded"));
+  } finally {
+    database.close();
+  }
+}
+
+function seedAnalysisWorkflow(database, { localDay, revision, count }) {
+  const { profileId, planId } = seedPlan(database);
+  const batchId = createBatch(database, "boss", "RAG", "analysis fixture", {
+    profileId,
+    searchPlanId: planId,
+    status: "running"
+  });
+  const sourceIds = [];
+  for (let index = 0; index < count; index += 1) {
+    const sourceId = `analysis-${localDay}-${index + 1}`;
+    sourceIds.push(sourceId);
+    upsertJob(database, {
+      source: "boss",
+      sourceId,
+      keyword: "RAG",
+      title: `Analysis Job ${index + 1}`,
+      company: "Offline Analysis Co",
+      location: "Guangzhou",
+      salary: "10-20K",
+      experience: "1-3 years",
+      education: "Bachelor",
+      url: `https://www.zhipin.com/job_detail/${sourceId}.html`,
+      description: "Python RAG application development",
+      score: 20,
+      level: "A",
+      matches: ["Python", "RAG"],
+      risks: [],
+      qualityTags: [],
+      analysis: { semanticStatus: "pending", decisionSource: "analysis_pending" }
+    }, batchId);
+  }
+  const workflow = createWorkflowRun(database, {
+    profileId,
+    planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: count,
+    inventoryCount: 0,
+    candidateGap: count,
+    scanNeeded: true,
+    keywords: [{ word: "RAG", priority: "A", maxCards: count, maxDetails: count }],
+    budget: { maxDetailTotal: 120, browserPageBudget: 20 },
+    planner: { remainingDailyTarget: 70, remainingRunSlots: 2 },
+    modelConfigRevision: revision,
+    createdAt: `${localDay}T01:00:00.000Z`
+  });
+  transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "scanning",
+    updatedAt: `${localDay}T01:01:00.000Z`
+  });
+  const scan = createScanRun(database, {
+    runId: `scan-analysis-${workflow.id}`,
+    planId,
+    batchId,
+    startedAt: `${localDay}T01:01:00.000Z`,
+    heartbeatAt: `${localDay}T01:01:00.000Z`
+  });
+  attachWorkflowScan(database, { id: workflow.id, scanRunId: scan.id, scanBatchId: batchId });
+  finishScanRun(database, {
+    runId: scan.id,
+    status: "completed",
+    finishedAt: `${localDay}T01:02:00.000Z`
+  });
+  return {
+    workflow: getWorkflowRun(database, workflow.id),
+    batchId,
+    jobs: observationEntries(database, batchId),
+    sourceIds
+  };
+}
+
+function runtimeFor(revision, concurrency) {
+  return {
+    revision,
+    concurrency,
+    modelConfig: {
+      provider: "mock",
+      providers: {
+        mock: {
+          model: "offline-mock",
+          thinkingMode: "disabled",
+          reasoningEffort: "high"
+        }
+      }
+    }
+  };
 }
 
 function pausedRecoveryNoBrowserNoChild() {

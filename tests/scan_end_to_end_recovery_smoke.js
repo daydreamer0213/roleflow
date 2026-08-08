@@ -297,6 +297,7 @@ async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-pre-stop-"));
   try {
     const scenario = seedScenario(storage, root, "2026-10-01", "stop_requested");
+    seedUnrelatedLease(storage, scenario.dbPath, "unrelated-pre-stop");
     const result = runScan(scenario.dbPath, scenario.planId, "wf-pre-access-stop", "complete", {
       workflowRunId: scenario.workflow.id,
       keywords: ["RAG", "Agent"]
@@ -309,6 +310,16 @@ async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
       assert.strictEqual(stopped.controlState, "none");
       assert.strictEqual(stopped.platformAccessStartedAt, null);
       assert.strictEqual(workflowRunConsumesSlot(stopped), false);
+      assert.strictEqual(storage.getSiteScanLease(db, "boss"), null);
+      assert.strictEqual(storage.getSiteScanLease(db, "other")?.owner, "unrelated-pre-stop");
+      assert.strictEqual(storage.listLatestScanTargetResults(db, stopped.scanBatchId).length, 0);
+      assert.throws(
+        () => require("../src/core/workflow_control").resumeWorkflowRun(db, {
+          workflowRunId: stopped.id,
+          now: "2026-10-01T01:10:00.000Z"
+        }),
+        (error) => error.code === "WORKFLOW_RUN_TERMINAL"
+      );
       // seed revision 0 + finalize stop +1; the pre-access stop never wrote
       // the platform access marker, so its revision must not include it.
       assert.strictEqual(stopped.progressRevision, 1);
@@ -316,6 +327,7 @@ async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
         storage.getScanRun(db, "wf-pre-access-stop").stopCode,
         "WORKFLOW_STOP_REQUESTED"
       );
+      storage.releaseSiteScanLease(db, { site: "other", owner: "unrelated-pre-stop" });
     } finally {
       db.close();
     }
@@ -362,6 +374,7 @@ async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-stop-after-"));
   try {
     const scenario = seedScenario(storage, root, "2026-10-02", "none");
+    seedUnrelatedLease(storage, scenario.dbPath, "unrelated-post-stop");
     const result = runScan(
       scenario.dbPath,
       scenario.planId,
@@ -380,6 +393,18 @@ async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
       assert.strictEqual(stopped.status, "stopped");
       assert.strictEqual(stopped.controlState, "none");
       assert.strictEqual(workflowRunConsumesSlot(stopped), true);
+      assert.strictEqual(storage.getSiteScanLease(db, "boss"), null);
+      assert.strictEqual(storage.getSiteScanLease(db, "other")?.owner, "unrelated-post-stop");
+      const savedResults = storage.listLatestScanTargetResults(db, stopped.scanBatchId);
+      assert(savedResults.length >= 1, "at least one target must remain checkpointed");
+      assert(savedResults.every((item) => item.status === "completed"));
+      assert.throws(
+        () => require("../src/core/workflow_control").resumeWorkflowRun(db, {
+          workflowRunId: stopped.id,
+          now: "2026-10-02T01:10:00.000Z"
+        }),
+        (error) => error.code === "WORKFLOW_RUN_TERMINAL"
+      );
       // seed 0 + platform access marker +1 + finalize stop +1. If the marker
       // were written twice, this would be 3.
       assert.strictEqual(stopped.progressRevision, 2);
@@ -387,6 +412,7 @@ async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
         storage.getScanRun(db, "wf-stop-after-first").stopCode,
         "WORKFLOW_STOP_REQUESTED"
       );
+      storage.releaseSiteScanLease(db, { site: "other", owner: "unrelated-post-stop" });
     } finally {
       db.close();
     }
@@ -464,6 +490,20 @@ function seedScenario(storage, root, localDay, controlState) {
       planId: saved.planId,
       workflow
     };
+  } finally {
+    db.close();
+  }
+}
+
+function seedUnrelatedLease(storage, dbPath, owner) {
+  const db = storage.openDb(dbPath);
+  try {
+    storage.acquireSiteScanLease(db, {
+      site: "other",
+      owner,
+      command: "offline-unrelated",
+      ttlMs: 10 * 60_000
+    });
   } finally {
     db.close();
   }
