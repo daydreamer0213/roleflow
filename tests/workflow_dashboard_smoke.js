@@ -879,7 +879,8 @@ let server;
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
   for (const spawned of spawns) spawned.child.emit("close", 0, null);
-  await testWorkflowStatusApi(baseUrl, db, saved);
+  const progressPanelFixture = await testWorkflowStatusApi(baseUrl, db, saved);
+  await testWorkflowProgressPanel(baseUrl, db, progressPanelFixture);
   await testWorkflowControlApi(
     baseUrl,
     db,
@@ -1005,6 +1006,96 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   assert.strictEqual(unknown.status, 404);
   assert.strictEqual(unknown.body.errorCode, "WORKFLOW_RUN_NOT_FOUND");
   return fixture;
+}
+
+async function testWorkflowProgressPanel(baseUrl, database, fixture) {
+  const page = await getText(
+    baseUrl,
+    `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`
+  );
+  assert.strictEqual(page.status, 200);
+  for (const hook of [
+    "data-workflow-panel",
+    "data-progress-revision",
+    "data-stage-label",
+    "data-stage-name",
+    "data-analysis-succeeded",
+    "data-analysis-failed",
+    "data-analysis-remaining",
+    "data-analysis-timeouts",
+    "data-eta",
+    "data-recent-activity",
+    "data-stop-collected",
+    "data-stop-slot",
+    "data-workflow-error"
+  ]) {
+    assert.match(page.body, new RegExp(hook), `workflow panel must expose ${hook}`);
+  }
+  assert.match(page.body, /第 4 阶段\s*\/\s*共 5 阶段/);
+  assert.match(page.body, /分析岗位/);
+  assert.match(page.body, /data-analysis-succeeded[^>]*>1</);
+  assert.match(page.body, /data-analysis-failed[^>]*>0</);
+  assert.match(page.body, /data-analysis-remaining[^>]*>1</);
+  assert.match(page.body, /当前恢复周期最终超时\s*0\s*\/\s*10/);
+  assert.match(page.body, /本轮累计超时\s*0/);
+  assert.match(page.body, /正在估算/);
+  assert.match(page.body, /data-action="pause"/);
+  assert.match(page.body, /data-action="stop-preview"/);
+  assert.match(page.body, /action="\/api\/workflow-control"/);
+  assert.match(
+    page.body,
+    new RegExp(`name="workflowRunId" value="${fixture.workflowId}"`)
+  );
+  assert.match(page.body, /data-stop-confirmation[^>]*hidden/);
+  assert.match(page.body, /data-stop-collected>2</);
+  assert.match(page.body, /data-stop-analyzed>1</);
+  assert.match(page.body, /data-stop-unfinished>1</);
+  assert.match(page.body, /会占用今天一轮/);
+  assert.match(page.body, /name="confirmStop" value="1"/);
+  const livePanelAndClient = page.body.slice(page.body.indexOf("data-workflow-panel"));
+  for (const sensitive of [
+    "Workflow API Job",
+    "Private Workflow API Company",
+    "private workflow API JD",
+    "private-workflow-error-message",
+    "private-planner-secret"
+  ]) {
+    assert(!livePanelAndClient.includes(sensitive), `live progress panel must not expose ${sensitive}`);
+  }
+
+  const script = extractWorkflowProgressScript(page.body);
+  assert.match(script, /\/api\/workflow-status\?runId=/);
+  assert.match(script, /cache:\s*["']no-store["']/);
+  assert.match(script, /2500/);
+  assert.match(script, /progressRevision/);
+  assert.match(script, /renderWorkflowProgress/);
+  assert.match(script, /renderWorkflowControls/);
+  assert.match(script, /textContent/);
+  assert.doesNotMatch(script, /innerHTML/);
+  assert.doesNotMatch(script, /location\.reload/);
+  assert.match(script, /无法读取任务状态/);
+  assert.match(script, /setControlsDisabled\(true\)/);
+  assert.match(script, /renderWorkflowControls\(snapshot\).*if\(nextKey===lastKey\)return/);
+  assert.match(script, /clearInterval/);
+
+  transitionWorkflowRun(database, {
+    id: fixture.workflowId,
+    status: "paused",
+    resumePhase: "analyzing",
+    errorCode: "MODEL_TIMEOUT_CIRCUIT_OPEN"
+  });
+  const pausedPage = await getText(
+    baseUrl,
+    `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`
+  );
+  assert.strictEqual(pausedPage.status, 200);
+  assert.match(pausedPage.body, /本轮已暂停/);
+  assert.match(pausedPage.body, /MODEL_TIMEOUT_CIRCUIT_OPEN/);
+  assert.match(pausedPage.body, /测试批量模型连接/);
+  assert.match(pausedPage.body, /调整批量模型/);
+  assert.match(pausedPage.body, /data-action="resume"/);
+  assert.match(pausedPage.body, /继续本轮/);
+  assert.match(pausedPage.body, /结束本轮…/);
 }
 
 function seedSensitiveCommunicationFixture(database, fixture) {
@@ -1506,6 +1597,12 @@ async function getJson(baseUrl, pathname) {
 function extractBrowserReadinessScript(page) {
   const match = String(page).match(/<script>\s*(\(function\(\)\{[\s\S]*?setInterval\(refreshReadiness, 5000\);[\s\S]*?\}\)\(\);)\s*<\/script>/);
   assert(match, "expected rendered plan page to include the browser-readiness polling script");
+  return match[1];
+}
+
+function extractWorkflowProgressScript(page) {
+  const match = String(page).match(/<script data-workflow-progress-client>([\s\S]*?)<\/script>/);
+  assert(match, "expected rendered workflow page to include the incremental progress script");
   return match[1];
 }
 
