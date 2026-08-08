@@ -90,7 +90,19 @@ const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../c
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
-const { listModelPresets, loadModelSettings, saveVerifiedModelConfiguration, testModelConnection, resolveRuntimeModelConfig, isModelReady, supportsDeepSeekV4Thinking } = require("../core/model_settings");
+const {
+  listModelPresets,
+  listModelTaskProfiles,
+  loadModelSettings,
+  saveVerifiedModelTaskProfile,
+  saveVerifiedBatchBackup,
+  restoreRecommendedTaskProfile,
+  testModelConnection,
+  resolveRuntimeModelConfig,
+  resolveRuntimeBatchBackup,
+  isModelReady,
+  supportsDeepSeekV4Thinking
+} = require("../core/model_settings");
 const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } = require("../core/feedback");
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
@@ -222,6 +234,10 @@ function createDashboardServer({
   modelConfig = { provider: "mock", providers: { mock: {} } },
   allowOfflineMock = false,
   forceMock = false,
+  modelSettingsLoader = null,
+  runtimeModelResolver = null,
+  modelReadinessChecker = null,
+  batchBackupResolver = null,
   connectionTester = testModelConnection,
   logger = createLogger({ root, component: "dashboard" }),
   spawnProcess = spawn,
@@ -251,15 +267,94 @@ function createDashboardServer({
   if (recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) {
     logger.warn("workflow_recovery_reconciled", recovery);
   }
+  const offlineConnection = {
+    status: "verified",
+    checkedAt: "2099-01-01T00:00:00.000Z",
+    latencyMs: 0,
+    httpStatus: 0,
+    fingerprint: "offline-structured-mock"
+  };
   const offlineMockState = {
     source: "runtime",
-    settings: { preset: "mock", provider: "mock", baseUrl: "", model: "offline-structured-mock", timeoutMs: 30000, connection: { status: "verified" } },
+    settings: {
+      schemaVersion: 2,
+      credentialMode: "shared",
+      sharedCredential: { preset: "mock", provider: "mock", baseUrl: "" },
+      taskProfiles: {
+        deep_analysis: {
+          model: "offline-structured-mock",
+          timeoutMs: 30000,
+          thinkingMode: "disabled",
+          reasoningEffort: "high",
+          concurrency: 1,
+          credentialRef: "shared",
+          revision: "offline-structured-mock",
+          connection: { ...offlineConnection }
+        },
+        batch_screening: {
+          model: "offline-structured-mock",
+          timeoutMs: 30000,
+          thinkingMode: "disabled",
+          reasoningEffort: "high",
+          concurrency: 1,
+          credentialRef: "shared",
+          revision: "offline-structured-mock",
+          connection: { ...offlineConnection }
+        }
+      },
+      independentCredentials: { deep_analysis: null, batch_screening: null },
+      batchBackup: {
+        enabled: false,
+        credentialRef: "shared",
+        preset: "mock",
+        provider: "mock",
+        baseUrl: "",
+        model: "offline-structured-mock",
+        timeoutMs: 30000,
+        thinkingMode: "disabled",
+        reasoningEffort: "high",
+        revision: "offline-structured-mock",
+        connection: { ...offlineConnection }
+      },
+      revision: "offline-structured-mock",
+      preset: "mock",
+      provider: "mock",
+      baseUrl: "",
+      model: "offline-structured-mock",
+      timeoutMs: 30000,
+      thinkingMode: "disabled",
+      reasoningEffort: "high",
+      connection: { ...offlineConnection }
+    },
     keyConfigured: false,
+    keyReadable: false,
+    keyStored: false,
+    keyErrorCode: "",
+    connectionStatus: "verified",
     modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } }
   };
-  const getPublicModelSettings = () => forceMock ? offlineMockState : loadModelSettings({ root, fallbackModelConfig: modelConfig });
-  const getRuntimeModelConfig = () => forceMock ? offlineMockState.modelConfig : resolveRuntimeModelConfig({ root, fallbackModelConfig: modelConfig }).modelConfig;
-  const modelReady = () => allowOfflineMock || isModelReady(getPublicModelSettings());
+  const getPublicModelSettings = () => modelSettingsLoader
+    ? modelSettingsLoader({ root, fallbackModelConfig: modelConfig })
+    : forceMock
+      ? offlineMockState
+      : loadModelSettings({ root, fallbackModelConfig: modelConfig });
+  const getRuntimeModelState = (taskProfile) => runtimeModelResolver
+    ? runtimeModelResolver({ root, fallbackModelConfig: modelConfig, taskProfile })
+    : forceMock
+      ? offlineMockState
+      : resolveRuntimeModelConfig({ root, fallbackModelConfig: modelConfig, taskProfile });
+  const getRuntimeModel = (taskProfile) => getRuntimeModelState(taskProfile).modelConfig;
+  const modelReady = (taskProfile, options = {}) => {
+    if ((allowOfflineMock || forceMock) && !modelReadinessChecker) return true;
+    const state = getRuntimeModelState(taskProfile);
+    const checker = modelReadinessChecker || isModelReady;
+    return checker(state, { taskProfile, ...options });
+  };
+  const getRuntimeBatchBackup = () => batchBackupResolver
+    ? batchBackupResolver({ root, fallbackModelConfig: modelConfig })
+    : forceMock
+      ? null
+      : resolveRuntimeBatchBackup({ root, fallbackModelConfig: modelConfig });
   return http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();
@@ -268,12 +363,12 @@ function createDashboardServer({
     try {
       url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
-      if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady(), selectedProfileId: url.searchParams.get("profileId") }));
+      if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
       if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
-      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, modelConfig: getPublicModelSettings().modelConfig, scanRuns }));
+      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
@@ -305,7 +400,8 @@ function createDashboardServer({
           requestId,
           spawnProcess,
           browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe,
-          getPublicModelSettings,
+          getBatchModelState: () => getRuntimeModelState("batch_screening"),
+          batchModelReady: () => modelReady("batch_screening"),
           workflowControlSchedule,
           workflowControlGraceMs
         });
@@ -317,21 +413,21 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
-      if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId, bulk: true });
+      if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModelConfig(), modelReady: modelReady(), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady(), logger, requestId, spawnProcess, inheritedContextResolver });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
-      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, inheritedContextResolver });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
+      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
     } catch (error) {
       logger.error("http_unhandled_error", { requestId, method: req.method, path: url?.pathname || req.url, error: errorMeta(error) });
@@ -383,7 +479,13 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
 async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false }) {
   let planId = 0;
   try {
-    if (!modelReady) throw new Error("重试语义分析前，请先让当前模型通过连接测试。");
+    if (!modelReady) {
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "重试语义分析前，请先完成批量筛选模型连接测试。",
+        { statusCode: 409 }
+      );
+    }
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId);
     const plan = getSearchPlan(db, planId);
@@ -452,7 +554,10 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     }
     redirect(res, `/queue?planId=${planId}${failed || sourcePending ? "&pool=analysis_pending" : ""}`);
   } catch (error) {
-    respondUiError(res, error, planId ? `/queue?planId=${planId}&pool=analysis_pending` : "/", { logger, requestId, event: "job_analysis_retry_failed", fallbackCode: "JOB_ANALYSIS_RETRY_FAILED" });
+    respondUiError(res, error, modelSettingsBack(
+      error,
+      planId ? `/queue?planId=${planId}&pool=analysis_pending` : "/"
+    ), { logger, requestId, event: "job_analysis_retry_failed", fallbackCode: "JOB_ANALYSIS_RETRY_FAILED" });
   }
 }
 
@@ -705,22 +810,112 @@ async function handleMatchCardConfirm(req, res, { db, logger, requestId }) {
 }
 
 async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, connectionTester, logger, requestId }) {
+  let taskProfile = "";
+  let action = "";
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
-    const state = await saveVerifiedModelConfiguration({ root, input: params, fallbackModelConfig, connectionTester });
+    taskProfile = String(params.taskProfile || "").trim();
+    action = String(params.action || "save").trim();
+    if (!["deep_analysis", "batch_screening", "batch_backup"].includes(taskProfile)) {
+      throw appError("MODEL_TASK_PROFILE_INVALID", "模型任务配置无效。", { statusCode: 400 });
+    }
+    if (!["save", "restore_recommended"].includes(action)) {
+      throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
+    }
+    if (action === "restore_recommended") {
+      if (taskProfile === "batch_backup") {
+        throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型没有推荐值恢复操作。", { statusCode: 400 });
+      }
+      const state = restoreRecommendedTaskProfile({
+        root,
+        taskProfile,
+        fallbackModelConfig
+      });
+      logger.info("model_task_profile_restored", {
+        requestId,
+        taskProfile,
+        model: state.settings.taskProfiles[taskProfile].model,
+        revision: state.settings.taskProfiles[taskProfile].revision,
+        connectionStatus: state.settings.taskProfiles[taskProfile].connection.status
+      });
+      return redirect(res, `/settings?profile=${encodeURIComponent(taskProfile)}&recommended=1`);
+    }
+    const timeoutMs = Number(params.timeoutMs);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 3000 || timeoutMs > 120000) {
+      throw appError("MODEL_TIMEOUT_INVALID", "请求超时必须是 3000 到 120000 毫秒。", { statusCode: 400 });
+    }
+    const credentialMode = String(params.credentialMode || (taskProfile === "batch_backup" ? "independent" : "shared")).trim();
+    if (!["shared", "independent"].includes(credentialMode)) {
+      throw appError("MODEL_CREDENTIAL_MODE_INVALID", "凭据模式必须是共享或独立。", { statusCode: 400 });
+    }
+    if (taskProfile === "batch_backup" && credentialMode !== "independent") {
+      throw appError("MODEL_CREDENTIAL_MODE_INVALID", "备用模型必须使用独立 API Key。", { statusCode: 400 });
+    }
+    const input = {
+      ...params,
+      model: String(params.model || "") === "__custom__"
+        ? String(params.customModel || "")
+        : String(params.model || ""),
+      credentialRef: credentialMode,
+      enabled: ["1", "on", "true"].includes(String(params.enabled || "").toLowerCase())
+    };
+    if (taskProfile === "deep_analysis") {
+      if (Number(params.concurrency) !== 1) {
+        throw appError("MODEL_CONCURRENCY_INVALID", "深度分析并发固定为 1。", { statusCode: 400 });
+      }
+    } else if (taskProfile === "batch_screening") {
+      if (![1, 2].includes(Number(params.concurrency))) {
+        throw appError("MODEL_CONCURRENCY_INVALID", "批量筛选并发只能是 1 或 2。", { statusCode: 400 });
+      }
+    }
+    const state = taskProfile === "batch_backup"
+      ? await saveVerifiedBatchBackup({
+          root,
+          input,
+          fallbackModelConfig,
+          connectionTester
+        })
+      : await saveVerifiedModelTaskProfile({
+          root,
+          taskProfile,
+          input,
+          fallbackModelConfig,
+          connectionTester
+        });
+    const identity = modelTaskProfileIdentity(state.settings, taskProfile);
     logger.info("model_settings_saved", {
       requestId,
-      preset: state.settings.preset,
-      provider: state.settings.provider,
-      model: state.settings.model,
-      keyConfigured: state.keyConfigured,
-      connectionStatus: state.connectionStatus,
-      latencyMs: state.settings.connection?.latencyMs ?? null
+      taskProfile,
+      provider: identity.provider,
+      model: identity.model,
+      revision: identity.revision,
+      connectionStatus: identity.connection?.status || "unverified",
+      latencyMs: identity.connection?.latencyMs ?? null
     });
-    redirect(res, isModelReady(state) ? safeSettingsNext(params.next) + "?modelConfigured=1" : "/settings?required=1&saved=1");
+    redirect(res, `/settings?profile=${encodeURIComponent(taskProfile)}&modelConfigured=1`);
   } catch (error) {
-    respondUiError(res, error, "/settings", { logger, requestId, event: "model_settings_save_failed", fallbackCode: "MODEL_SETTINGS_SAVE_FAILED" });
+    respondUiError(res, error, taskProfile ? `/settings?profile=${encodeURIComponent(taskProfile)}` : "/settings", {
+      logger,
+      requestId,
+      event: "model_settings_save_failed",
+      fallbackCode: "MODEL_SETTINGS_SAVE_FAILED",
+      metadata: { taskProfile, action }
+    });
   }
+}
+
+function modelTaskProfileIdentity(settings, taskProfile) {
+  if (taskProfile === "batch_backup") return settings.batchBackup || {};
+  const profile = settings.taskProfiles?.[taskProfile] || {};
+  const credential = profile.credentialRef === "independent"
+    ? settings.independentCredentials?.[taskProfile]
+    : settings.sharedCredential;
+  return {
+    ...profile,
+    provider: credential?.provider || "",
+    preset: credential?.preset || "",
+    baseUrl: credential?.baseUrl || ""
+  };
 }
 
 async function handleProfileSave(req, res, db, { logger, requestId }) {
@@ -949,8 +1144,15 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
   }
 }
 
-async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, requestId, spawnProcess }) {
+async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady, logger, requestId, spawnProcess }) {
   try {
+    if (!modelReady) {
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "扫描需要已验证的批量筛选模型，请打开 /settings#model-profile-batch_screening 完成连接测试。",
+        { statusCode: 409 }
+      );
+    }
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
     if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
@@ -984,7 +1186,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, logger, re
     startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, logger, requestId, spawnProcess });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
-    respondUiError(res, error, "/plan", { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
+    respondUiError(res, error, modelSettingsBack(error, "/plan"), { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
   }
 }
 
@@ -1223,6 +1425,8 @@ async function handleWorkflowRunStart(req, res, {
   dbPath,
   scanRuns,
   modelReady,
+  modelState,
+  backupRuntime,
   logger,
   requestId,
   spawnProcess,
@@ -1242,6 +1446,24 @@ async function handleWorkflowRunStart(req, res, {
       getSearchPlanDependency(db, plan.id),
       { validatePlatformCities: false }
     );
+    const preliminaryState = buildWorkflowDashboardState(db, plan);
+    if (preliminaryState.activeRun) {
+      return redirect(res, `/workflow?runId=${encodeURIComponent(preliminaryState.activeRun.id)}`);
+    }
+    if (preliminaryState.nextPlan?.errorCode) {
+      throw appError(
+        preliminaryState.nextPlan.errorCode,
+        workflowBlockedMessage(preliminaryState.nextPlan.errorCode, preliminaryState.nextPlan),
+        { statusCode: 409 }
+      );
+    }
+    if (preliminaryState.nextPlan?.scanNeeded && !modelReady) {
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "执行新一轮前，请先打开 /settings#model-profile-batch_screening 完成批量筛选模型连接测试。",
+        { statusCode: 409 }
+      );
+    }
     const inheritedContext = await inheritedContextResolver({
       db,
       plan,
@@ -1261,9 +1483,14 @@ async function handleWorkflowRunStart(req, res, {
       throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
     }
     if (state.nextPlan.scanNeeded && !modelReady) {
-      throw appError("MODEL_CONFIGURATION_REQUIRED", "执行新一轮前，请先完成模型连接测试。", { statusCode: 409 });
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "执行新一轮前，请先打开 /settings#model-profile-batch_screening 完成批量筛选模型连接测试。",
+        { statusCode: 409 }
+      );
     }
     if (state.nextPlan.scanNeeded) assertWorkflowScanAvailable(db, scanRuns, plan.id, logger);
+    const modelProfiles = workflowModelProfilesSnapshot(modelState, { backupRuntime });
     const workflow = createWorkflowRun(db, {
       profileId: plan.profileId,
       planId: plan.id,
@@ -1275,6 +1502,7 @@ async function handleWorkflowRunStart(req, res, {
       scanNeeded: state.nextPlan.scanNeeded,
       keywords: state.nextPlan.selectedKeywords,
       budget: state.nextPlan.budget,
+      modelConfigRevision: modelProfiles.batch_screening.revision,
       planner: {
         ...state.nextPlan,
         browserMode: browserAuthority.browserMode,
@@ -1283,7 +1511,8 @@ async function handleWorkflowRunStart(req, res, {
         searchTemplate: inheritedContext.searchTemplate,
         searchScope: inheritedContext.searchScope,
         keywordSource: inheritedContext.keywordSource,
-        platformPolicy: inheritedContext.platformPolicy
+        platformPolicy: inheritedContext.platformPolicy,
+        modelProfiles
       },
       shortfallCode: state.nextPlan.shortfallReason || "",
       metrics: {
@@ -1326,7 +1555,7 @@ async function handleWorkflowRunStart(req, res, {
     });
     redirect(res, `/workflow?runId=${encodeURIComponent(workflow.id)}`);
   } catch (error) {
-    respondUiError(res, error, planId ? `/plan?planId=${planId}` : "/plan", {
+    respondUiError(res, error, modelSettingsBack(error, planId ? `/plan?planId=${planId}` : "/plan"), {
       logger,
       requestId,
       event: "workflow_run_start_failed",
@@ -1357,6 +1586,7 @@ async function handleWorkflowRunResume(req, res, {
   root,
   dbPath,
   scanRuns,
+  batchModelReady,
   logger,
   requestId,
   spawnProcess,
@@ -1368,6 +1598,13 @@ async function handleWorkflowRunResume(req, res, {
     workflowRunId = String(params.workflowRunId || params.runId || "").trim();
     const workflow = getWorkflowRun(db, workflowRunId);
     if (!workflow) throw appError("WORKFLOW_RUN_NOT_FOUND", "本轮任务不存在。", { statusCode: 404 });
+    if (workflowResumeNeedsBatchModel(db, workflow) && !batchModelReady) {
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "继续本轮前，请先完成批量筛选模型连接测试。",
+        { statusCode: 409 }
+      );
+    }
     const acquisitionMode = String(workflow.planner?.acquisitionMode || "").trim();
     if (!["generated", "inherited"].includes(acquisitionMode)) {
       throw appError(
@@ -1448,7 +1685,10 @@ async function handleWorkflowRunResume(req, res, {
     }
     redirect(res, `/workflow?runId=${encodeURIComponent(workflow.id)}`);
   } catch (error) {
-    respondUiError(res, error, workflowRunId ? `/workflow?runId=${encodeURIComponent(workflowRunId)}` : "/plan", {
+    respondUiError(res, error, modelSettingsBack(
+      error,
+      workflowRunId ? `/workflow?runId=${encodeURIComponent(workflowRunId)}` : "/plan"
+    ), {
       logger,
       requestId,
       event: "workflow_run_resume_failed",
@@ -1473,6 +1713,15 @@ function workflowResumeRequiresBrowser(db, workflow) {
   const scan = workflow.scanRunId ? getScanRun(db, workflow.scanRunId) : null;
   if (!scan) return true;
   return ["running", "created", "scanning"].includes(String(scan.status || ""));
+}
+
+function workflowResumeNeedsBatchModel(db, workflow) {
+  if (!workflow) return false;
+  if (workflow.scanNeeded) return true;
+  if (["scanning", "analyzing"].includes(String(workflow.resumePhase || ""))) return true;
+  return Boolean(
+    db.prepare("SELECT 1 FROM workflow_job_tasks WHERE workflow_run_id = ? LIMIT 1").get(workflow.id)
+  );
 }
 
 function assertWorkflowResumeBrowserReady(readiness) {
@@ -1567,7 +1816,8 @@ async function handleWorkflowControl(req, res, {
   requestId,
   spawnProcess,
   browserReadinessProbe,
-  getPublicModelSettings,
+  getBatchModelState,
+  batchModelReady,
   workflowControlSchedule,
   workflowControlGraceMs
 }) {
@@ -1666,6 +1916,14 @@ async function handleWorkflowControl(req, res, {
     const targetPhase = workflow.status === "paused"
       ? String(workflow.resumePhase || "analyzing")
       : String(workflow.status || "");
+    const readyForResume = batchModelReady();
+    if (shouldLaunch && workflowResumeNeedsBatchModel(db, workflow) && !readyForResume) {
+      throw appError(
+        "MODEL_CONFIGURATION_REQUIRED",
+        "继续本轮前，请先测试批量筛选模型连接。",
+        { statusCode: 409 }
+      );
+    }
     const requiresBrowser = shouldLaunch && targetPhase === "scanning";
     let authority = null;
     if (requiresBrowser) {
@@ -1699,7 +1957,9 @@ async function handleWorkflowControl(req, res, {
     } else if (shouldLaunch && targetPhase === "analyzing") {
       assertWorkflowAnalysisBatch(db, workflow);
     }
-    const modelEvidence = workflowBatchResumeEvidence(getPublicModelSettings());
+    const modelEvidence = workflowBatchResumeEvidence(getBatchModelState(), {
+      ready: readyForResume
+    });
     workflow = resumeWorkflowRun(db, {
       workflowRunId,
       ...modelEvidence,
@@ -1760,7 +2020,10 @@ async function handleWorkflowControl(req, res, {
     return sendJson(res, issue.statusCode, {
       error: issue.message,
       errorCode: issue.code,
-      requestId
+      requestId,
+      ...(issue.code === "MODEL_CONFIGURATION_REQUIRED"
+        ? { settingsHref: "/settings#model-profile-batch_screening" }
+        : {})
     });
   }
 }
@@ -1896,9 +2159,49 @@ function exactPersistedWorkflowRunIsRunning(db, workflow) {
   return getScanRun(db, workflow.scanRunId)?.status === "running";
 }
 
-function workflowBatchResumeEvidence(modelState) {
+function workflowModelProfilesSnapshot(modelState, { backupRuntime = null } = {}) {
+  const settings = modelState?.settings || {};
+  const batch = settings.taskProfiles?.batch_screening;
+  if (!batch?.revision) {
+    throw appError(
+      "MODEL_CONFIGURATION_REQUIRED",
+      "批量筛选模型配置缺少版本，不能创建可恢复工作流。",
+      { statusCode: 409 }
+    );
+  }
+  const credential = batch.credentialRef === "independent"
+    ? settings.independentCredentials?.batch_screening
+    : settings.sharedCredential;
+  const backup = settings.batchBackup;
+  const backupUsable = Boolean(
+    backupRuntime
+    && backup?.enabled
+    && backup.connection?.status === "verified"
+  );
+  return {
+    batch_screening: {
+      revision: String(batch.revision),
+      provider: String(credential?.provider || ""),
+      model: String(batch.model || ""),
+      thinkingMode: String(batch.thinkingMode || "disabled"),
+      reasoningEffort: String(batch.reasoningEffort || "high"),
+      timeoutMs: Number(batch.timeoutMs || 0),
+      concurrency: Number(batch.concurrency || 1)
+    },
+    batch_backup: backupUsable ? {
+      revision: String(backup.revision || backupRuntime.revision || ""),
+      provider: String(backup.provider || ""),
+      model: String(backup.model || ""),
+      thinkingMode: String(backup.thinkingMode || "disabled"),
+      reasoningEffort: String(backup.reasoningEffort || "high"),
+      timeoutMs: Number(backup.timeoutMs || 0)
+    } : null
+  };
+}
+
+function workflowBatchResumeEvidence(modelState, { ready = false } = {}) {
   const profile = modelState?.settings?.taskProfiles?.batch_screening;
-  if (!profile || profile.connection?.status !== "verified") return {};
+  if (!ready || !profile || profile.connection?.status !== "verified") return {};
   return {
     batchModelRevision: String(profile.revision || ""),
     batchModelVerifiedAt: String(profile.connection.checkedAt || "")
@@ -2900,118 +3203,261 @@ function resumePreviewScript() {
 }
 
 function renderModelSettingsPage({ modelState, searchParams }) {
-  const storedSettings = modelState.settings || {};
-  const showAdvanced = searchParams.get("advanced") === "1" || storedSettings.preset === "mock";
-  const presets = listModelPresets({ includeAdvanced: showAdvanced });
-  const firstSetup = modelState.source === "legacy" && storedSettings.provider === "mock" && !modelState.keyConfigured;
-  const settings = firstSetup
-    ? { preset: "deepseek", provider: "openai_compatible", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", timeoutMs: 60000, thinkingMode: "disabled", reasoningEffort: "high" }
-    : storedSettings;
-  const supportsThinking = supportsDeepSeekV4Thinking(settings.preset, settings.model);
-  const thinkingMode = settings.thinkingMode || "disabled";
-  const reasoningEffort = settings.reasoningEffort || "high";
-  const selectedPreset = presets.find((item) => item.id === settings.preset) || presets.find((item) => item.id === "custom");
-  const presetOptions = presets.map((preset) => {
-    const selected = preset.id === selectedPreset.id ? " selected" : "";
-    return '<option value="' + escapeAttr(preset.id) + '"' + selected + '>' + escapeHtml(preset.label) + '</option>';
-  }).join("");
-  const required = searchParams.get("required") === "1";
-  const saved = searchParams.get("modelConfigured") ? '<p class="notice">模型连接测试通过，设置与当前厂商密钥已保存。</p>' : "";
-  const requiredNotice = required ? '<p class="setup-warning">开始解析简历前，请先让当前模型通过连接测试。</p>' : "";
-  const keyStatus = modelState.keyErrorCode === "SECRET_UNREADABLE" ? "密钥文件无法解密，请重新输入" : modelState.keyConfigured ? "当前厂商密钥已加密保存" : "当前厂商尚未保存密钥";
-  const connection = settings.connection || {};
-  const connectionStatus = connection.status === "verified"
-    ? `已验证${connection.checkedAt ? ` · ${String(connection.checkedAt).replace("T", " ").slice(0, 16)}` : ""}${connection.latencyMs !== null && connection.latencyMs !== undefined ? ` · ${connection.latencyMs}ms` : ""}`
-    : "尚未验证，保存时会发送一次极小连接测试";
-  const next = safeSettingsNext(searchParams.get("next"));
-  const presetJson = JSON.stringify(presets);
-  const thinkingControls = [
-    '      <div id="thinking-controls" class="settings-grid settings-field-wide"' + (supportsThinking ? "" : " hidden") + '>',
-    '        <label class="settings-field">\u601d\u8003\u6a21\u5f0f<select id="thinking-mode" name="thinkingMode"' + (supportsThinking ? "" : " disabled") + '><option value="disabled"' + (thinkingMode === "disabled" ? " selected" : "") + '>\u5173\u95ed\u601d\u8003\uff08\u5f53\u524d\u517c\u5bb9\u6a21\u5f0f\uff09</option><option value="enabled"' + (thinkingMode === "enabled" ? " selected" : "") + '>\u5f00\u542f\u601d\u8003</option></select></label>',
-    '        <label class="settings-field">\u63a8\u7406\u5f3a\u5ea6<select id="reasoning-effort" name="reasoningEffort"' + (supportsThinking && thinkingMode === "enabled" ? "" : " disabled") + '><option value="high"' + (reasoningEffort === "high" ? " selected" : "") + '>\u9ad8\uff08high\uff09</option><option value="max"' + (reasoningEffort === "max" ? " selected" : "") + '>\u6700\u9ad8\uff08max\uff09</option></select><small>max \u66f4\u6162\uff0c\u63a8\u7406\u8f93\u51fa\u548c\u6210\u672c\u66f4\u9ad8\uff0c\u53ea\u5efa\u8bae\u7528\u4e8e\u5c0f\u6837\u672c\u8bca\u65ad\u3002</small></label>',
-    "      </div>"
-  ].join("");
-  const body = [
-    '<style>.settings-page{max-width:960px;padding-top:32px}.settings-header{max-width:720px;margin:34px 0 24px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#0969da;font-size:13px;font-weight:700}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}.settings-form{max-width:none;padding:24px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.settings-field{display:grid;gap:7px;font-size:14px;font-weight:600}.settings-field[hidden]{display:none}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-security{display:grid;gap:3px;border-top:1px solid #d8dee4;margin-top:22px;padding-top:16px;font-size:13px;color:#57606a}.settings-security strong{color:#1f2328}.settings-clear{margin-top:14px}.settings-actions{display:flex;justify-content:flex-end;margin-top:20px}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:22px 0 18px}.settings-header h1{font-size:26px}.settings-form{padding:16px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}</style>',
-    '<main class="settings-page">',
-    "  <nav>" + navLinks() + "</nav>",
-    '  <header class="settings-header">',
-    '    <p class="eyebrow">开始使用前</p>',
-    '    <h1>配置模型</h1>',
-    '    <p class="hint">模型用于简历结构化、岗位理解与匹配；只有强推荐岗位在你点击时才生成定制沟通。已有岗位和投递记录不依赖模型即可查看。</p>',
-    "  </header>",
-    saved,
-    requiredNotice,
-    '  <form class="panel settings-form" method="post" action="/api/settings/model">',
-    thinkingControls,
-    '    <input type="hidden" name="next" value="' + escapeAttr(next) + '">',
-    '    <div class="settings-grid">',
-    '      <label class="settings-field">模型厂商<select id="model-preset" name="preset">' + presetOptions + "</select><small>常用接口地址已预设；每个厂商分别保存自己的 Key。</small></label>",
-    '      <label class="settings-field">模型名称<input id="model-name" name="model" list="model-options" maxlength="160" value="' + escapeAttr(settings.model || "") + '" required><datalist id="model-options"></datalist><small>可以选推荐项，也可以直接填写厂商支持的新模型名。</small></label>',
-    '      <label class="settings-field">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="' + (modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key") + '"><small>密钥状态：' + keyStatus + '。</small></label>',
-    '      <div class="settings-field"><strong>连接状态</strong><small>' + escapeHtml(connectionStatus) + "</small></div>",
-    "    </div>",
-    '    <details class="plan-advanced"><summary>高级设置</summary><div class="settings-grid" style="margin-top:14px"><label class="settings-field settings-field-wide">兼容接口基础地址<input id="model-base-url" name="baseUrl" type="url" value="' + escapeAttr(settings.baseUrl || "") + '" placeholder="https://..."' + (selectedPreset.id === "custom" ? "" : " readonly") + '><small>预设厂商自动填充；自定义兼容接口可编辑。</small></label><label class="settings-field">请求超时（毫秒）<input name="timeoutMs" type="number" min="3000" max="120000" value="' + escapeAttr(settings.timeoutMs || 60000) + '"></label><label class="checkbox settings-clear"><input name="clearApiKey" type="checkbox">删除当前厂商密钥</label></div></details>',
-    '    <div class="settings-security"><strong>本机安全存储</strong><span>API Key 仅按当前 Windows 用户加密保存，不进入配置文件、日志、数据库或绿色发布包。</span></div>',
-    '    <div class="settings-actions"><button>测试连接并保存</button></div>',
-    "  </form>",
-    '  <script id="model-preset-data" type="application/json">' + presetJson + "</script>",
-    "  <script>",
-    "  (function () {",
-    '    const presets = JSON.parse(document.getElementById("model-preset-data").textContent);',
-    '    const presetSelect = document.getElementById("model-preset");',
-    '    const baseUrl = document.getElementById("model-base-url");',
-    '    const modelName = document.getElementById("model-name");',
-    '    const modelOptions = document.getElementById("model-options");',
-    '    const thinkingControls = document.getElementById("thinking-controls");',
-    '    const thinkingMode = document.getElementById("thinking-mode");',
-    '    const reasoningEffort = document.getElementById("reasoning-effort");',
-    '    ' + supportsDeepSeekV4Thinking.toString(),
-    "    function currentPreset() { return presets.find(function (item) { return item.id === presetSelect.value; }) || presets[0]; }",
-    "    function syncThinkingControls() {",
-    '      const supported = supportsDeepSeekV4Thinking(currentPreset().id, modelName.value);',
-    "      thinkingControls.hidden = !supported;",
-    "      thinkingMode.disabled = !supported;",
-    '      if (!supported) { thinkingMode.value = "disabled"; reasoningEffort.value = "high"; }',
-    '      reasoningEffort.disabled = !supported || thinkingMode.value !== "enabled";',
-    "    }",
-    "    function syncMode() {",
-    "      const preset = currentPreset();",
-    '      baseUrl.readOnly = preset.id !== "custom";',
-    "      syncThinkingControls();",
-    "    }",
-    "    function updatePreset() {",
-    "      const preset = currentPreset();",
-    '      baseUrl.value = preset.baseUrl || "";',
-    '      modelOptions.innerHTML = "";',
-    "      const names = preset.models.length ? preset.models : (preset.defaultModel ? [preset.defaultModel] : []);",
-    "      names.forEach(function (name) {",
-    '        const option = document.createElement("option");',
-    "        option.value = name;",
-    "        modelOptions.appendChild(option);",
-    "      });",
-    '      modelName.value = preset.defaultModel || "";',
-    "      syncMode();",
-    "    }",
-    '    presetSelect.addEventListener("change", updatePreset);',
-    '    modelName.addEventListener("input", syncThinkingControls);',
-    '    thinkingMode.addEventListener("change", syncThinkingControls);',
-    "    syncMode();",
-    "  }());",
-    "  </script>",
-    "</main>"
-  ].join("\n");
-  return renderPage("配置模型", body);
+  const settings = modelState.settings || {};
+  const currentCredentials = [
+    settings.sharedCredential,
+    settings.independentCredentials?.deep_analysis,
+    settings.independentCredentials?.batch_screening,
+    settings.batchBackup
+  ].filter(Boolean);
+  const includeAdvanced = searchParams.get("advanced") === "1"
+    || currentCredentials.some((credential) => credential.preset === "mock");
+  const presets = listModelPresets({ includeAdvanced });
+  const profiles = listModelTaskProfiles();
+  const selectedProfile = String(searchParams.get("profile") || "");
+  const saved = searchParams.get("modelConfigured")
+    ? `<p class="notice">模型连接测试通过，${escapeHtml(selectedProfile || "任务配置")} 已保存。</p>`
+    : "";
+  const restored = searchParams.get("recommended")
+    ? `<p class="setup-warning">已恢复推荐值；请重新测试连接后再使用该任务配置。</p>`
+    : "";
+  const keyStatus = modelState.keyErrorCode === "SECRET_UNREADABLE"
+    ? "API Key 文件无法解密，请重新输入"
+    : modelState.keyConfigured
+      ? "API Key 已加密保存"
+      : "尚未保存共享 API Key";
+  const profileSections = profiles.map((definition) => renderModelTaskProfileSection({
+    definition,
+    settings,
+    presets,
+    modelState,
+    selected: selectedProfile === definition.id
+  })).join("");
+  const backupSection = renderBatchBackupSettings({
+    settings,
+    presets,
+    modelState,
+    selected: selectedProfile === "batch_backup"
+  });
+  const presetJson = JSON.stringify(presets).replace(/</g, "\\u003c");
+  const body = `<style>
+    .settings-page{max-width:980px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-profile{scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}
+  </style><main class="settings-page">
+    <nav>${navLinks()}</nav>
+    <header class="settings-header">
+      <p class="eyebrow">按任务选择模型</p>
+      <h1>模型设置</h1>
+      <p class="hint">深度分析处理简历与内容生成；批量筛选处理岗位理解、匹配和重试。两套配置默认共享厂商和 API Key，但模型参数互不覆盖。</p>
+    </header>
+    ${saved}${restored}
+    <section class="panel settings-credentials">
+      <h2>共享厂商和 API Key</h2>
+      <p>默认模式：两套任务配置共享厂商和 Windows 加密保存的 Key。需要拆分时，在对应配置的“高级设置”中选择“独立厂商和 API Key”。</p>
+      <div class="settings-grid">
+        <label class="settings-field">共享模型厂商<select id="shared-model-preset">${renderPresetOptions(presets, settings.sharedCredential?.preset || "deepseek")}</select><small>选择后会同步到仍使用共享凭据的任务配置。</small></label>
+        <label class="settings-field">共享 API Key<input id="shared-model-api-key" type="password" autocomplete="new-password" placeholder="${modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key"}"><small>在下方任一共享任务点击“测试连接并保存”时写入。</small></label>
+      </div>
+      <p class="settings-current">当前共享厂商：${escapeHtml(settings.sharedCredential?.preset || "未设置")} · ${escapeHtml(keyStatus)}</p>
+    </section>
+    ${profileSections}
+    ${backupSection}
+    <p class="hint">API Key 不进入设置 JSON、日志、数据库或页面响应。</p>
+    <script id="model-preset-data" type="application/json">${presetJson}</script>
+    ${modelSettingsClientScript()}
+  </main>`;
+  return renderPage("模型设置", body);
 }
 
-function renderModelOptions(preset, selectedModel) {
-  const names = [...new Set([...(preset?.models || []), selectedModel].filter(Boolean))];
-  if (!names.length) names.push("");
-  return names.map((name) => {
-    const selected = name === selectedModel ? " selected" : "";
-    const label = name || "请在下方填写自定义模型名";
-    return '<option value="' + escapeAttr(name) + '"' + selected + '>' + escapeHtml(label) + '</option>';
-  }).join("");
+function renderModelTaskProfileSection({ definition, settings, presets, modelState, selected }) {
+  const profile = settings.taskProfiles?.[definition.id] || {};
+  const credential = modelCredentialForTask(settings, definition.id);
+  const preset = presets.find((item) => item.id === credential.preset)
+    || presets.find((item) => item.id === "custom")
+    || presets[0];
+  const purpose = definition.id === "deep_analysis"
+    ? "用于简历解析、候选人画像、搜索建议、匹配偏好卡和主动生成沟通内容。"
+    : "用于岗位理解、岗位匹配、单岗重试和批量重试。";
+  const recommended = definition.recommended;
+  const connection = profile.connection || {};
+  const verified = connection.status === "verified";
+  const supportsThinking = supportsDeepSeekV4Thinking(preset.id, profile.model);
+  const shared = profile.credentialRef !== "independent";
+  const customModel = !(preset.models || []).includes(profile.model);
+  const current = `${credential.preset || credential.provider || "未设置"} · ${profile.model || "未设置"} · ${profile.timeoutMs || 0}ms · 并发 ${profile.concurrency || 1}`;
+  const recommendedText = `${recommended.model} · ${recommended.timeoutMs}ms · 思考${recommended.thinkingMode === "enabled" ? "开启" : "关闭"} · 并发 ${recommended.concurrency}`;
+  const profileId = escapeAttr(definition.id);
+  return `<section class="panel settings-profile${selected ? " selected" : ""}" id="model-profile-${profileId}">
+    <div class="settings-profile-head">
+      <div><h2>${escapeHtml(definition.label)}</h2><p class="hint">${escapeHtml(purpose)}</p></div>
+      <p class="settings-current">当前值：${escapeHtml(current)}</p>
+    </div>
+    <p class="settings-recommended">推荐值：${escapeHtml(recommendedText)}</p>
+    <form class="model-profile-form" method="post" action="/api/settings/model" data-task-profile="${profileId}">
+      <input type="hidden" name="taskProfile" value="${profileId}">
+      <div class="settings-grid">
+        <label class="settings-field">模型厂商<select class="profile-preset" name="preset">${renderPresetOptions(presets, preset.id)}</select><small>共享模式下修改厂商会应用到两套任务；要拆分请打开高级设置。</small></label>
+        <label class="settings-field">模型<select class="profile-model" name="model">${renderProfileModelOptions(preset, profile.model)}</select><input class="profile-custom-model" name="customModel" maxlength="160" value="${customModel ? escapeAttr(profile.model || "") : ""}" placeholder="填写自定义模型名"${customModel ? "" : " hidden"}></label>
+        <label class="settings-field">请求超时（毫秒）<input name="timeoutMs" type="number" min="3000" max="120000" value="${Number(profile.timeoutMs || recommended.timeoutMs)}" required></label>
+        ${definition.id === "deep_analysis"
+          ? `<label class="settings-field">并发数<output>1（固定）</output><input type="hidden" name="concurrency" value="1"><small>深度分析保持串行，避免高成本调用重叠。</small></label>`
+          : `<label class="settings-field">并发数<select name="concurrency"><option value="1"${Number(profile.concurrency) === 1 ? " selected" : ""}>1</option><option value="2"${Number(profile.concurrency) === 2 ? " selected" : ""}>2（推荐）</option></select><small>只并发处理已保存到本地的 JD，不增加 BOSS 页面并发。</small></label>`}
+        <label class="settings-field profile-thinking"${supportsThinking ? "" : " hidden"}>思考模式<select name="thinkingMode"${supportsThinking ? "" : " disabled"}><option value="disabled"${profile.thinkingMode === "disabled" ? " selected" : ""}>关闭思考</option><option value="enabled"${profile.thinkingMode === "enabled" ? " selected" : ""}>开启思考</option></select></label>
+        <label class="settings-field profile-reasoning"${supportsThinking ? "" : " hidden"}>推理强度<select name="reasoningEffort"${supportsThinking ? "" : " disabled"}><option value="high"${profile.reasoningEffort === "high" ? " selected" : ""}>高（high）</option><option value="max"${profile.reasoningEffort === "max" ? " selected" : ""}>最高（max）</option></select></label>
+        <div class="settings-field settings-status${verified ? " verified" : ""}"><strong>连接状态</strong><small>${escapeHtml(modelConnectionLabel(connection))}</small></div>
+      </div>
+      <details class="settings-advanced"><summary>高级设置</summary>
+        <div class="settings-grid settings-advanced-grid">
+          <label class="settings-field">凭据模式<select class="profile-credential-mode" name="credentialMode"><option value="shared"${shared ? " selected" : ""}>共享厂商和 API Key</option><option value="independent"${shared ? "" : " selected"}>独立厂商和 API Key</option></select></label>
+          <div class="settings-field settings-field-wide profile-independent-credentials"${shared ? " hidden" : ""}>
+            <label class="settings-field">独立 API Key<input class="profile-api-key" name="apiKey" type="password" autocomplete="new-password" placeholder="已保存则可留空"><small>只供当前任务使用；切换厂商时不会复用共享或另一厂商的 Key。</small></label>
+            <label class="settings-field">兼容接口基础地址<input class="profile-base-url" name="baseUrl" type="url" value="${escapeAttr(credential.baseUrl || "")}"${preset.id === "custom" ? "" : " readonly"}></label>
+          </div>
+        </div>
+      </details>
+      <div class="settings-actions">
+        <button class="settings-secondary" name="action" value="restore_recommended" formnovalidate>恢复推荐值</button>
+        <button name="action" value="save">测试连接并保存</button>
+      </div>
+    </form>
+  </section>`;
+}
+
+function renderBatchBackupSettings({ settings, presets, modelState, selected }) {
+  const backup = settings.batchBackup || {};
+  const preset = presets.find((item) => item.id === backup.preset)
+    || presets.find((item) => item.id === "custom")
+    || presets[0];
+  const customModel = !(preset.models || []).includes(backup.model);
+  const verified = backup.connection?.status === "verified";
+  return `<details class="panel settings-backup${selected ? " selected" : ""}" id="model-profile-batch_backup">
+    <summary>批量备用模型 · ${backup.enabled ? "已启用" : "备用模型默认关闭"}</summary>
+    <div class="settings-backup-body">
+      <p class="setup-warning">备用模型必须先通过连接测试，只用于单岗第二次尝试，不会替换整批主模型。</p>
+      <form class="model-profile-form" method="post" action="/api/settings/model" data-task-profile="batch_backup">
+        <input type="hidden" name="taskProfile" value="batch_backup">
+        <div class="settings-grid">
+          <label class="settings-toggle settings-field-wide"><input name="enabled" type="checkbox"${backup.enabled ? " checked" : ""}>启用已验证的备用模型</label>
+          <label class="settings-field">模型厂商<select class="profile-preset" name="preset">${renderPresetOptions(presets, preset.id)}</select></label>
+          <label class="settings-field">模型<select class="profile-model" name="model">${renderProfileModelOptions(preset, backup.model)}</select><input class="profile-custom-model" name="customModel" maxlength="160" value="${customModel ? escapeAttr(backup.model || "") : ""}" placeholder="填写自定义模型名"${customModel ? "" : " hidden"}></label>
+          <label class="settings-field">请求超时（毫秒）<input name="timeoutMs" type="number" min="3000" max="120000" value="${Number(backup.timeoutMs || 90000)}" required></label>
+          <label class="settings-field profile-thinking">思考模式<select name="thinkingMode"><option value="disabled"${backup.thinkingMode === "disabled" ? " selected" : ""}>关闭思考</option><option value="enabled"${backup.thinkingMode === "enabled" ? " selected" : ""}>开启思考</option></select></label>
+          <label class="settings-field profile-reasoning">推理强度<select name="reasoningEffort"><option value="high"${backup.reasoningEffort === "high" ? " selected" : ""}>高（high）</option><option value="max"${backup.reasoningEffort === "max" ? " selected" : ""}>最高（max）</option></select></label>
+          <div class="settings-field settings-status${verified ? " verified" : ""}"><strong>连接状态</strong><small>${escapeHtml(modelConnectionLabel(backup.connection))}</small></div>
+        </div>
+        <details class="settings-advanced"><summary>高级设置</summary><div class="settings-grid settings-advanced-grid">
+          <input type="hidden" name="credentialMode" value="independent">
+          <label class="settings-field">备用模型专用 API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="已保存则可留空"><small>备用模型使用独立密钥，不会复用主模型或其他厂商的 Key。</small></label>
+          <label class="settings-field settings-field-wide">兼容接口基础地址<input class="profile-base-url" name="baseUrl" type="url" value="${escapeAttr(backup.baseUrl || "")}"${preset.id === "custom" ? "" : " readonly"}></label>
+        </div></details>
+        <div class="settings-actions"><button name="action" value="save">测试连接并保存备用模型</button></div>
+      </form>
+    </div>
+  </details>`;
+}
+
+function modelCredentialForTask(settings, taskProfile) {
+  const profile = settings.taskProfiles?.[taskProfile] || {};
+  return profile.credentialRef === "independent"
+    ? settings.independentCredentials?.[taskProfile] || settings.sharedCredential || {}
+    : settings.sharedCredential || {};
+}
+
+function renderPresetOptions(presets, selectedPreset) {
+  return presets.map((preset) => `<option value="${escapeAttr(preset.id)}"${preset.id === selectedPreset ? " selected" : ""}>${escapeHtml(preset.label)}</option>`).join("");
+}
+
+function renderProfileModelOptions(preset, selectedModel) {
+  const models = [...new Set([...(preset.models || []), selectedModel].filter(Boolean))];
+  const custom = selectedModel && !(preset.models || []).includes(selectedModel);
+  const options = models.map((model) => `<option value="${escapeAttr(model)}"${model === selectedModel ? " selected" : ""}>${escapeHtml(model)}</option>`);
+  options.push(`<option value="__custom__"${custom ? " selected" : ""}>自定义模型…</option>`);
+  return options.join("");
+}
+
+function modelConnectionLabel(connection = {}) {
+  if (connection.status !== "verified") return "尚未验证，保存时会发送一次极小连接测试";
+  const checkedAt = connection.checkedAt
+    ? ` · ${String(connection.checkedAt).replace("T", " ").slice(0, 16)}`
+    : "";
+  const latency = connection.latencyMs !== null && connection.latencyMs !== undefined
+    ? ` · ${connection.latencyMs}ms`
+    : "";
+  return `已验证${checkedAt}${latency}`;
+}
+
+function modelSettingsClientScript() {
+  return `<script>(function(){
+    const presets=JSON.parse(document.getElementById("model-preset-data").textContent);
+    const sharedPreset=document.getElementById("shared-model-preset");
+    const sharedApiKey=document.getElementById("shared-model-api-key");
+    ${supportsDeepSeekV4Thinking.toString()}
+    const presetById=(id)=>presets.find((item)=>item.id===id)||presets[0];
+    document.querySelectorAll(".model-profile-form").forEach((form)=>{
+      const presetSelect=form.querySelector(".profile-preset");
+      const modelSelect=form.querySelector(".profile-model");
+      const customModel=form.querySelector(".profile-custom-model");
+      const baseUrl=form.querySelector(".profile-base-url");
+      const thinking=form.querySelector(".profile-thinking");
+      const reasoning=form.querySelector(".profile-reasoning");
+      const thinkingSelect=thinking?.querySelector("select");
+      const reasoningSelect=reasoning?.querySelector("select");
+      const credentialMode=form.querySelector(".profile-credential-mode");
+      const independentCredentials=form.querySelector(".profile-independent-credentials");
+      const profileApiKey=form.querySelector(".profile-api-key");
+      const syncModelControls=()=>{
+        const preset=presetById(presetSelect.value);
+        const model=modelSelect.value==="__custom__"?customModel.value:modelSelect.value;
+        const supports=supportsDeepSeekV4Thinking(preset.id,model);
+        customModel.hidden=modelSelect.value!=="__custom__";
+        if(thinking){thinking.hidden=!supports;thinkingSelect.disabled=!supports}
+        if(reasoning){reasoning.hidden=!supports;reasoningSelect.disabled=!supports}
+      };
+      const populateModels=()=>{
+        const preset=presetById(presetSelect.value);
+        modelSelect.replaceChildren();
+        [...preset.models,"__custom__"].forEach((model)=>{
+          const option=document.createElement("option");
+          option.value=model;
+          option.textContent=model==="__custom__"?"自定义模型…":model;
+          modelSelect.appendChild(option);
+        });
+        modelSelect.value=preset.defaultModel||"__custom__";
+        if(baseUrl){baseUrl.value=preset.baseUrl||"";baseUrl.readOnly=preset.id!=="custom"}
+        syncModelControls();
+      };
+      const syncCredentialMode=()=>{
+        if(independentCredentials)independentCredentials.hidden=credentialMode?.value!=="independent";
+      };
+      presetSelect.addEventListener("change",()=>{
+        populateModels();
+        if(credentialMode?.value==="shared"&&sharedPreset&&sharedPreset.value!==presetSelect.value){
+          sharedPreset.value=presetSelect.value;
+          sharedPreset.dispatchEvent(new Event("change"));
+        }
+      });
+      modelSelect.addEventListener("change",syncModelControls);
+      customModel.addEventListener("input",syncModelControls);
+      credentialMode?.addEventListener("change",syncCredentialMode);
+      form.addEventListener("submit",()=>{
+        if(credentialMode?.value==="shared"){
+          if(sharedPreset)presetSelect.value=sharedPreset.value;
+          if(profileApiKey&&sharedApiKey)profileApiKey.value=sharedApiKey.value;
+        }
+      });
+      syncCredentialMode();
+      syncModelControls();
+    });
+    sharedPreset?.addEventListener("change",()=>{
+      document.querySelectorAll(".model-profile-form").forEach((form)=>{
+        if(form.querySelector(".profile-credential-mode")?.value!=="shared")return;
+        const presetSelect=form.querySelector(".profile-preset");
+        if(presetSelect&&presetSelect.value!==sharedPreset.value){
+          presetSelect.value=sharedPreset.value;
+          presetSelect.dispatchEvent(new Event("change"));
+        }
+      });
+    });
+  }());</script>`;
 }
 
 const PLAN_CITY_OPTIONS = Object.keys(CITY_CODES);
@@ -3616,6 +4062,12 @@ function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
   return renderPage("操作未完成", `<main><nav>${navLinks()}</nav><h1>操作未完成</h1><section class="panel"><p class="risk-text">${escapeHtml(message)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
 }
 
+function modelSettingsBack(error, fallback) {
+  return error?.code === "MODEL_CONFIGURATION_REQUIRED"
+    ? "/settings#model-profile-batch_screening"
+    : fallback;
+}
+
 function renderDiagnosticsPage(entries = []) {
   const rows = entries.map((entry) => {
     const error = entry.error || {};
@@ -3727,14 +4179,6 @@ function navLinks(current = "") {
   const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
   if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">今日任务</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
   return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
-}
-
-function modelSetupPath(next = "/onboarding") {
-  return "/settings?required=1&next=" + encodeURIComponent(safeSettingsNext(next));
-}
-
-function safeSettingsNext(value) {
-  return value === "/onboarding" ? value : "/onboarding";
 }
 
 function redirect(res, location) {

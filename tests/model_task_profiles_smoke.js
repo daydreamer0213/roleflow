@@ -315,6 +315,8 @@ async function independentCredentialsAndBackupSmoke() {
     assert.strictEqual(loadSecret(root, sharedSecretId), sharedKey);
     assert.strictEqual(sharedDeep.modelConfig.providers.openai_compatible.apiKey, sharedKey);
     assert.strictEqual(sharedBatch.modelConfig.providers.openai_compatible.apiKey, sharedKey);
+    assert.strictEqual(sharedDeep.modelConfig.providers.openai_compatible.apiKeyEnv, null);
+    assert.strictEqual(sharedBatch.modelConfig.providers.openai_compatible.apiKeyEnv, null);
 
     state = await saveVerifiedModelTaskProfile({
       root,
@@ -328,6 +330,7 @@ async function independentCredentialsAndBackupSmoke() {
     assert.strictEqual(loadSecret(root, independentBatch.secretId), independentKey);
     assert.strictEqual(loadSecret(root, sharedSecretId), sharedKey, "independent mode must never copy the shared plaintext key");
     assert.strictEqual(independentBatch.modelConfig.providers.openai_compatible.apiKey, independentKey);
+    assert.strictEqual(independentBatch.modelConfig.providers.openai_compatible.apiKeyEnv, null);
     assert.strictEqual(isModelReady(independentBatch, { taskProfile: "batch_screening" }), true);
     assert.strictEqual(state.settings.independentCredentials.batch_screening.preset, "deepseek");
 
@@ -386,17 +389,25 @@ async function independentCredentialsAndBackupSmoke() {
     assert.strictEqual(backup.modelConfig.providers.openai_compatible.model, "deepseek-v4-pro");
     assert.strictEqual(backup.modelConfig.providers.openai_compatible.timeoutMs, 90000);
     assert.strictEqual(backup.modelConfig.providers.openai_compatible.apiKey, backupKey);
+    assert.strictEqual(backup.modelConfig.providers.openai_compatible.apiKeyEnv, null);
     assert.strictEqual(loadSecret(root, backup.secretId), backupKey);
     assert.notStrictEqual(backup.secretId, sharedSecretId);
+    fs.unlinkSync(secretPath(root, backup.secretId));
+    assert.strictEqual(
+      resolveRuntimeBatchBackup({ root, fallbackModelConfig: fallback }),
+      null,
+      "a verified backup without a readable configured key must not resolve or fall back to an environment key"
+    );
 
     state = await saveVerifiedBatchBackup({
       root,
       fallbackModelConfig: fallback,
-      connectionTester: verified,
+      connectionTester: testModelConnection,
       input: { enabled: false }
     });
     assert.strictEqual(state.settings.batchBackup.enabled, false);
     assert.strictEqual(state.settings.batchBackup.model, "deepseek-v4-pro", "disabling must keep the stored configuration");
+    assert.strictEqual(state.settings.batchBackup.connection.status, "unverified");
     assert.strictEqual(resolveRuntimeBatchBackup({ root, fallbackModelConfig: fallback }), null);
 
     const publicText = JSON.stringify(state);

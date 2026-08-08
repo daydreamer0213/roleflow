@@ -133,7 +133,7 @@ function loadModelSettings({ root, fallbackModelConfig }) {
     keyReadable: Boolean(keyState.readable),
     keyErrorCode,
     connectionStatus: primary.connection?.status || "unverified",
-    modelConfig: modelConfigFromSettings(settings, "", source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : "ZHIPPING_MODEL_API_KEY")
+    modelConfig: modelConfigFromSettings(settings, "", source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : null)
   };
 }
 
@@ -232,21 +232,26 @@ async function saveVerifiedBatchBackup({ root, input, fallbackModelConfig, conne
   if (backup.provider !== "mock" && !apiKey && backup.enabled) {
     throw appError("MODEL_KEY_REQUIRED", "请填写当前模型厂商的 API Key。切换厂商时不会复用上一家的密钥。", { statusCode: 400 });
   }
-  const verification = backup.provider === "mock"
-    ? { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 }
-    : await connectionTester({
-      settings: {
-        preset: backup.preset,
-        baseUrl: backup.baseUrl,
-        model: backup.model,
-        timeoutMs: backup.timeoutMs,
-        thinkingMode: backup.thinkingMode,
-        reasoningEffort: backup.reasoningEffort
-      },
-      apiKey
-    });
-  backup.connection = { ...verification, fingerprint: profileFingerprint(backup) };
-  backup.revision = profileFingerprint(backup);
+  const fingerprint = profileFingerprint(backup);
+  if (!backup.enabled) {
+    backup.connection = { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint };
+  } else {
+    const verification = backup.provider === "mock"
+      ? { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 }
+      : await connectionTester({
+        settings: {
+          preset: backup.preset,
+          baseUrl: backup.baseUrl,
+          model: backup.model,
+          timeoutMs: backup.timeoutMs,
+          thinkingMode: backup.thinkingMode,
+          reasoningEffort: backup.reasoningEffort
+        },
+        apiKey
+      });
+    backup.connection = { ...verification, fingerprint };
+  }
+  backup.revision = fingerprint;
   settings.batchBackup = backup;
   settings.revision = settingsFingerprint(settings);
   const settingsFile = settingsPath(root);
@@ -330,7 +335,7 @@ function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile }) {
     return { ...base, modelConfig: modelConfigFromProfile(effective, "") };
   }
   const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
-  const apiKeyEnv = loaded.source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : "ZHIPPING_MODEL_API_KEY";
+  const apiKeyEnv = loaded.source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : null;
   return { ...base, modelConfig: modelConfigFromProfile(effective, apiKey, apiKeyEnv) };
 }
 
@@ -341,6 +346,7 @@ function resolveRuntimeBatchBackup({ root, fallbackModelConfig }) {
   if (backup.connection?.status !== "verified" || backup.connection.fingerprint !== profileFingerprint(backup)) return null;
   const secretId = secretIdForBatchBackup(loaded.settings, backup);
   const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  if (backup.provider !== "mock" && !(keyState.configured && keyState.readable)) return null;
   const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
   return {
     ...loaded,
@@ -351,7 +357,7 @@ function resolveRuntimeBatchBackup({ root, fallbackModelConfig }) {
     keyConfigured: Boolean(keyState.configured),
     keyReadable: Boolean(keyState.readable),
     keyErrorCode: keyState.errorCode || "",
-    modelConfig: modelConfigFromProfile(backup, apiKey, "ZHIPPING_MODEL_API_KEY")
+    modelConfig: modelConfigFromProfile(backup, apiKey, null)
   };
 }
 

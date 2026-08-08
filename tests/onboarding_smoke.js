@@ -23,6 +23,7 @@ const {
 const { matchingCardRevision } = require("../src/core/matching_card");
 const { loadConfigs } = require("../src/config");
 const { profileToRuntimeConfigs } = require("../src/core/search_plan");
+const { resolveAnalysisConcurrency } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -84,6 +85,42 @@ const generatedReports = [];
   assert(settingsHtml.includes("DeepSeek"));
   assert(settingsHtml.includes("通义千问"));
   assert(settingsHtml.includes('name="apiKey"'));
+  const cliSource = fs.readFileSync(path.join(root, "src", "cli.js"), "utf8");
+  assert(
+    (cliSource.match(/taskProfile:\s*"batch_screening"/g) || []).length >= 3,
+    "scan, refresh and batch reassessment must explicitly use batch_screening"
+  );
+  assert(
+    (cliSource.match(/taskProfile:\s*"deep_analysis"/g) || []).length >= 1,
+    "profile creation must explicitly use deep_analysis"
+  );
+  assert.doesNotMatch(
+    cliSource,
+    /resolveRuntimeModelConfig\(\{\s*root:\s*ROOT,\s*fallbackModelConfig:\s*configs\.model\s*\}\)/,
+    "CLI model routing must not rely on the default deep_analysis profile"
+  );
+  assert.strictEqual(resolveAnalysisConcurrency({}, 1), 1);
+  assert.strictEqual(resolveAnalysisConcurrency({ "analysis-concurrency": 8 }, 1), 1);
+  assert.strictEqual(resolveAnalysisConcurrency({ "analysis-concurrency": 1 }, 2), 1);
+  assert.strictEqual(resolveAnalysisConcurrency({ "analysis-concurrency": 8 }, 2), 2);
+  const scanSource = cliSource.slice(
+    cliSource.indexOf("async function scan("),
+    cliSource.indexOf("async function refreshDetails(")
+  );
+  assert(scanSource.indexOf("isModelReady(primaryState") >= 0);
+  assert(
+    scanSource.indexOf("isModelReady(primaryState") < scanSource.indexOf("createBrowser(args)"),
+    "scan must reject an unready batch profile before creating or probing a browser"
+  );
+  const refreshSource = cliSource.slice(
+    cliSource.indexOf("async function refreshDetails("),
+    cliSource.indexOf("async function analyzeActivityProbe(")
+  );
+  assert(refreshSource.indexOf("isModelReady(batchModelState") >= 0);
+  assert(
+    refreshSource.indexOf("isModelReady(batchModelState") < refreshSource.indexOf("createBrowser(args)"),
+    "refresh-details/activity must reject an unready batch profile before creating or probing a browser"
+  );
 
   const sampleResumeText = fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8");
   const identityFileName = "测试候选人-AI应用开发.txt";

@@ -649,7 +649,8 @@ function installOfflineBoundaries() {
             }
           }
         }
-      })
+      }),
+      isModelReady: () => true
     };
     return originalLoad.call(this, request, parent, isMain);
   };

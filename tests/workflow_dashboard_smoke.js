@@ -50,6 +50,94 @@ let server;
   const saved = seedProfile(db);
   const spawns = [];
   const workflowControlTimers = [];
+  const modelAccesses = [];
+  let batchModelReady = true;
+  const routingModelState = {
+    source: "runtime",
+    settings: {
+      schemaVersion: 2,
+      credentialMode: "shared",
+      sharedCredential: { preset: "mock", provider: "mock", baseUrl: "" },
+      taskProfiles: {
+        deep_analysis: {
+          model: "deep-analysis-model",
+          timeoutMs: 120000,
+          thinkingMode: "disabled",
+          reasoningEffort: "high",
+          concurrency: 1,
+          credentialRef: "shared",
+          revision: "deep-analysis-revision",
+          connection: {
+            status: "verified",
+            checkedAt: "2099-01-01T00:00:00.000Z",
+            latencyMs: 1,
+            httpStatus: 200,
+            fingerprint: "deep-analysis-revision"
+          }
+        },
+        batch_screening: {
+          model: "batch-screening-model",
+          timeoutMs: 90000,
+          thinkingMode: "disabled",
+          reasoningEffort: "high",
+          concurrency: 2,
+          credentialRef: "shared",
+          revision: "batch-screening-revision",
+          connection: {
+            status: "verified",
+            checkedAt: "2099-01-01T00:00:00.000Z",
+            latencyMs: 1,
+            httpStatus: 200,
+            fingerprint: "batch-screening-revision"
+          }
+        }
+      },
+      independentCredentials: { deep_analysis: null, batch_screening: null },
+      batchBackup: {
+        enabled: false,
+        credentialRef: "shared",
+        preset: "mock",
+        provider: "mock",
+        baseUrl: "",
+        model: "batch-backup-model",
+        timeoutMs: 90000,
+        thinkingMode: "disabled",
+        reasoningEffort: "high",
+        revision: "batch-backup-revision",
+        connection: {
+          status: "unverified",
+          checkedAt: "",
+          latencyMs: null,
+          httpStatus: null,
+          fingerprint: "batch-backup-revision"
+        }
+      },
+      revision: "whole-model-settings-revision",
+      preset: "mock",
+      provider: "mock",
+      baseUrl: "",
+      model: "deep-analysis-model",
+      timeoutMs: 120000,
+      thinkingMode: "disabled",
+      reasoningEffort: "high",
+      connection: {
+        status: "verified",
+        checkedAt: "2099-01-01T00:00:00.000Z",
+        latencyMs: 1,
+        httpStatus: 200,
+        fingerprint: "deep-analysis-revision"
+      }
+    },
+    keyStored: false,
+    keyConfigured: false,
+    keyReadable: false,
+    keyErrorCode: "",
+    connectionStatus: "verified",
+    modelConfig: {
+      provider: "mock",
+      providers: { mock: { model: "deep-analysis-model" } }
+    }
+  };
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
   let inheritedResolutionInput = null;
@@ -118,7 +206,27 @@ let server;
     root,
     dbPath,
     forceMock: true,
-    allowOfflineMock: true,
+    allowOfflineMock: false,
+    modelSettingsLoader() {
+      modelAccesses.push({ kind: "public" });
+      return routingModelState;
+    },
+    runtimeModelResolver({ taskProfile }) {
+      modelAccesses.push({ kind: "runtime", taskProfile });
+      return {
+        ...routingModelState,
+        revision: routingModelState.settings.taskProfiles[taskProfile].revision,
+        concurrency: routingModelState.settings.taskProfiles[taskProfile].concurrency,
+        modelConfig: {
+          provider: "mock",
+          providers: { mock: { model: `${taskProfile}-model` } }
+        }
+      };
+    },
+    modelReadinessChecker(_state, { taskProfile } = {}) {
+      modelAccesses.push({ kind: "ready", taskProfile });
+      return taskProfile === "batch_screening" ? batchModelReady : taskProfile === "deep_analysis";
+    },
     logger,
     inheritedContextResolver,
     browserReadinessProbe: async () => ({ ...browserReadiness }),
@@ -225,6 +333,23 @@ let server;
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
 
+  batchModelReady = false;
+  const resolutionCountBeforeModelGate = inheritedResolutionCount;
+  const modelBlockedStart = await postForm(baseUrl, "/api/workflow-run", {
+    planId: saved.planId,
+    browserMode: "portable",
+    cdpPort: 9222,
+    action: "start"
+  });
+  assert.strictEqual(modelBlockedStart.status, 409);
+  assert.match(modelBlockedStart.body, /href="\/settings#model-profile-batch_screening"/);
+  assert.strictEqual(
+    inheritedResolutionCount,
+    resolutionCountBeforeModelGate,
+    "batch readiness must block before any BOSS/inherited-context inspection"
+  );
+  batchModelReady = true;
+
   for (const code of [
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
@@ -262,6 +387,13 @@ let server;
   const workflow = listWorkflowRuns(db, { planId: saved.planId })[0];
   assert.strictEqual(workflow.status, "scanning");
   assert.strictEqual(workflow.targetSuccessCount, 35);
+  assert.strictEqual(workflow.modelConfigRevision, "batch-screening-revision");
+  assert.strictEqual(workflow.planner.modelProfiles.batch_screening.model, "batch-screening-model");
+  assert.strictEqual(workflow.planner.modelProfiles.batch_screening.revision, "batch-screening-revision");
+  assert.strictEqual(workflow.planner.modelProfiles.batch_screening.concurrency, 2);
+  assert.strictEqual(workflow.planner.modelProfiles.batch_backup, null);
+  assert(!JSON.stringify(workflow.planner.modelProfiles).includes("apiKey"));
+  assert(!JSON.stringify(workflow.planner.modelProfiles).includes("baseUrl"));
   assert.strictEqual(workflow.planner.acquisitionMode, "inherited");
   assert.deepStrictEqual(inheritedResolutionInput, { browserMode: "portable", cdpPort: 9222 });
   assert.strictEqual(workflow.planner.browserMode, "portable");
@@ -864,6 +996,20 @@ let server;
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
   assert.deepStrictEqual(getWorkflowRun(db, generatedWorkflow.id), generatedBeforeInvalidMode);
 
+  batchModelReady = false;
+  const browserProbeCountBeforeModelBlockedResume = resumeBrowserProbeInputs.length;
+  const modelBlockedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "portable",
+    cdpPort: 9333
+  });
+  assert.strictEqual(modelBlockedResume.status, 409);
+  assert.match(modelBlockedResume.body, /href="\/settings#model-profile-batch_screening"/);
+  assert.strictEqual(resumeBrowserProbeInputs.length, browserProbeCountBeforeModelBlockedResume);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
+  batchModelReady = true;
+
   const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: generatedWorkflow.id,
     browserMode: "portable",
@@ -887,8 +1033,14 @@ let server;
     saved,
     spawns,
     resumeBrowserProbeInputs,
-    workflowControlTimers
+    workflowControlTimers,
+    (value) => { batchModelReady = value; }
   );
+  await testModelTaskRouting({
+    baseUrl,
+    modelAccesses,
+    setBatchReady(value) { batchModelReady = value; }
+  });
 
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
@@ -901,6 +1053,47 @@ let server;
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch {}
   }
 });
+
+async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
+  const assertRoute = async ({ pathname, method = "POST", taskProfile, runtime }) => {
+    modelAccesses.length = 0;
+    if (method === "GET") await getText(baseUrl, pathname);
+    else await postForm(baseUrl, pathname, {});
+    const profiled = modelAccesses.filter((entry) => entry.taskProfile);
+    assert(profiled.length, `${pathname} must use an explicit model task profile`);
+    assert(
+      profiled.every((entry) => entry.taskProfile === taskProfile),
+      `${pathname} routed through ${JSON.stringify(profiled)} instead of ${taskProfile}`
+    );
+    if (runtime) {
+      assert(profiled.some((entry) => entry.kind === "runtime"), `${pathname} must resolve ${taskProfile} runtime`);
+    }
+    assert(profiled.some((entry) => entry.kind === "ready"), `${pathname} must check ${taskProfile} readiness`);
+  };
+
+  await assertRoute({ pathname: "/onboarding", method: "GET", taskProfile: "deep_analysis", runtime: false });
+  await assertRoute({ pathname: "/api/communication", taskProfile: "deep_analysis", runtime: true });
+  await assertRoute({ pathname: "/api/resume", taskProfile: "deep_analysis", runtime: true });
+  await assertRoute({ pathname: "/api/resume-version", taskProfile: "deep_analysis", runtime: true });
+  await assertRoute({ pathname: "/api/plan/recommend", taskProfile: "deep_analysis", runtime: true });
+  await assertRoute({ pathname: "/api/analyze-job", taskProfile: "batch_screening", runtime: true });
+  await assertRoute({ pathname: "/api/analyze-jobs", taskProfile: "batch_screening", runtime: true });
+  await assertRoute({ pathname: "/api/workflow-run", taskProfile: "batch_screening", runtime: false });
+  await assertRoute({ pathname: "/api/workflow-run/resume", taskProfile: "batch_screening", runtime: false });
+
+  setBatchReady(false);
+  for (const pathname of ["/api/analyze-job", "/api/analyze-jobs"]) {
+    const rejectedRetry = await postForm(baseUrl, pathname, {});
+    assert.strictEqual(rejectedRetry.status, 409);
+    assert.match(rejectedRetry.body, /href="\/settings#model-profile-batch_screening"/);
+  }
+  modelAccesses.length = 0;
+  const rejectedScan = await postForm(baseUrl, "/api/scan", {});
+  const profiled = modelAccesses.filter((entry) => entry.taskProfile);
+  assert(profiled.some((entry) => entry.kind === "ready" && entry.taskProfile === "batch_screening"));
+  assert.match(rejectedScan.body, /href="\/settings#model-profile-batch_screening"/);
+  setBatchReady(true);
+}
 
 function seedProfile(database, { confirmCard = true } = {}) {
   const profile = {
@@ -1147,7 +1340,8 @@ async function testWorkflowControlApi(
   saved,
   spawns,
   resumeBrowserProbeInputs,
-  workflowControlTimers
+  workflowControlTimers,
+  setBatchReady
 ) {
   const detachedPause = seedWorkflowApiFixture(database, saved, {
     localDay: "2099-02-06",
@@ -1213,6 +1407,18 @@ async function testWorkflowControlApi(
   assert.strictEqual(pause.status, 303);
   assert.strictEqual(pause.location, `/workflow?runId=${analyzing.workflowId}`);
   assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
+
+  setBatchReady(false);
+  const spawnCountBeforeModelBlockedControlResume = spawns.length;
+  const modelBlockedControlResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(modelBlockedControlResume.status, 409);
+  assert.match(modelBlockedControlResume.body, /MODEL_CONFIGURATION_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforeModelBlockedControlResume);
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
+  setBatchReady(true);
 
   const browserProbeCountBeforeAnalysisResume = resumeBrowserProbeInputs.length;
   const spawnCountBeforeAnalysisResume = spawns.length;

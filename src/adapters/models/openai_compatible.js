@@ -87,7 +87,9 @@ class OpenAICompatibleAdapter {
     this.provider = "openai_compatible";
     this.baseUrl = String(config.baseUrl || "").replace(/\/$/, "");
     this.apiKey = String(config.apiKey || "");
-    this.apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
+    this.apiKeyEnv = Object.prototype.hasOwnProperty.call(config, "apiKeyEnv")
+      ? config.apiKeyEnv
+      : "OPENAI_API_KEY";
     this.model = config.model || "gpt-4.1-mini";
     this.timeoutMs = Number(config.timeoutMs || 60000);
     this.maxRetries = Math.max(0, Math.min(3, Number(config.maxRetries ?? 1)));
@@ -346,8 +348,13 @@ class OpenAICompatibleAdapter {
   }
 
   async chatJson(systemPrompt, input, { kind = "unknown" } = {}) {
-    const apiKey = this.apiKey || process.env[this.apiKeyEnv];
-    if (!apiKey) throw new Error(`模型 API key 未配置：请设置环境变量 ${this.apiKeyEnv}，或把 configs/model.json provider 改回 mock。`);
+    const apiKey = this.apiKey || (this.apiKeyEnv ? process.env[this.apiKeyEnv] : "");
+    if (!apiKey) {
+      const guidance = this.apiKeyEnv
+        ? `请设置环境变量 ${this.apiKeyEnv}`
+        : "请在模型设置中保存并验证当前任务的 API Key";
+      throw new Error(`模型 API key 未配置：${guidance}，或把 configs/model.json provider 改回 mock。`);
+    }
     if (!this.baseUrl) throw new Error("模型 baseUrl 未配置：请检查 configs/model.json providers.openai_compatible.baseUrl。");
 
     let lastError;

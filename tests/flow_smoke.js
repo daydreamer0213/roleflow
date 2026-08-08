@@ -21,6 +21,7 @@ const dbHandles = [];
     "--disable-warning=ExperimentalWarning",
     "src/cli.js",
     "scan",
+    "--force-mock",
     "--db",
     dbPath,
     "--input",

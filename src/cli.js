@@ -73,7 +73,7 @@ const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
 const { createLogger, errorMeta, workflowLogContext } = require("./core/observability");
-const { resolveRuntimeModelConfig, resolveRuntimeBatchBackup } = require("./core/model_settings");
+const { resolveRuntimeModelConfig, resolveRuntimeBatchBackup, isModelReady } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
@@ -528,6 +528,12 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
     backupState = resolveRuntimeBatchBackup({ root: ROOT, fallbackModelConfig: configs.model });
     configs.model = primaryState.modelConfig;
   }
+  if (args["force-mock"] !== true && !isModelReady(primaryState, { taskProfile: "batch_screening" })) {
+    throw codedError(
+      "MODEL_CONFIGURATION_REQUIRED",
+      "扫描前请先在模型设置中测试并保存批量筛选模型。"
+    );
+  }
   let planRecord = null;
   let matchingContext = null;
   if (args.plan) {
@@ -576,7 +582,7 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       signal,
       execution,
       scanLogger,
-      analysisConcurrency: resolveAnalysisConcurrency(args)
+      analysisConcurrency: resolveAnalysisConcurrency(args, primaryState.concurrency)
     });
   }
   const frozenInherited = workflowAcquisitionMode === "inherited"
@@ -622,7 +628,7 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   const keywords = keywordPlan.map((item) => item.word);
   const source = `${planned.source}:${scanMode}`;
   if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
-  const analysisConcurrency = resolveAnalysisConcurrency(args);
+  const analysisConcurrency = resolveAnalysisConcurrency(args, primaryState.concurrency);
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
   const resumeBatchId = resumeValidation?.resumeBatchId
     || parseOptionalPositiveIntegerArg(args, "resume-batch");
@@ -1312,6 +1318,20 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
   assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
+  let configs = loadConfigs(ROOT);
+  const batchModelState = resolveRuntimeModelConfig({
+    root: ROOT,
+    fallbackModelConfig: configs.model,
+    taskProfile: "batch_screening"
+  });
+  if (!isModelReady(batchModelState, { taskProfile: "batch_screening" })) {
+    throw codedError(
+      "MODEL_CONFIGURATION_REQUIRED",
+      "补读岗位前请先在模型设置中测试并保存批量筛选模型。"
+    );
+  }
+  configs.model = batchModelState.modelConfig;
+  configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
   const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
@@ -1319,12 +1339,9 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const browserState = await adapter.preflight();
   assertScanActive(signal);
 
-  let configs = loadConfigs(ROOT);
-  configs.model = resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
-  configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
   const analyzeJob = createJobAnalysisRunner(configs, keywordPlan, { db, logger: scanLogger });
-  const analysisConcurrency = resolveAnalysisConcurrency(args);
+  const analysisConcurrency = resolveAnalysisConcurrency(args, batchModelState.concurrency);
   const limit = Math.max(1, Math.min(PRODUCT_POLICY.operations.refreshLimit, Number(args.limit) || PRODUCT_POLICY.operations.refreshLimit));
   const pending = listDecisionPool(db, { planId })
     .filter((job) => {
@@ -1449,11 +1466,13 @@ async function analyzeActivityProbe(raw, { configs, analyzeJob }) {
   return analyzeScannedJob(raw, { configs, analyzeJob });
 }
 
-function resolveAnalysisConcurrency(args) {
-  const fallback = PRODUCT_POLICY.operations.modelAnalysis.scanConcurrency;
-  const parsed = Number(args["analysis-concurrency"] ?? fallback);
-  if (!Number.isInteger(parsed)) return fallback;
-  return Math.max(1, Math.min(8, parsed));
+function resolveAnalysisConcurrency(args, configuredConcurrency = PRODUCT_POLICY.operations.modelAnalysis.scanConcurrency) {
+  const configured = [1, 2].includes(Number(configuredConcurrency))
+    ? Number(configuredConcurrency)
+    : PRODUCT_POLICY.operations.modelAnalysis.scanConcurrency;
+  const parsed = Number(args["analysis-concurrency"] ?? configured);
+  if (!Number.isInteger(parsed)) return configured;
+  return Math.max(1, Math.min(configured, parsed));
 }
 
 function refreshRetryAt(errorCode) {
@@ -1826,7 +1845,11 @@ async function createProfile(db, args) {
   const configs = loadConfigs(ROOT);
   configs.model = args["force-mock"] === true
     ? offlineMockModelConfig()
-    : resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig;
+    : resolveRuntimeModelConfig({
+      root: ROOT,
+      fallbackModelConfig: configs.model,
+      taskProfile: "deep_analysis"
+    }).modelConfig;
   const { profile, plan } = await analyzeResumeToPlan({ modelConfig: configs.model, resume });
   const saved = saveProfileAnalysis(db, { profile, document: resume, searchPlan: plan });
   try {
@@ -1867,7 +1890,11 @@ async function reassessBatch(db, args) {
 
   let configs = loadConfigs(ROOT);
   configs.model = args["use-model"] === true
-    ? resolveRuntimeModelConfig({ root: ROOT, fallbackModelConfig: configs.model }).modelConfig
+    ? resolveRuntimeModelConfig({
+      root: ROOT,
+      fallbackModelConfig: configs.model,
+      taskProfile: "batch_screening"
+    }).modelConfig
     : offlineMockModelConfig();
   configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
@@ -2035,7 +2062,7 @@ function printHelp() {
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode daily
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode broad
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
-  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 3
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 2
   run.ps1 refresh-details --browser edge --plan <Search Plan ID> --limit 8
   run.ps1 refresh-activity --browser edge --plan <Search Plan ID> --limit 8
   run.ps1 scan --input data\\sample_jobs.json --profile profiles\\guo_mingfu.json --resume-versions profiles\\resume_versions.json

@@ -170,6 +170,20 @@ server.listen(0, "127.0.0.1", async () => {
       etaSampleMinimum: 3,
       etaSampleLimit: 10
     });
+    process.env.OPENAI_API_KEY = "must-not-be-used-for-runtime-profile";
+    const noEnvironmentFallback = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: null,
+      model: "test",
+      maxRetries: 0,
+      logger
+    });
+    await assert.rejects(
+      () => noEnvironmentFallback.chatJson("return json", { test: true }),
+      /模型 API key 未配置/
+    );
+    assert.strictEqual(requests, 0, "explicitly disabled env fallback must fail before any request");
+    delete process.env.OPENAI_API_KEY;
     const fallbackAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", maxRetries: 0, logger });
     assert.strictEqual(fallbackAdapter.timeoutMs, 60000);
     assert.deepStrictEqual(
