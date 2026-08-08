@@ -1480,13 +1480,13 @@ function assertWorkflowScanControl(db, workflowRunId) {
   if (!workflowRunId) return;
   const run = getWorkflowRun(db, workflowRunId);
   if (!run) return;
-  if (run.controlState === "pause_requested") {
+  if (run.controlState === "pause_requested" || run.status === "paused") {
     throw codedError(
       "WORKFLOW_PAUSE_REQUESTED",
       "workflow pause requested at a safe scan boundary; checkpoint preserved"
     );
   }
-  if (run.controlState === "stop_requested") {
+  if (run.controlState === "stop_requested" || run.status === "stopped") {
     throw codedError(
       "WORKFLOW_STOP_REQUESTED",
       "workflow stop requested at a safe scan boundary; checkpoint preserved"

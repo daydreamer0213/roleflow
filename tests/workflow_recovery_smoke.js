@@ -14,6 +14,11 @@ const {
 } = require("../src/core/storage");
 const { getCommunicationBatch } = require("../src/core/communication_batches");
 const { recoverWorkflowRuns } = require("../src/core/workflow_run");
+const {
+  requestWorkflowPause,
+  requestWorkflowStop,
+  resumeWorkflowRun
+} = require("../src/core/workflow_control");
 const { createDashboardServer } = require("../src/dashboard/server");
 const {
   initializeWorkflowJobTasks,
@@ -42,6 +47,29 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
     localDay: "2026-07-16",
     sequence: 1,
     heartbeatAt: "2026-07-20T07:55:00.000Z"
+  });
+  const stalePause = seedScanningWorkflow(db, {
+    profileId,
+    planId,
+    localDay: "2026-07-12",
+    sequence: 1,
+    heartbeatAt: "2026-07-20T07:55:00.000Z"
+  });
+  requestWorkflowPause(db, {
+    workflowRunId: stalePause.workflow.id,
+    now: "2026-07-20T07:59:00.000Z"
+  });
+  const staleStop = seedScanningWorkflow(db, {
+    profileId,
+    planId,
+    localDay: "2026-07-11",
+    sequence: 1,
+    heartbeatAt: "2026-07-20T07:55:00.000Z"
+  });
+  requestWorkflowStop(db, {
+    workflowRunId: staleStop.workflow.id,
+    confirmStop: true,
+    now: "2026-07-20T07:59:00.000Z"
   });
   const missingScan = seedWorkflow(db, {
     profileId,
@@ -102,8 +130,10 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
   const countBefore = listWorkflowRuns(db, { profileId, limit: 100 }).length;
   const report = recoverWorkflowRuns(db, { now, orphanTimeoutMs: 60_000 });
 
-  assert.strictEqual(report.scanRunsInterrupted, 1);
+  assert.strictEqual(report.scanRunsInterrupted, 3);
   assert.strictEqual(report.workflowRunsInterrupted, 4);
+  assert.strictEqual(report.workflowRunsPaused, 1);
+  assert.strictEqual(report.workflowRunsStopped, 1);
   assert.strictEqual(report.workflowRunsCompleted, 1);
   assert.strictEqual(report.reviewRunsPreserved, 1);
   assert.strictEqual(report.browserActionsStarted, 0);
@@ -111,6 +141,18 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
   assert.strictEqual(getWorkflowRun(db, freshScan.workflow.id).status, "scanning");
   assert.strictEqual(getWorkflowRun(db, staleScan.workflow.id).status, "interrupted");
   assert.strictEqual(getWorkflowRun(db, staleScan.workflow.id).errorCode, "SCAN_RUN_ORPHANED");
+  const recoveredPause = getWorkflowRun(db, stalePause.workflow.id);
+  assert.strictEqual(recoveredPause.status, "paused");
+  assert.strictEqual(recoveredPause.controlState, "none");
+  assert.strictEqual(recoveredPause.resumePhase, "scanning");
+  const resumedPause = resumeWorkflowRun(db, {
+    workflowRunId: stalePause.workflow.id,
+    now: "2026-07-20T08:01:00.000Z"
+  });
+  assert.strictEqual(resumedPause.status, "scanning");
+  assert.strictEqual(resumedPause.controlState, "none");
+  assert.strictEqual(getWorkflowRun(db, staleStop.workflow.id).status, "stopped");
+  assert.strictEqual(getWorkflowRun(db, staleStop.workflow.id).controlState, "none");
   assert.strictEqual(getWorkflowRun(db, missingScan.id).status, "interrupted");
   assert.strictEqual(getWorkflowRun(db, missingScan.id).errorCode, "SCAN_RUN_MISSING");
   assert.strictEqual(getWorkflowRun(db, orphanedCreated.id).status, "interrupted");

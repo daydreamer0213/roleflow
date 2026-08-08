@@ -11,7 +11,10 @@ const {
   setCommunicationBatchStatus,
   communicationBatchSummary
 } = require("./communication_batches");
-const { workflowRunConsumesSlot } = require("./workflow_control");
+const {
+  workflowRunConsumesSlot,
+  finalizeWorkflowControl
+} = require("./workflow_control");
 const { recoverExpiredWorkflowJobTasks } = require("./workflow_analysis_tasks");
 
 const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
@@ -289,6 +292,8 @@ function recoverWorkflowRuns(db, input = {}) {
     scanRunsInterrupted: orphaned.interrupted,
     workflowRunsInterrupted: 0,
     workflowRunsCompleted: 0,
+    workflowRunsPaused: 0,
+    workflowRunsStopped: 0,
     reviewRunsPreserved: 0,
     activeRunsPreserved: 0,
     tasksRecovered: 0,
@@ -356,6 +361,7 @@ function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
   const scan = run.scanRunId ? getScanRun(db, run.scanRunId) : null;
   if (!scan) {
     if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
+      if (settleRecoveredScanControl(db, run, report, now)) return;
       transitionWorkflowRun(db, {
         id: run.id,
         status: "interrupted",
@@ -372,6 +378,7 @@ function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
     report.activeRunsPreserved += 1;
     return;
   }
+  if (settleRecoveredScanControl(db, run, report, now)) return;
   transitionWorkflowRun(db, {
     id: run.id,
     status: "interrupted",
@@ -379,6 +386,23 @@ function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
     errorMessage: scan.stopMessage || `scan run ended as ${scan.status}`
   });
   report.workflowRunsInterrupted += 1;
+}
+
+function settleRecoveredScanControl(db, run, report, now) {
+  if (!["pause_requested", "stop_requested"].includes(run.controlState)) return false;
+  const settled = finalizeWorkflowControl(db, {
+    workflowRunId: run.id,
+    now: now.toISOString()
+  });
+  if (settled.status === "paused" && settled.controlState === "none") {
+    report.workflowRunsPaused += 1;
+    return true;
+  }
+  if (settled.status === "stopped" && settled.controlState === "none") {
+    report.workflowRunsStopped += 1;
+    return true;
+  }
+  return false;
 }
 
 function recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs }) {

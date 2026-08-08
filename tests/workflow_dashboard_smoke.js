@@ -11,6 +11,7 @@ const {
   createWorkflowRun,
   listWorkflowRuns,
   getWorkflowRun,
+  getScanRun,
   getLatestScanRun,
   createScanRun,
   finishScanRun,
@@ -1057,6 +1058,53 @@ async function testWorkflowControlApi(
   resumeBrowserProbeInputs,
   workflowControlTimers
 ) {
+  const detachedPause = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-06",
+    resumePhase: "analyzing"
+  });
+  const detachedPauseResponse = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: detachedPause.workflowId,
+    action: "pause"
+  });
+  assert.strictEqual(detachedPauseResponse.status, 303);
+  assert.strictEqual(getWorkflowRun(database, detachedPause.workflowId).status, "analyzing");
+  assert.strictEqual(getWorkflowRun(database, detachedPause.workflowId).controlState, "pause_requested");
+  assert.strictEqual(getScanRun(database, detachedPause.scanRunId).status, "running");
+  finishScanRun(database, {
+    runId: detachedPause.scanRunId,
+    status: "interrupted",
+    stopCode: "WORKFLOW_PAUSE_REQUESTED"
+  });
+  finalizeWorkflowControl(database, {
+    workflowRunId: detachedPause.workflowId,
+    now: "2099-02-06T00:00:03.000Z"
+  });
+  assert.strictEqual(getWorkflowRun(database, detachedPause.workflowId).status, "paused");
+
+  const detachedStop = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-07",
+    resumePhase: "scanning"
+  });
+  const detachedStopResponse = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: detachedStop.workflowId,
+    action: "stop",
+    confirmStop: 1
+  });
+  assert.strictEqual(detachedStopResponse.status, 303);
+  assert.strictEqual(getWorkflowRun(database, detachedStop.workflowId).status, "scanning");
+  assert.strictEqual(getWorkflowRun(database, detachedStop.workflowId).controlState, "stop_requested");
+  assert.strictEqual(getScanRun(database, detachedStop.scanRunId).status, "running");
+  finishScanRun(database, {
+    runId: detachedStop.scanRunId,
+    status: "interrupted",
+    stopCode: "WORKFLOW_STOP_REQUESTED"
+  });
+  finalizeWorkflowControl(database, {
+    workflowRunId: detachedStop.workflowId,
+    now: "2099-02-07T00:00:03.000Z"
+  });
+  assert.strictEqual(getWorkflowRun(database, detachedStop.workflowId).status, "stopped");
+
   const analyzing = seedWorkflowApiFixture(database, saved, {
     localDay: "2099-02-02",
     resumePhase: "analyzing"

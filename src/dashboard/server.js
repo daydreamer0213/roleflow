@@ -1590,6 +1590,7 @@ async function handleWorkflowControl(req, res, {
     }
     const now = new Date().toISOString();
     let activeRun = exactActiveWorkflowRun(scanRuns, workflow);
+    const persistedExecutionRunning = exactPersistedWorkflowRunIsRunning(db, workflow);
 
     if (action === "pause") {
       if (workflow.status !== "paused") {
@@ -1605,7 +1606,7 @@ async function handleWorkflowControl(req, res, {
             graceMs: workflowControlGraceMs,
             logger
           });
-        } else {
+        } else if (!persistedExecutionRunning) {
           finalizeWorkflowControl(db, {
             workflowRunId,
             now: new Date().toISOString()
@@ -1633,7 +1634,7 @@ async function handleWorkflowControl(req, res, {
           graceMs: workflowControlGraceMs,
           logger
         });
-      } else {
+      } else if (!persistedExecutionRunning) {
         finalizeWorkflowControl(db, {
           workflowRunId,
           now: new Date().toISOString()
@@ -1883,6 +1884,11 @@ function exactActiveWorkflowRun(scanRuns, workflow) {
     }
   }
   return null;
+}
+
+function exactPersistedWorkflowRunIsRunning(db, workflow) {
+  if (!workflow?.scanRunId) return false;
+  return getScanRun(db, workflow.scanRunId)?.status === "running";
 }
 
 function workflowBatchResumeEvidence(modelState) {

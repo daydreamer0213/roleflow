@@ -297,6 +297,16 @@ function workflowScanControlSmoke() {
     () => assertWorkflowScanControl(db, workflow.id),
     (error) => error.code === "WORKFLOW_STOP_REQUESTED"
   );
+  transitionWorkflowRun(db, { id: workflow.id, status: "paused", controlState: "none", resumePhase: "scanning" });
+  assert.throws(
+    () => assertWorkflowScanControl(db, workflow.id),
+    (error) => error.code === "WORKFLOW_PAUSE_REQUESTED"
+  );
+  transitionWorkflowRun(db, { id: workflow.id, status: "stopped", controlState: "none" });
+  assert.throws(
+    () => assertWorkflowScanControl(db, workflow.id),
+    (error) => error.code === "WORKFLOW_STOP_REQUESTED"
+  );
 }
 
 async function workflowControlledOuterSmoke() {

@@ -37,6 +37,26 @@ try {
   const withScan = attachWorkflowScan(db, { id: first.id, scanRunId: scanRun.id, scanBatchId: batchId });
   assert.strictEqual(withScan.scanRunId, scanRun.id);
   assert.strictEqual(withScan.scanBatchId, batchId);
+  assert.strictEqual(
+    attachWorkflowScan(db, { id: first.id, scanRunId: scanRun.id, scanBatchId: batchId }).scanRunId,
+    scanRun.id
+  );
+  const competingWorkflow = createWorkflowRun(db, input({
+    profileId,
+    planId,
+    localDay: "2026-07-19",
+    sequence: 1
+  }));
+  transitionWorkflowRun(db, { id: competingWorkflow.id, status: "scanning" });
+  assert.throws(
+    () => attachWorkflowScan(db, {
+      id: competingWorkflow.id,
+      scanRunId: scanRun.id,
+      scanBatchId: batchId
+    }),
+    (error) => error.code === "WORKFLOW_SCAN_EXECUTION_OWNED"
+  );
+  transitionWorkflowRun(db, { id: competingWorkflow.id, status: "stopped" });
   assert.throws(
     () => attachWorkflowScan(db, { id: first.id, scanRunId: "different-scan", scanBatchId: batchId }),
     (error) => error.code === "WORKFLOW_SCAN_LINK_MISMATCH"
