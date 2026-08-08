@@ -328,7 +328,6 @@ async function executeWithSiteScanLease(db, args, command, run) {
     scanKind,
     site
   });
-  interruptOrphanedScanRuns(db, { site });
   if (workflowRun?.status === "analyzing" && args["analysis-only"] === true) {
     const scanRun = beginScanRun(db, {
       runId,
@@ -356,6 +355,7 @@ async function executeWithSiteScanLease(db, args, command, run) {
       execution
     });
   }
+  interruptOrphanedScanRuns(db, { site });
   if (command === "scan" && args.input) {
     const scanRun = beginScanRun(db, {
       runId,
@@ -637,7 +637,19 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   const storedExecution = validatedResume?.storedSnapshot || null;
   const browser = createBrowser(args);
   const accessController = !args.input && site === "boss"
-    ? createSiteAccessController({ db, site, runId: execution?.runId || "", logger: scanLogger, signal })
+    ? createSiteAccessController({
+      db,
+      site,
+      runId: execution?.runId || "",
+      logger: scanLogger,
+      signal,
+      onReserved: workflowRun
+        ? (event) => recordWorkflowPlatformAccess(db, {
+          workflowRunId: workflowRun.id,
+          now: event.createdAt
+        })
+        : null
+    })
     : null;
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
   let plannedCityScopes = acquisitionMode === "generated"
@@ -946,16 +958,6 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
-  if (workflowRun && !args.input) {
-    // Exact safe boundary: BOSS readiness and the workflow/scan run are
-    // confirmed and the adapter is about to start its first platform action.
-    // Idempotent: the first timestamp is never rewritten and only the first
-    // write bumps the progress revision.
-    recordWorkflowPlatformAccess(db, {
-      workflowRunId: workflowRun.id,
-      now: new Date().toISOString()
-    });
-  }
   const rawJobs = await adapter.scan({
     input: args.input,
     tabId: browserState?.tabId,
@@ -1168,6 +1170,17 @@ async function resumeWorkflowAnalysisOnly(db, {
       "The persisted analysis batch does not belong to this workflow."
     );
   }
+  if (!execution?.runId) {
+    throw codedError(
+      "WORKFLOW_ANALYSIS_EXECUTION_REQUIRED",
+      "Analysis-only resume requires a persisted execution run."
+    );
+  }
+  attachWorkflowScan(db, {
+    id: workflowRun.id,
+    scanRunId: execution.runId,
+    scanBatchId: batchId
+  });
 
   const jobsToAnalyze = listReportJobs(db, { batchId, limit: 10000 });
   const keywordPlan = workflowRun.keywords.map((item) => ({ ...item }));

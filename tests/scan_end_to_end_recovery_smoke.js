@@ -288,6 +288,7 @@ function runScan(dbPath, planId, runId, mode, {
 async function workflowPlatformAccessSmoke(storage) {
   const { workflowRunConsumesSlot } = require("../src/core/workflow_control");
   await scenarioStopBeforeAccess(storage, workflowRunConsumesSlot);
+  await scenarioFailureBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot);
   await scenarioRepeatedEntry(storage);
 }
@@ -323,6 +324,40 @@ async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
   }
 }
 
+async function scenarioFailureBeforeAccess(storage, workflowRunConsumesSlot) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-fail-pre-access-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-04", "none");
+    const result = runScan(
+      scenario.dbPath,
+      scenario.planId,
+      "wf-fail-before-access",
+      "fail-before-access",
+      {
+        workflowRunId: scenario.workflow.id,
+        keywords: ["RAG", "Agent"]
+      }
+    );
+    assertExit(result, 1, "workflow failure before access");
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const interrupted = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert.strictEqual(interrupted.status, "interrupted");
+      assert.strictEqual(interrupted.platformAccessStartedAt, null);
+      assert.strictEqual(workflowRunConsumesSlot(interrupted), false);
+      assert.strictEqual(
+        storage.listSiteAccessEvents(db, { site: "boss" })
+          .filter((event) => event.details.runId === "wf-fail-before-access").length,
+        0
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
+}
+
 async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-stop-after-"));
   try {
@@ -341,7 +376,7 @@ async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
     const db = storage.openDb(scenario.dbPath);
     try {
       const stopped = storage.getWorkflowRun(db, scenario.workflow.id);
-      assert(stopped.platformAccessStartedAt, "platform access must be recorded before adapter scan");
+      assert(stopped.platformAccessStartedAt, "platform access must follow the first persisted access event");
       assert.strictEqual(stopped.status, "stopped");
       assert.strictEqual(stopped.controlState, "none");
       assert.strictEqual(workflowRunConsumesSlot(stopped), true);
@@ -374,7 +409,7 @@ async function scenarioRepeatedEntry(storage) {
     let persistedBatchId;
     try {
       afterFirst = storage.getWorkflowRun(db, scenario.workflow.id);
-      assert(afterFirst.platformAccessStartedAt, "first entry must record platform access before adapter scan");
+      assert(afterFirst.platformAccessStartedAt, "first entry must record the first persisted access event");
       assert.strictEqual(afterFirst.status, "interrupted");
       persistedBatchId = Number(afterFirst.scanBatchId);
       assert(persistedBatchId > 0, "first workflow entry must persist a scan batch");
@@ -518,6 +553,10 @@ function installOfflineBoundaries() {
   const logger = { child: () => logger, debug() {}, info() {}, warn() {}, error() {} };
 
   class OfflineBossSiteAdapter {
+    constructor({ accessController = null } = {}) {
+      this.accessController = accessController;
+    }
+
     async preflight() {
       const inheritedCurrent = process.env.ROLEFLOW_SCAN_E2E_MODE?.includes("inherited-current");
       return {
@@ -546,6 +585,14 @@ function installOfflineBoundaries() {
     }
 
     async scan(options) {
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "fail-before-access") {
+        const error = new Error("injected failure before first access reservation");
+        error.code = "BROWSER_TIMEOUT";
+        throw error;
+      }
+      await this.accessController?.reserve("list_navigation", {
+        keyword: options.keywords?.[0] || ""
+      });
       const requested = Array.isArray(options.targetKeys) ? new Set(options.targetKeys) : null;
       const targets = boss.buildBossScanTargets(options).filter((target) => !requested || requested.has(target.targetKey));
       assert(targets.length, "offline adapter received no scan targets");

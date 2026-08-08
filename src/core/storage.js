@@ -1288,8 +1288,11 @@ function attachWorkflowScan(db, input = {}) {
   const id = String(input.id || input.workflowRunId || "").trim();
   const run = getWorkflowRun(db, id);
   if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
-  if (!["scanning", "interrupted"].includes(run.status)) {
-    throw workflowRunError("WORKFLOW_SCAN_LINK_INVALID", "workflow scan can only be attached during scanning or interruption");
+  if (!["scanning", "analyzing", "interrupted"].includes(run.status)) {
+    throw workflowRunError(
+      "WORKFLOW_SCAN_LINK_INVALID",
+      "workflow execution can only be attached during scanning, analyzing, or interruption"
+    );
   }
   const scanRunId = String(input.scanRunId || "").trim();
   const scanBatchId = optionalPositiveInteger(input.scanBatchId, "scanBatchId");
@@ -1298,8 +1301,11 @@ function attachWorkflowScan(db, input = {}) {
     throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another scan");
   }
   if (run.scanRunId && run.scanRunId !== scanRunId) {
-    const previous = db.prepare("SELECT status, batch_id FROM scan_runs WHERE id = ?").get(run.scanRunId);
-    if (!previous || previous.status === "running" || Number(previous.batch_id || 0) !== scanBatchId) {
+    const previous = db.prepare("SELECT status, batch_id, plan_id FROM scan_runs WHERE id = ?").get(run.scanRunId);
+    if (!previous
+      || previous.status === "running"
+      || Number(previous.plan_id || 0) !== run.planId
+      || (previous.batch_id && Number(previous.batch_id) !== scanBatchId)) {
       throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another active scan");
     }
   }

@@ -17,7 +17,8 @@ function createSiteAccessController({
   nowFn = Date.now,
   sleepFn = null,
   signal = null,
-  randomFn = Math.random
+  randomFn = Math.random,
+  onReserved = null
 }) {
   if (!db) throw new Error("访问预算控制器需要数据库连接。");
 
@@ -59,13 +60,16 @@ function createSiteAccessController({
             .map(([window, limit]) => ({ window, limit, retryAtMs: nextAvailableAt(db, { site, action: normalizedAction, window, nowMs, policy }) }));
 
           if (!blockers.length) {
-            recordSiteAccessEvent(db, {
+            const event = recordSiteAccessEvent(db, {
               site,
               action: normalizedAction,
               runId,
               details,
               createdAt: new Date(nowMs).toISOString()
             });
+            if (typeof onReserved === "function") {
+              onReserved({ ...event, runId: String(runId || "") });
+            }
             const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
             db.exec("COMMIT");
             transactionOpen = false;

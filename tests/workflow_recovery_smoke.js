@@ -3,6 +3,7 @@ const {
   openDb,
   createBatch,
   createScanRun,
+  finishScanRun,
   createWorkflowRun,
   getWorkflowRun,
   listWorkflowRuns,
@@ -151,6 +152,7 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
   await crashExpiredLeaseResumeE2E();
   pausedRecoveryNoBrowserNoChild();
   orphanAnalyzingTaskRecoveryCounts();
+  activeAnalysisExecutionRecoverySmoke();
   console.log("workflow_recovery_smoke ok");
   } finally {
     db.close();
@@ -159,6 +161,77 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+function activeAnalysisExecutionRecoverySmoke() {
+  const database = openDb(":memory:");
+  try {
+    const { profileId, planId } = seedPlan(database);
+    const workflow = seedWorkflow(database, {
+      profileId,
+      planId,
+      localDay: "2026-09-30",
+      sequence: 1
+    });
+    const batchId = createBatch(database, "boss", "analysis", "completed acquisition", {
+      profileId,
+      searchPlanId: planId,
+      status: "running"
+    });
+    transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+    const acquisition = createScanRun(database, {
+      runId: "analysis-recovery-acquisition",
+      site: "boss",
+      command: "daily",
+      planId,
+      batchId,
+      startedAt: "2026-09-30T00:00:00.000Z",
+      heartbeatAt: "2026-09-30T00:00:00.000Z"
+    });
+    attachWorkflowScan(database, {
+      id: workflow.id,
+      scanRunId: acquisition.id,
+      scanBatchId: batchId
+    });
+    finishScanRun(database, {
+      runId: acquisition.id,
+      status: "completed",
+      finishedAt: "2026-09-30T00:01:00.000Z"
+    });
+    transitionWorkflowRun(database, {
+      id: workflow.id,
+      status: "analyzing",
+      updatedAt: "2026-09-30T00:02:00.000Z"
+    });
+    const execution = createScanRun(database, {
+      runId: "analysis-recovery-current",
+      site: "boss",
+      command: "daily",
+      planId,
+      startedAt: "2026-09-30T00:02:00.000Z",
+      heartbeatAt: "2026-09-30T00:02:30.000Z"
+    });
+    attachWorkflowScan(database, {
+      id: workflow.id,
+      scanRunId: execution.id,
+      scanBatchId: batchId
+    });
+
+    const report = recoverWorkflowRuns(database, {
+      workflowRunId: workflow.id,
+      now: new Date("2026-09-30T00:03:00.000Z"),
+      orphanTimeoutMs: 60_000
+    });
+    const preserved = getWorkflowRun(database, workflow.id);
+    assert.strictEqual(report.workflowRunsInterrupted, 0);
+    assert.strictEqual(report.activeRunsPreserved, 1);
+    assert.strictEqual(preserved.status, "analyzing");
+    assert.strictEqual(preserved.scanRunId, execution.id);
+    assert.strictEqual(preserved.scanBatchId, batchId);
+    assert.strictEqual(database.prepare("SELECT status FROM batches WHERE id = ?").get(batchId).status, "completed");
+  } finally {
+    database.close();
+  }
+}
 
 async function crashExpiredLeaseResumeE2E() {
   const database = openDb(":memory:");

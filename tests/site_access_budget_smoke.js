@@ -88,6 +88,34 @@ async function normalModeSmoke() {
   db.close();
 }
 
+async function persistedReservationCallbackSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:30:00+08:00");
+  const observed = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    runId: "callback-run",
+    nowFn: () => now,
+    sleepFn: async () => {},
+    onReserved(event) {
+      observed.push(event);
+      const persisted = listSiteAccessEvents(db, {
+        site: "boss",
+        action: "list_navigation"
+      });
+      assert.strictEqual(persisted.length, 1);
+      assert.strictEqual(persisted[0].createdAt, event.createdAt);
+      assert.strictEqual(persisted[0].details.runId, "callback-run");
+    }
+  });
+  await controller.reserve("list_navigation", { keyword: "RAG" });
+  assert.strictEqual(observed.length, 1);
+  assert.strictEqual(observed[0].action, "list_navigation");
+  assert.strictEqual(observed[0].runId, "callback-run");
+  db.close();
+}
+
 async function naturalDayResetSmoke() {
   const db = openDb(":memory:");
   const now = Date.parse("2026-07-22T00:01:00+08:00");
@@ -501,6 +529,7 @@ Promise.resolve()
   .then(rollingWindowSmoke)
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
+  .then(persistedReservationCallbackSmoke)
   .then(naturalDayResetSmoke)
   .then(naturalDayRetryAtSmoke)
   .then(configuredDetailBudgetsSmoke)

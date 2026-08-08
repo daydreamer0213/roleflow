@@ -19,6 +19,8 @@ const {
   transitionWorkflowRun,
   upsertJob,
   insertWorkflowJobTaskRow,
+  setSiteRuntimeState,
+  clearSiteRuntimeState,
   recordCandidateJobEvent,
   recordSiteAccessEvent
 } = require("../src/core/storage");
@@ -46,6 +48,7 @@ let server;
   db = openDb(dbPath);
   const saved = seedProfile(db);
   const spawns = [];
+  const workflowControlTimers = [];
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
   let inheritedResolutionInput = null;
@@ -127,11 +130,23 @@ let server;
         checkedAt: "2099-01-01T00:00:06.000Z"
       };
     },
+    workflowControlGraceMs: 1234,
+    workflowControlSchedule(callback, delayMs) {
+      const timer = { callback, delayMs, unrefCalled: false };
+      timer.handle = { unref() { timer.unrefCalled = true; } };
+      workflowControlTimers.push(timer);
+      return timer.handle;
+    },
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
+      child.killCalls = [];
+      child.kill = (signal) => {
+        child.killCalls.push(signal || "SIGTERM");
+        return true;
+      };
       spawns.push({ file, args, options, child });
       return child;
     }
@@ -864,7 +879,14 @@ let server;
 
   for (const spawned of spawns) spawned.child.emit("close", 0, null);
   await testWorkflowStatusApi(baseUrl, db, saved);
-  await testWorkflowControlApi(baseUrl, db, saved, spawns, resumeBrowserProbeInputs);
+  await testWorkflowControlApi(
+    baseUrl,
+    db,
+    saved,
+    spawns,
+    resumeBrowserProbeInputs,
+    workflowControlTimers
+  );
 
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
@@ -934,6 +956,7 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
     localDay: "2099-02-01",
     resumePhase: "analyzing"
   });
+  seedSensitiveCommunicationFixture(database, fixture);
   const before = getWorkflowRun(database, fixture.workflowId);
   const response = await getJson(baseUrl, `/api/workflow-status?runId=${encodeURIComponent(fixture.workflowId)}`);
   assert.strictEqual(response.status, 200);
@@ -956,13 +979,22 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   assert.strictEqual(response.body.model.model, "fixture-batch-model");
   assert.strictEqual(response.body.controls.stopConsumesRunSlot, true);
   assert(Array.isArray(response.body.recentActivity));
+  assert.deepStrictEqual(Object.keys(response.body.communication).sort(), ["batch", "summary"]);
+  assert.deepStrictEqual(Object.keys(response.body.communication.batch).sort(), ["id", "status"]);
   const serialized = JSON.stringify(response.body);
   for (const secret of [
     "private-workflow-error-message",
     "private-planner-secret",
     "Workflow API Job",
     "private workflow API JD",
-    "https://www.zhipin.com/job_detail/workflow-api"
+    "https://www.zhipin.com/job_detail/workflow-api",
+    "private-communication-title",
+    "private-communication-company",
+    "https://www.zhipin.com/job_detail/private-communication.html",
+    "private-communication-evidence",
+    "private-communication-error",
+    "private-communication-policy",
+    "private-communication-stop-message"
   ]) {
     assert(!serialized.includes(secret), `workflow status must not expose ${secret}`);
   }
@@ -974,7 +1006,57 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   return fixture;
 }
 
-async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBrowserProbeInputs) {
+function seedSensitiveCommunicationFixture(database, fixture) {
+  const workflow = getWorkflowRun(database, fixture.workflowId);
+  const jobId = Number(database.prepare(`
+    SELECT job_id
+    FROM job_observations
+    WHERE batch_id = ?
+    ORDER BY id
+    LIMIT 1
+  `).get(fixture.batchId).job_id);
+  const now = "2099-02-01T00:00:02.000Z";
+  const communicationBatchId = Number(database.prepare(`
+    INSERT INTO communication_batches(
+      site, profile_id, plan_id, browser_mode, status, policy_json,
+      confirmed_at, stop_message, created_at, updated_at
+    ) VALUES ('boss', ?, ?, 'portable', 'confirmed', ?, ?, ?, ?, ?)
+  `).run(
+    workflow.profileId,
+    workflow.planId,
+    JSON.stringify({ secret: "private-communication-policy" }),
+    now,
+    "private-communication-stop-message",
+    now,
+    now
+  ).lastInsertRowid);
+  database.prepare(`
+    INSERT INTO communication_batch_items(
+      batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+      status, evidence_json, error_code, error_message, updated_at
+    ) VALUES (?, ?, 1, ?, ?, ?, 'pending', ?, 'PRIVATE_CODE', ?, ?)
+  `).run(
+    communicationBatchId,
+    jobId,
+    "https://www.zhipin.com/job_detail/private-communication.html",
+    "private-communication-title",
+    "private-communication-company",
+    JSON.stringify({ raw: "private-communication-evidence" }),
+    "private-communication-error",
+    now
+  );
+  database.prepare("UPDATE workflow_runs SET communication_batch_id = ? WHERE id = ?")
+    .run(communicationBatchId, fixture.workflowId);
+}
+
+async function testWorkflowControlApi(
+  baseUrl,
+  database,
+  saved,
+  spawns,
+  resumeBrowserProbeInputs,
+  workflowControlTimers
+) {
   const analyzing = seedWorkflowApiFixture(database, saved, {
     localDay: "2099-02-02",
     resumePhase: "analyzing"
@@ -995,6 +1077,12 @@ async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBr
 
   const browserProbeCountBeforeAnalysisResume = resumeBrowserProbeInputs.length;
   const spawnCountBeforeAnalysisResume = spawns.length;
+  setSiteRuntimeState(database, "boss", {
+    status: "blocked",
+    reasonCode: "BOSS_RISK_CONTROL",
+    message: "fixture block must not affect local analysis",
+    details: { blockedUntil: "2099-12-31T23:59:59.000Z" }
+  });
   const resume = await postForm(baseUrl, "/api/workflow-control", {
     workflowRunId: analyzing.workflowId,
     action: "resume"
@@ -1005,7 +1093,15 @@ async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBr
   assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 1);
   assert(spawns.at(-1).args.includes("--workflow-run"));
   assert(spawns.at(-1).args.includes(analyzing.workflowId));
+  assert(spawns.at(-1).args.includes("--analysis-only"));
   assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "analyzing");
+  const liveAnalysisStatus = await getJson(
+    baseUrl,
+    `/api/workflow-status?runId=${encodeURIComponent(analyzing.workflowId)}`
+  );
+  assert.strictEqual(liveAnalysisStatus.status, 200);
+  assert.strictEqual(liveAnalysisStatus.body.workflow.status, "analyzing");
+  clearSiteRuntimeState(database, "boss");
 
   const repeatedResume = await postForm(baseUrl, "/api/workflow-control", {
     workflowRunId: analyzing.workflowId,
@@ -1013,6 +1109,80 @@ async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBr
   });
   assert.strictEqual(repeatedResume.status, 303);
   assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 1);
+
+  const activePause = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "pause"
+  });
+  assert.strictEqual(activePause.status, 303);
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).controlState, "pause_requested");
+  const pauseTimer = workflowControlTimers.at(-1);
+  assert.strictEqual(pauseTimer.delayMs, 1234);
+  assert.strictEqual(pauseTimer.unrefCalled, true);
+  assert.strictEqual(spawns.at(-1).child.killCalls.length, 0);
+  await pauseTimer.callback();
+  assert.deepStrictEqual(spawns.at(-1).child.killCalls, ["SIGTERM"]);
+  spawns.at(-1).child.emit("close", null, "SIGTERM");
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).controlState, "none");
+
+  const resumedAfterForcedSettle = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(resumedAfterForcedSettle.status, 303);
+  assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 2);
+  const secondActivePause = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "pause"
+  });
+  assert.strictEqual(secondActivePause.status, 303);
+  finalizeWorkflowControl(database, {
+    workflowRunId: analyzing.workflowId,
+    now: "2099-02-02T00:00:04.000Z"
+  });
+  const settlingResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(settlingResume.status, 409);
+  assert.match(settlingResume.body, /WORKFLOW_CONTROL_SETTLING/);
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
+
+  spawns.at(-1).child.emit("close", 0, null);
+  const settledResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(settledResume.status, 303, settledResume.body);
+  assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 3);
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "analyzing");
+  spawns.at(-1).child.emit("close", 0, null);
+
+  const invalidScanningResume = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-04",
+    resumePhase: "scanning"
+  });
+  finishScanRun(database, {
+    runId: invalidScanningResume.scanRunId,
+    status: "completed",
+    stopCode: "WORKFLOW_API_SCAN_COMPLETE"
+  });
+  const scanningPause = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: invalidScanningResume.workflowId,
+    action: "pause"
+  });
+  assert.strictEqual(scanningPause.status, 303);
+  assert.strictEqual(getWorkflowRun(database, invalidScanningResume.workflowId).status, "paused");
+  const probeCountBeforeScanningResume = resumeBrowserProbeInputs.length;
+  const rejectedScanningResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: invalidScanningResume.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(rejectedScanningResume.status, 409);
+  assert.match(rejectedScanningResume.body, /SCAN_RESUME_STATUS_INVALID/);
+  assert.strictEqual(resumeBrowserProbeInputs.length, probeCountBeforeScanningResume + 1);
+  assert.strictEqual(getWorkflowRun(database, invalidScanningResume.workflowId).status, "paused");
 
   const stopping = seedWorkflowApiFixture(database, saved, {
     localDay: "2099-02-03",
@@ -1047,17 +1217,17 @@ async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBr
   assert.strictEqual(getWorkflowRun(database, stopping.workflowId).status, "stopped");
 
   const scanning = seedWorkflowApiFixture(database, saved, {
-    localDay: "2099-02-04",
+    localDay: "2099-02-05",
     resumePhase: "scanning"
   });
   requestWorkflowStop(database, {
     workflowRunId: scanning.workflowId,
     confirmStop: true,
-    now: "2099-02-04T00:00:02.000Z"
+    now: "2099-02-05T00:00:02.000Z"
   });
   finalizeWorkflowControl(database, {
     workflowRunId: scanning.workflowId,
-    now: "2099-02-04T00:00:03.000Z"
+    now: "2099-02-05T00:00:03.000Z"
   });
   const terminalResume = await postForm(baseUrl, "/api/workflow-control", {
     workflowRunId: scanning.workflowId,

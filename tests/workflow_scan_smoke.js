@@ -244,7 +244,7 @@ async function main() {
   const analysisOnlyCompleted = getWorkflowRun(db, analysisOnly.workflowId);
   assert.strictEqual(analysisOnlyCompleted.status, "review_required");
   assert.strictEqual(analysisOnlyCompleted.scanBatchId, analysisOnly.batchId);
-  assert.strictEqual(analysisOnlyCompleted.scanRunId, analysisOnly.originalScanRunId);
+  assert.strictEqual(analysisOnlyCompleted.scanRunId, "workflow-analysis-only-process");
   assert.strictEqual(analysisOnlyCompleted.platformAccessStartedAt, null);
   assert.strictEqual(getScanRun(db, "workflow-analysis-only-process").batchId, null);
   assert.strictEqual(getScanRun(db, "workflow-analysis-only-process").status, "completed");

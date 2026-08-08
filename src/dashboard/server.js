@@ -29,6 +29,7 @@ const {
   createWorkflowRun,
   getWorkflowRun,
   getScanRun,
+  attachWorkflowScan,
   getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
@@ -213,7 +214,24 @@ function resolveNewInheritedBrowser(input = {}) {
   return { browserMode, cdpPort };
 }
 
-function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), dbPath = "", modelConfig = { provider: "mock", providers: { mock: {} } }, allowOfflineMock = false, forceMock = false, connectionTester = testModelConnection, logger = createLogger({ root, component: "dashboard" }), spawnProcess = spawn, workflowHealth = {}, outcomeAnalytics = {}, inheritedContextResolver = resolveLiveInheritedContext, browserReadinessProbe = null, workflowResumeBrowserReadinessProbe = null }) {
+function createDashboardServer({
+  db,
+  root = path.resolve(__dirname, "../.."),
+  dbPath = "",
+  modelConfig = { provider: "mock", providers: { mock: {} } },
+  allowOfflineMock = false,
+  forceMock = false,
+  connectionTester = testModelConnection,
+  logger = createLogger({ root, component: "dashboard" }),
+  spawnProcess = spawn,
+  workflowHealth = {},
+  outcomeAnalytics = {},
+  inheritedContextResolver = resolveLiveInheritedContext,
+  browserReadinessProbe = null,
+  workflowResumeBrowserReadinessProbe = null,
+  workflowControlSchedule = setTimeout,
+  workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs
+}) {
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
     || createDashboardBrowserReadinessProbe({ logger });
@@ -286,7 +304,9 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
           requestId,
           spawnProcess,
           browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe,
-          getPublicModelSettings
+          getPublicModelSettings,
+          workflowControlSchedule,
+          workflowControlGraceMs
         });
       }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
@@ -1520,7 +1540,9 @@ function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
   const workflow = getWorkflowRun(db, workflowRunId);
   const plan = getSearchPlan(db, workflow.planId);
   const daily = plan ? buildWorkflowDashboardState(db, plan) : null;
-  const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
+  const communication = workflow.communicationBatchId
+    ? publicCommunicationStatus(communicationStatus(db, workflow.communicationBatchId))
+    : null;
   sendJson(res, 200, {
     workflow: publicWorkflow(snapshot.workflow),
     progress: snapshot.progress,
@@ -1541,7 +1563,9 @@ async function handleWorkflowControl(req, res, {
   requestId,
   spawnProcess,
   browserReadinessProbe,
-  getPublicModelSettings
+  getPublicModelSettings,
+  workflowControlSchedule,
+  workflowControlGraceMs
 }) {
   let workflowRunId = "";
   let action = "";
@@ -1565,12 +1589,23 @@ async function handleWorkflowControl(req, res, {
       );
     }
     const now = new Date().toISOString();
-    const activeChild = exactActiveWorkflowChild(scanRuns, workflow);
+    let activeRun = exactActiveWorkflowRun(scanRuns, workflow);
 
     if (action === "pause") {
       if (workflow.status !== "paused") {
         requestWorkflowPause(db, { workflowRunId, now });
-        if (!activeChild) {
+        if (activeRun) {
+          scheduleExactWorkflowControlFallback({
+            db,
+            scanRuns,
+            workflowRunId,
+            expectedRun: activeRun,
+            expectedControlState: "pause_requested",
+            schedule: workflowControlSchedule,
+            graceMs: workflowControlGraceMs,
+            logger
+          });
+        } else {
           finalizeWorkflowControl(db, {
             workflowRunId,
             now: new Date().toISOString()
@@ -1587,7 +1622,18 @@ async function handleWorkflowControl(req, res, {
         confirmStop: String(params.confirmStop || "") === "1",
         now
       });
-      if (!activeChild) {
+      if (activeRun) {
+        scheduleExactWorkflowControlFallback({
+          db,
+          scanRuns,
+          workflowRunId,
+          expectedRun: activeRun,
+          expectedControlState: "stop_requested",
+          schedule: workflowControlSchedule,
+          graceMs: workflowControlGraceMs,
+          logger
+        });
+      } else {
         finalizeWorkflowControl(db, {
           workflowRunId,
           now: new Date().toISOString()
@@ -1597,13 +1643,56 @@ async function handleWorkflowControl(req, res, {
       return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
     }
 
-    const shouldLaunch = !activeChild;
-    const requiresBrowser = shouldLaunch && workflowResumeRequiresBrowser(db, workflow);
+    if (workflow.status === "paused" && activeRun) {
+      throw appError(
+        "WORKFLOW_CONTROL_SETTLING",
+        "上一执行进程仍在完成暂停，请稍后再继续本轮。",
+        { statusCode: 409 }
+      );
+    }
+    if (activeRun
+      && ["scanning", "analyzing"].includes(workflow.status)
+      && workflow.controlState === "none") {
+      logger.info("workflow_control_idempotent", { requestId, workflowRunId, action });
+      return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
+    }
+
+    const shouldLaunch = !activeRun;
+    const targetPhase = workflow.status === "paused"
+      ? String(workflow.resumePhase || "analyzing")
+      : String(workflow.status || "");
+    const requiresBrowser = shouldLaunch && targetPhase === "scanning";
     let authority = null;
     if (requiresBrowser) {
       authority = resolveWorkflowControlBrowserAuthority(workflow, params);
       const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe(authority));
       assertWorkflowResumeBrowserReady(readiness);
+      const refreshed = getWorkflowRun(db, workflowRunId);
+      activeRun = exactActiveWorkflowRun(scanRuns, refreshed);
+      if (activeRun
+        && ["scanning", "analyzing"].includes(refreshed?.status)
+        && refreshed.controlState === "none") {
+        logger.info("workflow_control_idempotent", { requestId, workflowRunId, action });
+        return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
+      }
+      if (!sameWorkflowControlSnapshot(workflow, refreshed)) {
+        throw appError(
+          "WORKFLOW_CONTROL_STATE_CHANGED",
+          "工作流状态在浏览器检查期间发生变化，请刷新后重试。",
+          { statusCode: 409 }
+        );
+      }
+      if (workflow.scanNeeded && workflow.scanBatchId) {
+        validateResumeBatch({
+          resumeBatchId: workflow.scanBatchId,
+          resumedBatch: getBatch(db, workflow.scanBatchId),
+          site: "boss",
+          planId: workflow.planId
+        });
+      }
+      assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
+    } else if (shouldLaunch && targetPhase === "analyzing") {
+      assertWorkflowAnalysisBatch(db, workflow);
     }
     const modelEvidence = workflowBatchResumeEvidence(getPublicModelSettings());
     workflow = resumeWorkflowRun(db, {
@@ -1613,31 +1702,29 @@ async function handleWorkflowControl(req, res, {
     });
 
     if (shouldLaunch) {
-      if (requiresBrowser && workflow.scanNeeded && workflow.scanBatchId) {
-        validateResumeBatch({
-          resumeBatchId: workflow.scanBatchId,
-          resumedBatch: getBatch(db, workflow.scanBatchId),
-          site: "boss",
-          planId: workflow.planId
-        });
-      }
       if (workflow.scanNeeded) {
-        authority ||= resolveWorkflowControlBrowserAuthority(workflow, params);
-        assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
-        startPlanScan(scanRuns, {
-          db,
-          root,
-          dbPath,
-          planId: workflow.planId,
-          cdpPort: authority.cdpPort,
-          browserMode: authority.browserMode,
-          scanKind: "daily",
-          resumeBatchId: workflow.scanBatchId,
-          workflowRunId: workflow.id,
-          logger,
-          requestId,
-          spawnProcess
-        });
+        const launchAuthority = requiresBrowser
+          ? authority
+          : { browserMode: "portable", cdpPort: PORTABLE_CDP_PORT };
+        try {
+          startPlanScan(scanRuns, {
+            db,
+            root,
+            dbPath,
+            planId: workflow.planId,
+            cdpPort: launchAuthority.cdpPort,
+            browserMode: launchAuthority.browserMode,
+            scanKind: "daily",
+            resumeBatchId: workflow.scanBatchId,
+            workflowRunId: workflow.id,
+            logger,
+            requestId,
+            spawnProcess
+          });
+        } catch (launchError) {
+          settleFailedWorkflowLaunch(db, scanRuns, workflow, launchError);
+          throw launchError;
+        }
       } else if (workflow.status !== "review_required") {
         workflow = transitionWorkflowRun(db, {
           id: workflow.id,
@@ -1673,6 +1760,81 @@ async function handleWorkflowControl(req, res, {
   }
 }
 
+function sameWorkflowControlSnapshot(before, after) {
+  return Boolean(before && after)
+    && before.id === after.id
+    && before.status === after.status
+    && before.controlState === after.controlState
+    && Number(before.progressRevision || 0) === Number(after.progressRevision || 0);
+}
+
+function settleFailedWorkflowLaunch(db, scanRuns, workflow, error) {
+  const current = getWorkflowRun(db, workflow?.id);
+  if (!current
+    || !["scanning", "analyzing"].includes(current.status)
+    || exactActiveWorkflowRun(scanRuns, current)) {
+    return current;
+  }
+  return transitionWorkflowRun(db, {
+    id: current.id,
+    status: "interrupted",
+    errorCode: String(error?.code || "WORKFLOW_PROCESS_LAUNCH_FAILED"),
+    errorMessage: String(error?.message || "workflow process launch failed")
+  });
+}
+
+function scheduleExactWorkflowControlFallback({
+  db,
+  scanRuns,
+  workflowRunId,
+  expectedRun,
+  expectedControlState,
+  schedule,
+  graceMs,
+  logger
+}) {
+  if (!expectedRun?.child || typeof schedule !== "function") return null;
+  const expectedChild = expectedRun.child;
+  const delayMs = Math.max(1, Number(graceMs)
+    || PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs);
+  let timer;
+  try {
+    timer = schedule(() => {
+      const workflow = getWorkflowRun(db, workflowRunId);
+      const active = exactActiveWorkflowRun(scanRuns, workflow);
+      if (!workflow
+        || workflow.controlState !== expectedControlState
+        || active !== expectedRun
+        || active.child !== expectedChild
+        || active.exited) {
+        return false;
+      }
+      if (typeof expectedChild.kill !== "function") {
+        logger?.warn("workflow_control_fallback_unavailable", {
+          workflowRunId,
+          controlState: expectedControlState
+        });
+        return false;
+      }
+      const killed = expectedChild.kill("SIGTERM");
+      logger?.warn("workflow_control_fallback_terminated", {
+        workflowRunId,
+        controlState: expectedControlState,
+        killed: killed !== false
+      });
+      return killed !== false;
+    }, delayMs);
+    timer?.unref?.();
+  } catch (error) {
+    logger?.error("workflow_control_fallback_schedule_failed", {
+      workflowRunId,
+      controlState: expectedControlState,
+      error: errorMeta(error)
+    });
+  }
+  return timer || null;
+}
+
 function publicWorkflow(workflow) {
   return {
     id: String(workflow.id || ""),
@@ -1683,14 +1845,44 @@ function publicWorkflow(workflow) {
   };
 }
 
-function exactActiveWorkflowChild(scanRuns, workflow) {
-  const local = workflow ? scanRuns.get(Number(workflow.planId)) : null;
-  return Boolean(
-    local
-    && !local.exited
-    && local.workflowRunId === workflow.id
-    && local.child
-  );
+function publicCommunicationStatus(communication) {
+  if (!communication) return null;
+  return {
+    batch: {
+      id: Number(communication.batch?.id || 0),
+      status: String(communication.batch?.status || "")
+    },
+    summary: {
+      batchId: Number(communication.summary?.batchId || 0),
+      batchStatus: String(communication.summary?.batchStatus || ""),
+      statusCounts: Object.fromEntries(
+        Object.entries(communication.summary?.statusCounts || {})
+          .filter(([status, count]) => /^[a-z_]+$/.test(status) && Number.isFinite(Number(count)))
+          .map(([status, count]) => [status, Math.max(0, Number(count))])
+      ),
+      total: Math.max(0, Number(communication.summary?.total || 0)),
+      terminal: Math.max(0, Number(communication.summary?.terminal || 0)),
+      remaining: Math.max(0, Number(communication.summary?.remaining || 0))
+    }
+  };
+}
+
+function exactActiveWorkflowRun(scanRuns, workflow) {
+  if (!workflow) return null;
+  const keys = [
+    `workflow:${workflow.id}`,
+    Number(workflow.planId)
+  ];
+  for (const key of keys) {
+    const local = scanRuns.get(key);
+    if (local
+      && !local.exited
+      && local.workflowRunId === workflow.id
+      && local.child) {
+      return local;
+    }
+  }
+  return null;
 }
 
 function workflowBatchResumeEvidence(modelState) {
@@ -1700,6 +1892,21 @@ function workflowBatchResumeEvidence(modelState) {
     batchModelRevision: String(profile.revision || ""),
     batchModelVerifiedAt: String(profile.connection.checkedAt || "")
   };
+}
+
+function assertWorkflowAnalysisBatch(db, workflow) {
+  const batch = workflow?.scanBatchId ? getBatch(db, workflow.scanBatchId) : null;
+  if (!batch
+    || batch.site !== "boss"
+    || Number(batch.searchPlanId || 0) !== Number(workflow?.planId || 0)
+    || Number(batch.profileId || 0) !== Number(workflow?.profileId || 0)) {
+    throw appError(
+      "WORKFLOW_ANALYSIS_BATCH_MISMATCH",
+      "本轮持久化分析批次不存在或不属于当前工作流。",
+      { statusCode: 409 }
+    );
+  }
+  return batch;
 }
 
 function resolveWorkflowControlBrowserAuthority(workflow, params = {}) {
@@ -1774,9 +1981,6 @@ function startPlanScan(scanRuns, {
   spawnProcess = spawn
 }) {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
-  assertBossRuntimeAvailable(db);
-  const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
-  if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   const runId = randomUUID();
   let workflowRun = workflowRunId ? getWorkflowRun(db, workflowRunId) : null;
   if (workflowRunId && (!workflowRun || workflowRun.planId !== Number(planId))) {
@@ -1787,6 +1991,15 @@ function startPlanScan(scanRuns, {
   }
   if (workflowRun && !["scanning", "analyzing"].includes(workflowRun.status)) {
     workflowRun = transitionWorkflowRun(db, { id: workflowRun.id, status: "scanning" });
+  }
+  const analysisOnly = workflowRun?.status === "analyzing";
+  if (!analysisOnly) {
+    assertBossRuntimeAvailable(db);
+    const orphaned = interruptOrphanedScanRuns(db, {
+      site: "boss",
+      heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+    });
+    if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
   }
   const processLogger = typeof logger.child === "function" ? logger.child({
     ...workflowLogContext({ ...(workflowRun || {}), scanRunId: runId }),
@@ -1800,7 +2013,6 @@ function startPlanScan(scanRuns, {
     throw appError("WORKFLOW_SCAN_INPUT_MISMATCH", "Resume batch differs from the persisted workflow run.");
   }
   const effectiveResumeBatchId = workflowRun ? persistedResumeBatchId : resumeBatchId;
-  const analysisOnly = workflowRun?.status === "analyzing";
   const commandArgs = buildScanCliArgs({
     kind: scanKind,
     dbPath,
@@ -1819,8 +2031,25 @@ function startPlanScan(scanRuns, {
     } : {})
   });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
+  if (analysisOnly) {
+    try {
+      attachWorkflowScan(db, {
+        id: workflowRun.id,
+        scanRunId: runId,
+        scanBatchId: persistedResumeBatchId
+      });
+    } catch (error) {
+      recordScanRunProcessExit(db, {
+        runId,
+        status: "failed",
+        stopCode: String(error?.code || "WORKFLOW_ANALYSIS_ATTACH_FAILED"),
+        stopMessage: String(error?.message || "analysis execution could not be attached")
+      });
+      throw error;
+    }
+  }
   const run = { runId, kind: scanKind, resumeBatchId: effectiveResumeBatchId, workflowRunId: workflowRun?.id || "", startedAt: persisted.createdAt, output: "", error: "", exitCode: null, child: null, exited: false };
-  scanRuns.set(Number(planId), run);
+  scanRuns.set(analysisOnly ? `workflow:${workflowRun.id}` : Number(planId), run);
   let exitRecorded = false;
   const recordExit = ({ exitCode = null, signal = "", error = null } = {}) => {
     if (exitRecorded) return;
@@ -1838,14 +2067,29 @@ function startPlanScan(scanRuns, {
       run.child = null;
       run.exitCode = finished.processExitCode;
       run.error = finished.status === "completed" ? "" : error?.message || finished.stopMessage || run.output;
-      if (workflowRun && error) {
+      if (workflowRun) {
         const currentWorkflow = getWorkflowRun(db, workflowRun.id);
-        if (["scanning", "analyzing"].includes(currentWorkflow?.status)) {
+        if (["pause_requested", "stop_requested"].includes(currentWorkflow?.controlState)) {
+          finalizeWorkflowControl(db, {
+            workflowRunId: workflowRun.id,
+            now: finished.finishedAt || new Date().toISOString()
+          });
+        } else if (["scanning", "analyzing"].includes(currentWorkflow?.status)) {
           transitionWorkflowRun(db, {
             id: workflowRun.id,
             status: "interrupted",
-            errorCode: "SCAN_PROCESS_ERROR",
-            errorMessage: error.message
+            errorCode: String(
+              error?.code
+              || finished.stopCode
+              || (finished.status === "completed"
+                ? "WORKFLOW_PROCESS_EXITED_EARLY"
+                : "SCAN_PROCESS_ERROR")
+            ),
+            errorMessage: String(
+              error?.message
+              || finished.stopMessage
+              || "workflow process exited before reaching a terminal workflow state"
+            )
           });
         }
       }
