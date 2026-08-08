@@ -171,14 +171,15 @@ function buildGuardedConversationClickExpression(target) {
     const conversationId = String(row.getAttribute("data-conversation-id") || row.getAttribute("data-encid") || "").trim();
     const actualConversationKey = "sha256:" + sha256(canonical(["conversation", conversationId ? "id:" + conversationId : "label:" + rowTitle]));
     if (actualConversationKey !== expected.conversationKey) return fail("row_drifted");
-    const rect = row.getBoundingClientRect();
-    const style = getComputedStyle(row);
+    const clickTarget = row.querySelector(".friend-content") || row.querySelector(".friend-top") || row;
+    const rect = clickTarget.getBoundingClientRect();
+    const style = getComputedStyle(clickTarget);
     if (rect.width <= 0 || rect.height <= 0
       || style.display === "none"
       || style.visibility === "hidden"
       || style.opacity === "0"
       || style.pointerEvents === "none") return fail("row_not_clickable");
-    row.click();
+    clickTarget.click();
     return { clicked: true, operation, rowIndex: expected.rowIndex };
   })()`;
 }
