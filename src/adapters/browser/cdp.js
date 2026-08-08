@@ -18,14 +18,22 @@ class CdpBrowserAdapter {
       throw browserError("BROWSER_COMMAND_FAILED", "CDP tab list response is not an array.");
     }
     const pageTabs = pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
-    return Promise.all(pageTabs.map(async (page, index) => ({
-        id: page.id,
-        title: page.title || "",
-        url: page.url || "",
-        active: index === 0,
-        windowId: await this.windowIdForTarget(page.id),
-        webSocketDebuggerUrl: page.webSocketDebuggerUrl
-      })));
+    const listedTabs = await Promise.all(pageTabs.map(async (page, index) => {
+      try {
+        return {
+          id: page.id,
+          title: page.title || "",
+          url: page.url || "",
+          active: index === 0,
+          windowId: await this.windowIdForTarget(page.id),
+          webSocketDebuggerUrl: page.webSocketDebuggerUrl
+        };
+      } catch (error) {
+        if (isWindowlessEdgeInternalTarget(page, error)) return null;
+        throw error;
+      }
+    }));
+    return listedTabs.filter(Boolean);
   }
 
   async browserCommand(method, params = {}) {
@@ -304,6 +312,12 @@ function isRetryableReadError(error) {
     || error?.status === 408
     || error?.status === 429
     || error?.status >= 500;
+}
+
+function isWindowlessEdgeInternalTarget(page, error) {
+  return /^edge:/i.test(String(page?.url || ""))
+    && error?.code === "BROWSER_COMMAND_FAILED"
+    && /Browser window not found/i.test(String(error.message || ""));
 }
 
 function isTimeoutError(error) {

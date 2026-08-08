@@ -12,7 +12,8 @@ const state = {
   edgeCdpFailureAt: null,
   edgeCdpDispatchCount: 0,
   cdpCreatedTargetListed: false,
-  cdpListInvalidAfterCreate: false
+  cdpListInvalidAfterCreate: false,
+  cdpWindowlessInternalTarget: false
 };
 
 const server = http.createServer(async (req, res) => {
@@ -93,6 +94,15 @@ const server = http.createServer(async (req, res) => {
         webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-created-tab"
       });
     }
+    if (state.cdpWindowlessInternalTarget) {
+      pages.push({
+        id: "cdp-edge-internal",
+        type: "page",
+        title: "Edge promotion",
+        url: "edge://nurturing/",
+        webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-edge-internal"
+      });
+    }
     res.end(JSON.stringify(pages));
     return;
   }
@@ -167,6 +177,20 @@ async function main() {
 
     websocket.mode = "window-identity-missing";
     await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
+
+    websocket.mode = "windowless-edge-internal-target";
+    state.cdpWindowlessInternalTarget = true;
+    const tabsWithWindowlessInternalTarget = await cdp.listTabs();
+    assert.deepStrictEqual(tabsWithWindowlessInternalTarget.map((tab) => tab.id), ["cdp-tab"]);
+
+    state.cdpWindowlessInternalTarget = false;
+    websocket.mode = "windowless-web-target";
+    await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
+
+    websocket.mode = "windowless-blank-target";
+    state.cdpCreatedTargetListed = true;
+    await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
+    state.cdpCreatedTargetListed = false;
 
     websocket.mode = "respond";
 
@@ -368,6 +392,7 @@ function reset(mode) {
   state.edgeCdpDispatchCount = 0;
   state.cdpCreatedTargetListed = false;
   state.cdpListInvalidAfterCreate = false;
+  state.cdpWindowlessInternalTarget = false;
 }
 
 function installFakeWebSocket() {
@@ -396,6 +421,12 @@ function installFakeWebSocket() {
           if (control.mode === "window-identity-missing"
             || (control.mode === "created-window-identity-missing"
               && payload.params.targetId === "cdp-created-tab")) result = {};
+          else if (control.mode === "windowless-edge-internal-target"
+            && payload.params.targetId === "cdp-edge-internal") error = { message: "Browser window not found" };
+          else if (control.mode === "windowless-web-target"
+            && payload.params.targetId === "cdp-tab") error = { message: "Browser window not found" };
+          else if (control.mode === "windowless-blank-target"
+            && payload.params.targetId === "cdp-created-tab") error = { message: "Browser window not found" };
           else if (["created-window-identity-error-close-fails", "close-false-target-persists", "close-false-target-disappears", "close-false-target-list-invalid"].includes(control.mode)
             && payload.params.targetId === "cdp-created-tab") error = { message: "identity query failed" };
           else if (control.mode === "created-window-mismatch" && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
