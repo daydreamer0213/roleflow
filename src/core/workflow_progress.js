@@ -2,6 +2,7 @@
 
 const { PRODUCT_POLICY } = require("./product_policy");
 const { workflowRunConsumesSlot } = require("./workflow_control");
+const { hasCompleteJobDescription } = require("./job_description_readiness");
 
 const WORKFLOW_STAGES = Object.freeze([
   "准备本轮",
@@ -42,7 +43,7 @@ function getWorkflowProgressSnapshot(db, {
     SELECT id, status, control_state, resume_phase,
       circuit_timeout_job_count, lifetime_timeout_job_count,
       progress_revision, last_activity_at, model_config_revision,
-      planner_json, metrics_json, platform_access_started_at
+      planner_json, metrics_json, platform_access_started_at, scan_batch_id
     FROM workflow_runs
     WHERE id = ?
   `).get(id);
@@ -54,8 +55,9 @@ function getWorkflowProgressSnapshot(db, {
   const status = String(workflow.status || "");
 
   const counts = countTaskStatuses(db, id);
-  const detailsRead = countObservationDetails(db, id);
-  const collected = counts.total;
+  const detailCoverage = countObservationDetails(db, Number(workflow.scan_batch_id || 0), id);
+  const collected = detailCoverage.collected;
+  const detailsRead = detailCoverage.read;
   const detailsPending = Math.max(0, collected - detailsRead);
 
   const tasks = db.prepare(`
@@ -112,6 +114,7 @@ function getWorkflowProgressSnapshot(db, {
         retryPending: counts.retryPending,
         failed: counts.failed,
         skipped: counts.skipped,
+        detailRequired: counts.detailRequired,
         stopped: counts.stopped,
         pending: counts.pending,
         circuitTimeoutJobs: Number(workflow.circuit_timeout_job_count || 0),
@@ -274,10 +277,10 @@ function stageIndexFor(workflow) {
 
 function countTaskStatuses(db, workflowRunId) {
   const rows = db.prepare(`
-    SELECT status, count(*) AS n
+    SELECT status, last_error_code, count(*) AS n
     FROM workflow_job_tasks
     WHERE workflow_run_id = ?
-    GROUP BY status
+    GROUP BY status, last_error_code
   `).all(workflowRunId);
   const counts = {
     pending: 0,
@@ -286,29 +289,44 @@ function countTaskStatuses(db, workflowRunId) {
     succeeded: 0,
     failed: 0,
     skipped: 0,
+    detailRequired: 0,
     stopped: 0,
     total: 0
   };
   for (const row of rows) {
     const key = row.status === "retry_pending" ? "retryPending" : row.status;
     if (Object.hasOwn(counts, key)) {
-      counts[key] = Number(row.n);
+      counts[key] += Number(row.n);
       counts.total += Number(row.n);
+    }
+    if (row.status === "skipped" && row.last_error_code === "DETAIL_REQUIRED") {
+      counts.detailRequired += Number(row.n);
     }
   }
   return counts;
 }
 
-function countObservationDetails(db, workflowRunId) {
-  const row = db.prepare(`
-    SELECT count(*) AS n
-    FROM workflow_job_tasks t
-    JOIN job_observations o ON o.id = t.observation_id
-    WHERE t.workflow_run_id = ?
-      AND o.description IS NOT NULL
-      AND length(trim(o.description)) > 0
-  `).get(workflowRunId);
-  return Number(row.n || 0);
+function countObservationDetails(db, scanBatchId, workflowRunId) {
+  const batchId = Number(scanBatchId);
+  const rows = Number.isInteger(batchId) && batchId > 0
+    ? db.prepare(`
+        SELECT description, quality_tags_json
+        FROM job_observations
+        WHERE batch_id = ?
+      `).all(batchId)
+    : db.prepare(`
+        SELECT o.description, o.quality_tags_json
+        FROM workflow_job_tasks t
+        JOIN job_observations o ON o.id = t.observation_id
+        WHERE t.workflow_run_id = ?
+      `).all(workflowRunId);
+  return {
+    collected: rows.length,
+    read: rows.filter((row) => hasCompleteJobDescription({
+      description: row.description,
+      qualityTags: parseJson(row.quality_tags_json, {})
+    })).length
+  };
 }
 
 function selectEtaSamples(db, workflowRunId, revision) {

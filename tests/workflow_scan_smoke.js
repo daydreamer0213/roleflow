@@ -28,6 +28,7 @@ const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = requi
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `workflow-scan-${Date.now()}.sqlite`);
+const completeJobsPath = path.join(smokeDir, `workflow-scan-complete-jds-${Date.now()}.json`);
 const reportsBefore = new Set(fs.existsSync(path.join(root, "reports")) ? fs.readdirSync(path.join(root, "reports")) : []);
 let db;
 
@@ -40,6 +41,7 @@ main()
   .finally(() => {
     try { db?.close(); } catch {}
     for (const suffix of ["", "-shm", "-wal"]) fs.rmSync(`${dbPath}${suffix}`, { force: true });
+    fs.rmSync(completeJobsPath, { force: true });
     cleanupReports();
   });
 
@@ -69,6 +71,14 @@ async function main() {
     eligible: 1
   });
   fs.mkdirSync(smokeDir, { recursive: true });
+  const completeJobs = JSON.parse(fs.readFileSync(path.join(root, "data", "sample_jobs.json"), "utf8"))
+    .map((job) => ({
+      ...job,
+      description: `${job.description} `.repeat(4),
+      detailRead: true,
+      detailRequired: true
+    }));
+  fs.writeFileSync(completeJobsPath, JSON.stringify(completeJobs));
   db = openDb(dbPath);
   for (const action of ["list_navigation", "list_scroll", "pane_detail_read", "pane_detail_read"]) {
     recordSiteAccessEvent(db, { site: "boss", action, runId: "usage-probe" });
@@ -106,7 +116,7 @@ async function main() {
     "src/cli.js",
     "scan",
     "--db", dbPath,
-    "--input", path.join("data", "sample_jobs.json"),
+    "--input", completeJobsPath,
     "--plan", String(saved.planId),
     "--force-mock",
     "--run-id", "workflow-invalid-inherited-process",
@@ -197,7 +207,7 @@ async function main() {
     "src/cli.js",
     "scan",
     "--db", dbPath,
-    "--input", path.join("data", "sample_jobs.json"),
+    "--input", completeJobsPath,
     "--plan", String(saved.planId),
     "--force-mock",
     "--run-id", "workflow-scan-process",
@@ -332,7 +342,7 @@ function spawnWorkflowScan({ dbPath, planId, workflowRunId, runId }) {
     "src/cli.js",
     "scan",
     "--db", dbPath,
-    "--input", path.join("data", "sample_jobs.json"),
+    "--input", completeJobsPath,
     "--plan", String(planId),
     "--force-mock",
     "--run-id", runId,

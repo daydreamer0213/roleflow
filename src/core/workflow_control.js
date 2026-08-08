@@ -7,6 +7,7 @@ const {
   markWorkflowJobTasksStopped,
   countWorkflowJobTaskStatuses
 } = require("./storage");
+const { completedWorkflowAnalysisCount } = require("./workflow_analysis_tasks");
 
 const MODEL_PAUSE_CODES = new Set([
   "MODEL_TIMEOUT_CIRCUIT_OPEN",
@@ -236,7 +237,7 @@ function workflowStopPreview(db, { workflowRunId }) {
   };
   return {
     collected: counts.total,
-    analyzed: counts.succeeded + counts.skipped,
+    analyzed: completedWorkflowAnalysisCount(counts),
     failed: counts.failed,
     unfinished: counts.pending + counts.retryPending + counts.running,
     access,

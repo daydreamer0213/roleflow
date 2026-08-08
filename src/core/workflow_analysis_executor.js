@@ -9,7 +9,8 @@ const {
   commitWorkflowJobTaskFailure,
   countWorkflowJobTaskStatusesForRun,
   earliestRetryAvailableAt,
-  markRemainingWorkflowJobTasksStopped
+  markRemainingWorkflowJobTasksStopped,
+  skipIncompleteWorkflowJobTasks
 } = require("./workflow_analysis_tasks");
 
 const WORKFLOW_ANALYSIS_ERROR_KINDS = Object.freeze({
@@ -252,6 +253,10 @@ function sanitizeForwarded(value, key = "") {
 async function runWorkflowAnalysis(input) {
   const context = normalizeRunContext(input);
   assertAnalyzingRun(context);
+  skipIncompleteWorkflowJobTasks(context.db, {
+    workflowRunId: context.workflowRunId,
+    now: context.now()
+  });
   const summary = { claimed: 0, succeeded: 0, failed: 0, skipped: 0 };
   const workerResults = await Promise.allSettled(
     Array.from({ length: context.workerCount }, (_, index) => workerLoop(context, index, summary))

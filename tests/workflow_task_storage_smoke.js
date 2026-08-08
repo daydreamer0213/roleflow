@@ -27,6 +27,7 @@ try {
   testInitialTaskStatusDerivation();
   testBatchAndWorkflowMismatchRejection();
   testAtomicClaimLifecycle();
+  testIncompleteObservationCannotBeClaimed();
   testClaimOrdering();
   testFutureAvailableAtBlocksClaim();
   testWorkflowGateReturnsNullWithoutMutation();
@@ -255,6 +256,43 @@ function testAtomicClaimLifecycle() {
   );
 }
 
+function testIncompleteObservationCannotBeClaimed() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-14",
+    modelConfigRevision: "mrev-incomplete"
+  });
+  const [entry] = observationEntries(db, scenario.batchId);
+  db.prepare(`
+    UPDATE job_observations
+    SET description = '', quality_tags_json = '["detail_unverified"]'
+    WHERE id = ?
+  `).run(entry.observationId);
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: [entry],
+    modelConfigRevision: "mrev-incomplete",
+    now: "2026-08-14T00:04:00.000Z"
+  });
+
+  const claimed = claimWorkflowJobTask(db, {
+    workflowRunId: scenario.workflowId,
+    leaseOwner: "worker-incomplete",
+    leaseTtlMs: 60_000,
+    selectModelIdentity: modelIdentity,
+    now: "2026-08-14T00:05:00.000Z"
+  });
+  assert.strictEqual(claimed, null);
+  const [task] = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+  assert.strictEqual(task.status, "pending");
+  assert.strictEqual(task.totalAttemptCount, 0);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM job_analysis_attempts WHERE task_id = ?").get(task.id).count,
+    0
+  );
+}
+
 function testClaimOrdering() {
   const scenario = seedWorkflow(db, {
     analyses: [{}, {}, {}],
@@ -474,6 +512,8 @@ function seedWorkflow(database, { analyses, localDay, modelConfigRevision, title
       source: "boss",
       sourceId,
       title: titleOverride || `Job ${index + 1} (${localDay})`,
+      description: "Complete JD evidence for workflow task storage smoke. ".repeat(4),
+      qualityTags: [],
       analysis
     }, batchId);
     sourceIds.push(sourceId);
@@ -2253,13 +2293,18 @@ function testExpiredLeaseRecoveryFirstAndSecondAttempts() {
   });
   assert(secondAttempt);
   assert.strictEqual(secondAttempt.task.attemptCountInGeneration, 2);
+  db.prepare(`
+    UPDATE job_observations
+    SET description = '', quality_tags_json = '["detail_unverified"]'
+    WHERE id = ?
+  `).run(secondAttempt.task.observationId);
 
   const now = "2026-08-27T00:02:00.000Z";
   const result = recoverExpiredWorkflowJobTasks(db, {
     workflowRunId: scenario.workflowId,
     now
   });
-  assert.deepStrictEqual(result, { recovered: 1, failed: 1 });
+  assert.deepStrictEqual(result, { recovered: 1, failed: 0 });
 
   const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
   const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
@@ -2276,14 +2321,14 @@ function testExpiredLeaseRecoveryFirstAndSecondAttempts() {
   assert.strictEqual(recoveredTask.lastErrorStage, "execution");
   assert.strictEqual(recoveredTask.lastErrorKind, "lease_expired");
 
-  const failedTask = byId[second.task.id];
-  assert.strictEqual(failedTask.status, "failed");
-  assert.strictEqual(failedTask.attemptCountInGeneration, 2);
-  assert.strictEqual(failedTask.totalAttemptCount, 2);
-  assert.strictEqual(failedTask.finishedAt, now);
-  assert.strictEqual(failedTask.leaseOwner, null);
-  assert.strictEqual(failedTask.lastErrorCode, "LEASE_EXPIRED");
-  assert.strictEqual(failedTask.lastErrorKind, "lease_expired");
+  const detailRequiredTask = byId[second.task.id];
+  assert.strictEqual(detailRequiredTask.status, "skipped");
+  assert.strictEqual(detailRequiredTask.attemptCountInGeneration, 2);
+  assert.strictEqual(detailRequiredTask.totalAttemptCount, 2);
+  assert.strictEqual(detailRequiredTask.finishedAt, now);
+  assert.strictEqual(detailRequiredTask.leaseOwner, null);
+  assert.strictEqual(detailRequiredTask.lastErrorCode, "DETAIL_REQUIRED");
+  assert.strictEqual(detailRequiredTask.lastErrorKind, "waiting_for_detail");
 
   const recoveredAttempt = listJobAnalysisAttempts(db, {
     workflowRunId: scenario.workflowId,

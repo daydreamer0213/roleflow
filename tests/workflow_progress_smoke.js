@@ -87,7 +87,7 @@ function testAggregateCountsMatchSqlAndInvariant() {
 
   db.prepare("UPDATE workflow_job_tasks SET status = 'succeeded' WHERE id = ?").run(ids[0]);
   db.prepare("UPDATE workflow_job_tasks SET status = 'failed' WHERE id = ?").run(ids[1]);
-  db.prepare("UPDATE workflow_job_tasks SET status = 'skipped' WHERE id = ?").run(ids[2]);
+  db.prepare("UPDATE workflow_job_tasks SET status = 'skipped', last_error_code = 'DETAIL_REQUIRED' WHERE id = ?").run(ids[2]);
   db.prepare("UPDATE workflow_job_tasks SET status = 'stopped' WHERE id = ?").run(ids[3]);
   db.prepare("UPDATE workflow_job_tasks SET status = 'running' WHERE id = ?").run(ids[4]);
   db.prepare("UPDATE workflow_job_tasks SET status = 'retry_pending' WHERE id = ?").run(ids[5]);
@@ -112,6 +112,7 @@ function testAggregateCountsMatchSqlAndInvariant() {
   assert.strictEqual(analysis.succeeded, rawCounts.succeeded);
   assert.strictEqual(analysis.failed, rawCounts.failed);
   assert.strictEqual(analysis.skipped, rawCounts.skipped);
+  assert.strictEqual(analysis.detailRequired, 1);
   assert.strictEqual(analysis.stopped, rawCounts.stopped);
   assert.strictEqual(analysis.total, tasks.length);
   assert.strictEqual(
@@ -139,14 +140,19 @@ function testCollectedDetailCountsComeFromObservations() {
   initializeWorkflowJobTasks(db, {
     workflowRunId: scenario.workflowId,
     batchId: scenario.batchId,
-    jobs: observationEntries(db, scenario.batchId),
+    jobs: observationEntries(db, scenario.batchId).slice(0, 2),
     modelConfigRevision: "mrev-details",
     now: "2026-08-08T00:00:00.000Z"
   });
+  db.prepare(`
+    UPDATE job_observations
+    SET quality_tags_json = '["detail_unverified"]'
+    WHERE job_id = ? AND batch_id = ?
+  `).run(observationEntries(db, scenario.batchId)[2].jobId, scenario.batchId);
   const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
   assert.strictEqual(snapshot.progress.collected, 4);
-  assert.strictEqual(snapshot.progress.detailsRead, 3);
-  assert.strictEqual(snapshot.progress.detailsPending, 1);
+  assert.strictEqual(snapshot.progress.detailsRead, 2);
+  assert.strictEqual(snapshot.progress.detailsPending, 2);
 }
 
 function testStageMapping() {
@@ -801,7 +807,10 @@ function seedWorkflow(database, {
       title: titleOverride || `Progress Job ${index + 1}`,
       company: companyOverride || `Progress Co ${index + 1}`,
       url: `https://www.zhipin.com/job_detail/${localDay}-progress-job-${index + 1}.html`,
-      description: descriptions[index] === undefined ? "full JD content for progress smoke" : descriptions[index],
+      description: descriptions[index] === undefined
+        ? "Complete JD evidence for workflow progress smoke. ".repeat(4)
+        : descriptions[index],
+      qualityTags: [],
       analysis
     }, batchId);
   });

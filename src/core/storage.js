@@ -11,6 +11,10 @@ const { decisionHardBlockers } = require("./model_contract");
 const { normalizeMatchingCard, matchingCardRevision, matchingCardFromProfile } = require("./matching_card");
 const { PRODUCT_POLICY } = require("./product_policy");
 const {
+  MIN_COMPLETE_JOB_DESCRIPTION_LENGTH,
+  DETAIL_UNVERIFIED_TAG
+} = require("./job_description_readiness");
+const {
   RECOMMENDATION_SCHEMA_VERSION,
   normalizeRecommendationTier
 } = require("./decision_policy");const { buildOutcomeAnalytics } = require("./outcome_analytics");
@@ -36,6 +40,22 @@ const ACTIVE_WORKFLOW_RUN_STATUSES = ["created", "scanning", "analyzing", "revie
 const TERMINAL_WORKFLOW_RUN_STATUSES = new Set(["completed", "failed", "stopped"]);
 const WORKFLOW_CONTROL_STATES = new Set(["none", "pause_requested", "stop_requested"]);
 const WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE = "MODEL_TIMEOUT_CIRCUIT_OPEN";
+const WORKFLOW_DETAIL_REQUIRED_CODE = "DETAIL_REQUIRED";
+const WORKFLOW_DETAIL_REQUIRED_KIND = "waiting_for_detail";
+const WORKFLOW_OBSERVATION_QUALITY_JSON_SQL = `CASE
+  WHEN json_valid(COALESCE(o.quality_tags_json, '[]')) THEN CASE
+    WHEN json_type(COALESCE(o.quality_tags_json, '[]')) = 'array' THEN COALESCE(o.quality_tags_json, '[]')
+    ELSE '["${DETAIL_UNVERIFIED_TAG}"]'
+  END
+  ELSE '["${DETAIL_UNVERIFIED_TAG}"]'
+END`;
+const WORKFLOW_OBSERVATION_READY_SQL = `
+  length(trim(COALESCE(o.description, ''))) >= ${MIN_COMPLETE_JOB_DESCRIPTION_LENGTH}
+  AND NOT EXISTS (
+    SELECT 1 FROM json_each(${WORKFLOW_OBSERVATION_QUALITY_JSON_SQL}) quality_tag
+    WHERE quality_tag.value = '${DETAIL_UNVERIFIED_TAG}'
+  )
+`;
 const WORKFLOW_TRANSITIONS = Object.freeze({
   created: new Set(["scanning", "review_required", "interrupted", "failed", "stopped"]),
   scanning: new Set(["analyzing", "paused", "interrupted", "failed", "stopped"]),
@@ -1536,15 +1556,154 @@ function insertWorkflowJobTaskRow(db, {
   );
 }
 
+function reactivateWorkflowDetailRequiredTaskRow(db, {
+  workflowRunId,
+  batchId,
+  jobId,
+  observationId,
+  modelConfigRevision,
+  now
+}) {
+  return db.prepare(`
+    UPDATE workflow_job_tasks SET
+      observation_id = ?,
+      status = CASE
+        WHEN attempt_count_in_generation > 0 THEN 'retry_pending'
+        ELSE 'pending'
+      END,
+      priority = CASE WHEN attempt_count_in_generation > 0 THEN 20 ELSE 100 END,
+      available_at = NULL,
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      model_config_revision = ?,
+      last_error_code = NULL,
+      last_error_stage = NULL,
+      last_error_kind = NULL,
+      finished_at = NULL,
+      updated_at = ?
+    WHERE workflow_run_id = ?
+      AND batch_id = ?
+      AND job_id = ?
+      AND status = 'skipped'
+      AND last_error_code = ?
+      AND attempt_count_in_generation < 2
+      AND EXISTS (
+        SELECT 1
+        FROM job_observations o
+        WHERE o.id = workflow_job_tasks.observation_id
+          AND o.job_id = workflow_job_tasks.job_id
+          AND o.batch_id = workflow_job_tasks.batch_id
+          AND ${WORKFLOW_OBSERVATION_READY_SQL}
+      )
+  `).run(
+    observationId,
+    modelConfigRevision || null,
+    now,
+    workflowRunId,
+    batchId,
+    jobId,
+    WORKFLOW_DETAIL_REQUIRED_CODE
+  );
+}
+
+function selectReadyWorkflowJobEntries(db, { batchId, entries }) {
+  const selectObservation = db.prepare(`
+    SELECT id, job_id
+    FROM job_observations
+    WHERE id = ? AND job_id = ? AND batch_id = ?
+  `);
+  const selectReady = db.prepare(`
+    SELECT o.id AS observation_id, o.job_id AS job_id
+    FROM job_observations o
+    WHERE o.id = ?
+      AND o.job_id = ?
+      AND o.batch_id = ?
+      AND ${WORKFLOW_OBSERVATION_READY_SQL}
+  `);
+  const ready = [];
+  for (const entry of entries || []) {
+    const jobId = Number(entry.jobId);
+    const observationId = Number(entry.observationId);
+    const observation = selectObservation.get(observationId, jobId, batchId);
+    if (!observation) {
+      throw workflowRunError(
+        "WORKFLOW_TASK_BATCH_MISMATCH",
+        `job ${jobId} (observation ${observationId}) does not belong to batch ${batchId}`
+      );
+    }
+    const row = selectReady.get(observationId, jobId, batchId);
+    if (!row) continue;
+    ready.push({
+      ...entry,
+      jobId: Number(row.job_id),
+      observationId: Number(row.observation_id)
+    });
+  }
+  return ready;
+}
+
+function isWorkflowJobTaskObservationReady(db, { taskId }) {
+  return Boolean(db.prepare(`
+    SELECT 1
+    FROM workflow_job_tasks t
+    JOIN job_observations o
+      ON o.id = t.observation_id
+      AND o.job_id = t.job_id
+      AND o.batch_id = t.batch_id
+    WHERE t.id = ?
+      AND ${WORKFLOW_OBSERVATION_READY_SQL}
+  `).get(taskId));
+}
+
+function settleIncompleteWorkflowJobTaskRows(db, { workflowRunId, now }) {
+  return db.prepare(`
+    UPDATE workflow_job_tasks AS t SET
+      status = 'skipped',
+      priority = 100,
+      available_at = NULL,
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      last_error_code = ?,
+      last_error_stage = 'input',
+      last_error_kind = ?,
+      finished_at = ?,
+      updated_at = ?
+    WHERE t.workflow_run_id = ?
+      AND t.status IN ('pending', 'retry_pending')
+      AND EXISTS (
+        SELECT 1
+        FROM job_observations o
+        WHERE o.id = t.observation_id
+          AND o.job_id = t.job_id
+          AND o.batch_id = t.batch_id
+          AND NOT (${WORKFLOW_OBSERVATION_READY_SQL})
+      )
+  `).run(
+    WORKFLOW_DETAIL_REQUIRED_CODE,
+    WORKFLOW_DETAIL_REQUIRED_KIND,
+    now,
+    now,
+    workflowRunId
+  );
+}
+
 function selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now }) {
   return db.prepare(`
-    SELECT * FROM workflow_job_tasks
-    WHERE workflow_run_id = ?
-      AND status IN ('pending', 'retry_pending')
-      AND attempt_count_in_generation < 2
-      AND (available_at IS NULL OR available_at <= ?)
-      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
-    ORDER BY priority ASC, position ASC, id ASC
+    SELECT t.*
+    FROM workflow_job_tasks t
+    JOIN job_observations o
+      ON o.id = t.observation_id
+      AND o.job_id = t.job_id
+      AND o.batch_id = t.batch_id
+    WHERE t.workflow_run_id = ?
+      AND t.status IN ('pending', 'retry_pending')
+      AND t.attempt_count_in_generation < 2
+      AND (t.available_at IS NULL OR t.available_at <= ?)
+      AND (t.lease_owner IS NULL OR t.lease_expires_at IS NULL OR t.lease_expires_at <= ?)
+      AND ${WORKFLOW_OBSERVATION_READY_SQL}
+    ORDER BY t.priority ASC, t.position ASC, t.id ASC
     LIMIT 1
   `).get(workflowRunId, now, now) || null;
 }
@@ -1842,10 +2001,10 @@ function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
 
 function countWorkflowJobTaskStatuses(db, workflowRunId) {
   const rows = db.prepare(`
-    SELECT status, count(*) AS n
+    SELECT status, last_error_code, count(*) AS n
     FROM workflow_job_tasks
     WHERE workflow_run_id = ?
-    GROUP BY status
+    GROUP BY status, last_error_code
   `).all(workflowRunId);
   const counts = {
     pending: 0,
@@ -1854,14 +2013,18 @@ function countWorkflowJobTaskStatuses(db, workflowRunId) {
     succeeded: 0,
     failed: 0,
     skipped: 0,
+    detailRequired: 0,
     stopped: 0,
     total: 0
   };
   for (const row of rows) {
     const key = row.status === "retry_pending" ? "retryPending" : row.status;
     if (Object.hasOwn(counts, key)) {
-      counts[key] = Number(row.n);
+      counts[key] += Number(row.n);
       counts.total += Number(row.n);
+    }
+    if (row.status === "skipped" && row.last_error_code === WORKFLOW_DETAIL_REQUIRED_CODE) {
+      counts.detailRequired += Number(row.n);
     }
   }
   return counts;
@@ -4490,6 +4653,10 @@ module.exports = {
   jobAnalysisAttemptRow,
   countWorkflowJobTasks,
   insertWorkflowJobTaskRow,
+  reactivateWorkflowDetailRequiredTaskRow,
+  selectReadyWorkflowJobEntries,
+  isWorkflowJobTaskObservationReady,
+  settleIncompleteWorkflowJobTaskRows,
   selectClaimableWorkflowJobTaskRow,
   claimWorkflowJobTaskRow,
   insertJobAnalysisAttemptRow,

@@ -8,6 +8,7 @@ const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
+const { completedWorkflowAnalysisCount } = require("./core/workflow_analysis_tasks");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
 const {
   CITY_CODES,
@@ -1064,7 +1065,7 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       metrics: workflowMetrics({ detailCoverage, rawJobs, analyzed: 0, saved: 0, access }),
       reviewIfDrained: finalStatus === "completed",
       renderReports: (phaseDb, phaseBatchId, { counts }) => {
-        const savedCount = counts.succeeded + counts.skipped;
+        const savedCount = completedWorkflowAnalysisCount(counts);
         report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), path.join(ROOT, "reports"));
         scanLogger.info("scan_completed", {
           batchId: phaseBatchId,
@@ -1215,7 +1216,7 @@ async function resumeWorkflowAnalysisOnly(db, {
     metrics: workflowRun.metrics || {},
     reviewIfDrained: true,
     renderReports: (phaseDb, phaseBatchId, { counts }) => {
-      const savedCount = counts.succeeded + counts.skipped;
+      const savedCount = completedWorkflowAnalysisCount(counts);
       report = renderReports(
         listReportJobs(phaseDb, { batchId: phaseBatchId }),
         path.join(ROOT, "reports")

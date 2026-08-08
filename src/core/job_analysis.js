@@ -7,13 +7,17 @@ const {
   saveModelCache,
   sourceContentHash,
   transitionWorkflowRun,
-  getWorkflowRun
+  getWorkflowRun,
+  selectReadyWorkflowJobEntries
 } = require("./storage");
 const { runWorkflowAnalysis } = require("./workflow_analysis_executor");
+const { hasCompleteJobDescription } = require("./job_description_readiness");
 const {
   initializeWorkflowJobTasks,
+  reactivateWorkflowDetailRequiredTasks,
   recoverExpiredWorkflowJobTasks,
-  countWorkflowJobTaskStatusesForRun
+  countWorkflowJobTaskStatusesForRun,
+  completedWorkflowAnalysisCount
 } = require("./workflow_analysis_tasks");
 const { listWorkflowInventory } = require("./workflow_inventory");
 const { decisionState } = require("./scoring");
@@ -143,20 +147,29 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
   const metrics = input.metrics && typeof input.metrics === "object" ? input.metrics : {};
 
   const entries = jobs
-    .map((job) => ({
+    .map((job, index) => ({
       jobId: Number(job.id ?? job.jobId),
-      observationId: Number(job.observationId ?? job.observation_id)
+      observationId: Number(job.observationId ?? job.observation_id),
+      position: index + 1
     }))
     .filter((entry) => (
       Number.isInteger(entry.jobId) && entry.jobId > 0
       && Number.isInteger(entry.observationId) && entry.observationId > 0
     ));
+  const readyEntries = selectReadyWorkflowJobEntries(db, { batchId, entries });
 
   transitionWorkflowRun(db, {
     id: runId,
     status: "analyzing",
     modelConfigRevision: revision,
     metrics
+  });
+  reactivateWorkflowDetailRequiredTasks(db, {
+    workflowRunId: runId,
+    batchId,
+    jobs: readyEntries,
+    modelConfigRevision: revision,
+    now: now()
   });
   initializeWorkflowJobTasks(db, {
     workflowRunId: runId,
@@ -204,8 +217,8 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
   const inventoryCount = listWorkflowInventory(db, { planId: workflowRun.planId }).length;
   const reviewedMetrics = {
     ...metrics,
-    analyzed: counts.succeeded + counts.skipped,
-    saved: counts.succeeded + counts.skipped,
+    analyzed: completedWorkflowAnalysisCount(counts),
+    saved: completedWorkflowAnalysisCount(counts),
     inventoryCount,
     eligible: inventoryCount
   };
@@ -371,7 +384,7 @@ function compactAnalysis(configs, parts) {
   const ruleMatch = parts.ruleMatch || {};
   const job = parts.job || {};
   const versionId = decision.recommendedResumeVersion || ruleMatch.recommendedResumeVersion || "";
-  const fullJd = job.detailRead === true || String(job.description || "").trim().length >= 120;
+  const fullJd = hasCompleteJobDescription(job);
   const semanticMatchingMode = effectiveSemanticMatchingMode(configs);
   return {
     provider,

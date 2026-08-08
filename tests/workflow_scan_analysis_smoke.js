@@ -11,13 +11,20 @@ const {
   getWorkflowRun,
   listReportJobs
 } = require("../src/core/storage");
-const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
-const { listWorkflowJobTasks } = require("../src/core/workflow_analysis_tasks");
+const { createJobAnalysisRunner, runWorkflowAnalysisPhase, compactAnalysis } = require("../src/core/job_analysis");
+const { initializeWorkflowJobTasks, listWorkflowJobTasks } = require("../src/core/workflow_analysis_tasks");
 const { finalizeWorkflowControl } = require("../src/core/workflow_control");
 
 (async () => {
   try {
     await crashPreservesIncrementalResultsSmoke();
+    compactAnalysisRequiresVerifiedCompleteJdSmoke();
+    await incompleteJdsNeverEnterWorkflowModelQueueSmoke();
+    await callerCannotSpoofPersistedIncompleteJdSmoke();
+    await detailUnverifiedJobsNeverEnterWorkflowModelQueueSmoke();
+    await invalidWorkflowInputIsRejectedInsteadOfDroppedSmoke();
+    await legacyIncompleteTasksAreSkippedBeforeModelClaimSmoke();
+    await detailRequiredTaskRequeuesOnlyAsPendingSmoke();
     await resumedBatchClaimsOnlyPendingSmoke();
     await reportOnlyAfterDrainedReviewSmoke();
     await runnerErrorModeSmoke();
@@ -28,6 +35,41 @@ const { finalizeWorkflowControl } = require("../src/core/workflow_control");
     process.exit(1);
   }
 })();
+
+function compactAnalysisRequiresVerifiedCompleteJdSmoke() {
+  const configs = { model: { provider: "mock", providers: { mock: { model: "mock" } } } };
+  const emptyButFlaggedRead = compactAnalysis(configs, {
+    job: { description: "", detailRead: true, qualityTags: [] },
+    jobUnderstanding: {},
+    matchDecision: {},
+    ruleMatch: {}
+  });
+  assert.strictEqual(emptyButFlaggedRead.semanticStatus, "partial");
+
+  const unverifiedButLong = compactAnalysis(configs, {
+    job: { description: "JD evidence ".repeat(20), detailRead: true, qualityTags: ["detail_unverified"] },
+    jobUnderstanding: {},
+    matchDecision: {},
+    ruleMatch: {}
+  });
+  assert.strictEqual(unverifiedButLong.semanticStatus, "partial");
+
+  const malformedTags = compactAnalysis(configs, {
+    job: { description: "JD evidence ".repeat(20), qualityTags: "detail_unverified" },
+    jobUnderstanding: {},
+    matchDecision: {},
+    ruleMatch: {}
+  });
+  assert.strictEqual(malformedTags.semanticStatus, "partial");
+
+  const databaseShapedTags = compactAnalysis(configs, {
+    job: { description: "JD evidence ".repeat(20), quality_tags_json: '["detail_unverified"]' },
+    jobUnderstanding: {},
+    matchDecision: {},
+    ruleMatch: {}
+  });
+  assert.strictEqual(databaseShapedTags.semanticStatus, "partial");
+}
 
 async function crashPreservesIncrementalResultsSmoke() {
   const db = openDb(":memory:");
@@ -85,6 +127,349 @@ async function crashPreservesIncrementalResultsSmoke() {
     }
     assert.strictEqual(getWorkflowRun(db, scenario.workflowId).status, "interrupted");
     assert.deepStrictEqual(renderCalls, []);
+  } finally {
+    db.close();
+  }
+}
+
+async function incompleteJdsNeverEnterWorkflowModelQueueSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-09",
+      analyses: Array.from({ length: 10 }, () => ({
+        semanticStatus: "pending",
+        decisionSource: "analysis_pending"
+      })),
+      modelConfigRevision: "phase-complete-jd-only"
+    });
+    const completeDescription = "Complete JD evidence for a real model analysis. ".repeat(4);
+    for (const jobId of scenario.jobIds.slice(0, 5)) {
+      db.prepare(`
+        UPDATE job_observations
+        SET description = ?
+        WHERE job_id = ? AND batch_id = ?
+      `).run(completeDescription, jobId, scenario.batchId);
+    }
+    for (const jobId of scenario.jobIds.slice(5)) {
+      db.prepare(`
+        UPDATE job_observations
+        SET description = ''
+        WHERE job_id = ? AND batch_id = ?
+      `).run(jobId, scenario.batchId);
+    }
+
+    const called = [];
+    const jobsToAnalyze = reportJobsAscending(db, scenario.batchId).map((job, index) => (
+      index >= 5 ? { ...job, detailRead: true } : job
+    ));
+    const result = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, scenario.workflowId),
+      batchId: scenario.batchId,
+      jobsToAnalyze,
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => {
+        called.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-09T00:05:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+
+    assert.strictEqual(result.status, "drained");
+    assert.deepStrictEqual(called, scenario.sourceIds.slice(0, 5));
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(tasks.length, 10);
+    assert.deepStrictEqual(
+      tasks.map((task) => task.status),
+      [...Array(5).fill("succeeded"), ...Array(5).fill("skipped")]
+    );
+    assert.deepStrictEqual(
+      tasks.slice(5).map((task) => [task.lastErrorCode, task.lastErrorKind, task.totalAttemptCount]),
+      Array.from({ length: 5 }, () => ["DETAIL_REQUIRED", "waiting_for_detail", 0])
+    );
+    const incompleteRows = db.prepare(`
+      SELECT analysis_json
+      FROM job_observations
+      WHERE batch_id = ? AND job_id IN (?, ?, ?, ?, ?)
+      ORDER BY job_id
+    `).all(scenario.batchId, ...scenario.jobIds.slice(5));
+    assert.deepStrictEqual(
+      incompleteRows.map((row) => JSON.parse(row.analysis_json).semanticStatus),
+      Array(5).fill("pending")
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function callerCannotSpoofPersistedIncompleteJdSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-10",
+      analyses: [{ semanticStatus: "pending", decisionSource: "analysis_pending" }],
+      modelConfigRevision: "phase-authoritative-jd"
+    });
+    db.prepare(`
+      UPDATE job_observations
+      SET description = '', quality_tags_json = '["detail_unverified"]'
+      WHERE job_id = ? AND batch_id = ?
+    `).run(scenario.jobIds[0], scenario.batchId);
+
+    const storedJob = reportJobsAscending(db, scenario.batchId)[0];
+    const called = [];
+    const result = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, scenario.workflowId),
+      batchId: scenario.batchId,
+      jobsToAnalyze: [{
+        ...storedJob,
+        description: "Caller-supplied content must not override the stored JD. ".repeat(4),
+        qualityTags: []
+      }],
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => {
+        called.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-09T00:06:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+
+    assert.strictEqual(result.status, "drained");
+    assert.deepStrictEqual(called, []);
+    const [task] = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(task.status, "skipped");
+    assert.strictEqual(task.lastErrorCode, "DETAIL_REQUIRED");
+    assert.strictEqual(task.lastErrorKind, "waiting_for_detail");
+    assert.strictEqual(task.totalAttemptCount, 0);
+  } finally {
+    db.close();
+  }
+}
+
+async function detailUnverifiedJobsNeverEnterWorkflowModelQueueSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-11",
+      analyses: [{ semanticStatus: "pending", decisionSource: "analysis_pending" }],
+      modelConfigRevision: "phase-verified-jd"
+    });
+    db.prepare(`
+      UPDATE job_observations
+      SET quality_tags_json = '["detail_unverified"]'
+      WHERE job_id = ? AND batch_id = ?
+    `).run(scenario.jobIds[0], scenario.batchId);
+
+    const called = [];
+    const result = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, scenario.workflowId),
+      batchId: scenario.batchId,
+      jobsToAnalyze: reportJobsAscending(db, scenario.batchId),
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => {
+        called.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-09T00:07:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+
+    assert.strictEqual(result.status, "drained");
+    assert.deepStrictEqual(called, []);
+    const [task] = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(task.status, "skipped");
+    assert.strictEqual(task.lastErrorCode, "DETAIL_REQUIRED");
+    assert.strictEqual(task.lastErrorKind, "waiting_for_detail");
+    assert.strictEqual(task.totalAttemptCount, 0);
+  } finally {
+    db.close();
+  }
+}
+
+async function invalidWorkflowInputIsRejectedInsteadOfDroppedSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-13",
+      analyses: [{ semanticStatus: "pending", decisionSource: "analysis_pending" }],
+      modelConfigRevision: "phase-entry-identity"
+    });
+    const storedJob = reportJobsAscending(db, scenario.batchId)[0];
+    await assert.rejects(
+      () => runWorkflowAnalysisPhase(db, {
+        workflowRun: getWorkflowRun(db, scenario.workflowId),
+        batchId: scenario.batchId,
+        jobsToAnalyze: [{ ...storedJob, observationId: Number(storedJob.observationId) + 999 }],
+        configs: {},
+        keywordPlan: [],
+        logger: silentLogger(),
+        signal: null,
+        modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+        createAnalyzeJob: () => async (job) => analyzedJob(job),
+        analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+        now: fixedClock("2026-09-13T00:05:00.000Z"),
+        retryBackoffMs: [0, 0],
+        random: () => 0,
+        sleep: async () => {}
+      }),
+      (error) => error?.code === "WORKFLOW_TASK_BATCH_MISMATCH"
+    );
+    assert.deepStrictEqual(listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId }), []);
+  } finally {
+    db.close();
+  }
+}
+
+async function legacyIncompleteTasksAreSkippedBeforeModelClaimSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-10",
+      analyses: [
+        { semanticStatus: "pending", decisionSource: "analysis_pending" },
+        { semanticStatus: "pending", decisionSource: "analysis_pending" }
+      ],
+      modelConfigRevision: "phase-legacy-incomplete-task"
+    });
+    db.prepare(`
+      UPDATE job_observations
+      SET description = '', quality_tags_json = '["detail_unverified"]'
+      WHERE job_id = ? AND batch_id = ?
+    `).run(scenario.jobIds[1], scenario.batchId);
+    const legacyObservation = db.prepare(`
+      SELECT id, job_id
+      FROM job_observations
+      WHERE batch_id = ? AND job_id = ?
+    `).get(scenario.batchId, scenario.jobIds[1]);
+    insertLegacyPendingWorkflowTask(db, {
+      workflowRunId: scenario.workflowId,
+      batchId: scenario.batchId,
+      jobId: legacyObservation.job_id,
+      observationId: legacyObservation.id,
+      position: 2,
+      now: "2026-09-10T00:00:00.000Z"
+    });
+
+    const called = [];
+    const result = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, scenario.workflowId),
+      batchId: scenario.batchId,
+      jobsToAnalyze: reportJobsAscending(db, scenario.batchId),
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => {
+        called.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-10T00:05:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+
+    assert.strictEqual(result.status, "drained");
+    assert.deepStrictEqual(called, [scenario.sourceIds[0]]);
+    const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "skipped"]);
+    assert.strictEqual(tasks[1].lastErrorCode, "DETAIL_REQUIRED");
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM job_analysis_attempts WHERE task_id = ?").get(tasks[1].id).count,
+      0
+    );
+    const workflow = getWorkflowRun(db, scenario.workflowId);
+    assert.strictEqual(workflow.metrics.analyzed, 1);
+    assert.strictEqual(workflow.metrics.saved, 1);
+  } finally {
+    db.close();
+  }
+}
+
+async function detailRequiredTaskRequeuesOnlyAsPendingSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const scenario = seedWorkflow(db, {
+      localDay: "2026-09-12",
+      analyses: [{ semanticStatus: "pending", decisionSource: "analysis_pending" }],
+      modelConfigRevision: "phase-detail-requeue"
+    });
+    const observation = db.prepare(`
+      SELECT id, job_id
+      FROM job_observations
+      WHERE batch_id = ? AND job_id = ?
+    `).get(scenario.batchId, scenario.jobIds[0]);
+    const now = "2026-09-12T00:00:00.000Z";
+    db.prepare(`
+      INSERT INTO workflow_job_tasks(
+        workflow_run_id, batch_id, job_id, observation_id, position, status,
+        recovery_generation, attempt_count_in_generation, total_attempt_count, priority,
+        last_error_code, last_error_stage, last_error_kind, finished_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 7, 'skipped', 0, 0, 0, 100, 'DETAIL_REQUIRED', 'input',
+        'waiting_for_detail', ?, ?, ?)
+    `).run(scenario.workflowId, scenario.batchId, observation.job_id, observation.id, now, now, now);
+    db.prepare(`
+      UPDATE job_observations
+      SET description = ?, quality_tags_json = '[]',
+          analysis_json = '{"semanticStatus":"complete","decisionSource":"model"}'
+      WHERE id = ?
+    `).run("Verified complete JD after detail refresh. ".repeat(4), observation.id);
+
+    const called = [];
+    const result = await runWorkflowAnalysisPhase(db, {
+      workflowRun: getWorkflowRun(db, scenario.workflowId),
+      batchId: scenario.batchId,
+      jobsToAnalyze: reportJobsAscending(db, scenario.batchId),
+      configs: {},
+      keywordPlan: [],
+      logger: silentLogger(),
+      signal: null,
+      modelRuntimes: { primary: { ...primaryRuntime(), concurrency: 1 }, backup: null },
+      createAnalyzeJob: () => async (job) => {
+        called.push(job.sourceId);
+        return analyzedJob(job);
+      },
+      analyzeScannedJob: async (raw, { analyzeJob }) => analyzeJob(raw),
+      now: fixedClock("2026-09-12T00:05:00.000Z"),
+      retryBackoffMs: [0, 0],
+      random: () => 0,
+      sleep: async () => {}
+    });
+    const [task] = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(result.status, "drained");
+    assert.deepStrictEqual(called, [scenario.sourceIds[0]]);
+    assert.strictEqual(task.status, "succeeded");
+    assert.strictEqual(task.position, 7);
+    assert.strictEqual(task.lastErrorCode, null);
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM job_analysis_attempts WHERE task_id = ?").get(task.id).count,
+      1
+    );
   } finally {
     db.close();
   }
@@ -424,6 +809,23 @@ async function controlledAnalysisOuterFinalizeSmoke() {
   }
 }
 
+function insertLegacyPendingWorkflowTask(db, {
+  workflowRunId,
+  batchId,
+  jobId,
+  observationId,
+  position,
+  now
+}) {
+  db.prepare(`
+    INSERT INTO workflow_job_tasks(
+      workflow_run_id, batch_id, job_id, observation_id, position, status,
+      recovery_generation, attempt_count_in_generation, total_attempt_count, priority,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, 0, 100, ?, ?)
+  `).run(workflowRunId, batchId, jobId, observationId, position, now, now);
+}
+
 function seedWorkflow(database, { analyses, localDay, modelConfigRevision }) {
   const now = new Date().toISOString();
   const profileId = Number(database.prepare(`
@@ -446,6 +848,9 @@ function seedWorkflow(database, { analyses, localDay, modelConfigRevision }) {
       source: "boss",
       sourceId,
       title: `Job ${index + 1} (${localDay})`,
+      description: "Complete JD evidence for durable workflow analysis. ".repeat(4),
+      detailRead: true,
+      detailRequired: true,
       analysis
     }, batchId);
     sourceIds.push(sourceId);

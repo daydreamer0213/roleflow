@@ -1658,6 +1658,8 @@ function seedWorkflow(database, { analyses, localDay, modelConfigRevision, title
       source: "boss",
       sourceId,
       title: titleOverride || `Job ${index + 1} (${localDay})`,
+      description: "Complete JD evidence for workflow executor smoke. ".repeat(4),
+      qualityTags: [],
       analysis
     }, batchId);
     sourceIds.push(sourceId);

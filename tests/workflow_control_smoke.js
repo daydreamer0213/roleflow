@@ -580,6 +580,7 @@ function testStopPreviewIsDatabaseDerived() {
     localDay: "2026-08-22",
     taskStates: [
       { status: "succeeded", attempts: 1, totalAttempts: 1 },
+      { status: "skipped", attempts: 1, totalAttempts: 1, lastErrorCode: "DETAIL_REQUIRED" },
       { status: "skipped", attempts: 1, totalAttempts: 1 },
       { status: "failed", attempts: 2, totalAttempts: 2 },
       { status: "pending" },
@@ -595,7 +596,7 @@ function testStopPreviewIsDatabaseDerived() {
     .run(scenario.workflow.id);
   const preview = workflowStopPreview(db, { workflowRunId: scenario.workflow.id });
   assert.deepStrictEqual(preview, {
-    collected: 5,
+    collected: 6,
     analyzed: 2,
     failed: 1,
     unfinished: 2,

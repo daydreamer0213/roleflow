@@ -72,6 +72,14 @@ try {
     ]
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
+  assert.deepStrictEqual(
+    workflowEligibility(job("short-verified-detail", {
+      description: "Verified but incomplete JD. ".repeat(4),
+      qualityTags: []
+    }), { now }),
+    { eligible: false, tier: "", reasonCode: "WORKFLOW_DETAIL_REQUIRED" },
+    "不足 120 字的岗位描述不得进入复核或沟通候选，即使旧分析已标为完整"
+  );
   assert.strictEqual(
     workflowEligibility(job("legacy-string-blocker", {
       analysis: { ...completeAnalysis(), recommendationSchemaVersion: 1, recommendation: "skip", fitLevel: "D", hardBlockers: ["Java 核心栈不匹配"] }

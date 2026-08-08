@@ -5,6 +5,9 @@ const {
   getWorkflowRun,
   immediateTransaction,
   insertWorkflowJobTaskRow,
+  reactivateWorkflowDetailRequiredTaskRow,
+  settleIncompleteWorkflowJobTaskRows,
+  isWorkflowJobTaskObservationReady,
   countWorkflowJobTasks,
   selectClaimableWorkflowJobTaskRow,
   claimWorkflowJobTaskRow,
@@ -79,7 +82,9 @@ function initializeWorkflowJobTasks(db, {
     return {
       jobId,
       observationId,
-      position: index + 1,
+      position: Number.isInteger(Number(entry.position)) && Number(entry.position) > 0
+        ? Number(entry.position)
+        : index + 1,
       status: initialTaskStatus(parseJsonSafe(observation.analysis_json))
     };
   });
@@ -102,6 +107,57 @@ function initializeWorkflowJobTasks(db, {
     }
     const total = countWorkflowJobTasks(db, workflowRunId);
     return { inserted, existing: total - inserted, total };
+  });
+}
+
+function reactivateWorkflowDetailRequiredTasks(db, {
+  workflowRunId,
+  batchId,
+  jobs,
+  modelConfigRevision,
+  now
+}) {
+  const normalizedNow = requiredIsoTime(now, "now");
+  return immediateTransaction(db, () => {
+    const workflow = getWorkflowRun(db, workflowRunId);
+    if (!workflow || workflow.status !== "analyzing" || workflow.controlState !== "none") {
+      return { reactivated: 0 };
+    }
+    let reactivated = 0;
+    for (const entry of jobs || []) {
+      const result = reactivateWorkflowDetailRequiredTaskRow(db, {
+        workflowRunId,
+        batchId,
+        jobId: Number(entry.jobId),
+        observationId: Number(entry.observationId),
+        modelConfigRevision,
+        now: normalizedNow
+      });
+      reactivated += Number(result.changes || 0);
+    }
+    if (reactivated > 0) {
+      incrementWorkflowRunActivity(db, { workflowRunId, now: normalizedNow });
+    }
+    return { reactivated };
+  });
+}
+
+function skipIncompleteWorkflowJobTasks(db, { workflowRunId, now }) {
+  const normalizedNow = requiredIsoTime(now, "now");
+  return immediateTransaction(db, () => {
+    const workflow = getWorkflowRun(db, workflowRunId);
+    if (!workflow || workflow.status !== "analyzing" || workflow.controlState !== "none") {
+      return { skipped: 0 };
+    }
+    const result = settleIncompleteWorkflowJobTaskRows(db, {
+      workflowRunId,
+      now: normalizedNow
+    });
+    const skipped = Number(result.changes || 0);
+    if (skipped > 0) {
+      incrementWorkflowRunActivity(db, { workflowRunId, now: normalizedNow });
+    }
+    return { skipped };
   });
 }
 
@@ -525,6 +581,11 @@ function countWorkflowJobTaskStatusesForRun(db, workflowRunId) {
   return countWorkflowJobTaskStatuses(db, workflowRunId);
 }
 
+function completedWorkflowAnalysisCount(counts = {}) {
+  return Number(counts.succeeded || 0)
+    + Math.max(0, Number(counts.skipped || 0) - Number(counts.detailRequired || 0));
+}
+
 function earliestRetryAvailableAt(db, { workflowRunId, now }) {
   return selectEarliestRetryAvailableAt(db, { workflowRunId, now });
 }
@@ -547,12 +608,15 @@ function recoverExpiredWorkflowJobTasks(db, { workflowRunId, now }) {
     });
     let recovered = 0;
     let failed = 0;
+    let deferredForDetail = 0;
     for (const row of rows) {
       const attemptRow = getRunningJobAnalysisAttemptRow(db, row.id);
       if (!attemptRow) continue;
       const attemptInGeneration = Number(row.attemptCountInGeneration || 0);
-      const isRetryable = attemptInGeneration < 2;
-      const taskStatus = isRetryable ? "retry_pending" : "failed";
+      const detailReady = isWorkflowJobTaskObservationReady(db, { taskId: row.id });
+      const isDetailRequired = !detailReady;
+      const isRetryable = !isDetailRequired && attemptInGeneration < 2;
+      const taskStatus = isDetailRequired ? "skipped" : (isRetryable ? "retry_pending" : "failed");
 
       finishJobAnalysisAttemptRow(db, {
         attemptId: Number(attemptRow.id),
@@ -570,30 +634,41 @@ function recoverExpiredWorkflowJobTasks(db, { workflowRunId, now }) {
         latencyMs: latencyBetween(attemptRow.started_at, normalizedNow),
         errorCode: LEASE_EXPIRED_ERROR_CODE,
         errorStage: LEASE_EXPIRED_ERROR_STAGE,
-        retryable: 1,
+        retryable: isRetryable ? 1 : 0,
         finishedAt: normalizedNow,
         now: normalizedNow
       });
 
-      const taskUpdate = failWorkflowJobTaskRow(db, {
-        taskId: row.id,
-        leaseOwner: String(row.leaseOwner || ""),
-        status: taskStatus,
-        errorCode: LEASE_EXPIRED_ERROR_CODE,
-        errorStage: LEASE_EXPIRED_ERROR_STAGE,
-        errorKind: "lease_expired",
-        priority: isRetryable ? 20 : null,
-        availableAt: null,
-        finishedAt: isRetryable ? null : normalizedNow,
-        now: normalizedNow
-      });
+      const taskUpdate = isDetailRequired
+        ? completeWorkflowJobTaskRow(db, {
+            taskId: row.id,
+            leaseOwner: String(row.leaseOwner || ""),
+            status: "skipped",
+            reasonCode: "DETAIL_REQUIRED",
+            reasonKind: "waiting_for_detail",
+            finishedAt: normalizedNow,
+            now: normalizedNow
+          })
+        : failWorkflowJobTaskRow(db, {
+            taskId: row.id,
+            leaseOwner: String(row.leaseOwner || ""),
+            status: taskStatus,
+            errorCode: LEASE_EXPIRED_ERROR_CODE,
+            errorStage: LEASE_EXPIRED_ERROR_STAGE,
+            errorKind: "lease_expired",
+            priority: isRetryable ? 20 : null,
+            availableAt: null,
+            finishedAt: isRetryable ? null : normalizedNow,
+            now: normalizedNow
+          });
       if (Number(taskUpdate.changes) !== 1) continue;
-      if (isRetryable) recovered += 1;
+      if (isDetailRequired) deferredForDetail += 1;
+      else if (isRetryable) recovered += 1;
       else failed += 1;
     }
     // Recovery changes persisted task counts; advance the run snapshot once
     // per batch (never per task) so UI polling refreshes on the next read.
-    if (recovered > 0 || failed > 0) {
+    if (recovered > 0 || failed > 0 || deferredForDetail > 0) {
       incrementWorkflowRunActivity(db, { workflowRunId, now: normalizedNow });
     }
     return { recovered, failed };
@@ -791,12 +866,15 @@ function workflowTaskError(code, message) {
 
 module.exports = {
   initializeWorkflowJobTasks,
+  reactivateWorkflowDetailRequiredTasks,
+  skipIncompleteWorkflowJobTasks,
   claimWorkflowJobTask,
   commitWorkflowJobTaskSuccess,
   commitWorkflowJobTaskFailure,
   commitWorkflowJobTaskSkipped,
   recoverExpiredWorkflowJobTasks,
   countWorkflowJobTaskStatusesForRun,
+  completedWorkflowAnalysisCount,
   earliestRetryAvailableAt,
   markRemainingWorkflowJobTasksStopped,
   listWorkflowJobTasks,

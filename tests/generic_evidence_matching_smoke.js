@@ -43,7 +43,7 @@ function validateGenericFixtures() {
     assert(fixture.candidateProfile?.candidate?.targetTitles?.length, `${fixture.id} 缺少候选人事实`);
     assert(fixture.matchingCard?.targetDirections?.length && Array.isArray(fixture.matchingCard?.strongEvidence), `${fixture.id} 缺少匹配偏好卡`);
     assert(fixture.searchPlan?.directions?.length, `${fixture.id} 缺少搜索方案`);
-    assert(fixture.job?.title && fixture.job?.description?.length >= 40, `${fixture.id} 缺少完整 JD`);
+    assert(fixture.job?.title && fixture.job?.description?.trim().length >= 120, `${fixture.id} 缺少可进入分析的完整 JD`);
     assert(Array.isArray(fixture.jobUnderstanding?.coreRequirements), `${fixture.id} 缺少假模型 JobUnderstanding`);
     assert(fixture.matchDecision?.recommendation && fixture.matchDecision?.evidence, `${fixture.id} 缺少假模型 MatchDecision`);
     assert(

@@ -8,9 +8,9 @@ const {
 const { PRODUCT_POLICY } = require("./product_policy");
 const { isBossJobUrl } = require("./scoring");
 const { defaultSelectedForBatch } = require("./decision_policy");
+const { hasCompleteJobDescription } = require("./job_description_readiness");
 
 const MAX_ACTIVE_DAYS = 3;
-const MIN_DETAIL_LENGTH = 80;
 const BLOCKING_COMMUNICATION_STATUSES = new Set([
   "opening",
   "verified",
@@ -40,7 +40,7 @@ function workflowEligibility(job = {}, context = {}) {
     || tags.has("inactive_boss") || tags.has("stale_or_unknown_active")) {
     return ineligible("WORKFLOW_ACTIVITY_STALE");
   }
-  if (tags.has("detail_unverified") || String(job.description || "").trim().length < MIN_DETAIL_LENGTH) {
+  if (!hasCompleteJobDescription(job)) {
     return ineligible("WORKFLOW_DETAIL_REQUIRED");
   }
 

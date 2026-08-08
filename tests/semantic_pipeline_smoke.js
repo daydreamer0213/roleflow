@@ -302,7 +302,7 @@ async function genericEvidenceContractSmoke() {
   const result = await runner(completeJob("douyin-shop", {
     title: "抖音店铺运营",
     tags: ["电商运营"],
-    description: "负责抖音店铺投放与复盘，同时要求直播、拍摄、剪辑。".repeat(4)
+    description: "负责抖音店铺投放与复盘，同时要求直播、拍摄、剪辑。".repeat(8)
   }));
   assert(seenMatchInput, "matchJob 未被调用");
   assert.strictEqual(result.requirementMatches[0].state, "transferable");

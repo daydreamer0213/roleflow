@@ -1213,6 +1213,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     "data-stage-label",
     "data-stage-name",
     "data-analysis-succeeded",
+    "data-analysis-detail-required",
     "data-analysis-failed",
     "data-analysis-remaining",
     "data-analysis-timeouts",
