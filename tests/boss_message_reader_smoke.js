@@ -75,8 +75,10 @@ function deferred() {
   return { promise, resolve };
 }
 
-function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null }) {
+function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null, interactiveChild = null }) {
   let clicks = 0;
+  let childClicks = 0;
+  const child = interactiveChild || null;
   const row = {
     isConnected: true,
     innerText,
@@ -85,11 +87,19 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
       if (selector === ".notice-badge") return unread ? {} : null;
       if (selector === ".title-box") return titleBox ? { textContent: titleBox } : null;
       if (selector === ".last-msg-text") return lastMsg ? { textContent: lastMsg } : null;
+      if (selector === ".friend-content" || selector === ".friend-top") return child;
       throw new Error(`unexpected selector: ${selector}`);
     },
     getBoundingClientRect: () => ({ width: 100, height: 40 }),
     click: () => { clicks += 1; }
   };
+  if (child) {
+    child.getBoundingClientRect = () => ({ width: 100, height: 40 });
+    child.click = () => {
+      childClicks += 1;
+      child.selected = true;
+    };
+  }
   const context = {
     document: { querySelectorAll: (selector) => selector === ".friend-content-warp" ? [row] : [] },
     location: { pathname: "/web/geek/chat" },
@@ -98,7 +108,7 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     encodeURIComponent
   };
   context.window = { __bossMessageSnapshot: () => snapshotResult };
-  return { result: vm.runInNewContext(expression, context), clicks };
+  return { result: vm.runInNewContext(expression, context), clicks, childClicks, child };
 }
 
 (async () => {
@@ -216,6 +226,25 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(liveRowShape.result)), guardedSuccess);
   assert.strictEqual(liveRowShape.clicks, 1, "a live row with time on its first line must still match title-box and last-msg-text");
+
+  const interactiveChildRow = runGuardedExpression(expression, {
+    innerText: "10:30\nAlex Example\nPlease share availability",
+    titleBox: "Alex Example",
+    lastMsg: "Please share availability",
+    snapshotResult: forgedHelperResult,
+    interactiveChild: { selected: false }
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(interactiveChildRow.result)), guardedSuccess);
+  assert.strictEqual(
+    interactiveChildRow.childClicks,
+    1,
+    "the guarded click must target the real interactive .friend-content child, not only the wrapper row"
+  );
+  assert.strictEqual(
+    interactiveChildRow.child.selected,
+    true,
+    "clicking the interactive child must enter the selected state"
+  );
 
   const driftBrowser = fakeBrowser({ snapshots: [snapshot(), { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "row_drifted" }] });
   const drift = await scan(driftBrowser);
