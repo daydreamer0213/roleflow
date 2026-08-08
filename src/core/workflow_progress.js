@@ -133,7 +133,7 @@ function getWorkflowProgressSnapshot(db, {
       canResume: status === "paused",
       canStop: !["completed", "failed", "stopped"].includes(status)
         && String(workflow.control_state || "none") !== "stop_requested",
-      stopConsumesRunSlot: workflowRunConsumesSlot(runForSlot)
+      stopConsumesRunSlot: workflowRunConsumesSlot({ ...runForSlot, status: "stopped" })
     },
     recentActivity: buildRecentActivity(db, id, clock, activityLimit, controlling)
   };

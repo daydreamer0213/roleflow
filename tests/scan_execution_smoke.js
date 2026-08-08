@@ -93,6 +93,26 @@ function cliArgsMatrixSmoke() {
       "--browser", "edge"
     ]
   );
+  assert.deepStrictEqual(
+    buildScanCliArgs({
+      kind: "daily",
+      dbPath,
+      planId: 42,
+      runId: "analysis-only-run",
+      workflowRunId: "workflow-run-analysis",
+      analysisOnly: true
+    }),
+    [
+      "scan",
+      "--db", dbPath,
+      "--plan", "42",
+      "--run-id", "analysis-only-run",
+      "--site", "boss",
+      "--scan-mode", "daily",
+      "--workflow-run", "workflow-run-analysis",
+      "--analysis-only"
+    ]
+  );
   assert.throws(
     () => buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", workflowRunId: "workflow-run-1" }),
     (error) => error.code === "INVALID_SCAN_INPUT"

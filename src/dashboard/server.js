@@ -113,6 +113,13 @@ const {
   listWorkflowReviewCandidates
 } = require("../core/workflow_inventory");
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
+const { getWorkflowProgressSnapshot } = require("../core/workflow_progress");
+const {
+  requestWorkflowPause,
+  resumeWorkflowRun,
+  requestWorkflowStop,
+  finalizeWorkflowControl
+} = require("../core/workflow_control");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
 const {
@@ -269,6 +276,19 @@ function createDashboardServer({ db, root = path.resolve(__dirname, "../.."), db
       }
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"), logger);
+      if (req.method === "POST" && url.pathname === "/api/workflow-control") {
+        return handleWorkflowControl(req, res, {
+          db,
+          root,
+          dbPath,
+          scanRuns,
+          logger,
+          requestId,
+          spawnProcess,
+          browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe,
+          getPublicModelSettings
+        });
+      }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
@@ -1490,16 +1510,237 @@ function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
   if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
     logger.warn("workflow_status_reconciled", { workflowRunId, ...recovery });
   }
+  const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId });
+  if (!snapshot) {
+    return sendJson(res, 404, {
+      error: "本轮任务不存在。",
+      errorCode: "WORKFLOW_RUN_NOT_FOUND"
+    });
+  }
   const workflow = getWorkflowRun(db, workflowRunId);
-  if (!workflow) return sendJson(res, 404, { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" });
   const plan = getSearchPlan(db, workflow.planId);
   const daily = plan ? buildWorkflowDashboardState(db, plan) : null;
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   sendJson(res, 200, {
-    workflow,
+    workflow: publicWorkflow(snapshot.workflow),
+    progress: snapshot.progress,
+    model: snapshot.model,
+    controls: snapshot.controls,
+    recentActivity: snapshot.recentActivity,
     communication,
     today: daily ? { successful: daily.successfulToday, target: daily.dailyTarget, slotsUsed: daily.slotsUsed } : null
   });
+}
+
+async function handleWorkflowControl(req, res, {
+  db,
+  root,
+  dbPath,
+  scanRuns,
+  logger,
+  requestId,
+  spawnProcess,
+  browserReadinessProbe,
+  getPublicModelSettings
+}) {
+  let workflowRunId = "";
+  let action = "";
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    workflowRunId = String(params.workflowRunId || params.runId || "").trim();
+    action = String(params.action || "").trim().toLowerCase();
+    if (!["pause", "resume", "stop"].includes(action)) {
+      throw appError(
+        "WORKFLOW_CONTROL_ACTION_INVALID",
+        "工作流操作必须是 pause、resume 或 stop。",
+        { statusCode: 409 }
+      );
+    }
+    let workflow = getWorkflowRun(db, workflowRunId);
+    if (!workflow) {
+      throw appError(
+        "WORKFLOW_CONTROL_TARGET_MISMATCH",
+        "指定的工作流不存在。",
+        { statusCode: 409 }
+      );
+    }
+    const now = new Date().toISOString();
+    const activeChild = exactActiveWorkflowChild(scanRuns, workflow);
+
+    if (action === "pause") {
+      if (workflow.status !== "paused") {
+        requestWorkflowPause(db, { workflowRunId, now });
+        if (!activeChild) {
+          finalizeWorkflowControl(db, {
+            workflowRunId,
+            now: new Date().toISOString()
+          });
+        }
+      }
+      logger.info("workflow_control_applied", { requestId, workflowRunId, action });
+      return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
+    }
+
+    if (action === "stop") {
+      requestWorkflowStop(db, {
+        workflowRunId,
+        confirmStop: String(params.confirmStop || "") === "1",
+        now
+      });
+      if (!activeChild) {
+        finalizeWorkflowControl(db, {
+          workflowRunId,
+          now: new Date().toISOString()
+        });
+      }
+      logger.info("workflow_control_applied", { requestId, workflowRunId, action });
+      return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
+    }
+
+    const shouldLaunch = !activeChild;
+    const requiresBrowser = shouldLaunch && workflowResumeRequiresBrowser(db, workflow);
+    let authority = null;
+    if (requiresBrowser) {
+      authority = resolveWorkflowControlBrowserAuthority(workflow, params);
+      const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe(authority));
+      assertWorkflowResumeBrowserReady(readiness);
+    }
+    const modelEvidence = workflowBatchResumeEvidence(getPublicModelSettings());
+    workflow = resumeWorkflowRun(db, {
+      workflowRunId,
+      ...modelEvidence,
+      now
+    });
+
+    if (shouldLaunch) {
+      if (requiresBrowser && workflow.scanNeeded && workflow.scanBatchId) {
+        validateResumeBatch({
+          resumeBatchId: workflow.scanBatchId,
+          resumedBatch: getBatch(db, workflow.scanBatchId),
+          site: "boss",
+          planId: workflow.planId
+        });
+      }
+      if (workflow.scanNeeded) {
+        authority ||= resolveWorkflowControlBrowserAuthority(workflow, params);
+        assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
+        startPlanScan(scanRuns, {
+          db,
+          root,
+          dbPath,
+          planId: workflow.planId,
+          cdpPort: authority.cdpPort,
+          browserMode: authority.browserMode,
+          scanKind: "daily",
+          resumeBatchId: workflow.scanBatchId,
+          workflowRunId: workflow.id,
+          logger,
+          requestId,
+          spawnProcess
+        });
+      } else if (workflow.status !== "review_required") {
+        workflow = transitionWorkflowRun(db, {
+          id: workflow.id,
+          status: "review_required"
+        });
+      }
+    }
+    logger.info("workflow_control_applied", {
+      requestId,
+      workflowRunId,
+      action,
+      resumedPhase: workflow.status
+    });
+    return redirect(res, `/workflow?runId=${encodeURIComponent(workflowRunId)}`);
+  } catch (error) {
+    const issue = publicError(error, {
+      fallbackCode: "WORKFLOW_CONTROL_FAILED",
+      fallbackMessage: "工作流控制未能完成。",
+      statusCode: 409
+    });
+    logger.error("workflow_control_failed", {
+      requestId,
+      workflowRunId,
+      action,
+      error: errorMeta(error),
+      errorCode: issue.code
+    });
+    return sendJson(res, issue.statusCode, {
+      error: issue.message,
+      errorCode: issue.code,
+      requestId
+    });
+  }
+}
+
+function publicWorkflow(workflow) {
+  return {
+    id: String(workflow.id || ""),
+    status: String(workflow.status || ""),
+    controlState: String(workflow.controlState || "none"),
+    lastActivityAt: workflow.lastActivityAt || null,
+    progressRevision: Number(workflow.progressRevision || 0)
+  };
+}
+
+function exactActiveWorkflowChild(scanRuns, workflow) {
+  const local = workflow ? scanRuns.get(Number(workflow.planId)) : null;
+  return Boolean(
+    local
+    && !local.exited
+    && local.workflowRunId === workflow.id
+    && local.child
+  );
+}
+
+function workflowBatchResumeEvidence(modelState) {
+  const profile = modelState?.settings?.taskProfiles?.batch_screening;
+  if (!profile || profile.connection?.status !== "verified") return {};
+  return {
+    batchModelRevision: String(profile.revision || ""),
+    batchModelVerifiedAt: String(profile.connection.checkedAt || "")
+  };
+}
+
+function resolveWorkflowControlBrowserAuthority(workflow, params = {}) {
+  const acquisitionMode = String(workflow?.planner?.acquisitionMode || "").trim();
+  if (!["generated", "inherited"].includes(acquisitionMode)) {
+    throw appError(
+      "WORKFLOW_ACQUISITION_MODE_INVALID",
+      "本轮任务的采集模式无效。",
+      { statusCode: 409 }
+    );
+  }
+  if (acquisitionMode === "inherited") {
+    try {
+      assertCompleteInheritedContext(workflow.planner, {
+        code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+        message: "本轮继承模式快照不完整。",
+        planId: workflow.planId
+      });
+    } catch (error) {
+      throw appError(
+        "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+        "本轮继承模式快照不完整。",
+        { statusCode: 409, cause: error }
+      );
+    }
+  }
+  const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
+  const storedCdpPort = Number(workflow?.planner?.cdpPort);
+  const cdpPort = normalizeCdpPort(
+    params.cdpPort || (Number.isInteger(storedCdpPort) ? storedCdpPort : PORTABLE_CDP_PORT)
+  );
+  if (acquisitionMode === "inherited"
+    && browserMode === "portable"
+    && cdpPort !== PORTABLE_CDP_PORT) {
+    throw appError(
+      "INHERITED_PORTABLE_PORT_REQUIRED",
+      "继承模式必须使用项目专用 Edge 的 9222 端口。",
+      { statusCode: 409 }
+    );
+  }
+  return { browserMode, cdpPort };
 }
 
 function workflowBlockedMessage(code, plan = {}) {
@@ -1541,10 +1782,10 @@ function startPlanScan(scanRuns, {
   if (workflowRunId && (!workflowRun || workflowRun.planId !== Number(planId))) {
     throw appError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not belong to this search plan.");
   }
-  if (workflowRun && !["created", "scanning", "interrupted"].includes(workflowRun.status)) {
+  if (workflowRun && !["created", "scanning", "analyzing", "interrupted"].includes(workflowRun.status)) {
     throw appError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run cannot scan from ${workflowRun.status}.`);
   }
-  if (workflowRun && workflowRun.status !== "scanning") {
+  if (workflowRun && !["scanning", "analyzing"].includes(workflowRun.status)) {
     workflowRun = transitionWorkflowRun(db, { id: workflowRun.id, status: "scanning" });
   }
   const processLogger = typeof logger.child === "function" ? logger.child({
@@ -1559,6 +1800,7 @@ function startPlanScan(scanRuns, {
     throw appError("WORKFLOW_SCAN_INPUT_MISMATCH", "Resume batch differs from the persisted workflow run.");
   }
   const effectiveResumeBatchId = workflowRun ? persistedResumeBatchId : resumeBatchId;
+  const analysisOnly = workflowRun?.status === "analyzing";
   const commandArgs = buildScanCliArgs({
     kind: scanKind,
     dbPath,
@@ -1566,9 +1808,10 @@ function startPlanScan(scanRuns, {
     browserMode,
     cdpPort,
     runId,
-    resumeBatchId: effectiveResumeBatchId,
+    resumeBatchId: analysisOnly ? null : effectiveResumeBatchId,
     ...(workflowRun ? {
       workflowRunId: workflowRun.id,
+      analysisOnly,
       keywords: workflowRun.keywords.map((item) => item.word),
       maxCards: Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0)),
       maxDetailTotal: workflowRun.budget.maxDetailTotal,

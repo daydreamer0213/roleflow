@@ -329,6 +329,33 @@ async function executeWithSiteScanLease(db, args, command, run) {
     site
   });
   interruptOrphanedScanRuns(db, { site });
+  if (workflowRun?.status === "analyzing" && args["analysis-only"] === true) {
+    const scanRun = beginScanRun(db, {
+      runId,
+      site,
+      command: scanKind,
+      planId,
+      processId: process.pid
+    });
+    const execution = {
+      runId,
+      leaseOwner: "",
+      site,
+      scanKind,
+      planId,
+      workflowRunId,
+      logger: runLogger
+    };
+    runLogger.info("scan_run_started", { status: scanRun.status, analysisOnly: true });
+    return executeTrackedScanRun(db, {
+      runId,
+      leaseOwner: "",
+      runLogger,
+      run,
+      signal: null,
+      execution
+    });
+  }
   if (command === "scan" && args.input) {
     const scanRun = beginScanRun(db, {
       runId,
@@ -474,11 +501,12 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
 
 async function scan(db, args, { signal = null, execution = null, resumeValidation = null } = {}) {
   assertScanActive(signal);
+  const analysisOnly = args["analysis-only"] === true;
   let scanLogger = execution?.logger || logger;
   if (!args.plan && !args.input) {
     throw new Error("真实浏览器扫描必须传入 --plan <Search Plan ID>，避免岗位和投递状态脱离候选人画像。");
   }
-  if (args["force-mock"] === true && !args.input) {
+  if (args["force-mock"] === true && !args.input && !analysisOnly) {
     throw new Error("真实浏览器扫描不能使用 --force-mock。请配置模型后按 Search Plan 扫描。");
   }
   let configs = loadConfigs(ROOT, {
@@ -513,7 +541,7 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   const workflowAcquisitionMode = workflowRun
     ? String(workflowRun.planner?.acquisitionMode || "").trim()
     : "";
-  if (workflowRun && !["generated", "inherited"].includes(workflowAcquisitionMode)) {
+  if (workflowRun && !analysisOnly && !["generated", "inherited"].includes(workflowAcquisitionMode)) {
     throw codedError(
       "WORKFLOW_ACQUISITION_MODE_INVALID",
       "本轮任务的采集模式无效，不能安全扫描或恢复。"
@@ -537,6 +565,19 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       listMatchingResumeVersions(db, planRecord.profileId),
       matchingContext.matchingCard
     );
+  }
+  if (analysisOnly) {
+    return resumeWorkflowAnalysisOnly(db, {
+      workflowRun,
+      planRecord,
+      configs,
+      primaryState,
+      backupState,
+      signal,
+      execution,
+      scanLogger,
+      analysisConcurrency: resolveAnalysisConcurrency(args)
+    });
   }
   const frozenInherited = workflowAcquisitionMode === "inherited"
     ? {
@@ -1099,6 +1140,105 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
   };
 }
 
+async function resumeWorkflowAnalysisOnly(db, {
+  workflowRun,
+  planRecord,
+  configs,
+  primaryState,
+  backupState,
+  signal,
+  execution,
+  scanLogger,
+  analysisConcurrency
+}) {
+  if (!workflowRun || workflowRun.status !== "analyzing") {
+    throw codedError(
+      "WORKFLOW_ANALYSIS_STATUS_INVALID",
+      "Analysis-only resume requires an analyzing workflow run."
+    );
+  }
+  const batchId = Number(workflowRun.scanBatchId || 0);
+  const batch = batchId ? getBatch(db, batchId) : null;
+  if (!batch
+    || batch.site !== "boss"
+    || Number(batch.searchPlanId || 0) !== Number(planRecord?.id || 0)
+    || Number(batch.profileId || 0) !== Number(workflowRun.profileId)) {
+    throw codedError(
+      "WORKFLOW_ANALYSIS_BATCH_MISMATCH",
+      "The persisted analysis batch does not belong to this workflow."
+    );
+  }
+
+  const jobsToAnalyze = listReportJobs(db, { batchId, limit: 10000 });
+  const keywordPlan = workflowRun.keywords.map((item) => ({ ...item }));
+  scanLogger.info("job_analysis_started", {
+    batchId,
+    jobCount: jobsToAnalyze.length,
+    analysisConcurrency,
+    resumedPending: jobsToAnalyze.length,
+    analysisOnly: true
+  });
+  assertScanActive(signal);
+  let report = null;
+  const summary = await runWorkflowAnalysisPhase(db, {
+    workflowRun,
+    batchId,
+    jobsToAnalyze,
+    configs,
+    keywordPlan,
+    logger: scanLogger,
+    signal,
+    modelRuntimes: { primary: primaryState, backup: backupState },
+    analyzeScannedJob: (raw, { configs: runtimeConfigs, analyzeJob }) => analyzeScannedJob(raw, {
+      configs: { ...configs, model: runtimeConfigs?.model || configs.model },
+      analyzeJob
+    }),
+    metrics: workflowRun.metrics || {},
+    reviewIfDrained: true,
+    renderReports: (phaseDb, phaseBatchId, { counts }) => {
+      const savedCount = counts.succeeded + counts.skipped;
+      report = renderReports(
+        listReportJobs(phaseDb, { batchId: phaseBatchId }),
+        path.join(ROOT, "reports")
+      );
+      scanLogger.info("scan_completed", {
+        batchId: phaseBatchId,
+        saved: savedCount,
+        reportMarkdown: path.basename(report.mdPath),
+        reportHtml: path.basename(report.htmlPath),
+        analysisOnly: true
+      });
+      console.log(`导入 ${savedCount} 个岗位`);
+      console.log(`Markdown: ${report.mdPath}`);
+      console.log(`HTML: ${report.htmlPath}`);
+    }
+  });
+
+  if (summary.status === "paused" || summary.status === "stopped") {
+    finalizeWorkflowControl(db, {
+      workflowRunId: workflowRun.id,
+      now: new Date().toISOString()
+    });
+    return {
+      status: "interrupted",
+      batchId,
+      stopCode: summary.status === "paused"
+        ? "WORKFLOW_PAUSE_REQUESTED"
+        : "WORKFLOW_STOP_REQUESTED",
+      stopMessage: `workflow analysis ${summary.status}`
+    };
+  }
+  if (summary.status === "interrupted") {
+    return {
+      status: "interrupted",
+      batchId,
+      stopCode: summary.errorCode || "SCAN_ABORTED",
+      stopMessage: "workflow analysis interrupted at a safe boundary"
+    };
+  }
+  return { status: "completed", batchId };
+}
+
 async function analyzeScannedJob(raw, { configs, analyzeJob }) {
   const scored = scoreJob(raw, configs);
   const gate = decisionState(scored);
@@ -1381,6 +1521,15 @@ function prepareWorkflowExecution(db, args, planId) {
   if (!planId || run.planId !== Number(planId)) {
     throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run belongs to another search plan.");
   }
+  if (args?.["analysis-only"] === true) {
+    if (run.status !== "analyzing") {
+      throw codedError(
+        "WORKFLOW_ANALYSIS_STATUS_INVALID",
+        `Analysis-only resume requires analyzing status, not ${run.status}.`
+      );
+    }
+    return run;
+  }
   if (!["created", "scanning", "interrupted"].includes(run.status)) {
     throw codedError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run cannot scan from ${run.status}.`);
   }
@@ -1394,6 +1543,21 @@ function resolveWorkflowScanContext(db, args, planRecord) {
   if (!run) throw codedError("WORKFLOW_RUN_NOT_FOUND", `Workflow run ${workflowRunId} does not exist.`);
   if (!planRecord || run.planId !== Number(planRecord.id) || run.profileId !== Number(planRecord.profileId)) {
     throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not match the selected search plan and profile.");
+  }
+  if (args?.["analysis-only"] === true) {
+    if (run.status !== "analyzing") {
+      throw codedError(
+        "WORKFLOW_ANALYSIS_STATUS_INVALID",
+        `Analysis-only resume requires analyzing status, not ${run.status}.`
+      );
+    }
+    if (!run.scanBatchId) {
+      throw codedError(
+        "WORKFLOW_ANALYSIS_BATCH_REQUIRED",
+        "Analysis-only resume requires the workflow's persisted scan batch."
+      );
+    }
+    return run;
   }
   if (run.status !== "scanning") {
     throw codedError("WORKFLOW_SCAN_STATUS_INVALID", `Workflow run must be scanning, not ${run.status}.`);

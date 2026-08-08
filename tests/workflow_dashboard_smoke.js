@@ -15,15 +15,17 @@ const {
   createScanRun,
   finishScanRun,
   attachWorkflowScan,
-  transitionWorkflowRun,
   createBatch,
+  transitionWorkflowRun,
   upsertJob,
+  insertWorkflowJobTaskRow,
   recordCandidateJobEvent,
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
+const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
@@ -860,6 +862,10 @@ let server;
   );
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
+  for (const spawned of spawns) spawned.child.emit("close", 0, null);
+  await testWorkflowStatusApi(baseUrl, db, saved);
+  await testWorkflowControlApi(baseUrl, db, saved, spawns, resumeBrowserProbeInputs);
+
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -921,6 +927,258 @@ function seedProfile(database, { confirmCard = true } = {}) {
   });
   if (confirmCard) confirmMatchingCard(database, { profileId: saved.profileId, cardId: draft.id });
   return saved;
+}
+
+async function testWorkflowStatusApi(baseUrl, database, saved) {
+  const fixture = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-01",
+    resumePhase: "analyzing"
+  });
+  const before = getWorkflowRun(database, fixture.workflowId);
+  const response = await getJson(baseUrl, `/api/workflow-status?runId=${encodeURIComponent(fixture.workflowId)}`);
+  assert.strictEqual(response.status, 200);
+  assert.deepStrictEqual(Object.keys(response.body).sort(), [
+    "communication",
+    "controls",
+    "model",
+    "progress",
+    "recentActivity",
+    "today",
+    "workflow"
+  ]);
+  assert.strictEqual(response.body.workflow.id, fixture.workflowId);
+  assert.strictEqual(response.body.workflow.status, "analyzing");
+  assert.strictEqual(response.body.progress.analysis.total, 2);
+  assert.strictEqual(response.body.progress.analysis.succeeded, 1);
+  assert.strictEqual(response.body.progress.analysis.pending, 1);
+  assert.strictEqual(response.body.progress.stageIndex, 4);
+  assert.strictEqual(response.body.model.profile, "batch_screening");
+  assert.strictEqual(response.body.model.model, "fixture-batch-model");
+  assert.strictEqual(response.body.controls.stopConsumesRunSlot, true);
+  assert(Array.isArray(response.body.recentActivity));
+  const serialized = JSON.stringify(response.body);
+  for (const secret of [
+    "private-workflow-error-message",
+    "private-planner-secret",
+    "Workflow API Job",
+    "private workflow API JD",
+    "https://www.zhipin.com/job_detail/workflow-api"
+  ]) {
+    assert(!serialized.includes(secret), `workflow status must not expose ${secret}`);
+  }
+  assert.deepStrictEqual(getWorkflowRun(database, fixture.workflowId), before);
+
+  const unknown = await getJson(baseUrl, "/api/workflow-status?runId=missing-workflow-api-run");
+  assert.strictEqual(unknown.status, 404);
+  assert.strictEqual(unknown.body.errorCode, "WORKFLOW_RUN_NOT_FOUND");
+  return fixture;
+}
+
+async function testWorkflowControlApi(baseUrl, database, saved, spawns, resumeBrowserProbeInputs) {
+  const analyzing = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-02",
+    resumePhase: "analyzing"
+  });
+  finishScanRun(database, {
+    runId: analyzing.scanRunId,
+    status: "completed",
+    stopCode: "WORKFLOW_API_SCAN_COMPLETE"
+  });
+
+  const pause = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "pause"
+  });
+  assert.strictEqual(pause.status, 303);
+  assert.strictEqual(pause.location, `/workflow?runId=${analyzing.workflowId}`);
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
+
+  const browserProbeCountBeforeAnalysisResume = resumeBrowserProbeInputs.length;
+  const spawnCountBeforeAnalysisResume = spawns.length;
+  const resume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(resume.status, 303, resume.body);
+  assert.strictEqual(resume.location, `/workflow?runId=${analyzing.workflowId}`);
+  assert.strictEqual(resumeBrowserProbeInputs.length, browserProbeCountBeforeAnalysisResume);
+  assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 1);
+  assert(spawns.at(-1).args.includes("--workflow-run"));
+  assert(spawns.at(-1).args.includes(analyzing.workflowId));
+  assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "analyzing");
+
+  const repeatedResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(repeatedResume.status, 303);
+  assert.strictEqual(spawns.length, spawnCountBeforeAnalysisResume + 1);
+
+  const stopping = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-03",
+    resumePhase: "analyzing"
+  });
+  const missingConfirmation = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: stopping.workflowId,
+    action: "stop"
+  });
+  assert.strictEqual(missingConfirmation.status, 409);
+  assert.match(missingConfirmation.body, /WORKFLOW_STOP_CONFIRMATION_REQUIRED/);
+  assert.notStrictEqual(getWorkflowRun(database, stopping.workflowId).status, "stopped");
+
+  finishScanRun(database, {
+    runId: stopping.scanRunId,
+    status: "completed",
+    stopCode: "WORKFLOW_API_SCAN_COMPLETE"
+  });
+  const stop = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: stopping.workflowId,
+    action: "stop",
+    confirmStop: 1
+  });
+  assert.strictEqual(stop.status, 303);
+  assert.strictEqual(getWorkflowRun(database, stopping.workflowId).status, "stopped");
+  const repeatedStop = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: stopping.workflowId,
+    action: "stop",
+    confirmStop: 1
+  });
+  assert.strictEqual(repeatedStop.status, 303);
+  assert.strictEqual(getWorkflowRun(database, stopping.workflowId).status, "stopped");
+
+  const scanning = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-04",
+    resumePhase: "scanning"
+  });
+  requestWorkflowStop(database, {
+    workflowRunId: scanning.workflowId,
+    confirmStop: true,
+    now: "2099-02-04T00:00:02.000Z"
+  });
+  finalizeWorkflowControl(database, {
+    workflowRunId: scanning.workflowId,
+    now: "2099-02-04T00:00:03.000Z"
+  });
+  const terminalResume = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: scanning.workflowId,
+    action: "resume"
+  });
+  assert.strictEqual(terminalResume.status, 409);
+  assert.match(terminalResume.body, /WORKFLOW_RUN_TERMINAL/);
+
+  const unknown = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: "missing-workflow-control-run",
+    action: "pause"
+  });
+  assert.strictEqual(unknown.status, 409);
+  assert.match(unknown.body, /WORKFLOW_CONTROL_TARGET_MISMATCH/);
+
+  const invalid = await postForm(baseUrl, "/api/workflow-control", {
+    workflowRunId: analyzing.workflowId,
+    action: "explode"
+  });
+  assert.strictEqual(invalid.status, 409);
+  assert.match(invalid.body, /WORKFLOW_CONTROL_ACTION_INVALID/);
+}
+
+function seedWorkflowApiFixture(database, saved, {
+  localDay,
+  resumePhase
+}) {
+  const batchId = createBatch(database, "boss", "workflow-api", "workflow API fixture", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId
+  });
+  for (let index = 1; index <= 2; index += 1) {
+    upsertJob(database, {
+      ...job(`api-${localDay}-${index}`),
+      sourceId: `workflow-api-${localDay}-${index}`,
+      title: `Workflow API Job ${index}`,
+      company: `Private Workflow API Company ${index}`,
+      url: `https://www.zhipin.com/job_detail/workflow-api-${localDay}-${index}.html`,
+      description: `private workflow API JD ${index}`
+    }, batchId);
+  }
+  const workflow = createWorkflowRun(database, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: 35,
+    inventoryCount: 2,
+    candidateGap: 33,
+    scanNeeded: true,
+    keywords: [{ word: "workflow-api", priority: "A" }],
+    budget: { maxDetailTotal: 20, browserPageBudget: 4 },
+    modelConfigRevision: "fixture-batch-revision",
+    planner: {
+      acquisitionMode: "generated",
+      browserMode: "portable",
+      cdpPort: 9222,
+      privateSecret: "private-planner-secret",
+      modelProfiles: {
+        batch_screening: {
+          provider: "mock",
+          model: "fixture-batch-model",
+          revision: "fixture-batch-revision",
+          concurrency: 2
+        }
+      }
+    },
+    metrics: { access: { details: 2, pages: 1, scrolls: 0 } }
+  });
+  const scan = createScanRun(database, {
+    runId: `workflow-api-scan-${localDay}`,
+    site: "boss",
+    command: "daily",
+    planId: saved.planId,
+    batchId
+  });
+  transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+  attachWorkflowScan(database, {
+    id: workflow.id,
+    scanRunId: scan.id,
+    scanBatchId: batchId
+  });
+  transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "analyzing",
+    platformAccessStartedAt: `${localDay}T00:00:01.000Z`,
+    modelConfigRevision: "fixture-batch-revision"
+  });
+  if (resumePhase === "scanning") {
+    database.prepare("UPDATE workflow_runs SET status = 'scanning' WHERE id = ?").run(workflow.id);
+  }
+  const observations = database.prepare(`
+    SELECT id AS observation_id, job_id
+    FROM job_observations
+    WHERE batch_id = ?
+    ORDER BY id
+  `).all(batchId);
+  observations.forEach((row, index) => {
+    insertWorkflowJobTaskRow(database, {
+      workflowRunId: workflow.id,
+      batchId,
+      jobId: Number(row.job_id),
+      observationId: Number(row.observation_id),
+      position: index + 1,
+      status: index === 0 ? "succeeded" : "pending",
+      recoveryGeneration: 0,
+      modelConfigRevision: "fixture-batch-revision",
+      now: `${localDay}T00:00:01.000Z`
+    });
+  });
+  database.prepare("UPDATE workflow_runs SET error_message = ? WHERE id = ?")
+    .run("private-workflow-error-message", workflow.id);
+  if (resumePhase) {
+    database.prepare("UPDATE workflow_runs SET resume_phase = ? WHERE id = ?")
+      .run(resumePhase, workflow.id);
+  }
+  return {
+    workflowId: workflow.id,
+    batchId,
+    scanRunId: scan.id
+  };
 }
 
 function job(index) {

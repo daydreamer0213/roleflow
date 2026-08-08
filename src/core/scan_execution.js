@@ -28,6 +28,7 @@ function buildScanCliArgs({
   runId,
   resumeBatchId = null,
   workflowRunId = "",
+  analysisOnly = false,
   keywords = null,
   maxCards = null,
   maxDetailTotal = null,
@@ -41,17 +42,34 @@ function buildScanCliArgs({
     throw scanExecutionError("INVALID_SCAN_INPUT", "planId must be a positive integer");
   }
 
-  const normalizedBrowser = String(browserMode || "").trim().toLowerCase();
-  if (normalizedBrowser !== "edge" && normalizedBrowser !== "portable") {
-    throw scanExecutionError("UNKNOWN_BROWSER_MODE", `Unknown browser mode: ${browserMode}`);
-  }
-
   const cliArgs = [
     SCAN_COMMANDS[normalizedKind],
     "--db", normalizedDbPath,
     "--plan", String(normalizedPlanId),
     "--run-id", normalizedRunId
   ];
+  if (analysisOnly === true) {
+    if (normalizedKind !== "daily") {
+      throw scanExecutionError("INVALID_SCAN_INPUT", "analysisOnly is only valid for daily workflow runs");
+    }
+    const normalizedWorkflowRunId = requiredText(workflowRunId, "workflowRunId");
+    if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
+      throw scanExecutionError("INVALID_SCAN_INPUT", "analysisOnly uses the batch persisted on the workflow run");
+    }
+    cliArgs.push(
+      "--site", "boss",
+      "--scan-mode", normalizedKind,
+      "--workflow-run", normalizedWorkflowRunId,
+      "--analysis-only"
+    );
+    return cliArgs;
+  }
+
+  const normalizedBrowser = String(browserMode || "").trim().toLowerCase();
+  if (normalizedBrowser !== "edge" && normalizedBrowser !== "portable") {
+    throw scanExecutionError("UNKNOWN_BROWSER_MODE", `Unknown browser mode: ${browserMode}`);
+  }
+
   if (normalizedKind === "daily" || normalizedKind === "broad") {
     cliArgs.push("--site", "boss", "--scan-mode", normalizedKind);
     if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {

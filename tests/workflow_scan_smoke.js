@@ -13,8 +13,11 @@ const {
   transitionWorkflowRun,
   createBatch,
   beginScanRun,
+  finishScanRun,
   attachWorkflowScan,
-  recordSiteAccessEvent
+  upsertJob,
+  recordSiteAccessEvent,
+  listSiteAccessEvents
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
@@ -215,6 +218,53 @@ async function main() {
   assert.strictEqual(completed.metrics.analyzed, 2);
   assert.deepStrictEqual(completed.keywords.map((item) => item.word), ["AI application", "RAG engineer"]);
 
+  const analysisOnly = seedAnalysisOnlyResume(db, saved);
+  const batchCountBeforeAnalysisResume = Number(
+    db.prepare("SELECT COUNT(*) AS count FROM batches").get().count
+  );
+  db.close();
+  db = null;
+  const analysisOnlyResult = spawnSync(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "scan",
+    "--db", dbPath,
+    "--plan", String(saved.planId),
+    "--force-mock",
+    "--run-id", "workflow-analysis-only-process",
+    "--workflow-run", analysisOnly.workflowId,
+    "--analysis-only"
+  ], { cwd: root, encoding: "utf8" });
+  assert.strictEqual(
+    analysisOnlyResult.status,
+    0,
+    analysisOnlyResult.stderr || analysisOnlyResult.stdout
+  );
+  db = openDb(dbPath);
+  const analysisOnlyCompleted = getWorkflowRun(db, analysisOnly.workflowId);
+  assert.strictEqual(analysisOnlyCompleted.status, "review_required");
+  assert.strictEqual(analysisOnlyCompleted.scanBatchId, analysisOnly.batchId);
+  assert.strictEqual(analysisOnlyCompleted.scanRunId, analysisOnly.originalScanRunId);
+  assert.strictEqual(analysisOnlyCompleted.platformAccessStartedAt, null);
+  assert.strictEqual(getScanRun(db, "workflow-analysis-only-process").batchId, null);
+  assert.strictEqual(getScanRun(db, "workflow-analysis-only-process").status, "completed");
+  assert.strictEqual(
+    databaseBatchStatus(db, analysisOnly.batchId),
+    "completed",
+    "analysis-only resume must not reopen the completed acquisition batch"
+  );
+  assert.strictEqual(
+    Number(db.prepare("SELECT COUNT(*) AS count FROM batches").get().count),
+    batchCountBeforeAnalysisResume,
+    "analysis-only resume must reuse the persisted batch"
+  );
+  assert.strictEqual(
+    listSiteAccessEvents(db, { site: "boss" })
+      .filter((event) => event.details.runId === "workflow-analysis-only-process").length,
+    0,
+    "analysis-only resume must not record BOSS access"
+  );
+
   const interrupted = createWorkflowRun(db, workflowInput(saved, {
     id: "workflow-interrupted",
     localDay: "2026-07-21",
@@ -292,6 +342,61 @@ function spawnWorkflowScan({ dbPath, planId, workflowRunId, runId }) {
     "--max-detail-total", "120",
     "--browser-page-budget", "20"
   ], { cwd: root, encoding: "utf8" });
+}
+
+function seedAnalysisOnlyResume(database, saved) {
+  const workflow = createWorkflowRun(database, workflowInput(saved, {
+    id: "workflow-analysis-only",
+    localDay: "2026-07-24",
+    sequence: 1,
+    modelConfigRevision: "force-mock"
+  }));
+  const batchId = createBatch(database, "boss", "analysis-only", "completed scan checkpoint", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "running"
+  });
+  const jobs = JSON.parse(fs.readFileSync(path.join(root, "data", "sample_jobs.json"), "utf8"));
+  for (const [index, raw] of jobs.entries()) {
+    upsertJob(database, {
+      ...raw,
+      sourceId: `${raw.sourceId}-analysis-only-${index + 1}`,
+      description: `${raw.description} `.repeat(4),
+      detailRead: true
+    }, batchId);
+  }
+  transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+  beginScanRun(database, {
+    runId: "workflow-analysis-only-original-scan",
+    site: "boss",
+    command: "daily",
+    planId: saved.planId,
+    batchId,
+    processId: process.pid
+  });
+  attachWorkflowScan(database, {
+    id: workflow.id,
+    scanRunId: "workflow-analysis-only-original-scan",
+    scanBatchId: batchId
+  });
+  finishScanRun(database, {
+    runId: "workflow-analysis-only-original-scan",
+    status: "completed"
+  });
+  transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "analyzing",
+    modelConfigRevision: "force-mock"
+  });
+  return {
+    workflowId: workflow.id,
+    batchId,
+    originalScanRunId: "workflow-analysis-only-original-scan"
+  };
+}
+
+function databaseBatchStatus(database, batchId) {
+  return database.prepare("SELECT status FROM batches WHERE id = ?").get(batchId)?.status || "";
 }
 
 function seedProfile(database, { city = "广州", fixtureId = "workflow-scan" } = {}) {
