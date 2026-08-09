@@ -999,6 +999,12 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
       });
     },
     onTargetComplete,
+    onDetailResult: args.input ? null : async (result) => persistDetailOutcome(db, {
+      site,
+      runId: execution?.runId || "",
+      batchId,
+      result
+    }),
     onScanComplete: (summary) => { scanSummary = summary; },
     signal
   });
@@ -1673,6 +1679,20 @@ function workflowAccessUsage(db, scanRunId) {
   return usage;
 }
 
+function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {}) {
+  const succeeded = result?.outcome === "succeeded";
+  return recordSiteAccessEvent(db, {
+    site,
+    action: "pane_detail_result",
+    runId,
+    details: {
+      batchId: Number(batchId),
+      outcome: succeeded ? "succeeded" : "failed",
+      errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+    }
+  });
+}
+
 function splitWorkflowKeywords(value) {
   return String(value || "").split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
 }
@@ -2094,6 +2114,7 @@ module.exports = {
   assertScanLimitOverridesAllowed,
   workflowMetrics,
   workflowAccessUsage,
+  persistDetailOutcome,
   resolveAnalysisConcurrency,
   assertWorkflowScanControl
 };

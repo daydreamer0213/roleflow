@@ -23,7 +23,7 @@ const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
 const { CITY_CODES } = require("../src/core/search_plan");
-const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage } = require("../src/cli");
+const { executeWithSiteScanLease, workflowMetrics, workflowAccessUsage, persistDetailOutcome } = require("../src/cli");
 
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -84,6 +84,29 @@ async function main() {
     recordSiteAccessEvent(db, { site: "boss", action, runId: "usage-probe" });
   }
   recordSiteAccessEvent(db, { site: "boss", action: "pane_detail_read", runId: "other-run" });
+  assert.deepStrictEqual(workflowAccessUsage(db, "usage-probe"), { details: 2, pages: 1, scrolls: 1 });
+  persistDetailOutcome(db, {
+    site: "boss",
+    runId: "usage-probe",
+    batchId: 42,
+    result: {
+      outcome: "failed",
+      errorCode: "BOSS_PANE_SWITCH_TIMEOUT",
+      title: "must-not-persist",
+      url: "https://example.invalid/private",
+      errorMessage: "must-not-persist"
+    }
+  });
+  const detailOutcomeEvents = listSiteAccessEvents(db, { site: "boss", action: "pane_detail_result" });
+  assert.strictEqual(detailOutcomeEvents.length, 1);
+  assert.deepStrictEqual(detailOutcomeEvents[0].details, {
+    site: "boss",
+    action: "pane_detail_result",
+    runId: "usage-probe",
+    batchId: 42,
+    outcome: "failed",
+    errorCode: "BOSS_PANE_SWITCH_TIMEOUT"
+  });
   assert.deepStrictEqual(workflowAccessUsage(db, "usage-probe"), { details: 2, pages: 1, scrolls: 1 });
   const saved = seedProfile(db);
   const workflow = createWorkflowRun(db, workflowInput(saved));
