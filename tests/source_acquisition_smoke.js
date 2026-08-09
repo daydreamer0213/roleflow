@@ -1115,7 +1115,10 @@ async function detailFatalOutcomeAuditSmoke() {
     cityScopes: [{ city: "骞垮窞", cityCode: "101280100" }],
     maxCards: 20,
     maxDetailTotal: 1,
-    onDetailResult: async (outcome) => outcomes.push(outcome)
+    onDetailResult: async (outcome) => {
+      outcomes.push(outcome);
+      throw new Error("audit sink unavailable");
+    }
   }), (error) => error.code === "BOSS_RISK_CONTROL");
   assert.deepStrictEqual(outcomes, [
     { outcome: "failed", errorCode: "BOSS_RISK_CONTROL" }

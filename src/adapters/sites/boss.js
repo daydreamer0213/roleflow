@@ -778,7 +778,11 @@ class BossSiteAdapter {
                 mergeScanCandidate(candidates, { ...entry, job: failedJob });
                 const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
                 if (isFatalBrowserError(error)) {
-                  await emitDetailResult(options.onDetailResult, failedOutcome);
+                  try {
+                    await emitDetailResult(options.onDetailResult, failedOutcome);
+                  } catch {
+                    // The audit sink must not replace the fatal browser/risk error.
+                  }
                   throw error;
                 }
                 await this.waitAfterDetailAction();
