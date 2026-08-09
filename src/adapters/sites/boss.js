@@ -1069,6 +1069,48 @@ class BossSiteAdapter {
     return result || { moved: false, atBottom: false };
   }
 
+  async readVisiblePaneDetail(tabId, job, signal = null) {
+    throwIfAborted(signal);
+    await this.assertSearchPage(tabId);
+    await this.browser.evalValue(tabId, PAGE_HELPERS);
+    const expectedJobId = (normalizeBossUrl(job?.url || "")
+      .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!expectedJobId) return null;
+    await this.reserveAccess("pane_detail_read", {
+      jobId: expectedJobId,
+      title: job?.title || "",
+      url: job?.url || ""
+    });
+    let scrolled = false;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      throwIfAborted(signal);
+      await this.assertSearchPage(tabId);
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
+      if (!detail?.currentJobId || detail.currentJobId !== expectedJobId) return null;
+      const titleMatches = normalizedComparableText(detail.title)
+        .includes(normalizedComparableText(job?.title));
+      if (!titleMatches) return null;
+      if (detail.description?.length >= 120) {
+        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
+        return {
+          description: cleanDetailText(detail.description),
+          bossActiveText: parseBossActivityText(detail.bossActiveText),
+          salary: detail.salary || "",
+          experience: detail.experience || "",
+          education: detail.education || ""
+        };
+      }
+      if (!scrolled && detail.canScroll) {
+        scrolled = true;
+        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
+      }
+      await this.waitWithPacing("card_retry");
+    }
+    await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
+    return null;
+  }
+
   async readCardDetail(tabId, job, fallbackIndex = 0, signal = null) {
     throwIfAborted(signal);
     await this.assertSearchPage(tabId);
@@ -1160,10 +1202,17 @@ class BossSiteAdapter {
     return state;
   }
 
-  async readDetail(tabId, url) {
-    const expectedJobId = (normalizeBossUrl(url).match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.navigateWithPacing(tabId, url, "detail");
+  async readDetail(tabId, url, signal = null) {
+    throwIfAborted(signal);
+    const normalizedUrl = normalizeBossNavigationUrl(url);
+    const expectedJobId = (normalizeBossUrl(normalizedUrl)
+      .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!normalizedUrl || !expectedJobId) {
+      throw bossError("BOSS_DETAIL_URL_INVALID", "BOSS standalone detail URL is invalid.");
+    }
+    await this.navigateWithPacing(tabId, normalizedUrl, "detail");
     for (let i = 0; i < 8; i += 1) {
+      throwIfAborted(signal);
       await this.assertDetailPage(tabId, expectedJobId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, `(() => {
@@ -1201,7 +1250,10 @@ class BossSiteAdapter {
       }
       await this.waitWithPacing("retry");
     }
-    return { description: "", bossActiveText: "", salary: "", experience: "", education: "" };
+    throw bossError(
+      "BOSS_DETAIL_LOAD_TIMEOUT",
+      `BOSS standalone detail did not become complete for ${expectedJobId || "unknown"}`
+    );
   }
 
   async readActivity(tabId, url) {
@@ -1768,6 +1820,7 @@ function normalizeBossUrl(url) {
   if (!value) return "";
   try {
     const parsed = new URL(value, "https://www.zhipin.com");
+    if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
     const id = parsed.pathname.match(/\/job_detail\/([^/?#]+)\.html/i);
     if (id) return `${parsed.origin}/job_detail/${id[1]}.html`;
     return "";

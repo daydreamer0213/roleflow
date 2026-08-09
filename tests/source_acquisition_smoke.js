@@ -81,8 +81,9 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await maxCardScrollBudgetSmoke();
   await delayedListSmoke();
   await accessReservationSmoke();
-  await paneSwitchSmoke();
-  await leftCardMetadataAvoidsPaneScrollSmoke();
+  await visiblePaneIdentitySmoke();
+  await visiblePaneMissingIdentitySmoke();
+  await standaloneDetailTimeoutSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
@@ -533,6 +534,112 @@ async function leftCardMetadataAvoidsPaneScrollSmoke() {
   }, 0);
   assert(detail.description.length >= 120);
   assert.deepStrictEqual(paneScrolls, ["top"]);
+}
+
+async function visiblePaneIdentitySmoke() {
+  const accessActions = [];
+  let paneReads = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        paneReads += 1;
+        return {
+          currentJobId: "pane-job",
+          title: "AI application developer",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          bossActiveText: "浠婃棩娲昏穬",
+          salary: "10-15K",
+          experience: "1-3 years",
+          education: "Bachelor",
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({
+    browser,
+    sleepFn: async () => {},
+    randomFn: () => 0,
+    accessController: {
+      reserve: async (action, details) => accessActions.push({ action, details })
+    }
+  });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "AI application developer",
+    url: "https://www.zhipin.com/job_detail/pane-job.html"
+  });
+  assert(detail.description.length >= 120);
+  assert.strictEqual(paneReads, 1);
+  assert.deepStrictEqual(accessActions.map((item) => item.action), ["pane_detail_read"]);
+}
+
+async function visiblePaneMissingIdentitySmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          currentJobId: "",
+          title: "pane-job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "pane-job",
+    url: "https://www.zhipin.com/job_detail/pane-job.html"
+  });
+  assert.strictEqual(detail, null, "title-only identity must not authorize pane reuse");
+}
+
+async function standaloneDetailTimeoutSmoke() {
+  const navigations = [];
+  const browser = {
+    async navigate(_tabId, url) { navigations.push(url); },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("const currentJobId")) {
+        return {
+          currentJobId: "strict-timeout",
+          description: "short",
+          bossActiveText: "",
+          salary: "",
+          experience: "",
+          education: ""
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertDetailPage = async () => ({ jobId: "strict-timeout" });
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "https://www.zhipin.com/job_detail/strict-timeout.html"),
+    (error) => error.code === "BOSS_DETAIL_LOAD_TIMEOUT"
+  );
+  assert.deepStrictEqual(navigations, ["https://www.zhipin.com/job_detail/strict-timeout.html"]);
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "https://example.invalid/job_detail/external.html"),
+    (error) => error.code === "BOSS_DETAIL_URL_INVALID"
+  );
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "http://www.zhipin.com/job_detail/insecure.html"),
+    (error) => error.code === "BOSS_DETAIL_URL_INVALID"
+  );
+  assert.deepStrictEqual(
+    navigations,
+    ["https://www.zhipin.com/job_detail/strict-timeout.html"],
+    "an external host must be rejected before browser navigation"
+  );
 }
 
 async function targetIsolationSmoke() {
