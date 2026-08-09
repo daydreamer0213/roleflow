@@ -123,3 +123,37 @@ Expected: every offline check passes, including `cli_model_settings_root_smoke.j
 - [ ] **Step 3: Record the exact tested commit and resume V4**
 
 Record the commit hash and test summary in `.superpowers/sdd/progress.md`. Then use the explicit external root only for the bounded V4 BOSS-SEARCH scan, preserving all existing read-only, serial pacing, no-communication rules.
+
+### Task 4: Close final-review safety and integration gaps
+
+**Files:**
+- Modify: `src/core/model_settings.js`
+- Modify: `tests/model_settings_smoke.js`
+- Modify: `tests/cli_model_settings_root_smoke.js`
+
+**Interfaces:**
+- Tighten `loadModelSettings({ readOnly: true })`: no fallback is allowed unless the stored setting is a schema-v2 object.
+- Tighten `resolveReadOnlyModelSettingsRoot`: reject UNC paths and non-regular `.runtime/settings/model.json` targets.
+- Verify the real non-force-mock `scan` path reaches its browser seam only after external schema-v2 mock model initialization.
+
+- [ ] **Step 1: Write failing security and integration assertions**
+
+Cover non-object JSON and missing settings with a non-mock fallback, asserting a stable read-only rejection before fallback. Cover UNC and directory-shaped settings roots. Add a `scan` call that uses the real context/runtime resolvers against a verified external mock fixture and stops at an injected browser sentinel after model readiness.
+
+- [ ] **Step 2: Confirm RED**
+
+Run: `node tests/model_settings_smoke.js` and `node tests/cli_model_settings_root_smoke.js`.
+
+Expected: the non-object read-only test falls back today, and the real non-force-mock scan assertion is absent.
+
+- [ ] **Step 3: Implement the smallest hardening**
+
+Require a schema-v2 stored object before any read-only fallback path; reject UNC and non-regular settings files; do not alter writable legacy behavior or dashboard paths.
+
+- [ ] **Step 4: Confirm GREEN and run the serial suite**
+
+Run the two focused tests, then `node tests/run_all.js` alone. Record all output facts, including any known test-fixture warnings.
+
+- [ ] **Step 5: Commit and re-review**
+
+Commit the remediation, regenerate the complete review package, and require a final independent review with no Critical or Important findings before any V4 live run.
