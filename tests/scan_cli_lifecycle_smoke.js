@@ -8,7 +8,8 @@ const {
   resolveScanLimit,
   persistRefreshAttempt,
   assertScanLimitOverridesAllowed,
-  assertWorkflowScanControl
+  assertWorkflowScanControl,
+  preflightBossScanBrowser
 } = require("../src/cli");
 const {
   openDb,
@@ -47,6 +48,7 @@ main()
 async function main() {
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
+  await fixedBossScanPreflightSmoke();
   await completedRunSmoke();
   await partialRunWithBatchSmoke();
   await interruptedRunSmoke();
@@ -58,6 +60,76 @@ async function main() {
   scanLimitSmoke();
   refreshCheckpointSmoke();
   workflowScanControlSmoke();
+}
+
+async function fixedBossScanPreflightSmoke() {
+  assert.strictEqual(typeof preflightBossScanBrowser, "function");
+
+  const fixedTabs = [
+    { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
+    { id: 90, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs/other" }
+  ];
+  const calls = [];
+  let currentTabs = fixedTabs;
+  const browser = { listTabs: async () => currentTabs };
+  const adapter = {
+    preflight: async (options) => {
+      calls.push(options);
+      return { tabId: options?.tabId, mode: options?.tabId === 31 ? "search" : "communication" };
+    }
+  };
+
+  const edgeState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
+  assert.deepStrictEqual(calls, [{ tabId: 32 }, { tabId: 31 }]);
+  assert.deepStrictEqual(edgeState, { tabId: 31, mode: "search" });
+
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => [...fixedTabs, { id: 33, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs?duplicate=1" }] },
+      adapter
+    }),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => fixedTabs.filter((tab) => tab.id !== 32) },
+      adapter
+    }),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => fixedTabs.map((tab) => tab.id === 32 ? { ...tab, windowId: 8 } : tab) },
+      adapter
+    }),
+    (error) => error.code === "BOSS_WINDOW_MISMATCH"
+  );
+
+  currentTabs = fixedTabs.map((tab) => tab.id === 31 ? { ...tab, id: 33 } : tab);
+  calls.length = 0;
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: edgeState.tabId
+    }),
+    (error) => error.code === "BOSS_SEARCH_TAB_CHANGED"
+  );
+  assert.deepStrictEqual(calls, []);
+
+  const portableCalls = [];
+  const portableState = await preflightBossScanBrowser({
+    browserMode: "portable",
+    browser: { listTabs: async () => { throw new Error("portable must not enumerate tabs"); } },
+    adapter: { preflight: async (options) => { portableCalls.push(options); return { tabId: 9222 }; } }
+  });
+  assert.deepStrictEqual(portableCalls, [undefined]);
+  assert.deepStrictEqual(portableState, { tabId: 9222 });
 }
 
 async function completedRunSmoke() {
