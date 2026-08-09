@@ -12,6 +12,46 @@ function isBossTab(tab) {
   }
 }
 
+function bossPath(tab) {
+  try {
+    const url = new URL(tab?.url || "");
+    return /(^|\.)zhipin\.com$/i.test(url.hostname) ? url.pathname : "";
+  } catch {
+    return "";
+  }
+}
+
+function assertBossOperatorTabs(tabs = []) {
+  const searchTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
+  const communicationTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
+  if (searchTabs.length !== 1 || communicationTabs.length !== 1) {
+    throw workspaceError(
+      "BOSS_TAB_REQUIRED",
+      "普通 Edge 必须正好保留一个 BOSS 搜索页和一个 BOSS 沟通页。"
+    );
+  }
+  const [searchTab] = searchTabs;
+  const [communicationTab] = communicationTabs;
+  if (!Number.isInteger(searchTab.windowId)
+    || !Number.isInteger(communicationTab.windowId)) {
+    throw workspaceError(
+      "BROWSER_COMMAND_FAILED",
+      "固定 BOSS 标签页缺少可靠的窗口身份。"
+    );
+  }
+  if (searchTab.windowId !== communicationTab.windowId) {
+    throw workspaceError(
+      "BOSS_WINDOW_MISMATCH",
+      "BOSS 搜索页和沟通页必须位于同一个普通 Edge 窗口。"
+    );
+  }
+  return {
+    searchTab,
+    communicationTab,
+    windowId: searchTab.windowId
+  };
+}
+
 function isDashboardTab(tab, dashboardUrl) {
   try {
     const actual = new URL(tab?.url || "");
@@ -29,17 +69,26 @@ function selectBossTab(tabs) {
     || null;
 }
 
-async function prepareWorkspaceTabs({ browser, dashboardUrl, inspectReadiness }) {
+async function prepareWorkspaceTabs({
+  browser,
+  dashboardUrl,
+  inspectReadiness,
+  requireFixedBossTabs = false
+}) {
   if (!browser || typeof inspectReadiness !== "function") {
     throw new TypeError("prepareWorkspaceTabs requires browser and inspectReadiness()");
   }
   const tabs = await browser.listTabs();
-  const bossTab = selectBossTab(tabs);
+  const fixed = requireFixedBossTabs
+    ? assertBossOperatorTabs(tabs)
+    : null;
+  const bossTab = fixed?.searchTab || selectBossTab(tabs);
   if (!bossTab) {
     throw workspaceError("BOSS_TAB_REQUIRED", "项目专用 Edge 中没有 BOSS 标签页。");
   }
   const bossTabs = tabs.filter(isBossTab);
-  if (bossTabs.some((tab) => String(tab.windowId) !== String(bossTab.windowId))) {
+  if (!requireFixedBossTabs
+    && bossTabs.some((tab) => String(tab.windowId) !== String(bossTab.windowId))) {
     throw workspaceError(
       "BOSS_WINDOW_MISMATCH",
       "BOSS 标签页分布在多个项目 Edge 窗口，请关闭多余窗口后重试。"
@@ -58,7 +107,8 @@ async function prepareWorkspaceTabs({ browser, dashboardUrl, inspectReadiness })
       "RoleFlow 工作台位于另一个项目 Edge 窗口，请关闭多余窗口后重试。"
     );
   }
-  if (tabs.some((tab) => !Number.isInteger(tab.windowId) || tab.windowId !== bossTab.windowId)) {
+  if (!requireFixedBossTabs
+    && tabs.some((tab) => !Number.isInteger(tab.windowId) || tab.windowId !== bossTab.windowId)) {
     throw workspaceError(
       "WORKSPACE_WINDOW_MISMATCH",
       "项目专用 Edge 包含多个窗口或缺少可靠的窗口身份，请关闭多余窗口后重试。"
@@ -86,4 +136,7 @@ async function prepareWorkspaceTabs({ browser, dashboardUrl, inspectReadiness })
   };
 }
 
-module.exports = { prepareWorkspaceTabs };
+module.exports = {
+  prepareWorkspaceTabs,
+  assertBossOperatorTabs
+};

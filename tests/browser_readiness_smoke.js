@@ -51,6 +51,28 @@ async function inspect(result) {
     checkedAt: "2099-01-01T00:00:00.000Z"
   });
 
+  const unavailable = await inspectBossBrowserReadiness({
+    preflight: async () => {
+      const error = new Error("bridge unavailable");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    },
+    now: () => "2099-01-01T00:00:00.000Z"
+  });
+  assert.strictEqual(unavailable.status, "browser_unavailable");
+  assert.match(unavailable.message, /Edge Control/);
+
+  const topology = await inspectBossBrowserReadiness({
+    preflight: async () => {
+      const error = new Error("fixed tabs differ");
+      error.code = "BOSS_WINDOW_MISMATCH";
+      throw error;
+    },
+    now: () => "2099-01-01T00:00:00.000Z"
+  });
+  assert.strictEqual(topology.status, "boss_tab_missing");
+  assert.match(topology.message, /搜索页.*沟通页.*同一窗口/);
+
   const privateState = await inspect({
     isSearchPage: true,
     url: "https://www.zhipin.com/web/geek/jobs?query=secret",

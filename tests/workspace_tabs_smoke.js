@@ -1,5 +1,8 @@
 const assert = require("node:assert");
-const { prepareWorkspaceTabs } = require("../src/core/workspace_tabs");
+const {
+  prepareWorkspaceTabs,
+  assertBossOperatorTabs
+} = require("../src/core/workspace_tabs");
 const { prepareWorkspaceTabsCommand } = require("../src/cli");
 
 function fakeBrowser(initialTabs, createdTab = null) {
@@ -27,6 +30,42 @@ function fakeBrowser(initialTabs, createdTab = null) {
     url: "https://www.zhipin.com/web/geek/jobs",
     windowId: 42
   };
+  const fixedCommunication = {
+    id: "boss-communication",
+    url: "https://www.zhipin.com/web/geek/chat",
+    windowId: 42
+  };
+  assert.deepStrictEqual(
+    assertBossOperatorTabs([boss, fixedCommunication]),
+    {
+      searchTab: boss,
+      communicationTab: fixedCommunication,
+      windowId: 42
+    }
+  );
+  assert.throws(
+    () => assertBossOperatorTabs([boss]),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  assert.throws(
+    () => assertBossOperatorTabs([
+      boss,
+      { ...fixedCommunication, windowId: 99 }
+    ]),
+    (error) => error.code === "BOSS_WINDOW_MISMATCH"
+  );
+  assert.doesNotThrow(
+    () => assertBossOperatorTabs([
+      boss,
+      fixedCommunication,
+      {
+        id: "ordinary-edge-unrelated",
+        url: "https://example.invalid/",
+        windowId: 99
+      }
+    ]),
+    "unrelated ordinary Edge windows must not invalidate the fixed BOSS pair"
+  );
   const dashboard = {
     id: "roleflow-dashboard",
     url: "http://127.0.0.1:8787/",
@@ -119,41 +158,76 @@ function fakeBrowser(initialTabs, createdTab = null) {
     (error) => error.code === "WORKSPACE_WINDOW_MISMATCH"
   );
 
-  const commandBrowser = { kind: "portable-browser" };
-  const commandCalls = { browser: [], adapter: [], preflight: 0 };
+  function workspaceCommandDependencies(calls) {
+    const browser = { kind: `${calls.label}-browser` };
+    return {
+      browserFactory: (args) => {
+        calls.browser.push(args);
+        return browser;
+      },
+      siteAdapterFactory: (site, context) => {
+        calls.adapter.push({ site, context });
+        return {
+          async preflight() {
+            calls.preflight += 1;
+            return { isSearchPage: true };
+          }
+        };
+      },
+      prepareTabs: async ({
+        browser: receivedBrowser,
+        dashboardUrl,
+        requireFixedBossTabs,
+        inspectReadiness
+      }) => {
+        assert.strictEqual(receivedBrowser, browser);
+        assert.strictEqual(dashboardUrl, "http://localhost:8787/workspace");
+        calls.requireFixedBossTabs = requireFixedBossTabs;
+        assert.strictEqual((await inspectReadiness()).status, "ready");
+        return { status: "ready" };
+      }
+    };
+  }
+
+  const commandCalls = {
+    label: "edge",
+    browser: [],
+    adapter: [],
+    preflight: 0,
+    requireFixedBossTabs: null
+  };
   const commandResult = await prepareWorkspaceTabsCommand({
+    "dashboard-url": "http://localhost:8787/workspace"
+  }, workspaceCommandDependencies(commandCalls));
+  assert.deepStrictEqual(commandResult, { status: "ready" });
+  assert.deepStrictEqual(commandCalls.browser, [{ browser: "edge" }]);
+  assert.strictEqual(commandCalls.requireFixedBossTabs, true);
+  assert.strictEqual(commandCalls.adapter[0].site, "boss");
+  assert.strictEqual(commandCalls.preflight, 1);
+
+  const portableCalls = {
+    label: "portable",
+    browser: [],
+    adapter: [],
+    preflight: 0,
+    requireFixedBossTabs: null
+  };
+  await prepareWorkspaceTabsCommand({
     browser: "portable",
     "cdp-port": 9222,
     "dashboard-url": "http://localhost:8787/workspace"
-  }, {
-    browserFactory: (args) => {
-      commandCalls.browser.push(args);
-      return commandBrowser;
-    },
-    siteAdapterFactory: (site, context) => {
-      commandCalls.adapter.push({ site, context });
-      return {
-        async preflight() {
-          commandCalls.preflight += 1;
-          return { isSearchPage: true };
-        }
-      };
-    },
-    prepareTabs: async ({ browser, dashboardUrl, inspectReadiness }) => {
-      assert.strictEqual(browser, commandBrowser);
-      assert.strictEqual(dashboardUrl, "http://localhost:8787/workspace");
-      assert.strictEqual((await inspectReadiness()).status, "ready");
-      return { status: "ready" };
-    }
-  });
-  assert.deepStrictEqual(commandResult, { status: "ready" });
-  assert.deepStrictEqual(commandCalls.browser, [{ browser: "portable", "cdp-port": 9222 }]);
-  assert.strictEqual(commandCalls.adapter[0].site, "boss");
-  assert.strictEqual(commandCalls.adapter[0].context.browser, commandBrowser);
-  assert.strictEqual(commandCalls.preflight, 1);
+  }, workspaceCommandDependencies(portableCalls));
+  assert.deepStrictEqual(portableCalls.browser, [{
+    browser: "portable",
+    "cdp-port": 9222
+  }]);
+  assert.strictEqual(portableCalls.requireFixedBossTabs, false);
 
   await assert.rejects(
-    () => prepareWorkspaceTabsCommand({ browser: "edge" }),
+    () => prepareWorkspaceTabsCommand({
+      browser: "portable",
+      "cdp-port": 9333
+    }),
     (error) => error.code === "WORKSPACE_PORTABLE_BROWSER_REQUIRED"
   );
   await assert.rejects(

@@ -171,10 +171,12 @@ async function prepareWorkspaceTabsCommand(
     prepareTabs = prepareWorkspaceTabs
   } = {}
 ) {
-  const browserMode = String(args.browser || "portable").trim().toLowerCase();
+  const browserMode = String(args.browser || "edge").trim().toLowerCase();
   const cdpPort = Number(args["cdp-port"] || 9222);
-  if (browserMode !== "portable" || cdpPort !== 9222) {
+  if (!["edge", "portable"].includes(browserMode)
+    || (browserMode === "portable" && cdpPort !== 9222)) {
     const error = new Error("工作台同窗启动固定使用项目专用 Edge 的 9222 端口。");
+    error.message = "工作台默认复用普通 Edge；项目专用 Edge 仅支持显式 portable/9222。";
     error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
     throw error;
   }
@@ -186,11 +188,15 @@ async function prepareWorkspaceTabsCommand(
     error.code = "WORKSPACE_DASHBOARD_URL_INVALID";
     throw error;
   }
-  const browser = browserFactory({ browser: "portable", "cdp-port": 9222 });
+  const browserArgs = browserMode === "portable"
+    ? { browser: "portable", "cdp-port": 9222 }
+    : { browser: "edge" };
+  const browser = browserFactory(browserArgs);
   const adapter = siteAdapterFactory("boss", { browser, logger });
   const result = await prepareTabs({
     browser,
     dashboardUrl: parsedDashboardUrl.toString(),
+    requireFixedBossTabs: browserMode === "edge",
     inspectReadiness: () => inspectBossBrowserReadiness({
       preflight: () => adapter.preflight()
     })
