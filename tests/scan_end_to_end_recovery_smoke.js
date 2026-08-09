@@ -597,13 +597,23 @@ function installOfflineBoundaries() {
       this.accessController = accessController;
     }
 
-    async preflight() {
+    async preflight({ tabId = null } = {}) {
       const inheritedCurrent = process.env.ROLEFLOW_SCAN_E2E_MODE?.includes("inherited-current");
+      const searchTabId = "offline-boss-search-tab";
+      const communicationTabId = "offline-boss-communication-tab";
+      if (String(tabId) === communicationTabId) {
+        return {
+          tabId: communicationTabId,
+          url: "https://www.zhipin.com/web/geek/chat",
+          isSearchPage: false
+        };
+      }
       return {
-        tabId: "offline-boss-tab",
+        tabId: searchTabId,
         url: inheritedCurrent
           ? "https://www.zhipin.com/web/geek/jobs?query=offline&page=2"
-          : ""
+          : "https://www.zhipin.com/web/geek/jobs",
+        isSearchPage: true
       };
     }
 
@@ -664,6 +674,21 @@ function installOfflineBoundaries() {
         error.code = "BROWSER_CREATED_TOO_EARLY";
         throw error;
       }
+    }
+
+    async listTabs() {
+      return [
+        {
+          id: "offline-boss-search-tab",
+          url: "https://www.zhipin.com/web/geek/jobs",
+          windowId: 17
+        },
+        {
+          id: "offline-boss-communication-tab",
+          url: "https://www.zhipin.com/web/geek/chat",
+          windowId: 17
+        }
+      ];
     }
   }
 
