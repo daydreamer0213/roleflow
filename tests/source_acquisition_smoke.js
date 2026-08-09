@@ -83,8 +83,10 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await accessReservationSmoke();
   await visiblePaneIdentitySmoke();
   await visiblePaneMissingIdentitySmoke();
+  await visiblePaneTitleIdentitySmoke();
   await standaloneDetailTimeoutSmoke();
   await obsoleteCardActivationUnavailableSmoke();
+  await scanNullPaneOutcomeSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
@@ -513,6 +515,36 @@ async function visiblePaneMissingIdentitySmoke() {
   assert.strictEqual(detail, null, "title-only identity must not authorize pane reuse");
 }
 
+async function visiblePaneTitleIdentitySmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          currentJobId: "title-job",
+          title: "AI application developer - senior",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const url = "https://www.zhipin.com/job_detail/title-job.html";
+  const normalized = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "AI application developer",
+    url
+  });
+  assert(normalized.description.length >= 120);
+  const missing = await adapter.readVisiblePaneDetail("pane-tab", { url });
+  assert.strictEqual(missing, null, "missing expected title must fail closed");
+  const empty = await adapter.readVisiblePaneDetail("pane-tab", { title: "   ", url });
+  assert.strictEqual(empty, null, "empty expected title must fail closed");
+}
+
 async function standaloneDetailTimeoutSmoke() {
   const navigations = [];
   const browser = {
@@ -557,6 +589,30 @@ async function obsoleteCardActivationUnavailableSmoke() {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "adapters", "sites", "boss.js"), "utf8");
   assert(!source.includes("readCardDetail"), "obsolete readCardDetail API must be unavailable");
   assert(!source.includes("__bossOpenCard"), "obsolete card activation helper must be unavailable");
+}
+
+async function scanNullPaneOutcomeSmoke() {
+  const browser = {
+    async activeTabId() { return "scan-tab"; },
+    async navigate() {}
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("pane-null")];
+  adapter.readVisiblePaneDetail = async () => null;
+  const outcomes = [];
+  const jobs = await adapter.scanBrowser({
+    tabId: "scan-tab",
+    keywords: ["pane-null"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onDetailResult: async (outcome) => outcomes.push(outcome)
+  });
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(jobs[0].detailRead, false);
+  assert.strictEqual(jobs[0].detailErrorCode, "BOSS_VISIBLE_PANE_UNAVAILABLE");
+  assert.deepStrictEqual(outcomes, [{ outcome: "failed", errorCode: "BOSS_VISIBLE_PANE_UNAVAILABLE" }]);
 }
 
 async function targetIsolationSmoke() {

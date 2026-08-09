@@ -734,6 +734,9 @@ class BossSiteAdapter {
               try {
                 const detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal);
                 throwIfAborted(options.signal);
+                if (!detail) {
+                  throw bossError("BOSS_VISIBLE_PANE_UNAVAILABLE", "BOSS visible detail pane is unavailable.");
+                }
                 const detailedJob = normalizeBossJob({
                   ...entry.job,
                   description: detail.description,
@@ -1071,9 +1074,9 @@ class BossSiteAdapter {
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
       if (!detail?.currentJobId || detail.currentJobId !== expectedJobId) return null;
-      const titleMatches = normalizedComparableText(detail.title)
-        .includes(normalizedComparableText(job?.title));
-      if (!titleMatches) return null;
+      const expectedTitle = normalizedComparableText(job?.title);
+      const actualTitle = normalizedComparableText(detail?.title);
+      if (!expectedTitle || !actualTitle || !actualTitle.includes(expectedTitle)) return null;
       if (detail.description?.length >= 120) {
         await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
         return {
