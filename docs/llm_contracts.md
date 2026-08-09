@@ -162,3 +162,23 @@
 真实适配器使用 OpenAI-compatible `/chat/completions`，支持 JSON mode；不支持时自动回退普通 JSON 提示。仅对短暂 5xx/网络错误做有限重试，不对鉴权、余额和模型名错误盲目重试。
 
 每个逻辑调用记录：kind、provider、model、缓存命中、延迟、尝试次数、HTTP 状态和 token 用量。日志不得包含 system prompt、输入、输出、简历、JD 或 Key。
+
+
+## draftMessageGroup（消息组回复草稿）
+
+独立于 `draftCommunication`，不修改既有匹配契约。
+
+输入：`profile`、`job`、`messages[{messageKey,text}]`、`facts[{key,value,subjectKey,updatedAt}]`、`requestedSubjectKeys`。
+
+输出 JSON：`messageCategory`、`requiredFactKeys`、`usedFactKeys`、`responseItems[{id,kind,required}]`、`coverage[{responseItemId,covered}]`、`missingFact`、`messages`（最多 2 条）、`progressUpdate`。
+
+规则：
+
+- 有序消息视为同一轮 HR 问题，必须全部覆盖。
+- 只使用传入的已确认事实；缺失或过期事实时不输出草稿。
+- 不确认面试时间、不声称已投递简历。
+- 面试邀约不输出草稿。
+- GAP、离职原因、短期项目解释必须有匹配 subjectKey 的稳定作用域事实。
+- `requestedSubjectKeys` 只包含当前消息正文能够明确定位的稳定事实作用域；不匹配的稳定事实会在模型调用前移除。作用域为空或无法确认时，不允许模型使用稳定事实生成草稿。
+- 提供商的 `nextAction` 不持久化，统一替换为安全提示。
+- 草稿只存内存，调用结束后消息文本立即清空。

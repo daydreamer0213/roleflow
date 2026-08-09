@@ -24,6 +24,9 @@ const {
   savePlatformFilterCatalog,
   getSiteRuntimeState,
   getSiteScanLease,
+  acquireSiteScanLease,
+  renewSiteScanLease,
+  releaseSiteScanLease,
   listSiteAccessEvents,
   createScanRun,
   createWorkflowRun,
@@ -80,6 +83,16 @@ const {
   communicationBatchSummary,
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
+const {
+  PROGRESS_STAGES,
+  ensureProgressCard,
+  transitionProgressCard,
+  correctProgressStage,
+  getProgressCardForJob,
+  getProgressCardById,
+  recordManualProgressAction,
+  listProgressCardsWithEvents
+} = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
@@ -136,6 +149,57 @@ const {
 } = require("../core/workflow_control");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
+
+const PROGRESS_ACTIONS = Object.freeze({
+  reply_confirmed_sent: {
+    stage: "waiting_reply",
+    eventType: "reply_confirmed_sent",
+    summary: "用户确认已手动发送",
+    nextAction: "等待招聘方回复"
+  },
+  mark_needs_user_action: {
+    stage: "needs_user_action",
+    eventType: "manual_review_requested",
+    summary: "用户标记需要处理",
+    nextAction: "请用户确认下一步"
+  },
+  mark_interview_invited: {
+    stage: "interview_invited",
+    eventType: "interview_invited",
+    summary: "用户确认收到面试邀约",
+    nextAction: "请用户决定是否接受并安排时间"
+  },
+  mark_interview_scheduled: {
+    stage: "interview_scheduled",
+    eventType: "interview_scheduled",
+    summary: "",
+    nextAction: "按已确认时间参加面试"
+  },
+  mark_resume_submitted: {
+    stage: "resume_submitted",
+    eventType: "resume_submitted",
+    summary: "用户确认已投递简历",
+    nextAction: "等待招聘方后续反馈"
+  },
+  mark_rejected: {
+    stage: "rejected",
+    eventType: "rejected",
+    summary: "用户确认已拒绝",
+    nextAction: ""
+  },
+  close_opportunity: {
+    stage: "closed",
+    eventType: "opportunity_closed",
+    summary: "用户关闭机会",
+    nextAction: ""
+  },
+  reopen_opportunity: {
+    stage: "needs_user_action",
+    eventType: "opportunity_reopened",
+    summary: "用户重新开启机会",
+    nextAction: "请用户确认下一步"
+  }
+});
 const {
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
@@ -146,6 +210,8 @@ const {
 const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_policy");
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
+const { createMessageDiscoveryController } = require("./message_discovery_controller");
+const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const boss = require("../adapters/sites/boss");
 const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
 
@@ -247,7 +313,8 @@ function createDashboardServer({
   browserReadinessProbe = null,
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
-  workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs
+  workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
+  messageDiscoveryDependencies = {}
 }) {
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
@@ -355,7 +422,17 @@ function createDashboardServer({
     : forceMock
       ? null
       : resolveRuntimeBatchBackup({ root, fallbackModelConfig: modelConfig });
-  return http.createServer(async (req, res) => {
+  const messageDiscovery = createMessageDiscoveryController({
+    db,
+    logger,
+    getModelConfig: () => getRuntimeModel("deep_analysis"),
+    modelReady: () => modelReady("deep_analysis"),
+    acquireLease: acquireSiteScanLease,
+    renewLease: renewSiteScanLease,
+    releaseLease: releaseSiteScanLease,
+    ...messageDiscoveryDependencies
+  });
+  const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();
     let url;
@@ -372,6 +449,12 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
+      if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({
+        db,
+        searchParams: url.searchParams,
+        controller: messageDiscovery,
+        helpers: messageDiscoveryViewHelpers()
+      }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
@@ -407,6 +490,7 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
+      if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
@@ -414,6 +498,8 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
+      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
@@ -434,6 +520,22 @@ function createDashboardServer({
       respondUnexpectedError(res, error, requestId, url?.pathname || req.url);
     }
   });
+  const closeHttpServer = dashboardServer.close.bind(dashboardServer);
+  dashboardServer.close = (callback) => {
+    const discoveryCleanup = messageDiscovery.close();
+    return closeHttpServer((serverError) => {
+      Promise.resolve(discoveryCleanup).then(
+        () => callback?.(serverError),
+        (cleanupError) => {
+          logger.warn("message_discovery_shutdown_cleanup_failed", {
+            errorCode: String(cleanupError?.code || "MESSAGE_DISCOVERY_CLEANUP_FAILED")
+          });
+          callback?.(serverError || cleanupError);
+        }
+      );
+    });
+  };
+  return dashboardServer;
 }
 
 function handleResumeFile(_req, res, { db, root, searchParams }) {
@@ -2667,6 +2769,62 @@ function handleRecommendationFeedbackApi(db, rawBody, contentType = "application
   }
 }
 
+async function handleMessageDiscovery(req, res, controller) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const action = String(params.action || "").trim();
+    let result;
+    if (action === "start") result = controller.start(params.profileId);
+    else if (action === "stop") result = controller.stop(params.profileId);
+    else if (action === "dismiss") result = controller.dismiss(params.profileId);
+    else throw appError("MESSAGE_DISCOVERY_ACTION_INVALID", "消息发现操作无效。", { statusCode: 400 });
+    sendJson(res, result.statusCode, result.body);
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || 400;
+    sendJson(res, statusCode, {
+      error: messageDiscoveryPublicError(error),
+      errorCode: error?.code || "MESSAGE_DISCOVERY_FAILED"
+    });
+  }
+}
+
+function handleMessageDiscoveryStatus(res, controller, profileIdValue) {
+  try {
+    sendJson(res, 200, controller.status(profileIdValue));
+  } catch (error) {
+    sendJson(res, 400, {
+      error: messageDiscoveryPublicError(error),
+      errorCode: error?.code || "MESSAGE_DISCOVERY_FAILED"
+    });
+  }
+}
+
+function messageDiscoveryPublicError(error) {
+  return {
+    MESSAGE_DISCOVERY_PROFILE_INVALID: "profileId 无效。",
+    MESSAGE_DISCOVERY_PROFILE_NOT_FOUND: "候选人画像不存在。",
+    MESSAGE_DISCOVERY_ALREADY_RUNNING: "该候选人的消息发现正在运行。",
+    MESSAGE_DISCOVERY_LEASE_BUSY: "BOSS 当前有其他任务运行。",
+    MESSAGE_DISCOVERY_NOT_FOUND: "没有可操作的消息发现任务。",
+    MESSAGE_DISCOVERY_NOT_RUNNING: "消息发现当前未运行。",
+    MESSAGE_DISCOVERY_RUNNING: "请先安全停止，再放弃草稿。",
+    MESSAGE_DISCOVERY_ACTION_INVALID: "消息发现操作无效。"
+  }[String(error?.code || "")] || "消息发现操作失败。";
+}
+
+function messageDiscoveryViewHelpers() {
+  return {
+    getCandidateProfile,
+    renderErrorPage,
+    renderPage,
+    navLinks,
+    escapeHtml,
+    escapeAttr,
+    progressStageLabel,
+    newProgressRequestKey
+  };
+}
+
 async function handleCommunication(req, res, { db, modelConfig, modelReady, logger, requestId }) {
   let params = {};
   try {
@@ -2717,6 +2875,59 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
   } catch (error) {
     const planId = Number(params.planId || 0);
     respondUiError(res, error, planId ? `/queue?planId=${planId}` : "/", { logger, requestId, event: "communication_draft_failed", fallbackCode: "COMMUNICATION_DRAFT_FAILED" });
+  }
+}
+
+async function handleProgress(req, res, db, messageDiscovery = null) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const card = getProgressCardById(db, params.cardId);
+    if (!card) throw appError("PROGRESS_CARD_NOT_FOUND", "进展卡不存在。", { statusCode: 404 });
+    const action = String(params.action || "").trim();
+    if (action === "correct_stage") {
+      const targetStage = String(params.targetStage || "").trim();
+      if (!PROGRESS_STAGES.has(targetStage)) throw appError("PROGRESS_STAGE_INVALID", "目标阶段无效。", { statusCode: 400 });
+      correctProgressStage(db, {
+        cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
+        expectedStage: card.stage,
+        toStage: targetStage,
+        reason: params.reason
+      });
+    } else {
+      const definition = PROGRESS_ACTIONS[action];
+      if (!definition) throw appError("PROGRESS_ACTION_INVALID", "进展操作无效。", { statusCode: 400 });
+      const enteredSummary = String(params.summary || "").trim();
+      if (action === "mark_interview_scheduled" && !enteredSummary) {
+        throw appError("PROGRESS_INTERVIEW_SUMMARY_REQUIRED", "请填写你确认的面试安排摘要。", { statusCode: 400 });
+      }
+      let scheduledAt = String(params.scheduledAt || "").trim();
+      if (action === "mark_interview_scheduled") {
+        if (!Number.isFinite(Date.parse(scheduledAt))) {
+          throw appError("PROGRESS_INTERVIEW_TIME_INVALID", "面试时间必须是有效日期时间。", { statusCode: 400 });
+        }
+        scheduledAt = new Date(scheduledAt).toISOString();
+      }
+      recordManualProgressAction(db, {
+        cardId: card.id,
+        idempotencyKey: params.idempotencyKey,
+        stage: definition.stage,
+        eventType: definition.eventType,
+        summary: enteredSummary || definition.summary,
+        nextAction: definition.nextAction,
+        scheduledAt
+      });
+      if (action === "reply_confirmed_sent" && messageDiscovery) {
+        messageDiscovery.clearDraftForCard(card.profileId, card.id);
+      }
+    }
+    redirect(res, `/queue?planId=${card.planId}`);
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "PROGRESS_UPDATE_FAILED" });
+    const statusCode = Number(issue.statusCode) >= 400 && Number(issue.statusCode) < 500
+      ? issue.statusCode
+      : 400;
+    sendJson(res, statusCode, { error: issue.message, errorCode: issue.code });
   }
 }
 
@@ -4232,13 +4443,18 @@ function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = ge
 }
 
 function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
-  const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
+  const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended", "waiting_reply", "needs_user_action", "interview"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
-  const fullPool = listDecisionPool(db, { planId: plan.id });
-  const allCandidates = fullPool.filter(compactAwaitingAction);
+  const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
+  const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
+  const fullPool = listDecisionPool(db, { planId: plan.id })
+    .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
+  const allCandidates = fullPool.filter((job) => compactAwaitingAction(job) && !job.progressCard);
   const noReplyCandidates = fullPool.filter((job) => job.applicationStatus === "no_reply");
-  const poolBase = pool === "no_reply" ? noReplyCandidates : allCandidates;
+  const progressCandidates = fullPool.filter((job) => job.progressCard);
+  const progressPools = new Set(["waiting_reply", "needs_user_action", "interview"]);
+  const poolBase = pool === "no_reply" ? noReplyCandidates : progressPools.has(pool) ? progressCandidates : allCandidates;
   const scopeCounts = Object.fromEntries(["all", "new", "repeated", "backlog"].map((key) => [key, poolBase.filter((job) => key === "all" || queueScopeForJob(job, latestMainBatchId) === key).length]));
   const candidates = poolBase.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
   const scopedAwaiting = allCandidates.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
@@ -4247,12 +4463,19 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   counts.detail_pending = refreshable.filter((job) => (job.qualityTags || []).includes("detail_unverified")).length;
   counts.activity_pending = refreshable.filter((job) => ((job.qualityTags || []).includes("activity_unverified") || (job.qualityTags || []).includes("stale_or_unknown_active")) && !(job.qualityTags || []).includes("detail_unverified")).length;
   counts.no_reply = noReplyCandidates.length;
+  const scopedProgress = progressCandidates.filter((job) => scope === "all" || queueScopeForJob(job, latestMainBatchId) === scope);
+  counts.waiting_reply = scopedProgress.filter((job) => job.progressCard.stage === "waiting_reply").length;
+  counts.needs_user_action = scopedProgress.filter((job) => ["needs_user_action", "reply_ready"].includes(job.progressCard.stage)).length;
+  counts.interview = scopedProgress.filter((job) => ["interview_invited", "interview_scheduled"].includes(job.progressCard.stage)).length;
   const wanted = pool === "focus" ? new Set(["primary", "apply"]) : new Set([pool]);
   const filtered = candidates.filter((job) => {
     const tags = job.qualityTags || [];
     if (pool === "no_reply") return true;
     if (pool === "detail_pending") return job.decisionBucket === "refresh" && tags.includes("detail_unverified");
     if (pool === "activity_pending") return job.decisionBucket === "refresh" && (tags.includes("activity_unverified") || tags.includes("stale_or_unknown_active")) && !tags.includes("detail_unverified");
+    if (pool === "waiting_reply") return job.progressCard?.stage === "waiting_reply";
+    if (pool === "needs_user_action") return ["needs_user_action", "reply_ready"].includes(job.progressCard?.stage);
+    if (pool === "interview") return ["interview_invited", "interview_scheduled"].includes(job.progressCard?.stage);
     return wanted.has(job.decisionBucket);
   });
   const pageSize = 30;
@@ -4263,9 +4486,13 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
     jobs,
     filters: { status: "all", level: "all", fresh: "all", decision: "all", q: "", planId: plan.id, batch: "latest", batchId: null, queuePool: pool, queueScope: scope, queuePage: page, latestMainBatchId },
     latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
-    title: pool === "no_reply" ? "无回复待跟进" : "当前待处理岗位",
-    hint: pool === "no_reply" ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。" : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
-    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId },
+    title: pool === "no_reply" ? "无回复待跟进" : progressPools.has(pool) ? "求职进展" : "当前待处理岗位",
+    hint: pool === "no_reply"
+      ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。"
+      : progressPools.has(pool)
+        ? "进展操作只更新本地记录；回复、投递、面试确认仍由你在平台上手动完成。"
+        : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
+    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId, profileId: plan.profileId },
     outcomeAnalyticsPanel
   });
 }
@@ -4429,15 +4656,16 @@ function renderCompactDashboard(data) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
 body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
 <nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
-  ${queue ? renderCompactPoolTabs(queue, filters.planId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
+  ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
 ${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
 }
 
-function renderCompactPoolTabs(queue, planId) {
+function renderCompactPoolTabs(queue, planId, profileId = "") {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
-  const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
+  const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["waiting_reply", "等待回复", queue.counts.waiting_reply || 0], ["needs_user_action", "需要处理", queue.counts.needs_user_action || 0], ["interview", "面试进展", queue.counts.interview || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
-    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`;
+    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`
+    + (profileId ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}">消息发现</a>` : "");
   const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);
@@ -4461,6 +4689,12 @@ function renderCompactFilters(filters) {
 }
 
 function renderCompactJob(job, filters) {
+  const html = renderCompactJobBase(job, filters);
+  if (!job.progressCard) return html;
+  return html.replace("</details></article>", `</details>${renderProgressPanel(job.progressCard)}</article>`);
+}
+
+function renderCompactJobBase(job, filters) {
   const analysis = job.analysis || {};
   const query = compactQuery(filters);
   const context = `${job.profileId ? `<input type="hidden" name="profileId" value="${escapeAttr(job.profileId)}">` : ""}${job.searchPlanId ? `<input type="hidden" name="planId" value="${escapeAttr(job.searchPlanId)}">` : ""}`;
@@ -4478,6 +4712,45 @@ function renderCompactJob(job, filters) {
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(job.risks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+}
+
+function renderProgressPanel(card) {
+  const eventTimeline = (card.events || []).slice(-5)
+    .map((event) => `<li>${escapeHtml(compactDateTime(event.occurredAt))} · ${escapeHtml(event.summary)}</li>`)
+    .join("");
+  const context = `<input type="hidden" name="cardId" value="${card.id}">`;
+  const requestKey = () => `<input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}">`;
+  const actionButton = (action, label) => `<form method="post" action="/api/progress">${context}${requestKey()}<button name="action" value="${action}">${label}</button></form>`;
+  const stageAction = card.stage === "reply_ready"
+    ? actionButton("reply_confirmed_sent", "已手动发送")
+    : card.stage === "interview_invited"
+      ? `<form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
+      : "";
+  const controls = card.stage === "closed"
+    ? actionButton("reopen_opportunity", "重新开启机会")
+    : `${stageAction}${actionButton("mark_needs_user_action", "标记需要处理")}${actionButton("mark_resume_submitted", "标记已投递简历")}${actionButton("close_opportunity", "关闭机会")}`;
+  const correctionOptions = [...PROGRESS_STAGES]
+    .map((stage) => `<option value="${stage}">${escapeHtml(progressStageLabel(stage))}</option>`)
+    .join("");
+  return `<section class="progress-card" style="margin-top:12px;padding:12px;border:1px solid #86b9ad;border-radius:7px;background:#f3faf8"><strong>${escapeHtml(progressStageLabel(card.stage))}</strong><div class="line">下一步：${escapeHtml(card.nextAction || "等待用户确认")}${card.scheduledAt ? ` · ${escapeHtml(compactDateTime(card.scheduledAt))}` : ""}</div>${eventTimeline ? `<ol>${eventTimeline}</ol>` : ""}<p class="line">所有按钮只更新本地记录，不会自动填写或发送。</p><div class="quick-actions">${controls}</div><details><summary>纠正阶段</summary><form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="correct_stage"><select name="targetStage">${correctionOptions}</select><input name="reason" placeholder="纠正原因" required><button>保存纠正</button></form></details></section>`;
+}
+
+function newProgressRequestKey() {
+  return `progress:${randomUUID()}`;
+}
+
+function progressStageLabel(stage) {
+  return {
+    contact_started: "已发起沟通",
+    waiting_reply: "已发起沟通",
+    needs_user_action: "需要你处理",
+    reply_ready: "回复草稿已就绪",
+    interview_invited: "收到面试邀约",
+    interview_scheduled: "面试已安排",
+    resume_submitted: "已投递简历",
+    rejected: "已拒绝",
+    closed: "已关闭"
+  }[stage] || "求职进展";
 }
 
 function compactSeenLabel(job, latestMainBatchId) {

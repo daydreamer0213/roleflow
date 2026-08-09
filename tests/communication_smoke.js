@@ -15,6 +15,12 @@ const {
   listCandidateFacts
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
+const {
+  ensureProgressCard,
+  transitionProgressCard,
+  getProgressCardForJob,
+  listProgressEvents
+} = require("../src/core/candidate_progress");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-communication-"));
@@ -72,12 +78,107 @@ let server;
       score: 20, level: "优先", matches: ["Python", "RAG"], risks: [], qualityTags: ["work_schedule_double"], analysis
     }, batchId);
 
+    const progressCard = ensureProgressCard(db, {
+      profileId: saved.profileId,
+      planId: saved.planId,
+      jobId,
+      source: "boss"
+    });
+    transitionProgressCard(db, {
+      cardId: progressCard.id,
+      expectedStage: "contact_started",
+      stage: "waiting_reply",
+      nextAction: "等待招聘方回复"
+    });
+
     server = createDashboardServer({ db, root, dbPath, forceMock: true });
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     const base = `http://127.0.0.1:${server.address().port}`;
 
     const queueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}`)).text();
-    assert(queueHtml.includes("生成定制招呼语"));
+    assert(!queueHtml.includes("生成定制招呼语"), "communicated jobs must move out of the focus pool");
+    assert(queueHtml.includes("等待回复"));
+
+    transitionProgressCard(db, {
+      cardId: progressCard.id,
+      expectedStage: "waiting_reply",
+      stage: "reply_ready",
+      nextAction: "Review draft before manual send"
+    });
+    const progressQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=needs_user_action`)).text();
+    assert(progressQueueHtml.includes("回复草稿已就绪"));
+    assert(progressQueueHtml.includes("已手动发送"));
+
+    const sent = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(1),
+      action: "reply_confirmed_sent"
+    });
+    assert.strictEqual(sent.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "waiting_reply");
+    assert.strictEqual(listProgressEvents(db, progressCard.id).at(-1).type, "reply_confirmed_sent");
+
+    const invited = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(2),
+      action: "mark_interview_invited"
+    });
+    assert.strictEqual(invited.status, 303);
+    const missingScheduleSummary = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(3),
+      action: "mark_interview_scheduled",
+      scheduledAt: "2026-08-01T15:00:00.000Z"
+    });
+    assert.strictEqual(missingScheduleSummary.status, 400);
+    const scheduled = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(4),
+      action: "mark_interview_scheduled",
+      scheduledAt: "2026-08-01T15:00:00.000Z",
+      summary: "用户确认周五下午三点面试"
+    });
+    assert.strictEqual(scheduled.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "interview_scheduled");
+    const interviewQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=interview`)).text();
+    assert(interviewQueueHtml.includes("2026-08-01 15:00"));
+
+    const correction = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(5),
+      action: "correct_stage",
+      targetStage: "resume_submitted",
+      reason: "用户确认已提交简历"
+    });
+    assert.strictEqual(correction.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "resume_submitted");
+    assert.deepStrictEqual(listProgressEvents(db, progressCard.id).at(-1).metadata, {
+      fromStage: "interview_scheduled",
+      toStage: "resume_submitted"
+    });
+    const rejectedCorrection = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(6),
+      action: "correct_stage",
+      targetStage: "waiting_reply",
+      reason: ""
+    });
+    assert.strictEqual(rejectedCorrection.status, 400);
+
+    const closed = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(7),
+      action: "close_opportunity"
+    });
+    assert.strictEqual(closed.status, 303);
+    const reopened = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(8),
+      action: "reopen_opportunity",
+      summary: "用户重新开启机会"
+    });
+    assert.strictEqual(reopened.status, 303);
+    assert.strictEqual(getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage, "needs_user_action");
 
     const greeting = await post(base, "/api/communication", { mode: "greeting", jobId, profileId: saved.profileId, planId: saved.planId });
     const greetingHtml = await greeting.text();
@@ -172,4 +273,8 @@ function post(base, route, values) {
     body: new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)])).toString(),
     redirect: "manual"
   });
+}
+
+function requestKey(sequence) {
+  return `progress:00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 }

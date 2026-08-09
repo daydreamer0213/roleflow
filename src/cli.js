@@ -2036,9 +2036,69 @@ function startDashboard(db, args) {
     forceMock: args["force-mock"] === true
   });
   logger.info("dashboard_starting", { port, dbPath: path.resolve(args.db || DEFAULT_DB) });
+  installDashboardSignalHandlers({ server, db, logger });
   server.listen(port, "127.0.0.1", () => {
     console.log(`Dashboard: http://127.0.0.1:${port}/`);
     console.log("只写本地 SQLite，不会自动投递或发消息。按 Ctrl+C 停止。");
+  });
+  return server;
+}
+
+function installDashboardSignalHandlers({
+  server,
+  db,
+  processRef = process,
+  logger: scopedLogger = logger
+} = {}) {
+  if (!server || typeof server.close !== "function") throw new Error("dashboard shutdown requires a server");
+  if (!db || typeof db.close !== "function") throw new Error("dashboard shutdown requires a database");
+  let shutdownPromise = null;
+  const onSigint = () => {
+    void shutdown("SIGINT").catch((error) => {
+      scopedLogger.error("dashboard_shutdown_failed", { signal: "SIGINT", error: errorMeta(error) });
+    });
+  };
+  const onSigterm = () => {
+    void shutdown("SIGTERM").catch((error) => {
+      scopedLogger.error("dashboard_shutdown_failed", { signal: "SIGTERM", error: errorMeta(error) });
+    });
+  };
+  const dispose = () => {
+    processRef.removeListener("SIGINT", onSigint);
+    processRef.removeListener("SIGTERM", onSigterm);
+  };
+  const shutdown = (signal = "") => {
+    if (shutdownPromise) return shutdownPromise;
+    dispose();
+    scopedLogger.info("dashboard_shutdown_started", { signal: String(signal || "") });
+    shutdownPromise = closeDashboardServer(server)
+      .then(() => db.close())
+      .then(() => {
+        processRef.exitCode = 0;
+        scopedLogger.info("dashboard_shutdown_completed", { signal: String(signal || "") });
+      })
+      .catch((error) => {
+        processRef.exitCode = 1;
+        throw error;
+      });
+    return shutdownPromise;
+  };
+  processRef.once("SIGINT", onSigint);
+  processRef.once("SIGTERM", onSigterm);
+  return { shutdown, dispose };
+}
+
+function closeDashboardServer(server) {
+  return new Promise((resolve, reject) => {
+    try {
+      server.close((error) => {
+        if (error && error.code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+        else resolve();
+      });
+    } catch (error) {
+      if (error?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+      else reject(error);
+    }
   });
 }
 
@@ -2151,6 +2211,8 @@ module.exports = {
   resolveScanModelSettingsContext,
   resolveScanModelRuntime,
   prepareWorkspaceTabsCommand,
+  startDashboard,
+  installDashboardSignalHandlers,
   communicate,
   resolveCommunicationBrowserAuthority,
   executeWithSiteScanLease,

@@ -14,6 +14,10 @@ const {
 const { classifyExperienceFit } = require("../src/core/scoring");
 const boss = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
+const {
+  ensureProgressCard,
+  transitionProgressCard
+} = require("../src/core/candidate_progress");
 const { handleMarkApi, getDashboardData, renderPlanPage, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
@@ -142,14 +146,29 @@ function queueUiSmoke({ profileId, planId }) {
   const latestBatchId = createBatch(db, "boss", "latest-main", "queue-scope", { profileId, searchPlanId: planId, filterSnapshot: { execution: { scanKind: "daily" } } });
   const newJobId = upsertJob(db, job("latest-new", { title: "本轮新增岗位" }), latestBatchId);
   upsertJob(db, job("old-0", { title: "本轮再次出现岗位" }), latestBatchId);
+  const progressCard = ensureProgressCard(db, {
+    profileId,
+    planId,
+    jobId: newJobId,
+    source: "boss"
+  });
+  transitionProgressCard(db, {
+    cardId: progressCard.id,
+    expectedStage: "contact_started",
+    stage: "waiting_reply",
+    nextAction: "等待招聘方回复"
+  });
+  const progressHtml = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "waiting_reply" }) });
+  assert(progressHtml.includes("求职进展"));
+  assert(progressHtml.includes("已发起沟通"));
   const lastPage = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "all", page: "5" }) });
   assert(lastPage.includes("当前待处理岗位"));
   assert(
-    lastPage.includes("当前显示 121-132 / 共 132 条"),
+    lastPage.includes("当前显示 121-131 / 共 131 条"),
     `分页摘要不符：${lastPage.match(/当前显示[^<]*/)?.[0] || lastPage.match(/共 \d+ 条/)?.[0] || "未找到摘要"}`
   );
   assert(lastPage.includes("上一页"));
-  assert(lastPage.includes("本轮新增 1"));
+  assert(lastPage.includes("本轮新增 0"));
   assert(lastPage.includes("本轮重复 1"));
   assert(
     lastPage.includes("历史未处理 131"),
@@ -157,10 +176,7 @@ function queueUiSmoke({ profileId, planId }) {
   );
 
   const newest = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "new" }) });
-  assert(newest.includes("本轮新增岗位"));
-  assert(newest.includes("首次 "));
-  assert(newest.includes("最近 "));
-  assert(newest.includes("7 天后再看"));
+  assert(!newest.includes("本轮新增岗位"), "communicated jobs must not appear in the apply/new pool");
 
   const repeated = renderQueuePage({ db, searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "repeated" }) });
   assert(repeated.includes("本轮再次出现岗位"));

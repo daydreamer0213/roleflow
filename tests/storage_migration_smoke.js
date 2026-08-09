@@ -4,6 +4,11 @@ const os = require("os");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
+const MATCHING_CARD_VERSION = 5;
+const DURABLE_WORKFLOW_VERSION = 6;
+const CANDIDATE_PROGRESS_VERSION = 7;
+const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
+const MESSAGE_PREVIEW_VERSION = 9;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -20,11 +25,14 @@ try {
       { version: 2, name: "communication_batches_v1", backup_path: null },
       { version: 3, name: "workflow_runs_v1", backup_path: null },
       { version: 4, name: "workflow_runs_three_slots", backup_path: null },
-      { version: 5, name: "candidate_matching_cards_v1", backup_path: null },
-      { version: 6, name: "durable_workflow_progress_v1", backup_path: null }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1", backup_path: null },
+      { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1", backup_path: null },
+      { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1", backup_path: null },
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null },
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "durable_workflow_progress_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_preview_states_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -54,8 +62,20 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_workflow_job_tasks_claim'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_preview_states'").get().n,
+    1
+  );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, 6);
+  assert.strictEqual(SCHEMA_VERSION, MESSAGE_PREVIEW_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -82,8 +102,11 @@ try {
       { version: 2, name: "communication_batches_v1" },
       { version: 3, name: "workflow_runs_v1" },
       { version: 4, name: "workflow_runs_three_slots" },
-      { version: 5, name: "candidate_matching_cards_v1" },
-      { version: 6, name: "durable_workflow_progress_v1" }
+      { version: MATCHING_CARD_VERSION, name: "candidate_matching_cards_v1" },
+      { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1" },
+      { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1" },
+      { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" },
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -101,6 +124,18 @@ try {
   );
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_matching_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_cards'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='candidate_progress_events'").get().n,
+    1
+  );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_preview_states'").get().n,
     1
   );
   db.close();
@@ -361,8 +396,8 @@ try {
   ) VALUES (?, ?, ?, ?)`).run(v4ProfileId, v4DocumentId, JSON.stringify(v4Profile), v4Now).lastInsertRowid);
   db.exec(`
     DROP TABLE candidate_matching_cards;
-    DELETE FROM schema_migrations WHERE version = 5;
-    PRAGMA user_version = 4;
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4LegacyPath);
@@ -401,8 +436,8 @@ try {
   ) VALUES (?, ?, NULL, 'hash-has-card', ?, 'draft', 'model', NULL, ?, ?)`)
     .run(hasCardProfileId, hasCardVersionId, JSON.stringify({ targetDirections: ["用户运营"], strongEvidence: [], transferableCapabilities: [], cautionTransitions: [], userNotes: [], source: "model" }), v4Now, v4Now);
   db.exec(`
-    DELETE FROM schema_migrations WHERE version = 5;
-    PRAGMA user_version = 4;
+    DELETE FROM schema_migrations WHERE version = ${MATCHING_CARD_VERSION};
+    PRAGMA user_version = ${MATCHING_CARD_VERSION - 1};
   `);
   db.close();
   db = openDb(v4MixedPath);
@@ -416,6 +451,92 @@ try {
   assert.strictEqual(kept[0].source, "model");
   assert.deepStrictEqual(JSON.parse(kept[0].card_json).targetDirections, ["用户运营"]);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+
+  const progressV6Path = path.join(root, "candidate-progress-v6.sqlite");
+  db = openDb(progressV6Path);
+  const progressNow = "2026-07-23T00:00:00.000Z";
+  const progressProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Progress Migration Candidate', '{}', NULL, ?, ?)`)
+    .run(progressNow, progressNow).lastInsertRowid);
+  const progressPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Progress Migration Plan', '{}', NULL, 1, ?, ?)`)
+    .run(progressProfileId, progressNow, progressNow).lastInsertRowid);
+  const progressJobs = [
+    { sourceId: "historical-communication-succeeded", status: "applied", reasonCode: "communication_succeeded" },
+    { sourceId: "historical-v3-succeeded", status: "applied", reasonCode: "succeeded" },
+    { sourceId: "historical-already-communicated", status: "later", reasonCode: "already_communicated" }
+  ].map((item) => ({
+    ...item,
+    jobId: Number(db.prepare(`INSERT INTO jobs(
+      source, source_id, title, first_seen_at, last_seen_at
+    ) VALUES ('boss', ?, ?, ?, ?)`)
+      .run(item.sourceId, item.sourceId, progressNow, progressNow).lastInsertRowid)
+  }));
+  for (const item of progressJobs) {
+    db.prepare(`INSERT INTO candidate_job_states(
+      profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'historical state', NULL, ?)`)
+      .run(progressProfileId, item.jobId, progressPlanId, item.status, item.reasonCode, progressNow);
+  }
+  db.exec(`
+    DROP TABLE candidate_progress_events;
+    DROP TABLE candidate_progress_cards;
+    DROP TABLE message_preview_states;
+    DELETE FROM schema_migrations WHERE version IN (7, 8, 9);
+    PRAGMA user_version = 6;
+  `);
+  db.close();
+  db = openDb(progressV6Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  const progressCards = db.prepare(`SELECT cards.job_id, cards.stage, events.type, events.idempotency_key
+    FROM candidate_progress_cards cards
+    JOIN candidate_progress_events events ON events.card_id = cards.id
+    WHERE cards.profile_id = ?
+    ORDER BY cards.job_id`).all(progressProfileId);
+  assert.deepStrictEqual(
+    progressCards.map((row) => ({
+      jobId: Number(row.job_id),
+      stage: row.stage,
+      type: row.type,
+      idempotencyKey: row.idempotency_key
+    })),
+    progressJobs.map((item) => ({
+      jobId: item.jobId,
+      stage: "waiting_reply",
+      type: item.reasonCode === "already_communicated" ? "contact_already_exists" : "contact_started",
+      idempotencyKey: `migration:communication:${progressProfileId}:${item.jobId}:${item.reasonCode}`
+    }))
+  );
+  assert.deepStrictEqual(
+    db.prepare(`SELECT job_id, status, reason_code FROM candidate_job_states
+      WHERE profile_id = ? ORDER BY job_id`).all(progressProfileId).map((row) => ({
+        jobId: Number(row.job_id),
+        status: row.status,
+        reasonCode: row.reason_code
+      })),
+    progressJobs.map((item) => ({
+      jobId: item.jobId,
+      status: item.status,
+      reasonCode: item.reasonCode
+    })),
+    "candidate progress migration must not rewrite historical application status"
+  );
+  db.close();
+  db = openDb(progressV6Path);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(progressProfileId).n,
+    progressJobs.length,
+    "candidate progress backfill must be idempotent"
+  );
+  assert.strictEqual(
+    db.prepare(`SELECT COUNT(*) AS n FROM candidate_progress_events
+      WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)`).get(progressProfileId).n,
+    progressJobs.length,
+    "candidate progress events must not duplicate after reopen"
+  );
   db.close();
 
   const durableV5Path = path.join(root, "durable-v5.sqlite");
@@ -531,7 +652,7 @@ try {
   const durableBackupDir = path.join(path.dirname(durableV5Path), "backups");
   const durableBackupsBefore = fs.readdirSync(durableBackupDir).filter((name) => name.endsWith(".sqlite"));
   db = openDb(durableV5Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 1);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM job_observations").get().n, 3);

@@ -597,6 +597,58 @@ CREATE INDEX IF NOT EXISTS idx_matching_cards_resume_hash
   ON candidate_matching_cards(profile_id, resume_content_hash, status);
 `;
 
+const CANDIDATE_PROGRESS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_progress_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  recruiter_name TEXT NOT NULL DEFAULT '',
+  thread_key TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL,
+  next_action TEXT NOT NULL DEFAULT '',
+  scheduled_at TEXT,
+  last_event_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, job_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+CREATE TABLE IF NOT EXISTS candidate_progress_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_progress_cards_plan
+  ON candidate_progress_cards(plan_id, stage, updated_at);
+CREATE INDEX IF NOT EXISTS idx_candidate_progress_events_card
+  ON candidate_progress_events(card_id, occurred_at);
+`;
+
+const MESSAGE_PREVIEW_STATES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_preview_states (
+  profile_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  preview_digest TEXT NOT NULL,
+  preview_kind TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(profile_id, platform, conversation_key),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -641,6 +693,45 @@ const MIGRATIONS = [
     name: "durable_workflow_progress_v1",
     apply(db) {
       migrateWorkflowRunDurability(db);
+    }
+  },
+  {
+    version: 7,
+    name: "candidate_progress_v1",
+    apply(db) {
+      db.exec(CANDIDATE_PROGRESS_SCHEMA);
+      backfillCandidateProgress(db);
+    }
+  },
+  {
+    version: 8,
+    name: "candidate_progress_event_idempotency",
+    apply(db) {
+      const columns = db.prepare(
+        "PRAGMA table_info(candidate_progress_events)"
+      ).all();
+      if (!columns.some((column) => column.name === "idempotency_key")) {
+        db.exec(
+          "ALTER TABLE candidate_progress_events ADD COLUMN idempotency_key TEXT"
+        );
+      }
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_progress_events_idempotency
+          ON candidate_progress_events(card_id, idempotency_key);
+        CREATE TRIGGER IF NOT EXISTS candidate_progress_events_require_idempotency
+        BEFORE INSERT ON candidate_progress_events
+        WHEN NEW.idempotency_key IS NULL OR trim(NEW.idempotency_key) = ''
+        BEGIN
+          SELECT RAISE(ABORT, 'candidate progress event idempotency required');
+        END;
+      `);
+    }
+  },
+  {
+    version: 9,
+    name: "message_preview_states_v1",
+    apply(db) {
+      db.exec(MESSAGE_PREVIEW_STATES_SCHEMA);
     }
   }
 ];
@@ -1093,6 +1184,55 @@ function backfillHistoricalCommunicationOutcomes(db) {
       updated_at
     FROM ranked WHERE rank = 1`).run();
   return Number(result.changes || 0);
+}
+
+function backfillCandidateProgress(db) {
+  db.exec(`
+    INSERT OR IGNORE INTO candidate_progress_cards(
+      profile_id, plan_id, job_id, source, stage, next_action,
+      last_event_at, created_at, updated_at
+    )
+    SELECT states.profile_id, states.plan_id, states.job_id, jobs.source,
+      'waiting_reply', 'Wait for recruiter reply',
+      states.updated_at, states.updated_at, states.updated_at
+    FROM candidate_job_states states
+    JOIN jobs ON jobs.id = states.job_id
+    JOIN search_plans plans
+      ON plans.id = states.plan_id
+      AND plans.profile_id = states.profile_id
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
+  `);
+  db.exec(`
+    INSERT INTO candidate_progress_events(
+      card_id, idempotency_key, type, actor, summary,
+      metadata_json, occurred_at, created_at
+    )
+    SELECT cards.id,
+      'migration:communication:' || states.profile_id || ':' || states.job_id || ':' || states.reason_code,
+      CASE states.reason_code
+        WHEN 'already_communicated' THEN 'contact_already_exists'
+        ELSE 'contact_started'
+      END,
+      'system',
+      CASE states.reason_code
+        WHEN 'already_communicated' THEN 'Historical platform contact preserved'
+        ELSE 'Historical verified contact preserved'
+      END,
+      json_object('source', 'migration', 'outcome', states.reason_code),
+      states.updated_at,
+      states.updated_at
+    FROM candidate_job_states states
+    JOIN candidate_progress_cards cards
+      ON cards.profile_id = states.profile_id
+      AND cards.job_id = states.job_id
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
+      AND NOT EXISTS (
+        SELECT 1 FROM candidate_progress_events events
+        WHERE events.card_id = cards.id
+          AND events.idempotency_key =
+            'migration:communication:' || states.profile_id || ':' || states.job_id || ':' || states.reason_code
+      )
+  `);
 }
 
 function createWorkflowRun(db, input = {}) {

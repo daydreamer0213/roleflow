@@ -1,0 +1,54 @@
+# BOSS Message Page Structure Calibration
+
+## Status
+
+Offline fixture calibration completed. Live read-only calibration ran on 2026-08-06 against the user's single open `/web/geek/chat` tab. The first pass confirmed the list and preview structures; after the user manually opened one conversation, the second pass confirmed the selected row, position, message items, and `data-mid`. No tab was created, navigated, or brought to the front; no recruiter text, message text, screenshot, cookie, localStorage, or sensitive URL was saved.
+
+## Approved fallback evidence
+
+| Evidence | Selector / attribute | Decision |
+| --- | --- | --- |
+| Conversation row | `.friend-content-warp` | Live-confirmed; 41 rows present. |
+| Row title / recruiter label | `.title-box` inside the row | Live-confirmed. The first `innerText` line is time, not recruiter, so title-box is required. |
+| Row preview | `.last-msg-text` | Live-confirmed. |
+| Row inner structure | `.friend-content > .friend-top > .figure/.text`, `.text > .title-box/.name-box`, `.last-msg > .last-msg-text` | Live-confirmed. |
+| Delivered preview | `.message-status.status-delivery` | Live-confirmed; replaces the text `[送达]` fallback when present. |
+| Read preview | `.message-status.status-read` | Live-confirmed; replaces the text `[已读]` fallback when present. |
+| Unread marker | `.notice-badge` | Not live-confirmed (no badge class was present in the open list); approved fallback only. |
+| Selected row | `.selected, .friend-top` | Live list had one `.selected` element elsewhere; row-level selected behavior must be confirmed after a conversation is opened. |
+| Position name | `.chat-position-content .position-name` | Live-confirmed after a conversation was opened. |
+| Company name | `.base-info > span:not(.base-title)` | Live-confirmed after the user pointed out the grey text beside the recruiter name. The header `.base-info` contains an unclassed span with the company name, followed by a `.base-title` span with the recruiter role. |
+| Message item | `.message-item` | Live-confirmed; 7 items visible in the opened conversation. |
+| Message id | `data-mid` | Live-confirmed; values are 15 digits. |
+| Stable conversation id | `data-conversation-id` or `data-encid` | Not present in the live list; rows exposed only `data-v-*` scoped attributes. The implemented fallback is a digest of the normalized recruiter label only, while the preview is hashed separately as `previewDigest` so preview changes remain observable. |
+| Stable recruiter id | `data-recruiter-id` or `data-geek-id` | Not present in the live list; approved label-digest fallback. |
+| Voice content | `.item-voice` | Not observed in the calibrated conversation; fallback only. |
+| Image content | `.item-image` | Not observed in the calibrated conversation; fallback only. |
+| Attachment content | `.item-attachment` | Not observed in the calibrated conversation; fallback only. |
+| Text/system content | `.item-friend`, `.item-myself`, `.item-system` | Live-confirmed as message-item direction classes; text fallback remains. |
+
+When neither stable conversation nor recruiter identifier exists, the implemented persistent fallback is a digest of the normalized recruiter label only. A click is still guarded by the current row index and a transient signature containing row index, label, preview, and unread state; after opening, the job identity must resolve uniquely by title and any available company, salary, and city fields. Duplicate recruiter labels therefore share one persistent preview baseline, but they do not bypass the per-click drift guard or the post-open unique-candidate check: an ambiguous identity stops the run without communication or application. A future live calibration should prefer a stable platform conversation identifier if one becomes available.
+
+## Preview classification fallback
+
+- `.message-status.status-delivery` or `[送达]` prefix -> `self_delivered`
+- `.message-status.status-read` or `[已读]` prefix -> `self_read`
+- Contains `对方已同意`, `附件简历已发送`, or `已投递成功` -> `platform_notice`
+- Contains `[语音]`, `[图片]`, or `[文件]` -> `unsupported`
+- Non-empty other text -> `possible_hr_reply`
+- Empty -> `unknown`
+
+## Privacy constraints
+
+The live probe returned only tab id, title, and URL. It saved no screenshot, recruiter text, message text, cookie, localStorage, or sensitive URL. Future calibration must hash text-bearing values inside the page expression and record only selector/attribute names, presence booleans, and fallback decisions.
+
+## Live acceptance (read-only)
+
+A manual one-run acceptance completed on the same day using the portable Edge message tab, a temporary SQLite database, the mock model, and dashboard port 8788. It verified:
+
+- `POST /api/message-discovery` returned `202`.
+- The run transitioned to `completed` with `queued: 0` and `processed: 0`.
+- The BOSS lease was released in `finally`.
+- No draft or message text appeared in public status JSON.
+
+The current page had no unread marker and no pending preview change, so no conversation click or model call was performed. The unread selector `.notice-badge` remains unverified on a page with actual unread state; until then the discovery can still recover via the preview-change channel after a first baseline.

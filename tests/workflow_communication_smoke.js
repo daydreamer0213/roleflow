@@ -14,6 +14,7 @@ const {
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
 const { listWorkflowInventory, listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
+const { getProgressCardForJob } = require("../src/core/candidate_progress");
 const {
   communicate,
   resolveCommunicationBrowserAuthority
@@ -212,12 +213,16 @@ async function workflowCommunicationSmoke() {
       ]
     );
     assert.deepStrictEqual(selectedIds.map((jobId) => candidateStatus(db, profileId, jobId)), [
-      "applied",
+      "",
       "invalid",
-      "applied",
-      "applied",
+      "",
+      "",
       ""
     ]);
+    for (const jobId of [selectedIds[0], selectedIds[2], selectedIds[3]]) {
+      assert.strictEqual(getProgressCardForJob(db, { profileId, jobId }).stage, "waiting_reply");
+    }
+    assert.strictEqual(getProgressCardForJob(db, { profileId, jobId: selectedIds[1] }), null);
     assert(listWorkflowInventory(db, { planId, now }).some((candidate) => candidate.id === selectedIds[4]));
 
     const completed = getWorkflowRun(db, workflow.id);
