@@ -513,8 +513,40 @@ function resolveScanModelSettingsContext(args, { root = ROOT, pathPolicy = {} } 
   return { root: externalRoot, readOnly: true };
 }
 
-async function scan(db, args, { signal = null, execution = null, resumeValidation = null } = {}) {
+function resolveScanModelRuntime({
+  context,
+  fallbackModelConfig,
+  primaryResolver = resolveRuntimeModelConfig,
+  backupResolver = resolveRuntimeBatchBackup
+}) {
+  const primaryState = primaryResolver({
+    root: context.root,
+    readOnly: context.readOnly,
+    fallbackModelConfig,
+    taskProfile: "batch_screening"
+  });
+  const backupState = backupResolver({
+    root: context.root,
+    readOnly: context.readOnly,
+    fallbackModelConfig
+  });
+  return { primaryState, backupState };
+}
+
+async function scan(
+  db,
+  args,
+  {
+    signal = null,
+    execution = null,
+    resumeValidation = null,
+    resolveScanModelSettingsContext: resolveContext = resolveScanModelSettingsContext,
+    resolveScanModelRuntime: resolveRuntime = resolveScanModelRuntime,
+    createBrowser: injectedCreateBrowser = createBrowser
+  } = {}
+) {
   assertScanActive(signal);
+  const createBrowser = injectedCreateBrowser;
   const analysisOnly = args["analysis-only"] === true;
   let scanLogger = execution?.logger || logger;
   if (!args.plan && !args.input) {
@@ -534,18 +566,13 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
     backupState = null;
     configs.model = offlineMockModelConfig();
   } else {
-    const modelSettingsContext = resolveScanModelSettingsContext(args);
-    primaryState = resolveRuntimeModelConfig({
-      root: modelSettingsContext.root,
-      readOnly: modelSettingsContext.readOnly,
-      fallbackModelConfig: configs.model,
-      taskProfile: "batch_screening"
-    });
-    backupState = resolveRuntimeBatchBackup({
-      root: modelSettingsContext.root,
-      readOnly: modelSettingsContext.readOnly,
+    const modelSettingsContext = resolveContext(args);
+    const runtime = resolveRuntime({
+      context: modelSettingsContext,
       fallbackModelConfig: configs.model
     });
+    primaryState = runtime.primaryState;
+    backupState = runtime.backupState;
     configs.model = primaryState.modelConfig;
   }
   if (args["force-mock"] !== true && !isModelReady(primaryState, { taskProfile: "batch_screening" })) {
@@ -2120,7 +2147,9 @@ function printHelp() {
 }
 
 module.exports = {
+  scan,
   resolveScanModelSettingsContext,
+  resolveScanModelRuntime,
   prepareWorkspaceTabsCommand,
   communicate,
   resolveCommunicationBrowserAuthority,

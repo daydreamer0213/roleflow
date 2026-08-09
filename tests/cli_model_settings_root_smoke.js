@@ -25,6 +25,88 @@ const cli = require("../src/cli");
     const pathPolicy = { worktreeRoot, homeRoot, tempRoot };
 
     assert.strictEqual(typeof cli.resolveScanModelSettingsContext, "function", "CLI must export resolveScanModelSettingsContext");
+    assert.strictEqual(typeof cli.resolveScanModelRuntime, "function", "CLI must export resolveScanModelRuntime");
+
+    const fallbackConfig = { provider: "mock" };
+    const injectedContext = { root: externalRoot, readOnly: true };
+    const primary = ({ root, readOnly, fallbackModelConfig, taskProfile }) => ({
+      root,
+      readOnly,
+      fallbackModelConfig,
+      taskProfile,
+      modelConfig: { provider: "stub-primary" }
+    });
+    const backup = ({ root, readOnly, fallbackModelConfig }) => ({
+      root,
+      readOnly,
+      fallbackModelConfig,
+      backupConfig: { provider: "stub-backup" }
+    });
+    const runtime = cli.resolveScanModelRuntime({
+      context: injectedContext,
+      fallbackModelConfig: fallbackConfig,
+      primaryResolver: primary,
+      backupResolver: backup
+    });
+    assert.deepStrictEqual(
+      runtime.primaryState.modelConfig,
+      { provider: "stub-primary" },
+      "scan model runtime must return the primary model config"
+    );
+    assert.deepStrictEqual(
+      runtime.backupState,
+      { root: externalRoot, readOnly: true, fallbackModelConfig: fallbackConfig, backupConfig: { provider: "stub-backup" } },
+      "scan model runtime must return the backup state"
+    );
+
+    const primaryCalls = [];
+    const backupCalls = [];
+    cli.resolveScanModelRuntime({
+      context: injectedContext,
+      fallbackModelConfig: fallbackConfig,
+      primaryResolver: (...args) => { primaryCalls.push(args); return { modelConfig: { provider: "stub-primary" } }; },
+      backupResolver: (...args) => { backupCalls.push(args); return { backupConfig: { provider: "stub-backup" } }; }
+    });
+    assert.strictEqual(primaryCalls.length, 1, "primary resolver must be called exactly once");
+    assert.strictEqual(backupCalls.length, 1, "backup resolver must be called exactly once");
+    assert.deepStrictEqual(primaryCalls[0][0], {
+      root: externalRoot,
+      readOnly: true,
+      fallbackModelConfig: fallbackConfig,
+      taskProfile: "batch_screening"
+    }, "primary resolver must receive the canonical external root, readOnly, fallback and batch_screening profile");
+    assert.deepStrictEqual(backupCalls[0][0], {
+      root: externalRoot,
+      readOnly: true,
+      fallbackModelConfig: fallbackConfig
+    }, "backup resolver must receive the same canonical external root, readOnly and fallback");
+
+    let contextResolverCalls = 0;
+    let primaryResolverCalls = 0;
+    let backupResolverCalls = 0;
+    let browserSeamReached = false;
+    const stubStatement = { run: () => ({ lastInsertRowid: 1 }) };
+    const stubDb = { prepare: () => stubStatement };
+    const browserSeam = () => {
+      browserSeamReached = true;
+      const error = new Error("browser seam must not be reached by force-mock scan model routing");
+      error.code = "TEST_BROWSER_SEAM_REACHED";
+      throw error;
+    };
+    try {
+      await cli.scan(stubDb, { input: "synthetic-input.json", "force-mock": true, keywords: "test-keyword" }, {
+        resolveScanModelSettingsContext: () => { contextResolverCalls += 1; return injectedContext; },
+        resolveRuntimeModelConfig: () => { primaryResolverCalls += 1; return { modelConfig: {} }; },
+        resolveRuntimeBatchBackup: () => { backupResolverCalls += 1; return {}; },
+        createBrowser: browserSeam
+      });
+    } catch (error) {
+      assert.strictEqual(error?.code, "TEST_BROWSER_SEAM_REACHED", "force-mock scan must reach the browser seam without model routing");
+    }
+    assert.strictEqual(browserSeamReached, true, "force-mock scan must reach the browser seam");
+    assert.strictEqual(contextResolverCalls, 0, "force-mock must not call the model settings context resolver");
+    assert.strictEqual(primaryResolverCalls, 0, "force-mock must not call the primary model resolver");
+    assert.strictEqual(backupResolverCalls, 0, "force-mock must not call the backup model resolver");
 
     const defaultContext = cli.resolveScanModelSettingsContext({}, { root: worktreeRoot, pathPolicy });
     assert.strictEqual(defaultContext.root, worktreeRoot, "default context must keep the candidate ROOT");
