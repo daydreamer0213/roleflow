@@ -104,7 +104,57 @@ function listModelTaskProfiles() {
   }));
 }
 
-function loadModelSettings({ root, fallbackModelConfig }) {
+function resolveReadOnlyModelSettingsRoot(rawRoot, { worktreeRoot, homeRoot, tempRoot } = {}) {
+  const value = String(rawRoot || "").trim();
+  if (!value || !path.isAbsolute(value) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) {
+    throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be an existing local absolute directory.");
+  }
+  const canonical = canonicalExistingDir(value);
+  if (!canonical) {
+    throw appError("MODEL_SETTINGS_ROOT_NOT_FOUND", "Model settings root does not exist or is not a directory.");
+  }
+  const worktree = canonicalRootPath(worktreeRoot);
+  const home = canonicalRootPath(homeRoot);
+  const temp = canonicalRootPath(tempRoot);
+  if (worktree && isPathWithin(canonical, worktree)) {
+    throw appError("MODEL_SETTINGS_ROOT_WORKTREE", "Model settings root must be outside the current worktree.");
+  }
+  if ((home && isPathWithin(canonical, home)) || (temp && isPathWithin(canonical, temp))) {
+    throw appError("MODEL_SETTINGS_ROOT_PROTECTED", "Model settings root must be outside the user home and system temp directories.");
+  }
+  if (!fs.existsSync(path.join(canonical, SETTINGS_RELATIVE_PATH))) {
+    throw appError("MODEL_SETTINGS_ROOT_MISSING_SETTINGS", "Model settings root must contain .runtime/settings/model.json.");
+  }
+  return canonical;
+}
+
+function canonicalExistingDir(value) {
+  try {
+    if (!fs.statSync(value).isDirectory()) return "";
+    return fs.realpathSync(value);
+  } catch {
+    return "";
+  }
+}
+
+function canonicalRootPath(value) {
+  if (!value) return "";
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function isPathWithin(candidate, base) {
+  const normalizedCandidate = path.normalize(candidate).toLowerCase();
+  const normalizedBase = path.normalize(base).toLowerCase();
+  if (normalizedCandidate === normalizedBase) return true;
+  const prefix = normalizedBase.endsWith(path.sep) ? normalizedBase : normalizedBase + path.sep;
+  return normalizedCandidate.startsWith(prefix);
+}
+
+function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
   const file = settingsPath(root);
   const stored = readJson(file);
   let settings;
@@ -118,6 +168,9 @@ function loadModelSettings({ root, fallbackModelConfig }) {
   } else {
     settings = settingsFromLegacyConfig(fallbackModelConfig);
     source = "legacy";
+  }
+  if (readOnly && stored && stored.schemaVersion !== 2) {
+    throw appError("MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED", "Read-only model settings require schema v2 and cannot migrate legacy settings.");
   }
   const migrationError = stored && stored.schemaVersion !== 2 ? migrateLegacySecret(root, settings) : "";
   const primary = settings.taskProfiles.deep_analysis;
@@ -314,8 +367,8 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
   return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: Date.now() - startedAt, httpStatus: response.status };
 }
 
-function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile }) {
-  const loaded = loadModelSettings({ root, fallbackModelConfig });
+function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile, readOnly = false }) {
+  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly });
   const profileId = normalizeTaskProfileId(taskProfile || "deep_analysis");
   const profile = loaded.settings.taskProfiles[profileId];
   const secretId = secretIdForSettings(loaded.settings, profileId);
@@ -339,8 +392,8 @@ function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile }) {
   return { ...base, modelConfig: modelConfigFromProfile(effective, apiKey, apiKeyEnv) };
 }
 
-function resolveRuntimeBatchBackup({ root, fallbackModelConfig }) {
-  const loaded = loadModelSettings({ root, fallbackModelConfig });
+function resolveRuntimeBatchBackup({ root, fallbackModelConfig, readOnly = false }) {
+  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly });
   const backup = loaded.settings.batchBackup;
   if (!backup.enabled) return null;
   if (backup.connection?.status !== "verified" || backup.connection.fingerprint !== profileFingerprint(backup)) return null;
@@ -1028,6 +1081,7 @@ module.exports = {
   saveVerifiedModelTaskProfile,
   saveVerifiedBatchBackup,
   restoreRecommendedTaskProfile,
+  resolveReadOnlyModelSettingsRoot,
   testModelConnection,
   resolveRuntimeModelConfig,
   resolveRuntimeBatchBackup,

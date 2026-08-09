@@ -1,4 +1,5 @@
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -8,7 +9,9 @@ const {
   loadModelSettings,
   saveVerifiedModelConfiguration,
   testModelConnection,
+  resolveReadOnlyModelSettingsRoot,
   resolveRuntimeModelConfig,
+  resolveRuntimeBatchBackup,
   isModelReady,
   modelConfigFromSettings,
   normalizeSettings,
@@ -127,6 +130,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
 
     await connectionErrorSmoke();
     await connectionProbeSmoke();
+    await readOnlyRootSmoke();
     console.log("model_settings_smoke ok");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -178,4 +182,92 @@ async function connectionProbeSmoke() {
       assert.strictEqual(Object.hasOwn(body, "thinking"), false, `${probe.name} probe must omit thinking`);
     }
   }
+}
+
+async function readOnlyRootSmoke() {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-readonly-root-"));
+  try {
+    const homeRoot = path.join(sandbox, "home");
+    const tempRoot = path.join(sandbox, "temp");
+    const externalRoot = path.join(sandbox, "external");
+    const v1Root = path.join(sandbox, "v1");
+    const emptyRoot = path.join(sandbox, "empty");
+    const missingRoot = path.join(sandbox, "missing");
+    fs.mkdirSync(homeRoot);
+    fs.mkdirSync(tempRoot);
+    fs.mkdirSync(emptyRoot);
+    writeFixtureSettings(externalRoot, {
+      schemaVersion: 2,
+      sharedCredential: { preset: "mock" },
+      taskProfiles: {
+        deep_analysis: { model: "offline-structured-mock", credentialRef: "shared" },
+        batch_screening: { model: "offline-structured-mock", credentialRef: "shared" }
+      },
+      batchBackup: { enabled: false }
+    });
+    writeFixtureSettings(v1Root, {
+      schemaVersion: 1,
+      preset: "mock",
+      model: "offline-structured-mock"
+    });
+
+    const worktreeRoot = path.resolve(__dirname, "..");
+    const options = { worktreeRoot, homeRoot, tempRoot };
+
+    const resolved = resolveReadOnlyModelSettingsRoot(externalRoot, options);
+    assert.strictEqual(resolved, fs.realpathSync(externalRoot), "valid external root must resolve to its canonical path");
+
+    assertRootError("relative/model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
+    assertRootError("https://example.com/model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
+    assertRootError(worktreeRoot, options, "MODEL_SETTINGS_ROOT_WORKTREE");
+    assertRootError(homeRoot, options, "MODEL_SETTINGS_ROOT_PROTECTED");
+    assertRootError(tempRoot, options, "MODEL_SETTINGS_ROOT_PROTECTED");
+    assertRootError(emptyRoot, options, "MODEL_SETTINGS_ROOT_MISSING_SETTINGS");
+    assertRootError(missingRoot, options, "MODEL_SETTINGS_ROOT_NOT_FOUND");
+
+    const v1Hash = fileHash(settingsPath(v1Root));
+    assert.throws(
+      () => loadModelSettings({ root: v1Root, fallbackModelConfig: fallback, readOnly: true }),
+      (error) => error.code === "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED"
+    );
+    assert.strictEqual(fileHash(settingsPath(v1Root)), v1Hash, "read-only load must not rewrite the schema-v1 fixture");
+    assert.throws(
+      () => resolveRuntimeModelConfig({ root: v1Root, fallbackModelConfig: fallback, readOnly: true }),
+      (error) => error.code === "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED"
+    );
+    assert.throws(
+      () => resolveRuntimeBatchBackup({ root: v1Root, fallbackModelConfig: fallback, readOnly: true }),
+      (error) => error.code === "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED"
+    );
+    assert.strictEqual(
+      loadModelSettings({ root: v1Root, fallbackModelConfig: fallback }).source,
+      "migrated_v1",
+      "default writable loading must keep legacy migration behavior"
+    );
+    assert.strictEqual(
+      loadModelSettings({ root: externalRoot, fallbackModelConfig: fallback, readOnly: true }).source,
+      "runtime",
+      "read-only schema-v2 loading must still succeed"
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+function writeFixtureSettings(root, data) {
+  const file = settingsPath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+  return file;
+}
+
+function fileHash(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function assertRootError(rawRoot, options, code) {
+  assert.throws(
+    () => resolveReadOnlyModelSettingsRoot(rawRoot, options),
+    (error) => error.code === code
+  );
 }
