@@ -123,11 +123,21 @@ Windows 普通用户：
 
 ## 便携交付
 
-双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；需要系统已安装 Microsoft Edge，但不依赖 Codex 或浏览器插件。
+双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；发布包不依赖 Codex，但默认普通 Edge 模式需要用户已安装并连接健康的 Edge Control 扩展和桥接。发布 zip 不内置或自动安装 Edge Control 桥接。
 
 项目专用 Edge profile 位于 `.runtime\edge-profile`。不要复制旧电脑的登录 profile；在新电脑重新登录 BOSS。
 
-Edge Control 插件模式仅作为兼容入口：
+默认普通 Edge 入口通过 Edge Control 扩展和桥接复用当前已登录会话。若扩展或桥接缺失、未连接或不健康，`Start.bat` 会 fail-closed（停止启动，不自动切换浏览器），并提示用户安装/连接或刷新 Edge Control、在普通 Edge 登录 BOSS、保留同一窗口中的一个搜索页和一个沟通页后重试。
+
+无需或不想安装 Edge Control 时，必须显式运行：
+
+```text
+Start.bat -BrowserMode portable
+```
+
+该模式不依赖 Edge Control，固定使用 CDP `9222` 和独立的 `.runtime\edge-profile`，需要单独登录 BOSS；它不会由普通 Edge 检查失败自动启动。
+
+普通 Edge 入口的显式扫描命令：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\scan-boss.ps1 -PlanId 1 -BridgeSource plugin
