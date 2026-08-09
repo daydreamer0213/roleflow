@@ -9,6 +9,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($BrowserMode -eq "portable" -and $CdpPort -ne 9222) {
+  throw "WORKSPACE_PORTABLE_BROWSER_REQUIRED: portable 模式只支持 9222 端口。"
+}
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RunScript = Join-Path $ProjectRoot "run.ps1"
 . (Join-Path $PSScriptRoot "lib\startup-identity.ps1")

@@ -17,8 +17,8 @@ function fakeBrowser(initialTabs, createdTab = null) {
     async createTab(openerTabId, url) {
       state.createCalls.push({ openerTabId, url });
       if (!createdTab) throw new Error("unexpected createTab");
-      state.tabs.push({ ...createdTab, url });
-      return createdTab.id;
+      if (!createdTab.omitFromList) state.tabs.push({ ...createdTab, url });
+      return createdTab.returnId || createdTab.id;
     },
     async bringToFront(tabId) { state.frontCalls.push(tabId); }
   };
@@ -53,6 +53,21 @@ function fakeBrowser(initialTabs, createdTab = null) {
       { ...fixedCommunication, windowId: 99 }
     ]),
     (error) => error.code === "BOSS_WINDOW_MISMATCH"
+  );
+  assert.throws(
+    () => assertBossOperatorTabs([
+      boss,
+      { ...boss, id: "duplicate-boss-search" },
+      fixedCommunication
+    ]),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  assert.throws(
+    () => assertBossOperatorTabs([
+      boss,
+      { ...fixedCommunication, windowId: undefined }
+    ]),
+    (error) => error.code === "BROWSER_COMMAND_FAILED"
   );
   assert.doesNotThrow(
     () => assertBossOperatorTabs([
@@ -103,6 +118,86 @@ function fakeBrowser(initialTabs, createdTab = null) {
   }]);
   assert.deepStrictEqual(created.state.frontCalls, [boss.id]);
 
+  const fixedCreated = fakeBrowser([
+    boss,
+    fixedCommunication,
+    {
+      id: "unrelated-ordinary-edge-window",
+      url: "https://example.invalid/",
+      windowId: 99
+    }
+  ], {
+    id: "900",
+    returnId: 900,
+    windowId: 42
+  });
+  const fixedCreatedResult = await prepareWorkspaceTabs({
+    browser: fixedCreated,
+    dashboardUrl: dashboard.url,
+    requireFixedBossTabs: true,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(
+    fixedCreatedResult.dashboardTabId,
+    "900",
+    "created dashboard identity must come from the post-create tab list"
+  );
+  assert.deepStrictEqual(fixedCreated.state.frontCalls, ["900"]);
+
+  const fixedReadiness = [];
+  await prepareWorkspaceTabs({
+    browser: fakeBrowser([
+      boss,
+      fixedCommunication,
+      dashboard,
+      {
+        id: "unrelated-boss-page",
+        url: "https://www.zhipin.com/web/geek/jobs/other",
+        windowId: 99
+      }
+    ]),
+    dashboardUrl: dashboard.url,
+    requireFixedBossTabs: true,
+    inspectReadiness: async (fixed) => {
+      fixedReadiness.push({
+        searchTabId: fixed.searchTab.id,
+        communicationTabId: fixed.communicationTab.id,
+        windowId: fixed.windowId
+      });
+      return { status: "ready" };
+    }
+  });
+  assert.deepStrictEqual(fixedReadiness, [{
+    searchTabId: "boss-search",
+    communicationTabId: "boss-communication",
+    windowId: 42
+  }]);
+
+  await assert.rejects(
+    () => prepareWorkspaceTabs({
+      browser: fakeBrowser([boss, fixedCommunication], {
+        id: "dashboard-in-other-window",
+        windowId: 99
+      }),
+      dashboardUrl: dashboard.url,
+      requireFixedBossTabs: true,
+      inspectReadiness: async () => ({ status: "ready" })
+    }),
+    (error) => error.code === "WORKSPACE_DASHBOARD_WINDOW_MISMATCH"
+  );
+  await assert.rejects(
+    () => prepareWorkspaceTabs({
+      browser: fakeBrowser([boss, fixedCommunication], {
+        id: "dashboard-missing-from-list",
+        omitFromList: true
+      }),
+      dashboardUrl: dashboard.url,
+      requireFixedBossTabs: true,
+      inspectReadiness: async () => ({ status: "ready" })
+    }),
+    (error) => error.code === "WORKSPACE_DASHBOARD_TAB_REQUIRED"
+  );
+
   const wrongWindow = fakeBrowser([boss, {
     ...dashboard,
     windowId: 99
@@ -113,7 +208,12 @@ function fakeBrowser(initialTabs, createdTab = null) {
       dashboardUrl: dashboard.url,
       inspectReadiness: async () => ({ status: "ready" })
     }),
-    (error) => error.code === "WORKSPACE_DASHBOARD_WINDOW_MISMATCH"
+    (error) => {
+      assert.strictEqual(error.code, "WORKSPACE_DASHBOARD_WINDOW_MISMATCH");
+      assert.match(error.message, /仅移动或关闭 RoleFlow Dashboard 标签页/);
+      assert.match(error.message, /不要关闭含有无关页面的普通 Edge 窗口/);
+      return true;
+    }
   );
 
   await assert.rejects(
@@ -168,8 +268,8 @@ function fakeBrowser(initialTabs, createdTab = null) {
       siteAdapterFactory: (site, context) => {
         calls.adapter.push({ site, context });
         return {
-          async preflight() {
-            calls.preflight += 1;
+          async preflight(options) {
+            calls.preflight.push(options);
             return { isSearchPage: true };
           }
         };
@@ -183,7 +283,7 @@ function fakeBrowser(initialTabs, createdTab = null) {
         assert.strictEqual(receivedBrowser, browser);
         assert.strictEqual(dashboardUrl, "http://localhost:8787/workspace");
         calls.requireFixedBossTabs = requireFixedBossTabs;
-        assert.strictEqual((await inspectReadiness()).status, "ready");
+        assert.strictEqual((await inspectReadiness(calls.fixedTabs)).status, "ready");
         return { status: "ready" };
       }
     };
@@ -193,8 +293,12 @@ function fakeBrowser(initialTabs, createdTab = null) {
     label: "edge",
     browser: [],
     adapter: [],
-    preflight: 0,
-    requireFixedBossTabs: null
+    preflight: [],
+    requireFixedBossTabs: null,
+    fixedTabs: {
+      searchTab: { id: "fixed-search" },
+      communicationTab: { id: "fixed-communication" }
+    }
   };
   const commandResult = await prepareWorkspaceTabsCommand({
     "dashboard-url": "http://localhost:8787/workspace"
@@ -203,13 +307,16 @@ function fakeBrowser(initialTabs, createdTab = null) {
   assert.deepStrictEqual(commandCalls.browser, [{ browser: "edge" }]);
   assert.strictEqual(commandCalls.requireFixedBossTabs, true);
   assert.strictEqual(commandCalls.adapter[0].site, "boss");
-  assert.strictEqual(commandCalls.preflight, 1);
+  assert.deepStrictEqual(commandCalls.preflight, [
+    { tabId: "fixed-communication" },
+    { tabId: "fixed-search" }
+  ]);
 
   const portableCalls = {
     label: "portable",
     browser: [],
     adapter: [],
-    preflight: 0,
+    preflight: [],
     requireFixedBossTabs: null
   };
   await prepareWorkspaceTabsCommand({
@@ -222,6 +329,7 @@ function fakeBrowser(initialTabs, createdTab = null) {
     "cdp-port": 9222
   }]);
   assert.strictEqual(portableCalls.requireFixedBossTabs, false);
+  assert.deepStrictEqual(portableCalls.preflight, [undefined]);
 
   await assert.rejects(
     () => prepareWorkspaceTabsCommand({

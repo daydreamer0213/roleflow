@@ -197,8 +197,12 @@ async function prepareWorkspaceTabsCommand(
     browser,
     dashboardUrl: parsedDashboardUrl.toString(),
     requireFixedBossTabs: browserMode === "edge",
-    inspectReadiness: () => inspectBossBrowserReadiness({
-      preflight: () => adapter.preflight()
+    inspectReadiness: (fixed) => inspectBossBrowserReadiness({
+      preflight: async () => {
+        if (!fixed) return adapter.preflight();
+        await adapter.preflight({ tabId: fixed.communicationTab.id });
+        return adapter.preflight({ tabId: fixed.searchTab.id });
+      }
     })
   });
   console.log(`RoleFlow workspace tabs ready: ${result.status}`);

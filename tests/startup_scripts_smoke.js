@@ -72,6 +72,7 @@ async function main() {
   }
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
+  testPortableModeRejectsInvalidCdpPort();
   await testForeignDashboardIdentityRejected();
   await testForeignCdpIdentityRejected();
   await testPortableEdgeProfileArgumentWithSpaces();
@@ -192,6 +193,45 @@ async function testWorkspaceStartupFromSpacePath() {
   assert(portableTabs.args.includes("9222"));
   await stopRegisteredProcess(portableDashboard.pid);
   await waitForPortClosed(8787);
+}
+
+function testPortableModeRejectsInvalidCdpPort() {
+  const portableScript = path.join(projectRoot, "scripts", "start-portable-edge.ps1");
+  const portableScriptSource = fs.readFileSync(portableScript, "utf8");
+  fs.writeFileSync(
+    portableScript,
+    [
+      "param([int]$Port)",
+      "if ($env:ROLEFLOW_PORTABLE_EDGE_AUDIT) {",
+      "  Add-Content -LiteralPath $env:ROLEFLOW_PORTABLE_EDGE_AUDIT -Value $Port",
+      "}",
+      "exit 0"
+    ].join("\r\n"),
+    "utf8"
+  );
+  const recordPath = path.join(tempRoot, "workspace-invalid-port.jsonl");
+  const edgeAuditPath = path.join(tempRoot, "portable-edge-invalid-port.txt");
+  try {
+    const result = runPowerShell([
+      "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+      "-Port", "8787",
+      "-BrowserMode", "portable",
+      "-CdpPort", "9333"
+    ], {
+      cwd: outsideCwd,
+      env: fixtureEnv({
+        ROLEFLOW_STARTUP_RECORD: recordPath,
+        ROLEFLOW_PORTABLE_EDGE_AUDIT: edgeAuditPath
+      }),
+      timeout: 10000
+    });
+    assert.notStrictEqual(result.status, 0, "portable mode must reject a non-9222 port");
+    assert.match(combinedOutput(result), /WORKSPACE_PORTABLE_BROWSER_REQUIRED/);
+    assert(!fs.existsSync(edgeAuditPath), "invalid portable port must not start portable Edge");
+    assert(!fs.existsSync(recordPath), "invalid portable port must not invoke workspace-tabs");
+  } finally {
+    fs.writeFileSync(portableScript, portableScriptSource, "utf8");
+  }
 }
 
 async function testForeignDashboardIdentityRejected() {

@@ -104,7 +104,7 @@ async function prepareWorkspaceTabs({
   if (crossWindow) {
     throw workspaceError(
       "WORKSPACE_DASHBOARD_WINDOW_MISMATCH",
-      "RoleFlow 工作台位于另一个项目 Edge 窗口，请关闭多余窗口后重试。"
+      "RoleFlow Dashboard 标签页位于另一个窗口。请仅移动或关闭 RoleFlow Dashboard 标签页；不要关闭含有无关页面的普通 Edge 窗口。"
     );
   }
   if (!requireFixedBossTabs
@@ -118,15 +118,24 @@ async function prepareWorkspaceTabs({
   let dashboardTab = dashboardTabs[0] || null;
   if (!dashboardTab) {
     const dashboardTabId = await browser.createTab(bossTab.id, dashboardUrl);
-    // CdpBrowserAdapter.createTab() returns only after proving same-window identity.
-    dashboardTab = {
-      id: dashboardTabId,
-      url: dashboardUrl,
-      windowId: bossTab.windowId
-    };
+    const createdTabs = await browser.listTabs();
+    dashboardTab = createdTabs.find((tab) => String(tab.id) === String(dashboardTabId)) || null;
+    if (!dashboardTab) {
+      throw workspaceError(
+        "WORKSPACE_DASHBOARD_TAB_REQUIRED",
+        "RoleFlow Dashboard 标签页创建后未能在浏览器中确认。"
+      );
+    }
+    if (!Number.isInteger(dashboardTab.windowId)
+      || dashboardTab.windowId !== bossTab.windowId) {
+      throw workspaceError(
+        "WORKSPACE_DASHBOARD_WINDOW_MISMATCH",
+        "RoleFlow Dashboard 标签页位于另一个窗口。请仅移动或关闭 RoleFlow Dashboard 标签页；不要关闭含有无关页面的普通 Edge 窗口。"
+      );
+    }
   }
 
-  const readiness = await inspectReadiness();
+  const readiness = await inspectReadiness(fixed);
   await browser.bringToFront(readiness.status === "ready" ? dashboardTab.id : bossTab.id);
   return {
     bossTabId: bossTab.id,
