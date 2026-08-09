@@ -776,9 +776,13 @@ class BossSiteAdapter {
                 });
                 const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
                 mergeScanCandidate(candidates, { ...entry, job: failedJob });
-                if (isFatalBrowserError(error)) throw error;
+                const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
+                if (isFatalBrowserError(error)) {
+                  await emitDetailResult(options.onDetailResult, failedOutcome);
+                  throw error;
+                }
                 await this.waitAfterDetailAction();
-                detailOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
+                detailOutcome = failedOutcome;
               }
               await emitDetailResult(options.onDetailResult, detailOutcome);
             }

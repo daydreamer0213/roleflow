@@ -91,6 +91,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await detailSafetyLimitSmoke();
   await detailFailureDedupeSmoke();
   await detailOutcomeAuditSmoke();
+  await detailFatalOutcomeAuditSmoke();
   await targetIsolationSmoke();
   await scanTargetPlanSmoke();
   await scanTargetResumeFilterSmoke();
@@ -1093,6 +1094,32 @@ async function detailOutcomeAuditSmoke() {
   ]);
   assert.strictEqual(jobs.find((job) => job.title === "audit-failure").detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
   assert(!JSON.stringify(outcomes).includes("audit-failure"));
+}
+
+async function detailFatalOutcomeAuditSmoke() {
+  const browser = {
+    keyword: "",
+    async activeTabId() { return activeBoss.id; },
+    async navigate(_tabId, url) { this.keyword = new URL(url).searchParams.get("query"); }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("audit-fatal")];
+  adapter.readCardDetail = async () => {
+    throw Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL" });
+  };
+  const outcomes = [];
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["audit-fatal"],
+    cityScopes: [{ city: "骞垮窞", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onDetailResult: async (outcome) => outcomes.push(outcome)
+  }), (error) => error.code === "BOSS_RISK_CONTROL");
+  assert.deepStrictEqual(outcomes, [
+    { outcome: "failed", errorCode: "BOSS_RISK_CONTROL" }
+  ]);
 }
 
 async function refreshSafetySmoke() {
