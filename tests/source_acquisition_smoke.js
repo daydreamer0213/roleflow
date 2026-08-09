@@ -97,6 +97,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await detailFailureDedupeSmoke();
   await detailOutcomeAuditSmoke();
   await detailFatalOutcomeAuditSmoke();
+  await detailBudgetCheckpointSmoke();
   await targetIsolationSmoke();
   await scanTargetPlanSmoke();
   await scanTargetResumeFilterSmoke();
@@ -1280,6 +1281,65 @@ async function detailFatalOutcomeAuditSmoke() {
   assert.deepStrictEqual(outcomes, [
     { outcome: "failed", errorCode: "BOSS_RISK_CONTROL", accessMode: "visible_pane" }
   ]);
+}
+
+async function detailBudgetCheckpointSmoke() {
+  const checkpoints = [];
+  const summaries = [];
+  const outcomes = [];
+  let detailCalls = 0;
+  const browser = {
+    async navigate() {}
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [
+    card("budget-complete"),
+    card("budget-pending"),
+    card("budget-unvisited")
+  ];
+  adapter.readVisiblePaneDetail = async () => null;
+  adapter.readDetail = async () => {
+    detailCalls += 1;
+    if (detailCalls === 1) {
+      return {
+        description: "Complete detail before budget stop ".repeat(12),
+        bossActiveText: "浠婃棩娲昏穬"
+      };
+    }
+    throw Object.assign(new Error("daily detail budget exhausted; resume at 2026-08-10T00:00:00.000Z"), {
+      code: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+      retryAt: "2026-08-10T00:00:00.000Z"
+    });
+  };
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["budget"],
+    cityScopes: [{ city: "骞垮窞", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 3,
+    onTargetComplete: async (result) => checkpoints.push(result),
+    onDetailResult: async (result) => outcomes.push(result),
+    onScanComplete: async (summary) => summaries.push(summary)
+  }), (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+    && error.retryAt === "2026-08-10T00:00:00.000Z");
+
+  assert.strictEqual(detailCalls, 2);
+  assert.strictEqual(checkpoints.length, 1);
+  assert.strictEqual(checkpoints[0].status, "failed");
+  const byTitle = new Map(checkpoints[0].jobs.map((job) => [job.title, job]));
+  assert.strictEqual(byTitle.get("budget-complete").detailRead, true);
+  assert.strictEqual(byTitle.get("budget-pending").detailRead, false);
+  assert.strictEqual(byTitle.get("budget-pending").detailErrorCode || "", "");
+  assert.strictEqual(byTitle.get("budget-unvisited").detailRead, false);
+  assert.strictEqual(byTitle.get("budget-unvisited").detailErrorCode || "", "");
+  assert.strictEqual(summaries[0].fatalErrorCode, "BOSS_ACCESS_BUDGET_EXHAUSTED");
+  assert.match(summaries[0].fatalErrorMessage, /2026-08-10T00:00:00\.000Z/);
+  assert.deepStrictEqual(outcomes.at(-1), {
+    outcome: "failed",
+    errorCode: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+    accessMode: "standalone_detail"
+  });
 }
 
 async function refreshSafetySmoke() {

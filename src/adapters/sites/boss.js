@@ -765,7 +765,8 @@ class BossSiteAdapter {
                 detailsRead += 1;
                 await this.waitAfterDetailAction();
               } catch (error) {
-                detailsFailed += 1;
+                const accessPending = error?.code === "BOSS_ACCESS_BUDGET_EXHAUSTED";
+                if (!accessPending) detailsFailed += 1;
                 this.logger?.warn("boss_card_detail_read_failed", {
                   targetKey,
                   keyword,
@@ -773,8 +774,10 @@ class BossSiteAdapter {
                   errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT",
                   errorMessage: error?.message || String(error)
                 });
-                const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT" };
-                mergeScanCandidate(candidates, { ...entry, job: failedJob });
+                if (!accessPending) {
+                  const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT" };
+                  mergeScanCandidate(candidates, { ...entry, job: failedJob });
+                }
                 const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT", accessMode };
                 if (isFatalBrowserError(error)) {
                   try {
