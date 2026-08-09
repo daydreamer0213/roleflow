@@ -1287,6 +1287,18 @@ async function detailBudgetCheckpointSmoke() {
   const checkpoints = [];
   const summaries = [];
   const outcomes = [];
+  const expectedUsage = { "10m": 5, "1h": 15, "24h": 30 };
+  const budgetError = Object.assign(new Error("daily detail budget exhausted; resume at 2026-08-10T00:00:00.000Z"), {
+    code: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+    site: "boss",
+    action: "detail_open",
+    mode: "recovery",
+    window: "24h",
+    limit: 30,
+    usage: { ...expectedUsage },
+    retryAt: "2026-08-10T00:00:00.000Z"
+  });
+  let receivedError = null;
   let detailCalls = 0;
   const browser = {
     async navigate() {}
@@ -1307,10 +1319,7 @@ async function detailBudgetCheckpointSmoke() {
         bossActiveText: "浠婃棩娲昏穬"
       };
     }
-    throw Object.assign(new Error("daily detail budget exhausted; resume at 2026-08-10T00:00:00.000Z"), {
-      code: "BOSS_ACCESS_BUDGET_EXHAUSTED",
-      retryAt: "2026-08-10T00:00:00.000Z"
-    });
+    throw budgetError;
   };
   await assert.rejects(() => adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -1321,9 +1330,17 @@ async function detailBudgetCheckpointSmoke() {
     onTargetComplete: async (result) => checkpoints.push(result),
     onDetailResult: async (result) => outcomes.push(result),
     onScanComplete: async (summary) => summaries.push(summary)
-  }), (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
-    && error.retryAt === "2026-08-10T00:00:00.000Z");
+  }), (error) => {
+    receivedError = error;
+    return true;
+  });
 
+  assert.strictEqual(receivedError, budgetError);
+  assert.strictEqual(receivedError.code, "BOSS_ACCESS_BUDGET_EXHAUSTED");
+  assert.strictEqual(receivedError.retryAt, "2026-08-10T00:00:00.000Z");
+  assert.strictEqual(receivedError.action, "detail_open");
+  assert.strictEqual(receivedError.limit, 30);
+  assert.deepStrictEqual(receivedError.usage, expectedUsage);
   assert.strictEqual(detailCalls, 2);
   assert.strictEqual(checkpoints.length, 1);
   assert.strictEqual(checkpoints[0].status, "failed");
