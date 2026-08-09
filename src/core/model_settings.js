@@ -106,7 +106,7 @@ function listModelTaskProfiles() {
 
 function resolveReadOnlyModelSettingsRoot(rawRoot, { worktreeRoot, homeRoot, tempRoot } = {}) {
   const value = String(rawRoot || "").trim();
-  if (!value || !path.isAbsolute(value) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) {
+  if (!value || /^[\\/]{2}/.test(value) || !path.isAbsolute(value) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) {
     throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be an existing local absolute directory.");
   }
   const canonical = canonicalExistingDir(value);
@@ -122,8 +122,18 @@ function resolveReadOnlyModelSettingsRoot(rawRoot, { worktreeRoot, homeRoot, tem
   if ((home && isPathWithin(canonical, home)) || (temp && isPathWithin(canonical, temp))) {
     throw appError("MODEL_SETTINGS_ROOT_PROTECTED", "Model settings root must be outside the user home and system temp directories.");
   }
-  if (!fs.existsSync(path.join(canonical, SETTINGS_RELATIVE_PATH))) {
+  const settingsFile = path.join(canonical, SETTINGS_RELATIVE_PATH);
+  if (!fs.existsSync(settingsFile)) {
     throw appError("MODEL_SETTINGS_ROOT_MISSING_SETTINGS", "Model settings root must contain .runtime/settings/model.json.");
+  }
+  let settingsStat;
+  try {
+    settingsStat = fs.statSync(settingsFile);
+  } catch {
+    settingsStat = null;
+  }
+  if (!settingsStat || !settingsStat.isFile()) {
+    throw appError("MODEL_SETTINGS_ROOT_SETTINGS_NOT_FILE", "Model settings root must contain .runtime/settings/model.json as a local regular file.");
   }
   return canonical;
 }
@@ -157,6 +167,12 @@ function isPathWithin(candidate, base) {
 function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
   const file = settingsPath(root);
   const stored = readJson(file);
+  if (readOnly && !stored) {
+    throw appError("MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED", "Read-only model settings require a stored schema-v2 object; missing or non-object settings cannot use a fallback.");
+  }
+  if (readOnly && stored.schemaVersion !== 2) {
+    throw appError("MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED", "Read-only model settings require schema v2 and cannot migrate legacy settings.");
+  }
   let settings;
   let source;
   if (stored) {
@@ -168,9 +184,6 @@ function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
   } else {
     settings = settingsFromLegacyConfig(fallbackModelConfig);
     source = "legacy";
-  }
-  if (readOnly && stored && stored.schemaVersion !== 2) {
-    throw appError("MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED", "Read-only model settings require schema v2 and cannot migrate legacy settings.");
   }
   const migrationError = stored && stored.schemaVersion !== 2 ? migrateLegacySecret(root, settings) : "";
   const primary = settings.taskProfiles.deep_analysis;
@@ -1036,7 +1049,7 @@ function readJson(file) {
   if (!fs.existsSync(file)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    return data && typeof data === "object" ? data : null;
+    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
   } catch {
     throw new Error("模型设置文件无法读取，请在模型设置页面重新保存。");
   }

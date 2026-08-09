@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const cli = require("../src/cli");
+const { saveVerifiedModelTaskProfile } = require("../src/core/model_settings");
 
 (async () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-cli-model-settings-root-"));
@@ -104,6 +105,49 @@ const cli = require("../src/cli");
     assert.strictEqual(browserSeamReached, true, "force-mock scan must reach the browser seam");
     assert.strictEqual(contextResolverCalls, 0, "force-mock must not call the model settings context resolver");
     assert.strictEqual(runtimeResolverCalls, 0, "force-mock must not call the scan model runtime resolver");
+
+    const mockBatchRoot = path.join(sandbox, "external-mock-batch");
+    await saveVerifiedModelTaskProfile({
+      root: mockBatchRoot,
+      taskProfile: "batch_screening",
+      fallbackModelConfig: fallbackConfig,
+      connectionTester: async () => {
+        throw new Error("mock batch profile must not call the connection tester");
+      },
+      input: { preset: "mock", model: "offline-structured-mock" }
+    });
+    const realContext = cli.resolveScanModelSettingsContext(
+      { "model-settings-root": mockBatchRoot },
+      { root: worktreeRoot, pathPolicy }
+    );
+    assert.strictEqual(realContext.root, fs.realpathSync(mockBatchRoot), "mock batch context must canonicalize the external root");
+    assert.strictEqual(realContext.readOnly, true, "mock batch context must be read-only");
+
+    let realContextCalls = 0;
+    let nonForceBrowserSeamReached = false;
+    const nonForceBrowserSeam = () => {
+      nonForceBrowserSeamReached = true;
+      const error = new Error("browser seam reached by read-only scan model init without force-mock");
+      error.code = "TEST_BROWSER_SEAM_REACHED";
+      throw error;
+    };
+    try {
+      await cli.scan(
+        stubDb,
+        { input: "synthetic-input.json", "model-settings-root": mockBatchRoot, keywords: "test-keyword" },
+        {
+          resolveScanModelSettingsContext: (args) => {
+            realContextCalls += 1;
+            return cli.resolveScanModelSettingsContext(args, { root: worktreeRoot, pathPolicy });
+          },
+          createBrowser: nonForceBrowserSeam
+        }
+      );
+    } catch (error) {
+      assert.strictEqual(error?.code, "TEST_BROWSER_SEAM_REACHED", "read-only scan must reach the browser seam after real model init");
+    }
+    assert.strictEqual(nonForceBrowserSeamReached, true, "read-only scan must reach the browser seam");
+    assert.strictEqual(realContextCalls, 1, "read-only scan must resolve the context through the real CLI resolver exactly once");
 
     const defaultContext = cli.resolveScanModelSettingsContext({}, { root: worktreeRoot, pathPolicy });
     assert.strictEqual(defaultContext.root, worktreeRoot, "default context must keep the candidate ROOT");

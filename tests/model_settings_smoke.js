@@ -131,6 +131,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
     await connectionErrorSmoke();
     await connectionProbeSmoke();
     await readOnlyRootSmoke();
+    readOnlySchemaRequiredSmoke();
     readOnlyLegacySecretSmoke();
     console.log("model_settings_smoke ok");
   } finally {
@@ -225,6 +226,12 @@ async function readOnlyRootSmoke() {
     assertRootError(tempRoot, options, "MODEL_SETTINGS_ROOT_PROTECTED");
     assertRootError(emptyRoot, options, "MODEL_SETTINGS_ROOT_MISSING_SETTINGS");
     assertRootError(missingRoot, options, "MODEL_SETTINGS_ROOT_NOT_FOUND");
+    assertRootError("\\\\192.168.1.10\\share\\model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
+    assertRootError("//192.168.1.10/share/model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
+
+    const dirSettingsRoot = path.join(sandbox, "dir-settings");
+    fs.mkdirSync(path.join(dirSettingsRoot, ".runtime", "settings", "model.json"), { recursive: true });
+    assertRootError(dirSettingsRoot, options, "MODEL_SETTINGS_ROOT_SETTINGS_NOT_FILE");
 
     const v1Hash = fileHash(settingsPath(v1Root));
     assert.throws(
@@ -271,6 +278,71 @@ function assertRootError(rawRoot, options, code) {
     () => resolveReadOnlyModelSettingsRoot(rawRoot, options),
     (error) => error.code === code
   );
+}
+
+function readOnlySchemaRequiredSmoke() {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-readonly-schema-"));
+  try {
+    const nonMockFallback = {
+      provider: "openai_compatible",
+      providers: {
+        openai_compatible: {
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-v4-pro",
+          apiKeyEnv: "TEST_READONLY_MODEL_API_KEY"
+        }
+      }
+    };
+    const cases = [
+      { name: "missing", prepare: () => {} },
+      { name: "json-null", prepare: (root) => writeFixtureSettings(root, null) },
+      { name: "json-false", prepare: (root) => writeFixtureSettings(root, false) },
+      { name: "json-string", prepare: (root) => writeFixtureSettings(root, "not-an-object") },
+      { name: "json-array", prepare: (root) => writeFixtureSettings(root, []) }
+    ];
+
+    for (const item of cases) {
+      const root = path.join(sandbox, item.name);
+      fs.mkdirSync(root, { recursive: true });
+      item.prepare(root);
+      saveSecret(root, "model-api-key-deepseek", "synthetic-readonly-non-object-value");
+      const before = settingsAndSecretsSnapshot(root);
+
+      assert.throws(
+        () => loadModelSettings({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
+        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
+        `${item.name} read-only load must reject before legacy fallback`
+      );
+      assert.throws(
+        () => resolveRuntimeModelConfig({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
+        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
+        `${item.name} read-only runtime config must reject before legacy fallback`
+      );
+      assert.throws(
+        () => resolveRuntimeBatchBackup({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
+        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
+        `${item.name} read-only batch backup must reject before legacy fallback`
+      );
+      assert.deepStrictEqual(
+        settingsAndSecretsSnapshot(root),
+        before,
+        `${item.name} read-only rejection must not change settings or secrets`
+      );
+
+      const writable = loadModelSettings({ root, fallbackModelConfig: nonMockFallback });
+      assert.strictEqual(writable.source, "legacy", `${item.name} default writable load must keep legacy fallback`);
+    }
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+function settingsAndSecretsSnapshot(root) {
+  const file = settingsPath(root);
+  return {
+    settings: fs.existsSync(file) ? fileHash(file) : null,
+    secrets: secretFilesSnapshot(root)
+  };
 }
 
 function readOnlyLegacySecretSmoke() {
