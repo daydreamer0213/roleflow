@@ -1200,7 +1200,7 @@ function backfillCandidateProgress(db) {
     JOIN search_plans plans
       ON plans.id = states.plan_id
       AND plans.profile_id = states.profile_id
-    WHERE states.reason_code IN ('communication_succeeded', 'already_communicated')
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
   `);
   db.exec(`
     INSERT INTO candidate_progress_events(
@@ -1225,7 +1225,7 @@ function backfillCandidateProgress(db) {
     JOIN candidate_progress_cards cards
       ON cards.profile_id = states.profile_id
       AND cards.job_id = states.job_id
-    WHERE states.reason_code IN ('communication_succeeded', 'already_communicated')
+    WHERE states.reason_code IN ('communication_succeeded', 'succeeded', 'already_communicated')
       AND NOT EXISTS (
         SELECT 1 FROM candidate_progress_events events
         WHERE events.card_id = cards.id

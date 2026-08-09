@@ -12,6 +12,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
       updatedAt: fact.updatedAt || fact.confirmedAt || ""
     }));
     const requestedSubjectKeys = deriveRequestedSubjectKeys(messages, normalizedFacts);
+    const scopedFacts = normalizedFacts.filter((fact) => factMatchesRequestedScope(fact, requestedSubjectKeys));
     const input = {
       profile,
       job,
@@ -19,7 +20,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
         messageKey: message.messageKey,
         text: String(message.text || "")
       })),
-      facts: normalizedFacts,
+      facts: scopedFacts,
       requestedSubjectKeys
     };
     try {
@@ -53,6 +54,12 @@ function stableFactSubject(fact = {}) {
   const key = String(fact.key || "");
   if (!["gap.", "leaving_reason.", "short_project."].some((prefix) => key.startsWith(prefix))) return "";
   return String(fact.subjectKey || key.split(".").slice(1).join(".")).trim();
+}
+
+function factMatchesRequestedScope(fact, requestedSubjectKeys) {
+  const subject = stableFactSubject(fact);
+  if (!subject) return true;
+  return requestedSubjectKeys.includes(subject);
 }
 
 function scopeText(value) {

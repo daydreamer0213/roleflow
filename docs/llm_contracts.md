@@ -168,7 +168,7 @@
 
 独立于 `draftCommunication`，不修改既有匹配契约。
 
-输入：`profile`、`job`、`messages[{messageKey,text}]`、`facts[{key,value,subjectKey,updatedAt}]`。
+输入：`profile`、`job`、`messages[{messageKey,text}]`、`facts[{key,value,subjectKey,updatedAt}]`、`requestedSubjectKeys`。
 
 输出 JSON：`messageCategory`、`requiredFactKeys`、`usedFactKeys`、`responseItems[{id,kind,required}]`、`coverage[{responseItemId,covered}]`、`missingFact`、`messages`（最多 2 条）、`progressUpdate`。
 
@@ -179,5 +179,6 @@
 - 不确认面试时间、不声称已投递简历。
 - 面试邀约不输出草稿。
 - GAP、离职原因、短期项目解释必须有匹配 subjectKey 的稳定作用域事实。
+- `requestedSubjectKeys` 只包含当前消息正文能够明确定位的稳定事实作用域；不匹配的稳定事实会在模型调用前移除。作用域为空或无法确认时，不允许模型使用稳定事实生成草稿。
 - 提供商的 `nextAction` 不持久化，统一替换为安全提示。
 - 草稿只存内存，调用结束后消息文本立即清空。

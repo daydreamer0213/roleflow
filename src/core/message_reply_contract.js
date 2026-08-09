@@ -22,8 +22,16 @@ function validateMessageReply(value, context = {}) {
   assertDraftLimit(normalized.messages, MAX_DRAFTS);
   assertInterviewHasNoDraft(normalized);
   for (const key of normalized.usedFactKeys) {
-    if (!validFacts.has(key)) {
+    const fact = validFacts.get(key);
+    if (!fact) {
       throw contractError("MESSAGE_REPLY_FACT_NOT_SUPPLIED", `used fact ${key} is not in the supplied valid fact set`);
+    }
+    if (isStableFactKey(key)
+      && (!stableFactMatchesScope(key, fact) || !requestedSubjectMatches(key, context))) {
+      throw contractError("MESSAGE_REPLY_FACT_UNVERIFIED", `used stable fact ${key} is outside the requested subject scope`);
+    }
+    if (factStatus(now, fact).status !== "valid") {
+      throw contractError("MESSAGE_REPLY_FACT_UNVERIFIED", `used fact ${key} is missing, expired, or unverified`);
     }
   }
   const requiredStates = normalized.requiredFactKeys.map((key) => {

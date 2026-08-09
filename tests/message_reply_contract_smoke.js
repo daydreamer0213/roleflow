@@ -81,7 +81,7 @@ async function main() {
     (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED"
   );
   const withoutDate = validateMessageReply(safeReply({
-    usedFactKeys: ["employment_status"],
+    usedFactKeys: [],
     responseItems: [{ id: "employment_status", kind: "question", required: true }],
     coverage: [{ responseItemId: "employment_status", covered: true }],
     messages: []
@@ -101,6 +101,23 @@ async function main() {
     messages: ["stable scoped draft"]
   }, { facts: stableFacts, now: NOW, requestedSubjectKeys: ["2024-03_2024-08"] });
   assert.strictEqual(stablePass.progressUpdate.stage, "reply_ready");
+  assert.throws(
+    () => validateMessageReply({
+      messageCategory: "qualification",
+      requiredFactKeys: [],
+      usedFactKeys: ["gap.2024-03_2024-08"],
+      responseItems: [],
+      coverage: [],
+      missingFact: null,
+      messages: ["stable scoped draft"]
+    }, {
+      facts: stableFacts,
+      now: NOW,
+      requestedSubjectKeys: ["2025-01_2025-06"]
+    }),
+    (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED",
+    "used stable facts must be scope-checked even when the provider omits them from requiredFactKeys"
+  );
   assert.throws(
     () => validateMessageReply({
       messageCategory: "qualification",
@@ -171,8 +188,10 @@ async function main() {
     "storage-shaped facts must be normalized before the reply contract"
   );
 
+  let stableAdapterInput;
   const stableAdapter = {
-    async draftMessageGroup() {
+    async draftMessageGroup(input) {
+      stableAdapterInput = input;
       return {
         messageCategory: "qualification",
         requiredFactKeys: ["gap.2024-03_2024-08"],
@@ -193,10 +212,19 @@ async function main() {
     profile: { candidate: { targetTitles: ["Java Engineer"] } },
     job: { id: 2, title: "Java Engineer" },
     messages: scopedMessages,
-    facts: stableFacts,
+    facts: [
+      ...stableFacts,
+      { key: "gap.2025-01_2025-06", value: "unrelated", subjectKey: "2025-01_2025-06", updatedAt: "2026-07-01T00:00:00.000Z" },
+      { key: "employment_status", value: "available", updatedAt: "2026-08-01T00:00:00.000Z" }
+    ],
     now: NOW
   });
   assert.strictEqual(scopedResult.progressUpdate.stage, "reply_ready");
+  assert.deepStrictEqual(
+    stableAdapterInput.facts.map((fact) => fact.key),
+    ["gap.2024-03_2024-08", "employment_status"],
+    "out-of-scope stable facts must be removed before the model call"
+  );
   await assert.rejects(
     () => scopedAnalyzer({
       profile: { candidate: { targetTitles: ["Java Engineer"] } },
@@ -208,7 +236,7 @@ async function main() {
       facts: stableFacts,
       now: NOW
     }),
-    (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED",
+    (error) => error.code === "MESSAGE_REPLY_FACT_NOT_SUPPLIED",
     "analyzer must not use a stable fact when the recruiter message does not establish its subject"
   );
 

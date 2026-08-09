@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { EventEmitter } = require("node:events");
 const {
   openDb,
   saveProfileAnalysis,
@@ -19,6 +20,7 @@ const {
   transitionProgressCard
 } = require("../src/core/candidate_progress");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { installDashboardSignalHandlers } = require("../src/cli");
 
 const PRIVATE_BODY = "脱敏测试问题";
 const PRIVATE_PREVIEW = "脱敏会话预览";
@@ -47,6 +49,7 @@ main().catch((error) => {
 });
 
 async function main() {
+  await dashboardSignalShutdownSmoke();
   const fixture = createFixture();
   await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
   const scenarios = [];
@@ -394,6 +397,44 @@ async function main() {
   await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function dashboardSignalShutdownSmoke() {
+  const events = [];
+  const processRef = new EventEmitter();
+  processRef.exitCode = null;
+  const fakeServer = {
+    close(callback) {
+      events.push("server-close-start");
+      setImmediate(() => {
+        events.push("server-close-finished");
+        callback();
+      });
+    }
+  };
+  const fakeDb = {
+    close() {
+      events.push("db-close");
+    }
+  };
+  const controls = installDashboardSignalHandlers({
+    server: fakeServer,
+    db: fakeDb,
+    processRef,
+    logger
+  });
+  processRef.emit("SIGTERM");
+  await controls.shutdown("SIGTERM");
+  assert.deepStrictEqual(events, ["server-close-start", "server-close-finished", "db-close"]);
+  assert.strictEqual(processRef.exitCode, 0);
+  assert.strictEqual(processRef.listenerCount("SIGINT"), 0);
+  assert.strictEqual(processRef.listenerCount("SIGTERM"), 0);
+  await controls.shutdown("SIGINT");
+  assert.deepStrictEqual(
+    events,
+    ["server-close-start", "server-close-finished", "db-close"],
+    "dashboard signal shutdown must be idempotent"
+  );
 }
 
 async function modelReadinessGateSmoke(database, projectRoot, databasePath, scopedLogger, profileId) {

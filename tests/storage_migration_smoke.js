@@ -466,6 +466,7 @@ try {
     .run(progressProfileId, progressNow, progressNow).lastInsertRowid);
   const progressJobs = [
     { sourceId: "historical-communication-succeeded", status: "applied", reasonCode: "communication_succeeded" },
+    { sourceId: "historical-v3-succeeded", status: "applied", reasonCode: "succeeded" },
     { sourceId: "historical-already-communicated", status: "later", reasonCode: "already_communicated" }
   ].map((item) => ({
     ...item,
@@ -527,13 +528,13 @@ try {
   db = openDb(progressV6Path);
   assert.strictEqual(
     db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(progressProfileId).n,
-    2,
+    progressJobs.length,
     "candidate progress backfill must be idempotent"
   );
   assert.strictEqual(
     db.prepare(`SELECT COUNT(*) AS n FROM candidate_progress_events
       WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)`).get(progressProfileId).n,
-    2,
+    progressJobs.length,
     "candidate progress events must not duplicate after reopen"
   );
   db.close();
