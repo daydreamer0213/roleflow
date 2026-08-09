@@ -199,7 +199,24 @@ function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
     }
     throw error;
   }
-  if (readOnly && stored && typeof stored === "object" && !Array.isArray(stored) && stored.schemaVersion === 1) {
+  if (
+    readOnly
+    && stored
+    && typeof stored === "object"
+    && !Array.isArray(stored)
+    && (
+      stored.schemaVersion === 1
+      || (
+        !Object.hasOwn(stored, "schemaVersion")
+        && typeof stored.model === "string"
+        && (
+          typeof stored.preset === "string"
+          || typeof stored.provider === "string"
+          || typeof stored.baseUrl === "string"
+        )
+      )
+    )
+  ) {
     throw appError("MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED", "Read-only model settings require schema v2 and cannot migrate legacy settings.");
   }
   if (readOnly && !isStoredSchemaV2Settings(stored)) {

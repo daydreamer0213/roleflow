@@ -363,6 +363,20 @@ function readOnlySchemaRequiredSmoke() {
         writable: "migrated_v1"
       },
       {
+        name: "legacy-v1-no-schema-version",
+        prepare: (root) => writeFixtureSettings(root, {
+          preset: "deepseek",
+          provider: "openai_compatible",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-v4-pro",
+          timeoutMs: 60000,
+          thinkingMode: "enabled",
+          reasoningEffort: "max"
+        }),
+        code: "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED",
+        writable: "migrated_v1"
+      },
+      {
         name: "schema-v2-missing-task-profiles",
         prepare: (root) => writeFixtureSettings(root, { schemaVersion: 2, sharedCredential: { preset: "mock" } })
       },
