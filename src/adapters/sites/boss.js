@@ -300,6 +300,7 @@ class BossSiteAdapter {
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.communicationTabId = null;
     this.communicationSearchTabId = null;
+    this.communicationTabsBound = false;
     this.communicationTabPreparationPromise = null;
     this.communicationOperationInFlight = "";
     this.communicationDispatchedJobIds = new Set();
@@ -1266,6 +1267,7 @@ class BossSiteAdapter {
     }
     this.communicationSearchTabId = searchTabId;
     this.communicationTabId = communicationTabId;
+    this.communicationTabsBound = true;
   }
 
   async prepareCommunicationTabOnce(searchTabId = null) {
@@ -1302,11 +1304,20 @@ class BossSiteAdapter {
     const stored = this.communicationTabId === null
       ? null
       : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
+    if (this.communicationTabsBound && !stored) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The bound BOSS communication tab is no longer present.");
+    }
     if (stored) {
       if (!sameBossWindow(searchTab, stored)) {
+        if (this.communicationTabsBound) {
+          throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The bound BOSS communication tab is in a different browser window.");
+        }
         throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH", "The fixed BOSS communication tab is in a different browser window.");
       }
       if (!isCachedBossCommunicationTab(stored)) {
+        if (this.communicationTabsBound) {
+          throw bossError("BOSS_COMMUNICATION_PAGE_LOST", "The bound BOSS communication tab is no longer a chat or detail page.");
+        }
         throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
       }
       return stored.id;

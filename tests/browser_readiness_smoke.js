@@ -32,7 +32,10 @@ async function inspect(result) {
     ["BOSS_LOGIN_REQUIRED", "login_required"],
     ["BOSS_RISK_CONTROL", "risk_control"],
     ["BOSS_SEARCH_PAGE_INVALID", "search_page_required"],
-    ["BOSS_SEARCH_PAGE_LOST", "search_page_required"]
+    ["BOSS_SEARCH_PAGE_LOST", "search_page_required"],
+    ["BOSS_SEARCH_TAB_CHANGED", "search_page_required"],
+    ["BOSS_COMMUNICATION_PAGE_LOST", "boss_tab_missing"],
+    ["BOSS_OPERATOR_TABS_CHANGED", "boss_tab_missing"]
   ];
   for (const [code, status] of cases) {
     assert.deepStrictEqual(await inspect(codedError(code)), {

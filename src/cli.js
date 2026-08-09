@@ -746,14 +746,15 @@ async function scan(
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
   let browserState = null;
   const usesFixedBossSearchTab = site === "boss" && String(args.browser || "").trim().toLowerCase() === "edge";
-  const preflightBrowser = async (expectedSearchTabId = null) => {
+  const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
     try {
       if (!usesFixedBossSearchTab) return await adapter.preflight();
       return await preflightBossScanBrowser({
         browserMode: "edge",
         browser,
         adapter,
-        expectedSearchTabId
+        expectedSearchTabId,
+        expectedCommunicationTabId
       });
     } catch (error) {
       if (error?.code === "BOSS_RISK_CONTROL") {
@@ -775,6 +776,7 @@ async function scan(
         browser,
         adapter,
         expectedSearchTabId: browserState.tabId,
+        expectedCommunicationTabId: browserState.communicationTabId,
         action: async (nextBrowserState) => {
           browserState = nextBrowserState;
           assertScanActive(signal);
@@ -1472,13 +1474,14 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
   const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
   const usesFixedBossSearchTab = String(args.browser || "").trim().toLowerCase() === "edge";
-  const preflightBrowser = async (expectedSearchTabId = null) => {
+  const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
     try {
       return await preflightBossScanBrowser({
         browserMode: usesFixedBossSearchTab ? "edge" : args.browser,
         browser,
         adapter,
-        expectedSearchTabId
+        expectedSearchTabId,
+        expectedCommunicationTabId
       });
     } catch (error) {
       if (error?.code === "BOSS_RISK_CONTROL") {
@@ -1501,6 +1504,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
         browser,
         adapter,
         expectedSearchTabId: browserState.tabId,
+        expectedCommunicationTabId: browserState.communicationTabId,
         action: async (nextBrowserState) => {
           browserState = nextBrowserState;
           assertScanActive(signal);
@@ -1919,7 +1923,8 @@ async function preflightBossScanBrowser({
   browserMode,
   browser,
   adapter,
-  expectedSearchTabId = null
+  expectedSearchTabId = null,
+  expectedCommunicationTabId = null
 }) {
   if (String(browserMode || "").trim().toLowerCase() !== "edge") {
     return adapter.preflight();
@@ -1927,9 +1932,14 @@ async function preflightBossScanBrowser({
   const inspected = await inspectBossOperatorTabs({
     browser,
     inspectTab: (tabId) => adapter.preflight({ tabId }),
-    expectedSearchTabId
+    expectedSearchTabId,
+    expectedCommunicationTabId
   });
-  return { ...(inspected.searchState || {}), tabId: inspected.searchTab.id };
+  return {
+    ...(inspected.searchState || {}),
+    tabId: inspected.searchTab.id,
+    communicationTabId: inspected.communicationTab.id
+  };
 }
 
 async function runWithBoundBossScanBrowser({
@@ -1937,6 +1947,7 @@ async function runWithBoundBossScanBrowser({
   browser,
   adapter,
   expectedSearchTabId = null,
+  expectedCommunicationTabId = null,
   action
 }) {
   if (typeof action !== "function") throw new TypeError("runWithBoundBossScanBrowser requires action()");
@@ -1944,7 +1955,8 @@ async function runWithBoundBossScanBrowser({
     browserMode,
     browser,
     adapter,
-    expectedSearchTabId
+    expectedSearchTabId,
+    expectedCommunicationTabId
   });
   return action(browserState);
 }

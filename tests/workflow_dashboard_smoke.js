@@ -1156,17 +1156,16 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
         ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
         : { tabId: 32, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
     };
-    await assert.rejects(
-      () => inspectDashboardBossBrowserReadiness({
-        browserMode: "edge",
-        cdpPort: null,
-        logger,
-        browserFactory() {
-          return { async listTabs() { return tabs; } };
-        }
-      }),
-      (error) => error?.code === "BOSS_COMMUNICATION_PAGE_LOST"
-    );
+    const communicationDriftReadiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "edge",
+      cdpPort: null,
+      logger,
+      browserFactory() {
+        return { async listTabs() { return tabs; } };
+      }
+    });
+    assert.strictEqual(communicationDriftReadiness.status, "boss_tab_missing");
+    assert.strictEqual(communicationDriftReadiness.ready, false);
 
     const portablePreflightCalls = [];
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {

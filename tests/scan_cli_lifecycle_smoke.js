@@ -80,13 +80,37 @@ async function fixedBossScanPreflightSmoke() {
       calls.push(options);
       return options?.tabId === 31
         ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true, mode: "search" }
-        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false, mode: "communication" };
+        : { tabId: options?.tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false, mode: "communication" };
     }
   };
 
   const edgeState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
   assert.deepStrictEqual(calls, [{ tabId: 32 }, { tabId: 31 }]);
-  assert.deepStrictEqual(edgeState, { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true, mode: "search" });
+  assert.deepStrictEqual(edgeState, {
+    tabId: 31,
+    communicationTabId: 32,
+    url: "https://www.zhipin.com/web/geek/jobs",
+    isSearchPage: true,
+    mode: "search"
+  });
+
+  currentTabs = fixedTabs;
+  const initialBoundState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
+  currentTabs = fixedTabs.map((tab) => tab.id === 32 ? { ...tab, id: 33 } : tab);
+  let communicationDriftActions = 0;
+  await assert.rejects(
+    () => runWithBoundBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: initialBoundState.tabId,
+      expectedCommunicationTabId: initialBoundState.communicationTabId,
+      action: async () => { communicationDriftActions += 1; }
+    }),
+    (error) => error.code === "BOSS_OPERATOR_TABS_CHANGED"
+  );
+  assert.strictEqual(communicationDriftActions, 0);
+  currentTabs = fixedTabs;
 
   const lostSearchCalls = [];
   const lostSearchAdapter = {

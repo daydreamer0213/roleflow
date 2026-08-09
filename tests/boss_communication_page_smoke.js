@@ -383,6 +383,12 @@ function assertNoPreparationAction(browser, before) {
   boundAdapter.bindCommunicationTabs({ searchTabId: "bound-search", communicationTabId: "bound-chat" });
   assert.strictEqual(await boundAdapter.prepareCommunicationTab("bound-search"), "bound-chat");
   assert.deepStrictEqual(boundBrowser.calls.createTab, []);
+  boundBrowser.removeTab("bound-chat");
+  await assert.rejects(
+    () => boundAdapter.prepareCommunicationTab("bound-search"),
+    (error) => error.code === "BOSS_OPERATOR_TABS_CHANGED"
+  );
+  assert.deepStrictEqual(boundBrowser.calls.createTab, []);
 
   const pinnedSearchBrowser = fakeBrowser({
     tabs: [

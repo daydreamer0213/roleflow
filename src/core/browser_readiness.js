@@ -16,6 +16,9 @@ const CODE_TO_STATUS = Object.freeze({
   BOSS_RISK_CONTROL: "risk_control",
   BOSS_SEARCH_PAGE_INVALID: "search_page_required",
   BOSS_SEARCH_PAGE_LOST: "search_page_required",
+  BOSS_SEARCH_TAB_CHANGED: "search_page_required",
+  BOSS_COMMUNICATION_PAGE_LOST: "boss_tab_missing",
+  BOSS_OPERATOR_TABS_CHANGED: "boss_tab_missing",
   BOSS_WINDOW_MISMATCH: "boss_tab_missing",
   BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH: "boss_tab_missing",
   BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN: "boss_tab_missing"
