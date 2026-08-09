@@ -306,6 +306,7 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
   await assertSerializedSlowBrowserReadinessGate(readinessScript);
   await assertBrowserReadinessModeSelection(readinessScript);
+  await assertBrowserReadinessModeSwitchRace(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -2096,6 +2097,63 @@ async function assertBrowserReadinessModeSelection(readinessScript) {
     "/api/browser-readiness?browserMode=edge",
     "/api/browser-readiness?browserMode=portable&cdpPort=9222"
   ]);
+  assert.strictEqual(button.disabled, false);
+}
+
+async function assertBrowserReadinessModeSwitchRace(readinessScript) {
+  const requests = [];
+  const listeners = new Map();
+  const button = { dataset: { browserBaseDisabled: "false" }, disabled: true };
+  const browserMode = {
+    value: "edge",
+    addEventListener(event, callback) { listeners.set(event, callback); }
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) {
+        if (selector === "[data-browser-readiness-button]") return button;
+        if (selector === "select[name=browserMode]") return browserMode;
+        return null;
+      }
+    },
+    fetch(url) {
+      const request = deferred();
+      requests.push({ url, request });
+      return request.promise;
+    },
+    setInterval() { return 1; },
+    URLSearchParams
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, "/api/browser-readiness?browserMode=edge");
+
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  requests[0].request.resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.notStrictEqual(statusNode.dataset.status, "ready", "a stale Edge response must not update portable readiness");
+  assert.strictEqual(button.disabled, true, "a stale Edge response must not enable the portable selection");
+  assert.strictEqual(requests.length, 2, "finishing a stale Edge request must immediately launch portable readiness");
+  assert.strictEqual(requests[1].url, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  requests[1].request.resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.strictEqual(statusNode.dataset.status, "ready");
+  assert.strictEqual(button.disabled, false);
+
+  browserMode.value = "edge";
+  await listeners.get("change")();
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  requests[2].request.reject(new Error("stale edge failure"));
+  await flushPromises();
+  assert.notStrictEqual(statusNode.dataset.status, "browser_unavailable", "a stale Edge failure must not replace portable readiness");
+  assert.strictEqual(requests.length, 4, "a stale Edge failure must immediately launch portable readiness");
+  assert.strictEqual(requests[3].url, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  requests[3].request.resolve(readinessResponse("ready"));
+  await flushPromises();
   assert.strictEqual(button.disabled, false);
 }
 

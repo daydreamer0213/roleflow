@@ -3877,33 +3877,46 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       if (!statusNode || !button) return;
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
       let readinessInFlight = false;
+      let queuedRefresh = false;
+      let selectionVersion = 0;
       function readinessUrl() {
         const mode = browserMode?.value === 'portable' ? 'portable' : 'edge';
         const params = new URLSearchParams({browserMode:mode});
         if (mode === 'portable') params.set('cdpPort','9222');
         return '/api/browser-readiness?'+params.toString();
       }
-      async function refreshReadiness() {
-        if (readinessInFlight) return;
+      async function refreshReadiness({queueIfBusy=false}={}) {
+        if (readinessInFlight) {
+          if (queueIfBusy) queuedRefresh = true;
+          return;
+        }
+        const requestVersion = selectionVersion;
+        const requestUrl = readinessUrl();
         readinessInFlight = true;
         button.disabled = true;
         try {
-          const response = await fetch(readinessUrl(), {cache:'no-store'});
+          const response = await fetch(requestUrl, {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
+          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
           statusNode.textContent = state.message || '浏览器状态未知。';
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
+          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
           statusNode.textContent = '无法确认当前已登录 Edge 状态，请检查本地服务。';
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;
         } finally {
           readinessInFlight = false;
+          if (queuedRefresh || requestVersion !== selectionVersion || requestUrl !== readinessUrl()) {
+            queuedRefresh = false;
+            void refreshReadiness();
+          }
         }
       }
       refreshReadiness();
-      browserMode?.addEventListener('change', refreshReadiness);
+      browserMode?.addEventListener('change', function(){selectionVersion+=1;void refreshReadiness({queueIfBusy:true})});
       setInterval(refreshReadiness, 5000);
     })();
     </script>
