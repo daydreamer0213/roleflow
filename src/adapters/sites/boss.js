@@ -183,23 +183,6 @@ const PAGE_HELPERS = String.raw`
     };
   };
 
-  window.__bossOpenCard = function(jobId, fallbackIndex, expectedTitle) {
-    const cards = window.__bossCards();
-    const byId = jobId ? cards.find((card) => {
-      const href = (card.querySelector('a[href*="job_detail"]') || card.querySelector("a"))?.href || "";
-      return href.includes("/job_detail/" + jobId + ".html");
-    }) : null;
-    const byTitle = expectedTitle ? cards.find((card) => window.__bossDecode(card.innerText || "").includes(expectedTitle)) : null;
-    const card = byId || byTitle || cards[Number(fallbackIndex) || 0];
-    if (!card) return { clicked: false, reason: "card_not_found", cardCount: cards.length };
-    const target = card.tagName === "A"
-      ? (card.closest("li, .job-card-box, .job-card-wrapper") || card)
-      : card;
-    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
-    target.click();
-    return { clicked: true, cardCount: cards.length };
-  };
-
   window.__bossScrollPane = function(toTop) {
     const root = document.querySelector(".job-detail-container")
       || document.querySelector(".job-detail")
@@ -749,7 +732,7 @@ class BossSiteAdapter {
               console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
               let detailOutcome = { outcome: "succeeded", errorCode: "" };
               try {
-                const detail = await this.readCardDetail(tabId, entry.job, entry.index, options.signal);
+                const detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal);
                 throwIfAborted(options.signal);
                 const detailedJob = normalizeBossJob({
                   ...entry.job,
@@ -1109,53 +1092,6 @@ class BossSiteAdapter {
     }
     await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
     return null;
-  }
-
-  async readCardDetail(tabId, job, fallbackIndex = 0, signal = null) {
-    throwIfAborted(signal);
-    await this.assertSearchPage(tabId);
-    await this.browser.evalValue(tabId, PAGE_HELPERS);
-    const expectedJobId = (normalizeBossUrl(job?.url || "").match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.reserveAccess("pane_detail_read", { jobId: expectedJobId, title: job?.title || "", url: job?.url || "" });
-    const opened = await this.browser.evalValue(tabId, `(() => window.__bossOpenCard(${JSON.stringify(expectedJobId)}, ${Number(fallbackIndex) || 0}, ${JSON.stringify(job?.title || "")}))()`);
-    if (!opened?.clicked) throw bossError("BOSS_CARD_NOT_FOUND", `左侧岗位卡片未找到：${job?.title || expectedJobId || "unknown"}`);
-    await this.waitWithPacing("card");
-    let scrolled = false;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      throwIfAborted(signal);
-      await this.assertSearchPage(tabId);
-      await this.browser.evalValue(tabId, PAGE_HELPERS);
-      const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
-      const titleMatches = normalizedComparableText(detail?.title).includes(normalizedComparableText(job?.title));
-      const identityMatches = expectedJobId && detail?.currentJobId
-        ? detail.currentJobId === expectedJobId
-        : titleMatches;
-      if (identityMatches && detail?.description) {
-        const missingUsefulField = detail.description.length < 120
-          || !(detail.salary || job.salary)
-          || !(detail.experience || job.experience)
-          || !(detail.bossActiveText || job.bossActiveText);
-        if (!scrolled && detail.canScroll && missingUsefulField) {
-          scrolled = true;
-          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
-          await this.waitWithPacing("card_retry");
-          continue;
-        }
-        if (detail.description.length >= 120) {
-          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
-          return {
-            description: cleanDetailText(detail.description),
-            bossActiveText: parseBossActivityText(detail.bossActiveText),
-            salary: detail.salary || "",
-            experience: detail.experience || "",
-            education: detail.education || ""
-          };
-        }
-      }
-      await this.waitWithPacing("card_retry");
-    }
-    await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
-    throw bossError("BOSS_PANE_SWITCH_TIMEOUT", `右侧详情未切换到目标岗位：${job?.title || expectedJobId || "unknown"}`);
   }
 
   async assertSearchPage(tabId) {

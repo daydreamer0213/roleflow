@@ -84,6 +84,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await visiblePaneIdentitySmoke();
   await visiblePaneMissingIdentitySmoke();
   await standaloneDetailTimeoutSmoke();
+  await obsoleteCardActivationUnavailableSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
@@ -424,61 +425,6 @@ async function delayedListSmoke() {
   assert(reads >= 4);
 }
 
-async function paneSwitchSmoke() {
-  let paneReads = 0;
-  const paneScrolls = [];
-  const accessActions = [];
-  const browser = {
-    async evalValue(_tabId, expression) {
-      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
-      if (expression.startsWith("(() => window.__bossOpenCard")) return { clicked: true, jobId: "pane-job" };
-      if (expression.includes("window.__bossPaneState()")) {
-        paneReads += 1;
-        if (paneReads === 1) {
-          return {
-            currentJobId: "pane-job",
-            title: "AI应用开发",
-            description: "短内容",
-            bossActiveText: "",
-            salary: "10-15K",
-            experience: "1-3年",
-            education: "本科",
-            canScroll: true
-          };
-        }
-        return {
-          currentJobId: "pane-job",
-          title: "AI应用开发",
-          description: "完整职位描述 Python RAG Agent ".repeat(20),
-          bossActiveText: "今日活跃",
-          salary: "10-15K",
-          experience: "1-3年",
-          education: "本科",
-          canScroll: true
-        };
-      }
-      if (expression.includes("window.__bossScrollPane(false)")) paneScrolls.push("down");
-      if (expression.includes("window.__bossScrollPane(true)")) paneScrolls.push("top");
-      return true;
-    }
-  };
-  const adapter = new BossSiteAdapter({
-    browser,
-    sleepFn: async () => {},
-    randomFn: () => 0,
-    accessController: { reserve: async (action, details) => accessActions.push({ action, details }) }
-  });
-  const detail = await adapter.readCardDetail("pane-tab", {
-    title: "AI应用开发",
-    url: "https://www.zhipin.com/job_detail/pane-job.html"
-  }, 0);
-  assert(detail.description.length >= 120);
-  assert.strictEqual(detail.bossActiveText, "今日活跃");
-  assert.deepStrictEqual(paneScrolls, ["down", "top"]);
-  assert.deepStrictEqual(accessActions.map((item) => item.action), ["pane_detail_read"]);
-  assert.strictEqual(accessActions[0].details.jobId, "pane-job");
-}
-
 async function accessReservationSmoke() {
   const accessActions = [];
   const browser = {
@@ -499,41 +445,6 @@ async function accessReservationSmoke() {
   await adapter.navigateWithPacing("tab", "https://www.zhipin.com/job_detail/detail-job.html", "detail");
   await adapter.scrollList("tab");
   assert.deepStrictEqual(accessActions.map((item) => item.action), ["list_navigation", "detail_open", "list_scroll"]);
-}
-
-async function leftCardMetadataAvoidsPaneScrollSmoke() {
-  const paneScrolls = [];
-  const browser = {
-    async evalValue(_tabId, expression) {
-      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
-      if (expression.startsWith("(() => window.__bossOpenCard")) return { clicked: true, jobId: "card-facts" };
-      if (expression.includes("window.__bossPaneState()")) {
-        return {
-          currentJobId: "card-facts",
-          title: "AI应用开发",
-          description: "完整职位描述 Python RAG Agent ".repeat(20),
-          bossActiveText: "",
-          salary: "",
-          experience: "",
-          education: "",
-          canScroll: true
-        };
-      }
-      if (expression.includes("window.__bossScrollPane(false)")) paneScrolls.push("down");
-      if (expression.includes("window.__bossScrollPane(true)")) paneScrolls.push("top");
-      return true;
-    }
-  };
-  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
-  const detail = await adapter.readCardDetail("pane-tab", {
-    title: "AI应用开发",
-    url: "https://www.zhipin.com/job_detail/card-facts.html",
-    salary: "10-15K",
-    experience: "1-3年",
-    bossActiveText: "今日活跃"
-  }, 0);
-  assert(detail.description.length >= 120);
-  assert.deepStrictEqual(paneScrolls, ["top"]);
 }
 
 async function visiblePaneIdentitySmoke() {
@@ -642,6 +553,12 @@ async function standaloneDetailTimeoutSmoke() {
   );
 }
 
+async function obsoleteCardActivationUnavailableSmoke() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "adapters", "sites", "boss.js"), "utf8");
+  assert(!source.includes("readCardDetail"), "obsolete readCardDetail API must be unavailable");
+  assert(!source.includes("__bossOpenCard"), "obsolete card activation helper must be unavailable");
+}
+
 async function targetIsolationSmoke() {
   const browser = {
     keyword: "",
@@ -654,7 +571,7 @@ async function targetIsolationSmoke() {
     if (browser.keyword === "broken") throw Object.assign(new Error("white page"), { code: "BOSS_WHITE_PAGE" });
     return [card(browser.keyword)];
   };
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -792,7 +709,7 @@ async function fatalBrowserStopsRemainingTargetsSmoke() {
     }
     return [card(browser.keyword)];
   };
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃"
   });
@@ -851,7 +768,7 @@ async function partialTargetCheckpointSmoke() {
     growthRounds: 1,
     quietWindows: 0
   });
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -894,7 +811,7 @@ async function pageBudgetSmoke() {
     browser.keyword = new URL(url).searchParams.get("query");
   };
   adapter.collectCards = async () => [card(browser.keyword)];
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -925,7 +842,7 @@ async function riskControlSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card(browser.keyword)];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => {
     throw Object.assign(new Error("risk control"), { code: "BOSS_RISK_CONTROL" });
   };
   const checkpoints = [];
@@ -963,7 +880,7 @@ async function fullDetailCoverageSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => fixtures[browser.keyword];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return {
       description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
@@ -1003,7 +920,7 @@ async function fairDetailAllocationSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.title);
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
   };
@@ -1035,7 +952,7 @@ async function priorityDetailBudgetSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.title);
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
   };
@@ -1060,7 +977,7 @@ async function reusableDetailSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("cached"), card("fresh")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return { description: `实时职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
   };
@@ -1087,7 +1004,7 @@ async function changedCardFactsRejectCacheSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("changed-cache")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return {
       description: `实时职位描述 ${job.title} Python RAG `.repeat(12),
@@ -1126,7 +1043,7 @@ async function detailSafetyLimitSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 5 }, (_, index) => card(`safety-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads += 1;
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
   };
@@ -1153,7 +1070,7 @@ async function detailFailureDedupeSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("same-failure")];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => {
     reads += 1;
     throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
   };
@@ -1180,7 +1097,7 @@ async function detailOutcomeAuditSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("audit-success"), card("audit-failure")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     if (job.title === "audit-failure") {
       throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
     }
@@ -1212,7 +1129,7 @@ async function detailFatalOutcomeAuditSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("audit-fatal")];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => {
     throw Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL" });
   };
   const outcomes = [];
