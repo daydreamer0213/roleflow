@@ -1646,7 +1646,11 @@ async function handleWorkflowRunResume(req, res, {
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
     }
-    if (workflow.scanNeeded && workflow.scanBatchId) {
+    const resumesAnalysis = workflow.status === "interrupted"
+      && String(workflow.resumePhase || "") === "analyzing";
+    if (resumesAnalysis) {
+      assertWorkflowAnalysisBatch(db, workflow);
+    } else if (workflow.scanNeeded && workflow.scanBatchId) {
       validateResumeBatch({
         resumeBatchId: workflow.scanBatchId,
         resumedBatch: getBatch(db, workflow.scanBatchId),
@@ -1663,7 +1667,26 @@ async function handleWorkflowRunResume(req, res, {
       assertWorkflowResumeBrowserReady(readiness);
     }
     if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
-      if (workflow.scanNeeded) {
+      if (resumesAnalysis) {
+        transitionWorkflowRun(db, {
+          id: workflow.id,
+          status: "analyzing",
+          resumePhase: null
+        });
+        startPlanScan(scanRuns, {
+          db,
+          root,
+          dbPath,
+          planId: workflow.planId,
+          cdpPort,
+          browserMode,
+          scanKind: "daily",
+          workflowRunId: workflow.id,
+          logger,
+          requestId,
+          spawnProcess
+        });
+      } else if (workflow.scanNeeded) {
         assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
         startPlanScan(scanRuns, {
           db,

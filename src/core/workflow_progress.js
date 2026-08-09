@@ -43,7 +43,12 @@ function getWorkflowProgressSnapshot(db, {
     SELECT id, status, control_state, resume_phase,
       circuit_timeout_job_count, lifetime_timeout_job_count,
       progress_revision, last_activity_at, model_config_revision,
-      planner_json, metrics_json, platform_access_started_at, scan_batch_id
+      planner_json, metrics_json, platform_access_started_at,
+      scan_batch_id, communication_batch_id, review_ready_at,
+      EXISTS(
+        SELECT 1 FROM workflow_job_tasks t
+        WHERE t.workflow_run_id = workflow_runs.id
+      ) AS has_analysis_tasks
     FROM workflow_runs
     WHERE id = ?
   `).get(id);
@@ -271,6 +276,12 @@ function stageIndexFor(workflow) {
   const status = String(workflow.status || "");
   if (["paused", "interrupted"].includes(status) && workflow.resume_phase) {
     return String(workflow.resume_phase || "") === "scanning" ? 3 : 4;
+  }
+  if (status === "interrupted") {
+    if (workflow.communication_batch_id || workflow.review_ready_at) return 5;
+    if (Number(workflow.has_analysis_tasks || 0) > 0) return 4;
+    if (workflow.scan_batch_id) return 3;
+    return 1;
   }
   return STATUS_STAGE_INDEX[status] || WORKFLOW_STAGES.length;
 }

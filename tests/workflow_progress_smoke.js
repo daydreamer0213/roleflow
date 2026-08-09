@@ -238,6 +238,56 @@ function testStageMapping() {
     assert.strictEqual(snapshot.workflow.status, "interrupted");
     assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 3 : 4);
   }
+
+  const createdInterrupted = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-10",
+    modelConfigRevision: "mrev-stage-interrupted-created",
+    keepCreated: true
+  });
+  transitionWorkflowRun(db, {
+    id: createdInterrupted.workflowId,
+    status: "interrupted",
+    errorCode: "WORKFLOW_CHILD_NOT_STARTED"
+  });
+  assert.strictEqual(
+    getWorkflowProgressSnapshot(db, { workflowRunId: createdInterrupted.workflowId }).progress.stageIndex,
+    1
+  );
+
+  const resumedThenCommunicationInterrupted = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-10",
+    modelConfigRevision: "mrev-stage-interrupted-cleared",
+    keepCreated: true
+  });
+  transitionWorkflowRun(db, { id: resumedThenCommunicationInterrupted.workflowId, status: "scanning" });
+  const firstInterruption = transitionWorkflowRun(db, {
+    id: resumedThenCommunicationInterrupted.workflowId,
+    status: "interrupted",
+    errorCode: "SCAN_INTERRUPTED"
+  });
+  assert.strictEqual(firstInterruption.resumePhase, "scanning");
+  const resumed = transitionWorkflowRun(db, {
+    id: resumedThenCommunicationInterrupted.workflowId,
+    status: "scanning"
+  });
+  assert.strictEqual(resumed.resumePhase, null);
+  transitionWorkflowRun(db, { id: resumedThenCommunicationInterrupted.workflowId, status: "analyzing" });
+  transitionWorkflowRun(db, { id: resumedThenCommunicationInterrupted.workflowId, status: "review_required" });
+  transitionWorkflowRun(db, { id: resumedThenCommunicationInterrupted.workflowId, status: "communicating" });
+  const secondInterruption = transitionWorkflowRun(db, {
+    id: resumedThenCommunicationInterrupted.workflowId,
+    status: "interrupted",
+    errorCode: "COMMUNICATION_INTERRUPTED"
+  });
+  assert.strictEqual(secondInterruption.resumePhase, null);
+  assert.strictEqual(
+    getWorkflowProgressSnapshot(db, {
+      workflowRunId: resumedThenCommunicationInterrupted.workflowId
+    }).progress.stageIndex,
+    5
+  );
 }
 
 function testModelIdentityFromPlannerSnapshot() {

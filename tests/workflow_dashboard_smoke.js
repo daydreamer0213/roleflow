@@ -1505,6 +1505,47 @@ async function testWorkflowControlApi(
   assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "analyzing");
   spawns.at(-1).child.emit("close", 0, null);
 
+  const interruptedAnalysis = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-08",
+    resumePhase: "analyzing"
+  });
+  finishScanRun(database, {
+    runId: interruptedAnalysis.scanRunId,
+    status: "interrupted",
+    stopCode: "ANALYSIS_CHILD_INTERRUPTED"
+  });
+  transitionWorkflowRun(database, {
+    id: interruptedAnalysis.workflowId,
+    status: "interrupted",
+    errorCode: "ANALYSIS_CHILD_INTERRUPTED"
+  });
+  const probeCountBeforeInterruptedAnalysisResume = resumeBrowserProbeInputs.length;
+  const spawnCountBeforeInterruptedAnalysisResume = spawns.length;
+  setSiteRuntimeState(database, "boss", {
+    status: "blocked",
+    reasonCode: "BOSS_RISK_CONTROL",
+    message: "fixture block must not affect interrupted local analysis",
+    details: { blockedUntil: "2099-12-31T23:59:59.000Z" }
+  });
+  const interruptedAnalysisResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: interruptedAnalysis.workflowId,
+    browserMode: "portable"
+  });
+  assert.strictEqual(interruptedAnalysisResume.status, 303, interruptedAnalysisResume.body);
+  assert.strictEqual(
+    resumeBrowserProbeInputs.length,
+    probeCountBeforeInterruptedAnalysisResume,
+    "interrupted analysis resume must not probe BOSS browser readiness"
+  );
+  assert.strictEqual(spawns.length, spawnCountBeforeInterruptedAnalysisResume + 1);
+  assert(spawns.at(-1).args.includes("--analysis-only"));
+  assert(!spawns.at(-1).args.includes("--resume-batch"));
+  const resumedInterruptedAnalysis = getWorkflowRun(database, interruptedAnalysis.workflowId);
+  assert.strictEqual(resumedInterruptedAnalysis.status, "analyzing");
+  assert.strictEqual(resumedInterruptedAnalysis.resumePhase, null);
+  clearSiteRuntimeState(database, "boss");
+  spawns.at(-1).child.emit("close", 0, null);
+
   const invalidScanningResume = seedWorkflowApiFixture(database, saved, {
     localDay: "2099-02-04",
     resumePhase: "scanning"

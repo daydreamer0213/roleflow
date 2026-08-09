@@ -1232,7 +1232,7 @@ function transitionWorkflowRun(db, input = {}) {
     : null;
   const resumePhase = Object.hasOwn(input, "resumePhase")
     ? (input.resumePhase ? String(input.resumePhase) : null)
-    : (current.resumePhase || interruptedResumePhase);
+    : (resumed ? null : (current.resumePhase || interruptedResumePhase));
   if (resumePhase && !["scanning", "analyzing"].includes(resumePhase)) {
     throw workflowRunError("WORKFLOW_RESUME_PHASE_INVALID", "workflow run resume phase is invalid");
   }
