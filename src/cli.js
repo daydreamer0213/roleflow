@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 const { loadConfigs } = require("./config");
 const { EdgeControlAdapter } = require("./adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
@@ -74,7 +75,7 @@ const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
 const { createLogger, errorMeta, workflowLogContext } = require("./core/observability");
-const { resolveRuntimeModelConfig, resolveRuntimeBatchBackup, isModelReady } = require("./core/model_settings");
+const { resolveReadOnlyModelSettingsRoot, resolveRuntimeModelConfig, resolveRuntimeBatchBackup, isModelReady } = require("./core/model_settings");
 const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
@@ -500,6 +501,18 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
   }
 }
 
+function resolveScanModelSettingsContext(args, { root = ROOT, pathPolicy = {} } = {}) {
+  if (args["model-settings-root"] === undefined) {
+    return { root, readOnly: false };
+  }
+  const externalRoot = resolveReadOnlyModelSettingsRoot(args["model-settings-root"], {
+    worktreeRoot: pathPolicy.worktreeRoot || root,
+    homeRoot: pathPolicy.homeRoot || os.homedir(),
+    tempRoot: pathPolicy.tempRoot || os.tmpdir()
+  });
+  return { root: externalRoot, readOnly: true };
+}
+
 async function scan(db, args, { signal = null, execution = null, resumeValidation = null } = {}) {
   assertScanActive(signal);
   const analysisOnly = args["analysis-only"] === true;
@@ -521,12 +534,18 @@ async function scan(db, args, { signal = null, execution = null, resumeValidatio
     backupState = null;
     configs.model = offlineMockModelConfig();
   } else {
+    const modelSettingsContext = resolveScanModelSettingsContext(args);
     primaryState = resolveRuntimeModelConfig({
-      root: ROOT,
+      root: modelSettingsContext.root,
+      readOnly: modelSettingsContext.readOnly,
       fallbackModelConfig: configs.model,
       taskProfile: "batch_screening"
     });
-    backupState = resolveRuntimeBatchBackup({ root: ROOT, fallbackModelConfig: configs.model });
+    backupState = resolveRuntimeBatchBackup({
+      root: modelSettingsContext.root,
+      readOnly: modelSettingsContext.readOnly,
+      fallbackModelConfig: configs.model
+    });
     configs.model = primaryState.modelConfig;
   }
   if (args["force-mock"] !== true && !isModelReady(primaryState, { taskProfile: "batch_screening" })) {
@@ -2082,6 +2101,7 @@ function printHelp() {
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID>
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode daily
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode broad
+  run.ps1 scan --plan <Search Plan ID> --browser portable --cdp-port 9222 --model-settings-root <external-root>  # scan-only, read-only
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --analysis-concurrency 2
   run.ps1 refresh-details --browser edge --plan <Search Plan ID> --limit 8
@@ -2100,6 +2120,7 @@ function printHelp() {
 }
 
 module.exports = {
+  resolveScanModelSettingsContext,
   prepareWorkspaceTabsCommand,
   communicate,
   resolveCommunicationBrowserAuthority,
