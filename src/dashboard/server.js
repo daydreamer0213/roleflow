@@ -243,9 +243,9 @@ function createDashboardBrowser({ browserMode, cdpPort }) {
 }
 
 function createDashboardBrowserReadinessProbe({ logger }) {
-  return () => inspectDashboardBossBrowserReadiness({
-    browserMode: "edge",
-    cdpPort: null,
+  return ({ browserMode = "edge", cdpPort = null } = {}) => inspectDashboardBossBrowserReadiness({
+    browserMode,
+    cdpPort,
     logger
   });
 }
@@ -476,7 +476,11 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
-        const readiness = await resolvedBrowserReadinessProbe();
+        const authority = resolveNewInheritedBrowser({
+          browserMode: url.searchParams.get("browserMode"),
+          cdpPort: url.searchParams.get("cdpPort")
+        });
+        const readiness = await resolvedBrowserReadinessProbe(authority);
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
       }
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
@@ -1278,9 +1282,14 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
     const activeLease = getSiteScanLease(db, "boss");
     if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
     const browserMode = params.browserMode === "portable" ? "portable" : "edge";
-    const cdpPort = browserMode === "portable"
-      ? Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)))
-      : null;
+    const cdpPort = browserMode === "portable" ? normalizeCdpPort(params.cdpPort) : null;
+    if (browserMode === "portable" && cdpPort !== PORTABLE_CDP_PORT) {
+      throw appError(
+        "INHERITED_PORTABLE_PORT_REQUIRED",
+        "项目专用 Edge 固定使用 9222 端口。",
+        { statusCode: 409 }
+      );
+    }
     const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
     let scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
     if (resumeBatchId) {
@@ -1454,7 +1463,9 @@ async function resolveLiveInheritedContext({
     if (!preflight.isSearchPage) {
       throw appError(
         "BOSS_SEARCH_PAGE_INVALID",
-        "请先在项目专用 Edge 打开 BOSS 岗位搜索结果页。",
+        browserMode === "edge"
+          ? "请先在当前已登录 Edge 的固定 BOSS 搜索页打开岗位搜索结果。"
+          : "请先在项目专用 Edge 打开 BOSS 岗位搜索结果页。",
         { statusCode: 409 }
       );
     }
@@ -1510,15 +1521,19 @@ async function resolveLiveInheritedContext({
   } catch (error) {
     if (error?.code === "BROWSER_DISCONNECTED") {
       throw appError(
-        "PORTABLE_EDGE_REQUIRED",
-        "项目专用 Edge 未启动或已经断开。请重新运行 Start.bat。",
+        browserMode === "edge" ? "BROWSER_UNAVAILABLE" : "PORTABLE_EDGE_REQUIRED",
+        browserMode === "edge"
+          ? "当前已登录 Edge 的 Edge Control 或桥接未连接，请启动或刷新桥接并确认扩展已连接。"
+          : "项目专用 Edge 未启动或已经断开。请重新运行 Start.bat。",
         { statusCode: 409, cause: error }
       );
     }
     if (error?.code === "BOSS_LOGIN_REQUIRED") {
       throw appError(
         "BOSS_LOGIN_REQUIRED",
-        "请先在项目专用 Edge 登录 BOSS。",
+        browserMode === "edge"
+          ? "请先在当前已登录 Edge 的固定 BOSS 页面登录。"
+          : "请先在项目专用 Edge 登录 BOSS。",
         { statusCode: 409, cause: error }
       );
     }
@@ -1746,19 +1761,27 @@ async function handleWorkflowRunResume(req, res, {
       }
     }
     const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
-    let cdpPort;
-    if (acquisitionMode === "inherited" && browserMode === "portable") {
-      const storedCdpPort = workflow.planner?.cdpPort;
-      if (!Number.isInteger(storedCdpPort) || storedCdpPort !== PORTABLE_CDP_PORT) {
+    let cdpPort = null;
+    if (browserMode === "portable") {
+      const storedCdpPort = Number(workflow.planner?.cdpPort);
+      if (acquisitionMode === "inherited"
+        && (!Number.isInteger(storedCdpPort) || storedCdpPort !== PORTABLE_CDP_PORT)) {
         throw appError(
           "INHERITED_PORTABLE_PORT_REQUIRED",
-          "继承模式固定使用项目专用 Edge 的 9222 端口。",
+          "项目专用 Edge 固定使用 9222 端口。",
           { statusCode: 409 }
         );
       }
-      cdpPort = storedCdpPort;
-    } else {
-      cdpPort = normalizeCdpPort(params.cdpPort);
+      cdpPort = acquisitionMode === "inherited"
+        ? storedCdpPort
+        : normalizeCdpPort(params.cdpPort || (Number.isInteger(storedCdpPort) ? storedCdpPort : PORTABLE_CDP_PORT));
+      if (cdpPort !== PORTABLE_CDP_PORT) {
+        throw appError(
+          "INHERITED_PORTABLE_PORT_REQUIRED",
+          "项目专用 Edge 固定使用 9222 端口。",
+          { statusCode: 409 }
+        );
+      }
     }
     if (["completed", "failed", "stopped"].includes(workflow.status)) {
       throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
@@ -2388,13 +2411,12 @@ function resolveWorkflowControlBrowserAuthority(workflow, params = {}) {
     }
   }
   const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
+  if (browserMode === "edge") return { browserMode: "edge", cdpPort: null };
   const storedCdpPort = Number(workflow?.planner?.cdpPort);
   const cdpPort = normalizeCdpPort(
     params.cdpPort || (Number.isInteger(storedCdpPort) ? storedCdpPort : PORTABLE_CDP_PORT)
   );
-  if (acquisitionMode === "inherited"
-    && browserMode === "portable"
-    && cdpPort !== PORTABLE_CDP_PORT) {
+  if (cdpPort !== PORTABLE_CDP_PORT) {
     throw appError(
       "INHERITED_PORTABLE_PORT_REQUIRED",
       "继承模式必须使用项目专用 Edge 的 9222 端口。",
@@ -3851,15 +3873,22 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
     (function(){
       const statusNode = document.getElementById('browser-readiness-status');
       const button = document.querySelector('[data-browser-readiness-button]');
+      const browserMode = document.querySelector('select[name=browserMode]');
       if (!statusNode || !button) return;
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
       let readinessInFlight = false;
+      function readinessUrl() {
+        const mode = browserMode?.value === 'portable' ? 'portable' : 'edge';
+        const params = new URLSearchParams({browserMode:mode});
+        if (mode === 'portable') params.set('cdpPort','9222');
+        return '/api/browser-readiness?'+params.toString();
+      }
       async function refreshReadiness() {
         if (readinessInFlight) return;
         readinessInFlight = true;
         button.disabled = true;
         try {
-          const response = await fetch('/api/browser-readiness', {cache:'no-store'});
+          const response = await fetch(readinessUrl(), {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
           statusNode.textContent = state.message || '浏览器状态未知。';
@@ -3874,6 +3903,7 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
         }
       }
       refreshReadiness();
+      browserMode?.addEventListener('change', refreshReadiness);
       setInterval(refreshReadiness, 5000);
     })();
     </script>
@@ -4179,13 +4209,14 @@ function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtime
 }
 
 function renderWorkflowResumeForm(workflow) {
-  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="cdpPort" value="9222">`;
+  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}">`;
   if (workflow.planner?.acquisitionMode === "inherited") {
     const browserMode = resolveWorkflowResumeBrowserMode(workflow);
     const label = browserMode === "portable"
       ? "使用项目专用 Edge 的 BOSS 搜索页"
       : "使用当前已登录 Edge 中的固定 BOSS 搜索页";
-    return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="${browserMode}"><span class="hint">${label}</span><button>继续本轮</button></form>`;
+    const cdpPort = browserMode === "portable" ? `<input type="hidden" name="cdpPort" value="${PORTABLE_CDP_PORT}">` : "";
+    return `<form method="post" action="/api/workflow-run/resume">${identity}${cdpPort}<input type="hidden" name="browserMode" value="${browserMode}"><span class="hint">${label}</span><button>继续本轮</button></form>`;
   }
   const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
   const edgeSelected = selectedMode === "edge" ? " selected" : "";
@@ -4936,6 +4967,7 @@ module.exports = {
   createDashboardServer,
   buildWorkflowDashboardState,
   resolveLiveInheritedContext,
+  inspectDashboardBossBrowserReadiness,
   startPlanScan,
   scanStatus,
   handleMarkApi,

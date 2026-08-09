@@ -29,7 +29,12 @@ const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
-const { createDashboardServer } = require("../src/dashboard/server");
+const {
+  createDashboardServer,
+  inspectDashboardBossBrowserReadiness,
+  resolveLiveInheritedContext
+} = require("../src/dashboard/server");
+const boss = require("../src/adapters/sites/boss");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
 const root = path.join(__dirname, "..");
@@ -149,6 +154,7 @@ let server;
     message: "等待登录：请在 BOSS 标签页完成登录。",
     checkedAt: "2099-01-01T00:00:00.000Z"
   };
+  const browserReadinessInputs = [];
   const inheritedContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
     inheritedResolutionCount += 1;
     inheritedResolutionInput = { browserMode, cdpPort };
@@ -229,7 +235,10 @@ let server;
     },
     logger,
     inheritedContextResolver,
-    browserReadinessProbe: async () => ({ ...browserReadiness }),
+    browserReadinessProbe: async (authority) => {
+      browserReadinessInputs.push(authority);
+      return { ...browserReadiness };
+    },
     workflowResumeBrowserReadinessProbe: async ({ browserMode, cdpPort }) => {
       resumeBrowserProbeInputs.push({ browserMode, cdpPort });
       return {
@@ -262,6 +271,8 @@ let server;
   });
   const baseUrl = await listen(server);
 
+  await testDashboardFixedTabReadinessAndInheritedContext({ db, logger, saved });
+
   const health = await getJson(baseUrl, "/health");
   assert.strictEqual(health.status, 200);
   assert.strictEqual(health.body.ok, true);
@@ -271,6 +282,14 @@ let server;
   const loginReadiness = await getJson(baseUrl, "/api/browser-readiness");
   assert.strictEqual(loginReadiness.status, 200);
   assert.deepStrictEqual(loginReadiness.body, browserReadiness);
+  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "edge", cdpPort: null });
+
+  const portableReadiness = await getJson(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  assert.strictEqual(portableReadiness.status, 200);
+  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "portable", cdpPort: 9222 });
+  const invalidPortableReadiness = await getText(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9223");
+  assert.strictEqual(invalidPortableReadiness.status, 409);
+  assert.match(invalidPortableReadiness.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
 
   const gatedPlanPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(gatedPlanPage.body, /data-browser-readiness-button/);
@@ -286,6 +305,7 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
   await assertSerializedSlowBrowserReadinessGate(readinessScript);
+  await assertBrowserReadinessModeSelection(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -335,6 +355,23 @@ let server;
   assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
+
+  const portableScanSaved = seedProfile(db);
+  const portableScanPlan = db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(portableScanSaved.planId);
+  const portableScanPlanJson = JSON.parse(portableScanPlan.plan_json);
+  portableScanPlanJson.cities = ["广州"];
+  db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
+    .run(JSON.stringify(portableScanPlanJson), portableScanSaved.planId);
+  const scanSpawnCountBeforeInvalidPortable = spawns.length;
+  const invalidPortableScan = await postForm(baseUrl, "/api/scan", {
+    planId: portableScanSaved.planId,
+    browserMode: "portable",
+    cdpPort: 9223,
+    scanKind: "daily"
+  });
+  assert.strictEqual(invalidPortableScan.status, 409);
+  assert.match(invalidPortableScan.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.strictEqual(spawns.length, scanSpawnCountBeforeInvalidPortable);
 
   batchModelReady = false;
   const resolutionCountBeforeModelGate = inheritedResolutionCount;
@@ -470,11 +507,15 @@ let server;
     ),
     ["--browser", "portable", "--cdp-port", "9222"]
   );
-  portableSpawn.child.emit("close", 0, null);
+  portableSpawn.child.emit("error", new Error("portable workflow fixture"));
+  const portableInterruptedPage = await getText(baseUrl, portableStarted.location);
+  assert.match(portableInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
+  assert.match(portableInterruptedPage.body, /<input type="hidden" name="browserMode" value="portable">/);
 
   const inheritedInterruptedPage = await getText(baseUrl, started.location);
   assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
   assert.match(inheritedInterruptedPage.body, /当前已登录 Edge/);
+  assert.doesNotMatch(inheritedInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
   const frozenPlanner = workflow.planner;
@@ -507,7 +548,7 @@ let server;
       db.prepare("SELECT status, updated_at, scan_run_id, scan_batch_id, planner_json FROM workflow_runs WHERE id = ?").get(workflow.id),
       workflowRowBefore
     );
-    assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: 9222 });
+    assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   }
 
   const noScanInherited = createWorkflowRun(db, {
@@ -727,7 +768,7 @@ let server;
   assert.strictEqual(rejectedLegacyResume.status, 409);
   assert.match(rejectedLegacyResume.body, /BOSS_LOGIN_REQUIRED/);
   assert.strictEqual(spawns.length, spawnCountBeforeLegacyPreflight);
-  assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: 9222 });
+  assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   resumeBrowserReadinessStatus = "ready";
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
@@ -1026,17 +1067,27 @@ let server;
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
   batchModelReady = true;
 
-  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+  const rejectedGeneratedPortablePort = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: generatedWorkflow.id,
     browserMode: "portable",
     cdpPort: 9333
+  });
+  assert.strictEqual(rejectedGeneratedPortablePort.status, 409);
+  assert.match(rejectedGeneratedPortablePort.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
+
+  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "portable",
+    cdpPort: 9222
   });
   assert.strictEqual(generatedPortableResume.status, 303);
   assert.strictEqual(generatedPortableResume.location, `/workflow?runId=${generatedWorkflow.id}`);
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode + 1);
   assert.deepStrictEqual(
     spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
-    ["--browser", "portable", "--cdp-port", "9333"]
+    ["--browser", "portable", "--cdp-port", "9222"]
   );
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
@@ -1069,6 +1120,99 @@ let server;
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch {}
   }
 });
+
+async function testDashboardFixedTabReadinessAndInheritedContext({ db: database, logger, saved }) {
+  assert.strictEqual(typeof inspectDashboardBossBrowserReadiness, "function");
+  const tabs = [
+    { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
+    { id: 33, windowId: 7, url: "https://www.zhipin.com/job_detail/other-boss-page.html" }
+  ];
+  const originalPreflight = boss.BossSiteAdapter.prototype.preflight;
+  const originalInspect = boss.BossSiteAdapter.prototype.inspectInheritedSearchPage;
+  try {
+    const edgePreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      edgePreflightCalls.push(options);
+      return { tabId: options?.tabId, isSearchPage: options?.tabId === 31 };
+    };
+    const readiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "edge",
+      cdpPort: null,
+      logger,
+      browserFactory() {
+        return { async listTabs() { return tabs; } };
+      }
+    });
+    assert.strictEqual(readiness.status, "ready");
+    assert.deepStrictEqual(edgePreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+    const portablePreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      portablePreflightCalls.push(options);
+      return { tabId: 41, isSearchPage: true };
+    };
+    const portableReadiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "portable",
+      cdpPort: 9222,
+      logger,
+      browserFactory() {
+        return { async listTabs() { throw new Error("portable readiness must not list Edge tabs"); } };
+      }
+    });
+    assert.strictEqual(portableReadiness.status, "ready");
+    assert.deepStrictEqual(portablePreflightCalls, [undefined]);
+
+    const inheritedPreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      inheritedPreflightCalls.push(options);
+      return { tabId: options?.tabId, isSearchPage: options?.tabId === 31 };
+    };
+    boss.BossSiteAdapter.prototype.inspectInheritedSearchPage = async function inspectInheritedSearchPage() {
+      const error = new Error("fixture risk control");
+      error.code = "BOSS_RISK_CONTROL";
+      throw error;
+    };
+    await assert.rejects(
+      () => resolveLiveInheritedContext({
+        db: database,
+        plan: { profileId: saved.profileId },
+        matchingContext: {},
+        logger,
+        browserMode: "edge",
+        cdpPort: null,
+        browserFactory() {
+          return { async listTabs() { return tabs; } };
+        }
+      }),
+      (error) => error?.code === "BOSS_RISK_CONTROL"
+    );
+    assert.deepStrictEqual(inheritedPreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+    boss.BossSiteAdapter.prototype.preflight = async function preflight() {
+      const error = new Error("fixture disconnected");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    };
+    await assert.rejects(
+      () => resolveLiveInheritedContext({
+        db: database,
+        plan: { profileId: saved.profileId },
+        matchingContext: {},
+        logger,
+        browserMode: "edge",
+        cdpPort: null,
+        browserFactory() {
+          return { async listTabs() { return tabs; } };
+        }
+      }),
+      (error) => error?.code === "BROWSER_UNAVAILABLE" && /Edge Control|桥接/.test(error.message)
+    );
+  } finally {
+    boss.BossSiteAdapter.prototype.preflight = originalPreflight;
+    boss.BossSiteAdapter.prototype.inspectInheritedSearchPage = originalInspect;
+  }
+}
 
 async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
   const assertRoute = async ({ pathname, method = "POST", taskProfile, runtime }) => {
@@ -1900,7 +2044,8 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
       intervalCallback = callback;
       intervalMs = interval;
       return 1;
-    }
+    },
+    URLSearchParams
   });
   new vm.Script(readinessScript).runInContext(context);
   await new Promise((resolve) => setImmediate(resolve));
@@ -1909,6 +2054,49 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
   assert.strictEqual(intervalMs, 5000);
   assert.strictEqual(button.disabled, expectedDisabled);
   assert.strictEqual(formSubmitCalls, 0);
+}
+
+async function assertBrowserReadinessModeSelection(readinessScript) {
+  const requests = [];
+  const listeners = new Map();
+  const button = { dataset: { browserBaseDisabled: "false" }, disabled: true };
+  const browserMode = {
+    value: "edge",
+    addEventListener(event, callback) { listeners.set(event, callback); }
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) {
+        if (selector === "[data-browser-readiness-button]") return button;
+        if (selector === "select[name=browserMode]") return browserMode;
+        return null;
+      }
+    },
+    fetch(url) {
+      requests.push(url);
+      const portable = String(url).includes("browserMode=portable") && String(url).includes("cdpPort=9222");
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: portable ? "ready" : "login_required", message: "fixture mode" })
+      });
+    },
+    setInterval() { return 1; },
+    URLSearchParams
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  await flushPromises();
+  assert.deepStrictEqual(requests, ["/api/browser-readiness?browserMode=edge"]);
+  assert.strictEqual(button.disabled, true);
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  await flushPromises();
+  assert.deepStrictEqual(requests, [
+    "/api/browser-readiness?browserMode=edge",
+    "/api/browser-readiness?browserMode=portable&cdpPort=9222"
+  ]);
+  assert.strictEqual(button.disabled, false);
 }
 
 async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
@@ -1934,7 +2122,8 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
       intervalCallback = callback;
       intervalMs = interval;
       return 1;
-    }
+    },
+    URLSearchParams
   });
   new vm.Script(readinessScript).runInContext(context);
   assert.strictEqual(requests.length, 1);
