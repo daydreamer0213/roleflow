@@ -739,11 +739,31 @@ async function scan(
       throw error;
     }
   };
-  const recheckFixedBossSearchTab = async () => {
-    if (!usesFixedBossSearchTab) return browserState;
-    browserState = await preflightBrowser(browserState.tabId);
-    assertScanActive(signal);
-    return browserState;
+  const runWithBoundFixedBossSearchAction = async (action) => {
+    if (!usesFixedBossSearchTab) return action(browserState);
+    try {
+      return await runWithBoundBossScanBrowser({
+        browserMode: "edge",
+        browser,
+        adapter,
+        expectedSearchTabId: browserState.tabId,
+        action: async (nextBrowserState) => {
+          browserState = nextBrowserState;
+          assertScanActive(signal);
+          return action(nextBrowserState);
+        }
+      });
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, site, {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
   };
   let plannedCityScopes = acquisitionMode === "generated"
     ? resolveCityScopes(args, planRecord, configs)
@@ -816,8 +836,9 @@ async function scan(
         platformPolicy = storedExecution.platformPolicy || {};
         assertInheritedAcquisitionScope(searchScope);
       } else {
-        await recheckFixedBossSearchTab();
-        const inspected = await adapter.inspectInheritedSearchPage({ tabId: browserState.tabId });
+        const inspected = await runWithBoundFixedBossSearchAction((state) =>
+          adapter.inspectInheritedSearchPage({ tabId: state.tabId })
+        );
         ({ searchTemplate, searchScope } = buildInheritedSearchScope({
           profileId: planRecord.profileId,
           rawUrl: inspected.url
@@ -852,15 +873,17 @@ async function scan(
       }];
     }
   }
-  if (!args.input && searchTemplate.mode !== "inherited") {
-    await recheckFixedBossSearchTab();
-  }
+  const generatedFilterCatalog = !args.input && searchTemplate.mode !== "inherited"
+    ? await runWithBoundFixedBossSearchAction((state) =>
+      resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: state.tabId, logger: scanLogger })
+    )
+    : null;
   const nativeFilterSnapshot = args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
     : searchTemplate.mode === "inherited"
       ? { site, scanMode, source: "search_template", params: {}, labels: {}, lanes: [] }
       : applyScanPolicyToFilters(
-        await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId, logger: scanLogger }),
+        generatedFilterCatalog,
         scanPolicy
       );
   if (!args.input) {
@@ -1042,10 +1065,9 @@ async function scan(
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
-  if (!args.input) await recheckFixedBossSearchTab();
-  const rawJobs = await adapter.scan({
+  const rawJobs = await runWithBoundFixedBossSearchAction((state) => adapter.scan({
     input: args.input,
-    tabId: browserState?.tabId,
+    tabId: state?.tabId,
     keywords,
     keywordPlan,
     cityScopes,
@@ -1085,7 +1107,7 @@ async function scan(
     }),
     onScanComplete: (summary) => { scanSummary = summary; },
     signal
-  });
+  }));
   assertScanActive(signal);
 
   const detailCoverage = args.input ? null : {
@@ -1443,6 +1465,32 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
     }
   };
   let browserState = await preflightBrowser();
+  const runWithBoundFixedBossRefreshAction = async (action) => {
+    if (!usesFixedBossSearchTab) return action(browserState);
+    try {
+      return await runWithBoundBossScanBrowser({
+        browserMode: "edge",
+        browser,
+        adapter,
+        expectedSearchTabId: browserState.tabId,
+        action: async (nextBrowserState) => {
+          browserState = nextBrowserState;
+          assertScanActive(signal);
+          return action(nextBrowserState);
+        }
+      });
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, "boss", {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
+  };
   assertScanActive(signal);
 
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
@@ -1501,20 +1549,16 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   scanLogger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
   const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
   const attemptCounts = { success: 0, failed: 0 };
-  if (usesFixedBossSearchTab) {
-    browserState = await preflightBrowser(browserState.tabId);
-    assertScanActive(signal);
-  }
-  const rawJobs = await refreshMethod(pending, {
+  const rawJobs = await runWithBoundFixedBossRefreshAction((state) => refreshMethod(pending, {
     limit,
-    tabId: browserState.tabId,
+    tabId: state.tabId,
     signal,
     onAttempt: async (attempt) => {
       assertScanActive(signal);
       persistRefreshAttempt(db, attempt, { batchId, activityOnly });
       if (Object.hasOwn(attemptCounts, attempt.result)) attemptCounts[attempt.result] += 1;
     }
-  });
+  }));
   assertScanActive(signal);
   const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
     assertScanActive(signal);
@@ -1860,9 +1904,64 @@ async function preflightBossScanBrowser({
       "BOSS 固定搜索页已变化；为避免在错误页面继续操作，扫描已停止。"
     );
   }
-  await adapter.preflight({ tabId: communicationTab.id });
+  const communicationState = await adapter.preflight({ tabId: communicationTab.id });
+  assertLiveBossOperatorPage(communicationState, {
+    tabId: communicationTab.id,
+    pathname: "/web/geek/chat",
+    code: "BOSS_COMMUNICATION_PAGE_LOST",
+    requiresSearchPage: false
+  });
   const searchState = await adapter.preflight({ tabId: searchTab.id });
+  assertLiveBossOperatorPage(searchState, {
+    tabId: searchTab.id,
+    pathname: "/web/geek/jobs",
+    code: "BOSS_SEARCH_PAGE_LOST",
+    requiresSearchPage: true
+  });
+  const refreshed = assertBossOperatorTabs(await browser.listTabs());
+  if (String(refreshed.searchTab.id) !== String(searchTab.id)) {
+    throw codedError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed; scan stopped.");
+  }
+  if (String(refreshed.communicationTab.id) !== String(communicationTab.id)) {
+    throw codedError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed; scan stopped.");
+  }
+  if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
+    && String(refreshed.searchTab.id) !== String(expectedSearchTabId)) {
+    throw codedError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed; scan stopped.");
+  }
   return { ...(searchState || {}), tabId: searchTab.id };
+}
+
+function assertLiveBossOperatorPage(state, { tabId, pathname, code, requiresSearchPage }) {
+  let url;
+  try {
+    url = new URL(String(state?.url || ""));
+  } catch {
+    throw codedError(code, "BOSS fixed operator page has invalid live state; scan stopped.");
+  }
+  if (String(state?.tabId) !== String(tabId)
+    || !/(^|\.)zhipin\.com$/i.test(url.hostname)
+    || url.pathname !== pathname
+    || (requiresSearchPage ? state?.isSearchPage !== true : state?.isSearchPage === true)) {
+    throw codedError(code, "BOSS fixed operator page left its required view; scan stopped.");
+  }
+}
+
+async function runWithBoundBossScanBrowser({
+  browserMode,
+  browser,
+  adapter,
+  expectedSearchTabId = null,
+  action
+}) {
+  if (typeof action !== "function") throw new TypeError("runWithBoundBossScanBrowser requires action()");
+  const browserState = await preflightBossScanBrowser({
+    browserMode,
+    browser,
+    adapter,
+    expectedSearchTabId
+  });
+  return action(browserState);
 }
 
 function prevalidateDirectScanResume(db, args = {}) {
@@ -2312,5 +2411,6 @@ module.exports = {
   persistDetailOutcome,
   resolveAnalysisConcurrency,
   assertWorkflowScanControl,
-  preflightBossScanBrowser
+  preflightBossScanBrowser,
+  runWithBoundBossScanBrowser
 };

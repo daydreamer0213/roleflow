@@ -9,7 +9,8 @@ const {
   persistRefreshAttempt,
   assertScanLimitOverridesAllowed,
   assertWorkflowScanControl,
-  preflightBossScanBrowser
+  preflightBossScanBrowser,
+  runWithBoundBossScanBrowser
 } = require("../src/cli");
 const {
   openDb,
@@ -64,6 +65,7 @@ async function main() {
 
 async function fixedBossScanPreflightSmoke() {
   assert.strictEqual(typeof preflightBossScanBrowser, "function");
+  assert.strictEqual(typeof runWithBoundBossScanBrowser, "function");
 
   const fixedTabs = [
     { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
@@ -76,13 +78,61 @@ async function fixedBossScanPreflightSmoke() {
   const adapter = {
     preflight: async (options) => {
       calls.push(options);
-      return { tabId: options?.tabId, mode: options?.tabId === 31 ? "search" : "communication" };
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true, mode: "search" }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false, mode: "communication" };
     }
   };
 
   const edgeState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
   assert.deepStrictEqual(calls, [{ tabId: 32 }, { tabId: 31 }]);
-  assert.deepStrictEqual(edgeState, { tabId: 31, mode: "search" });
+  assert.deepStrictEqual(edgeState, { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true, mode: "search" });
+
+  const lostSearchCalls = [];
+  const lostSearchAdapter = {
+    preflight: async (options) => {
+      lostSearchCalls.push(options);
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+    }
+  };
+  await assert.rejects(
+    () => preflightBossScanBrowser({ browserMode: "edge", browser, adapter: lostSearchAdapter }),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
+  );
+  assert.deepStrictEqual(lostSearchCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+  const badCommunicationCalls = [];
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter: {
+        preflight: async (options) => {
+          badCommunicationCalls.push(options);
+          return { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
+        }
+      }
+    }),
+    (error) => error.code === "BOSS_COMMUNICATION_PAGE_LOST"
+  );
+  assert.deepStrictEqual(badCommunicationCalls, [{ tabId: 32 }]);
+
+  const blockedActions = { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 };
+  for (const [name, action] of Object.entries({
+    inheritedInspect: async () => { blockedActions.inheritedInspect += 1; },
+    generatedCatalog: async () => { blockedActions.generatedCatalog += 1; },
+    finalScan: async () => { blockedActions.finalScan += 1; },
+    refreshActivity: async () => { blockedActions.refreshActivity += 1; }
+  })) {
+    await assert.rejects(
+      () => runWithBoundBossScanBrowser({ browserMode: "edge", browser, adapter: lostSearchAdapter, action }),
+      (error) => error.code === "BOSS_SEARCH_PAGE_LOST",
+      `${name} must stop before its page action when the fixed search page is lost`
+    );
+  }
+  assert.deepStrictEqual(blockedActions, { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 });
 
   await assert.rejects(
     () => preflightBossScanBrowser({
