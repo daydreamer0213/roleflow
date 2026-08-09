@@ -130,8 +130,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
 
     await connectionErrorSmoke();
     await connectionProbeSmoke();
-    await readOnlyRootSmoke();
     readOnlySchemaRequiredSmoke();
+    await readOnlyRootSmoke();
     readOnlyLegacySecretSmoke();
     console.log("model_settings_smoke ok");
   } finally {
@@ -228,10 +228,19 @@ async function readOnlyRootSmoke() {
     assertRootError(missingRoot, options, "MODEL_SETTINGS_ROOT_NOT_FOUND");
     assertRootError("\\\\192.168.1.10\\share\\model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
     assertRootError("//192.168.1.10/share/model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
+    assertRootError(path.normalize("//192.168.1.10/share/model-settings"), options, "MODEL_SETTINGS_ROOT_INVALID");
+    assertRootError("\\\\?\\UNC\\192.168.1.10\\share\\model-settings", options, "MODEL_SETTINGS_ROOT_INVALID");
 
     const dirSettingsRoot = path.join(sandbox, "dir-settings");
     fs.mkdirSync(path.join(dirSettingsRoot, ".runtime", "settings", "model.json"), { recursive: true });
     assertRootError(dirSettingsRoot, options, "MODEL_SETTINGS_ROOT_SETTINGS_NOT_FILE");
+
+    const rootLink = path.join(sandbox, "root-link");
+    fs.symlinkSync(externalRoot, rootLink, "junction");
+    assertRootError(rootLink, options, "MODEL_SETTINGS_ROOT_INVALID");
+
+    const settingsLink = createSettingsPathLink(sandbox, externalRoot);
+    assertRootError(settingsLink.root, options, "MODEL_SETTINGS_ROOT_SETTINGS_NOT_FILE");
 
     const v1Hash = fileHash(settingsPath(v1Root));
     assert.throws(
@@ -280,6 +289,51 @@ function assertRootError(rawRoot, options, code) {
   );
 }
 
+function createSettingsPathLink(sandbox, sourceRoot) {
+  const linkedRoot = path.join(sandbox, "settings-link-root");
+  fs.mkdirSync(linkedRoot, { recursive: true });
+  fs.mkdirSync(path.join(linkedRoot, ".runtime"));
+  const sourceFile = settingsPath(sourceRoot);
+  const linkFile = path.join(linkedRoot, ".runtime", "settings", "model.json");
+  try {
+    fs.mkdirSync(path.dirname(linkFile), { recursive: true });
+    fs.symlinkSync(sourceFile, linkFile, "file");
+    return { root: linkedRoot, kind: "file-symlink" };
+  } catch (error) {
+    if (error.code !== "EPERM" && error.code !== "EACCES") throw error;
+    fs.rmSync(path.dirname(linkFile), { recursive: true, force: true });
+    fs.symlinkSync(
+      path.join(sourceRoot, ".runtime", "settings"),
+      path.join(linkedRoot, ".runtime", "settings"),
+      "junction"
+    );
+    return { root: linkedRoot, kind: "settings-junction" };
+  }
+}
+
+function assertReadOnlyRejections(root, fallbackModelConfig, code, label, before) {
+  assert.throws(
+    () => loadModelSettings({ root, fallbackModelConfig, readOnly: true }),
+    (error) => error.code === code,
+    `${label} read-only load must reject before fallback`
+  );
+  assert.throws(
+    () => resolveRuntimeModelConfig({ root, fallbackModelConfig, readOnly: true }),
+    (error) => error.code === code,
+    `${label} read-only runtime config must reject before fallback`
+  );
+  assert.throws(
+    () => resolveRuntimeBatchBackup({ root, fallbackModelConfig, readOnly: true }),
+    (error) => error.code === code,
+    `${label} read-only batch backup must reject before fallback`
+  );
+  assert.deepStrictEqual(
+    settingsAndSecretsSnapshot(root),
+    before,
+    `${label} read-only rejection must not change settings or secrets`
+  );
+}
+
 function readOnlySchemaRequiredSmoke() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-readonly-schema-"));
   try {
@@ -294,11 +348,86 @@ function readOnlySchemaRequiredSmoke() {
       }
     };
     const cases = [
-      { name: "missing", prepare: () => {} },
-      { name: "json-null", prepare: (root) => writeFixtureSettings(root, null) },
-      { name: "json-false", prepare: (root) => writeFixtureSettings(root, false) },
-      { name: "json-string", prepare: (root) => writeFixtureSettings(root, "not-an-object") },
-      { name: "json-array", prepare: (root) => writeFixtureSettings(root, []) }
+      { name: "missing", prepare: () => {}, writable: "legacy" },
+      { name: "json-null", prepare: (root) => writeFixtureSettings(root, null), writable: "legacy" },
+      { name: "json-false", prepare: (root) => writeFixtureSettings(root, false), writable: "legacy" },
+      { name: "json-string", prepare: (root) => writeFixtureSettings(root, "not-an-object"), writable: "legacy" },
+      {
+        name: "schema-v1",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 1,
+          preset: "mock",
+          model: "offline-structured-mock"
+        }),
+        code: "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED",
+        writable: "migrated_v1"
+      },
+      {
+        name: "schema-v2-missing-task-profiles",
+        prepare: (root) => writeFixtureSettings(root, { schemaVersion: 2, sharedCredential: { preset: "mock" } })
+      },
+      {
+        name: "schema-version-string",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: "2",
+          sharedCredential: { preset: "mock" },
+          taskProfiles: {
+            deep_analysis: { model: "offline-structured-mock", credentialRef: "shared" },
+            batch_screening: { model: "offline-structured-mock", credentialRef: "shared" }
+          }
+        })
+      },
+      {
+        name: "schema-v2-task-profiles-null",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 2,
+          sharedCredential: { preset: "mock" },
+          taskProfiles: null
+        })
+      },
+      {
+        name: "schema-v2-task-profiles-array",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 2,
+          sharedCredential: { preset: "mock" },
+          taskProfiles: []
+        })
+      },
+      {
+        name: "schema-v2-task-profiles-string",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 2,
+          sharedCredential: { preset: "mock" },
+          taskProfiles: "not-an-object"
+        })
+      },
+      {
+        name: "schema-v2-task-profiles-empty",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 2,
+          sharedCredential: { preset: "mock" },
+          taskProfiles: {}
+        })
+      },
+      {
+        name: "schema-v2-task-profiles-partial",
+        prepare: (root) => writeFixtureSettings(root, {
+          schemaVersion: 2,
+          sharedCredential: { preset: "mock" },
+          taskProfiles: {
+            deep_analysis: { model: "offline-structured-mock", credentialRef: "shared" }
+          }
+        })
+      },
+      {
+        name: "json-malformed",
+        prepare: (root) => {
+          fs.mkdirSync(path.dirname(settingsPath(root)), { recursive: true });
+          fs.writeFileSync(settingsPath(root), "{ not json", "utf8");
+        },
+        writable: "read-error"
+      },
+      { name: "json-array", prepare: (root) => writeFixtureSettings(root, []), writable: "array-format-error" }
     ];
 
     for (const item of cases) {
@@ -308,30 +437,50 @@ function readOnlySchemaRequiredSmoke() {
       saveSecret(root, "model-api-key-deepseek", "synthetic-readonly-non-object-value");
       const before = settingsAndSecretsSnapshot(root);
 
-      assert.throws(
-        () => loadModelSettings({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
-        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
-        `${item.name} read-only load must reject before legacy fallback`
-      );
-      assert.throws(
-        () => resolveRuntimeModelConfig({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
-        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
-        `${item.name} read-only runtime config must reject before legacy fallback`
-      );
-      assert.throws(
-        () => resolveRuntimeBatchBackup({ root, fallbackModelConfig: nonMockFallback, readOnly: true }),
-        (error) => error.code === "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
-        `${item.name} read-only batch backup must reject before legacy fallback`
-      );
-      assert.deepStrictEqual(
-        settingsAndSecretsSnapshot(root),
-        before,
-        `${item.name} read-only rejection must not change settings or secrets`
+      assertReadOnlyRejections(
+        root,
+        nonMockFallback,
+        item.code || "MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED",
+        item.name,
+        before
       );
 
-      const writable = loadModelSettings({ root, fallbackModelConfig: nonMockFallback });
-      assert.strictEqual(writable.source, "legacy", `${item.name} default writable load must keep legacy fallback`);
+      if (item.writable === "legacy") {
+        const writable = loadModelSettings({ root, fallbackModelConfig: nonMockFallback });
+        assert.strictEqual(writable.source, "legacy", `${item.name} default writable load must keep legacy fallback`);
+      } else if (item.writable === "array-format-error") {
+        assert.throws(
+          () => loadModelSettings({ root, fallbackModelConfig: nonMockFallback }),
+          (error) => !error.code && /对象/.test(error.message),
+          `${item.name} writable load must keep the explicit array format error`
+        );
+      } else if (item.writable === "read-error") {
+        assert.throws(
+          () => loadModelSettings({ root, fallbackModelConfig: nonMockFallback }),
+          (error) => !error.code && /无法读取/.test(error.message),
+          `${item.name} writable load must keep the generic malformed-JSON error`
+        );
+      } else if (item.writable === "migrated_v1") {
+        const writable = loadModelSettings({ root, fallbackModelConfig: nonMockFallback });
+        assert.strictEqual(writable.source, "migrated_v1", `${item.name} writable load must keep v1 migration`);
+      }
     }
+
+    const mixedRoot = path.join(sandbox, "mixed-v2-v1-fields");
+    writeFixtureSettings(mixedRoot, {
+      schemaVersion: 2,
+      preset: "mock",
+      model: "offline-structured-mock",
+      sharedCredential: { preset: "mock" },
+      taskProfiles: {
+        deep_analysis: { model: "offline-structured-mock", credentialRef: "shared" },
+        batch_screening: { model: "offline-structured-mock", credentialRef: "shared" }
+      },
+      batchBackup: { enabled: false }
+    });
+    const mixed = loadModelSettings({ root: mixedRoot, fallbackModelConfig: nonMockFallback, readOnly: true });
+    assert.strictEqual(mixed.source, "runtime", "a schema-v2 object with legacy alias fields must stay runtime");
+    assert.strictEqual(mixed.settings.schemaVersion, 2, "mixed v2/v1 fields must normalize as schema v2");
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

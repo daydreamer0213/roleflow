@@ -107,11 +107,23 @@ function listModelTaskProfiles() {
 function resolveReadOnlyModelSettingsRoot(rawRoot, { worktreeRoot, homeRoot, tempRoot } = {}) {
   const value = String(rawRoot || "").trim();
   if (!value || /^[\\/]{2}/.test(value) || !path.isAbsolute(value) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) {
-    throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be an existing local absolute directory.");
+    throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be a direct local absolute directory.");
   }
-  const canonical = canonicalExistingDir(value);
-  if (!canonical) {
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(value);
+  } catch {
     throw appError("MODEL_SETTINGS_ROOT_NOT_FOUND", "Model settings root does not exist or is not a directory.");
+  }
+  if (rootStat.isSymbolicLink() || isUncPath(path.resolve(value))) {
+    throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be a direct local absolute directory.");
+  }
+  if (!rootStat.isDirectory()) {
+    throw appError("MODEL_SETTINGS_ROOT_NOT_FOUND", "Model settings root does not exist or is not a directory.");
+  }
+  const canonical = fs.realpathSync(value);
+  if (isUncPath(canonical)) {
+    throw appError("MODEL_SETTINGS_ROOT_INVALID", "Model settings root must be a direct local absolute directory.");
   }
   const worktree = canonicalRootPath(worktreeRoot);
   const home = canonicalRootPath(homeRoot);
@@ -122,29 +134,41 @@ function resolveReadOnlyModelSettingsRoot(rawRoot, { worktreeRoot, homeRoot, tem
   if ((home && isPathWithin(canonical, home)) || (temp && isPathWithin(canonical, temp))) {
     throw appError("MODEL_SETTINGS_ROOT_PROTECTED", "Model settings root must be outside the user home and system temp directories.");
   }
-  const settingsFile = path.join(canonical, SETTINGS_RELATIVE_PATH);
-  if (!fs.existsSync(settingsFile)) {
+  const settingsFile = directSettingsFile(canonical);
+  if (!settingsFile.exists) {
     throw appError("MODEL_SETTINGS_ROOT_MISSING_SETTINGS", "Model settings root must contain .runtime/settings/model.json.");
   }
-  let settingsStat;
-  try {
-    settingsStat = fs.statSync(settingsFile);
-  } catch {
-    settingsStat = null;
-  }
-  if (!settingsStat || !settingsStat.isFile()) {
+  if (!settingsFile.file) {
     throw appError("MODEL_SETTINGS_ROOT_SETTINGS_NOT_FILE", "Model settings root must contain .runtime/settings/model.json as a local regular file.");
   }
   return canonical;
 }
 
-function canonicalExistingDir(value) {
-  try {
-    if (!fs.statSync(value).isDirectory()) return "";
-    return fs.realpathSync(value);
-  } catch {
-    return "";
+function directSettingsFile(root) {
+  let current = root;
+  const segments = SETTINGS_RELATIVE_PATH.split(path.sep);
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      return { exists: false, file: "" };
+    }
+    if (stat.isSymbolicLink()) {
+      return { exists: true, file: "" };
+    }
+    if (index < segments.length - 1) {
+      if (!stat.isDirectory()) return { exists: true, file: "" };
+    } else if (!stat.isFile()) {
+      return { exists: true, file: "" };
+    }
   }
+  return { exists: true, file: current };
+}
+
+function isUncPath(value) {
+  return /^[\\/]{2}/.test(path.normalize(value));
 }
 
 function canonicalRootPath(value) {
@@ -166,12 +190,20 @@ function isPathWithin(candidate, base) {
 
 function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
   const file = settingsPath(root);
-  const stored = readJson(file);
-  if (readOnly && !stored) {
-    throw appError("MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED", "Read-only model settings require a stored schema-v2 object; missing or non-object settings cannot use a fallback.");
+  let stored;
+  try {
+    stored = readJson(file);
+  } catch (error) {
+    if (readOnly) {
+      throw appError("MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED", "Read-only model settings require a stored schema-v2 object; malformed JSON cannot use a fallback.", { cause: error });
+    }
+    throw error;
   }
-  if (readOnly && stored.schemaVersion !== 2) {
+  if (readOnly && stored && typeof stored === "object" && !Array.isArray(stored) && stored.schemaVersion === 1) {
     throw appError("MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED", "Read-only model settings require schema v2 and cannot migrate legacy settings.");
+  }
+  if (readOnly && !isStoredSchemaV2Settings(stored)) {
+    throw appError("MODEL_SETTINGS_READ_ONLY_SCHEMA_REQUIRED", "Read-only model settings require a stored schema-v2 object; missing or non-object settings cannot use a fallback.");
   }
   let settings;
   let source;
@@ -201,6 +233,16 @@ function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
     connectionStatus: primary.connection?.status || "unverified",
     modelConfig: modelConfigFromSettings(settings, "", source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : null)
   };
+}
+
+function isStoredSchemaV2Settings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value.schemaVersion !== 2) return false;
+  if (!value.taskProfiles || typeof value.taskProfiles !== "object" || Array.isArray(value.taskProfiles)) return false;
+  return MODEL_TASK_PROFILE_IDS.every((id) => {
+    const profile = value.taskProfiles[id];
+    return Boolean(profile) && typeof profile === "object" && !Array.isArray(profile);
+  });
 }
 
 function saveModelSettings({ root, input, fallbackModelConfig }) {
@@ -1049,7 +1091,7 @@ function readJson(file) {
   if (!fs.existsSync(file)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+    return data && typeof data === "object" ? data : null;
   } catch {
     throw new Error("模型设置文件无法读取，请在模型设置页面重新保存。");
   }
