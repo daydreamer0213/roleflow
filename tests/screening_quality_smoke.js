@@ -661,12 +661,16 @@ async function browserAllocationSmoke() {
     adapter.cardLimits.push(limit);
     return fixtures[browser.keyword].slice(0, limit);
   };
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     const url = job.url;
     adapter.detailUrls.push(url);
     return { description: `职位描述 Python RAG ${url}`, bossActiveText: "今日活跃" };
   };
   adapter.readDetail = async (_tabId, url) => ({ description: `职位描述 Python RAG ${url}`, bossActiveText: "今日活跃" });
+  adapter.readDetail = async (_tabId, url) => {
+    adapter.detailUrls.push(url);
+    return { description: `standalone detail ${url} `.repeat(12), bossActiveText: "今日活跃" };
+  };
   const jobs = await adapter.scanBrowser({
     keywords: ["RAG", "LangChain", "Docker"],
     keywordPlan: [{ word: "RAG", priority: "A" }, { word: "LangChain", priority: "B" }, { word: "Docker", priority: "C" }],
@@ -708,7 +712,8 @@ async function browserAllocationSmoke() {
     url: `https://www.zhipin.com/job_detail/city-${cityBrowser.cityCode}.html`,
     cardText: "Python RAG"
   }];
-  cityAdapter.readCardDetail = async (_tabId, job) => ({ description: `职位描述 Python RAG ${job.url}`, bossActiveText: "今日活跃" });
+  cityAdapter.readVisiblePaneDetail = async (_tabId, job) => ({ description: `职位描述 Python RAG ${job.url}`, bossActiveText: "今日活跃" });
+  cityAdapter.readDetail = async (_tabId, url) => ({ description: `standalone detail ${url} `.repeat(12), bossActiveText: "今日活跃" });
   let cityDetailPlan;
   cityAdapter.logger = {
     info(event, fields) { if (event === "boss_detail_plan") cityDetailPlan = fields; }

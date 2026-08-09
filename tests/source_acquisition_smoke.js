@@ -587,21 +587,23 @@ async function standaloneDetailTimeoutSmoke() {
 }
 
 async function standaloneDetailRoutingSmoke() {
-  const listNavigations = [];
+  const events = [];
   const detailUrls = [];
   const outcomes = [];
   let visiblePaneReads = 0;
   const browser = {
-    async navigate(_tabId, url) { listNavigations.push(url); }
+    async navigate(tabId, url) { events.push({ type: "list", tabId, url }); }
   };
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("direct-1"), card("direct-2")];
-  adapter.readVisiblePaneDetail = async () => {
+  adapter.readVisiblePaneDetail = async (tabId, job) => {
     visiblePaneReads += 1;
+    events.push({ type: "visible_pane", tabId, url: job.url });
     return null;
   };
-  adapter.readDetail = async (_tabId, url) => {
+  adapter.readDetail = async (tabId, url) => {
+    events.push({ type: "detail", tabId, url });
     detailUrls.push(url);
     return {
       description: `Complete standalone detail ${url} `.repeat(12),
@@ -624,7 +626,12 @@ async function standaloneDetailRoutingSmoke() {
     "https://www.zhipin.com/job_detail/direct-1.html",
     "https://www.zhipin.com/job_detail/direct-2.html"
   ]);
-  assert.strictEqual(listNavigations.filter((url) => url.includes("/web/geek/jobs")).length, 1);
+  assert.strictEqual(events.filter((event) => event.type === "list").length, 1);
+  assert.deepStrictEqual(events.map((event) => event.type), ["list", "visible_pane", "detail", "detail"]);
+  assert(events.every((event) => event.tabId === activeBoss.id));
+  assert(events.slice(2).every((event) => event.type === "detail"));
+  assert.strictEqual(events[2].url, detailUrls[0]);
+  assert.strictEqual(events[3].url, detailUrls[1]);
   assert.strictEqual(jobs.filter((job) => job.detailRead).length, 2);
   assert.deepStrictEqual(outcomes, [
     { outcome: "succeeded", errorCode: "", accessMode: "standalone_detail" },
@@ -633,8 +640,9 @@ async function standaloneDetailRoutingSmoke() {
 }
 
 async function obsoleteCardActivationUnavailableSmoke() {
-  assert.strictEqual(typeof BossSiteAdapter.prototype.readDetail, "function");
-  assert.strictEqual(typeof BossSiteAdapter.prototype.readVisiblePaneDetail, "function");
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "adapters", "sites", "boss.js"), "utf8");
+  assert(!source.includes("readCardDetail"), "obsolete readCardDetail API must be unavailable");
+  assert(!source.includes("__bossOpenCard"), "obsolete card activation helper must be unavailable");
 }
 
 async function scanNullPaneOutcomeSmoke() {
