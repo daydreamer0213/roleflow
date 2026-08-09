@@ -11,6 +11,7 @@ const tests = [
   "workspace_tabs_smoke.js",
   "scan_execution_smoke.js",
   "site_access_budget_smoke.js",
+  "site_access_usage_smoke.js",
   "workflow_planner_smoke.js",
   "inherited_search_scope_smoke.js",
   "scoped_keyword_stats_smoke.js",

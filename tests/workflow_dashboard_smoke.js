@@ -894,7 +894,7 @@ let server;
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
   transitionWorkflowRun(db, { id: workflow.id, status: "completed", successfulCount: 30, shortfallCode: "WORKFLOW_SUPPLY_EXHAUSTED" });
-  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "pane_detail_read"]) {
+  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "detail_open"]) {
     recordSiteAccessEvent(db, { site: "boss", action, runId: resumedScan.id });
   }
   const completedPage = await getText(baseUrl, confirmed.location);

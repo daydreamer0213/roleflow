@@ -71,6 +71,7 @@ const {
 } = require("./core/storage");
 const { listWorkflowInventory } = require("./core/workflow_inventory");
 const { createSiteAccessController } = require("./core/site_access_budget");
+const { isBossDetailAccessAction } = require("./core/site_access_usage");
 const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
@@ -1718,7 +1719,7 @@ function workflowAccessUsage(db, scanRunId) {
   const usage = { details: 0, pages: 0, scrolls: 0 };
   for (const event of listSiteAccessEvents(db, { site: "boss", limit: 10000 })) {
     if (String(event.details?.runId || "") !== normalizedRunId) continue;
-    if (event.action === "pane_detail_read") usage.details += 1;
+    if (isBossDetailAccessAction(event.action)) usage.details += 1;
     if (event.action === "list_navigation") usage.pages += 1;
     if (event.action === "list_scroll") usage.scrolls += 1;
   }
@@ -1727,6 +1728,9 @@ function workflowAccessUsage(db, scanRunId) {
 
 function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {}) {
   const succeeded = result?.outcome === "succeeded";
+  const accessMode = ["visible_pane", "standalone_detail"].includes(result?.accessMode)
+    ? result.accessMode
+    : "unknown";
   return recordSiteAccessEvent(db, {
     site,
     action: "pane_detail_result",
@@ -1734,7 +1738,8 @@ function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {
     details: {
       batchId: Number(batchId),
       outcome: succeeded ? "succeeded" : "failed",
-      errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+      errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_DETAIL_LOAD_TIMEOUT"),
+      accessMode
     }
   });
 }

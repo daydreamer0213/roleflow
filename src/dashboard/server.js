@@ -100,6 +100,7 @@ const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
+const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
@@ -1408,9 +1409,9 @@ function workflowRunsWithAccessUsage(db, runs, localDay) {
   const usageByRun = new Map();
   for (const event of listSiteAccessEvents(db, { site: "boss", since, limit: 10000 })) {
     const runId = String(event.details?.runId || "").trim();
-    if (!runId || !["pane_detail_read", "list_navigation", "list_scroll"].includes(event.action)) continue;
+    if (!runId || !["pane_detail_read", "detail_open", "list_navigation", "list_scroll"].includes(event.action)) continue;
     const usage = usageByRun.get(runId) || { details: 0, pages: 0, scrolls: 0 };
-    if (event.action === "pane_detail_read") usage.details += 1;
+    if (isBossDetailAccessAction(event.action)) usage.details += 1;
     if (event.action === "list_navigation") usage.pages += 1;
     if (event.action === "list_scroll") usage.scrolls += 1;
     usageByRun.set(runId, usage);
