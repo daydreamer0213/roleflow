@@ -36,20 +36,21 @@ assert.match(
   /if \(-not \$CheckOnly\) \{\s*& \$Node\.Path --disable-warning=ExperimentalWarning \(Join-Path \$ProjectRoot "tests\\run_all\.js"\)/,
   "startup dependency checks must not run the full offline suite"
 );
+assert(workspaceLauncher.includes('BrowserMode = "edge"'));
+assert(workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
-assert(!workspaceLauncher.includes("start-edge-control.ps1"));
-assert(workspaceLauncher.includes("项目专用 Edge"));
 assert(workspaceLauncher.includes('"workspace-tabs"'));
 assert(workspaceLauncher.includes('"--dashboard-url", $url'));
-assert(workspaceLauncher.includes('"--browser", "portable"'));
 assert(workspaceLauncher.includes('"--cdp-port", [string]$CdpPort'));
 assert(!workspaceLauncher.includes("Start-Process $url"));
 assert(portableEdgeLauncher.includes("--remote-debugging-address=127.0.0.1"));
+assert(portableEdgeLauncher.includes("9222"));
 assert(portableEdgeLauncher.includes("https://www.zhipin.com/web/geek/jobs"));
-assert(readme.includes("不需要 Edge Control 扩展"));
-assert(readme.includes("项目专用 Edge"));
-assert(readme.includes("同一个项目专用 Edge 窗口"));
-assert(readme.includes("等待登录"));
+assert(readme.includes("当前已登录 Edge（推荐）"));
+assert(readme.includes("Start.bat -BrowserMode portable"));
+assert(readme.includes("不会自动回退"));
+assert(readme.includes("9222"));
+assert(readme.includes(".runtime\\edge-profile"));
 const selfCheckDir = path.join(root, ".runtime", "self-check");
 fs.mkdirSync(selfCheckDir, { recursive: true });
 const help = spawnSync(process.execPath, [path.join(root, "src", "cli.js"), "--help"], { encoding: "utf8" });

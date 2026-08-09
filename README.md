@@ -26,10 +26,16 @@ Windows 普通用户：
 3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。
 5. 检查模型生成的候选人画像和搜索方案，手工选择求职城市并保存方案。
-6. `Start.bat` 会打开一个项目专用 Edge 窗口；BOSS 与 RoleFlow 工作台位于同一个项目专用 Edge 窗口的两个标签页。
-7. 第一次使用若尚未登录，先在 BOSS 标签页完成登录；工作台会显示“等待登录”，并禁用“执行一轮”。
-8. 登录后打开岗位搜索结果页并设置筛选，再切回工作台。状态变为“继承模式已就绪”后，手动点击“执行一轮”。
-9. 登录成功不会自动扫描；扫描完成后仍需确认清单并再次点击“开始沟通”。项目专用 Edge 由本机 CDP 直接控制，不需要 Edge Control 扩展、Edge Control 桥接服务或 Codex；登录状态保存在项目的 `.runtime\edge-profile`。
+6. `Start.bat` 默认复用“当前已登录 Edge（推荐）”中的 BOSS 页面，不会另开项目专用 Edge。启动前请在同一个普通 Edge 窗口正好保留一个 `BOSS-SEARCH` 岗位搜索页和一个 `BOSS-COMMUNICATION` 沟通页，并确认 Edge Control 扩展和桥接服务健康。
+7. RoleFlow 只读检查登录、风控、窗口归属和页面身份；检查失败会停止并给出处理建议，不会自动回退，也不会静默切换浏览器 authority（浏览器控制权）。必须保持这两个固定标签页在同一窗口；RoleFlow 不会创建第二个 BOSS 窗口或标签页。
+8. 只有需要独立环境时才手动运行：
+
+   ```text
+   Start.bat -BrowserMode portable
+   ```
+
+   该备用模式固定使用 CDP 端口 `9222` 和项目的 `.runtime\edge-profile`，需要独立登录 BOSS。它不会被普通 Edge 检查失败自动启动。
+9. 登录成功不会自动扫描；扫描完成后仍需用户确认清单并再次明确点击“开始沟通”。本阶段不自动沟通、不发送或投递，也不放宽首次校准点击和批次确认门禁。
 
 模型不可用时，历史岗位和投递记录仍可查看；简历解析和语义匹配会明确显示为待处理，不会伪装成模型结论。
 
@@ -127,7 +133,7 @@ Edge Control 插件模式仅作为兼容入口：
 powershell -ExecutionPolicy Bypass -File .\scripts\scan-boss.ps1 -PlanId 1 -BridgeSource plugin
 ```
 
-默认便携 CDP 模式无需插件：
+便携 CDP 模式仍作为显式兼容入口，无需插件：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\scan-portable.ps1 -PlanId 1
