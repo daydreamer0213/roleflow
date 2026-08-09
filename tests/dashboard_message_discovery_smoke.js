@@ -8,7 +8,11 @@ const {
   createBatch,
   upsertJob,
   acquireSiteScanLease,
-  releaseSiteScanLease
+  releaseSiteScanLease,
+  getSiteRuntimeState,
+  setSiteRuntimeState,
+  clearSiteRuntimeState,
+  listSiteAccessEvents
 } = require("../src/core/storage");
 const {
   ensureProgressCard,
@@ -44,6 +48,7 @@ main().catch((error) => {
 
 async function main() {
   const fixture = createFixture();
+  await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
   const scenarios = [];
   const cleanupTimers = controllableTimers();
   const browsers = [];
@@ -125,13 +130,33 @@ async function main() {
   assert(!page.body.includes(".btn-send"));
   assert(!page.body.includes('name="hrMessage"'));
 
+  setSiteRuntimeState(db, "boss", {
+    status: "blocked",
+    reasonCode: "BOSS_RISK_CONTROL",
+    message: "blocked for safety verification",
+    details: { blockedUntil: "2099-01-01T00:00:00.000Z" }
+  });
+  let response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 409);
+  assert.strictEqual(response.body.errorCode, "BOSS_RISK_CONTROL");
+  assert.strictEqual(browserCreations, 0, "runtime block must stop before browser creation");
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
+    0,
+    "runtime block must stop before lease acquisition"
+  );
+  clearSiteRuntimeState(db, "boss");
+
   acquireSiteScanLease(db, {
     site: "boss",
     owner: "external-scan",
     command: "daily",
     planId: fixture.planId
   });
-  let response = await postJson(base, "/api/message-discovery", {
+  response = await postJson(base, "/api/message-discovery", {
     action: "start",
     profileId: fixture.profileId
   });
@@ -188,6 +213,21 @@ async function main() {
   await waitForStatus(base, fixture.profileId, "stopped");
   await waitForLeaseRelease();
   assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "runner failure must clean up its browser exactly once");
+
+  scenarios.push(riskControlRun());
+  response = await postJson(base, "/api/message-discovery", {
+    action: "start",
+    profileId: fixture.profileId
+  });
+  assert.strictEqual(response.status, 202);
+  await waitForStatus(base, fixture.profileId, "needs_user_action");
+  await waitForLeaseRelease();
+  assert.strictEqual(getSiteRuntimeState(db, "boss").reasonCode, "BOSS_RISK_CONTROL");
+  assert.strictEqual(
+    listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).at(-1).details.errorCode,
+    "BOSS_RISK_CONTROL"
+  );
+  clearSiteRuntimeState(db, "boss");
 
   scenarios.push(completedRun({
     fixture,
@@ -331,6 +371,16 @@ async function main() {
   await closeRace.started;
   const scheduledBeforeClose = cleanupTimers.scheduledCount();
   await new Promise((resolve) => server.close(resolve));
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
+    0,
+    "server close callback must wait for lease release"
+  );
+  assert.strictEqual(
+    browsers.at(-1).cleanupCalls,
+    1,
+    "server close callback must wait for browser cleanup"
+  );
   await closeRace.aborted;
   await new Promise((resolve) => setImmediate(resolve));
   assert.strictEqual(cleanupTimers.activeCount(), 0, "server close must clear every cleanup timer");
@@ -344,6 +394,45 @@ async function main() {
   await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function modelReadinessGateSmoke(database, projectRoot, databasePath, scopedLogger, profileId) {
+  let browserCreations = 0;
+  const readinessServer = createDashboardServer({
+    db: database,
+    root: projectRoot,
+    dbPath: databasePath,
+    forceMock: true,
+    modelReadinessChecker: () => false,
+    logger: scopedLogger,
+    messageDiscoveryDependencies: {
+      createBrowser() {
+        browserCreations += 1;
+        return {};
+      }
+    }
+  });
+  await new Promise((resolve, reject) => {
+    readinessServer.once("error", reject);
+    readinessServer.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const base = `http://127.0.0.1:${readinessServer.address().port}`;
+    const response = await postJson(base, "/api/message-discovery", {
+      action: "start",
+      profileId
+    });
+    assert.strictEqual(response.status, 409);
+    assert.strictEqual(response.body.errorCode, "MESSAGE_DISCOVERY_MODEL_NOT_READY");
+    assert.strictEqual(browserCreations, 0, "unready model must stop before browser creation");
+    assert.strictEqual(
+      database.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
+      0,
+      "unready model must stop before lease acquisition"
+    );
+  } finally {
+    await new Promise((resolve) => readinessServer.close(resolve));
+  }
 }
 
 async function leaseConstraintSmoke(database, root, dbPath, logger, profileId) {
@@ -494,6 +583,20 @@ function failedRun() {
   return async ({ onStatus }) => {
     onStatus({ status: "running", queued: 1, processed: 0, reasonCode: "", results: [] });
     throw new Error("fake discovery failed");
+  };
+}
+
+function riskControlRun() {
+  return async ({ onStatus }) => {
+    const summary = {
+      status: "needs_user_action",
+      queued: 1,
+      processed: 0,
+      reasonCode: "BOSS_RISK_CONTROL",
+      results: []
+    };
+    onStatus(summary);
+    return summary;
   };
 }
 
@@ -689,7 +792,7 @@ async function postJson(base, route, body) {
   });
   const text = await response.text();
   assertNoDraftMessagesInJson(text);
-  return { status: response.status };
+  return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
 function postForm(base, route, values) {

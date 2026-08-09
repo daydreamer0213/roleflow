@@ -15,7 +15,7 @@ const {
   listWorkflowReviewCandidates,
   reconcileCommunicationOutcome
 } = require("../src/core/workflow_inventory");
-const { ensureProgressCard } = require("../src/core/candidate_progress");
+const { ensureProgressCard, transitionProgressCard } = require("../src/core/candidate_progress");
 
 const db = openDb(":memory:");
 
@@ -43,6 +43,7 @@ try {
   ids.futureLater = insert("future-later", {}, batchId);
   ids.ambiguous = insert("ambiguous", {}, batchId);
   ids.progressActive = insert("progress-active", {}, batchId);
+  ids.verifiedClosed = insert("verified-closed", {}, batchId);
   ids.staleActivity = insert("stale-activity", { bossActiveDays: 7 }, batchId);
   ids.missingDetail = insert("missing-detail", { qualityTags: ["detail_unverified"], description: "short" }, batchId);
   ids.staleAnalysis = insert("stale-analysis", { analysis: { ...completeAnalysis(), semanticStatus: "stale" } }, batchId);
@@ -71,6 +72,26 @@ try {
     source: "boss",
     now
   });
+  seedCommunicationState(db, {
+    profileId,
+    planId,
+    jobId: ids.verifiedClosed,
+    status: "succeeded",
+    now
+  });
+  const verifiedClosedCard = ensureProgressCard(db, {
+    profileId,
+    planId,
+    jobId: ids.verifiedClosed,
+    source: "boss",
+    now
+  });
+  transitionProgressCard(db, {
+    cardId: verifiedClosedCard.id,
+    expectedStage: "contact_started",
+    stage: "closed",
+    now
+  });
 
   const inventory = listWorkflowInventory(db, { planId, now });
   assert.deepStrictEqual(
@@ -84,6 +105,11 @@ try {
     inventory.some((item) => item.id === ids.progressActive),
     false,
     "an active progress card must remove the job from the communication inventory"
+  );
+  assert.strictEqual(
+    inventory.some((item) => item.id === ids.verifiedClosed),
+    false,
+    "verified communication must stay out of inventory after its progress card becomes terminal"
   );
   assert.strictEqual(workflowEligibility(job("pure-primary"), { now }).eligible, true);
   assert.deepStrictEqual(
@@ -130,6 +156,10 @@ try {
   assert.strictEqual(
     workflowEligibility(job("progress-active"), { now, progressStage: "waiting_reply" }).reasonCode,
     "WORKFLOW_PROGRESS_ACTIVE"
+  );
+  assert.strictEqual(
+    workflowEligibility(job("already-contacted"), { now, communicationStatus: "succeeded" }).reasonCode,
+    "WORKFLOW_COMMUNICATION_VERIFIED"
   );
   assert.strictEqual(
     workflowEligibility(job("model-rejected", {
@@ -281,6 +311,19 @@ function seedAmbiguousCommunication(database, { profileId, planId, jobId, now })
     status, click_count, updated_at
   ) VALUES (?, ?, 1, ?, 'Ambiguous role', 'Ambiguous company', 'ambiguous', 1, ?)`)
     .run(communicationBatchId, jobId, `https://www.zhipin.com/job_detail/ambiguous.html`, now);
+}
+
+function seedCommunicationState(database, { profileId, planId, jobId, status, now }) {
+  const communicationBatchId = Number(database.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, started_at, finished_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'edge', 'completed', '{}', ?, ?, ?, ?, ?)`)
+    .run(profileId, planId, now, now, now, now, now).lastInsertRowid);
+  database.prepare(`INSERT INTO communication_batch_items(
+    batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+    status, click_count, finished_at, updated_at
+  ) VALUES (?, ?, 1, ?, 'Verified role', 'Verified company', ?, 1, ?, ?)`)
+    .run(communicationBatchId, jobId, `https://www.zhipin.com/job_detail/verified-${jobId}.html`, status, now, now);
 }
 
 function job(sourceId, overrides = {}) {

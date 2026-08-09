@@ -2,7 +2,7 @@ const {
   listMessageDiscoveryCandidates,
   recordDiscoveredMessageGroupClassification
 } = require("./candidate_progress");
-const { listCandidateFacts } = require("./storage");
+const { getCandidateProfile, listCandidateFacts } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const {
   listPreviewStates,
@@ -27,6 +27,12 @@ async function runBossMessageDiscovery({
   onStatus = () => {}
 }) {
   const candidates = listMessageDiscoveryCandidates(db, { profileId });
+  const storedProfile = getCandidateProfile(db, profileId);
+  if (!storedProfile) {
+    throw discoveryError("MESSAGE_DISCOVERY_PROFILE_NOT_FOUND", "candidate profile was not found");
+  }
+  const profile = messageReplyProfile(storedProfile.profile);
+  const facts = listCandidateFacts(db, profileId);
   let scan;
   try {
     throwIfAborted(signal);
@@ -121,10 +127,11 @@ async function runBossMessageDiscovery({
     let classification;
     try {
       classification = await classifyMessageGroup({
+        profile,
         card: resolved.card,
         job: resolved.job,
         messages: incoming.messages,
-        facts: listCandidateFacts(db, resolved.card.profileId)
+        facts
       });
     } finally {
       for (const item of incoming.messages) item.text = "";
@@ -275,17 +282,17 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
   }
   const processed = candidates.filter((item) => !item.isNew);
   const unprocessed = candidates.filter((item) => item.isNew);
-  if (unprocessed.length > BOSS_MESSAGE_GROUP_LIMIT) {
+  const grouped = [...processed, ...unprocessed];
+  if (grouped.length > BOSS_MESSAGE_GROUP_LIMIT) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_LIMIT" };
   }
-  if (unprocessed.reduce((sum, item) => sum + item.text.length, 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
+  if (grouped.reduce((sum, item) => sum + item.text.length, 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
   }
   const newMessageKeys = unprocessed.map((item) => item.messageKey);
   if (newMessageKeys.length === 0) {
     return { ok: false, skipped: true, reasonCode: "BOSS_MESSAGE_ALREADY_PROCESSED" };
   }
-  const grouped = [...processed, ...unprocessed];
   return {
     ok: true,
     messages: grouped.map(({ messageKey: itemKey, text }) => ({ messageKey: itemKey, text })),
@@ -436,7 +443,7 @@ function throwIfAborted(signal) {
 
 function shouldInterrupt(error, signal) {
   return Boolean(signal?.aborted)
-    || ["MESSAGE_DISCOVERY_STOPPED", "MESSAGE_DISCOVERY_LEASE_LOST"].includes(error?.code);
+    || ["MESSAGE_DISCOVERY_STOPPED", "MESSAGE_DISCOVERY_LEASE_LOST", "BOSS_RISK_CONTROL"].includes(error?.code);
 }
 
 function errorCode(error) {
@@ -448,6 +455,51 @@ function discoveryError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function messageReplyProfile(value = {}) {
+  const profile = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const candidate = profile.candidate && typeof profile.candidate === "object" ? profile.candidate : {};
+  return {
+    candidate: {
+      city: profileText(candidate.city),
+      targetTitles: profileTextList(candidate.targetTitles, 10),
+      expectedSalary: profileText(candidate.expectedSalary),
+      adjustableSalary: profileTextList(candidate.adjustableSalary, 4)
+    },
+    education: profileObjectList(profile.education, [
+      "degree", "major", "startDate", "endDate", "status", "highlights"
+    ], 6),
+    experiences: profileObjectList(profile.experiences, [
+      "organization", "role", "type", "startDate", "endDate",
+      "roleBoundary", "highlights", "technologies"
+    ], 12),
+    skills: profileObjectList(profile.skills, ["name", "level", "evidence"], 40),
+    projects: profileObjectList(profile.projects, [
+      "name", "period", "context", "roleBoundary", "canSay",
+      "technologies", "results", "avoidSaying"
+    ], 10),
+    credentials: profileObjectList(profile.credentials, ["name", "details"], 12),
+    strengths: profileTextList(profile.strengths, 12)
+  };
+}
+
+function profileObjectList(value, keys, limit) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map((item) => {
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    return Object.fromEntries(keys.map((key) => [
+      key,
+      Array.isArray(source[key]) ? profileTextList(source[key], 20) : profileText(source[key])
+    ]));
+  });
+}
+
+function profileTextList(value, limit) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map(profileText).filter(Boolean);
+}
+
+function profileText(value) {
+  return String(value == null ? "" : value).trim().slice(0, 2000);
 }
 
 module.exports = {

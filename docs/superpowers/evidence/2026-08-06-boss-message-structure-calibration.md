@@ -20,14 +20,14 @@ Offline fixture calibration completed. Live read-only calibration ran on 2026-08
 | Company name | `.base-info > span:not(.base-title)` | Live-confirmed after the user pointed out the grey text beside the recruiter name. The header `.base-info` contains an unclassed span with the company name, followed by a `.base-title` span with the recruiter role. |
 | Message item | `.message-item` | Live-confirmed; 7 items visible in the opened conversation. |
 | Message id | `data-mid` | Live-confirmed; values are 15 digits. |
-| Stable conversation id | `data-conversation-id` or `data-encid` | Not present in the live list; rows exposed only `data-v-*` scoped attributes, so the approved fallback is a digest of normalized recruiter label plus preview text. |
+| Stable conversation id | `data-conversation-id` or `data-encid` | Not present in the live list; rows exposed only `data-v-*` scoped attributes. The implemented fallback is a digest of the normalized recruiter label only, while the preview is hashed separately as `previewDigest` so preview changes remain observable. |
 | Stable recruiter id | `data-recruiter-id` or `data-geek-id` | Not present in the live list; approved label-digest fallback. |
 | Voice content | `.item-voice` | Not observed in the calibrated conversation; fallback only. |
 | Image content | `.item-image` | Not observed in the calibrated conversation; fallback only. |
 | Attachment content | `.item-attachment` | Not observed in the calibrated conversation; fallback only. |
 | Text/system content | `.item-friend`, `.item-myself`, `.item-system` | Live-confirmed as message-item direction classes; text fallback remains. |
 
-When neither stable conversation nor recruiter identifier exists, the approved fallback is a digest of the normalized recruiter label plus preview text. This key changes when the label or preview changes, so the reader fails closed instead of clicking a drifted row.
+When neither stable conversation nor recruiter identifier exists, the implemented persistent fallback is a digest of the normalized recruiter label only. A click is still guarded by the current row index and a transient signature containing row index, label, preview, and unread state; after opening, the job identity must resolve uniquely by title and any available company, salary, and city fields. Duplicate recruiter labels therefore share one persistent preview baseline, but they do not bypass the per-click drift guard or the post-open unique-candidate check: an ambiguous identity stops the run without communication or application. A future live calibration should prefer a stable platform conversation identifier if one becomes available.
 
 ## Preview classification fallback
 

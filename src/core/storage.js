@@ -700,6 +700,7 @@ const MIGRATIONS = [
     name: "candidate_progress_v1",
     apply(db) {
       db.exec(CANDIDATE_PROGRESS_SCHEMA);
+      backfillCandidateProgress(db);
     }
   },
   {
@@ -1183,6 +1184,55 @@ function backfillHistoricalCommunicationOutcomes(db) {
       updated_at
     FROM ranked WHERE rank = 1`).run();
   return Number(result.changes || 0);
+}
+
+function backfillCandidateProgress(db) {
+  db.exec(`
+    INSERT OR IGNORE INTO candidate_progress_cards(
+      profile_id, plan_id, job_id, source, stage, next_action,
+      last_event_at, created_at, updated_at
+    )
+    SELECT states.profile_id, states.plan_id, states.job_id, jobs.source,
+      'waiting_reply', 'Wait for recruiter reply',
+      states.updated_at, states.updated_at, states.updated_at
+    FROM candidate_job_states states
+    JOIN jobs ON jobs.id = states.job_id
+    JOIN search_plans plans
+      ON plans.id = states.plan_id
+      AND plans.profile_id = states.profile_id
+    WHERE states.reason_code IN ('communication_succeeded', 'already_communicated')
+  `);
+  db.exec(`
+    INSERT INTO candidate_progress_events(
+      card_id, idempotency_key, type, actor, summary,
+      metadata_json, occurred_at, created_at
+    )
+    SELECT cards.id,
+      'migration:communication:' || states.profile_id || ':' || states.job_id || ':' || states.reason_code,
+      CASE states.reason_code
+        WHEN 'already_communicated' THEN 'contact_already_exists'
+        ELSE 'contact_started'
+      END,
+      'system',
+      CASE states.reason_code
+        WHEN 'already_communicated' THEN 'Historical platform contact preserved'
+        ELSE 'Historical verified contact preserved'
+      END,
+      json_object('source', 'migration', 'outcome', states.reason_code),
+      states.updated_at,
+      states.updated_at
+    FROM candidate_job_states states
+    JOIN candidate_progress_cards cards
+      ON cards.profile_id = states.profile_id
+      AND cards.job_id = states.job_id
+    WHERE states.reason_code IN ('communication_succeeded', 'already_communicated')
+      AND NOT EXISTS (
+        SELECT 1 FROM candidate_progress_events events
+        WHERE events.card_id = cards.id
+          AND events.idempotency_key =
+            'migration:communication:' || states.profile_id || ':' || states.job_id || ':' || states.reason_code
+      )
+  `);
 }
 
 function createWorkflowRun(db, input = {}) {

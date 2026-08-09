@@ -110,6 +110,19 @@ async function main() {
       coverage: [{ responseItemId: "gap.2024-03_2024-08", covered: true }],
       missingFact: null,
       messages: ["stable scoped draft"]
+    }, { facts: stableFacts, now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED",
+    "stable facts must fail closed when the requested subject scope is unknown"
+  );
+  assert.throws(
+    () => validateMessageReply({
+      messageCategory: "qualification",
+      requiredFactKeys: ["gap.2024-03_2024-08"],
+      usedFactKeys: ["gap.2024-03_2024-08"],
+      responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
+      coverage: [{ responseItemId: "gap.2024-03_2024-08", covered: true }],
+      missingFact: null,
+      messages: ["stable scoped draft"]
     }, { facts: stableFacts, now: NOW, requestedSubjectKeys: ["2025-01_2025-06"] }),
     (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED"
   );
@@ -156,6 +169,47 @@ async function main() {
     storedShapeAnalyzed.progressUpdate.stage,
     "reply_ready",
     "storage-shaped facts must be normalized before the reply contract"
+  );
+
+  const stableAdapter = {
+    async draftMessageGroup() {
+      return {
+        messageCategory: "qualification",
+        requiredFactKeys: ["gap.2024-03_2024-08"],
+        usedFactKeys: ["gap.2024-03_2024-08"],
+        responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
+        coverage: [{ responseItemId: "gap.2024-03_2024-08", covered: true }],
+        missingFact: null,
+        messages: ["stable scoped draft"]
+      };
+    }
+  };
+  const scopedAnalyzer = createMessageReplyAnalyzer({ adapter: stableAdapter });
+  const scopedMessages = [{
+    messageKey: "sha256:" + "d".repeat(64),
+    text: "Please explain gap 2024-03_2024-08."
+  }];
+  const scopedResult = await scopedAnalyzer({
+    profile: { candidate: { targetTitles: ["Java Engineer"] } },
+    job: { id: 2, title: "Java Engineer" },
+    messages: scopedMessages,
+    facts: stableFacts,
+    now: NOW
+  });
+  assert.strictEqual(scopedResult.progressUpdate.stage, "reply_ready");
+  await assert.rejects(
+    () => scopedAnalyzer({
+      profile: { candidate: { targetTitles: ["Java Engineer"] } },
+      job: { id: 2, title: "Java Engineer" },
+      messages: [{
+        messageKey: "sha256:" + "e".repeat(64),
+        text: "Please explain the employment gap."
+      }],
+      facts: stableFacts,
+      now: NOW
+    }),
+    (error) => error.code === "MESSAGE_REPLY_FACT_UNVERIFIED",
+    "analyzer must not use a stable fact when the recruiter message does not establish its subject"
   );
 
   console.log("message_reply_contract_smoke ok");

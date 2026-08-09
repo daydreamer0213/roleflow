@@ -31,7 +31,11 @@ function workflowEligibility(job = {}, context = {}) {
   if (progressStage && !TERMINAL_PROGRESS_STAGES.has(progressStage)) {
     return ineligible("WORKFLOW_PROGRESS_ACTIVE");
   }
-  if (BLOCKING_COMMUNICATION_STATUSES.has(String(context.communicationStatus || "").trim())) {
+  const communicationStatus = String(context.communicationStatus || "").trim();
+  if (VERIFIED_COMMUNICATION_STATUSES.has(communicationStatus)) {
+    return ineligible("WORKFLOW_COMMUNICATION_VERIFIED");
+  }
+  if (BLOCKING_COMMUNICATION_STATUSES.has(communicationStatus)) {
     return ineligible("WORKFLOW_COMMUNICATION_STATE_BLOCKED");
   }
   if (String(job.source || "").toLowerCase() !== "boss" || !isBossJobUrl(job.url)) {

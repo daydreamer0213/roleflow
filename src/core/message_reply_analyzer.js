@@ -11,6 +11,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
       subjectKey: fact.subjectKey || "",
       updatedAt: fact.updatedAt || fact.confirmedAt || ""
     }));
+    const requestedSubjectKeys = deriveRequestedSubjectKeys(messages, normalizedFacts);
     const input = {
       profile,
       job,
@@ -18,11 +19,16 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
         messageKey: message.messageKey,
         text: String(message.text || "")
       })),
-      facts: normalizedFacts
+      facts: normalizedFacts,
+      requestedSubjectKeys
     };
     try {
       const result = await adapter.draftMessageGroup(input);
-      return validateMessageReply(result, { facts: input.facts, now });
+      return validateMessageReply(result, {
+        facts: input.facts,
+        now,
+        requestedSubjectKeys: input.requestedSubjectKeys
+      });
     } catch (error) {
       if (typeof logger?.warn === "function") {
         logger.warn("message_reply_analyzer_failed", { code: String(error?.code || "MESSAGE_REPLY_FAILED") });
@@ -32,6 +38,25 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
       for (const message of messages || []) message.text = "";
     }
   };
+}
+
+function deriveRequestedSubjectKeys(messages, facts) {
+  const messageText = scopeText((messages || []).map((message) => message?.text).join(" "));
+  if (!messageText) return [];
+  return [...new Set((facts || []).map((fact) => stableFactSubject(fact)).filter((subject) => {
+    const normalizedSubject = scopeText(subject);
+    return normalizedSubject && messageText.includes(normalizedSubject);
+  }))];
+}
+
+function stableFactSubject(fact = {}) {
+  const key = String(fact.key || "");
+  if (!["gap.", "leaving_reason.", "short_project."].some((prefix) => key.startsWith(prefix))) return "";
+  return String(fact.subjectKey || key.split(".").slice(1).join(".")).trim();
+}
+
+function scopeText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
 }
 
 module.exports = {

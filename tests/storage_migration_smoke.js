@@ -453,6 +453,91 @@ try {
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
 
+  const progressV6Path = path.join(root, "candidate-progress-v6.sqlite");
+  db = openDb(progressV6Path);
+  const progressNow = "2026-07-23T00:00:00.000Z";
+  const progressProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Progress Migration Candidate', '{}', NULL, ?, ?)`)
+    .run(progressNow, progressNow).lastInsertRowid);
+  const progressPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Progress Migration Plan', '{}', NULL, 1, ?, ?)`)
+    .run(progressProfileId, progressNow, progressNow).lastInsertRowid);
+  const progressJobs = [
+    { sourceId: "historical-communication-succeeded", status: "applied", reasonCode: "communication_succeeded" },
+    { sourceId: "historical-already-communicated", status: "later", reasonCode: "already_communicated" }
+  ].map((item) => ({
+    ...item,
+    jobId: Number(db.prepare(`INSERT INTO jobs(
+      source, source_id, title, first_seen_at, last_seen_at
+    ) VALUES ('boss', ?, ?, ?, ?)`)
+      .run(item.sourceId, item.sourceId, progressNow, progressNow).lastInsertRowid)
+  }));
+  for (const item of progressJobs) {
+    db.prepare(`INSERT INTO candidate_job_states(
+      profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'historical state', NULL, ?)`)
+      .run(progressProfileId, item.jobId, progressPlanId, item.status, item.reasonCode, progressNow);
+  }
+  db.exec(`
+    DROP TABLE candidate_progress_events;
+    DROP TABLE candidate_progress_cards;
+    DROP TABLE message_preview_states;
+    DELETE FROM schema_migrations WHERE version IN (7, 8, 9);
+    PRAGMA user_version = 6;
+  `);
+  db.close();
+  db = openDb(progressV6Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  const progressCards = db.prepare(`SELECT cards.job_id, cards.stage, events.type, events.idempotency_key
+    FROM candidate_progress_cards cards
+    JOIN candidate_progress_events events ON events.card_id = cards.id
+    WHERE cards.profile_id = ?
+    ORDER BY cards.job_id`).all(progressProfileId);
+  assert.deepStrictEqual(
+    progressCards.map((row) => ({
+      jobId: Number(row.job_id),
+      stage: row.stage,
+      type: row.type,
+      idempotencyKey: row.idempotency_key
+    })),
+    progressJobs.map((item) => ({
+      jobId: item.jobId,
+      stage: "waiting_reply",
+      type: item.reasonCode === "already_communicated" ? "contact_already_exists" : "contact_started",
+      idempotencyKey: `migration:communication:${progressProfileId}:${item.jobId}:${item.reasonCode}`
+    }))
+  );
+  assert.deepStrictEqual(
+    db.prepare(`SELECT job_id, status, reason_code FROM candidate_job_states
+      WHERE profile_id = ? ORDER BY job_id`).all(progressProfileId).map((row) => ({
+        jobId: Number(row.job_id),
+        status: row.status,
+        reasonCode: row.reason_code
+      })),
+    progressJobs.map((item) => ({
+      jobId: item.jobId,
+      status: item.status,
+      reasonCode: item.reasonCode
+    })),
+    "candidate progress migration must not rewrite historical application status"
+  );
+  db.close();
+  db = openDb(progressV6Path);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(progressProfileId).n,
+    2,
+    "candidate progress backfill must be idempotent"
+  );
+  assert.strictEqual(
+    db.prepare(`SELECT COUNT(*) AS n FROM candidate_progress_events
+      WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)`).get(progressProfileId).n,
+    2,
+    "candidate progress events must not duplicate after reopen"
+  );
+  db.close();
+
   const durableV5Path = path.join(root, "durable-v5.sqlite");
   db = openDb(durableV5Path);
   const v5Now = "2026-07-25T00:00:00.000Z";

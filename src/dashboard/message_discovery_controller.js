@@ -3,6 +3,11 @@ const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
+const {
+  getSiteRuntimeState,
+  setSiteRuntimeState,
+  recordSiteAccessEvent
+} = require("../core/storage");
 
 const DEFAULT_CLEANUP_MS = 30 * 60 * 1000;
 const ALLOWED_RUN_STATUSES = new Set(["running", "completed", "needs_user_action", "stopped"]);
@@ -12,6 +17,9 @@ function createMessageDiscoveryController(deps = {}) {
     db,
     logger = null,
     getModelConfig = () => ({ provider: "mock", providers: { mock: {} } }),
+    modelReady = () => true,
+    assertRuntimeAvailable = () => assertMessageDiscoveryRuntimeAvailable(db, now),
+    recordRiskControl = (input) => persistMessageDiscoveryRiskControl(db, input),
     acquireLease,
     renewLease,
     releaseLease,
@@ -31,6 +39,7 @@ function createMessageDiscoveryController(deps = {}) {
     clearInterval: clearIntervalFn = clearInterval
   } = deps;
   const runs = new Map();
+  let closePromise = null;
 
   return {
     start,
@@ -51,6 +60,15 @@ function createMessageDiscoveryController(deps = {}) {
     if (previousRun?.status === "running") {
       throw messageDiscoveryError("MESSAGE_DISCOVERY_ALREADY_RUNNING", "message discovery is already running", 409);
     }
+    assertRuntimeAvailable({ profileId });
+    if (!modelReady()) {
+      throw messageDiscoveryError(
+        "MESSAGE_DISCOVERY_MODEL_NOT_READY",
+        "message discovery requires a verified deep analysis model",
+        409
+      );
+    }
+    const modelConfig = getModelConfig();
     const owner = randomUUID();
     try {
       acquireLease(db, { site: "boss", owner, command: "discover-messages", planId: null });
@@ -81,7 +99,9 @@ function createMessageDiscoveryController(deps = {}) {
       abortController,
       cleanupTimer: null,
       clearedCardIds: new Set(),
-      closed: false
+      closed: false,
+      riskRecorded: false,
+      completion: null
     };
     runs.set(profileId, run);
     const heartbeatMs = Math.max(1, Number(deps.leaseHeartbeatMs) || 30_000);
@@ -94,11 +114,11 @@ function createMessageDiscoveryController(deps = {}) {
     }, heartbeatMs);
 
     let browser = null;
-    Promise.resolve().then(async () => {
+    run.completion = Promise.resolve().then(async () => {
       browser = createBrowser();
       const reader = createReader({ browser });
       const analyzer = createAnalyzer({
-        modelConfig: getModelConfig(),
+        modelConfig,
         logger
       });
       const summary = await runDiscovery({
@@ -110,12 +130,18 @@ function createMessageDiscoveryController(deps = {}) {
         classifyMessageGroup: analyzer,
         onStatus: (status) => updateRun(run, status)
       });
+      if (summary?.reasonCode === "BOSS_RISK_CONTROL") {
+        recordRiskOnce(run, summary.reasonCode, "BOSS requires security verification");
+      }
       updateRun(run, summary);
     }).catch((error) => {
-      if (runs.get(profileId) !== run) return;
       const code = messageDiscoveryErrorCode(error);
+      if (code === "BOSS_RISK_CONTROL") recordRiskOnce(run, code, error?.message);
+      if (runs.get(profileId) !== run) return;
       updateRun(run, {
-        status: code === "MESSAGE_DISCOVERY_LEASE_LOST" ? "needs_user_action" : "stopped",
+        status: ["MESSAGE_DISCOVERY_LEASE_LOST", "BOSS_RISK_CONTROL"].includes(code)
+          ? "needs_user_action"
+          : "stopped",
         queued: run.queued,
         processed: run.processed,
         reasonCode: code,
@@ -212,7 +238,9 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function close() {
-    for (const run of runs.values()) {
+    if (closePromise) return closePromise;
+    const closingRuns = [...runs.values()];
+    for (const run of closingRuns) {
       clearRunTimer(run);
       run.closed = true;
       if (run.status === "running") {
@@ -220,7 +248,23 @@ function createMessageDiscoveryController(deps = {}) {
       }
       run.results = [];
     }
-    runs.clear();
+    closePromise = Promise.allSettled(
+      closingRuns.map((run) => run.completion).filter((completion) => completion && typeof completion.then === "function")
+    ).then(() => {
+      runs.clear();
+    });
+    return closePromise;
+  }
+
+  function recordRiskOnce(run, errorCode, message) {
+    if (run.riskRecorded) return;
+    recordRiskControl({
+      profileId: run.profileId,
+      errorCode,
+      message: String(message || ""),
+      occurredAt: nowDate().toISOString()
+    });
+    run.riskRecorded = true;
   }
 
   function updateRun(run, statusValue) {
@@ -372,6 +416,46 @@ function messageDiscoveryError(code, message, statusCode = 500) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+function assertMessageDiscoveryRuntimeAvailable(db, now) {
+  const state = getSiteRuntimeState(db, "boss");
+  if (!state || state.status !== "blocked") return;
+  const blockedUntil = state.details?.blockedUntil || "";
+  const blockedUntilMs = Date.parse(blockedUntil);
+  const nowValue = typeof now === "function" ? now() : new Date();
+  const nowMs = nowValue instanceof Date ? nowValue.getTime() : Date.parse(nowValue);
+  if (Number.isFinite(blockedUntilMs) && Number.isFinite(nowMs) && blockedUntilMs <= nowMs) return;
+  throw messageDiscoveryError(
+    state.reasonCode || "BOSS_RUNTIME_BLOCKED",
+    "BOSS access is paused by the central runtime safety guard",
+    409
+  );
+}
+
+function persistMessageDiscoveryRiskControl(db, {
+  profileId,
+  errorCode = "BOSS_RISK_CONTROL",
+  message = "",
+  occurredAt = new Date().toISOString()
+} = {}) {
+  setSiteRuntimeState(db, "boss", {
+    status: "blocked",
+    reasonCode: errorCode,
+    message,
+    details: { phase: "message_discovery", profileId: Number(profileId) || null }
+  });
+  recordSiteAccessEvent(db, {
+    site: "boss",
+    action: "risk_control",
+    runId: "",
+    details: {
+      profileId: Number(profileId) || null,
+      errorCode,
+      errorMessage: String(message || "").slice(0, 1000)
+    },
+    createdAt: occurredAt
+  });
 }
 
 function createMessageModelAdapter(modelConfig, logger) {

@@ -179,7 +179,7 @@ function requestedSubjectMatches(key, context) {
   const requestedSubjects = Array.isArray(context.requestedSubjectKeys)
     ? context.requestedSubjectKeys
     : [];
-  if (!requestedSubjects.length) return true;
+  if (!requestedSubjects.length) return false;
   return requestedSubjects.some((subject) => String(subject) === stableSubjectFromKey(key));
 }
 

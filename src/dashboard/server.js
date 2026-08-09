@@ -426,6 +426,7 @@ function createDashboardServer({
     db,
     logger,
     getModelConfig: () => getRuntimeModel("deep_analysis"),
+    modelReady: () => modelReady("deep_analysis"),
     acquireLease: acquireSiteScanLease,
     renewLease: renewSiteScanLease,
     releaseLease: releaseSiteScanLease,
@@ -519,7 +520,21 @@ function createDashboardServer({
       respondUnexpectedError(res, error, requestId, url?.pathname || req.url);
     }
   });
-  dashboardServer.on("close", () => messageDiscovery.close());
+  const closeHttpServer = dashboardServer.close.bind(dashboardServer);
+  dashboardServer.close = (callback) => {
+    const discoveryCleanup = messageDiscovery.close();
+    return closeHttpServer((serverError) => {
+      Promise.resolve(discoveryCleanup).then(
+        () => callback?.(serverError),
+        (cleanupError) => {
+          logger.warn("message_discovery_shutdown_cleanup_failed", {
+            errorCode: String(cleanupError?.code || "MESSAGE_DISCOVERY_CLEANUP_FAILED")
+          });
+          callback?.(serverError || cleanupError);
+        }
+      );
+    });
+  };
   return dashboardServer;
 }
 

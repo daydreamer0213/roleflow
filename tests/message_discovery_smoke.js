@@ -67,8 +67,17 @@ async function uniqueCandidateAndPrivacySmoke() {
     db,
     profileId: fixture.profileId,
     reader: fakeReader([selected]),
-    classifyMessageGroup: async ({ card, job, messages }) => {
+    classifyMessageGroup: async ({ profile, card, job, messages }) => {
       modelCalls += 1;
+      assert.deepStrictEqual(profile.candidate, {
+        city: "Guangzhou",
+        targetTitles: ["Java Engineer"],
+        expectedSalary: "20-30K",
+        adjustableSalary: []
+      });
+      assert.strictEqual(profile.candidate.name, undefined, "candidate name must not enter message drafting");
+      assert.strictEqual(profile.riskMessaging, undefined, "risk messaging must not enter message drafting");
+      assert.deepStrictEqual(profile.projects.map((project) => project.name), ["KnowledgeFlow"]);
       assert.strictEqual(card.id, fixture.card.id);
       assert.strictEqual(card.profileId, fixture.profileId);
       assert.strictEqual(job.title, "Java Engineer");
@@ -397,17 +406,11 @@ async function messageGroupBoundarySmoke() {
         message("friend", "910000000000005", "new follow-up")
       ]
     })]),
-    classifyMessageGroup: async ({ messages }) => {
-      assert.strictEqual(messages.length, 6, "processed context messages must remain for the model");
-      assert.strictEqual(messages.at(-1).text, "new follow-up");
-      return classification();
+    classifyMessageGroup: async () => {
+      throw new Error("complete grouped context over the limit must not call the model");
     }
   });
-  assert.strictEqual(
-    incrementalSummary.processed,
-    1,
-    "group limit must apply only to unprocessed messages"
-  );
+  assertStopped(incrementalSummary, "BOSS_MESSAGE_GROUP_LIMIT");
 }
 
 async function previewChannelSmoke() {
@@ -603,7 +606,6 @@ async function classificationOutcomeSmoke() {
 async function readerStopSmoke() {
   const fixture = createFixture({ suffix: "reader-stop", title: "Reader Stop Engineer" });
   for (const code of [
-    "BOSS_MESSAGE_RISK_CONTROL",
     "BOSS_MESSAGE_LOGIN_REQUIRED",
     "BOSS_MESSAGE_PAGE_LOST"
   ]) {
@@ -641,6 +643,40 @@ async function readerStopSmoke() {
     assertStopped(summary, code);
     assert.deepStrictEqual(calls, [0], "reader failure must stop the immutable queue");
   }
+  const riskCalls = [];
+  const riskError = Object.assign(new Error("redacted risk control"), { code: "BOSS_RISK_CONTROL" });
+  await assert.rejects(
+    () => runBossMessageDiscovery({
+      db,
+      profileId: fixture.profileId,
+      reader: {
+        async scanConversationRows() {
+          return {
+            tabId: "fake-tab",
+            path: "/web/geek/chat",
+            rows: Object.freeze([Object.freeze({
+              rowIndex: 0,
+              unread: true,
+              selected: false,
+              conversationKey: safeDigest(["conversation", "risk"]),
+              previewDigest: safeDigest(["preview", "risk"]),
+              previewKind: "possible_hr_reply",
+              transientSignature: safeDigest(["row", "risk"])
+            })])
+          };
+        },
+        async openQueuedConversation(target) {
+          riskCalls.push(target.rowIndex);
+          throw riskError;
+        }
+      },
+      classifyMessageGroup: async () => {
+        throw new Error("risk control must stop before model use");
+      }
+    }),
+    (error) => error === riskError
+  );
+  assert.deepStrictEqual(riskCalls, [0], "risk control must stop the immutable queue");
 }
 
 async function abortAfterClassificationSmoke() {
@@ -807,9 +843,26 @@ function createFixture({
   company = "Fixture Company"
 }) {
   if (!profileId) {
+    const profile = {
+      candidate: {
+        name: `Candidate ${suffix}`,
+        city,
+        targetTitles: [title],
+        expectedSalary: salary,
+        adjustableSalary: []
+      },
+      education: [{ degree: "Bachelor", major: "Computer Science", status: "completed" }],
+      experiences: [],
+      skills: [{ name: "Java", level: "resume", evidence: ["KnowledgeFlow"] }],
+      projects: [{ name: "KnowledgeFlow", roleBoundary: "individual contributor", canSay: ["built retrieval"], technologies: ["Java"], results: [] }],
+      credentials: [],
+      strengths: ["reliable delivery"],
+      riskMessaging: { gap: "PRIVATE_PROFILE_RISK" },
+      source: { provider: "private" }
+    };
     profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
       display_name, profile_json, source_hash, created_at, updated_at
-    ) VALUES (?, '{}', NULL, ?, ?)`).run(`Candidate ${suffix}`, NOW, NOW).lastInsertRowid);
+    ) VALUES (?, ?, NULL, ?, ?)`).run(`Candidate ${suffix}`, JSON.stringify(profile), NOW, NOW).lastInsertRowid);
   }
   if (!planId) {
     planId = Number(db.prepare(`INSERT INTO search_plans(
