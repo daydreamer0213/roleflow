@@ -82,22 +82,20 @@ const cli = require("../src/cli");
     }, "backup resolver must receive the same canonical external root, readOnly and fallback");
 
     let contextResolverCalls = 0;
-    let primaryResolverCalls = 0;
-    let backupResolverCalls = 0;
+    let runtimeResolverCalls = 0;
     let browserSeamReached = false;
     const stubStatement = { run: () => ({ lastInsertRowid: 1 }) };
     const stubDb = { prepare: () => stubStatement };
     const browserSeam = () => {
       browserSeamReached = true;
-      const error = new Error("browser seam must not be reached by force-mock scan model routing");
+      const error = new Error("browser seam reached by force-mock scan without model routing");
       error.code = "TEST_BROWSER_SEAM_REACHED";
       throw error;
     };
     try {
       await cli.scan(stubDb, { input: "synthetic-input.json", "force-mock": true, keywords: "test-keyword" }, {
         resolveScanModelSettingsContext: () => { contextResolverCalls += 1; return injectedContext; },
-        resolveRuntimeModelConfig: () => { primaryResolverCalls += 1; return { modelConfig: {} }; },
-        resolveRuntimeBatchBackup: () => { backupResolverCalls += 1; return {}; },
+        resolveScanModelRuntime: () => { runtimeResolverCalls += 1; return { primaryState: { modelConfig: {} }, backupState: null }; },
         createBrowser: browserSeam
       });
     } catch (error) {
@@ -105,8 +103,7 @@ const cli = require("../src/cli");
     }
     assert.strictEqual(browserSeamReached, true, "force-mock scan must reach the browser seam");
     assert.strictEqual(contextResolverCalls, 0, "force-mock must not call the model settings context resolver");
-    assert.strictEqual(primaryResolverCalls, 0, "force-mock must not call the primary model resolver");
-    assert.strictEqual(backupResolverCalls, 0, "force-mock must not call the backup model resolver");
+    assert.strictEqual(runtimeResolverCalls, 0, "force-mock must not call the scan model runtime resolver");
 
     const defaultContext = cli.resolveScanModelSettingsContext({}, { root: worktreeRoot, pathPolicy });
     assert.strictEqual(defaultContext.root, worktreeRoot, "default context must keep the candidate ROOT");
