@@ -509,7 +509,12 @@ class BossSiteAdapter {
     const accessAction = kind === "detail"
       ? "detail_open"
       : ["catalog", "list"].includes(kind) ? "list_navigation" : "";
-    if (accessAction) await this.reserveAccess(accessAction, { kind, url });
+    if (accessAction === "detail_open") {
+      const jobId = (normalizeBossUrl(url).match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+      await this.reserveAccess(accessAction, { jobId });
+    } else if (accessAction) {
+      await this.reserveAccess(accessAction, { kind });
+    }
     await this.browser.navigate(tabId, url);
     this.pageNavigations += 1;
     if (kind === "list") this.listNavigations += 1;
@@ -765,6 +770,7 @@ class BossSiteAdapter {
                 detailsRead += 1;
                 await this.waitAfterDetailAction();
               } catch (error) {
+                if (error?.code === "SCAN_ABORTED") throw error;
                 const accessPending = error?.code === "BOSS_ACCESS_BUDGET_EXHAUSTED";
                 if (!accessPending) detailsFailed += 1;
                 this.logger?.warn("boss_card_detail_read_failed", {
@@ -892,7 +898,7 @@ class BossSiteAdapter {
       fatalErrorMessage: fatalError?.message || ""
     };
     if (typeof options.onScanComplete === "function") await options.onScanComplete(scanSummary);
-    if (!successfulTargets && fatalError) throw fatalError;
+    if (fatalError) throw fatalError;
     if (!successfulTargets) throw bossError("BOSS_SCAN_NO_TARGET_SUCCEEDED", "本轮所有 BOSS 搜索目标均失败，已保留逐目标错误记录。");
     return resultJobs;
   }
@@ -1079,9 +1085,7 @@ class BossSiteAdapter {
       .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
     if (!expectedJobId) return null;
     await this.reserveAccess("pane_detail_read", {
-      jobId: expectedJobId,
-      title: job?.title || "",
-      url: job?.url || ""
+      jobId: expectedJobId
     });
     let scrolled = false;
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -1863,6 +1867,7 @@ function isFatalBrowserError(error) {
     "BROWSER_TIMEOUT",
     "BROWSER_DISCONNECTED",
     "BROWSER_COMMAND_FAILED",
+    "SCAN_ABORTED",
     "SCAN_CHECKPOINT_FAILED",
     "SCAN_LEASE_LOST"
   ]).has(String(error?.code || ""));
