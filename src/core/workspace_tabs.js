@@ -52,6 +52,87 @@ function assertBossOperatorTabs(tabs = []) {
   };
 }
 
+async function inspectBossOperatorTabs({
+  browser,
+  inspectTab,
+  expectedSearchTabId = null,
+  expectedCommunicationTabId = null
+}) {
+  if (!browser || typeof browser.listTabs !== "function" || typeof inspectTab !== "function") {
+    throw new TypeError("inspectBossOperatorTabs requires browser.listTabs() and inspectTab()");
+  }
+  const fixed = assertBossOperatorTabs(await browser.listTabs());
+  assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expectedCommunicationTabId });
+  const communicationState = await inspectTab(fixed.communicationTab.id);
+  assertLiveBossOperatorState(communicationState, {
+    tabId: fixed.communicationTab.id,
+    pathname: "/web/geek/chat",
+    code: "BOSS_COMMUNICATION_PAGE_LOST",
+    requiresSearchPage: false
+  });
+  const searchState = await inspectTab(fixed.searchTab.id);
+  assertLiveBossOperatorState(searchState, {
+    tabId: fixed.searchTab.id,
+    pathname: "/web/geek/jobs",
+    code: "BOSS_SEARCH_PAGE_LOST",
+    requiresSearchPage: true
+  });
+  const refreshedTabs = await browser.listTabs();
+  let refreshed;
+  try {
+    refreshed = assertBossOperatorTabs(refreshedTabs);
+  } catch (error) {
+    if (error?.code !== "BOSS_TAB_REQUIRED") throw error;
+    const currentSearchTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.searchTab.id));
+    if (!currentSearchTab || bossPath(currentSearchTab) !== "/web/geek/jobs") {
+      throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab path changed during preflight.");
+    }
+    const currentCommunicationTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.communicationTab.id));
+    if (!currentCommunicationTab || bossPath(currentCommunicationTab) !== "/web/geek/chat") {
+      throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab path changed during preflight.");
+    }
+    throw error;
+  }
+  if (String(refreshed.searchTab.id) !== String(fixed.searchTab.id)) {
+    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed during preflight.");
+  }
+  if (String(refreshed.communicationTab.id) !== String(fixed.communicationTab.id)) {
+    throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during preflight.");
+  }
+  assertExpectedBossOperatorTabIds(refreshed, { expectedSearchTabId, expectedCommunicationTabId });
+  return {
+    ...refreshed,
+    searchState,
+    communicationState
+  };
+}
+
+function assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expectedCommunicationTabId }) {
+  if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
+    && String(fixed.searchTab.id) !== String(expectedSearchTabId)) {
+    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed before preflight.");
+  }
+  if (expectedCommunicationTabId !== null && expectedCommunicationTabId !== undefined
+    && String(fixed.communicationTab.id) !== String(expectedCommunicationTabId)) {
+    throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed before preflight.");
+  }
+}
+
+function assertLiveBossOperatorState(state, { tabId, pathname, code, requiresSearchPage }) {
+  let url;
+  try {
+    url = new URL(String(state?.url || ""));
+  } catch {
+    throw workspaceError(code, "BOSS fixed operator tab returned invalid live state.");
+  }
+  if (String(state?.tabId) !== String(tabId)
+    || !/(^|\.)zhipin\.com$/i.test(url.hostname)
+    || url.pathname !== pathname
+    || (requiresSearchPage ? state?.isSearchPage !== true : state?.isSearchPage === true)) {
+    throw workspaceError(code, "BOSS fixed operator tab left its required page.");
+  }
+}
+
 function isDashboardTab(tab, dashboardUrl) {
   try {
     const actual = new URL(tab?.url || "");
@@ -147,5 +228,6 @@ async function prepareWorkspaceTabs({
 
 module.exports = {
   prepareWorkspaceTabs,
-  assertBossOperatorTabs
+  assertBossOperatorTabs,
+  inspectBossOperatorTabs
 };

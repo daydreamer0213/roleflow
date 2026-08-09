@@ -103,7 +103,7 @@ const {
 } = require("./core/scan_snapshot");
 const { validateResumeBatch } = require("./core/scan_resume");
 const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
-const { prepareWorkspaceTabs, assertBossOperatorTabs } = require("./core/workspace_tabs");
+const { prepareWorkspaceTabs, inspectBossOperatorTabs } = require("./core/workspace_tabs");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -200,8 +200,13 @@ async function prepareWorkspaceTabsCommand(
     inspectReadiness: (fixed) => inspectBossBrowserReadiness({
       preflight: async () => {
         if (!fixed) return adapter.preflight();
-        await adapter.preflight({ tabId: fixed.communicationTab.id });
-        return adapter.preflight({ tabId: fixed.searchTab.id });
+        const inspected = await inspectBossOperatorTabs({
+          browser,
+          inspectTab: (tabId) => adapter.preflight({ tabId }),
+          expectedSearchTabId: fixed.searchTab.id,
+          expectedCommunicationTabId: fixed.communicationTab.id
+        });
+        return inspected.searchState;
       }
     })
   });
@@ -209,7 +214,15 @@ async function prepareWorkspaceTabsCommand(
   return result;
 }
 
-async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
+async function communicate(
+  db,
+  args,
+  {
+    createBrowserFn = createBrowser,
+    createSiteAdapterFn = createSiteAdapter,
+    runCommunicationBatchFn = runCommunicationBatch
+  } = {}
+) {
   const batchId = Number(args.batch);
   if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
   const batch = getCommunicationBatch(db, batchId);
@@ -229,13 +242,28 @@ async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
     operation: "communication"
   });
   const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
-  const adapter = createSiteAdapter("boss", { browser, logger: communicationLogger, accessController });
+  const adapter = createSiteAdapterFn("boss", { browser, logger: communicationLogger, accessController });
   const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
 
   try {
-    const browserState = await adapter.preflight();
-    await adapter.prepareCommunicationTab(browserState.tabId);
-    const summary = await runCommunicationBatch({ db, batchId, adapter, accessController, logger: communicationLogger });
+    if (browserMode === "edge") {
+      const inspected = await inspectBossOperatorTabs({
+        browser,
+        inspectTab: (tabId) => adapter.preflight({ tabId })
+      });
+      if (typeof adapter.bindCommunicationTabs !== "function") {
+        throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication requires fixed BOSS operator tab binding.");
+      }
+      adapter.bindCommunicationTabs({
+        searchTabId: inspected.searchTab.id,
+        communicationTabId: inspected.communicationTab.id
+      });
+      await adapter.prepareCommunicationTab(inspected.searchTab.id);
+    } else {
+      const browserState = await adapter.preflight();
+      await adapter.prepareCommunicationTab(browserState.tabId);
+    }
+    const summary = await runCommunicationBatchFn({ db, batchId, adapter, accessController, logger: communicationLogger });
     console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
     return summary;
   } catch (error) {
@@ -1896,55 +1924,12 @@ async function preflightBossScanBrowser({
   if (String(browserMode || "").trim().toLowerCase() !== "edge") {
     return adapter.preflight();
   }
-  const { searchTab, communicationTab } = assertBossOperatorTabs(await browser.listTabs());
-  if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
-    && String(searchTab.id) !== String(expectedSearchTabId)) {
-    throw codedError(
-      "BOSS_SEARCH_TAB_CHANGED",
-      "BOSS 固定搜索页已变化；为避免在错误页面继续操作，扫描已停止。"
-    );
-  }
-  const communicationState = await adapter.preflight({ tabId: communicationTab.id });
-  assertLiveBossOperatorPage(communicationState, {
-    tabId: communicationTab.id,
-    pathname: "/web/geek/chat",
-    code: "BOSS_COMMUNICATION_PAGE_LOST",
-    requiresSearchPage: false
+  const inspected = await inspectBossOperatorTabs({
+    browser,
+    inspectTab: (tabId) => adapter.preflight({ tabId }),
+    expectedSearchTabId
   });
-  const searchState = await adapter.preflight({ tabId: searchTab.id });
-  assertLiveBossOperatorPage(searchState, {
-    tabId: searchTab.id,
-    pathname: "/web/geek/jobs",
-    code: "BOSS_SEARCH_PAGE_LOST",
-    requiresSearchPage: true
-  });
-  const refreshed = assertBossOperatorTabs(await browser.listTabs());
-  if (String(refreshed.searchTab.id) !== String(searchTab.id)) {
-    throw codedError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed; scan stopped.");
-  }
-  if (String(refreshed.communicationTab.id) !== String(communicationTab.id)) {
-    throw codedError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed; scan stopped.");
-  }
-  if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
-    && String(refreshed.searchTab.id) !== String(expectedSearchTabId)) {
-    throw codedError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed; scan stopped.");
-  }
-  return { ...(searchState || {}), tabId: searchTab.id };
-}
-
-function assertLiveBossOperatorPage(state, { tabId, pathname, code, requiresSearchPage }) {
-  let url;
-  try {
-    url = new URL(String(state?.url || ""));
-  } catch {
-    throw codedError(code, "BOSS fixed operator page has invalid live state; scan stopped.");
-  }
-  if (String(state?.tabId) !== String(tabId)
-    || !/(^|\.)zhipin\.com$/i.test(url.hostname)
-    || url.pathname !== pathname
-    || (requiresSearchPage ? state?.isSearchPage !== true : state?.isSearchPage === true)) {
-    throw codedError(code, "BOSS fixed operator page left its required view; scan stopped.");
-  }
+  return { ...(inspected.searchState || {}), tabId: inspected.searchTab.id };
 }
 
 async function runWithBoundBossScanBrowser({

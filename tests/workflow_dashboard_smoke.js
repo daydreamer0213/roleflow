@@ -21,6 +21,7 @@ const {
   upsertJob,
   insertWorkflowJobTaskRow,
   setSiteRuntimeState,
+  getSiteRuntimeState,
   clearSiteRuntimeState,
   recordCandidateJobEvent,
   recordSiteAccessEvent
@@ -1135,7 +1136,9 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
     const edgePreflightCalls = [];
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
       edgePreflightCalls.push(options);
-      return { tabId: options?.tabId, isSearchPage: options?.tabId === 31 };
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
     };
     const readiness = await inspectDashboardBossBrowserReadiness({
       browserMode: "edge",
@@ -1147,6 +1150,23 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
     });
     assert.strictEqual(readiness.status, "ready");
     assert.deepStrictEqual(edgePreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
+    };
+    await assert.rejects(
+      () => inspectDashboardBossBrowserReadiness({
+        browserMode: "edge",
+        cdpPort: null,
+        logger,
+        browserFactory() {
+          return { async listTabs() { return tabs; } };
+        }
+      }),
+      (error) => error?.code === "BOSS_COMMUNICATION_PAGE_LOST"
+    );
 
     const portablePreflightCalls = [];
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
@@ -1167,7 +1187,9 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
     const inheritedPreflightCalls = [];
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
       inheritedPreflightCalls.push(options);
-      return { tabId: options?.tabId, isSearchPage: options?.tabId === 31 };
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
     };
     boss.BossSiteAdapter.prototype.inspectInheritedSearchPage = async function inspectInheritedSearchPage() {
       const error = new Error("fixture risk control");
@@ -1189,6 +1211,15 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
       (error) => error?.code === "BOSS_RISK_CONTROL"
     );
     assert.deepStrictEqual(inheritedPreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+    assert.deepStrictEqual(getSiteRuntimeState(database, "boss"), {
+      site: "boss",
+      status: "blocked",
+      reasonCode: "BOSS_RISK_CONTROL",
+      message: "fixture risk control",
+      details: { phase: "inherited_context" },
+      updatedAt: getSiteRuntimeState(database, "boss").updatedAt
+    });
+    clearSiteRuntimeState(database, "boss");
 
     boss.BossSiteAdapter.prototype.preflight = async function preflight() {
       const error = new Error("fixture disconnected");

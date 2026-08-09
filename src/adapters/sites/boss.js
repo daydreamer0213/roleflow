@@ -1253,6 +1253,21 @@ class BossSiteAdapter {
     }
   }
 
+  bindCommunicationTabs({ searchTabId, communicationTabId } = {}) {
+    if (searchTabId === null || searchTabId === undefined
+      || communicationTabId === null || communicationTabId === undefined) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Fixed BOSS search and communication tab IDs are required.");
+    }
+    if (this.communicationSearchTabId !== null && String(this.communicationSearchTabId) !== String(searchTabId)) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
+    }
+    if (this.communicationTabId !== null && String(this.communicationTabId) !== String(communicationTabId)) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS communication tab cannot be rebound during communication inspection.");
+    }
+    this.communicationSearchTabId = searchTabId;
+    this.communicationTabId = communicationTabId;
+  }
+
   async prepareCommunicationTabOnce(searchTabId = null) {
     const hasCachedSearchTab = this.communicationSearchTabId !== null;
     const hasExplicitSearchTab = searchTabId !== null && searchTabId !== undefined;

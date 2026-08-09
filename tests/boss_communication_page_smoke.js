@@ -373,6 +373,17 @@ function assertNoPreparationAction(browser, before) {
   assert.deepStrictEqual(existingBrowser.calls.createTab, []);
   assert.deepStrictEqual(existingBrowser.calls.bringToFront, []);
 
+  const boundBrowser = fakeBrowser({
+    tabs: [
+      { id: "bound-search", url: searchUrl, windowId: "window-1" },
+      { id: "bound-chat", url: "https://www.zhipin.com/web/geek/chat", windowId: "window-1" }
+    ]
+  });
+  const boundAdapter = new BossSiteAdapter({ browser: boundBrowser, sleepFn: async () => {} });
+  boundAdapter.bindCommunicationTabs({ searchTabId: "bound-search", communicationTabId: "bound-chat" });
+  assert.strictEqual(await boundAdapter.prepareCommunicationTab("bound-search"), "bound-chat");
+  assert.deepStrictEqual(boundBrowser.calls.createTab, []);
+
   const pinnedSearchBrowser = fakeBrowser({
     tabs: [
       { id: "search-1", url: searchUrl, windowId: "window-1" },

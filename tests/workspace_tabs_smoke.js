@@ -1,7 +1,8 @@
 const assert = require("node:assert");
 const {
   prepareWorkspaceTabs,
-  assertBossOperatorTabs
+  assertBossOperatorTabs,
+  inspectBossOperatorTabs
 } = require("../src/core/workspace_tabs");
 const { prepareWorkspaceTabsCommand } = require("../src/cli");
 
@@ -35,6 +36,84 @@ function fakeBrowser(initialTabs, createdTab = null) {
     url: "https://www.zhipin.com/web/geek/chat",
     windowId: 42
   };
+  assert.strictEqual(typeof inspectBossOperatorTabs, "function");
+  const inspectionCalls = [];
+  const strictInspection = await inspectBossOperatorTabs({
+    browser: fakeBrowser([boss, fixedCommunication, {
+      id: "unrelated-boss-detail",
+      url: "https://www.zhipin.com/web/geek/jobs/detail",
+      windowId: 99
+    }]),
+    inspectTab: async (tabId) => {
+      inspectionCalls.push(tabId);
+      return String(tabId) === String(fixedCommunication.id)
+        ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+        : { tabId, url: boss.url, isSearchPage: true };
+    }
+  });
+  assert.deepStrictEqual(inspectionCalls, [fixedCommunication.id, boss.id]);
+  assert.deepStrictEqual({
+    searchTabId: strictInspection.searchTab.id,
+    communicationTabId: strictInspection.communicationTab.id,
+    searchState: strictInspection.searchState,
+    communicationState: strictInspection.communicationState,
+    windowId: strictInspection.windowId
+  }, {
+    searchTabId: boss.id,
+    communicationTabId: fixedCommunication.id,
+    searchState: { tabId: boss.id, url: boss.url, isSearchPage: true },
+    communicationState: { tabId: fixedCommunication.id, url: fixedCommunication.url, isSearchPage: false },
+    windowId: 42
+  });
+  const communicationLostCalls = [];
+  await assert.rejects(
+    () => inspectBossOperatorTabs({
+      browser: fakeBrowser([boss, fixedCommunication]),
+      inspectTab: async (tabId) => {
+        communicationLostCalls.push(tabId);
+        return { tabId, url: boss.url, isSearchPage: true };
+      }
+    }),
+    (error) => error.code === "BOSS_COMMUNICATION_PAGE_LOST"
+  );
+  assert.deepStrictEqual(communicationLostCalls, [fixedCommunication.id]);
+  let listCalls = 0;
+  const driftingBrowser = {
+    async listTabs() {
+      listCalls += 1;
+      return listCalls === 1
+        ? [boss, fixedCommunication]
+        : [{ ...boss, id: "replacement-search" }, fixedCommunication];
+    }
+  };
+  await assert.rejects(
+    () => inspectBossOperatorTabs({
+      browser: driftingBrowser,
+      expectedSearchTabId: boss.id,
+      expectedCommunicationTabId: fixedCommunication.id,
+      inspectTab: async (tabId) => String(tabId) === String(fixedCommunication.id)
+        ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+        : { tabId, url: boss.url, isSearchPage: true }
+    }),
+    (error) => error.code === "BOSS_SEARCH_TAB_CHANGED"
+  );
+  let pathDriftListCalls = 0;
+  await assert.rejects(
+    () => inspectBossOperatorTabs({
+      browser: {
+        async listTabs() {
+          pathDriftListCalls += 1;
+          return pathDriftListCalls === 1
+            ? [boss, fixedCommunication]
+            : [{ ...boss, url: "https://www.zhipin.com/web/geek/chat?drift=1" }, fixedCommunication];
+        }
+      },
+      inspectTab: async (tabId) => String(tabId) === String(fixedCommunication.id)
+        ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+        : { tabId, url: boss.url, isSearchPage: true }
+    }),
+    (error) => error.code === "BOSS_SEARCH_TAB_CHANGED"
+  );
   assert.deepStrictEqual(
     assertBossOperatorTabs([boss, fixedCommunication]),
     {
@@ -259,7 +338,13 @@ function fakeBrowser(initialTabs, createdTab = null) {
   );
 
   function workspaceCommandDependencies(calls) {
-    const browser = { kind: `${calls.label}-browser` };
+    const browser = {
+      kind: `${calls.label}-browser`,
+      async listTabs() {
+        calls.browserList += 1;
+        return calls.liveTabs.map((tab) => ({ ...tab }));
+      }
+    };
     return {
       browserFactory: (args) => {
         calls.browser.push(args);
@@ -270,7 +355,9 @@ function fakeBrowser(initialTabs, createdTab = null) {
         return {
           async preflight(options) {
             calls.preflight.push(options);
-            return { isSearchPage: true };
+            return String(options?.tabId) === String(calls.fixedTabs.communicationTab.id)
+              ? { tabId: options.tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false }
+              : { tabId: options?.tabId, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
           }
         };
       },
@@ -283,7 +370,7 @@ function fakeBrowser(initialTabs, createdTab = null) {
         assert.strictEqual(receivedBrowser, browser);
         assert.strictEqual(dashboardUrl, "http://localhost:8787/workspace");
         calls.requireFixedBossTabs = requireFixedBossTabs;
-        assert.strictEqual((await inspectReadiness(calls.fixedTabs)).status, "ready");
+        assert.strictEqual((await inspectReadiness(requireFixedBossTabs ? calls.fixedTabs : null)).status, "ready");
         return { status: "ready" };
       }
     };
@@ -294,11 +381,16 @@ function fakeBrowser(initialTabs, createdTab = null) {
     browser: [],
     adapter: [],
     preflight: [],
+    browserList: 0,
     requireFixedBossTabs: null,
     fixedTabs: {
-      searchTab: { id: "fixed-search" },
-      communicationTab: { id: "fixed-communication" }
-    }
+      searchTab: { id: "fixed-search", url: "https://www.zhipin.com/web/geek/jobs", windowId: 55 },
+      communicationTab: { id: "fixed-communication", url: "https://www.zhipin.com/web/geek/chat", windowId: 55 }
+    },
+    liveTabs: [
+      { id: "fixed-search", url: "https://www.zhipin.com/web/geek/jobs", windowId: 55 },
+      { id: "fixed-communication", url: "https://www.zhipin.com/web/geek/chat", windowId: 55 }
+    ]
   };
   const commandResult = await prepareWorkspaceTabsCommand({
     "dashboard-url": "http://localhost:8787/workspace"
@@ -306,6 +398,7 @@ function fakeBrowser(initialTabs, createdTab = null) {
   assert.deepStrictEqual(commandResult, { status: "ready" });
   assert.deepStrictEqual(commandCalls.browser, [{ browser: "edge" }]);
   assert.strictEqual(commandCalls.requireFixedBossTabs, true);
+  assert.strictEqual(commandCalls.browserList, 2);
   assert.strictEqual(commandCalls.adapter[0].site, "boss");
   assert.deepStrictEqual(commandCalls.preflight, [
     { tabId: "fixed-communication" },
@@ -317,8 +410,11 @@ function fakeBrowser(initialTabs, createdTab = null) {
     browser: [],
     adapter: [],
     preflight: [],
+    browserList: 0,
     requireFixedBossTabs: null
   };
+  portableCalls.fixedTabs = commandCalls.fixedTabs;
+  portableCalls.liveTabs = commandCalls.liveTabs;
   await prepareWorkspaceTabsCommand({
     browser: "portable",
     "cdp-port": 9222,
@@ -329,6 +425,7 @@ function fakeBrowser(initialTabs, createdTab = null) {
     "cdp-port": 9222
   }]);
   assert.strictEqual(portableCalls.requireFixedBossTabs, false);
+  assert.strictEqual(portableCalls.browserList, 0);
   assert.deepStrictEqual(portableCalls.preflight, [undefined]);
 
   await assert.rejects(

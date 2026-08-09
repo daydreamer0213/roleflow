@@ -23,6 +23,7 @@ const {
   getPlatformFilterCatalog,
   savePlatformFilterCatalog,
   getSiteRuntimeState,
+  setSiteRuntimeState,
   getSiteScanLease,
   acquireSiteScanLease,
   renewSiteScanLease,
@@ -215,7 +216,7 @@ const { createMessageDiscoveryController } = require("./message_discovery_contro
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const boss = require("../adapters/sites/boss");
 const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
-const { assertBossOperatorTabs } = require("../core/workspace_tabs");
+const { inspectBossOperatorTabs } = require("../core/workspace_tabs");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 const PORTABLE_CDP_PORT = 9222;
@@ -261,9 +262,11 @@ async function inspectDashboardBossBrowserReadiness({
   return inspectBossBrowserReadiness({
     preflight: async () => {
       if (browserMode !== "edge") return adapter.preflight();
-      const { communicationTab, searchTab } = assertBossOperatorTabs(await browser.listTabs());
-      await adapter.preflight({ tabId: communicationTab.id });
-      return adapter.preflight({ tabId: searchTab.id });
+      const inspected = await inspectBossOperatorTabs({
+        browser,
+        inspectTab: (tabId) => adapter.preflight({ tabId })
+      });
+      return inspected.searchState;
     }
   });
 }
@@ -1454,9 +1457,11 @@ async function resolveLiveInheritedContext({
     const adapter = new boss.BossSiteAdapter({ browser, logger });
     let preflight;
     if (browserMode === "edge") {
-      const { communicationTab, searchTab } = assertBossOperatorTabs(await browser.listTabs());
-      await adapter.preflight({ tabId: communicationTab.id });
-      preflight = await adapter.preflight({ tabId: searchTab.id });
+      const inspected = await inspectBossOperatorTabs({
+        browser,
+        inspectTab: (tabId) => adapter.preflight({ tabId })
+      });
+      preflight = inspected.searchState;
     } else {
       preflight = await adapter.preflight();
     }
@@ -1519,6 +1524,15 @@ async function resolveLiveInheritedContext({
       platformPolicy
     };
   } catch (error) {
+    if (error?.code === "BOSS_RISK_CONTROL") {
+      setSiteRuntimeState(db, "boss", {
+        status: "blocked",
+        reasonCode: error.code,
+        message: error.message,
+        details: { phase: "inherited_context" }
+      });
+      throw error;
+    }
     if (error?.code === "BROWSER_DISCONNECTED") {
       throw appError(
         browserMode === "edge" ? "BROWSER_UNAVAILABLE" : "PORTABLE_EDGE_REQUIRED",
