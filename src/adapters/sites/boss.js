@@ -727,16 +727,29 @@ class BossSiteAdapter {
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
+            let visiblePaneProbeAvailable = true;
             for (const entry of detailEntries) {
               throwIfAborted(options.signal);
-              console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
-              let detailOutcome = { outcome: "succeeded", errorCode: "" };
+              console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
+              let accessMode = "standalone_detail";
+              let detailOutcome = {
+                outcome: "succeeded",
+                errorCode: "",
+                accessMode
+              };
               try {
-                const detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal);
-                throwIfAborted(options.signal);
-                if (!detail) {
-                  throw bossError("BOSS_VISIBLE_PANE_UNAVAILABLE", "BOSS visible detail pane is unavailable.");
+                let detail = null;
+                if (visiblePaneProbeAvailable) {
+                  visiblePaneProbeAvailable = false;
+                  accessMode = "visible_pane";
+                  detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal);
                 }
+                if (!detail) {
+                  accessMode = "standalone_detail";
+                  detail = await this.readDetail(tabId, entry.job.url, options.signal);
+                }
+                throwIfAborted(options.signal);
+                detailOutcome = { outcome: "succeeded", errorCode: "", accessMode };
                 const detailedJob = normalizeBossJob({
                   ...entry.job,
                   description: detail.description,
@@ -757,12 +770,12 @@ class BossSiteAdapter {
                   targetKey,
                   keyword,
                   jobId: entry.job.sourceId || entry.job.url || "",
-                  errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED",
+                  errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT",
                   errorMessage: error?.message || String(error)
                 });
-                const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
+                const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT" };
                 mergeScanCandidate(candidates, { ...entry, job: failedJob });
-                const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
+                const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT", accessMode };
                 if (isFatalBrowserError(error)) {
                   try {
                     await emitDetailResult(options.onDetailResult, failedOutcome);
@@ -1860,12 +1873,13 @@ function throwIfAborted(signal) {
   throw error;
 }
 
-async function emitDetailResult(callback, { outcome, errorCode = "" } = {}) {
+async function emitDetailResult(callback, { outcome, errorCode = "", accessMode = "standalone_detail" } = {}) {
   if (typeof callback !== "function") return;
   const succeeded = outcome === "succeeded";
   await callback({
     outcome: succeeded ? "succeeded" : "failed",
-    errorCode: succeeded ? "" : String(errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+    errorCode: succeeded ? "" : String(errorCode || "BOSS_DETAIL_LOAD_TIMEOUT"),
+    accessMode
   });
 }
 
