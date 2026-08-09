@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { secretPath, loadSecret } = require("../src/core/secret_store");
+const { secretPath, hasSecret, saveSecret, loadSecret } = require("../src/core/secret_store");
 const {
   listModelPresets,
   loadModelSettings,
@@ -131,6 +131,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-settings-"));
     await connectionErrorSmoke();
     await connectionProbeSmoke();
     await readOnlyRootSmoke();
+    readOnlyLegacySecretSmoke();
     console.log("model_settings_smoke ok");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -270,4 +271,61 @@ function assertRootError(rawRoot, options, code) {
     () => resolveReadOnlyModelSettingsRoot(rawRoot, options),
     (error) => error.code === code
   );
+}
+
+function readOnlyLegacySecretSmoke() {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-readonly-secret-"));
+  try {
+    const legacyRoot = path.join(sandbox, "legacy-secret");
+    writeFixtureSettings(legacyRoot, {
+      schemaVersion: 1,
+      preset: "deepseek",
+      model: "deepseek-v4-pro"
+    });
+    const legacySecretId = "model-api-key-deepseek";
+    const targetSecretId = secretIdForSettings({
+      schemaVersion: 1,
+      preset: "deepseek",
+      model: "deepseek-v4-pro"
+    });
+    const syntheticSecret = "synthetic-readonly-fix-value";
+    saveSecret(legacyRoot, legacySecretId, syntheticSecret);
+
+    assert.strictEqual(hasSecret(legacyRoot, legacySecretId), true, "legacy secret fixture must exist");
+    assert.strictEqual(hasSecret(legacyRoot, targetSecretId), false, "target secret must be absent before read-only load");
+    const settingsHashBefore = fileHash(settingsPath(legacyRoot));
+    const secretsBefore = secretFilesSnapshot(legacyRoot);
+    assert.strictEqual(secretsBefore.length, 1, "fixture must contain exactly one legacy secret file");
+
+    assert.throws(
+      () => loadModelSettings({ root: legacyRoot, fallbackModelConfig: fallback, readOnly: true }),
+      (error) => error.code === "MODEL_SETTINGS_READ_ONLY_MIGRATION_REQUIRED"
+    );
+    assert.strictEqual(fileHash(settingsPath(legacyRoot)), settingsHashBefore, "read-only load must not rewrite settings");
+    assert.deepStrictEqual(secretFilesSnapshot(legacyRoot), secretsBefore, "read-only load must not change secret files");
+    assert.strictEqual(hasSecret(legacyRoot, targetSecretId), false, "read-only load must not create the target secret");
+
+    const writable = loadModelSettings({ root: legacyRoot, fallbackModelConfig: fallback });
+    assert.strictEqual(writable.source, "migrated_v1");
+    assert.strictEqual(hasSecret(legacyRoot, targetSecretId), true, "writable load must migrate the legacy synthetic secret");
+    assert.strictEqual(loadSecret(legacyRoot, targetSecretId), syntheticSecret, "migrated secret must equal the synthetic value");
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+function secretFilesSnapshot(root) {
+  const dir = path.join(root, ".runtime", "secrets");
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((name) => name.endsWith(".dpapi"))
+    .sort()
+    .map((name) => {
+      const file = path.join(dir, name);
+      return {
+        name,
+        bytes: fs.statSync(file).size,
+        hash: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")
+      };
+    });
 }
