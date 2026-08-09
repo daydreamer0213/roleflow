@@ -30,7 +30,7 @@
 1. 记录页面显示的错误编号和请求编号。
 2. 打开工作台“诊断”，按请求编号查最近事件。
 3. 需要更完整的上下文时，搜索 `.runtime\logs` 下的 JSONL。
-4. 运行 `npm.cmd test`。当前 `tests/run_all.js` 注册 66 项离线检查，不访问 BOSS。
+4. 运行 `npm.cmd test`。当前 `tests/run_all.js` 注册 67 项离线检查，不访问 BOSS。
 5. 只有离线检查通过后，才在已登录 Edge 上做 3–5 条只读小样本验收。
 
 ## Dashboard 与只读数据库检查

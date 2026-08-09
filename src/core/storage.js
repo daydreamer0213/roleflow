@@ -1226,9 +1226,13 @@ function transitionWorkflowRun(db, input = {}) {
   if (!WORKFLOW_CONTROL_STATES.has(controlState)) {
     throw workflowRunError("WORKFLOW_CONTROL_INVALID", "workflow run control state is invalid");
   }
+  const interruptedResumePhase = nextStatus === "interrupted"
+    && ["scanning", "analyzing"].includes(current.status)
+    ? current.status
+    : null;
   const resumePhase = Object.hasOwn(input, "resumePhase")
     ? (input.resumePhase ? String(input.resumePhase) : null)
-    : (current.resumePhase || null);
+    : (current.resumePhase || interruptedResumePhase);
   if (resumePhase && !["scanning", "analyzing"].includes(resumePhase)) {
     throw workflowRunError("WORKFLOW_RESUME_PHASE_INVALID", "workflow run resume phase is invalid");
   }

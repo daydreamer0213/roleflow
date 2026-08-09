@@ -269,7 +269,7 @@ function taskCounts(tasks) {
 
 function stageIndexFor(workflow) {
   const status = String(workflow.status || "");
-  if (status === "paused") {
+  if (["paused", "interrupted"].includes(status) && workflow.resume_phase) {
     return String(workflow.resume_phase || "") === "scanning" ? 3 : 4;
   }
   return STATUS_STAGE_INDEX[status] || WORKFLOW_STAGES.length;

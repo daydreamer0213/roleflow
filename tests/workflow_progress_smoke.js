@@ -217,6 +217,27 @@ function testStageMapping() {
     assert.strictEqual(snapshot.workflow.status, "paused");
     assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 3 : 4);
   }
+
+  for (const resumePhase of ["scanning", "analyzing"]) {
+    const scenario = seedWorkflow(db, {
+      analyses: [{}],
+      localDay: "2026-08-10",
+      modelConfigRevision: `mrev-stage-interrupted-${resumePhase}`,
+      keepCreated: resumePhase === "scanning"
+    });
+    if (resumePhase === "scanning") {
+      transitionWorkflowRun(db, { id: scenario.workflowId, status: "scanning" });
+    }
+    const interrupted = transitionWorkflowRun(db, {
+      id: scenario.workflowId,
+      status: "interrupted",
+      errorCode: "TEST_INTERRUPTED"
+    });
+    const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
+    assert.strictEqual(interrupted.resumePhase, resumePhase);
+    assert.strictEqual(snapshot.workflow.status, "interrupted");
+    assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 3 : 4);
+  }
 }
 
 function testModelIdentityFromPlannerSnapshot() {
