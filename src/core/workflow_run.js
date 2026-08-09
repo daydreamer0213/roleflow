@@ -348,16 +348,6 @@ function recoverableRuns(db, input) {
 }
 
 function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
-  if (run.status === "analyzing") {
-    // Recover expired running task leases before deciding the workflow fate.
-    // succeeded/skipped tasks are never touched by this recovery path.
-    const taskRecovery = recoverExpiredWorkflowJobTasks(db, {
-      workflowRunId: run.id,
-      now
-    });
-    report.tasksRecovered += taskRecovery.recovered;
-    report.tasksFailed += taskRecovery.failed;
-  }
   const scan = run.scanRunId ? getScanRun(db, run.scanRunId) : null;
   if (!scan) {
     if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
@@ -377,6 +367,16 @@ function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
   if (scan.status === "running") {
     report.activeRunsPreserved += 1;
     return;
+  }
+  if (run.status === "analyzing") {
+    // The orphan scan pass runs before workflow recovery. Only reclaim an
+    // expired task after its exact owning scan is no longer running.
+    const taskRecovery = recoverExpiredWorkflowJobTasks(db, {
+      workflowRunId: run.id,
+      now
+    });
+    report.tasksRecovered += taskRecovery.recovered;
+    report.tasksFailed += taskRecovery.failed;
   }
   if (settleRecoveredScanControl(db, run, report, now)) return;
   transitionWorkflowRun(db, {

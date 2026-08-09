@@ -221,6 +221,25 @@ function activeAnalysisExecutionRecoverySmoke() {
       searchPlanId: planId,
       status: "running"
     });
+    upsertJob(database, {
+      source: "boss",
+      sourceId: "analysis-recovery-active-job",
+      keyword: "RAG",
+      title: "Active Analysis Recovery Job",
+      company: "Recovery Co",
+      location: "Guangzhou",
+      salary: "10-20K",
+      experience: "1-3 years",
+      education: "Bachelor",
+      url: "https://www.zhipin.com/job_detail/analysis-recovery-active-job.html",
+      description: "Complete JD evidence for active analysis recovery. ".repeat(4),
+      score: 20,
+      level: "A",
+      matches: ["Python", "RAG"],
+      risks: [],
+      qualityTags: [],
+      analysis: { semanticStatus: "pending", decisionSource: "analysis_pending" }
+    }, batchId);
     transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
     const acquisition = createScanRun(database, {
       runId: "analysis-recovery-acquisition",
@@ -259,6 +278,20 @@ function activeAnalysisExecutionRecoverySmoke() {
       scanRunId: execution.id,
       scanBatchId: batchId
     });
+    initializeWorkflowJobTasks(database, {
+      workflowRunId: workflow.id,
+      batchId,
+      jobs: observationEntries(database, batchId),
+      modelConfigRevision: "active-recovery-rev",
+      now: "2026-09-30T00:02:00.000Z"
+    });
+    const claimed = claimWorkflowJobTask(database, {
+      workflowRunId: workflow.id,
+      leaseOwner: "active-recovery-worker",
+      leaseTtlMs: 30_000,
+      selectModelIdentity: () => modelIdentity("active-recovery-rev"),
+      now: "2026-09-30T00:02:00.000Z"
+    });
 
     const report = recoverWorkflowRuns(database, {
       workflowRunId: workflow.id,
@@ -268,10 +301,22 @@ function activeAnalysisExecutionRecoverySmoke() {
     const preserved = getWorkflowRun(database, workflow.id);
     assert.strictEqual(report.workflowRunsInterrupted, 0);
     assert.strictEqual(report.activeRunsPreserved, 1);
+    assert.strictEqual(report.tasksRecovered, 0);
     assert.strictEqual(preserved.status, "analyzing");
     assert.strictEqual(preserved.scanRunId, execution.id);
     assert.strictEqual(preserved.scanBatchId, batchId);
     assert.strictEqual(database.prepare("SELECT status FROM batches WHERE id = ?").get(batchId).status, "completed");
+    assert.strictEqual(workflowTasks(database, workflow.id)[0].status, "running");
+    const committed = commitWorkflowJobTaskSuccess(database, {
+      taskId: claimed.task.id,
+      leaseOwner: "active-recovery-worker",
+      analyzedJob: analyzedJobFor(claimed.job),
+      modelIdentity: modelIdentity("active-recovery-rev"),
+      telemetry: { modelCallCount: 1, promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      startedAt: "2026-09-30T00:02:00.000Z",
+      finishedAt: "2026-09-30T00:03:10.000Z"
+    });
+    assert.strictEqual(committed.task.status, "succeeded");
   } finally {
     database.close();
   }
