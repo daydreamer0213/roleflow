@@ -215,6 +215,7 @@ const { createMessageDiscoveryController } = require("./message_discovery_contro
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const boss = require("../adapters/sites/boss");
 const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
+const { assertBossOperatorTabs } = require("../core/workspace_tabs");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 const PORTABLE_CDP_PORT = 9222;
@@ -243,22 +244,27 @@ function createDashboardBrowser({ browserMode, cdpPort }) {
 
 function createDashboardBrowserReadinessProbe({ logger }) {
   return () => inspectDashboardBossBrowserReadiness({
-    browserMode: "portable",
-    cdpPort: PORTABLE_CDP_PORT,
+    browserMode: "edge",
+    cdpPort: null,
     logger
   });
 }
 
 async function inspectDashboardBossBrowserReadiness({
-  browserMode,
-  cdpPort,
+  browserMode = "edge",
+  cdpPort = null,
   logger,
   browserFactory = createDashboardBrowser
 }) {
   const browser = browserFactory({ browserMode, cdpPort });
   const adapter = new boss.BossSiteAdapter({ browser, logger });
   return inspectBossBrowserReadiness({
-    preflight: () => adapter.preflight()
+    preflight: async () => {
+      if (browserMode !== "edge") return adapter.preflight();
+      const { communicationTab, searchTab } = assertBossOperatorTabs(await browser.listTabs());
+      await adapter.preflight({ tabId: communicationTab.id });
+      return adapter.preflight({ tabId: searchTab.id });
+    }
   });
 }
 
@@ -275,14 +281,15 @@ function publicBrowserReadinessSnapshot(readiness) {
 }
 
 function resolveNewInheritedBrowser(input = {}) {
-  const browserMode = String(input.browserMode || "portable").trim().toLowerCase();
-  if (browserMode !== "portable") {
+  const browserMode = String(input.browserMode || "edge").trim().toLowerCase();
+  if (!["edge", "portable"].includes(browserMode)) {
     throw appError(
-      "INHERITED_PORTABLE_REQUIRED",
+      "WORKFLOW_BROWSER_MODE_INVALID",
       "新的继承模式必须使用项目专用 Edge。",
       { statusCode: 409 }
     );
   }
+  if (browserMode === "edge") return { browserMode: "edge", cdpPort: null };
   const cdpPort = normalizeCdpPort(input.cdpPort);
   if (cdpPort !== PORTABLE_CDP_PORT) {
     throw appError(
@@ -1270,8 +1277,10 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
     }
     const activeLease = getSiteScanLease(db, "boss");
     if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
-    const cdpPort = Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)));
-    const browserMode = params.browserMode === "edge" ? "edge" : "portable";
+    const browserMode = params.browserMode === "portable" ? "portable" : "edge";
+    const cdpPort = browserMode === "portable"
+      ? Math.max(1, Math.min(65535, Number(params.cdpPort || 9222)))
+      : null;
     const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
     let scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
     if (resumeBatchId) {
@@ -1427,16 +1436,21 @@ async function resolveLiveInheritedContext({
   plan,
   matchingContext,
   logger,
-  browserMode = "portable",
-  cdpPort = PORTABLE_CDP_PORT,
+  browserMode = "edge",
+  cdpPort = null,
   browserFactory = createDashboardBrowser
 }) {
   try {
-    const adapter = new boss.BossSiteAdapter({
-      browser: browserFactory({ browserMode, cdpPort }),
-      logger
-    });
-    const preflight = await adapter.preflight();
+    const browser = browserFactory({ browserMode, cdpPort });
+    const adapter = new boss.BossSiteAdapter({ browser, logger });
+    let preflight;
+    if (browserMode === "edge") {
+      const { communicationTab, searchTab } = assertBossOperatorTabs(await browser.listTabs());
+      await adapter.preflight({ tabId: communicationTab.id });
+      preflight = await adapter.preflight({ tabId: searchTab.id });
+    } else {
+      preflight = await adapter.preflight();
+    }
     if (!preflight.isSearchPage) {
       throw appError(
         "BOSS_SEARCH_PAGE_INVALID",
@@ -2412,7 +2426,7 @@ function startPlanScan(scanRuns, {
   dbPath,
   planId,
   cdpPort,
-  browserMode = "portable",
+  browserMode = "edge",
   scanKind = "daily",
   resumeBatchId = null,
   workflowRunId = "",
@@ -3796,7 +3810,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
     <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词，主薪资档全部覆盖，补充薪资档仅覆盖前 ${dailyScan.supplementalSalaryLaneKeywordLimit} 个关键词；A/B 主档每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，补充档最多 ${dailyScan.supplementalSalaryLaneCardLimit} 张卡片和 ${dailyScan.supplementalSalaryLaneDetailLimit} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
     ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge">当前已登录 Edge</option><option value="portable">项目专用 Edge</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
+    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用，需要独立登录）</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
   </section></details>
 </main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
 }
@@ -3812,8 +3826,8 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       : `<form class="workflow-start" method="post" action="/api/workflow-run">
           <input type="hidden" name="planId" value="${planRecord.id}">
           <input type="hidden" name="cdpPort" value="9222">
-          <input type="hidden" name="browserMode" value="portable">
-          <span class="hint">使用项目专用 Edge 的 BOSS 搜索页</span>
+          <label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用，需要独立登录）</option></select></label>
+          <span class="hint">使用普通 Edge 中已登录的固定 BOSS 搜索页</span>
           <button
             class="workflow-primary"
             name="action"
@@ -3832,7 +3846,7 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
       <div><span>已用轮次</span><strong>${workflowState.slotsUsed} / ${workflowState.maxRuns}</strong></div>
     </div>
     <div class="workflow-budget">剩余详情读取预算 ${workflowState.remainingBudget.details} · 剩余搜索页预算 ${workflowState.remainingBudget.pages}${next?.shortfallReason ? ` · ${escapeHtml(workflowShortfallLabel(next.shortfallReason))}` : ""}</div>
-    <div id="browser-readiness-status" class="workflow-budget" role="status">正在检查项目专用 Edge 与 BOSS 登录状态…</div>
+    <div id="browser-readiness-status" class="workflow-budget" role="status">正在检查当前已登录 Edge 与固定 BOSS 页面状态…</div>
     <script>
     (function(){
       const statusNode = document.getElementById('browser-readiness-status');
@@ -3852,7 +3866,7 @@ function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
-          statusNode.textContent = '无法确认项目专用 Edge 状态，请检查本地服务。';
+          statusNode.textContent = '无法确认当前已登录 Edge 状态，请检查本地服务。';
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;
         } finally {
@@ -4170,7 +4184,7 @@ function renderWorkflowResumeForm(workflow) {
     const browserMode = resolveWorkflowResumeBrowserMode(workflow);
     const label = browserMode === "portable"
       ? "使用项目专用 Edge 的 BOSS 搜索页"
-      : "使用旧版当前 Edge 的 BOSS-SEARCH 标签页";
+      : "使用当前已登录 Edge 中的固定 BOSS 搜索页";
     return `<form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="browserMode" value="${browserMode}"><span class="hint">${label}</span><button>继续本轮</button></form>`;
   }
   const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
@@ -4615,7 +4629,7 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="portable">项目专用 Edge</option><option value="edge">当前 Edge（高级）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
 }
 
 function renderCommunicationReviewPage({ db, searchParams }) {
