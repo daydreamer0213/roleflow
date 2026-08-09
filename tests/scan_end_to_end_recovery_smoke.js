@@ -47,6 +47,11 @@ async function main() {
         cities: ["测试未映射城市"]
       }
     });
+    const generatedUnsupportedWorkflow = seedWorkflowRun(storage, db, {
+      profileId,
+      planId: unsupportedPlanId,
+      localDay: "2026-08-11"
+    });
     db.close();
     db = null;
 
@@ -215,7 +220,11 @@ async function main() {
       dbPath,
       unsupportedPlanId,
       "scan-e2e-generated-unsupported",
-      "complete"
+      "complete",
+      {
+        workflowRunId: generatedUnsupportedWorkflow.id,
+        keywords: ["RAG", "Agent"]
+      }
     );
     assertExit(generatedUnsupported, 1, "generated unsupported Search Plan city rejection");
     assert.match(generatedUnsupported.stderr, /BOSS 暂不支持这些城市：测试未映射城市/);
