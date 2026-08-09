@@ -4,7 +4,7 @@
 
 - 盘点时共有 52 个本地分支、33 个 worktree。
 - `main` 已包含 durable workflow progress v4 和消息发现联合集成，当前提交为 `038241c`。
-- 计划删除 9 个已合并完成分支；删除前均要求提交已进入 `origin/main`、worktree 干净，并已有 main 历史或检查点标签可回溯。
+- 最终净删除 8 个已合并完成分支；删除前均要求提交已进入 `origin/main`、worktree 干净，并已有 main 历史或检查点标签可回溯。
 - 保留基线、诊断、实测候选、模型 A/B、尚未合并的分叉分支，以及所有位于 `C:/Users/Administrator/.codex/worktrees` 的 Codex 管理 worktree。
 - 历史未跟踪文档已归档到 `archive/2026-08-09/inherited-scope-completion-plan`。
 
@@ -27,7 +27,7 @@
 | `codex/candidate-progress-manual-reply` | `07e8f31` | `origin/codex/candidate-progress-manual-reply` | 否 | `diverged-keep` | — |
 | `codex/claude-generic-evidence-matching` | `ebdcb11` | `origin/codex/claude-generic-evidence-matching` | 是 | `merged-delete` | `D:/DevData/RoleFlow-worktrees/claude-generic-evidence-matching` |
 | `codex/claude-generic-evidence-matching-impl` | `cdd6274` | `origin/codex/claude-generic-evidence-matching-impl` | 是 | `merged-delete` | `D:/DevData/RoleFlow-worktrees/claude-generic-evidence-matching-impl` |
-| `codex/claude-generic-evidence-matching-live-fix` | `1fc49da` | `origin/codex/claude-generic-evidence-matching-live-fix` | 是 | `merged-delete` | `D:/DevData/RoleFlow-worktrees/claude-generic-evidence-matching-live-fix` |
+| `codex/claude-generic-evidence-matching-live-fix` | `1fc49da` | `origin/codex/claude-generic-evidence-matching-live-fix` | 是 | `evidence-keep` | `D:/DevData/RoleFlow-worktrees/claude-generic-evidence-matching-live-fix` |
 | `codex/deepseek-match-nonthinking-ab` | `71885b9` | `origin/codex/deepseek-match-nonthinking-ab` | 是 | `evidence-keep` | `D:/DevData/RoleFlow-worktrees/deepseek-match-nonthinking-ab` |
 | `codex/deepseek-v4-flash-nonthinking-v19-live-eval` | `ea53ff7` | — | 是 | `evidence-keep` | — |
 | `codex/deepseek-v4-flash-thinking-live-eval` | `47b807d` | — | 是 | `evidence-keep` | — |
@@ -89,14 +89,14 @@
 
 ## 清理后目标
 
-- 本地分支：43 个。
-- 远端实际分支：9 个（不计 `origin/HEAD`）。
-- worktree：25 个。
+- 本地分支：44 个。
+- 远端实际分支：10 个（不计 `origin/HEAD`）。
+- worktree：26 个。
 - 根工作区最终切换到 `main`；临时 `main-integration` worktree 删除。
 
 ## 执行结果
 
-- 已使用 `git branch -d` 删除 9 个 `merged-delete` 本地分支，没有使用强制删除。
-- 已删除其中 7 个同名远端完成分支；另外 2 个 `feat/*` 分支原本没有远端。
-- 已移除 7 个干净的 D 盘完成 worktree；没有移除任何 C 盘 Codex 管理 worktree，也没有移除私有基线、诊断、实测或模型对照 worktree。
-- 主 worktree 交接前复核结果：43 个本地分支、9 个远端实际分支、26 个 worktree。移除临时 `main-integration` worktree 后为 25 个。
+- 清理阶段先使用 `git branch -d` 删除 9 个本地完成分支，没有使用强制删除。最终根工作区回归证明 `codex/claude-generic-evidence-matching-live-fix@1fc49da` 是私有 runner 的固定候选依赖，因此按原路径、原分支和原提交恢复；最终净删除 8 个本地分支。
+- 同名远端分支先删除 7 个，固定候选分支随后按原提交恢复；最终净删除 6 个远端分支。另外 2 个已删除的 `feat/*` 分支原本没有远端。
+- 先移除 7 个干净的 D 盘完成 worktree，随后恢复固定候选 worktree；最终净移除 6 个。没有移除任何 C 盘 Codex 管理 worktree，也没有移除其他私有基线、诊断、实测或模型对照 worktree。
+- 最终复核结果：44 个本地分支、10 个远端实际分支、26 个 worktree；所有 worktree 均干净。
