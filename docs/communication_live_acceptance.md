@@ -2,10 +2,16 @@
 
 ## Current Status
 
-- Calibration status: `pending`
-- Execution enabled: `false`
-- Real communication clicks completed: `1`
-- Production communication CLI/dashboard execution: disabled
+- Implementation: `implemented`
+- Technical calibration: `calibrated`
+- User end-to-end acceptance: `e2e_pending`
+- Technical execution gate: `true`
+- Historical controlled communication clicks: `1`
+
+The execution gate is a technical calibration gate. It does not mean that the
+user has completed or accepted the full end-to-end communication workflow.
+The click count and page observations below are historical recorded evidence;
+they are not a claim about the current external BOSS page.
 
 ## 2026-07-18 Read-Only Evidence
 
@@ -65,7 +71,7 @@ One previously applied local record was inspected through the merged adapter wit
 
 The classifier now exposes this as a distinct `already_communicated` read-only state. It does not treat `继续沟通` as a fresh `立即沟通` action or click it during initial application dispatch.
 
-### User-Approved Single Click
+### Historical User-Approved Single Click
 
 One recommended, locally unprocessed job was selected for explicit user-approved calibration. The merged read-only inspection confirmed the expected job ID, title, company, `招聘中` status, and exactly one visible and enabled `立即沟通` control before the click.
 
@@ -83,7 +89,10 @@ One recommended, locally unprocessed job was selected for explicit user-approved
 - Risk-control or login-loss signals: none
 - Local candidate state: recorded as `applied`
 
-This evidence supports a fail-closed implementation that rechecks the current detail DOM immediately before one click and requires the same job identity, friend state, chat identity presence, and exact success dialog immediately afterward.
+This historical evidence supports the fail-closed implementation that rechecks
+the detail DOM immediately before one click and requires the same job identity,
+friend state, chat identity presence, and exact success dialog immediately
+afterward. It is not the user's end-to-end workflow acceptance.
 
 No real job ID, job title, company, recruiter identity, JD text, raw HTML, screenshot, resume data, or browser credential is stored in this document.
 
@@ -93,14 +102,14 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 2. Communication must open the saved canonical detail URL; it must not search for the old card again.
 3. The action element's `ka` value is not a job identity. Pre-click identity uses the URL job ID, visible title and company, the action redirect's matching job ID, chat identity presence, and `data-isfriend=false`.
 4. The helper retains every visible, enabled control whose label contains `沟通` as a candidate. The classifier requires exactly one candidate with the exact label `立即沟通`; non-communication controls such as favorite are ignored. Missing job status and missing or ambiguous candidates produce `action_unavailable`; a present status other than `招聘中` produces `job_unavailable`. A non-exact candidate fails closed. Hidden or disabled controls are excluded from candidates.
-5. The current evidence supports one `立即沟通` ready state, one `继续沟通` state classified as `already_communicated`, and one explicitly approved immediate post-click success state. Production execution remains disabled pending review.
+5. The recorded evidence supports one `立即沟通` ready state, one `继续沟通` state classified as `already_communicated`, and one explicitly approved immediate post-click success state. Technical execution is enabled, while the user end-to-end acceptance state remains `e2e_pending`.
 
 ## Window Identity and Transport Boundary
 
 - The current Edge Control `listTabs` result provides `windowId`. Read-only communication tab preparation pins one immutable search-tab ID and requires that fixed search tab to have a non-empty `windowId` before any page assertion, tab creation, navigation, or click.
 - Stored and reusable communication tabs must have the same known `windowId`; a missing ID is never treated as a same-window match or synthesized from a tab ID, URL, title, or ordering.
 - CDP does not currently provide a reliable window identity, and communication execution is not wired to CDP. Before any future CDP communication connection, the transport must supply a reliable window identity with the same semantics. Do not silently synthesize one.
-- This document records a read-only Edge Control sample and offline regression coverage only. It does not claim that the end-to-end communication flow is available.
+- This document records historical Edge Control evidence and offline regression coverage only. It does not claim current external page behavior or that user end-to-end acceptance has completed.
 
 ## Offline Engineering Verification
 
@@ -113,13 +122,19 @@ No real job ID, job title, company, recruiter identity, JD text, raw HTML, scree
 - A cached communication tab that changes into a search or unrelated page fails closed before navigation.
 - Syntax checks passed for the adapter and its smoke test.
 - `npm test` passed all 33 offline checks on 2026-07-18.
-- `PRODUCT_POLICY.operations.bossCommunication.calibration.executionEnabled` remains `false`.
+- `PRODUCT_POLICY.operations.bossCommunication.calibration.executionEnabled` is `true`; this is the technical gate and is independent from `acceptance: e2e_pending`.
 
-## Remaining Live Calibration
+## Remaining User End-to-End Acceptance
 
-The following states still require separate, explicitly approved, low-frequency observation:
+The following user workflow has not been recorded as completed and requires a
+separate, explicitly approved acceptance run:
 
-- an unavailable or closed job page;
-- active chat-page DOM identity, only if a future workflow needs to leave the verified success dialog and enter chat.
+- enter from the dashboard's review queue;
+- confirm the immutable communication batch;
+- start a small batch and serially verify target identity and result states;
+- inspect success, already-communicated, unavailable, and ambiguous outcomes;
+- pause or stop, then resume or resolve the batch manually;
+- confirm that no extra tabs, parallel BOSS operations, or risk signals occur.
 
-Do not enable production communication until every required state has current real-page evidence and the calibration review passes.
+Until that user workflow is explicitly accepted, report `e2e_pending`; do not
+report `accepted` or infer acceptance from the historical click.

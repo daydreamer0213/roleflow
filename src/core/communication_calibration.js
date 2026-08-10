@@ -3,7 +3,14 @@ const { appError } = require("./observability");
 
 function communicationCalibrationStatus() {
   const calibration = PRODUCT_POLICY.operations.bossCommunication.calibration;
-  return { status: calibration.status, executionEnabled: calibration.executionEnabled };
+  const status = {
+    implementation: calibration.implementation,
+    calibration: calibration.status,
+    acceptance: calibration.acceptance,
+    executionEnabled: calibration.executionEnabled
+  };
+  Object.defineProperty(status, "status", { value: status.calibration, enumerable: false });
+  return status;
 }
 
 function assertCommunicationExecutionEnabled() {

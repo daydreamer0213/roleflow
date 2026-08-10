@@ -13,8 +13,25 @@ let db;
 let server;
 
 (async () => {
-  assert.deepStrictEqual(communicationCalibrationStatus(), { status: "calibrated", executionEnabled: true });
-  assert.deepStrictEqual(assertCommunicationExecutionEnabled(), { status: "calibrated", executionEnabled: true });
+  assert.deepStrictEqual(communicationCalibrationStatus(), {
+    implementation: "implemented",
+    calibration: "calibrated",
+    acceptance: "e2e_pending",
+    executionEnabled: true
+  });
+  assert.strictEqual(communicationCalibrationStatus().status, "calibrated");
+  assert.notDeepStrictEqual(communicationCalibrationStatus(), {
+    implementation: "implemented",
+    calibration: "calibrated",
+    acceptance: "accepted",
+    executionEnabled: true
+  });
+  assert.deepStrictEqual(assertCommunicationExecutionEnabled(), {
+    implementation: "implemented",
+    calibration: "calibrated",
+    acceptance: "e2e_pending",
+    executionEnabled: true
+  });
 
   db = openDb(":memory:");
   const { planId, jobId } = seed(db);

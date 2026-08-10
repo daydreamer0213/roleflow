@@ -873,7 +873,12 @@ function assertNoPreparationAction(browser, before) {
     (error) => error.code === "BOSS_COMMUNICATION_INSPECTION_INVALID"
   );
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
-  assert.deepStrictEqual(communicationCalibrationStatus(), { status: "calibrated", executionEnabled: true });
+  assert.deepStrictEqual(communicationCalibrationStatus(), {
+    implementation: "implemented",
+    calibration: "calibrated",
+    acceptance: "e2e_pending",
+    executionEnabled: true
+  });
   console.log("boss_communication_page_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);

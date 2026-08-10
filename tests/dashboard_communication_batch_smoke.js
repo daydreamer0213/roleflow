@@ -109,6 +109,13 @@ let server;
   assert.match(review.body, /name="action" value="start"/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
+  assert.deepStrictEqual(status.body.calibration, {
+    implementation: "implemented",
+    calibration: "calibrated",
+    acceptance: "e2e_pending",
+    executionEnabled: true
+  });
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(status.body.calibration, "status"), false);
   assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
 
