@@ -151,6 +151,16 @@ const {
 } = require("../core/workflow_control");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
+const { sendHtml, sendJson, escapeHtml, escapeAttr } = require("./http/response");
+const { renderPage: renderDashboardPage } = require("./ui/shell");
+const { renderNavigation } = require("./ui/navigation");
+
+const DASHBOARD_ASSETS = Object.freeze({
+  "/assets/roleflow.css": {
+    contentType: "text/css; charset=utf-8",
+    file: path.join(__dirname, "assets", "roleflow.css")
+  }
+});
 
 const PROGRESS_ACTIONS = Object.freeze({
   reply_confirmed_sent: {
@@ -450,6 +460,7 @@ function createDashboardServer({
     res.on("finish", () => logger.info("http_request_completed", { requestId, method: req.method, path: url?.pathname || req.url, statusCode: res.statusCode, durationMs: Date.now() - startedAt }));
     try {
       url = new URL(req.url, "http://127.0.0.1");
+      if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname]);
       if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
       if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
@@ -4470,10 +4481,7 @@ function renderFeedbackInsight(feedback = {}) {
 }
 
 function renderPage(title, body) {
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:0;background:#f6f7f9;color:#1f2328}main{max-width:1160px;margin:0 auto;padding:24px}nav{display:flex;gap:14px;margin-bottom:18px}nav a{color:#0969da;text-decoration:none}h1{font-size:24px;margin:0 0 8px;letter-spacing:0}h2{font-size:16px;margin:0 0 10px}.hint,.line{color:#57606a;margin:7px 0}.notice{color:#0a6b2b}.risk-text{color:#b42318}.error-code{font-family:Consolas,monospace;color:#57606a}.panel{background:#fff;border:1px solid #d8dee4;border-radius:8px;padding:16px;margin:12px 0}.form-stack{display:grid;gap:12px;max-width:560px}.plan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.plan-form .wide{grid-column:1/-1}.plan-form label,.form-stack label,.inline-form label{display:grid;gap:5px;font-size:14px}.plan-form .checkbox{display:flex;align-items:center;gap:8px;padding-top:24px}.plan-form .checkbox input{width:auto}input,select,textarea,button{font:inherit}input,select,textarea{min-width:0;padding:8px;border:1px solid #b8c0cc;border-radius:4px;background:#fff}input,select,button,.button-link{min-height:44px;box-sizing:border-box}textarea{min-height:118px;resize:vertical}button,.button-link{padding:8px 12px;border:1px solid #0969da;border-radius:4px;background:#0969da;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.button-link{line-height:20px}.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}.inline-form input{width:120px}.resume-preview pre{max-height:360px;overflow:auto;white-space:pre-wrap;background:#f6f8fa;padding:10px;border:1px solid #d8dee4}.scan-error{white-space:pre-wrap;background:#fff1f0;padding:10px;max-height:180px;overflow:auto}.profile-summary{display:grid;gap:3px}.validation{border-left:4px solid #bf8700}.validation-error{border-left-color:#b42318}.validation strong{display:block}.validation ul,.profile-diff ul{margin:7px 0 0;padding-left:20px}.profile-diff{border-top:1px solid #d8dee4;padding-top:8px}.diagnostics{width:100%;border-collapse:collapse;font-size:12px}.diagnostics th,.diagnostics td{border-bottom:1px solid #d8dee4;padding:7px;text-align:left;vertical-align:top;word-break:break-word}@media(max-width:760px){main{padding:16px}.plan-form{grid-template-columns:1fr}.plan-form .wide{grid-column:auto}.plan-form .checkbox{padding-top:0}.inline-form{display:grid;grid-template-columns:1fr}.diagnostics{display:block;overflow-x:auto}}
-button:disabled{cursor:not-allowed;background:#8c959f;border-color:#8c959f;opacity:.65}nav{flex-wrap:wrap}
-</style>${body}</html>`;
+  return renderDashboardPage({ title, body });
 }
 
 function keywordLines(keywords = []) {
@@ -4501,8 +4509,7 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
 
 function navLinks(current = "") {
   const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
-  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">今日任务</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
-  return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
+  return renderNavigation({ currentPath: current, planId });
 }
 
 function redirect(res, location) {
@@ -4983,27 +4990,14 @@ function refererPath(req) {
   }
 }
 
-function sendHtml(res, html, statusCode = 200) {
-  res.writeHead(statusCode, { "content-type": "text/html; charset=utf-8" });
-  res.end(html);
-}
-
-function sendJson(res, statusCode, body) {
-  res.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
+function sendDashboardAsset(res, asset) {
+  res.writeHead(200, { "content-type": asset.contentType });
+  res.end(fs.readFileSync(asset.file));
 }
 
 function sendText(res, statusCode, text) {
   res.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8" });
   res.end(text);
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
-}
-
-function escapeAttr(value) {
-  return escapeHtml(value);
 }
 
 module.exports = {
