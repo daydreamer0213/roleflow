@@ -396,15 +396,21 @@ Each task must include focused regression, full suite, independent review, and a
 
 Start after Wave 3 is merged.
 
-Keep `openDatabase` and schema/migrations in `src/core/storage.js` initially. Move only exported operation groups:
+Keep `openDb`, schema/migrations, migration backfills, shared row mappers, and the common `immediateTransaction` primitive in `src/core/storage.js` initially. Move only exported operation groups, in dependency-safe order:
 
-1. `src/storage/workflow_store.js`
-2. `src/storage/scan_store.js`
-3. `src/storage/job_store.js`
+1. `src/storage/candidate_store.js`
+2. `src/storage/job_store.js`
+3. `src/storage/scan_store.js`
 4. `src/storage/communication_store.js`
-5. `src/storage/candidate_store.js`
+5. `src/storage/workflow_store.js`
 
 Each store accepts an existing SQLite database handle. No store opens a second production database, owns a separate transaction system, or changes schema.
+
+Keep `src/core/storage.js` as a compatibility facade during the migration: existing export names, parameter order, return shapes, error behavior, and dynamic test imports remain valid while implementations move one group at a time. Cross-table operations keep their original atomic transaction boundary; do not reconstruct one operation as several independently committed store calls.
+
+`getWorkflowHealthSnapshot` remains a cross-cutting read model until all five stores are stable. The communication step must explicitly account for the existing state-machine owner in `src/core/communication_batches.js`; moving only the single communication backfill currently exported by `storage.js` does not count as a completed communication boundary.
+
+The order is intentional: candidate/profile/plan/card data is an upstream dependency of job decisions; jobs are inputs to scan reuse and communication eligibility; workflow is the strongest cross-domain orchestrator and moves last. Re-capture the export/caller baseline after Wave 3 before starting implementation.
 
 Migrate one store per branch. Do not run these branches in parallel.
 

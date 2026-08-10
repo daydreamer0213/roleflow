@@ -304,13 +304,17 @@ acceptance = e2e_pending
 
 在应用用例稳定后，把 `storage.js` 按调用群拆成小型存储模块：
 
-- workflow
-- scan
+- candidate/profile/plan/matching card
 - jobs/analysis
+- scan/batch/lease
 - communication
-- candidate/profile
+- workflow/task/attempt
 
-继续使用同一个 SQLite 连接、schema 和迁移入口。该阶段不改表结构，不引入 ORM。
+顺序是依赖约束，不是文件偏好：候选人、方案和匹配卡是岗位决策的上游，岗位又被扫描复用和沟通资格判断使用；workflow 连接 scan、job、communication 和 recovery，因此最后拆。
+
+继续使用同一个 SQLite 连接、schema 和迁移入口。`openDb`、migration/backfill、共享 mapper 和统一事务原语先留在 `src/core/storage.js`。旧 `storage.js` 在迁移期间保留为兼容门面，继续导出相同函数名、参数和返回结构；跨表操作保留原子事务，不拆成多个独立 store 提交。
+
+`getWorkflowHealthSnapshot` 先作为跨域读模型保留。communication 的主体状态机目前位于 `src/core/communication_batches.js`，该阶段必须明确完整 owner，不能只移动一个历史回填函数就宣称通信存储已拆分。该阶段不改表结构，不引入 ORM。
 
 ### 阶段 5：平台注册表
 
