@@ -82,11 +82,12 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await delayedListSmoke();
   await accessReservationSmoke();
   await visiblePaneIdentitySmoke();
+  await visiblePaneActivationWaitSmoke();
   await visiblePaneMissingIdentitySmoke();
   await visiblePaneTitleIdentitySmoke();
   await standaloneDetailRoutingSmoke();
   await standaloneDetailTimeoutSmoke();
-  await obsoleteCardActivationUnavailableSmoke();
+  await componentActivationUnavailableSmoke();
   await scanNullPaneOutcomeSmoke();
   await detailCheckpointAndWorkflowPauseSmoke();
   await fullDetailCoverageSmoke();
@@ -498,6 +499,71 @@ async function visiblePaneIdentitySmoke() {
   assert.deepStrictEqual(accessActions[0].details, { jobId: "pane-job" });
 }
 
+async function visiblePaneActivationWaitSmoke() {
+  let paneReads = 0;
+  let activations = 0;
+  let navigations = 0;
+  const accessActions = [];
+  const browser = {
+    async navigate() { navigations += 1; },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("(() => window.__bossActivateCard(")) {
+        activations += 1;
+        return { activated: true, jobId: "slow-pane-job", reason: "" };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        paneReads += 1;
+        if (paneReads <= 12) {
+          return {
+            activeJobId: paneReads === 1 ? "old-job" : "slow-pane-job",
+            componentCurrentJobId: paneReads === 1 ? "old-job" : "slow-pane-job",
+            paneJobId: "old-job",
+            currentJobId: "old-job",
+            jobDetailLoading: paneReads > 1,
+            title: "Old job",
+            description: "Old detail",
+            canScroll: false
+          };
+        }
+        return {
+          activeJobId: "slow-pane-job",
+          componentCurrentJobId: "slow-pane-job",
+          paneJobId: "slow-pane-job",
+          currentJobId: "slow-pane-job",
+          jobDetailLoading: false,
+          title: "Slow pane job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({
+    browser,
+    sleepFn: async () => {},
+    randomFn: () => 0,
+    accessController: {
+      reserve: async (action, details) => accessActions.push({ action, details })
+    }
+  });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Slow pane job",
+    url: "https://www.zhipin.com/job_detail/slow-pane-job.html"
+  });
+  assert(detail.description.length >= 120);
+  assert(paneReads > 8, "must survive the old eight-poll timeout");
+  assert.strictEqual(activations, 1);
+  assert.strictEqual(navigations, 0);
+  assert.deepStrictEqual(accessActions, [{
+    action: "pane_detail_read",
+    details: { jobId: "slow-pane-job" }
+  }]);
+}
+
 async function visiblePaneMissingIdentitySmoke() {
   const browser = {
     async evalValue(_tabId, expression) {
@@ -646,10 +712,38 @@ async function standaloneDetailRoutingSmoke() {
   ]);
 }
 
-async function obsoleteCardActivationUnavailableSmoke() {
-  const source = fs.readFileSync(path.join(__dirname, "..", "src", "adapters", "sites", "boss.js"), "utf8");
-  assert(!source.includes("readCardDetail"), "obsolete readCardDetail API must be unavailable");
-  assert(!source.includes("__bossOpenCard"), "obsolete card activation helper must be unavailable");
+async function componentActivationUnavailableSmoke() {
+  let activations = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          activeJobId: "old-job",
+          componentCurrentJobId: "old-job",
+          paneJobId: "old-job",
+          currentJobId: "old-job",
+          title: "Old job",
+          description: "Old detail",
+          canScroll: false
+        };
+      }
+      if (expression.includes("(() => window.__bossActivateCard(")) {
+        activations += 1;
+        return { activated: false, jobId: "", reason: "component_unavailable" };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Target job",
+    url: "https://www.zhipin.com/job_detail/target-job.html"
+  });
+  assert.strictEqual(detail, null);
+  assert.strictEqual(activations, 1);
 }
 
 async function scanNullPaneOutcomeSmoke() {
