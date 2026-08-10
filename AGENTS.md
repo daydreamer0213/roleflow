@@ -8,6 +8,16 @@
 - A tool reporting that a click or navigation succeeded is not enough; verify that the expected job ID, title, pane, or URL actually changed.
 - Before changing selectors, fields, timing, or risk-control behavior, run the smallest read-only live probe that can confirm the premise.
 
+## Skill routing and proportionality
+
+- Project rules and explicit user requirements take precedence over reusable Skill workflows.
+- Use `systematic-debugging` for bugs, failures, and unexpected behavior. Use `verification-before-completion` before claiming that work is fixed or complete.
+- Use brainstorming, written plans, worktrees, and formal review for behavior changes, multi-file work, architecture decisions, or high-risk external actions. Handle summaries, documentation, and clearly scoped small edits directly with a short intent statement.
+- For non-trivial behavior, keep the smallest regression check that would fail if the behavior broke. Do not add tests for prose, comments, trivial forwarding, framework behavior, source-text presence, or speculative edge cases.
+- Apply Ponytail to implementation scope: understand the real flow first, reuse existing code, prefer native capabilities and installed dependencies, avoid speculative abstractions, and change the fewest files that solve the root cause.
+- Ponytail must not simplify away account safety, input validation, data-loss prevention, error handling, accessibility, JD coverage, matching quality, or any explicitly requested requirement.
+- Use subagents only for genuinely independent work with separately verifiable outputs.
+
 ## BOSS safety boundary
 
 - Keep BOSS access read-only unless the user explicitly approves communication or application actions.

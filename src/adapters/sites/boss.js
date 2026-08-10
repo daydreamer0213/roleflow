@@ -69,6 +69,29 @@ const PAGE_HELPERS = String.raw`
     });
   };
 
+  window.__bossActivateCard = function(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    if (!expectedJobId) return { activated: false, jobId: "", reason: "job_id_missing" };
+    const card = window.__bossCards().find((item) => {
+      const href = (item.querySelector('a[href*="/job_detail/"]') || item.querySelector("a"))?.href || "";
+      const id = (href.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+      return id === expectedJobId;
+    });
+    if (!card) return { activated: false, jobId: "", reason: "card_not_found" };
+    const wrap = card.closest(".job-card-wrap") || card;
+    const component = wrap.__vue__ || card.__vue__ || null;
+    const componentJobId = String(component?.data?.encryptJobId || "").trim();
+    if (componentJobId !== expectedJobId) {
+      return { activated: false, jobId: componentJobId, reason: "component_job_mismatch" };
+    }
+    if (typeof component?.clickJobCard !== "function") {
+      return { activated: false, jobId: componentJobId, reason: "component_unavailable" };
+    }
+    wrap.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+    component.clickJobCard();
+    return { activated: true, jobId: componentJobId, reason: "" };
+  };
+
   window.__bossExtractCards = function(maxCards) {
     const salaryRe = /\d+\s*[-~—]\s*\d+\s*K(?:·\d+薪)?|\d+\s*K(?:·\d+薪)?|面议/;
     const salaryLineRe = /^(?:\d+\s*[-~—]\s*\d+\s*K(?:·\d+薪)?|\d+\s*K(?:·\d+薪)?|面议)$/;
@@ -146,14 +169,42 @@ const PAGE_HELPERS = String.raw`
 
   window.__bossPaneState = function() {
     const decode = window.__bossDecode || ((value) => String(value || ""));
+    const activeWrap = document.querySelector(".job-card-wrap.active");
+    const activeCard = activeWrap?.querySelector(".job-card-box")
+      || document.querySelector(".job-card-box.active, .job-card-wrapper.active, li.active[class*='job']");
+    const activeLink = activeCard?.querySelector('a[href*="job_detail"]');
+    const activeJobId = (activeLink?.href?.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    let pageComponent = activeWrap?.__vue__ || activeCard?.__vue__ || null;
+    for (let depth = 0; pageComponent && depth < 8; depth += 1) {
+      if (String(pageComponent.$options?.name || "") === "PageJobs") break;
+      pageComponent = pageComponent.$parent || null;
+    }
+    const componentCurrentJobId = String(pageComponent?.currentJob?.encryptJobId || "");
+    const jobDetailLoading = typeof pageComponent?.jobDetailLoading === "boolean"
+      ? pageComponent.jobDetailLoading
+      : null;
     const root = document.querySelector(".job-detail-container")
       || document.querySelector(".job-detail")
       || document.querySelector(".detail-content")
       || document.querySelector(".job-detail-box");
-    if (!root) return { currentJobId: "", title: "", description: "", bossActiveText: "", salary: "", experience: "", education: "", hasRoot: false };
-    const activeCard = document.querySelector(".job-card-wrap.active .job-card-box, .job-card-box.active, .job-card-wrapper.active, li.active[class*='job']");
-    const detailLink = root.querySelector('a[href*="job_detail"]') || activeCard?.querySelector('a[href*="job_detail"]');
-    const currentJobId = (detailLink?.href?.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!root) {
+      return {
+        activeJobId,
+        componentCurrentJobId,
+        paneJobId: "",
+        currentJobId: "",
+        jobDetailLoading,
+        title: "",
+        description: "",
+        bossActiveText: "",
+        salary: "",
+        experience: "",
+        education: "",
+        hasRoot: false
+      };
+    }
+    const paneLink = root.querySelector('a[href*="job_detail"]');
+    const paneJobId = (paneLink?.href?.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
     const header = root.querySelector(".job-primary")
       || root.querySelector(".job-banner")
       || root.querySelector(".job-detail-header")
@@ -170,7 +221,11 @@ const PAGE_HELPERS = String.raw`
     const onlineIcon = root.querySelector(".boss-online-icon, [class*='online-icon']");
     const metadata = (window.__bossJobMetadata || (() => ({})))(decode(header.innerText || ""));
     return {
-      currentJobId,
+      activeJobId,
+      componentCurrentJobId,
+      paneJobId,
+      currentJobId: paneJobId,
+      jobDetailLoading,
       title: decode(titleNode.innerText || "").split(/\n+/)[0].trim(),
       description: decode(descriptionNode.innerText || "").replace(/\s+/g, " ").slice(0, 12000),
       bossActiveText: (window.__bossActivity || (() => ""))(activityText) || (onlineIcon ? "今日活跃" : ""),
@@ -746,27 +801,28 @@ class BossSiteAdapter {
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
-            let visiblePaneProbeAvailable = true;
             for (const entry of detailEntries) {
               throwIfAborted(options.signal);
               await assertRuntimeTabBindings(options.assertTabBindings);
               console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
-              let accessMode = "standalone_detail";
+              const accessMode = "visible_pane";
               let detailOutcome = {
                 outcome: "succeeded",
                 errorCode: "",
                 accessMode
               };
               try {
-                let detail = null;
-                if (visiblePaneProbeAvailable) {
-                  visiblePaneProbeAvailable = false;
-                  accessMode = "visible_pane";
-                  detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal, options.assertTabBindings);
-                }
+                const detail = await this.readVisiblePaneDetail(
+                  tabId,
+                  entry.job,
+                  options.signal,
+                  options.assertTabBindings
+                );
                 if (!detail) {
-                  accessMode = "standalone_detail";
-                  detail = await this.readDetail(tabId, entry.job.url, options.signal, options.assertTabBindings);
+                  throw bossError(
+                    "BOSS_PANE_SWITCH_TIMEOUT",
+                    `BOSS search pane did not become complete for ${entry.job.sourceId || "unknown"}`
+                  );
                 }
                 throwIfAborted(options.signal);
                 detailOutcome = { outcome: "succeeded", errorCode: "", accessMode };
@@ -1119,34 +1175,54 @@ class BossSiteAdapter {
     await this.browser.evalValue(tabId, PAGE_HELPERS);
     const expectedJobId = (normalizeBossUrl(job?.url || "")
       .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    if (!expectedJobId) return null;
+    const expectedTitle = normalizedComparableText(job?.title);
+    if (!expectedJobId || !expectedTitle) return null;
     await this.reserveAccess("pane_detail_read", {
       jobId: expectedJobId
     });
+    let activationAttempted = false;
     let scrolled = false;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
-      if (!detail?.currentJobId || detail.currentJobId !== expectedJobId) return null;
-      const expectedTitle = normalizedComparableText(job?.title);
-      const actualTitle = normalizedComparableText(detail?.title);
-      if (!expectedTitle || !actualTitle || !actualTitle.includes(expectedTitle)) return null;
-      if (detail.description?.length >= 120) {
-        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
-        return {
-          description: cleanDetailText(detail.description),
-          bossActiveText: parseBossActivityText(detail.bossActiveText),
-          salary: detail.salary || "",
-          experience: detail.experience || "",
-          education: detail.education || ""
-        };
+      const paneJobId = detail?.paneJobId || detail?.currentJobId || "";
+      const activeIds = [detail?.activeJobId, detail?.componentCurrentJobId]
+        .map((value) => String(value || ""))
+        .filter(Boolean);
+      const selectionHasTarget = activeIds.includes(expectedJobId);
+      const hasSelectionMismatch = activeIds.some((value) => value !== expectedJobId);
+      const selectionMatches = activeIds.length > 0 && !hasSelectionMismatch;
+      if (hasSelectionMismatch
+        && (paneJobId === expectedJobId || activationAttempted || selectionHasTarget)) {
+        return null;
       }
-      if (!scrolled && detail.canScroll) {
-        scrolled = true;
-        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
+      if (paneJobId === expectedJobId) {
+        const actualTitle = normalizedComparableText(detail?.title);
+        if (!actualTitle || !actualTitle.includes(expectedTitle)) return null;
+        if (detail?.description?.length >= 120) {
+          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
+          return {
+            description: cleanDetailText(detail.description),
+            bossActiveText: parseBossActivityText(detail.bossActiveText),
+            salary: detail.salary || "",
+            experience: detail.experience || "",
+            education: detail.education || ""
+          };
+        }
+        if (!scrolled && detail?.canScroll) {
+          scrolled = true;
+          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
+        }
+      } else if (!selectionMatches && !activationAttempted) {
+        const activation = await this.browser.evalValue(
+          tabId,
+          `(() => window.__bossActivateCard(${JSON.stringify(expectedJobId)}))()`
+        );
+        if (!activation?.activated || activation.jobId !== expectedJobId) return null;
+        activationAttempted = true;
       }
       await this.waitWithPacing("card_retry", { signal, assertTabBindings });
     }
