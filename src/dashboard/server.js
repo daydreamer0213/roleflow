@@ -22,7 +22,6 @@ const {
   getActiveSearchPlan,
   getPlatformFilterCatalog,
   savePlatformFilterCatalog,
-  getSiteRuntimeState,
   setSiteRuntimeState,
   getSiteScanLease,
   acquireSiteScanLease,
@@ -74,17 +73,7 @@ const {
   OUTCOME_STATUSES,
   getOutcomeAnalyticsSnapshot
 } = require("../core/storage");
-const {
-  createCommunicationBatch,
-  getCommunicationBatch,
-  listCommunicationBatchItems,
-  setCommunicationBatchStatus,
-  resumeInterruptedCommunicationBatch,
-  resolveAmbiguousCommunicationItem,
-  transitionCommunicationItem,
-  communicationBatchSummary,
-  communicationQuotaSnapshot
-} = require("../core/communication_batches");
+const { getCommunicationBatch, setCommunicationBatchStatus, communicationQuotaSnapshot } = require("../core/communication_batches");
 const {
   PROGRESS_STAGES,
   ensureProgressCard,
@@ -123,7 +112,13 @@ const { FEEDBACK_REASON_OPTIONS, normalizeFeedbackReason, feedbackReasonLabel } 
 const { storeResumeSourceFile, resolveResumeSourceFile } = require("../core/resume_files");
 const { PRODUCT_POLICY } = require("../core/product_policy");
 const { defaultSelectedForBatch } = require("../core/decision_policy");
-const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../core/communication_calibration");
+const {
+  createCommunicationBatch,
+  controlCommunicationBatch,
+  getCommunicationStatus,
+  resolveAmbiguousCommunication
+} = require("../application/communication");
+const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
 const { scoreJob, decisionState } = require("../core/scoring");
@@ -2670,70 +2665,28 @@ async function handleCommunicationBatch(req, res, db) {
   const rawBody = await readBody(req);
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
-    const quota = communicationQuota(db);
-    const jobIds = arrayValue(params.jobIds);
-    if (jobIds.length > quota.remaining) throw appError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
-    const batch = createCommunicationBatch(db, {
-      workflowRunId: params.workflowRunId,
-      planId: params.planId,
-      jobIds,
-      browserMode: params.browserMode,
-      policySnapshot: { calibration: communicationCalibrationStatus() }
-    });
-    return { batch, summary: communicationBatchSummary(db, batch.id), items: listCommunicationBatchItems(db, batch.id), quota: communicationQuota(db) };
+    return createCommunicationBatch({ db, input: { ...params, jobIds: arrayValue(params.jobIds) } });
   });
   if (!result.ok) return sendJson(res, result.statusCode, result.body);
   if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
-  const workflow = getWorkflowRunByCommunicationBatch(db, result.body.batch.id);
-  redirect(res, workflow ? `/workflow?runId=${encodeURIComponent(workflow.id)}` : `/communication?batchId=${result.body.batch.id}`);
+  redirectCommunicationResult(res, result.body.batch);
 }
 
 async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn }) {
   const rawBody = await readBody(req);
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
-    const action = String(params.action || "").trim().toLowerCase();
-    const batchId = Number(params.batchId);
-    const batch = getCommunicationBatch(db, batchId);
-    if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
-    if (action === "start" || action === "resume") {
-      assertCommunicationExecutionEnabled();
-      assertBossRuntimeAvailable(db);
-      const expected = action === "start" ? ["confirmed"] : ["paused", "interrupted"];
-      if (!expected.includes(batch.status)) {
-        throw appError("COMMUNICATION_BATCH_STATUS_INVALID", `${action} requires a ${expected.join(" or ")} communication batch`, { statusCode: 409 });
-      }
-      const running = batch.status === "interrupted"
-        ? resumeInterruptedCommunicationBatch(db, { batchId }).batch
-        : setCommunicationBatchStatus(db, { batchId, status: "running" });
-      if (running.status !== "running") {
-        throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
-      }
-      startCommunicationProcess({ db, root, dbPath, batch: running, logger, requestId, spawnProcess });
-      return { batch: running, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
-    }
-    if (action !== "discard") throw appError("COMMUNICATION_CONTROL_INVALID", "communication action must be start, resume, or discard");
-    const items = listCommunicationBatchItems(db, batchId);
-    if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
-      throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
-    }
-    for (const item of items) {
-      if (["pending", "opening", "verified"].includes(item.status)) {
-        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
-      } else if (item.status === "click_dispatched") {
-        transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
-      }
-    }
-    const updated = setCommunicationBatchStatus(db, { batchId, status: "stopped", stopCode: "COMMUNICATION_BATCH_DISCARDED", stopMessage: "discarded before calibrated execution" });
-    return { batch: updated, summary: communicationBatchSummary(db, batchId), items: listCommunicationBatchItems(db, batchId) };
+    return controlCommunicationBatch({
+      db,
+      input: params,
+      deps: communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess })
+    });
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
-  const workflow = getWorkflowRunByCommunicationBatch(db, result.body.batch.id);
-  redirect(res, workflow ? `/workflow?runId=${encodeURIComponent(workflow.id)}` : `/communication?batchId=${result.body.batch.id}`);
+  redirectCommunicationResult(res, result.body.batch);
 }
 
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
-  if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
     ...workflowLogContext({ ...(workflow || {}), communicationBatchId: batch.id }),
@@ -2744,6 +2697,7 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   }) : logger;
   let child;
   try {
+    if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
     const portableCdpPort = batch.browserMode === "portable"
       ? portableCommunicationCdpPort(batch)
       : null;
@@ -2790,6 +2744,12 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   return child;
 }
 
+function communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess }) {
+  return {
+    spawnCommunication: ({ batch }) => startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess })
+  };
+}
+
 function portableCommunicationCdpPort(batch) {
   const browserPolicy = batch.policySnapshot?.browser;
   if (!browserPolicy) return PORTABLE_CDP_PORT;
@@ -2807,20 +2767,14 @@ async function handleCommunicationResolve(req, res, db) {
   const rawBody = await readBody(req);
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
-    const item = resolveAmbiguousCommunicationItem(db, {
-      batchId: params.batchId,
-      itemId: params.itemId,
-      status: params.status,
-      evidenceNote: params.evidenceNote
-    });
-    return { item, batch: getCommunicationBatch(db, item.batchId), summary: communicationBatchSummary(db, item.batchId) };
+    return resolveAmbiguousCommunication({ db, input: params });
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
   redirect(res, `/communication?batchId=${result.body.batch.id}`);
 }
 
 function handleCommunicationStatus(res, db, batchId) {
-  const result = communicationApiResult(() => communicationStatus(db, batchId));
+  const result = communicationApiResult(() => getCommunicationStatus({ db, batchId }));
   sendJson(res, result.statusCode, result.body);
 }
 
@@ -2833,36 +2787,17 @@ function communicationApiResult(action) {
   }
 }
 
-function communicationStatus(db, batchId) {
-  const batch = getCommunicationBatch(db, batchId);
-  if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
-  return {
-    batch,
-    summary: communicationBatchSummary(db, batch.id),
-    items: listCommunicationBatchItems(db, batch.id),
-    quota: communicationQuota(db),
-    calibration: communicationCalibrationStatus(),
-    runtimeBlock: communicationRuntimeBlock(db)
-  };
-}
-
 function communicationQuota(db) {
   return communicationQuotaSnapshot(db);
 }
 
-function communicationRuntimeBlock(db) {
-  const state = getSiteRuntimeState(db, "boss");
-  if (!state || state.status !== "blocked") return null;
-  const blockedUntil = state.details?.blockedUntil || null;
-  const blockedUntilMs = Date.parse(blockedUntil || "");
-  if (Number.isFinite(blockedUntilMs) && blockedUntilMs <= Date.now()) return null;
-  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
+function communicationStatus(db, batchId) {
+  return getCommunicationStatus({ db, batchId });
 }
 
-function assertBossRuntimeAvailable(db) {
-  const block = communicationRuntimeBlock(db);
-  if (!block) return;
-  throw appError(block.reasonCode, "BOSS 访问仍处于安全暂停期。", { statusCode: 409 });
+function redirectCommunicationResult(res, batch) {
+  const workflowRunId = String(batch.policySnapshot?.workflowRunId || "").trim();
+  redirect(res, workflowRunId ? `/workflow?runId=${encodeURIComponent(workflowRunId)}` : `/communication?batchId=${batch.id}`);
 }
 
 function arrayValue(value) {
