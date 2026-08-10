@@ -2,7 +2,8 @@ const assert = require("node:assert");
 const {
   prepareWorkspaceTabs,
   assertBossOperatorTabs,
-  inspectBossOperatorTabs
+  inspectBossOperatorTabs,
+  assertBossRuntimeTabBindings
 } = require("../src/core/workspace_tabs");
 const { prepareWorkspaceTabsCommand } = require("../src/cli");
 
@@ -121,6 +122,28 @@ function fakeBrowser(initialTabs, createdTab = null) {
       communicationTab: fixedCommunication,
       windowId: 42
     }
+  );
+  assert.strictEqual(typeof assertBossRuntimeTabBindings, "function");
+  assert.deepStrictEqual(
+    assertBossRuntimeTabBindings([
+      { ...boss, url: "https://www.zhipin.com/job_detail/runtime-bound.html" },
+      fixedCommunication
+    ], {
+      expectedSearchTabId: boss.id,
+      expectedCommunicationTabId: fixedCommunication.id
+    }),
+    {
+      searchTab: { ...boss, url: "https://www.zhipin.com/job_detail/runtime-bound.html" },
+      communicationTab: fixedCommunication,
+      windowId: 42
+    }
+  );
+  assert.throws(
+    () => assertBossRuntimeTabBindings([boss, { ...fixedCommunication, id: "replacement-chat" }], {
+      expectedSearchTabId: boss.id,
+      expectedCommunicationTabId: fixedCommunication.id
+    }),
+    (error) => error.code === "BOSS_OPERATOR_TABS_CHANGED"
   );
   assert.throws(
     () => assertBossOperatorTabs([boss]),

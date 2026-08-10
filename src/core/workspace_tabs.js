@@ -118,6 +118,34 @@ function assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expected
   }
 }
 
+function assertBossRuntimeTabBindings(tabs = [], {
+  expectedSearchTabId,
+  expectedCommunicationTabId
+} = {}) {
+  const searchTab = tabs.find((tab) => String(tab.id) === String(expectedSearchTabId));
+  if (!searchTab) {
+    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed during runtime.");
+  }
+  const communicationTab = tabs.find((tab) => String(tab.id) === String(expectedCommunicationTabId));
+  if (!communicationTab) {
+    throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during runtime.");
+  }
+  if (!Number.isInteger(searchTab.windowId) || !Number.isInteger(communicationTab.windowId)) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "BOSS fixed operator tabs lost their window identity during runtime.");
+  }
+  if (searchTab.windowId !== communicationTab.windowId) {
+    throw workspaceError("BOSS_WINDOW_MISMATCH", "BOSS fixed operator tabs moved to different windows during runtime.");
+  }
+  if (!/^\/web\/geek\/jobs\/?$/i.test(bossPath(searchTab))
+    && !/^\/job_detail\/[^/?#]+\.html$/i.test(bossPath(searchTab))) {
+    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab left its permitted runtime path.");
+  }
+  if (bossPath(communicationTab) !== "/web/geek/chat") {
+    throw workspaceError("BOSS_COMMUNICATION_PAGE_LOST", "BOSS fixed communication tab left its required page.");
+  }
+  return { searchTab, communicationTab, windowId: searchTab.windowId };
+}
+
 function assertLiveBossOperatorState(state, { tabId, pathname, code, requiresSearchPage }) {
   let url;
   try {
@@ -229,5 +257,6 @@ async function prepareWorkspaceTabs({
 module.exports = {
   prepareWorkspaceTabs,
   assertBossOperatorTabs,
-  inspectBossOperatorTabs
+  inspectBossOperatorTabs,
+  assertBossRuntimeTabBindings
 };

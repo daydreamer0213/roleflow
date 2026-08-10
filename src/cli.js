@@ -103,7 +103,7 @@ const {
 } = require("./core/scan_snapshot");
 const { validateResumeBatch } = require("./core/scan_resume");
 const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
-const { prepareWorkspaceTabs, inspectBossOperatorTabs } = require("./core/workspace_tabs");
+const { prepareWorkspaceTabs, inspectBossOperatorTabs, assertBossRuntimeTabBindings } = require("./core/workspace_tabs");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -1136,7 +1136,13 @@ async function scan(
       result
     }),
     onScanComplete: (summary) => { scanSummary = summary; },
-    signal
+    signal,
+    assertTabBindings: usesFixedBossSearchTab
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+        expectedSearchTabId: state.tabId,
+        expectedCommunicationTabId: state.communicationTabId
+      })
+      : null
   }));
   assertScanActive(signal);
 
@@ -1585,6 +1591,12 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
     limit,
     tabId: state.tabId,
     signal,
+    assertTabBindings: usesFixedBossSearchTab
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+        expectedSearchTabId: state.tabId,
+        expectedCommunicationTabId: state.communicationTabId
+      })
+      : null,
     onAttempt: async (attempt) => {
       assertScanActive(signal);
       persistRefreshAttempt(db, attempt, { batchId, activityOnly });
@@ -1723,6 +1735,10 @@ function scanFailureStatus(error) {
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
     "BOSS_TAB_REQUIRED",
+    "BOSS_SEARCH_TAB_CHANGED",
+    "BOSS_OPERATOR_TABS_CHANGED",
+    "BOSS_COMMUNICATION_PAGE_LOST",
+    "BOSS_WINDOW_MISMATCH",
     "BOSS_SEARCH_PAGE_LOST",
     "BOSS_DETAIL_PAGE_LOST",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",

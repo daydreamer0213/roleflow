@@ -108,6 +108,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await pageBudgetSmoke();
   await riskControlSmoke();
   await refreshSafetySmoke();
+  await runtimeBindingAndAbortSmoke();
   await refreshCheckpointBeforeFatalSmoke();
   storageSmoke();
   console.log("source_acquisition_smoke ok");
@@ -1479,6 +1480,67 @@ async function refreshSafetySmoke() {
   assert.strictEqual(probes, PRODUCT_POLICY.operations.refreshLimit);
   assert.strictEqual(probed.length, PRODUCT_POLICY.operations.refreshLimit);
   assert(probed.every((job) => job.bossActiveText === "今日活跃"));
+}
+
+async function runtimeBindingAndAbortSmoke() {
+  let bindingIntact = true;
+  const reads = [];
+  const bindingError = Object.assign(new Error("fixed BOSS communication tab changed"), {
+    code: "BOSS_OPERATOR_TABS_CHANGED"
+  });
+  const adapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  adapter.readDetail = async (_tabId, url) => {
+    reads.push(url);
+    bindingIntact = false;
+    return { description: "完整职位描述 Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  await assert.rejects(
+    () => adapter.refreshDetails([card("runtime-binding-1"), card("runtime-binding-2")], {
+      limit: 2,
+      tabId: "fixed-search",
+      assertTabBindings: async () => {
+        if (!bindingIntact) throw bindingError;
+      }
+    }),
+    (error) => error === bindingError
+  );
+  assert.deepStrictEqual(reads, [card("runtime-binding-1").url]);
+
+  const detailController = new AbortController();
+  const detailAbort = Object.assign(new Error("detail refresh aborted"), { code: "SCAN_ABORTED" });
+  let detailSignal = null;
+  const detailAdapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  detailAdapter.readDetail = async (_tabId, _url, signal) => {
+    detailSignal = signal;
+    detailController.abort(detailAbort);
+    return { description: "完整职位描述 Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  await assert.rejects(
+    () => detailAdapter.refreshDetails([card("refresh-signal")], {
+      tabId: "fixed-search",
+      signal: detailController.signal
+    }),
+    (error) => error === detailAbort
+  );
+  assert.strictEqual(detailSignal, detailController.signal);
+
+  const activityController = new AbortController();
+  const activityAbort = Object.assign(new Error("activity refresh aborted"), { code: "SCAN_ABORTED" });
+  let activitySignal = null;
+  const activityAdapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  activityAdapter.readActivity = async (_tabId, _url, signal) => {
+    activitySignal = signal;
+    activityController.abort(activityAbort);
+    return "今日活跃";
+  };
+  await assert.rejects(
+    () => activityAdapter.probeActivities([card("activity-signal")], {
+      tabId: "fixed-search",
+      signal: activityController.signal
+    }),
+    (error) => error === activityAbort
+  );
+  assert.strictEqual(activitySignal, activityController.signal);
 }
 
 async function refreshCheckpointBeforeFatalSmoke() {

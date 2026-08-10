@@ -10,7 +10,8 @@ const {
   assertScanLimitOverridesAllowed,
   assertWorkflowScanControl,
   preflightBossScanBrowser,
-  runWithBoundBossScanBrowser
+  runWithBoundBossScanBrowser,
+  scanFailureStatus
 } = require("../src/cli");
 const {
   openDb,
@@ -358,6 +359,15 @@ function terminalAggregationSmoke() {
     targetSummary: { pending: 2, completed: 0, partial: 0, failed: 0 },
     scanSummary: { status: "failed", fatalErrorCode: "BROWSER_DISCONNECTED" }
   }), "interrupted");
+  for (const code of [
+    "BOSS_SEARCH_TAB_CHANGED",
+    "BOSS_OPERATOR_TABS_CHANGED",
+    "BOSS_COMMUNICATION_PAGE_LOST",
+    "BOSS_WINDOW_MISMATCH"
+  ]) {
+    assert.strictEqual(scanFailureStatus({ code }), "interrupted", `${code} must interrupt the run`);
+  }
+  assert.strictEqual(scanFailureStatus({ code: "BOSS_DETAIL_LOAD_TIMEOUT" }), "failed");
 }
 
 function scanLimitSmoke() {
