@@ -1,0 +1,749 @@
+{
+  "schemaVersion": 2,
+  "label": "baseline",
+  "expectPrimary": false,
+  "targetRevision": "8fedac5b8dddfe5e647c771d9993ba8221f5e1a6",
+  "browser": {
+    "engine": "msedge",
+    "headless": true
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "states": [
+    "scanning",
+    "paused",
+    "review_required",
+    "interrupted"
+  ],
+  "pages": [
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "baseline-scanning-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "baseline-scanning-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "baseline-scanning-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "baseline-scanning-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "baseline-paused-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "baseline-paused-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "baseline-paused-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "baseline-paused-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "baseline-review_required-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "baseline-review_required-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "baseline-review_required-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "baseline-review_required-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "baseline-interrupted-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "baseline-interrupted-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "baseline-interrupted-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "baseline-interrupted-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 0,
+        "visiblePrimaryCount": 0,
+        "primary": null,
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    }
+  ],
+  "errors": []
+}

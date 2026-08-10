@@ -1,0 +1,1037 @@
+{
+  "schemaVersion": 2,
+  "label": "current",
+  "expectPrimary": true,
+  "targetRevision": "46525282bb1cb8a0db28fcc7f1f236544e0fff35",
+  "browser": {
+    "engine": "msedge",
+    "headless": true
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "states": [
+    "scanning",
+    "paused",
+    "review_required",
+    "interrupted"
+  ],
+  "pages": [
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "current-scanning-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "暂停本轮",
+          "rect": {
+            "top": 283.671875,
+            "bottom": 327.671875,
+            "left": 260,
+            "right": 354,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "current-scanning-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "暂停本轮",
+          "rect": {
+            "top": 278.21875,
+            "bottom": 322.21875,
+            "left": 128,
+            "right": 222,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "current-scanning-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "暂停本轮",
+          "rect": {
+            "top": 317.171875,
+            "bottom": 361.171875,
+            "left": 120,
+            "right": 214,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "current-scanning-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "暂停本轮",
+          "rect": {
+            "top": 396.546875,
+            "bottom": 440.546875,
+            "left": 40,
+            "right": 335,
+            "width": 295,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "stop-preview-cancel",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "confirmationVisible": true,
+          "confirmationHidden": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "current-paused-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 283.671875,
+            "bottom": 327.671875,
+            "left": 260,
+            "right": 354,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "current-paused-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 278.21875,
+            "bottom": 322.21875,
+            "left": 128,
+            "right": 222,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "current-paused-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 317.171875,
+            "bottom": 361.171875,
+            "left": 120,
+            "right": 214,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "current-paused-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 396.546875,
+            "bottom": 440.546875,
+            "left": 40,
+            "right": 335,
+            "width": 295,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "current-review_required-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "确认清单",
+          "rect": {
+            "top": 333.859375,
+            "bottom": 377.859375,
+            "left": 1154,
+            "right": 1248,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "current-review_required-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "确认清单",
+          "rect": {
+            "top": 328.40625,
+            "bottom": 372.40625,
+            "left": 870,
+            "right": 964,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "current-review_required-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "确认清单",
+          "rect": {
+            "top": 367.359375,
+            "bottom": 411.359375,
+            "left": 622,
+            "right": 716,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "current-review_required-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "确认清单",
+          "rect": {
+            "top": 482.734375,
+            "bottom": 526.734375,
+            "left": 44,
+            "right": 331,
+            "width": 287,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "review-checkbox",
+        "attempted": true,
+        "passed": true,
+        "result": {
+          "before": true,
+          "after": false
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "screenshot": "current-interrupted-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "body": {
+          "width": 1440,
+          "clientWidth": 1440
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 331.671875,
+            "bottom": 375.671875,
+            "left": 260,
+            "right": 354,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "screenshot": "current-interrupted-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "document": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "body": {
+          "width": 1024,
+          "clientWidth": 1024
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 326.21875,
+            "bottom": 370.21875,
+            "left": 128,
+            "right": 222,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "screenshot": "current-interrupted-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "document": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "body": {
+          "width": 768,
+          "clientWidth": 768
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 365.171875,
+            "bottom": 409.171875,
+            "left": 120,
+            "right": 214,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "viewport": {
+        "width": 375,
+        "height": 812
+      },
+      "screenshot": "current-interrupted-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "document": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "body": {
+          "width": 375,
+          "clientWidth": 375
+        },
+        "primaryCount": 1,
+        "visiblePrimaryCount": 1,
+        "primary": {
+          "text": "继续本轮",
+          "rect": {
+            "top": 479.09375,
+            "bottom": 523.09375,
+            "left": 40,
+            "right": 134,
+            "width": 94,
+            "height": 44
+          },
+          "fullyWithinViewport": true,
+          "focused": true,
+          "outline": {
+            "style": "solid",
+            "width": "3px",
+            "color": "rgb(240, 120, 36)",
+            "offset": "2px"
+          }
+        },
+        "motion": {
+          "reduced": true,
+          "runningAnimations": 0
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": {
+        "kind": "none",
+        "attempted": false,
+        "passed": true,
+        "result": {}
+      },
+      "errors": {
+        "console": [],
+        "page": [],
+        "request": [],
+        "external": []
+      }
+    }
+  ],
+  "errors": []
+}
