@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { openDb } = require("../src/core/storage");
+const { openDb, saveProfileAnalysis, createBatch, upsertJob } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const response = require("../src/dashboard/http/response");
 const { renderPage } = require("../src/dashboard/ui/shell");
@@ -19,9 +19,21 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
   assert.strictEqual(response.escapeAttr(`<&>\"'`), "&lt;&amp;&gt;&quot;&#39;");
 
   assert.strictEqual(typeof renderNavigation, "function", "the navigation renderer must be available");
-  const navigation = renderNavigation({ currentPath: "/plan?planId=17", planId: 17 });
-  assert.match(navigation, /href="\/queue\?planId=17"/);
-  assert.match(navigation, /href="\/plan\?planId=17" aria-current="page"/);
+  for (const navigationCase of [
+    { currentPath: "/plan?planId=17", todayPath: "/plan?planId=17", label: "今日任务" },
+    { currentPath: "/workflow?runId=workflow-17", todayPath: "/plan?planId=17", label: "本轮" },
+    { currentPath: "/queue?planId=17&pool=primary", href: "/queue?planId=17", todayPath: "/plan?planId=17", label: "当前岗位" },
+    { currentPath: "/communication/new?planId=17", todayPath: "/plan?planId=17", label: "批量沟通清单" },
+    { currentPath: "/communication?batchId=17", todayPath: "/plan?planId=17", label: "批量沟通审阅" },
+    { currentPath: "/settings", label: "模型设置" },
+    { currentPath: "/diagnostics", label: "诊断" },
+    { currentPath: "/onboarding", label: "简历" }
+  ]) {
+    const markup = renderNavigation({ ...navigationCase, planId: 17 });
+    assertCurrentLink(markup, navigationCase.href || navigationCase.currentPath, navigationCase.label);
+  }
+  const encodedPlanNavigation = renderNavigation({ currentPath: "/queue?planId=plan%20id%2F17", todayPath: "/plan?planId=plan%20id%2F17", planId: "plan id/17" });
+  assert.match(encodedPlanNavigation, /href="\/queue\?planId=plan%20id%2F17" aria-current="page">当前岗位<\/a>/);
 
   assert.strictEqual(typeof renderPage, "function", "the page shell renderer must be available");
   const page = renderPage({ title: `<title>`, body: "<main>body</main>", scripts: ["<script>window.roleflowShellTest=true</script>"] });
@@ -31,6 +43,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
 
   fs.mkdirSync(smokeDir, { recursive: true });
   const db = openDb(dbPath);
+  const queueFixture = seedQueueFixture(db);
   const server = createDashboardServer({ db, root, dbPath, forceMock: true, logger });
   const baseUrl = await listen(server);
   try {
@@ -55,6 +68,16 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
       assert.match(page.contentType, /^text\/html(?:;|$)/);
       assert.match(page.body, /<link rel="stylesheet" href="\/assets\/roleflow\.css">/);
     }
+
+    const queue = await getText(baseUrl, `/queue?planId=${queueFixture.planId}`);
+    assert.strictEqual(queue.status, 200);
+    assert.match(queue.body, /<h1>当前待处理岗位<\/h1>/);
+    assert.match(queue.body, /class="pool-tabs"/);
+    assert.match(queue.body, /<link rel="stylesheet" href="\/assets\/roleflow\.css">/);
+    assertCurrentLink(queue.body, `/queue?planId=${queueFixture.planId}`, "当前岗位");
+    assert.strictEqual((queue.body.match(/<!doctype html>/gi) || []).length, 1, "queue must have one document shell");
+    assert.strictEqual((queue.body.match(/<body>/gi) || []).length, 1, "queue must not nest a second body");
+    assert.strictEqual((queue.body.match(/<nav(?:\s|>)/gi) || []).length, 1, "single-page queue fixture must not duplicate global navigation");
   } finally {
     await close(server);
     db.close();
@@ -83,4 +106,36 @@ async function getText(baseUrl, pathname) {
 async function getJson(baseUrl, pathname) {
   const response = await fetch(`${baseUrl}${pathname}`);
   return { status: response.status, contentType: response.headers.get("content-type") || "", body: await response.json() };
+}
+
+function assertCurrentLink(markup, href, label) {
+  assert.match(markup, new RegExp(`<a href="${escapeRegExp(href)}" aria-current="page">${label}</a>`));
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function seedQueueFixture(database) {
+  const profile = {
+    candidate: { name: "Queue Candidate", city: "广州", targetTitles: ["AI应用开发工程师"], expectedSalary: "10-20K" },
+    education: [{ school: "Test University", degree: "本科", major: "Computer Science" }],
+    experiences: [],
+    skills: [{ name: "Python", evidence: ["Queue Project"] }, { name: "RAG", evidence: ["Queue Project"] }],
+    projects: [{ name: "Queue Project", roleBoundary: "personal project", canSay: ["Built a RAG workflow"] }],
+    credentials: [],
+    strengths: []
+  };
+  const saved = saveProfileAnalysis(database, {
+    profile,
+    document: { originalFileName: "queue-resume.txt", format: "text", contentHash: "dashboard-shell-queue", text: "Python RAG project experience. ".repeat(8), diagnostics: {} },
+    searchPlan: { name: "Queue plan", cities: ["广州"], directions: ["AI应用开发"], keywords: [{ word: "RAG", priority: "A" }], experience: ["1-3年"], jobTypes: ["全职"], bossActiveDays: 3 }
+  });
+  const batchId = createBatch(database, "boss", "dashboard-shell", "queue fixture", { profileId: saved.profileId, searchPlanId: saved.planId, filterSnapshot: { execution: { scanKind: "daily" } } });
+  upsertJob(database, {
+    source: "boss", sourceId: "dashboard-shell-queue-job", keyword: "RAG", title: "Queue Fixture Engineer", company: "Fixture Co", location: "广州", salary: "15-20K", experience: "1-3年", education: "本科", bossActiveText: "今日活跃", bossActiveDays: 0,
+    url: "https://www.zhipin.com/job_detail/dashboard-shell-queue.html", tags: ["Python", "RAG"], description: "Build Python RAG applications and maintain production services. ".repeat(5), score: 20, level: "优先", matches: ["Python", "RAG"], risks: [], qualityTags: [],
+    analysis: { provider: "mock", model: "offline", semanticStatus: "complete", decisionSource: "model", recommendation: "primary", fitLevel: "A", confidence: 0.9, fitReasons: ["Python RAG matches"], evidence: { jd: ["Python RAG"], resume: ["Python RAG"] } }
+  }, batchId);
+  return saved;
 }
