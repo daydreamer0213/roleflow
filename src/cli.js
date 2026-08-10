@@ -43,6 +43,7 @@ const {
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,
+  recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
   listReusableJobDetails,
   recordJobRefreshAttempt,
@@ -739,6 +740,18 @@ async function scan(
         ? (event) => recordWorkflowPlatformAccess(db, {
           workflowRunId: workflowRun.id,
           now: event.createdAt
+        })
+        : null,
+      assertActive: workflowRun
+        ? () => assertWorkflowScanControl(db, workflowRun.id)
+        : null,
+      onWait: workflowRun
+        ? (wait) => recordWorkflowScanWait(db, {
+          workflowRunId: workflowRun.id,
+          runId: execution?.runId || "",
+          action: wait.action,
+          delayMs: wait.delayMs,
+          retryAt: wait.retryAt
         })
         : null
     })

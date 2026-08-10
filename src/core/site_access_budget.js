@@ -18,7 +18,10 @@ function createSiteAccessController({
   sleepFn = null,
   signal = null,
   randomFn = Math.random,
-  onReserved = null
+  onReserved = null,
+  onWait = null,
+  assertActive = null,
+  controlPollIntervalMs = 1000
 }) {
   if (!db) throw new Error("访问预算控制器需要数据库连接。");
 
@@ -105,8 +108,23 @@ function createSiteAccessController({
           windows: blockers.map((item) => item.window)
         });
         console.error(`[${site}] 访问额度进入冷却，约 ${Math.ceil(delayMs / 60_000)} 分钟后自动继续；当前进度已保留。`);
-        if (sleepFn) await sleepFn(delayMs);
-        else await sleep(delayMs, signal);
+        const wait = {
+          site,
+          action: normalizedAction,
+          delayMs,
+          retryAt: new Date(nowMs + delayMs).toISOString(),
+          waitedMs,
+          usage,
+          limits,
+          windows: blockers.map((item) => item.window)
+        };
+        if (typeof onWait === "function") await onWait(wait);
+        await controlledSleep(delayMs, {
+          signal,
+          sleepFn,
+          assertActive,
+          intervalMs: controlPollIntervalMs
+        });
         throwIfAborted(signal);
         waitedMs += delayMs;
       }
@@ -255,6 +273,27 @@ function sleep(ms, signal) {
     }
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+async function controlledSleep(delayMs, { signal, sleepFn, assertActive, intervalMs }) {
+  const wait = sleepFn
+    ? (ms) => sleepFn(ms)
+    : (ms) => sleep(ms, signal);
+  if (typeof assertActive !== "function") return wait(delayMs);
+
+  const sliceLimitMs = Number.isFinite(Number(intervalMs)) && Number(intervalMs) > 0
+    ? Number(intervalMs)
+    : 1000;
+  let remainingMs = delayMs;
+  while (remainingMs > 0) {
+    assertActive();
+    throwIfAborted(signal);
+    const sliceMs = Math.min(remainingMs, sliceLimitMs);
+    await wait(sliceMs);
+    remainingMs -= sliceMs;
+    throwIfAborted(signal);
+    assertActive();
+  }
 }
 
 function throwIfAborted(signal) {

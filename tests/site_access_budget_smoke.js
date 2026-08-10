@@ -289,6 +289,53 @@ async function abortDuringWindowWaitSmoke() {
   db.close();
 }
 
+async function workflowControlInterruptsSegmentedCooldownSmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  const initialNow = now;
+  for (let index = 0; index < 8; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "detail_open",
+      createdAt: new Date(now - 60_000 + index * 1000).toISOString()
+    });
+  }
+
+  const sleeps = [];
+  const waits = [];
+  let checks = 0;
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    nowFn: () => now,
+    randomFn: () => 0,
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    },
+    controlPollIntervalMs: 1000,
+    onWait: (wait) => waits.push(wait),
+    assertActive: () => {
+      checks += 1;
+      if (checks === 3) {
+        const error = new Error("pause");
+        error.code = "WORKFLOW_PAUSE_REQUESTED";
+        throw error;
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => controller.reserve("detail_open", { jobId: "controlled-wait" }),
+    (error) => error.code === "WORKFLOW_PAUSE_REQUESTED"
+  );
+  assert.strictEqual(waits.length, 1);
+  assert(Date.parse(waits[0].retryAt) > initialNow);
+  assert(sleeps.length > 0);
+  assert(sleeps.every((delayMs) => delayMs <= 1000));
+  db.close();
+}
+
 async function communicationTenMinuteBudgetSmoke() {
   const db = openDb(":memory:");
   let now = Date.parse("2026-07-21T12:00:00+08:00");
@@ -598,6 +645,7 @@ Promise.resolve()
   .then(configuredDetailBudgetsSmoke)
   .then(paneDetailDailyStopSmoke)
   .then(abortDuringWindowWaitSmoke)
+  .then(workflowControlInterruptsSegmentedCooldownSmoke)
   .then(communicationTenMinuteBudgetSmoke)
   .then(communicationThirtyMinuteBudgetSmoke)
   .then(communicationWindowBoundarySmoke)
