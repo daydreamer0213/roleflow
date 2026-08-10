@@ -1,43 +1,57 @@
 # Job Store Effect Evaluation
 
-Date: 2026-08-11
+Date: 2026-08-11  
 Baseline: `54761dc8de36e358e586f9126ea9b0b5e300ccc0`
 
-## Fix round 1 evidence map
+## Brief evidence map
 
-`tests/job_store_contract_smoke.js` maps brief items 1–6 and 9 directly to SQLite assertions: export/no-cycle; profile and legacy report state; independent complete/partial/failed/stale/hard-block/risk decisions; governance ordering and queue cap; execution-object filtering; application/candidate/feedback/event payloads; and outer `BEGIN IMMEDIATE` upsert. Items 7–8 and 10–12 are exercised by the named focused storage/semantic/scan/health smoke checks. The prior 86/86, 131-second suite result is a historical measurement, not a runtime guarantee.
+| Brief item | Executed evidence |
+| --- | --- |
+| 1 | `job_store_contract_smoke`: exact 136 facade keys, 29 candidate exports, 26 job-store exports, and direct-reference identity. |
+| 2 | `job_store_contract_smoke`: facade, job store, and candidate store load while a warning listener records no circular-dependency warning. |
+| 3 | `job_store_contract_smoke`: keyword-source conflict update leaves one updated row; model-cache conflict update and invalid JSON fallback round trip. |
+| 4 | `job_store_contract_smoke`: source/sourceId idempotency, observation content hash, and observed outer `BEGIN IMMEDIATE` with no nested begin. |
+| 5 | `job_store_contract_smoke`: latest report observation plus profile-specific candidate state versus legacy application state and row fields. |
+| 6 | `job_store_contract_smoke`: independent complete/partial/failed/stale/hard-block/risk decision fixtures and ordered quality-governance tags. |
+| 7 | `job_store_contract_smoke`: review-before-pending ordering and 55 eligible jobs capped to 50. |
+| 8 | `job_store_contract_smoke`: `filterSnapshot.execution` object is selected; array-shaped execution is excluded. |
+| 9 | `job_store_contract_smoke`: application, candidate state, recommendation feedback, manual event, event payload, and event-count paths. |
+| 10 | `job_store_contract_smoke`: bind/rescore/reassess success `BEGIN`/`COMMIT`; SQLite trigger late failures yield direct `ROLLBACK` and restored atomic snapshots. Rescore uses an isolated two-observation plan and a second-update UDF failure. |
+| 11 | `job_store_contract_smoke`: `BATCH_ID_REQUIRED`, `PLAN_ID_REQUIRED`, and `BATCH_PLAN_MISMATCH` reject before analyzer calls and preserve ordered snapshots of all candidate write tables. |
+| 12 | Focused `scan_recovery_smoke`, `storage_migration_smoke`, and `workflow_health_smoke` execute facade scan checkpoint, migration hash, and health consumers; the contract also verifies facade/job-store direct references. |
 
-Reproduce source metrics with `node -e "for (const f of ['src/core/storage.js','src/storage/job_store.js','src/storage/storage_shared.js']) { const a=require('fs').readFileSync(f,'utf8').split(/\r?\n/); console.log(f,a.length,a.filter(x=>x.trim()).length) }"`; run it at the baseline and current SHA for before/after totals.
+## Structure and dependency result
 
-The contract now executes all transaction evidence directly: `upsertJob` under observed outer `BEGIN IMMEDIATE` has no nested begin; bind and rescore each have observed `BEGIN/COMMIT` and a trigger-induced `BEGIN/ROLLBACK` with pre-state restored; reassess has a successful call plus a trigger-induced write failure after analyzer invocation and restores its observation row. Its three validation codes are separately rejected with analyzer count zero and stable observation count. These are execution assertions, not source-reading claims.
+The facade has 136 exports and direct references to all 26 job-store and 29 candidate-store operations. `job_store.js` owns the moved implementations and imports no facade, schema, migration, openDb, workflow, communication, browser, transport, dashboard, CLI, or application module. The shared module exports only `nowIso`, `parseJson`, `OUTCOME_STATUSES`, `storageError`, `optionalInteger`, and `optionalPositiveInteger`.
 
-Fix round 2 mapping: 1 exports/direct refs/no cycle; 2 profile and legacy report rows; 3 independent decision precedence; 4 governance order plus review/pending queue ordering and a 55-job cap assertion; 5 execution-object filter; 6 application/state/feedback/event round trips; 7 success transaction sequences; 8 trigger rollback snapshots (rescore has two observations and compares the complete ordered batch snapshot); 9 outer upsert sequence; 10 three gate full-table snapshots with analyzer zero; 11 scan/health/migration remains covered by focused `scan_recovery_smoke`, `workflow_health_smoke`, and `storage_migration_smoke` execution; 12 keyword conflict update, cache, hash and idempotent observation assertions. Reproduce all source totals before/after with `git ls-tree -r --name-only <SHA> src | rg '\.js$' | % { $a=Get-Content $_; $p+=@($a).Count; $n+=@($a|?{$_.Trim()}).Count }; "$p $n"`.
+Task 4.3 retains `listReusableJobDetails`, `recordJobRefreshAttempt`, `listJobRefreshAttempts`, and `getLatestJobRefreshAttempt`.
 
-Fix round 3 correction: brief items 1–12 map respectively to: export/no-cycle assertion; profile/legacy report assertion; independent decision fixtures; governance plus 55 eligible queue ordering/cap; execution-shape batch assertion; write/payload assertions; observed success sequences; trigger rollback snapshots; outer upsert sequence; three gate full-table snapshots/analyzer zero; executing focused scan-recovery/workflow-health/storage-migration tests; cache/hash/keyword/idempotency assertions. The isolated rescore database has exactly two plan observations and a `DatabaseSync.function` UDF trigger; its second actual update throws, callback count is exactly two, and a stable full joined-row snapshot is equal before/after rollback.
+## Blob source metrics
 
-All `src/**/*.js` blob metrics were recomputed: baseline `54761dc` is **34566 physical / 32519 nonblank**; current is **34231 physical / 32201 nonblank**. Reproduce without reading the working tree: `node -e "const{execFileSync:e}=require('child_process');for(const s of ['54761dc','HEAD']){let p=0,n=0;for(const f of e('git',['ls-tree','-r','--name-only',s,'src'],{encoding:'utf8'}).trim().split(/\\r?\\n/).filter(x=>x.endsWith('.js'))){const t=e('git',['show',s+':'+f],{encoding:'utf8'}),a=t.split(/\\r?\\n/);if(t.endsWith('\\n'))a.pop();p+=a.length;n+=a.filter(x=>x.trim()).length}console.log(s,p,n)}"`.
+All `src/**/*.js` metrics use Git blobs, not the working tree:
 
-## Structure and ownership
+- Baseline `54761dc`: **34566 physical / 32519 nonblank**.
+- Current: **34231 physical / 32201 nonblank**.
 
-- `src/core/storage.js`: 3482 physical / 3295 nonblank lines; it exports exactly 136 public keys.
-- `src/storage/job_store.js`: 710 physical / 661 nonblank lines; it directly exports exactly the required 26 operations.
-- `src/storage/candidate_store.js`: unchanged from baseline, remains 570 physical / 531 nonblank lines and its 29 direct facade references are unchanged.
-- `src/storage/storage_shared.js`: 35 physical / 29 nonblank lines. Its complete export set is exactly `nowIso`, `parseJson`, `OUTCOME_STATUSES`, `storageError`, `optionalInteger`, and `optionalPositiveInteger`.
+Reproduce with:
 
-The facade reference audit returned `facade=136`, `job=26`, `jobDirect=true`, `candidate=29`, and `candidateDirect=true`. Each moved operation and its job-only helpers have one implementation owner in `job_store.js`; the facade holds direct references only. `levelRank` and `hardRiskRank` had no callers and were not moved.
-
-## Dependency and behavior evidence
-
-`job_store.js` imports only Node crypto, storage shared, the candidate `getSearchPlan` boundary, and existing core policy/normalization modules. It has no `core/storage`, schema, migration, openDb, workflow, communication, browser, transport, dashboard, CLI, or application import. The facade retains schema/migration/scan/health ownership and calls job-store references for observation-hash migration, scan checkpoint job writes, and health report/event reads. No circular-load warning was observed.
-
-The contract and focused smoke checks exercised keyword/cache conflict update plus JSON fallback, job idempotency and outer transaction composition, observation/report row mapping, candidate and legacy application state paths, quality/decision precedence, queue ordering, scan execution filtering, feedback/event payloads, and cross-domain facade consumption. Existing transaction implementations retain deferred `BEGIN`, direct `COMMIT`/`ROLLBACK`, no transaction in `upsertJob`, and the reassessment validation codes `BATCH_ID_REQUIRED`, `PLAN_ID_REQUIRED`, and `BATCH_PLAN_MISMATCH` before analyzer/write work. The full suite also preserves source acquisition refresh behavior because `listReusableJobDetails` and refresh-attempt operations remain in the facade for Task 4.3.
+```powershell
+@'
+const { execFileSync } = require('node:child_process');
+for (const sha of ['54761dc', 'HEAD']) {
+  let physical = 0, nonblank = 0;
+  const files = execFileSync('git', ['ls-tree', '-r', '--name-only', sha, 'src'], { encoding: 'utf8' })
+    .trim().split(/\r?\n/).filter((file) => file.endsWith('.js'));
+  for (const file of files) {
+    const text = execFileSync('git', ['show', `${sha}:${file}`], { encoding: 'utf8' });
+    const lines = text.split(/\r?\n/); if (text.endsWith('\n')) lines.pop();
+    physical += lines.length; nonblank += lines.filter((line) => line.trim()).length;
+  }
+  console.log(sha, physical, nonblank);
+}
+'@ | node -
+```
 
 ## Verification
 
-- Focused offline checks: 12/12 passed in 7.951 s: job/candidate contracts, data visibility, screening, semantic pipeline, scan recovery, batch consistency, outcome analytics, communication, workflow health, analysis application, and source acquisition.
-- Full offline suite: 86/86 passed. `tests/run_all.js` began at 07:00:11 and completed at 07:02:22 (131 s); the previous foreground attempt was stopped only by its 120 s command limit, without a test failure.
-- `git diff --check 54761dc8de36e358e586f9126ea9b0b5e300ccc0`: passed before commit.
-
-## Remaining boundary
-
-Task 4.3 remains responsible for `listReusableJobDetails`, `recordJobRefreshAttempt`, `listJobRefreshAttempts`, and `getLatestJobRefreshAttempt`. Scan/workflow/cross-cutting schema, migrations, health and transaction orchestration remain in the facade by design; this task did not change JD coverage, scoring, recommendation policy, models, BOSS/browser, communication, workflow task, or lease behavior.
+The specified 12 focused offline checks and the 86-check `tests/run_all.js` suite most recently completed with exit code 0. Runtime is environment-dependent; prior full-suite measurements were approximately 135–137 seconds. `git diff --check 54761dc..HEAD` is the required whitespace check.
