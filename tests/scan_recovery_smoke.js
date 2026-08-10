@@ -13,6 +13,7 @@ const {
   finishScanRun,
   recordScanRunProcessExit,
   interruptOrphanedScanRuns,
+  checkpointScanProgress,
   checkpointScanTarget,
   listScanTargetResults,
   listLatestScanTargetResults,
@@ -48,6 +49,7 @@ let db;
 
   observationFailureRollsBack(db, { profileId, planId, owner });
   targetFailureRollsBack(db, { profileId, planId, owner });
+  jobOnlyCheckpointPersistsDetailWithoutTargetResult(db, { profileId, planId, owner });
   lifecycleAndIdempotency(db, { profileId, planId, owner });
   processExitAndOrphanRecovery(db, { profileId, planId, owner });
   await wrongPlanReassessmentIsRejected(db, { profileId, planId, otherPlanId });
@@ -140,6 +142,20 @@ function targetFailureRollsBack(database, context) {
   assert.strictEqual(listScanTargetResults(database, batchId).length, 0);
   assert.strictEqual(getScanRun(database, runId).heartbeatAt, heartbeatBefore);
   finishScanRun(database, { runId, leaseOwner: context.owner, status: "failed", stopCode: "INJECTED_TARGET_FAILURE" });
+}
+
+function jobOnlyCheckpointPersistsDetailWithoutTargetResult(database, context) {
+  const { runId, batchId } = startRun(database, { ...context, label: "partial-detail" });
+  const checkpoint = checkpointScanProgress(database, {
+    runId,
+    batchId,
+    leaseOwner: context.owner,
+    jobs: [job("partial-detail", "Partial Detail")]
+  });
+  assert.strictEqual(checkpoint.jobCount, 1);
+  assert.strictEqual(count(database, "SELECT COUNT(*) AS count FROM job_observations WHERE batch_id = ?", batchId), 1);
+  assert.strictEqual(listScanTargetResults(database, batchId).length, 0);
+  finishScanRun(database, { runId, leaseOwner: context.owner, status: "completed" });
 }
 
 function lifecycleAndIdempotency(database, context) {

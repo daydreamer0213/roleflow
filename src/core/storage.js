@@ -2744,6 +2744,42 @@ function checkpointScanTarget(db, input = {}) {
   }
 }
 
+function checkpointScanProgress(db, input = {}) {
+  const runId = requiredRunId(input);
+  const batchId = optionalPositiveInteger(input.batchId, "batchId");
+  const owner = normalizedLeaseOwner(input);
+  if (!batchId) throw scanRunError("SCAN_RUN_BATCH_REQUIRED", "scan progress batchId is required");
+  if (!owner) throw scanRunError("SCAN_RUN_LEASE_OWNER_REQUIRED", "scan progress lease owner is required");
+  if (!Array.isArray(input.jobs)) throw new TypeError("scan progress jobs must be an array");
+  const checkpointedAt = nowIso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const run = requireRunningScanRun(db, runId);
+    if (Number(run.batch_id || 0) !== batchId) {
+      throw scanRunError("SCAN_RUN_BATCH_MISMATCH", "scan run is not bound to the progress batch");
+    }
+    if (run.lease_owner !== owner) {
+      throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "scan run lease owner does not match");
+    }
+    const batch = validateScanRunBatch(db, run, batchId);
+    if (batch.status !== "running") {
+      throw scanRunError("SCAN_BATCH_NOT_RUNNING", "scan batch is not running");
+    }
+    const lease = db.prepare("SELECT owner, expires_at FROM site_scan_leases WHERE site = ?").get(run.site);
+    const leaseExpiresAt = Date.parse(lease?.expires_at || "");
+    if (!lease || lease.owner !== owner || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.parse(checkpointedAt)) {
+      throw scanRunError("SCAN_LEASE_LOST", "scan lease was lost before the checkpoint could be saved");
+    }
+    const jobIds = input.jobs.map((job) => upsertJob(db, job, batchId));
+    db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
+    db.exec("COMMIT");
+    return { runId, batchId, jobCount: input.jobs.length, jobIds };
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+}
+
 function recordScanTargetResult(db, input = {}) {
   const batchId = Number(input.batchId || 0);
   const targetKey = String(input.targetKey || "").trim();
@@ -4880,6 +4916,7 @@ module.exports = {
   finishScanRun,
   recordScanRunProcessExit,
   interruptOrphanedScanRuns,
+  checkpointScanProgress,
   checkpointScanTarget,
   recordScanTargetResult,
   listScanTargetResults,

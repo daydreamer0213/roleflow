@@ -33,6 +33,7 @@ const {
   heartbeatScanRun,
   finishScanRun,
   interruptOrphanedScanRuns,
+  checkpointScanProgress,
   checkpointScanTarget,
   listLatestScanTargetResults,
   getSiteRuntimeState,
@@ -1142,6 +1143,26 @@ async function scan(
       });
     },
     onTargetComplete,
+    onDetailCheckpoint: args.input ? null : async (result) => {
+      assertScanActive(signal);
+      try {
+        const job = checkpointScannedJob(result.job, configs);
+        checkpointScanProgress(db, {
+          runId: execution.runId,
+          batchId,
+          leaseOwner: execution.leaseOwner,
+          jobs: [job]
+        });
+      } catch (error) {
+        if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
+          throw error;
+        }
+        const checkpointError = new Error(`扫描详情 ${result.job?.sourceId || result.job?.url || ""} 保存失败：${error.message}`);
+        checkpointError.code = "SCAN_CHECKPOINT_FAILED";
+        checkpointError.cause = error;
+        throw checkpointError;
+      }
+    },
     onDetailResult: args.input ? null : async (result) => persistDetailOutcome(db, {
       site,
       runId: execution?.runId || "",

@@ -783,9 +783,20 @@ class BossSiteAdapter {
                 detailedJob.detailRequired = true;
                 mergeScanCandidate(candidates, { ...entry, job: detailedJob });
                 detailsRead += 1;
+                if (typeof options.onDetailCheckpoint === "function") {
+                  await options.onDetailCheckpoint({
+                    targetKey,
+                    city: city.city || "",
+                    cityCode: city.cityCode,
+                    keyword,
+                    laneId,
+                    job: detailedJob
+                  });
+                }
                 await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings });
               } catch (error) {
                 if (error?.code === "SCAN_ABORTED") throw error;
+                if (isWorkflowControlError(error)) throw error;
                 const accessPending = error?.code === "BOSS_ACCESS_BUDGET_EXHAUSTED";
                 if (!accessPending) detailsFailed += 1;
                 this.logger?.warn("boss_card_detail_read_failed", {
@@ -842,6 +853,7 @@ class BossSiteAdapter {
             await this.waitWithPacing("target", { signal: options.signal, assertTabBindings: options.assertTabBindings });
           } catch (error) {
             if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST"].includes(error?.code)) throw error;
+            if (isWorkflowControlError(error)) throw error;
             this.logger?.warn("boss_scan_target_failed", {
               targetKey,
               keyword,
@@ -1962,6 +1974,11 @@ function isFatalBrowserError(error) {
     "SCAN_CHECKPOINT_FAILED",
     "SCAN_LEASE_LOST"
   ]).has(String(error?.code || ""));
+}
+
+function isWorkflowControlError(error) {
+  return ["WORKFLOW_PAUSE_REQUESTED", "WORKFLOW_STOP_REQUESTED"]
+    .includes(String(error?.code || ""));
 }
 
 function throwIfAborted(signal) {
