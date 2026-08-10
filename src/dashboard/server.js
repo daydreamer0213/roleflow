@@ -2521,7 +2521,7 @@ function startPlanScan(scanRuns, {
     } : {})
   });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
-  if (analysisOnly) {
+  if (workflowRun && persistedResumeBatchId) {
     try {
       attachWorkflowScan(db, {
         id: workflowRun.id,
@@ -2532,8 +2532,8 @@ function startPlanScan(scanRuns, {
       recordScanRunProcessExit(db, {
         runId,
         status: "failed",
-        stopCode: String(error?.code || "WORKFLOW_ANALYSIS_ATTACH_FAILED"),
-        stopMessage: String(error?.message || "analysis execution could not be attached")
+        stopCode: String(error?.code || "WORKFLOW_SCAN_ATTACH_FAILED"),
+        stopMessage: String(error?.message || "workflow scan execution could not be attached")
       });
       throw error;
     }

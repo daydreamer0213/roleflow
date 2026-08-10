@@ -730,6 +730,14 @@ let server;
   assert.strictEqual(resumed.location, `/workflow?runId=${workflow.id}`);
   assert.strictEqual(spawns.length, 4);
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
+  const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
+  assert.strictEqual(getWorkflowRun(db, workflow.id).scanRunId, resumedScan.id);
+  const liveResumedStatus = await getJson(
+    baseUrl,
+    `/api/workflow-status?runId=${encodeURIComponent(workflow.id)}`
+  );
+  assert.strictEqual(liveResumedStatus.status, 200);
+  assert.strictEqual(liveResumedStatus.body.workflow.status, "scanning");
   assert.deepStrictEqual(
     spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 2),
     ["--browser", "edge"]
@@ -772,7 +780,6 @@ let server;
   assert.strictEqual(spawns.length, spawnCountBeforeLegacyPreflight);
   assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   resumeBrowserReadinessStatus = "ready";
-  const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
   const batchId = validInheritedResumeBatchId;
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
