@@ -36,6 +36,7 @@ for (const name of JOB_EXPORTS) assert.strictEqual(storage[name], jobStore[name]
 for (const name of CANDIDATE_EXPORTS) assert.strictEqual(storage[name], candidateStore[name], `${name} must remain a direct facade reference`);
 assert.strictEqual(warnings.filter((warning) => /circular/i.test(warning.message)).length, 0, "facade and direct stores must load without circular warnings");
 
+async function main() {
 const db = storage.openDb(":memory:");
 function observeExec(action) {
   const original = db.exec.bind(db);
@@ -110,8 +111,25 @@ try {
   jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "ignored", tags: [], matches: [] }, ignored);
   assert.strictEqual(jobStore.getLatestMainScanBatchId(db, { planId }), queueBatch);
 
+  const configs = { model: { provider: "test", providers: { test: { model: "test" } } }, candidateProfile: { candidate: { targetTitles: ["PM"] } }, searchPlan: { name: "contract", cities: ["Shanghai"], keywords: ["AI"] }, profile: { location: { target_cities: ["Shanghai"] }, candidate: { target_roles: ["PM"] } }, scoring: { positive_keywords: [], risk_rules: [], boss_activity: { max_active_days: 3 }, salary: {}, experience: {}, exclude_words: [] }, targetPolicy: { directions: ["PM"] }, platformPolicy: {} };
+  const bound = storage.createBatch(db, "boss", "bind", "bind");
+  jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "bind", tags: [], matches: [] }, bound);
+  const bind = observeExec(() => jobStore.bindBatchToPlan(db, { batchId: bound, planId }));
+  assert.deepStrictEqual(bind.statements, ["BEGIN", "COMMIT"]);
+  const rescored = observeExec(() => jobStore.rescorePlanObservations(db, { planId, configs }));
+  assert.deepStrictEqual(rescored.statements, ["BEGIN", "COMMIT"]);
+  const reassessed = await jobStore.reassessBatchObservations(db, { batchId, planId, configs, analyzeJob: async () => ({ semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }) });
+  assert.strictEqual(reassessed.batchId, batchId);
+  let analyzerCalls = 0;
+  const countBeforeGate = db.prepare("SELECT count(*) AS n FROM job_observations").get().n;
+  for (const [input, code] of [[{ batchId: null, planId }, "BATCH_ID_REQUIRED"], [{ batchId, planId: null }, "PLAN_ID_REQUIRED"], [{ batchId, planId: planId + 999 }, "BATCH_PLAN_MISMATCH"]]) {
+    await assert.rejects(() => jobStore.reassessBatchObservations(db, { ...input, configs, analyzeJob: async () => { analyzerCalls += 1; } }), (error) => error.code === code);
+  }
+  assert.strictEqual(analyzerCalls, 0);
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM job_observations").get().n, countBeforeGate);
 } finally {
   db.close();
 }
+}
 
-console.log("job_store_contract_smoke ok");
+main().then(() => console.log("job_store_contract_smoke ok"), (error) => { console.error(error); process.exitCode = 1; });
