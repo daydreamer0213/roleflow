@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
@@ -20,6 +21,7 @@ const dbPath = path.join(smokeDir, `today-dashboard-${Date.now()}.sqlite`);
 const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-dashboard-smoke"; }, listRecent() { return []; } };
 
 (async () => {
+  assertEvaluationScriptExplainsMissingPlaywright();
   assertRendererIsPureAndEscapesHtml();
   fs.mkdirSync(smokeDir, { recursive: true });
   const db = openDb(dbPath);
@@ -49,6 +51,26 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+function assertEvaluationScriptExplainsMissingPlaywright() {
+  const evaluationScript = path.join(root, "scripts", "evaluate-today-dashboard.js");
+  const result = spawnSync(process.execPath, [
+    evaluationScript,
+    "--target-root", root,
+    "--label", "missing-playwright-contract",
+    "--output-dir", path.join(smokeDir, "missing-playwright-contract")
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, NODE_PATH: "" }
+  });
+  assert.notStrictEqual(result.status, 0, "evaluation must fail when Playwright is unavailable");
+  assert.match(
+    result.stderr,
+    /Playwright is unavailable.+NODE_PATH/s,
+    "evaluation must explain how to provide the existing workspace Playwright package"
+  );
+}
 
 function assertRendererIsPureAndEscapesHtml() {
   const viewModel = buildTodayViewModel({
