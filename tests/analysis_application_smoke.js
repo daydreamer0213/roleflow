@@ -1,6 +1,8 @@
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const runtimeWarnings = [];
+process.on("warning", (warning) => runtimeWarnings.push(warning));
 const {
   openDb,
   saveProfileAnalysis,
@@ -16,7 +18,7 @@ const {
   isJobAwaitingAction
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
-const { listWorkflowInventory } = require("../src/core/workflow_inventory");
+const { listWorkflowInventory, reconcilePlanWorkflowInventory } = require("../src/core/workflow_inventory");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   retryOneJobAnalysis,
@@ -33,8 +35,9 @@ let server;
 
 (async () => {
   try {
-    await testApplicationBoundary();
     await testDashboardContract();
+    await testApplicationBoundary();
+    assert(!runtimeWarnings.some((warning) => /circular dependency/i.test(warning.message)), "analysis inventory core ownership must not introduce a circular dependency");
     console.log("analysis_application_smoke ok");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
@@ -58,6 +61,7 @@ async function testApplicationBoundary() {
     inventoryCount: 999
   });
   db.prepare("UPDATE workflow_runs SET status = 'review_required' WHERE id = ?").run(workflow.id);
+  assert.strictEqual(reconcilePlanWorkflowInventory(db, single.planId), listWorkflowInventory(db, { planId: single.planId }).length);
   const singleRunner = controlledRunner();
   const one = await retryOneJobAnalysis({
     db,
@@ -144,8 +148,14 @@ async function testApplicationBoundary() {
 
 async function testDashboardContract() {
   const http = seedPlan("http");
-  const jobId = seedFailedJob(http, "http-retry");
+  const failedJobId = seedFailedJob(http, "http-failed");
+  const bulk = seedPlan("http-bulk");
+  seedFailedJob(bulk, "http-bulk-failed");
+  seedFailedJob(bulk, "http-bulk-source-pending", { location: "Beijing" });
+  const empty = seedPlan("http-empty");
   const requests = [];
+  const httpRunner = controlledRunner();
+  const runtimeModelConfig = { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } };
   let ready = true;
   const httpLogger = {
     info() {}, warn() {}, error() {},
@@ -158,9 +168,10 @@ async function testDashboardContract() {
     dbPath,
     forceMock: true,
     logger: httpLogger,
+    analysisRetryRunnerFactory: httpRunner.create,
     runtimeModelResolver({ taskProfile }) {
       requests.push({ kind: "runtime", taskProfile });
-      return { modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } } };
+      return { modelConfig: runtimeModelConfig };
     },
     modelReadinessChecker(_state, { taskProfile }) {
       requests.push({ kind: "ready", taskProfile });
@@ -170,10 +181,18 @@ async function testDashboardContract() {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${server.address().port}`;
 
-  const success = await post(base, "/api/analyze-job", { planId: http.planId, jobId });
-  assert.strictEqual(success.status, 303);
-  assert.strictEqual(success.headers.get("location"), `/queue?planId=${http.planId}`);
+  const singleFailed = await post(base, "/api/analyze-job", { planId: http.planId, jobId: failedJobId });
+  const singleFailedHtml = await singleFailed.text();
+  assert.strictEqual(singleFailed.status, 400);
+  assert(singleFailedHtml.includes("MODEL_TIMEOUT"));
+  assert(singleFailedHtml.includes("analysis-http-request"));
+  assert(singleFailedHtml.includes(`href="/queue?planId=${http.planId}&amp;pool=analysis_pending"`));
   assert(requests.some((entry) => entry.taskProfile === "batch_screening"), "retry routes must resolve the batch_screening task profile");
+  assert(httpRunner.configs.every((configs) => configs.model === runtimeModelConfig), "runner seam must receive the route's batch_screening model config without replacing it");
+
+  const bulkMixed = await post(base, "/api/analyze-jobs", { planId: bulk.planId });
+  assert.strictEqual(bulkMixed.status, 303);
+  assert.strictEqual(bulkMixed.headers.get("location"), `/queue?planId=${bulk.planId}&pool=analysis_pending`);
 
   ready = false;
   const modelBlocked = await post(base, "/api/analyze-jobs", { planId: http.planId });
@@ -191,6 +210,27 @@ async function testDashboardContract() {
   assert(noCardHtml.includes("MATCHING_CARD_CONFIRMATION_REQUIRED"));
   assert(noCardHtml.includes("analysis-http-request"));
   assert(noCardHtml.includes(`href="/queue?planId=${noCard.planId}&amp;pool=analysis_pending"`));
+
+  const missingPlan = await post(base, "/api/analyze-job", { jobId: 1 });
+  const missingPlanHtml = await missingPlan.text();
+  assert.strictEqual(missingPlan.status, 400);
+  assert(missingPlanHtml.includes("JOB_ANALYSIS_RETRY_FAILED"));
+  assert(missingPlanHtml.includes("analysis-http-request"));
+  assert(missingPlanHtml.includes('href="/"'));
+
+  const missingJob = await post(base, "/api/analyze-job", { planId: http.planId, jobId: 999999 });
+  const missingJobHtml = await missingJob.text();
+  assert.strictEqual(missingJob.status, 400);
+  assert(missingJobHtml.includes("JOB_ANALYSIS_RETRY_FAILED"));
+  assert(missingJobHtml.includes("analysis-http-request"));
+  assert(missingJobHtml.includes(`href="/queue?planId=${http.planId}&amp;pool=analysis_pending"`));
+
+  const emptyBulk = await post(base, "/api/analyze-jobs", { planId: empty.planId });
+  const emptyBulkHtml = await emptyBulk.text();
+  assert.strictEqual(emptyBulk.status, 400);
+  assert(emptyBulkHtml.includes("JOB_ANALYSIS_RETRY_FAILED"));
+  assert(emptyBulkHtml.includes("analysis-http-request"));
+  assert(emptyBulkHtml.includes(`href="/queue?planId=${empty.planId}&amp;pool=analysis_pending"`));
 }
 
 function seedPlan(label, { confirmCard = true } = {}) {
@@ -268,6 +308,7 @@ function controlledRunner({ delayMs = 10 } = {}) {
   return {
     get calls() { return state.calls; },
     get peak() { return state.peak; },
+    get configs() { return state.configs; },
     create(configs) {
       state.configs.push(configs);
       return async (jobInput) => {

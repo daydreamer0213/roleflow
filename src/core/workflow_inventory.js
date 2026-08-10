@@ -3,6 +3,8 @@ const {
   getWorkflowRun,
   getSearchPlan,
   listDecisionPool,
+  listWorkflowRuns,
+  transitionWorkflowRun,
   markCandidateJob
 } = require("./storage");
 const { PRODUCT_POLICY } = require("./product_policy");
@@ -132,6 +134,20 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   });
 }
 
+function reconcilePlanWorkflowInventory(db, planId) {
+  const inventoryCount = listWorkflowInventory(db, { planId }).length;
+  for (const workflow of listWorkflowRuns(db, {
+    planId,
+    localDay: shanghaiLocalDay(),
+    statuses: ["review_required", "interrupted"],
+    limit: 500
+  })) {
+    if (workflow.inventoryCount === inventoryCount) continue;
+    transitionWorkflowRun(db, { id: workflow.id, status: workflow.status, inventoryCount });
+  }
+  return inventoryCount;
+}
+
 function reconcileCommunicationOutcome(db, {
   batch,
   item,
@@ -195,6 +211,19 @@ function normalizedNow(value) {
   return new Date(parsed).toISOString();
 }
 
+function shanghaiLocalDay(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw inventoryError("WORKFLOW_TIME_INVALID", "workflow inventory time is invalid");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function tierRank(tier) {
   return { primary: 0, apply: 1 }[tier] ?? 9;
 }
@@ -220,5 +249,6 @@ module.exports = {
   workflowEligibility,
   listWorkflowInventory,
   listWorkflowReviewCandidates,
+  reconcilePlanWorkflowInventory,
   reconcileCommunicationOutcome
 };

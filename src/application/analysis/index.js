@@ -2,8 +2,6 @@ const {
   createBatch,
   upsertJob,
   getSearchPlan,
-  listWorkflowRuns,
-  transitionWorkflowRun,
   listMatchingResumeVersions,
   getSearchPlanDependency,
   getCandidateMatchingContext,
@@ -17,8 +15,7 @@ const { PRODUCT_POLICY } = require("../../core/product_policy");
 const { scoreJob, decisionState } = require("../../core/scoring");
 const { createJobAnalysisRunner } = require("../../core/job_analysis");
 const { mapWithConcurrency } = require("../../core/async_pool");
-const { chinaLocalDay } = require("../../core/workflow_run");
-const { listWorkflowInventory } = require("../../core/workflow_inventory");
+const { reconcilePlanWorkflowInventory } = require("../../core/workflow_inventory");
 
 function retryOneJobAnalysis({ db, input = {}, deps = {} }) {
   return retryJobAnalyses({ db, input, deps, bulk: false });
@@ -97,19 +94,6 @@ async function retryJobAnalyses({ db, input, deps, bulk }) {
     concurrency,
     results
   };
-}
-
-function reconcilePlanWorkflowInventory(db, planId) {
-  const inventoryCount = listWorkflowInventory(db, { planId }).length;
-  for (const workflow of listWorkflowRuns(db, {
-    planId,
-    localDay: chinaLocalDay(),
-    statuses: ["review_required", "interrupted"],
-    limit: 500
-  })) {
-    if (workflow.inventoryCount === inventoryCount) continue;
-    transitionWorkflowRun(db, { id: workflow.id, status: workflow.status, inventoryCount });
-  }
 }
 
 module.exports = {

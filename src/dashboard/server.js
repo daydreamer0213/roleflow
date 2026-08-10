@@ -135,7 +135,8 @@ const {
 const {
   workflowEligibility,
   listWorkflowInventory,
-  listWorkflowReviewCandidates
+  listWorkflowReviewCandidates,
+  reconcilePlanWorkflowInventory
 } = require("../core/workflow_inventory");
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
 const { getWorkflowProgressSnapshot } = require("../core/workflow_progress");
@@ -346,6 +347,7 @@ function createDashboardServer({
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
+  analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
   assetReader = fs.readFileSync
 }) {
@@ -539,8 +541,8 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
-      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true });
+      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
+      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
@@ -617,7 +619,7 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
   }
 }
 
-async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false }) {
+async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false, analysisRetryRunnerFactory = null }) {
   let planId = 0;
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
@@ -625,7 +627,7 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
     const result = await (bulk ? retryPendingJobAnalyses : retryOneJobAnalysis)({
       db,
       input: params,
-      deps: { root, modelConfig, modelReady, logger }
+      deps: { root, modelConfig, modelReady, logger, createJobAnalysisRunner: analysisRetryRunnerFactory || undefined }
     });
     logger.info(bulk ? "job_analysis_bulk_retried" : "job_analysis_retried", {
       requestId,
@@ -651,20 +653,6 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
       planId ? `/queue?planId=${planId}&pool=analysis_pending` : "/"
     ), { logger, requestId, event: "job_analysis_retry_failed", fallbackCode: "JOB_ANALYSIS_RETRY_FAILED" });
   }
-}
-
-function reconcilePlanWorkflowInventory(db, planId) {
-  const inventoryCount = listWorkflowInventory(db, { planId }).length;
-  for (const workflow of listWorkflowRuns(db, {
-    planId,
-    localDay: chinaLocalDay(),
-    statuses: ["review_required", "interrupted"],
-    limit: 500
-  })) {
-    if (workflow.inventoryCount === inventoryCount) continue;
-    transitionWorkflowRun(db, { id: workflow.id, status: workflow.status, inventoryCount });
-  }
-  return inventoryCount;
 }
 
 function redirectHome(res, db) {
