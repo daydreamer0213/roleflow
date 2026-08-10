@@ -55,6 +55,7 @@ const tests = [
   "observability_context_smoke.js",
   "profile_quality_smoke.js",
   "semantic_pipeline_smoke.js",
+  "shadow_scorecard_smoke.js",
   "four_tier_pipeline_smoke.js",
   "outcome_analytics_smoke.js",
   "four_tier_product_surface_smoke.js",

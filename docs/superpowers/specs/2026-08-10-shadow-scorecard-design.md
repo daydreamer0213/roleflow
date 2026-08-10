@@ -40,10 +40,22 @@ The function reads only its arguments and returns:
 ```
 
 The implementation does not mutate the input. `dimensions` keeps role,
-responsibility, and core/supporting requirement diagnostics separate. Unknown
-requirements are excluded from the fit denominator but remain in coverage.
-Responsibility evidence counts only when both JD and resume evidence are
-present, matching the approved stability rule.
+responsibility, and core/supporting requirement diagnostics separate, but the
+candidate tier is not computed by a second simplified ruleset. It calls the
+existing pure production entry `deriveMatrixDecision` with the complete
+verified semantic object (`roleAlignment`, `responsibilityMatches`, and
+`requirementMatches`) and uses its `matrixRecommendation` as the candidate
+tier. This preserves production responsibility consistency, alignment
+consistency, zero-duty-gap promotion, matched-indispensable promotion,
+foundation/duty-gap ceilings, core/coverage caps, and the approved matrix.
+Unknown requirements are excluded from the fit denominator but remain in
+coverage because that is the production entry's behavior.
+
+The scorecard then applies only its offline-only inputs that are outside the
+production pure decision signature: a verified hard boundary or severe risk
+forces `not_recommended`, and a verified medium/high risk caps at `caution`.
+These additions are diagnostics/guardrails for the shadow candidate and never
+write or replace a formal recommendation.
 
 ## Initial candidate policy
 
@@ -94,11 +106,12 @@ The fixture is a JSON object with a `cases` array. Each case has an `id`, an
 for comparison. An optional serialized policy is accepted for offline policy
 experiments; when absent, the approved local policy is used.
 
-The CLI rejects missing or duplicate case IDs and identical input/output
-paths. It reads exactly the explicit input file, sorts report rows by ID, and
-writes only the explicit output file. It does not scan directories, open
-SQLite, mutate the fixture, call a model/network/browser, or write any formal
-recommendation field.
+The CLI rejects missing or duplicate case IDs, missing/non-array-object case
+inputs, and input/output paths that resolve to the same Windows file through
+case aliases, real paths, or file identity. It reads exactly the explicit
+input file, sorts report rows by ID, and writes only the explicit output file.
+It does not scan directories, open SQLite, mutate the fixture, call a
+model/network/browser, or write any formal recommendation field.
 
 ## Verification and later decision
 

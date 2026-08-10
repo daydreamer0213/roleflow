@@ -11,7 +11,9 @@ function main(argv = process.argv.slice(2)) {
   const { inputPath, outputPath } = parseArgs(argv);
   const resolvedInput = path.resolve(inputPath);
   const resolvedOutput = path.resolve(outputPath);
-  if (resolvedInput === resolvedOutput) throw new Error("input and output paths must be different");
+  if (sameFileIdentity(resolvedInput, resolvedOutput)) {
+    throw new Error("input and output must refer to different files");
+  }
 
   const fixture = JSON.parse(fs.readFileSync(resolvedInput, "utf8"));
   if (!fixture || typeof fixture !== "object" || Array.isArray(fixture) || !Array.isArray(fixture.cases)) {
@@ -25,6 +27,9 @@ function main(argv = process.argv.slice(2)) {
     if (!id) throw new Error("every fixture case must have a non-empty id");
     if (seen.has(id)) throw new Error(`duplicate fixture case id: ${id}`);
     seen.add(id);
+    if (!item.input || typeof item.input !== "object" || Array.isArray(item.input)) {
+      throw new Error(`case ${id} input must be a non-array object`);
+    }
     const scorecard = buildShadowScorecard(item.input, policy);
     return {
       id,
@@ -56,6 +61,25 @@ function main(argv = process.argv.slice(2)) {
   };
   fs.writeFileSync(resolvedOutput, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return report;
+}
+
+function sameFileIdentity(leftPath, rightPath) {
+  if (samePlatformPath(leftPath, rightPath)) return true;
+  if (!fs.existsSync(leftPath) || !fs.existsSync(rightPath)) return false;
+  const leftRealPath = fs.realpathSync.native(leftPath);
+  const rightRealPath = fs.realpathSync.native(rightPath);
+  if (samePlatformPath(leftRealPath, rightRealPath)) return true;
+  const leftStat = fs.statSync(leftRealPath);
+  const rightStat = fs.statSync(rightRealPath);
+  return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+}
+
+function samePlatformPath(leftPath, rightPath) {
+  const left = path.normalize(leftPath);
+  const right = path.normalize(rightPath);
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 function parseArgs(argv) {

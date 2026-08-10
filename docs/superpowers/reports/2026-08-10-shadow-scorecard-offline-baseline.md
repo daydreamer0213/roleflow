@@ -29,6 +29,11 @@ The report summary is:
 }
 ```
 
+The regression fixture also covers the production promotion path: a semantic
+input whose production `deriveMatrixDecision` result is `apply` through the
+`zero_duty_gap` route produces the same shadow `candidateTier=apply`. This
+checks semantic decision consistency; it is not an accuracy or quality claim.
+
 ## Commands and observed results
 
 ```powershell
@@ -48,6 +53,11 @@ git diff --check
 An additional established offline focus set of 16 tests, including the new
 scorecard smoke and the existing four-tier, browser-contract, access-budget,
 matching-card, and source-acquisition checks, exited 0.
+
+The new scorecard smoke is now part of `tests/run_all.js` in the semantic
+pipeline/four-tier section. The full runner still cannot reach it in this
+worktree because the earlier existing self-check stops on the missing PDF
+dependency described below; the focused command above is the direct evidence.
 
 The full suite was attempted with `npm.cmd test` but stopped in the existing
 `tests/self_check.js` PDF fixture check because the current worktree has no
@@ -77,4 +87,3 @@ The idea is suitable for a later *read-only* production shadow integration in
 principle, but not approved for integration by this Wave 1.2 task. Before any
 integration, the controller should approve privacy-safe fixture boundaries,
 measure latency and storage cost, confirm that formal outputs remain byte-for-
-byte unchanged, and demonstrate diagnostic value on a fresh offline baseline.
