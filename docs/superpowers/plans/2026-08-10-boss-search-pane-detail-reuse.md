@@ -237,9 +237,10 @@ async readVisiblePaneDetail(tabId, job, signal = null, assertTabBindings = null)
       .map((value) => String(value || ""))
       .filter(Boolean);
     const selectionHasTarget = activeIds.includes(expectedJobId);
-    if (activationAttempted
-      && activeIds.length > 0
-      && !selectionHasTarget) {
+    const hasSelectionMismatch = activeIds.some((value) => value !== expectedJobId);
+    const selectionMatches = activeIds.length > 0 && !hasSelectionMismatch;
+    if (hasSelectionMismatch
+      && (paneJobId === expectedJobId || activationAttempted || selectionHasTarget)) {
       return null;
     }
     if (paneJobId === expectedJobId) {
@@ -259,7 +260,7 @@ async readVisiblePaneDetail(tabId, job, signal = null, assertTabBindings = null)
         scrolled = true;
         await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
       }
-    } else if (!selectionHasTarget && !activationAttempted) {
+    } else if (!selectionMatches && !activationAttempted) {
       const activation = await this.browser.evalValue(
         tabId,
         `(() => window.__bossActivateCard(${JSON.stringify(expectedJobId)}))()`

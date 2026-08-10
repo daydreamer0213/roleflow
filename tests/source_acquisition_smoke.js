@@ -83,6 +83,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await accessReservationSmoke();
   await visiblePaneIdentitySmoke();
   await visiblePaneActivationWaitSmoke();
+  await visiblePaneSelectionMismatchSmoke();
   await visiblePaneMissingIdentitySmoke();
   await visiblePaneTitleIdentitySmoke();
   await searchPaneDetailRoutingSmoke();
@@ -562,6 +563,35 @@ async function visiblePaneActivationWaitSmoke() {
     action: "pane_detail_read",
     details: { jobId: "slow-pane-job" }
   }]);
+}
+
+async function visiblePaneSelectionMismatchSmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          activeJobId: "old-job",
+          componentCurrentJobId: "old-job",
+          paneJobId: "target-job",
+          currentJobId: "target-job",
+          jobDetailLoading: false,
+          title: "Target job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Target job",
+    url: "https://www.zhipin.com/job_detail/target-job.html"
+  });
+  assert.strictEqual(detail, null, "stale card selection must not authorize a target pane");
 }
 
 async function visiblePaneMissingIdentitySmoke() {
