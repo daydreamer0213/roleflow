@@ -535,3 +535,77 @@ Expected: exit code 0 with every test passing.
 - [ ] **Step 7: Restart only the dashboard**
 
 Stop the existing local dashboard process and start it from merged `main`. Do not resume the workflow scan. Verify the workflow page still shows the existing run as paused and the continue button remains enabled.
+
+---
+
+### Task 5: Bind a resumed scan before the workflow page can recover it
+
+**Files:**
+- Modify: `src/dashboard/server.js`
+- Test: `tests/workflow_dashboard_smoke.js`
+- Document: `docs/superpowers/specs/2026-08-10-manual-acceptance-runtime-control-fixes-design.md`
+
+**Interfaces:**
+- Consumes: `startPlanScan(scanRuns, options)`, `createScanRun(db, input)`, and `attachWorkflowScan(db, input)`
+- Produces: a resumed scan whose new `scan_run_id` is persisted before the child process starts or the redirected workflow page is queried
+
+- [ ] **Step 1: Write the failing regression assertion**
+
+Immediately after the existing valid scanning-resume request, capture the newly created scan run and assert:
+
+```js
+const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
+assert.strictEqual(getWorkflowRun(db, workflow.id).scanRunId, resumedScan.id);
+
+const liveResumedStatus = await getJson(
+  baseUrl,
+  `/api/workflow-status?runId=${encodeURIComponent(workflow.id)}`
+);
+assert.strictEqual(liveResumedStatus.body.workflow.status, "scanning");
+```
+
+- [ ] **Step 2: Run the focused test and verify RED**
+
+Run:
+
+```powershell
+node tests/workflow_dashboard_smoke.js
+```
+
+Expected: FAIL because the workflow still points to the previous interrupted scan when the resume response returns.
+
+- [ ] **Step 3: Implement the minimal pre-spawn binding**
+
+In `startPlanScan`, after `createScanRun` and before `spawnProcess`, call `attachWorkflowScan` whenever the workflow has a persisted resume batch:
+
+```js
+if (workflowRun && persistedResumeBatchId) {
+  attachWorkflowScan(db, {
+    id: workflowRun.id,
+    scanRunId: runId,
+    scanBatchId: persistedResumeBatchId
+  });
+}
+```
+
+Keep the existing failure settlement around this operation so a rejected bind marks the new scan run failed and does not spawn a child.
+
+- [ ] **Step 4: Run focused verification**
+
+Run:
+
+```powershell
+node tests/workflow_dashboard_smoke.js
+node tests/dashboard_scan_lifecycle_smoke.js
+node tests/workflow_recovery_smoke.js
+```
+
+Expected: all three print `ok`.
+
+- [ ] **Step 5: Run full verification and integrate**
+
+Run `npm.cmd test`, review `git diff --check`, commit the branch, create a new pre-merge checkpoint tag on `main`, merge with `--no-ff`, and run `npm.cmd test` again from merged `main`.
+
+- [ ] **Step 6: Restart manual acceptance**
+
+Restart only the dashboard from merged `main`. Preserve the two fixed logged-in BOSS tabs. Reopen the current workflow page and continue from the interrupted run only after confirming the new scan binding is visible.
