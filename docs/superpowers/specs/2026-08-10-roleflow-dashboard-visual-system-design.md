@@ -67,7 +67,7 @@ All normal text uses a dark token on a light surface and is sized at 14–16px w
 | Workflow | `/workflow?runId=` | run header | `workflow.sequence`, `localDay`, `status`, `targetSuccessCount`, `successfulCount`, `inventoryCount`, `daily` | status is rendered from current workflow state labels |
 | Workflow | `/workflow?runId=` | live progress | `getWorkflowProgressSnapshot`: `progress.stageIndex`, `stageCount`, `analysis`, `model`, `recentActivity`, `scanWait` | polling can be added later; prototype shows a frozen snapshot |
 | Workflow | `/workflow?runId=` | frozen scope | `renderInheritedScopeSummary`: `planner.searchScope`, `keywordSource`, `platformPolicy.filterSummary`, `unresolvedParams` | preserves “BOSS 当前页面” source language; never invents filter values |
-| Workflow | `/workflow?runId=` | review / confirmation | `listWorkflowReviewCandidates`, `communicationQuota`, `communicationRuntimeBlock`, `communication.calibration` | confirmation remains human-controlled and immutable; no send/apply control is added |
+| Workflow | `/workflow?runId=` | review / confirmation | `listWorkflowReviewCandidates`, `communicationQuota`, `communicationRuntimeBlock`, `communication.calibration`; production form is `POST /api/communication-batch` with `planId`, `workflowRunId`, `browserMode`, repeated `jobIds` | static form uses `onsubmit="return false"`; it mirrors batch creation only, never sends messages. Production still enforces quota, calibration, human confirmation, and BOSS safety gates |
 | Queue | `/queue?planId=&pool=&scope=&page=` | pool switcher | `queue.counts`, `queue.scopeCounts`, `queue.pool`, `queue.scope`, `latestMainBatchId` | links map to existing `queueHref` query params |
 | Queue | `/queue?planId=&pool=&scope=&page=` | job evidence | `listDecisionPool` rows: `title`, `company`, `salary`, `experience`, `analysis.fitReasons`, `risks`, `qualityTags`, `decisionBucket`, `applicationStatus` | labels are display-only; state mutations remain existing `/api/mark`, `/api/follow-up`, `/api/analyze-job` forms |
 | Queue | `/queue?planId=` | outcome summary | `renderOutcomeAnalyticsPanel`: tier rows, keyword rows, `diagnostics`, `unclassified` | read-only analytics; no tuning control is implied |
@@ -91,7 +91,7 @@ Open with “需要你处理的岗位” and a short explanation of the current 
 1. Add one shared offline stylesheet with tokens, typography, signal rail, cards, badges, form controls, table/card responsive behavior, focus, reduced motion, error and empty states.
 2. Add three self-contained static HTML prototypes that import the shared stylesheet and use only existing RoleFlow route names and data-shaped examples.
 3. Use the installed local Edge executable through Playwright; call `page.setViewportSize({ width, height })` before loading each page, then render each page at 1440×900, 1024×768, 768×1024, and 375×812. Inspect every mobile screenshot and check the root plus each major visible text/container boundary in that same page context.
-4. Record the screenshot evidence in the task report and commit only the assigned prototype/spec/screenshot files.
+4. Keep `verify.mjs` and `screenshots/viewport-audit.json` as the rerunnable offline evidence, then commit only the assigned prototype/spec/verification/screenshot files.
 
 ## Mobile validation correction
 
@@ -104,6 +104,26 @@ The first prototype verification compared only `document.documentElement.scrollW
 - assert the page’s primary action is fully inside the first viewport, keyboard focus is visible, reduced motion is honored, contrast meets AA, and no external URL/font is loaded.
 
 The previous “12/12 无横向溢出” conclusion is superseded: it proved only root document width in a different renderer. Direct CDP inspection of the old Edge CLI command showed `window.innerWidth=496`, `clientWidth=496`, `innerHeight=719`, `outerWidth=522` while the PNG header was `375×812`; the image was therefore a 375px crop of a wider layout. The repaired prototypes must use one Playwright viewport context for both metrics and PNG output, then be visually checked before this wave is accepted.
+
+### Re-run command
+
+The verifier uses only an existing Node runtime, an existing Playwright module, and an existing local Edge executable. It does not install packages or access the network. In PowerShell, point the two environment variables at the already-installed paths and run:
+
+```powershell
+$env:ROLEFLOW_PLAYWRIGHT = "<existing Playwright module path>"
+$env:ROLEFLOW_EDGE_EXECUTABLE = "<existing Edge executable path>"
+node docs\prototypes\roleflow-dashboard\verify.mjs
+```
+
+Equivalent explicit arguments are supported:
+
+```powershell
+node docs\prototypes\roleflow-dashboard\verify.mjs `
+  --playwright "<existing Playwright module path>" `
+  --edge "<existing Edge executable path>"
+```
+
+The command rewrites all 12 screenshots and `screenshots/viewport-audit.json`; any failed viewport, boundary, form-contract, focus, contrast, reduced-motion, or external-resource check exits non-zero.
 
 ## Production migration sequence
 

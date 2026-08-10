@@ -78,31 +78,35 @@
 
         <section class="card" style="margin-top:18px" aria-labelledby="review-title">
           <div class="card-head"><div><p class="section-label">下一步</p><h2 id="review-title">确认本轮沟通清单</h2><p>主投与可投默认勾选 4 个；慎投只展示，不自动加入。</p></div><span class="status info">不可变快照</span></div>
-          <div class="card-body">
+          <form id="workflow-review-form" class="card-body" method="post" action="/api/communication-batch" onsubmit="return false" aria-describedby="review-submit-note">
+            <input type="hidden" name="planId" value="12">
+            <input type="hidden" name="workflowRunId" value="run-20260810-02">
+            <input type="hidden" name="browserMode" value="edge">
             <div class="review-list">
               <label class="review-row">
-                <input type="checkbox" checked aria-label="选择星河智算 AI 应用工程师">
+                <input type="checkbox" name="jobIds" value="1001" checked aria-label="选择星河智算 AI 应用工程师">
                 <span class="review-main"><strong>AI 应用工程师 · 星河智算</strong><span class="review-meta">上海 · 22–32K · 3–5 年 · 双休</span><span class="review-reason">职责与 RAG、Agent 服务化经历高度贴合；JD 与简历证据齐全。</span><span class="review-evidence"><span>Python / FastAPI</span><span>RAG 线上项目</span><span>薪资贴合</span></span></span>
                 <span class="tier primary">主投</span>
               </label>
               <label class="review-row">
-                <input type="checkbox" checked aria-label="选择远见数据 AI 产品工程师">
+                <input type="checkbox" name="jobIds" value="1002" checked aria-label="选择远见数据 AI 产品工程师">
                 <span class="review-main"><strong>AI 产品工程师 · 远见数据</strong><span class="review-meta">上海 · 20–28K · 3–5 年 · 双休</span><span class="review-reason">产品落地证据较强；需要在沟通时确认团队规模与模型供应商。</span><span class="review-evidence"><span>LLM 应用</span><span>数据管道</span><span>团队待确认</span></span></span>
                 <span class="tier apply">可投</span>
               </label>
               <label class="review-row">
-                <input type="checkbox" checked aria-label="选择墨桥科技 Python 后端工程师">
+                <input type="checkbox" name="jobIds" value="1003" checked aria-label="选择墨桥科技 Python 后端工程师">
                 <span class="review-main"><strong>Python 后端工程师 · 墨桥科技</strong><span class="review-meta">上海 · 18–25K · 3–5 年 · 工作制未说明</span><span class="review-reason">核心技术栈匹配；工作节奏与到岗安排需要先聊清。</span><span class="review-evidence"><span>FastAPI</span><span>服务治理</span><span>工作制待确认</span></span></span>
                 <span class="tier apply">可投</span>
               </label>
               <label class="review-row">
-                <input type="checkbox" aria-label="选择云迹实验室 AI 解决方案工程师">
+                <input type="checkbox" name="jobIds" value="1004" aria-label="选择云迹实验室 AI 解决方案工程师">
                 <span class="review-main"><strong>AI 解决方案工程师 · 云迹实验室</strong><span class="review-meta">上海 · 25–40K · 5–8 年 · 双休</span><span class="review-reason">方向有吸引力，但客户交付占比与资深经验要求偏高。</span><span class="review-evidence"><span>慎投</span><span>经验可冲</span><span>交付占比待确认</span></span></span>
                 <span class="tier caution">慎投</span>
               </label>
             </div>
-          </div>
-          <div class="sticky-confirm"><span><strong>已选 3 个岗位</strong><br><span class="tiny" style="color:#cfe1dc">今日剩余额度 18 · 确认后生成不可变快照</span></span><a class="button" href="/communication?batchId=preview-12">确认本轮清单 <span aria-hidden="true">→</span></a></div>
+            <p id="review-submit-note" class="field-help">静态原型不会实际提交。生产契约会 POST 到 <span class="mono">/api/communication-batch</span>，只创建不可变审阅批次，不发送消息；之后仍受今日额度、校准状态、人工确认和 BOSS 安全门禁约束。</p>
+          </form>
+          <div class="sticky-confirm"><span><strong>已选 3 个岗位</strong><br><span class="tiny" style="color:#cfe1dc">今日剩余额度 18 · 确认后生成不可变审阅批次</span></span><button class="button" type="submit" form="workflow-review-form">确认本轮清单 <span aria-hidden="true">→</span></button></div>
         </section>
 
         <div class="alert danger" role="alert" style="margin-top:18px"><strong>1 个岗位模型分析失败</strong><p>失败不等于不推荐。岗位详情仍安全保存在本地；可到“当前岗位 → 待语义分析”单独重试，不需要重新扫描。</p><a href="/queue?planId=12&amp;pool=analysis_pending">去处理分析失败</a></div>
