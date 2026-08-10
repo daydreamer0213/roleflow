@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>今日任务 · RoleFlow</title>
+  <link rel="stylesheet" href="./roleflow-dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="signal-rail" aria-label="RoleFlow 阶段标记">
+      <div class="rail-mark" aria-hidden="true">RF</div>
+      <div class="rail-label">今日任务</div>
+      <div class="rail-spacer"></div>
+      <span class="rail-dot attention" title="有待处理事项"></span>
+    </aside>
+    <div class="page">
+      <header class="topbar">
+        <a class="brand" href="./today.html"><strong>RoleFlow</strong><span>本地岗位工作台</span></a>
+        <nav class="primary-nav" aria-label="主导航">
+          <a href="./today.html" aria-current="page">今日任务</a>
+          <a href="./workflow.html">本轮执行</a>
+          <a href="./queue.html">当前岗位</a>
+          <a href="/settings">模型设置</a>
+          <a href="/diagnostics">诊断</a>
+        </nav>
+        <span class="nav-scroll-hint" aria-hidden="true">左右滑动查看更多</span>
+      </header>
+
+      <main id="main-content">
+        <section class="page-heading" aria-labelledby="today-title">
+          <p class="eyebrow">01 / 准备与筛选</p>
+          <h1 id="today-title">今天先把高质量机会推进到人工确认。</h1>
+          <p class="lede">当前筛选方案已就绪。RoleFlow 会保留完整 JD 与匹配证据，只有你确认清单后才会进入沟通。</p>
+          <div class="heading-meta">
+            <span>2026 年 8 月 10 日 · 周一</span>
+            <span>Search Plan #12 · AI 应用开发</span>
+            <span class="status good">方案可用</span>
+          </div>
+        </section>
+
+        <section class="action-panel" aria-labelledby="next-action-title">
+          <div>
+            <p class="section-label">现在做什么</p>
+            <h2 id="next-action-title">开始第 2 轮，继续寻找 35 个值得人工确认的岗位。</h2>
+            <p class="muted">本轮会沿用已保存的关键词、城市和预算；不会自动发送消息或投递。</p>
+          </div>
+          <div class="action-meta" aria-label="本轮摘要">
+            <span>今日进度 <strong>28 / 70</strong></span>
+            <span>可用候选 <strong>46</strong></span>
+            <span>剩余轮次 <strong>1 / 3</strong></span>
+          </div>
+          <div class="button-row">
+            <a class="button" href="./workflow.html">开始一轮 <span aria-hidden="true">→</span></a>
+            <a class="button quiet" href="./queue.html">先复核待处理岗位</a>
+          </div>
+        </section>
+
+        <section class="metric-grid" aria-label="今日工作指标">
+          <div class="metric"><span class="metric-label">今日成功沟通</span><strong class="metric-value">28 <small>/ 70</small></strong><span class="metric-note">目标还差 42 个</span></div>
+          <div class="metric"><span class="metric-label">可用候选</span><strong class="metric-value">46</strong><span class="metric-note">主投 18 · 可投 28</span></div>
+          <div class="metric"><span class="metric-label">详情读取预算</span><strong class="metric-value">214</strong><span class="metric-note">剩余 / 360</span></div>
+          <div class="metric"><span class="metric-label">今日已用轮次</span><strong class="metric-value">1 <small>/ 3</small></strong><span class="metric-note">下一轮目标 35</span></div>
+        </section>
+
+        <div class="today-grid" style="margin-top:18px">
+          <div class="stack">
+            <section class="card pad" aria-labelledby="blocker-title">
+              <p class="section-label">检查站</p>
+              <h2 id="blocker-title">现在卡在哪里</h2>
+              <div class="list">
+                <div class="list-row">
+                  <div><strong>5 个岗位待读详情</strong><p>列表信息已保存，完整 JD 尚未补读；不会当作匹配结论。</p></div>
+                  <span class="status waiting">待补读</span>
+                </div>
+                <div class="list-row">
+                  <div><strong>1 个岗位模型分析失败</strong><p>岗位详情仍在本地，稍后可以只重试语义分析。</p></div>
+                  <span class="status danger">需重试</span>
+                </div>
+                <div class="list-row">
+                  <div><strong>BOSS 页面状态</strong><p>本原型不读取浏览器；生产页沿用当前固定页面就绪检查。</p></div>
+                  <span class="status good">已检查</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="plan-summary-title">
+              <div class="card-head"><div><p class="section-label">当前方案</p><h2 id="plan-summary-title">AI 应用开发 · 上海</h2></div><a class="button secondary" href="/plan?planId=12">调整方案</a></div>
+              <div class="card-body">
+                <dl class="definition-grid">
+                  <div><dt>关键词</dt><dd>AI 应用、RAG、Python 后端</dd></div>
+                  <div><dt>工作经验</dt><dd>3–5 年，可冲刺 5–8 年</dd></div>
+                  <div><dt>薪资策略</dt><dd>18–30K，范围外保留</dd></div>
+                  <div><dt>工作节奏</dt><dd>优先双休，其他保留</dd></div>
+                </dl>
+                <div class="button-row" style="margin-top:16px"><a class="button quiet" href="/profile?profileId=7">查看候选人画像</a><a class="button quiet" href="/resumes?profileId=7">管理简历版本</a></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="stack" aria-label="候选人摘要">
+            <section class="card pad" aria-labelledby="candidate-title">
+              <p class="section-label">候选人摘要</p>
+              <h2 id="candidate-title">林知行</h2>
+              <p class="muted">上海 · Python / AI 应用开发 · 当前简历 v3</p>
+              <div class="chip-row" aria-label="核心技能" style="margin:15px 0">
+                <span class="chip">Python</span><span class="chip">FastAPI</span><span class="chip">RAG</span><span class="chip">LLM 应用</span><span class="chip">数据处理</span>
+              </div>
+              <div class="alert good"><strong>画像已确认</strong><p>本轮匹配会使用已确认的经历与项目证据。</p></div>
+              <a class="button secondary" href="/profile?profileId=7" style="margin-top:16px">检查画像</a>
+            </section>
+
+            <section class="card pad" aria-labelledby="quality-title">
+              <p class="section-label">质量护栏</p>
+              <h2 id="quality-title">保留覆盖，不用弱岗位凑数</h2>
+              <p class="muted">日常扫描继续覆盖当前关键词与主薪资档。预算只限制本轮窗口，不降低逻辑上的 JD 读取目标。</p>
+              <div class="progress-row" style="margin-top:16px"><div class="progress" aria-label="详情读取预算已使用 146 / 360"><span style="width:41%"></span></div><strong>41%</strong></div>
+            </section>
+          </aside>
+        </div>
+
+        <details class="card" style="margin-top:18px">
+          <summary class="card-head" style="cursor:pointer"><strong>高级扫描与维护</strong><span class="tiny">日常扫描 · 广泛扫描 · 补读详情 · 更新活跃状态</span></summary>
+          <div class="card-body">
+            <div class="alert"><strong>低频入口</strong><p>这些动作会使用现有扫描预算，并继续遵守单标签串行、随机等待和风控即停。</p></div>
+            <div class="button-row" style="margin-top:16px"><a class="button secondary" href="/plan?planId=12&amp;scan=daily">日常扫描</a><a class="button secondary" href="/plan?planId=12&amp;scan=broad">广泛扫描</a><a class="button secondary" href="/plan?planId=12&amp;scan=refresh">补读缺失详情</a><a class="button secondary" href="/plan?planId=12&amp;scan=activity">更新活跃状态</a></div>
+          </div>
+        </details>
+      </main>
+      <p class="footer-note">原型数据为离线示例；生产迁移时只替换数据绑定与现有表单，不新增外部操作。</p>
+    </div>
+  </div>
+</body>
+</html>
