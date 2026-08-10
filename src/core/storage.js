@@ -1498,6 +1498,47 @@ function attachWorkflowScan(db, input = {}) {
   });
 }
 
+function attachWorkflowScanRun(db, input = {}) {
+  return immediateTransaction(db, () => {
+    const id = String(input.id || input.workflowRunId || "").trim();
+    const run = getWorkflowRun(db, id);
+    if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+    if (!["scanning", "analyzing", "interrupted"].includes(run.status)) {
+      throw workflowRunError(
+        "WORKFLOW_SCAN_LINK_INVALID",
+        "workflow execution can only be attached during scanning, analyzing, or interruption"
+      );
+    }
+    const scanRunId = String(input.scanRunId || "").trim();
+    if (!scanRunId) throw workflowRunError("WORKFLOW_SCAN_RUN_REQUIRED", "scan run is required");
+    const owner = db.prepare(`
+      SELECT id
+      FROM workflow_runs
+      WHERE scan_run_id = ? AND id <> ?
+      LIMIT 1
+    `).get(scanRunId, id);
+    if (owner) {
+      throw workflowRunError(
+        "WORKFLOW_SCAN_EXECUTION_OWNED",
+        "scan execution is already attached to another workflow run"
+      );
+    }
+    if (run.scanRunId && run.scanRunId !== scanRunId) {
+      const previous = db.prepare("SELECT status, plan_id FROM scan_runs WHERE id = ?").get(run.scanRunId);
+      if (!previous || previous.status === "running" || Number(previous.plan_id || 0) !== run.planId) {
+        throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another active scan");
+      }
+    }
+    const scan = db.prepare("SELECT plan_id, status FROM scan_runs WHERE id = ?").get(scanRunId);
+    if (!scan || Number(scan.plan_id || 0) !== run.planId || scan.status !== "running") {
+      throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "scan run does not belong to this workflow plan");
+    }
+    db.prepare("UPDATE workflow_runs SET scan_run_id = ?, updated_at = ? WHERE id = ?")
+      .run(scanRunId, nowIso(), id);
+    return getWorkflowRun(db, id);
+  });
+}
+
 function attachWorkflowCommunication(db, input = {}) {
   const id = String(input.id || input.workflowRunId || "").trim();
   const run = getWorkflowRun(db, id);
@@ -2127,6 +2168,34 @@ function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
   `).run(now, now, workflowRunId);
 }
 
+function recordWorkflowScanWait(db, {
+  workflowRunId,
+  runId,
+  action,
+  delayMs,
+  retryAt,
+  now
+}) {
+  const id = String(workflowRunId || "").trim();
+  if (!id) return null;
+  const clock = String(now || nowIso());
+  const wait = JSON.stringify({
+    runId: String(runId || ""),
+    action: String(action || ""),
+    delayMs: Math.max(0, Number(delayMs || 0)),
+    retryAt: String(retryAt || "")
+  });
+  const result = db.prepare(`
+    UPDATE workflow_runs SET
+      metrics_json = json_set(COALESCE(metrics_json, '{}'), '$.scanWait', json(?)),
+      last_activity_at = ?,
+      updated_at = ?,
+      progress_revision = progress_revision + 1
+    WHERE id = ?
+  `).run(wait, clock, clock, id);
+  return Number(result.changes || 0) > 0 ? getWorkflowRun(db, id) : null;
+}
+
 function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
   const id = String(workflowRunId || "").trim();
   if (!id) return null;
@@ -2134,10 +2203,10 @@ function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
   const result = db.prepare(`
     UPDATE workflow_runs SET
       platform_access_started_at = COALESCE(platform_access_started_at, ?),
-      last_activity_at = COALESCE(last_activity_at, ?),
+      metrics_json = json_remove(COALESCE(metrics_json, '{}'), '$.scanWait'),
+      last_activity_at = ?,
       updated_at = ?,
-      progress_revision = progress_revision + CASE
-        WHEN platform_access_started_at IS NULL THEN 1 ELSE 0 END
+      progress_revision = progress_revision + 1
     WHERE id = ?
   `).run(clock, clock, clock, id);
   return Number(result.changes || 0) > 0 ? getWorkflowRun(db, id) : null;
@@ -2710,6 +2779,42 @@ function checkpointScanTarget(db, input = {}) {
       jobCount: input.jobs.length,
       jobIds
     };
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+}
+
+function checkpointScanProgress(db, input = {}) {
+  const runId = requiredRunId(input);
+  const batchId = optionalPositiveInteger(input.batchId, "batchId");
+  const owner = normalizedLeaseOwner(input);
+  if (!batchId) throw scanRunError("SCAN_RUN_BATCH_REQUIRED", "scan progress batchId is required");
+  if (!owner) throw scanRunError("SCAN_RUN_LEASE_OWNER_REQUIRED", "scan progress lease owner is required");
+  if (!Array.isArray(input.jobs)) throw new TypeError("scan progress jobs must be an array");
+  const checkpointedAt = nowIso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const run = requireRunningScanRun(db, runId);
+    if (Number(run.batch_id || 0) !== batchId) {
+      throw scanRunError("SCAN_RUN_BATCH_MISMATCH", "scan run is not bound to the progress batch");
+    }
+    if (run.lease_owner !== owner) {
+      throw scanRunError("SCAN_RUN_LEASE_MISMATCH", "scan run lease owner does not match");
+    }
+    const batch = validateScanRunBatch(db, run, batchId);
+    if (batch.status !== "running") {
+      throw scanRunError("SCAN_BATCH_NOT_RUNNING", "scan batch is not running");
+    }
+    const lease = db.prepare("SELECT owner, expires_at FROM site_scan_leases WHERE site = ?").get(run.site);
+    const leaseExpiresAt = Date.parse(lease?.expires_at || "");
+    if (!lease || lease.owner !== owner || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.parse(checkpointedAt)) {
+      throw scanRunError("SCAN_LEASE_LOST", "scan lease was lost before the checkpoint could be saved");
+    }
+    const jobIds = input.jobs.map((job) => upsertJob(db, job, batchId));
+    db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
+    db.exec("COMMIT");
+    return { runId, batchId, jobCount: input.jobs.length, jobIds };
   } catch (error) {
     rollback(db);
     throw error;
@@ -4818,6 +4923,7 @@ module.exports = {
   selectEarliestRetryAvailableAt,
   markWorkflowJobTasksStopped,
   requestWorkflowRunConfigurationPause,
+  recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
   selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
@@ -4837,6 +4943,7 @@ module.exports = {
   getActiveWorkflowRun,
   transitionWorkflowRun,
   attachWorkflowScan,
+  attachWorkflowScanRun,
   attachWorkflowCommunication,
   createBatch,
   createAndBindScanBatch,
@@ -4851,6 +4958,7 @@ module.exports = {
   finishScanRun,
   recordScanRunProcessExit,
   interruptOrphanedScanRuns,
+  checkpointScanProgress,
   checkpointScanTarget,
   recordScanTargetResult,
   listScanTargetResults,

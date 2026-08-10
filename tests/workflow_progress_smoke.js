@@ -8,6 +8,8 @@ const {
   createWorkflowRun,
   attachWorkflowScan,
   transitionWorkflowRun,
+  recordWorkflowScanWait,
+  recordWorkflowPlatformAccess,
   upsertJob
 } = require("../src/core/storage");
 const {
@@ -27,6 +29,8 @@ const db = openDb(":memory:");
 
 try {
   testSnapshotRequiresExactRunId();
+  testRecordWorkflowScanWait();
+  testScanWaitAndHeartbeatActivity();
   testAggregateCountsMatchSqlAndInvariant();
   testCollectedDetailCountsComeFromObservations();
   testStageMapping();
@@ -66,6 +70,79 @@ function testSnapshotRequiresExactRunId() {
   );
   const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
   assert.strictEqual(snapshot.workflow.id, scenario.workflowId);
+}
+
+function testRecordWorkflowScanWait() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-14",
+    modelConfigRevision: "mrev-record-scan-wait"
+  });
+  const workflow = recordWorkflowScanWait(db, {
+    workflowRunId: scenario.workflowId,
+    runId: scenario.scanRunId,
+    action: "detail_open",
+    delayMs: 600000,
+    retryAt: "2026-08-15T00:10:00.000Z",
+    now: "2026-08-15T00:00:00.000Z"
+  });
+  assert.deepStrictEqual(workflow.metrics.scanWait, {
+    runId: scenario.scanRunId,
+    action: "detail_open",
+    delayMs: 600000,
+    retryAt: "2026-08-15T00:10:00.000Z"
+  });
+  assert.strictEqual(workflow.lastActivityAt, "2026-08-15T00:00:00.000Z");
+}
+
+function testScanWaitAndHeartbeatActivity() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-15",
+    modelConfigRevision: "mrev-scan-wait"
+  });
+  db.prepare(`
+    UPDATE workflow_runs SET
+      status = 'scanning',
+      last_activity_at = ?,
+      metrics_json = ?
+    WHERE id = ?
+  `).run(
+    "2026-08-15T00:00:00.000Z",
+    JSON.stringify({
+      scanWait: {
+        runId: scenario.scanRunId,
+        action: "detail_open",
+        retryAt: "2026-08-15T00:10:00.000Z",
+        delayMs: 600000
+      }
+    }),
+    scenario.workflowId
+  );
+  db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?")
+    .run("2026-08-15T00:00:20.000Z", scenario.scanRunId);
+
+  const snapshot = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-15T00:00:30.000Z"
+  });
+  assert.strictEqual(snapshot.workflow.lastActivityAt, "2026-08-15T00:00:20.000Z");
+  assert.deepStrictEqual(snapshot.progress.scanWait, {
+    action: "detail_open",
+    retryAt: "2026-08-15T00:10:00.000Z",
+    delayMs: 600000
+  });
+
+  recordWorkflowPlatformAccess(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-15T00:00:40.000Z"
+  });
+  const afterPlatformAccess = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-15T00:00:41.000Z"
+  });
+  assert.strictEqual(afterPlatformAccess.workflow.lastActivityAt, "2026-08-15T00:00:40.000Z");
+  assert.strictEqual(afterPlatformAccess.progress.scanWait, null);
 }
 
 function testAggregateCountsMatchSqlAndInvariant() {
@@ -913,7 +990,7 @@ function seedWorkflow(database, {
     });
     transitionWorkflowRun(database, { id: workflowId, status: "analyzing" });
   }
-  return { workflowId, batchId, profileId, planId };
+  return { workflowId, batchId, profileId, planId, scanRunId: scanRun.id };
 }
 
 function observationEntries(database, batchId) {

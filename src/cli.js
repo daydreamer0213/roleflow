@@ -26,6 +26,7 @@ const {
   getWorkflowRunByCommunicationBatch,
   transitionWorkflowRun,
   attachWorkflowScan,
+  attachWorkflowScanRun,
   createBatch,
   createAndBindScanBatch,
   getBatch,
@@ -33,6 +34,7 @@ const {
   heartbeatScanRun,
   finishScanRun,
   interruptOrphanedScanRuns,
+  checkpointScanProgress,
   checkpointScanTarget,
   listLatestScanTargetResults,
   getSiteRuntimeState,
@@ -43,6 +45,7 @@ const {
   acquireSiteScanLease,
   renewSiteScanLease,
   releaseSiteScanLease,
+  recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
   listReusableJobDetails,
   recordJobRefreshAttempt,
@@ -671,6 +674,12 @@ async function scan(
       analysisConcurrency: resolveAnalysisConcurrency(args, primaryState.concurrency)
     });
   }
+  if (workflowRun && execution?.runId) {
+    attachWorkflowScanRun(db, {
+      id: workflowRun.id,
+      scanRunId: execution.runId
+    });
+  }
   const frozenInherited = workflowAcquisitionMode === "inherited"
     ? {
       acquisitionMode: "inherited",
@@ -739,6 +748,18 @@ async function scan(
         ? (event) => recordWorkflowPlatformAccess(db, {
           workflowRunId: workflowRun.id,
           now: event.createdAt
+        })
+        : null,
+      assertActive: workflowRun
+        ? () => assertWorkflowScanControl(db, workflowRun.id)
+        : null,
+      onWait: workflowRun
+        ? (wait) => recordWorkflowScanWait(db, {
+          workflowRunId: workflowRun.id,
+          runId: execution?.runId || "",
+          action: wait.action,
+          delayMs: wait.delayMs,
+          retryAt: wait.retryAt
         })
         : null
     })
@@ -1129,6 +1150,26 @@ async function scan(
       });
     },
     onTargetComplete,
+    onDetailCheckpoint: args.input ? null : async (result) => {
+      assertScanActive(signal);
+      try {
+        const job = checkpointScannedJob(result.job, configs);
+        checkpointScanProgress(db, {
+          runId: execution.runId,
+          batchId,
+          leaseOwner: execution.leaseOwner,
+          jobs: [job]
+        });
+      } catch (error) {
+        if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
+          throw error;
+        }
+        const checkpointError = new Error(`扫描详情 ${result.job?.sourceId || result.job?.url || ""} 保存失败：${error.message}`);
+        checkpointError.code = "SCAN_CHECKPOINT_FAILED";
+        checkpointError.cause = error;
+        throw checkpointError;
+      }
+    },
     onDetailResult: args.input ? null : async (result) => persistDetailOutcome(db, {
       site,
       runId: execution?.runId || "",

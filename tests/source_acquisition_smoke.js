@@ -88,6 +88,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await standaloneDetailTimeoutSmoke();
   await obsoleteCardActivationUnavailableSmoke();
   await scanNullPaneOutcomeSmoke();
+  await detailCheckpointAndWorkflowPauseSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
@@ -1102,6 +1103,35 @@ async function fullDetailCoverageSmoke() {
   assert.strictEqual(new Set(reads).size, 4, "跨关键词重复岗位不得重复点击");
   assert(jobs.filter((job) => job.detailRequired).every((job) => job.detailRead));
   assert.strictEqual(jobs.find((job) => /实习/.test(job.title)).detailRequired, false);
+}
+
+async function detailCheckpointAndWorkflowPauseSmoke() {
+  const pause = Object.assign(new Error("pause"), { code: "WORKFLOW_PAUSE_REQUESTED" });
+  const detailCheckpoints = [];
+  const targetCheckpoints = [];
+  const adapter = new BossSiteAdapter({ browser: { async navigate() {} }, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("workflow-pause-detail")];
+  adapter.readVisiblePaneDetail = async () => ({
+    description: "Complete checkpointed job description Python RAG ".repeat(12),
+    bossActiveText: "active today"
+  });
+  adapter.waitAfterDetailAction = async () => { throw pause; };
+
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["workflow-pause"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onDetailCheckpoint: async (result) => detailCheckpoints.push(result),
+    onTargetComplete: async (result) => targetCheckpoints.push(result)
+  }), (error) => error.code === "WORKFLOW_PAUSE_REQUESTED");
+
+  assert.strictEqual(detailCheckpoints.length, 1);
+  assert.strictEqual(detailCheckpoints[0].job.detailRead, true);
+  assert.strictEqual(detailCheckpoints[0].job.description, "Complete checkpointed job description Python RAG ".repeat(12).trim());
+  assert.deepStrictEqual(targetCheckpoints, []);
 }
 
 async function fairDetailAllocationSmoke() {
