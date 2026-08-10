@@ -1,0 +1,229 @@
+const assert = require("assert");
+
+const CANDIDATE_EXPORTS = [
+  "saveProfileAnalysis",
+  "attachResumeDocumentFile",
+  "getResumeDocument",
+  "saveSearchPlan",
+  "getCandidateProfile",
+  "listCandidateProfiles",
+  "saveCandidateResumeVersion",
+  "listCandidateResumeVersions",
+  "listMatchingResumeVersions",
+  "recordResumeParseAttempt",
+  "listResumeParseAttempts",
+  "updateCandidateProfile",
+  "getSearchPlan",
+  "getActiveSearchPlan",
+  "listSearchPlans",
+  "listProfileVersions",
+  "getLatestProfileVersionId",
+  "getSearchPlanDependency",
+  "getMatchingCard",
+  "getActiveMatchingCard",
+  "listMatchingCards",
+  "createMatchingCardDraft",
+  "confirmMatchingCard",
+  "saveMatchingCardDraftEdit",
+  "saveConfirmedMatchingCardRevision",
+  "getCandidateMatchingContext",
+  "compareProfileVersions",
+  "saveCandidateFact",
+  "listCandidateFacts"
+].sort();
+
+const FACADE_EXPORTS = [
+  "OUTCOME_STATUSES", "SCAN_RUN_STATUSES", "SCHEMA", "SCHEMA_VERSION", "WORKFLOW_RUN_STATUSES", "WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE",
+  "acquireSiteScanLease", "addFollowUpNote", "applyJobQualityGovernance", "attachResumeDocumentFile", "attachWorkflowCommunication", "attachWorkflowScan", "attachWorkflowScanRun", "backfillHistoricalCommunicationOutcomes", "beginScanRun", "bindBatchToPlan", "buildBatchSummary", "buildFeedbackSummary", "checkpointScanProgress", "checkpointScanTarget", "claimScanRun", "claimWorkflowJobTaskRow", "clearSiteRuntimeState", "compareProfileVersions", "completeWorkflowJobTaskRow", "confirmMatchingCard", "countWorkflowJobTaskStatuses", "countWorkflowJobTasks", "createAndBindScanBatch", "createBatch", "createMatchingCardDraft", "createScanRun", "createWorkflowRun", "decisionBucket", "failWorkflowJobTaskRow", "finishJobAnalysisAttemptRow", "finishScanRun", "getActiveMatchingCard", "getActiveSearchPlan", "getActiveWorkflowRun", "getBatch", "getCandidateMatchingContext", "getCandidateProfile", "getLatestBatchId", "getLatestJobRefreshAttempt", "getLatestMainScanBatchId", "getLatestProfileVersionId", "getLatestResumableBatch", "getLatestScanRun", "getMatchingCard", "getModelCache", "getOutcomeAnalyticsSnapshot", "getPlatformFilterCatalog", "getResumeDocument", "getRunningJobAnalysisAttemptRow", "getScanRun", "getSearchPlan", "getSearchPlanDependency", "getSiteRuntimeState", "getSiteScanLease", "getWorkflowHealthSnapshot", "getWorkflowJobTaskRow", "getWorkflowObservationJob", "getWorkflowRun", "getWorkflowRunByCommunicationBatch", "heartbeatScanRun", "immediateTransaction", "incrementWorkflowRunActivity", "incrementWorkflowTimeoutCounters", "insertJobAnalysisAttemptRow", "insertWorkflowJobTaskRow", "interruptOrphanedScanRuns", "isActivityProbeDue", "isJobAwaitingAction", "isWorkflowJobTaskObservationReady", "jobAnalysisAttemptRow", "listCandidateFacts", "listCandidateJobEvents", "listCandidateProfiles", "listCandidateResumeVersions", "listDecisionPool", "listDecisionQueue", "listJobAnalysisAttemptRows", "listJobRefreshAttempts", "listLatestScanTargetResults", "listMatchingCards", "listMatchingResumeVersions", "listProfileVersions", "listReportJobs", "listResumeParseAttempts", "listReusableJobDetails", "listScanTargetResults", "listSearchPlans", "listSiteAccessEvents", "listWorkflowJobTaskRows", "listWorkflowRuns", "markApplication", "markCandidateJob", "markWorkflowJobTasksStopped", "openDb", "reactivateWorkflowDetailRequiredTaskRow", "reassessBatchObservations", "recordCandidateJobEvent", "recordJobRefreshAttempt", "recordRecommendationFeedback", "recordResumeParseAttempt", "recordScanRunProcessExit", "recordScanTargetResult", "recordSiteAccessEvent", "recordWorkflowPlatformAccess", "recordWorkflowScanWait", "releaseSiteScanLease", "renewSiteScanLease", "requestWorkflowRunConfigurationPause", "rescorePlanObservations", "saveCandidateFact", "saveCandidateResumeVersion", "saveConfirmedMatchingCardRevision", "saveMatchingCardDraftEdit", "saveModelCache", "savePlatformFilterCatalog", "saveProfileAnalysis", "saveSearchPlan", "selectClaimableWorkflowJobTaskRow", "selectEarliestRetryAvailableAt", "selectExpiredLeaseWorkflowJobTaskRows", "selectReadyWorkflowJobEntries", "setSiteRuntimeState", "settleIncompleteWorkflowJobTaskRows", "sourceContentHash", "summarizeScanTargets", "transitionWorkflowRun", "updateCandidateProfile", "upsertJob", "upsertKeywordSource", "workflowJobTaskRow"
+].sort();
+
+assert.strictEqual(CANDIDATE_EXPORTS.length, 29);
+assert.strictEqual(FACADE_EXPORTS.length, 136);
+
+const warnings = [];
+const onWarning = (warning) => warnings.push(warning);
+process.on("warning", onWarning);
+const candidateStore = require("../src/storage/candidate_store");
+const storage = require("../src/core/storage");
+process.removeListener("warning", onWarning);
+
+assert.deepStrictEqual(Object.keys(candidateStore).sort(), CANDIDATE_EXPORTS);
+assert.deepStrictEqual(Object.keys(storage).sort(), FACADE_EXPORTS);
+for (const name of CANDIDATE_EXPORTS) assert.strictEqual(storage[name], candidateStore[name], `${name} must be a direct facade reference`);
+assert.strictEqual(warnings.filter((warning) => /circular/i.test(warning.message)).length, 0, "facade and direct store must load without circular-dependency warnings");
+
+const db = storage.openDb(":memory:");
+
+function observeTransaction(action) {
+  const originalExec = db.exec.bind(db);
+  const statements = [];
+  db.exec = (sql) => {
+    statements.push(String(sql));
+    return originalExec(sql);
+  };
+  try {
+    return { value: action(), statements };
+  } finally {
+    db.exec = originalExec;
+  }
+}
+
+function profile(name, targetTitles = ["AI 产品经理"]) {
+  return {
+    candidate: { name, city: "广州", targetTitles, expectedSalary: "25k" },
+    skills: [{ name: "JavaScript" }],
+    projects: [{ name: "RoleFlow" }]
+  };
+}
+
+function document(hash, text = "resume text") {
+  return {
+    originalFileName: "candidate-resume.txt",
+    format: "text",
+    contentHash: hash,
+    text,
+    diagnostics: { extractionMethod: "text", inputBytes: text.length }
+  };
+}
+
+function plan(name = "candidate plan") {
+  return { name, cities: ["广州"], keywords: ["AI"] };
+}
+
+function card(direction = "AI 产品经理") {
+  return {
+    targetDirections: [direction],
+    strongEvidence: [{ label: "产品交付", evidence: "负责 AI 产品交付" }],
+    transferableCapabilities: [{ label: "数据分析", evidence: "持续复盘数据", limitation: "缺少行业经验" }],
+    cautionTransitions: [],
+    userNotes: []
+  };
+}
+
+try {
+  const initialSave = observeTransaction(() => storage.saveProfileAnalysis(db, {
+    profile: profile("Candidate One"),
+    document: document("resume-v1", "A".repeat(6100)),
+    searchPlan: plan()
+  }));
+  assert.deepStrictEqual(initialSave.statements, ["BEGIN", "COMMIT"]);
+  const saved = initialSave.value;
+  assert(saved.profileId > 0 && saved.profileVersionId > 0 && saved.resumeVersionId > 0 && saved.resumeDocumentId > 0 && saved.planId > 0);
+  assert.strictEqual(storage.getCandidateProfile(db, saved.profileId).displayName, "Candidate One");
+  assert.strictEqual(storage.listCandidateProfiles(db)[0].activePlanId, saved.planId);
+  assert.strictEqual(storage.getSearchPlan(db, saved.planId).profileVersionId, saved.profileVersionId);
+  assert.strictEqual(storage.getActiveSearchPlan(db, saved.profileId).id, saved.planId);
+  assert.strictEqual(storage.listSearchPlans(db, saved.profileId).length, 1);
+  assert.strictEqual(storage.listProfileVersions(db, saved.profileId)[0].resumeDocumentId, saved.resumeDocumentId);
+  assert.strictEqual(storage.getLatestProfileVersionId(db, saved.profileId), saved.profileVersionId);
+  assert.strictEqual(storage.getSearchPlanDependency(db, saved.planId).matchingCardRequired, true);
+
+  storage.attachResumeDocumentFile(db, saved.resumeDocumentId, "D:/candidate-resume.txt");
+  const storedDocument = storage.getResumeDocument(db, saved.resumeDocumentId);
+  assert.deepStrictEqual(storedDocument, {
+    id: saved.resumeDocumentId,
+    profileId: saved.profileId,
+    originalFileName: "candidate-resume.txt",
+    format: "text",
+    contentHash: "resume-v1",
+    storedFilePath: "D:/candidate-resume.txt",
+    createdAt: storedDocument.createdAt
+  });
+  assert(!Object.hasOwn(storedDocument, "text"));
+
+  const firstVersion = storage.listCandidateResumeVersions(db, saved.profileId)[0];
+  assert.strictEqual(firstVersion.versionKey, `resume_${saved.resumeDocumentId}`);
+  assert.strictEqual(firstVersion.resumeTextExcerpt.length, 6000);
+  db.prepare("UPDATE candidate_resume_versions SET target_roles_json = 'not json', analysis_json = 'not json' WHERE id = ?").run(firstVersion.id);
+  const fallbackVersion = storage.listCandidateResumeVersions(db, saved.profileId)[0];
+  assert.deepStrictEqual(fallbackVersion.targetRoles, []);
+  assert.deepStrictEqual(fallbackVersion.analysis, {});
+
+  const editedVersionSave = observeTransaction(() => storage.saveCandidateResumeVersion(db, {
+    profileId: saved.profileId,
+    versionId: firstVersion.id,
+    version: { name: "edited", targetRoles: ["AI 产品经理"], keywords: ["JavaScript"], primaryProjects: ["RoleFlow"], summary: "edited" }
+  }));
+  assert.deepStrictEqual(editedVersionSave.statements, ["BEGIN", "COMMIT"]);
+  const editedVersion = editedVersionSave.value;
+  assert.strictEqual(editedVersion.versionId, firstVersion.id);
+  const manualVersionSave = observeTransaction(() => storage.saveCandidateResumeVersion(db, {
+    profileId: saved.profileId,
+    version: { name: "manual", targetRoles: ["产品经理"], keywords: ["沟通"], primaryProjects: [], summary: "manual" }
+  }));
+  assert.deepStrictEqual(manualVersionSave.statements, ["BEGIN", "COMMIT"]);
+  const manualVersion = manualVersionSave.value;
+  assert(/^resume_manual_[0-9a-f-]+$/.test(storage.listCandidateResumeVersions(db, saved.profileId).find((item) => item.id === manualVersion.versionId).versionKey));
+
+  storage.recordResumeParseAttempt(db, { profileId: saved.profileId, document: document("attempt", "parsed") });
+  storage.recordResumeParseAttempt(db, { profileId: saved.profileId, error: Object.assign(new Error("parse failed"), { code: "PARSE_FAILED" }) });
+  assert.deepStrictEqual(storage.listResumeParseAttempts(db, saved.profileId, 50).map((item) => item.status).sort(), ["failed", "succeeded"]);
+
+  const draft = storage.createMatchingCardDraft(db, {
+    profileId: saved.profileId,
+    profileVersionId: saved.profileVersionId,
+    resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: "resume-v1",
+    card: card()
+  });
+  assert.strictEqual(storage.createMatchingCardDraft(db, {
+    profileId: saved.profileId, profileVersionId: saved.profileVersionId, resumeDocumentId: saved.resumeDocumentId,
+    resumeContentHash: "resume-v1", card: card()
+  }).id, draft.id);
+  assert(!storage.listMatchingResumeVersions(db, saved.profileId).some((item) => item.resumeDocumentId === saved.resumeDocumentId));
+  const editedDraft = storage.saveMatchingCardDraftEdit(db, { profileId: saved.profileId, cardId: draft.id, card: { ...card(), userNotes: ["prefer product"] } });
+  assert.deepStrictEqual(editedDraft.card.userNotes, ["prefer product"]);
+  const confirmedSave = observeTransaction(() => storage.confirmMatchingCard(db, { profileId: saved.profileId, cardId: draft.id }));
+  assert.deepStrictEqual(confirmedSave.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+  const confirmed = confirmedSave.value;
+  const idempotentConfirm = observeTransaction(() => storage.confirmMatchingCard(db, { profileId: saved.profileId, cardId: draft.id }));
+  assert.deepStrictEqual(idempotentConfirm.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+  assert.strictEqual(idempotentConfirm.value.id, confirmed.id);
+  assert.strictEqual(storage.getActiveMatchingCard(db, saved.profileId).id, confirmed.id);
+  assert.strictEqual(storage.getMatchingCard(db, confirmed.id).status, "confirmed");
+  assert.strictEqual(storage.getCandidateMatchingContext(db, saved.profileId).matchingCardId, confirmed.id);
+  assert(storage.listMatchingResumeVersions(db, saved.profileId).some((item) => item.resumeDocumentId === saved.resumeDocumentId));
+
+  const revisionSave = observeTransaction(() => storage.saveConfirmedMatchingCardRevision(db, { profileId: saved.profileId, cardId: confirmed.id, card: { ...card(), userNotes: ["revised"] } }));
+  assert.deepStrictEqual(revisionSave.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+  const revised = revisionSave.value;
+  assert.notStrictEqual(revised.id, confirmed.id);
+  assert.strictEqual(storage.getMatchingCard(db, confirmed.id).status, "superseded");
+  assert.strictEqual(storage.listMatchingCards(db, saved.profileId).length, 2);
+  assert.strictEqual(storage.getSearchPlanDependency(db, saved.planId).matchingCardId, revised.id);
+
+  const updateSave = observeTransaction(() => storage.updateCandidateProfile(db, { profileId: saved.profileId, profile: profile("Candidate One Updated", ["增长产品经理"]) }));
+  assert.deepStrictEqual(updateSave.statements, ["BEGIN", "COMMIT"]);
+  const updated = updateSave.value;
+  assert.strictEqual(updated.displayName, "Candidate One Updated");
+  assert(storage.compareProfileVersions(db, saved.profileId).changes.length > 0);
+
+  const longValue = "x".repeat(2001);
+  assert.deepStrictEqual(storage.saveCandidateFact(db, { profileId: saved.profileId, factKey: "contact preference!", factValue: longValue }), {
+    factKey: "contact_preference_", factValue: "x".repeat(2000), source: "user_provided"
+  });
+  storage.saveCandidateFact(db, { profileId: saved.profileId, factKey: "contact preference!", factValue: "email", source: "user" });
+  assert.deepStrictEqual(storage.listCandidateFacts(db, saved.profileId).map(({ factKey, factValue, source }) => ({ factKey, factValue, source })), [{ factKey: "contact_preference_", factValue: "email", source: "user" }]);
+
+  assert.strictEqual(storage.getOutcomeAnalyticsSnapshot(db, { planId: saved.planId }).context.planName, "candidate plan");
+  assert.strictEqual(storage.getWorkflowHealthSnapshot(db, { planId: saved.planId }).profileId, saved.profileId);
+
+  const countsBeforeRollback = ["candidate_profiles", "resume_documents", "profile_versions", "candidate_resume_versions", "search_plans"]
+    .map((table) => db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count);
+  db.exec("CREATE TRIGGER fail_late_profile_save BEFORE INSERT ON search_plans WHEN NEW.name = 'rollback' BEGIN SELECT RAISE(ABORT, 'forced rollback'); END");
+  const rollback = observeTransaction(() => assert.throws(() => storage.saveProfileAnalysis(db, { profile: profile("Rollback Candidate"), document: document("rollback"), searchPlan: plan("rollback") }), /forced rollback/));
+  assert.deepStrictEqual(rollback.statements, ["BEGIN", "ROLLBACK"]);
+  assert.deepStrictEqual(["candidate_profiles", "resume_documents", "profile_versions", "candidate_resume_versions", "search_plans"]
+    .map((table) => db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count), countsBeforeRollback);
+
+  const activePlanBeforePartialFailure = storage.getActiveSearchPlan(db, saved.profileId).id;
+  const circularPlan = plan("partial failure");
+  circularPlan.self = circularPlan;
+  assert.throws(() => storage.saveSearchPlan(db, { profileId: saved.profileId, plan: circularPlan }), /circular/i);
+  assert.strictEqual(storage.getActiveSearchPlan(db, saved.profileId), null, "saveSearchPlan must keep its existing non-transaction partial state");
+  assert.strictEqual(storage.getSearchPlan(db, activePlanBeforePartialFailure).isActive, false);
+
+  console.log("candidate_store_contract_smoke ok");
+} finally {
+  db.close();
+}
