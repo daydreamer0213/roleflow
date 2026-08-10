@@ -29,12 +29,15 @@ const dbPath = path.join(smokeDir, `communication-application-${Date.now()}.sqli
 const logger = { info() {}, warn() {}, error() {}, requestId() { return "communication-application-smoke"; }, listRecent() { return []; } };
 let db;
 let server;
+let noDbPathServer;
 
 (async () => {
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
   const fixture = seed(db);
   const spawns = [];
+  const spawnedChildren = [];
+  let spawnBehavior = "normal";
   server = createDashboardServer({
     db,
     root,
@@ -42,10 +45,12 @@ let server;
     logger,
     spawnProcess(file, args, options) {
       spawns.push({ file, args, options });
+      if (spawnBehavior === "throw") throw new Error("spawn failed");
       const child = new EventEmitter();
       child.pid = 3201;
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
+      spawnedChildren.push(child);
       return child;
     }
   });
@@ -72,6 +77,18 @@ let server;
     (error) => error.code === "COMMUNICATION_PROCESS_LAUNCHER_REQUIRED"
   );
   assert.strictEqual(getCommunicationBatch(db, missingLauncher.batch.id).status, "confirmed");
+  const directResolution = createCommunicationBatch({
+    db,
+    input: { planId: fixture.planId, jobIds: [fixture.directResolveJobId], browserMode: "edge" }
+  });
+  const directResolutionItem = transitionToAmbiguous(db, directResolution.batch.id);
+  const directResolved = resolveAmbiguousCommunication({
+    db,
+    input: { batchId: directResolution.batch.id, itemId: directResolutionItem.id, status: "stopped", evidenceNote: "Direct application review evidence." }
+  });
+  assert.deepStrictEqual(Object.keys(directResolved).sort(), ["batch", "item", "summary"]);
+  assert.strictEqual(directResolved.item.status, "stopped");
+  assert.strictEqual(directResolved.batch.id, directResolution.batch.id);
 
   const created = await postJson(baseUrl, "/api/communication-batch", {
     planId: fixture.planId,
@@ -165,12 +182,52 @@ let server;
   assert.strictEqual(discarded.location, `/communication?batchId=${discardable.body.batch.id}`);
   assert.strictEqual(getCommunicationBatch(db, discardable.body.batch.id).status, "stopped");
 
+  const syncSpawnFailure = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.syncSpawnJobId,
+    browserMode: "edge"
+  });
+  spawnBehavior = "throw";
+  await expectApiError(baseUrl, "/api/communication-control", { batchId: syncSpawnFailure.body.batch.id, action: "start" }, "COMMUNICATION_REQUEST_FAILED");
+  assert.deepStrictEqual(
+    pickBatchState(getCommunicationBatch(db, syncSpawnFailure.body.batch.id)),
+    { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED" }
+  );
+  spawnBehavior = "normal";
+
+  const childErrorFailure = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.childErrorJobId,
+    browserMode: "edge"
+  });
+  const childErrorStarted = await postJson(baseUrl, "/api/communication-control", { batchId: childErrorFailure.body.batch.id, action: "start" });
+  assert.strictEqual(childErrorStarted.status, 200);
+  spawnedChildren.at(-1).emit("error", new Error("child process error"));
+  assert.deepStrictEqual(
+    pickBatchState(getCommunicationBatch(db, childErrorFailure.body.batch.id)),
+    { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_ERROR" }
+  );
+
+  noDbPathServer = createDashboardServer({ db, root, dbPath: "", logger, spawnProcess() { throw new Error("spawn must not run without dbPath"); } });
+  const noDbPathBaseUrl = await listen(noDbPathServer);
+  const missingDbPath = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.missingDbPathJobId,
+    browserMode: "edge"
+  });
+  await expectApiError(noDbPathBaseUrl, "/api/communication-control", { batchId: missingDbPath.body.batch.id, action: "start" }, "COMMUNICATION_DB_PATH_REQUIRED", 500);
+  assert.deepStrictEqual(
+    pickBatchState(getCommunicationBatch(db, missingDbPath.body.batch.id)),
+    { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED" }
+  );
+
   console.log("communication_application_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
   process.exitCode = 1;
 }).finally(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (noDbPathServer) await new Promise((resolve) => noDbPathServer.close(resolve));
   if (db) db.close();
   for (const suffix of ["", "-shm", "-wal"]) {
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch {}
@@ -186,9 +243,13 @@ function seed(database) {
     planId,
     directJobId: upsertJob(database, job("direct", { title: "Direct role" }), scanBatchId),
     launcherJobId: upsertJob(database, job("launcher", { title: "Launcher role" }), scanBatchId),
+    directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
     startJobId: upsertJob(database, job("start", { title: "Start role", company: "Start company" }), scanBatchId),
     ambiguousJobId: upsertJob(database, job("ambiguous", { title: "Ambiguous role" }), scanBatchId),
-    discardJobId: upsertJob(database, job("discard", { title: "Discard role" }), scanBatchId)
+    discardJobId: upsertJob(database, job("discard", { title: "Discard role" }), scanBatchId),
+    syncSpawnJobId: upsertJob(database, job("sync-spawn", { title: "Sync spawn role" }), scanBatchId),
+    childErrorJobId: upsertJob(database, job("child-error", { title: "Child error role" }), scanBatchId),
+    missingDbPathJobId: upsertJob(database, job("missing-db-path", { title: "Missing dbPath role" }), scanBatchId)
   };
 }
 
@@ -230,6 +291,18 @@ function clickAudit(item) {
     eventType: "communication_click",
     payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
   };
+}
+
+function transitionToAmbiguous(database, batchId) {
+  const item = listCommunicationBatchItems(database, batchId)[0];
+  transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
+  return transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+}
+
+function pickBatchState(batch) {
+  return { status: batch.status, stopCode: batch.stopCode };
 }
 
 async function listen(instance) {

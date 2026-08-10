@@ -22,7 +22,6 @@ const {
   getActiveSearchPlan,
   getPlatformFilterCatalog,
   savePlatformFilterCatalog,
-  getSiteRuntimeState,
   setSiteRuntimeState,
   getSiteScanLease,
   acquireSiteScanLease,
@@ -119,6 +118,7 @@ const {
   getCommunicationStatus,
   resolveAmbiguousCommunication
 } = require("../application/communication");
+const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
 const { scoreJob, decisionState } = require("../core/scoring");
@@ -2687,7 +2687,6 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
 }
 
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
-  if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
     ...workflowLogContext({ ...(workflow || {}), communicationBatchId: batch.id }),
@@ -2698,6 +2697,7 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   }) : logger;
   let child;
   try {
+    if (!dbPath) throw appError("COMMUNICATION_DB_PATH_REQUIRED", "沟通执行缺少数据库路径。", { statusCode: 500 });
     const portableCdpPort = batch.browserMode === "portable"
       ? portableCommunicationCdpPort(batch)
       : null;
@@ -2793,21 +2793,6 @@ function communicationQuota(db) {
 
 function communicationStatus(db, batchId) {
   return getCommunicationStatus({ db, batchId });
-}
-
-function communicationRuntimeBlock(db) {
-  const state = getSiteRuntimeState(db, "boss");
-  if (!state || state.status !== "blocked") return null;
-  const blockedUntil = state.details?.blockedUntil || null;
-  const blockedUntilMs = Date.parse(blockedUntil || "");
-  if (Number.isFinite(blockedUntilMs) && blockedUntilMs <= Date.now()) return null;
-  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
-}
-
-function assertBossRuntimeAvailable(db) {
-  const block = communicationRuntimeBlock(db);
-  if (!block) return;
-  throw appError(block.reasonCode, "BOSS 访问仍处于安全暂停期。", { statusCode: 409 });
 }
 
 function redirectCommunicationResult(res, batch) {
