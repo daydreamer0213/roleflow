@@ -203,7 +203,7 @@ function pageAudit(primarySelector) {
   const focused = document.activeElement;
   const focusStyle = focused ? getComputedStyle(focused) : null;
   const motionTarget = primaryVisible[0] || actions[0] || document.body;
-  const headings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].map((heading) => ({ level: Number(heading.tagName.slice(1)), text: text(heading) }));
+  const headings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter(visible).map((heading) => ({ level: Number(heading.tagName.slice(1)), text: text(heading) }));
   const headingOrderValid = headings.every((heading, index) => index === 0 || heading.level <= headings[index - 1].level + 1);
   const labelledInputs = [...document.querySelectorAll("input:not([type=hidden]), select, textarea")].filter(visible).map((element) => ({ tag: element.tagName.toLowerCase(), name: element.getAttribute("name") || "", labelled: Boolean(element.labels?.length || element.getAttribute("aria-label") || element.getAttribute("aria-labelledby")) }));
   const overflowElements = [...document.body.querySelectorAll("*")].filter(visible).filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < -0.5 || rect.right > innerWidth + 0.5; }).slice(0, 20).map((element) => ({ tag: element.tagName.toLowerCase(), id: element.id || "", classes: typeof element.className === "string" ? element.className : "" }));
