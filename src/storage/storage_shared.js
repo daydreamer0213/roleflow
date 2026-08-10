@@ -10,4 +10,26 @@ function parseJson(text, fallback) {
   }
 }
 
-module.exports = { nowIso, parseJson };
+const OUTCOME_STATUSES = ["applied", "skipped", "no_reply", "review", "later", "interview", "rejected", "invalid", "salary_mismatch"];
+
+function storageError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function optionalInteger(value, label) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new TypeError(`${label} must be an integer`);
+  return parsed;
+}
+
+function optionalPositiveInteger(value, label) {
+  const parsed = optionalInteger(value, label);
+  if (parsed === null) return null;
+  if (parsed <= 0) throw new TypeError(`${label} must be a positive integer`);
+  return parsed;
+}
+
+module.exports = { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger };
