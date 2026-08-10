@@ -3494,13 +3494,13 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
   <p class="hint">当前模型：${escapeHtml(status)}</p>
   ${unavailable}
   <form class="panel form-stack" method="post" action="/api/resume" enctype="multipart/form-data">
+    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
     <label>候选人画像<select name="profileId"><option value="">新建候选人</option>${options}</select></label>
     <label>上传简历文件<input name="resume" type="file" accept=".txt,.md,.docx,.pdf" onchange="document.getElementById('resume-text').value=''"></label>
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
     <div class="inline-form"><button type="button" data-template="${escapeAttr(JSON.stringify(resumeTextTemplate()))}" onclick="const target=document.getElementById(&quot;resume-text&quot;);if(!target.value.trim())target.value=JSON.parse(this.dataset.template);target.focus()">使用模板</button></div>
     ${renderResumePreviewControls()}
     <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
-    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
   </form>
   ${profiles.length ? `<section class="panel"><h2>已有候选人</h2>${profiles.map((profile) => `<p><a href="/plan?profileId=${profile.id}&planId=${profile.activePlanId || ""}">${escapeHtml(profile.displayName)}</a> · 最近更新 ${escapeHtml(profile.updatedAt.slice(0, 16).replace("T", " "))}</p>`).join("")}</section>` : ""}
 </main>${resumePreviewScript()}` });
