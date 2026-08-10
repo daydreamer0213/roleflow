@@ -19,6 +19,7 @@ let server;
     acceptance: "e2e_pending",
     executionEnabled: true
   });
+  assert.strictEqual(communicationCalibrationStatus().status, "calibrated");
   assert.notDeepStrictEqual(communicationCalibrationStatus(), {
     implementation: "implemented",
     calibration: "calibrated",
