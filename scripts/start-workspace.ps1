@@ -2,11 +2,16 @@
 param(
   [int]$Port = 8787,
   [int]$CdpPort = 9222,
+  [ValidateSet("edge", "portable")]
+  [string]$BrowserMode = "edge",
   [switch]$NoBrowser,
   [switch]$NoOpen
 )
 
 $ErrorActionPreference = "Stop"
+if ($BrowserMode -eq "portable" -and $CdpPort -ne 9222) {
+  throw "WORKSPACE_PORTABLE_BROWSER_REQUIRED: portable 模式只支持 9222 端口。"
+}
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RunScript = Join-Path $ProjectRoot "run.ps1"
 . (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
@@ -38,7 +43,11 @@ function Test-Dashboard {
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $NoBrowser) {
-  & (Join-Path $PSScriptRoot "start-portable-edge.ps1") -Port $CdpPort
+  if ($BrowserMode -eq "edge") {
+    & (Join-Path $PSScriptRoot "start-edge-control.ps1") -Source auto
+  } else {
+    & (Join-Path $PSScriptRoot "start-portable-edge.ps1") -Port $CdpPort
+  }
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -63,16 +72,22 @@ if (-not (Test-Dashboard -DashboardPort $Port)) {
 
 $url = "http://127.0.0.1:$Port/"
 Write-Host "RoleFlow is ready: $url"
-Write-Host "浏览器：工作台与 BOSS 位于同一个项目专用 Edge 窗口（不需要 Edge Control 扩展）"
+if ($BrowserMode -eq "edge") {
+  Write-Host "浏览器：复用普通 Edge 中已登录的固定 BOSS 标签页"
+} else {
+  Write-Host "浏览器：项目专用 Edge（手动备用，需要独立登录）"
+}
 Write-Host "未登录时请先在 BOSS 标签页登录；设置好搜索条件后切回工作台。"
 
 if (-not $NoOpen) {
   $workspaceArgs = @(
     "workspace-tabs",
     "--dashboard-url", $url,
-    "--browser", "portable",
-    "--cdp-port", [string]$CdpPort
+    "--browser", $BrowserMode
   )
+  if ($BrowserMode -eq "portable") {
+    $workspaceArgs += @("--cdp-port", [string]$CdpPort)
+  }
   & $RunScript @workspaceArgs
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

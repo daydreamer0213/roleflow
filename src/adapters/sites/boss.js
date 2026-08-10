@@ -183,23 +183,6 @@ const PAGE_HELPERS = String.raw`
     };
   };
 
-  window.__bossOpenCard = function(jobId, fallbackIndex, expectedTitle) {
-    const cards = window.__bossCards();
-    const byId = jobId ? cards.find((card) => {
-      const href = (card.querySelector('a[href*="job_detail"]') || card.querySelector("a"))?.href || "";
-      return href.includes("/job_detail/" + jobId + ".html");
-    }) : null;
-    const byTitle = expectedTitle ? cards.find((card) => window.__bossDecode(card.innerText || "").includes(expectedTitle)) : null;
-    const card = byId || byTitle || cards[Number(fallbackIndex) || 0];
-    if (!card) return { clicked: false, reason: "card_not_found", cardCount: cards.length };
-    const target = card.tagName === "A"
-      ? (card.closest("li, .job-card-box, .job-card-wrapper") || card)
-      : card;
-    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
-    target.click();
-    return { clicked: true, cardCount: cards.length };
-  };
-
   window.__bossScrollPane = function(toTop) {
     const root = document.querySelector(".job-detail-container")
       || document.querySelector(".job-detail")
@@ -317,6 +300,7 @@ class BossSiteAdapter {
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.communicationTabId = null;
     this.communicationSearchTabId = null;
+    this.communicationTabsBound = false;
     this.communicationTabPreparationPromise = null;
     this.communicationOperationInFlight = "";
     this.communicationDispatchedJobIds = new Set();
@@ -517,7 +501,9 @@ class BossSiteAdapter {
     throw new Error("BOSS 筛选目录读取失败：页面未返回薪资或经验条件。");
   }
 
-  async navigateWithPacing(tabId, url, kind, { enforceBudget = true } = {}) {
+  async navigateWithPacing(tabId, url, kind, { enforceBudget = true, signal = null, assertTabBindings = null } = {}) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     if (enforceBudget && kind === "list" && this.listNavigations >= this.pageBudget) {
       const error = new Error(`BOSS 本批列表页面达到安全上限 ${this.pageBudget}，已停止继续搜索。`);
       error.code = "BOSS_PAGE_BUDGET_REACHED";
@@ -526,22 +512,32 @@ class BossSiteAdapter {
     const accessAction = kind === "detail"
       ? "detail_open"
       : ["catalog", "list"].includes(kind) ? "list_navigation" : "";
-    if (accessAction) await this.reserveAccess(accessAction, { kind, url });
+    if (accessAction === "detail_open") {
+      const jobId = (normalizeBossUrl(url).match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+      await this.reserveAccess(accessAction, { jobId });
+    } else if (accessAction) {
+      await this.reserveAccess(accessAction, { kind });
+    }
+    throwIfAborted(signal);
     await this.browser.navigate(tabId, url);
     this.pageNavigations += 1;
     if (kind === "list") this.listNavigations += 1;
-    await this.waitWithPacing(kind);
+    await this.waitWithPacing(kind, { signal, assertTabBindings });
   }
 
-  async waitWithPacing(kind) {
+  async waitWithPacing(kind, { signal = null, assertTabBindings = null } = {}) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     const [min, max] = BOSS_PACING_POLICY.delayMs[kind] || BOSS_PACING_POLICY.delayMs.list;
-    await this.sleep(randomBetween(min, max, this.random));
+    await waitForAbortableSleep(this.sleep(randomBetween(min, max, this.random)), signal);
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     if (!["catalog", "list", "detail", "scroll", "card", "refresh", "target"].includes(kind)) return;
     this.pacedActions += 1;
     if (this.pacedActions < this.nextPacingCooldownAt) return;
     const cooldownMs = randomBetween(...BOSS_PACING_POLICY.periodicDelayMs, this.random);
     this.logger?.info("boss_pacing_cooldown", { pacedActions: this.pacedActions, cooldownMs });
-    await this.sleep(cooldownMs);
+    await waitForAbortableSleep(this.sleep(cooldownMs), signal);
     this.nextPacingCooldownAt += randomBetween(...BOSS_PACING_POLICY.periodicEvery, this.random);
   }
 
@@ -558,13 +554,15 @@ class BossSiteAdapter {
     this.nextDetailMacroCooldownAt = randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
   }
 
-  async waitAfterDetailAction() {
+  async waitAfterDetailAction({ signal = null, assertTabBindings = null } = {}) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     this.detailActions += 1;
     if (this.detailActions >= this.nextDetailMacroCooldownAt) {
       const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.macroDelayMs, this.random);
       console.error(`[boss] 已读取 ${this.detailActions} 个右栏详情，阶段冷却 ${Math.ceil(cooldownMs / 1000)} 秒后继续`);
       this.logger?.info("boss_detail_macro_cooldown", { detailActions: this.detailActions, cooldownMs });
-      await this.sleep(cooldownMs);
+      await waitForAbortableSleep(this.sleep(cooldownMs), signal);
       this.nextDetailMacroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
       while (this.nextDetailMicroCooldownAt <= this.detailActions) {
         this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
@@ -574,7 +572,7 @@ class BossSiteAdapter {
     if (this.detailActions >= this.nextDetailMicroCooldownAt) {
       const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.microDelayMs, this.random);
       this.logger?.info("boss_detail_micro_cooldown", { detailActions: this.detailActions, cooldownMs });
-      await this.sleep(cooldownMs);
+      await waitForAbortableSleep(this.sleep(cooldownMs), signal);
       this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
     }
   }
@@ -628,6 +626,7 @@ class BossSiteAdapter {
 
     scanTargetLoop: for (const target of scanTargets) {
           throwIfAborted(options.signal);
+          await assertRuntimeTabBindings(options.assertTabBindings);
           const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey, detailLimitOverride } = target;
           targetPosition += 1;
           const startedAt = new Date().toISOString();
@@ -646,10 +645,13 @@ class BossSiteAdapter {
               nativeFilterLane: laneId,
               nativeFilters: normalizeNativeFilters(lane)
             });
-            await this.navigateWithPacing(tabId, url, "list");
+            await this.navigateWithPacing(tabId, url, "list", {
+              signal: options.signal,
+              assertTabBindings: options.assertTabBindings
+            });
             throwIfAborted(options.signal);
             await this.assertSearchPage(tabId);
-            const collected = await this.collectCards(tabId, cardLimit, options.signal);
+            const collected = await this.collectCards(tabId, cardLimit, options.signal, options.assertTabBindings);
             throwIfAborted(options.signal);
             const collection = Array.isArray(collected)
               ? { cards: collected, status: "completed", stopReason: "external_collection", scrollRounds: 0, growthRounds: 0, quietWindows: 0 }
@@ -744,13 +746,30 @@ class BossSiteAdapter {
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
+            let visiblePaneProbeAvailable = true;
             for (const entry of detailEntries) {
               throwIfAborted(options.signal);
-              console.error(`[boss] 读右栏：${keyword}（${item.priority}） ${entry.job.title}`);
-              let detailOutcome = { outcome: "succeeded", errorCode: "" };
+              await assertRuntimeTabBindings(options.assertTabBindings);
+              console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
+              let accessMode = "standalone_detail";
+              let detailOutcome = {
+                outcome: "succeeded",
+                errorCode: "",
+                accessMode
+              };
               try {
-                const detail = await this.readCardDetail(tabId, entry.job, entry.index, options.signal);
+                let detail = null;
+                if (visiblePaneProbeAvailable) {
+                  visiblePaneProbeAvailable = false;
+                  accessMode = "visible_pane";
+                  detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal, options.assertTabBindings);
+                }
+                if (!detail) {
+                  accessMode = "standalone_detail";
+                  detail = await this.readDetail(tabId, entry.job.url, options.signal, options.assertTabBindings);
+                }
                 throwIfAborted(options.signal);
+                detailOutcome = { outcome: "succeeded", errorCode: "", accessMode };
                 const detailedJob = normalizeBossJob({
                   ...entry.job,
                   description: detail.description,
@@ -764,19 +783,23 @@ class BossSiteAdapter {
                 detailedJob.detailRequired = true;
                 mergeScanCandidate(candidates, { ...entry, job: detailedJob });
                 detailsRead += 1;
-                await this.waitAfterDetailAction();
+                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings });
               } catch (error) {
-                detailsFailed += 1;
+                if (error?.code === "SCAN_ABORTED") throw error;
+                const accessPending = error?.code === "BOSS_ACCESS_BUDGET_EXHAUSTED";
+                if (!accessPending) detailsFailed += 1;
                 this.logger?.warn("boss_card_detail_read_failed", {
                   targetKey,
                   keyword,
                   jobId: entry.job.sourceId || entry.job.url || "",
-                  errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED",
+                  errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT",
                   errorMessage: error?.message || String(error)
                 });
-                const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
-                mergeScanCandidate(candidates, { ...entry, job: failedJob });
-                const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_CARD_DETAIL_READ_FAILED" };
+                if (!accessPending) {
+                  const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT" };
+                  mergeScanCandidate(candidates, { ...entry, job: failedJob });
+                }
+                const failedOutcome = { outcome: "failed", errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT", accessMode };
                 if (isFatalBrowserError(error)) {
                   try {
                     await emitDetailResult(options.onDetailResult, failedOutcome);
@@ -785,7 +808,7 @@ class BossSiteAdapter {
                   }
                   throw error;
                 }
-                await this.waitAfterDetailAction();
+                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings });
                 detailOutcome = failedOutcome;
               }
               await emitDetailResult(options.onDetailResult, detailOutcome);
@@ -816,7 +839,7 @@ class BossSiteAdapter {
             }
             successfulTargets += 1;
             if (collection.status === "partial") partialTargets += 1;
-            await this.waitWithPacing("target");
+            await this.waitWithPacing("target", { signal: options.signal, assertTabBindings: options.assertTabBindings });
           } catch (error) {
             if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST"].includes(error?.code)) throw error;
             this.logger?.warn("boss_scan_target_failed", {
@@ -849,7 +872,7 @@ class BossSiteAdapter {
               fatalError = error;
               break scanTargetLoop;
             }
-            await this.waitWithPacing("target");
+            await this.waitWithPacing("target", { signal: options.signal, assertTabBindings: options.assertTabBindings });
           }
     }
     const resultJobs = [...candidates.values()].map((item) => item.job);
@@ -890,12 +913,12 @@ class BossSiteAdapter {
       fatalErrorMessage: fatalError?.message || ""
     };
     if (typeof options.onScanComplete === "function") await options.onScanComplete(scanSummary);
-    if (!successfulTargets && fatalError) throw fatalError;
+    if (fatalError) throw fatalError;
     if (!successfulTargets) throw bossError("BOSS_SCAN_NO_TARGET_SUCCEEDED", "本轮所有 BOSS 搜索目标均失败，已保留逐目标错误记录。");
     return resultJobs;
   }
 
-  async refreshDetails(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null } = {}) {
+  async refreshDetails(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null, assertTabBindings = null } = {}) {
     if (!this.browser) throw new Error("补读岗位详情需要浏览器连接。");
     throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
@@ -906,10 +929,11 @@ class BossSiteAdapter {
     const refreshed = [];
     for (const job of selected) {
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       console.error(`[boss] 补读详情：${job.title}`);
       let normalized;
       try {
-        const detail = await this.readDetail(selectedTabId, job.url);
+        const detail = await this.readDetail(selectedTabId, job.url, signal, assertTabBindings);
         throwIfAborted(signal);
         if (!detail.description) throw new Error("岗位详情未加载完成");
         normalized = normalizeBossJob({
@@ -934,17 +958,17 @@ class BossSiteAdapter {
           errorMessage: error?.message || String(error)
         });
         if (isFatalBrowserError(error)) throw error;
-        await this.waitWithPacing("refresh");
+        await this.waitWithPacing("refresh", { signal, assertTabBindings });
         continue;
       }
       refreshed.push(normalized);
       if (typeof onAttempt === "function") await onAttempt({ job, refreshedJob: normalized, result: "success" });
-      await this.waitWithPacing("refresh");
+      await this.waitWithPacing("refresh", { signal, assertTabBindings });
     }
     return refreshed.map((job) => ({ ...job, detailRequired: true, detailRead: true }));
   }
 
-  async probeActivities(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null } = {}) {
+  async probeActivities(jobs, { limit = REFRESH_LIMIT, tabId = null, onAttempt = null, signal = null, assertTabBindings = null } = {}) {
     if (!this.browser) throw new Error("更新招聘方活跃状态需要浏览器连接。");
     throwIfAborted(signal);
     const selectedTabId = tabId || await this.browser.activeTabId();
@@ -955,10 +979,11 @@ class BossSiteAdapter {
     const refreshed = [];
     for (const job of selected) {
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       console.error(`[boss] 更新活跃状态：${job.title}`);
       let normalized;
       try {
-        const bossActiveText = await this.readActivity(selectedTabId, job.url);
+        const bossActiveText = await this.readActivity(selectedTabId, job.url, signal, assertTabBindings);
         throwIfAborted(signal);
         if (!bossActiveText) throw bossError("BOSS_ACTIVITY_UNAVAILABLE", "页面没有返回可识别的招聘方活跃状态");
         normalized = normalizeBossJob({ ...job, bossActiveText });
@@ -975,28 +1000,29 @@ class BossSiteAdapter {
           errorMessage: error?.message || String(error)
         });
         if (isFatalBrowserError(error)) throw error;
-        await this.waitWithPacing("refresh");
+        await this.waitWithPacing("refresh", { signal, assertTabBindings });
         continue;
       }
       refreshed.push(normalized);
       if (typeof onAttempt === "function") await onAttempt({ job, refreshedJob: normalized, result: "success" });
-      await this.waitWithPacing("refresh");
+      await this.waitWithPacing("refresh", { signal, assertTabBindings });
     }
     return refreshed;
   }
 
-  async collectCards(tabId, maxCards, signal = null) {
+  async collectCards(tabId, maxCards, signal = null, assertTabBindings = null) {
     const found = new Map();
     let readinessAttempts = 0;
     while (!found.size && readinessAttempts < 10) {
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       mergeUniqueCards(found, initialCards);
       if (found.size) break;
       readinessAttempts += 1;
-      await this.waitWithPacing("list_ready");
+      await this.waitWithPacing("list_ready", { signal, assertTabBindings });
     }
     if (readinessAttempts) {
       this.logger?.info("boss_list_content_waited", { attempts: readinessAttempts, cardCount: found.size });
@@ -1008,15 +1034,16 @@ class BossSiteAdapter {
     const maxRounds = Math.max(20, normalizeCardLimit(maxCards));
     for (let round = 0; round < maxRounds && found.size < maxCards; round += 1) {
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       if (mergeUniqueCards(found, cards) > 0) growthRounds += 1;
       if (found.size >= maxCards) break;
-      const scroll = await this.scrollList(tabId);
+      const scroll = await this.scrollList(tabId, signal, assertTabBindings);
       scrollRounds += 1;
       if (scroll?.atBottom) {
-        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal);
+        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal, assertTabBindings);
         if (growth.grew) {
           growthRounds += 1;
           quietWindows = 0;
@@ -1030,7 +1057,7 @@ class BossSiteAdapter {
         continue;
       }
       quietWindows = 0;
-      await this.waitWithPacing("scroll");
+      await this.waitWithPacing("scroll", { signal, assertTabBindings });
     }
     const reachedLimit = found.size >= maxCards;
     return {
@@ -1043,14 +1070,16 @@ class BossSiteAdapter {
     };
   }
 
-  async waitForCardGrowth(tabId, maxCards, found, signal = null) {
+  async waitForCardGrowth(tabId, maxCards, found, signal = null, assertTabBindings = null) {
     const timeoutMs = randomBetween(2400, 3400, this.random);
     const pollMs = randomBetween(350, 650, this.random);
     const maxPolls = Math.max(4, Math.ceil(timeoutMs / pollMs));
     for (let poll = 0; poll < maxPolls; poll += 1) {
       throwIfAborted(signal);
-      await this.sleep(pollMs);
+      await assertRuntimeTabBindings(assertTabBindings);
+      await waitForAbortableSleep(this.sleep(pollMs), signal);
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
@@ -1060,7 +1089,9 @@ class BossSiteAdapter {
     return { grew: false, added: 0, polls: maxPolls };
   }
 
-  async scrollList(tabId) {
+  async scrollList(tabId, signal = null, assertTabBindings = null) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
     await this.reserveAccess("list_scroll");
@@ -1069,51 +1100,46 @@ class BossSiteAdapter {
     return result || { moved: false, atBottom: false };
   }
 
-  async readCardDetail(tabId, job, fallbackIndex = 0, signal = null) {
+  async readVisiblePaneDetail(tabId, job, signal = null, assertTabBindings = null) {
     throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     await this.assertSearchPage(tabId);
     await this.browser.evalValue(tabId, PAGE_HELPERS);
-    const expectedJobId = (normalizeBossUrl(job?.url || "").match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.reserveAccess("pane_detail_read", { jobId: expectedJobId, title: job?.title || "", url: job?.url || "" });
-    const opened = await this.browser.evalValue(tabId, `(() => window.__bossOpenCard(${JSON.stringify(expectedJobId)}, ${Number(fallbackIndex) || 0}, ${JSON.stringify(job?.title || "")}))()`);
-    if (!opened?.clicked) throw bossError("BOSS_CARD_NOT_FOUND", `左侧岗位卡片未找到：${job?.title || expectedJobId || "unknown"}`);
-    await this.waitWithPacing("card");
+    const expectedJobId = (normalizeBossUrl(job?.url || "")
+      .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!expectedJobId) return null;
+    await this.reserveAccess("pane_detail_read", {
+      jobId: expectedJobId
+    });
     let scrolled = false;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
-      const titleMatches = normalizedComparableText(detail?.title).includes(normalizedComparableText(job?.title));
-      const identityMatches = expectedJobId && detail?.currentJobId
-        ? detail.currentJobId === expectedJobId
-        : titleMatches;
-      if (identityMatches && detail?.description) {
-        const missingUsefulField = detail.description.length < 120
-          || !(detail.salary || job.salary)
-          || !(detail.experience || job.experience)
-          || !(detail.bossActiveText || job.bossActiveText);
-        if (!scrolled && detail.canScroll && missingUsefulField) {
-          scrolled = true;
-          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
-          await this.waitWithPacing("card_retry");
-          continue;
-        }
-        if (detail.description.length >= 120) {
-          await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
-          return {
-            description: cleanDetailText(detail.description),
-            bossActiveText: parseBossActivityText(detail.bossActiveText),
-            salary: detail.salary || "",
-            experience: detail.experience || "",
-            education: detail.education || ""
-          };
-        }
+      if (!detail?.currentJobId || detail.currentJobId !== expectedJobId) return null;
+      const expectedTitle = normalizedComparableText(job?.title);
+      const actualTitle = normalizedComparableText(detail?.title);
+      if (!expectedTitle || !actualTitle || !actualTitle.includes(expectedTitle)) return null;
+      if (detail.description?.length >= 120) {
+        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
+        return {
+          description: cleanDetailText(detail.description),
+          bossActiveText: parseBossActivityText(detail.bossActiveText),
+          salary: detail.salary || "",
+          experience: detail.experience || "",
+          education: detail.education || ""
+        };
       }
-      await this.waitWithPacing("card_retry");
+      if (!scrolled && detail.canScroll) {
+        scrolled = true;
+        await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
+      }
+      await this.waitWithPacing("card_retry", { signal, assertTabBindings });
     }
     await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
-    throw bossError("BOSS_PANE_SWITCH_TIMEOUT", `右侧详情未切换到目标岗位：${job?.title || expectedJobId || "unknown"}`);
+    return null;
   }
 
   async assertSearchPage(tabId) {
@@ -1160,10 +1186,19 @@ class BossSiteAdapter {
     return state;
   }
 
-  async readDetail(tabId, url) {
-    const expectedJobId = (normalizeBossUrl(url).match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.navigateWithPacing(tabId, url, "detail");
+  async readDetail(tabId, url, signal = null, assertTabBindings = null) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
+    const normalizedUrl = normalizeBossNavigationUrl(url);
+    const expectedJobId = (normalizeBossUrl(normalizedUrl)
+      .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!normalizedUrl || !expectedJobId) {
+      throw bossError("BOSS_DETAIL_URL_INVALID", "BOSS standalone detail URL is invalid.");
+    }
+    await this.navigateWithPacing(tabId, normalizedUrl, "detail", { signal, assertTabBindings });
     for (let i = 0; i < 8; i += 1) {
+      throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertDetailPage(tabId, expectedJobId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, `(() => {
@@ -1199,15 +1234,22 @@ class BossSiteAdapter {
           education: detail.education || ""
         };
       }
-      await this.waitWithPacing("retry");
+      await this.waitWithPacing("retry", { signal, assertTabBindings });
     }
-    return { description: "", bossActiveText: "", salary: "", experience: "", education: "" };
+    throw bossError(
+      "BOSS_DETAIL_LOAD_TIMEOUT",
+      `BOSS standalone detail did not become complete for ${expectedJobId || "unknown"}`
+    );
   }
 
-  async readActivity(tabId, url) {
+  async readActivity(tabId, url, signal = null, assertTabBindings = null) {
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     const expectedJobId = (normalizeBossUrl(url).match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
-    await this.navigateWithPacing(tabId, url, "detail");
+    await this.navigateWithPacing(tabId, url, "detail", { signal, assertTabBindings });
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
       await this.assertDetailPage(tabId, expectedJobId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const state = await this.browser.evalValue(tabId, `(() => {
@@ -1225,7 +1267,7 @@ class BossSiteAdapter {
       })()`);
       const parsed = parseBossActivityText(state?.bossActiveText);
       if (parsed) return parsed;
-      await this.waitWithPacing("retry");
+      await this.waitWithPacing("retry", { signal, assertTabBindings });
     }
     return "";
   }
@@ -1240,6 +1282,22 @@ class BossSiteAdapter {
     } finally {
       if (this.communicationTabPreparationPromise === preparation) this.communicationTabPreparationPromise = null;
     }
+  }
+
+  bindCommunicationTabs({ searchTabId, communicationTabId } = {}) {
+    if (searchTabId === null || searchTabId === undefined
+      || communicationTabId === null || communicationTabId === undefined) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Fixed BOSS search and communication tab IDs are required.");
+    }
+    if (this.communicationSearchTabId !== null && String(this.communicationSearchTabId) !== String(searchTabId)) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
+    }
+    if (this.communicationTabId !== null && String(this.communicationTabId) !== String(communicationTabId)) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS communication tab cannot be rebound during communication inspection.");
+    }
+    this.communicationSearchTabId = searchTabId;
+    this.communicationTabId = communicationTabId;
+    this.communicationTabsBound = true;
   }
 
   async prepareCommunicationTabOnce(searchTabId = null) {
@@ -1276,11 +1334,20 @@ class BossSiteAdapter {
     const stored = this.communicationTabId === null
       ? null
       : tabs.find((tab) => String(tab.id) === String(this.communicationTabId));
+    if (this.communicationTabsBound && !stored) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The bound BOSS communication tab is no longer present.");
+    }
     if (stored) {
       if (!sameBossWindow(searchTab, stored)) {
+        if (this.communicationTabsBound) {
+          throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The bound BOSS communication tab is in a different browser window.");
+        }
         throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_MISMATCH", "The fixed BOSS communication tab is in a different browser window.");
       }
       if (!isCachedBossCommunicationTab(stored)) {
+        if (this.communicationTabsBound) {
+          throw bossError("BOSS_COMMUNICATION_PAGE_LOST", "The bound BOSS communication tab is no longer a chat or detail page.");
+        }
         throw bossError("BOSS_DETAIL_PAGE_LOST", "The fixed BOSS communication tab is no longer a standalone detail or chat page.");
       }
       return stored.id;
@@ -1768,6 +1835,7 @@ function normalizeBossUrl(url) {
   if (!value) return "";
   try {
     const parsed = new URL(value, "https://www.zhipin.com");
+    if (parsed.protocol !== "https:" || !/(^|\.)zhipin\.com$/i.test(parsed.hostname)) return "";
     const id = parsed.pathname.match(/\/job_detail\/([^/?#]+)\.html/i);
     if (id) return `${parsed.origin}/job_detail/${id[1]}.html`;
     return "";
@@ -1825,6 +1893,37 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function assertRuntimeTabBindings(assertTabBindings) {
+  if (typeof assertTabBindings === "function") await assertTabBindings();
+}
+
+function waitForAbortableSleep(sleepPromise, signal = null) {
+  if (!signal) return sleepPromise;
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(sleepPromise).then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+}
+
 function bossError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -1850,11 +1949,16 @@ function isFatalBrowserError(error) {
     "BOSS_LOGIN_REQUIRED",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BOSS_TAB_REQUIRED",
+    "BOSS_SEARCH_TAB_CHANGED",
+    "BOSS_OPERATOR_TABS_CHANGED",
+    "BOSS_COMMUNICATION_PAGE_LOST",
+    "BOSS_WINDOW_MISMATCH",
     "BOSS_SEARCH_PAGE_LOST",
     "BOSS_DETAIL_PAGE_LOST",
     "BROWSER_TIMEOUT",
     "BROWSER_DISCONNECTED",
     "BROWSER_COMMAND_FAILED",
+    "SCAN_ABORTED",
     "SCAN_CHECKPOINT_FAILED",
     "SCAN_LEASE_LOST"
   ]).has(String(error?.code || ""));
@@ -1868,12 +1972,13 @@ function throwIfAborted(signal) {
   throw error;
 }
 
-async function emitDetailResult(callback, { outcome, errorCode = "" } = {}) {
+async function emitDetailResult(callback, { outcome, errorCode = "", accessMode = "standalone_detail" } = {}) {
   if (typeof callback !== "function") return;
   const succeeded = outcome === "succeeded";
   await callback({
     outcome: succeeded ? "succeeded" : "failed",
-    errorCode: succeeded ? "" : String(errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+    errorCode: succeeded ? "" : String(errorCode || "BOSS_DETAIL_LOAD_TIMEOUT"),
+    accessMode
   });
 }
 

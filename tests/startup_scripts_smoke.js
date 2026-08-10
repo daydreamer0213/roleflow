@@ -72,6 +72,7 @@ async function main() {
   }
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
+  testPortableModeRejectsInvalidCdpPort();
   await testForeignDashboardIdentityRejected();
   await testForeignCdpIdentityRejected();
   await testPortableEdgeProfileArgumentWithSpaces();
@@ -154,8 +155,83 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.strictEqual(normalizePath(dashboard.cwd), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(dashboard.projectRoot), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(workspaceTabs.projectRoot), normalizePath(projectRoot));
+  assert.deepStrictEqual(
+    workspaceTabs.args.slice(
+      workspaceTabs.args.indexOf("--browser"),
+      workspaceTabs.args.indexOf("--browser") + 2
+    ),
+    ["--browser", "edge"]
+  );
+  assert(!workspaceTabs.args.includes("--cdp-port"));
   await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(8787);
+
+  const portableRecordPath = path.join(tempRoot, "workspace-portable.jsonl");
+  const portable = runPowerShell([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", "8787",
+    "-BrowserMode", "portable",
+    "-NoBrowser"
+  ], {
+    cwd: outsideCwd,
+    env: fixtureEnv({ ROLEFLOW_STARTUP_RECORD: portableRecordPath }),
+    timeout: 30000
+  });
+  assert.strictEqual(portable.status, 0, combinedOutput(portable));
+  const portableRecords = readJsonLines(portableRecordPath);
+  const portableDashboard = portableRecords.find((item) => item.command === "dashboard");
+  const portableTabs = portableRecords.find((item) => item.command === "workspace-tabs");
+  assert(portableDashboard);
+  registerProcess(portableDashboard.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
+  assert(portableTabs);
+  assert(portableTabs.args.includes("--browser"));
+  assert(portableTabs.args.includes("portable"));
+  assert(portableTabs.args.includes("--cdp-port"));
+  assert(portableTabs.args.includes("9222"));
+  await stopRegisteredProcess(portableDashboard.pid);
+  await waitForPortClosed(8787);
+}
+
+function testPortableModeRejectsInvalidCdpPort() {
+  const portableScript = path.join(projectRoot, "scripts", "start-portable-edge.ps1");
+  const portableScriptSource = fs.readFileSync(portableScript, "utf8");
+  fs.writeFileSync(
+    portableScript,
+    [
+      "param([int]$Port)",
+      "if ($env:ROLEFLOW_PORTABLE_EDGE_AUDIT) {",
+      "  Add-Content -LiteralPath $env:ROLEFLOW_PORTABLE_EDGE_AUDIT -Value $Port",
+      "}",
+      "exit 0"
+    ].join("\r\n"),
+    "utf8"
+  );
+  const recordPath = path.join(tempRoot, "workspace-invalid-port.jsonl");
+  const edgeAuditPath = path.join(tempRoot, "portable-edge-invalid-port.txt");
+  try {
+    const result = runPowerShell([
+      "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+      "-Port", "8787",
+      "-BrowserMode", "portable",
+      "-CdpPort", "9333"
+    ], {
+      cwd: outsideCwd,
+      env: fixtureEnv({
+        ROLEFLOW_STARTUP_RECORD: recordPath,
+        ROLEFLOW_PORTABLE_EDGE_AUDIT: edgeAuditPath
+      }),
+      timeout: 10000
+    });
+    assert.notStrictEqual(result.status, 0, "portable mode must reject a non-9222 port");
+    assert.match(combinedOutput(result), /WORKSPACE_PORTABLE_BROWSER_REQUIRED/);
+    assert(!fs.existsSync(edgeAuditPath), "invalid portable port must not start portable Edge");
+    assert(!fs.existsSync(recordPath), "invalid portable port must not invoke workspace-tabs");
+  } finally {
+    fs.writeFileSync(portableScript, portableScriptSource, "utf8");
+  }
 }
 
 async function testForeignDashboardIdentityRejected() {

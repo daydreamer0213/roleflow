@@ -116,6 +116,68 @@ async function persistedReservationCallbackSmoke() {
   db.close();
 }
 
+async function reservationPrivacySanitizationSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:30:00+08:00");
+  const privateSentinel = "PRIVATE-RESERVATION-DATA";
+  const observed = [];
+  const logs = [];
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    runId: "privacy-run",
+    nowFn: () => now,
+    sleepFn: async () => {},
+    logger: {
+      info(event, details) { logs.push({ event, details }); }
+    },
+    onReserved(event) { observed.push(event); }
+  });
+  const privateDetails = {
+    title: privateSentinel,
+    company: privateSentinel,
+    url: privateSentinel,
+    securityId: privateSentinel,
+    description: privateSentinel,
+    errorMessage: privateSentinel,
+    arbitrary: privateSentinel
+  };
+  await controller.reserve("pane_detail_read", { ...privateDetails, jobId: " pane-42 " });
+  await controller.reserve("detail_open", { ...privateDetails, jobId: " detail-73 " });
+  await controller.reserve("list_navigation", { ...privateDetails, kind: " LIST " });
+  await controller.reserve("list_scroll", privateDetails);
+  const firstCommunication = await controller.reserve("communication_visit", {
+    ...privateDetails,
+    batchId: "7",
+    itemId: "9",
+    jobId: "11"
+  });
+  const reusedCommunication = await controller.reserve("communication_visit", {
+    ...privateDetails,
+    title: `${privateSentinel}-changed`,
+    batchId: 7,
+    itemId: 9,
+    jobId: 11
+  });
+  const events = listSiteAccessEvents(db, { site: "boss" });
+  const detailsByAction = new Map(events.map((event) => [event.action, event.details]));
+  assert.strictEqual(firstCommunication.reused, false);
+  assert.strictEqual(reusedCommunication.reused, true);
+  assert.strictEqual(events.length, 5);
+  assert.strictEqual(detailsByAction.get("pane_detail_read").jobId, "pane-42");
+  assert.strictEqual(detailsByAction.get("detail_open").jobId, "detail-73");
+  assert.strictEqual(detailsByAction.get("list_navigation").kind, "list");
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(detailsByAction.get("list_scroll"), "kind"), false);
+  assert.deepStrictEqual({
+    batchId: detailsByAction.get("communication_visit").batchId,
+    itemId: detailsByAction.get("communication_visit").itemId,
+    jobId: detailsByAction.get("communication_visit").jobId
+  }, { batchId: 7, itemId: 9, jobId: 11 });
+  assert.strictEqual(observed.length, 5);
+  assert.strictEqual(JSON.stringify({ events, observed, logs }).includes(privateSentinel), false);
+  db.close();
+}
+
 async function naturalDayResetSmoke() {
   const db = openDb(":memory:");
   const now = Date.parse("2026-07-22T00:01:00+08:00");
@@ -530,6 +592,7 @@ Promise.resolve()
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
   .then(persistedReservationCallbackSmoke)
+  .then(reservationPrivacySanitizationSmoke)
   .then(naturalDayResetSmoke)
   .then(naturalDayRetryAtSmoke)
   .then(configuredDetailBudgetsSmoke)

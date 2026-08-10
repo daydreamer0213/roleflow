@@ -111,6 +111,28 @@ function commandAndSuccessfulExitSmoke(database) {
   const resumeArgs = resumeCalls[0].args.slice(2);
   assert.strictEqual(resumeArgs[resumeArgs.indexOf("--resume-batch") + 1], "88");
   resumeCalls[0].child.emit("close", 7, null);
+
+  const defaultCalls = [];
+  startPlanScan(new Map(), {
+    db: database,
+    root,
+    dbPath,
+    planId: 151,
+    scanKind: "daily",
+    logger,
+    requestId: "request-default-edge",
+    spawnProcess: spawnHarness(database, 151, defaultCalls)
+  });
+  const defaultArgs = defaultCalls[0].args.slice(2);
+  assert.deepStrictEqual(
+    defaultArgs.slice(
+      defaultArgs.indexOf("--browser"),
+      defaultArgs.indexOf("--browser") + 2
+    ),
+    ["--browser", "edge"]
+  );
+  assert(!defaultArgs.includes("--cdp-port"));
+  defaultCalls[0].child.emit("close", 0, null);
 }
 
 function failedAndInterruptedExitSmoke(database) {

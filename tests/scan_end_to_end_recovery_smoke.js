@@ -47,6 +47,11 @@ async function main() {
         cities: ["测试未映射城市"]
       }
     });
+    const generatedUnsupportedWorkflow = seedWorkflowRun(storage, db, {
+      profileId,
+      planId: unsupportedPlanId,
+      localDay: "2026-08-11"
+    });
     db.close();
     db = null;
 
@@ -215,7 +220,11 @@ async function main() {
       dbPath,
       unsupportedPlanId,
       "scan-e2e-generated-unsupported",
-      "complete"
+      "complete",
+      {
+        workflowRunId: generatedUnsupportedWorkflow.id,
+        keywords: ["RAG", "Agent"]
+      }
     );
     assertExit(generatedUnsupported, 1, "generated unsupported Search Plan city rejection");
     assert.match(generatedUnsupported.stderr, /BOSS 暂不支持这些城市：测试未映射城市/);
@@ -597,13 +606,23 @@ function installOfflineBoundaries() {
       this.accessController = accessController;
     }
 
-    async preflight() {
+    async preflight({ tabId = null } = {}) {
       const inheritedCurrent = process.env.ROLEFLOW_SCAN_E2E_MODE?.includes("inherited-current");
+      const searchTabId = "offline-boss-search-tab";
+      const communicationTabId = "offline-boss-communication-tab";
+      if (String(tabId) === communicationTabId) {
+        return {
+          tabId: communicationTabId,
+          url: "https://www.zhipin.com/web/geek/chat",
+          isSearchPage: false
+        };
+      }
       return {
-        tabId: "offline-boss-tab",
+        tabId: searchTabId,
         url: inheritedCurrent
           ? "https://www.zhipin.com/web/geek/jobs?query=offline&page=2"
-          : ""
+          : "https://www.zhipin.com/web/geek/jobs",
+        isSearchPage: true
       };
     }
 
@@ -664,6 +683,21 @@ function installOfflineBoundaries() {
         error.code = "BROWSER_CREATED_TOO_EARLY";
         throw error;
       }
+    }
+
+    async listTabs() {
+      return [
+        {
+          id: "offline-boss-search-tab",
+          url: "https://www.zhipin.com/web/geek/jobs",
+          windowId: 17
+        },
+        {
+          id: "offline-boss-communication-tab",
+          url: "https://www.zhipin.com/web/geek/chat",
+          windowId: 17
+        }
+      ];
     }
   }
 

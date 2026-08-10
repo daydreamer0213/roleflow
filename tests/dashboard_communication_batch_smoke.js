@@ -51,6 +51,8 @@ let server;
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
   assert.match(builder.body, /form\.addEventListener\('change',update\);update\(\)/);
+  assert.match(builder.body, /<option value="edge" selected>\u5f53\u524d\u5df2\u767b\u5f55 Edge\uff08\u63a8\u8350\uff09<\/option>/);
+  assert.match(builder.body, /<option value="portable">\u9879\u76ee\u4e13\u7528 Edge\uff08\u624b\u52a8\u5907\u7528\uff09<\/option>/);
   assert.strictEqual((builder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 30);
   assert.match(builder.body, /已达到日常沟通区间，无需为凑满 30 个补扫/);
 

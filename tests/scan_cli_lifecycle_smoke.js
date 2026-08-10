@@ -8,7 +8,10 @@ const {
   resolveScanLimit,
   persistRefreshAttempt,
   assertScanLimitOverridesAllowed,
-  assertWorkflowScanControl
+  assertWorkflowScanControl,
+  preflightBossScanBrowser,
+  runWithBoundBossScanBrowser,
+  scanFailureStatus
 } = require("../src/cli");
 const {
   openDb,
@@ -47,6 +50,7 @@ main()
 async function main() {
   fs.mkdirSync(smokeDir, { recursive: true });
   db = openDb(dbPath);
+  await fixedBossScanPreflightSmoke();
   await completedRunSmoke();
   await partialRunWithBatchSmoke();
   await interruptedRunSmoke();
@@ -58,6 +62,149 @@ async function main() {
   scanLimitSmoke();
   refreshCheckpointSmoke();
   workflowScanControlSmoke();
+}
+
+async function fixedBossScanPreflightSmoke() {
+  assert.strictEqual(typeof preflightBossScanBrowser, "function");
+  assert.strictEqual(typeof runWithBoundBossScanBrowser, "function");
+
+  const fixedTabs = [
+    { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
+    { id: 90, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs/other" }
+  ];
+  const calls = [];
+  let currentTabs = fixedTabs;
+  const browser = { listTabs: async () => currentTabs };
+  const adapter = {
+    preflight: async (options) => {
+      calls.push(options);
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true, mode: "search" }
+        : { tabId: options?.tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false, mode: "communication" };
+    }
+  };
+
+  const edgeState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
+  assert.deepStrictEqual(calls, [{ tabId: 32 }, { tabId: 31 }]);
+  assert.deepStrictEqual(edgeState, {
+    tabId: 31,
+    communicationTabId: 32,
+    url: "https://www.zhipin.com/web/geek/jobs",
+    isSearchPage: true,
+    mode: "search"
+  });
+
+  currentTabs = fixedTabs;
+  const initialBoundState = await preflightBossScanBrowser({ browserMode: "edge", browser, adapter });
+  currentTabs = fixedTabs.map((tab) => tab.id === 32 ? { ...tab, id: 33 } : tab);
+  let communicationDriftActions = 0;
+  await assert.rejects(
+    () => runWithBoundBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: initialBoundState.tabId,
+      expectedCommunicationTabId: initialBoundState.communicationTabId,
+      action: async () => { communicationDriftActions += 1; }
+    }),
+    (error) => error.code === "BOSS_OPERATOR_TABS_CHANGED"
+  );
+  assert.strictEqual(communicationDriftActions, 0);
+  currentTabs = fixedTabs;
+
+  const lostSearchCalls = [];
+  const lostSearchAdapter = {
+    preflight: async (options) => {
+      lostSearchCalls.push(options);
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+    }
+  };
+  await assert.rejects(
+    () => preflightBossScanBrowser({ browserMode: "edge", browser, adapter: lostSearchAdapter }),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
+  );
+  assert.deepStrictEqual(lostSearchCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+  const badCommunicationCalls = [];
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter: {
+        preflight: async (options) => {
+          badCommunicationCalls.push(options);
+          return { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
+        }
+      }
+    }),
+    (error) => error.code === "BOSS_COMMUNICATION_PAGE_LOST"
+  );
+  assert.deepStrictEqual(badCommunicationCalls, [{ tabId: 32 }]);
+
+  const blockedActions = { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 };
+  for (const [name, action] of Object.entries({
+    inheritedInspect: async () => { blockedActions.inheritedInspect += 1; },
+    generatedCatalog: async () => { blockedActions.generatedCatalog += 1; },
+    finalScan: async () => { blockedActions.finalScan += 1; },
+    refreshActivity: async () => { blockedActions.refreshActivity += 1; }
+  })) {
+    await assert.rejects(
+      () => runWithBoundBossScanBrowser({ browserMode: "edge", browser, adapter: lostSearchAdapter, action }),
+      (error) => error.code === "BOSS_SEARCH_PAGE_LOST",
+      `${name} must stop before its page action when the fixed search page is lost`
+    );
+  }
+  assert.deepStrictEqual(blockedActions, { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 });
+
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => [...fixedTabs, { id: 33, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs?duplicate=1" }] },
+      adapter
+    }),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => fixedTabs.filter((tab) => tab.id !== 32) },
+      adapter
+    }),
+    (error) => error.code === "BOSS_TAB_REQUIRED"
+  );
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: { listTabs: async () => fixedTabs.map((tab) => tab.id === 32 ? { ...tab, windowId: 8 } : tab) },
+      adapter
+    }),
+    (error) => error.code === "BOSS_WINDOW_MISMATCH"
+  );
+
+  currentTabs = fixedTabs.map((tab) => tab.id === 31 ? { ...tab, id: 33 } : tab);
+  calls.length = 0;
+  await assert.rejects(
+    () => preflightBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: edgeState.tabId
+    }),
+    (error) => error.code === "BOSS_SEARCH_TAB_CHANGED"
+  );
+  assert.deepStrictEqual(calls, []);
+
+  const portableCalls = [];
+  const portableState = await preflightBossScanBrowser({
+    browserMode: "portable",
+    browser: { listTabs: async () => { throw new Error("portable must not enumerate tabs"); } },
+    adapter: { preflight: async (options) => { portableCalls.push(options); return { tabId: 9222 }; } }
+  });
+  assert.deepStrictEqual(portableCalls, [undefined]);
+  assert.deepStrictEqual(portableState, { tabId: 9222 });
 }
 
 async function completedRunSmoke() {
@@ -212,6 +359,16 @@ function terminalAggregationSmoke() {
     targetSummary: { pending: 2, completed: 0, partial: 0, failed: 0 },
     scanSummary: { status: "failed", fatalErrorCode: "BROWSER_DISCONNECTED" }
   }), "interrupted");
+  for (const code of [
+    "BOSS_SEARCH_TAB_CHANGED",
+    "BOSS_OPERATOR_TABS_CHANGED",
+    "BOSS_COMMUNICATION_PAGE_LOST",
+    "BOSS_WINDOW_MISMATCH",
+    "BROWSER_COMMAND_FAILED"
+  ]) {
+    assert.strictEqual(scanFailureStatus({ code }), "interrupted", `${code} must interrupt the run`);
+  }
+  assert.strictEqual(scanFailureStatus({ code: "BOSS_DETAIL_LOAD_TIMEOUT" }), "failed");
 }
 
 function scanLimitSmoke() {

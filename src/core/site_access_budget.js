@@ -25,6 +25,7 @@ function createSiteAccessController({
   return {
     async reserve(action, details = {}) {
       const normalizedAction = String(action || "").trim().toLowerCase();
+      const sanitizedDetails = sanitizeReservationDetails(normalizedAction, details);
       let waitedMs = 0;
       while (true) {
         throwIfAborted(signal);
@@ -38,7 +39,7 @@ function createSiteAccessController({
           const limits = policy.modes[mode]?.[normalizedAction] || {};
           const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
           const existing = normalizedAction === "communication_visit"
-            ? existingCommunicationReservation(db, { site, details, nowMs, policy })
+            ? existingCommunicationReservation(db, { site, details: sanitizedDetails, nowMs, policy })
             : null;
           if (existing) {
             db.exec("COMMIT");
@@ -50,8 +51,8 @@ function createSiteAccessController({
               eventId: existing.id,
               usage,
               limits,
-              batchId: details.batchId,
-              itemId: details.itemId
+              batchId: sanitizedDetails.batchId,
+              itemId: sanitizedDetails.itemId
             });
             return { site, action: normalizedAction, mode, waitedMs, usage, limits, reused: true, eventId: existing.id };
           }
@@ -64,7 +65,7 @@ function createSiteAccessController({
               site,
               action: normalizedAction,
               runId,
-              details,
+              details: sanitizedDetails,
               createdAt: new Date(nowMs).toISOString()
             });
             if (typeof onReserved === "function") {
@@ -111,6 +112,29 @@ function createSiteAccessController({
       }
     }
   };
+}
+
+function sanitizeReservationDetails(action, details) {
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  if (["pane_detail_read", "detail_open"].includes(normalizedAction)) {
+    const jobId = String(details?.jobId || "").trim();
+    return jobId ? { jobId } : {};
+  }
+  if (normalizedAction === "list_navigation") {
+    const kind = String(details?.kind || "").trim().toLowerCase();
+    return kind ? { kind } : {};
+  }
+  if (normalizedAction === "communication_visit") {
+    return Object.fromEntries(["batchId", "itemId", "jobId"]
+      .map((field) => [field, positiveInteger(details?.[field])])
+      .filter(([, value]) => value !== null));
+  }
+  return {};
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 function existingCommunicationReservation(db, { site, details, nowMs, policy }) {

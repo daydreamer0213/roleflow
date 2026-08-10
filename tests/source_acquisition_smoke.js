@@ -81,8 +81,13 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await maxCardScrollBudgetSmoke();
   await delayedListSmoke();
   await accessReservationSmoke();
-  await paneSwitchSmoke();
-  await leftCardMetadataAvoidsPaneScrollSmoke();
+  await visiblePaneIdentitySmoke();
+  await visiblePaneMissingIdentitySmoke();
+  await visiblePaneTitleIdentitySmoke();
+  await standaloneDetailRoutingSmoke();
+  await standaloneDetailTimeoutSmoke();
+  await obsoleteCardActivationUnavailableSmoke();
+  await scanNullPaneOutcomeSmoke();
   await fullDetailCoverageSmoke();
   await fairDetailAllocationSmoke();
   await priorityDetailBudgetSmoke();
@@ -92,15 +97,18 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await detailFailureDedupeSmoke();
   await detailOutcomeAuditSmoke();
   await detailFatalOutcomeAuditSmoke();
+  await detailBudgetCheckpointSmoke();
   await targetIsolationSmoke();
   await scanTargetPlanSmoke();
   await scanTargetResumeFilterSmoke();
-  await fatalBrowserStopsRemainingTargetsSmoke();
+  await fatalBudgetAfterCompletedTargetSmoke();
+  await midDetailAbortIsFatalSmoke();
   await abortedScanStopsBeforeBrowserUseSmoke();
   await partialTargetCheckpointSmoke();
   await pageBudgetSmoke();
   await riskControlSmoke();
   await refreshSafetySmoke();
+  await runtimeBindingAndAbortSmoke();
   await refreshCheckpointBeforeFatalSmoke();
   storageSmoke();
   console.log("source_acquisition_smoke ok");
@@ -423,61 +431,6 @@ async function delayedListSmoke() {
   assert(reads >= 4);
 }
 
-async function paneSwitchSmoke() {
-  let paneReads = 0;
-  const paneScrolls = [];
-  const accessActions = [];
-  const browser = {
-    async evalValue(_tabId, expression) {
-      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
-      if (expression.startsWith("(() => window.__bossOpenCard")) return { clicked: true, jobId: "pane-job" };
-      if (expression.includes("window.__bossPaneState()")) {
-        paneReads += 1;
-        if (paneReads === 1) {
-          return {
-            currentJobId: "pane-job",
-            title: "AI应用开发",
-            description: "短内容",
-            bossActiveText: "",
-            salary: "10-15K",
-            experience: "1-3年",
-            education: "本科",
-            canScroll: true
-          };
-        }
-        return {
-          currentJobId: "pane-job",
-          title: "AI应用开发",
-          description: "完整职位描述 Python RAG Agent ".repeat(20),
-          bossActiveText: "今日活跃",
-          salary: "10-15K",
-          experience: "1-3年",
-          education: "本科",
-          canScroll: true
-        };
-      }
-      if (expression.includes("window.__bossScrollPane(false)")) paneScrolls.push("down");
-      if (expression.includes("window.__bossScrollPane(true)")) paneScrolls.push("top");
-      return true;
-    }
-  };
-  const adapter = new BossSiteAdapter({
-    browser,
-    sleepFn: async () => {},
-    randomFn: () => 0,
-    accessController: { reserve: async (action, details) => accessActions.push({ action, details }) }
-  });
-  const detail = await adapter.readCardDetail("pane-tab", {
-    title: "AI应用开发",
-    url: "https://www.zhipin.com/job_detail/pane-job.html"
-  }, 0);
-  assert(detail.description.length >= 120);
-  assert.strictEqual(detail.bossActiveText, "今日活跃");
-  assert.deepStrictEqual(paneScrolls, ["down", "top"]);
-  assert.deepStrictEqual(accessActions.map((item) => item.action), ["pane_detail_read"]);
-  assert.strictEqual(accessActions[0].details.jobId, "pane-job");
-}
-
 async function accessReservationSmoke() {
   const accessActions = [];
   const browser = {
@@ -498,41 +451,228 @@ async function accessReservationSmoke() {
   await adapter.navigateWithPacing("tab", "https://www.zhipin.com/job_detail/detail-job.html", "detail");
   await adapter.scrollList("tab");
   assert.deepStrictEqual(accessActions.map((item) => item.action), ["list_navigation", "detail_open", "list_scroll"]);
+  assert.deepStrictEqual(accessActions[0].details, { kind: "list" });
+  assert.deepStrictEqual(accessActions[1].details, { jobId: "detail-job" });
 }
 
-async function leftCardMetadataAvoidsPaneScrollSmoke() {
-  const paneScrolls = [];
+async function visiblePaneIdentitySmoke() {
+  const accessActions = [];
+  let paneReads = 0;
   const browser = {
     async evalValue(_tabId, expression) {
-      if (expression.includes("isRiskPage:")) return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
-      if (expression.startsWith("(() => window.__bossOpenCard")) return { clicked: true, jobId: "card-facts" };
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
       if (expression.includes("window.__bossPaneState()")) {
+        paneReads += 1;
         return {
-          currentJobId: "card-facts",
-          title: "AI应用开发",
-          description: "完整职位描述 Python RAG Agent ".repeat(20),
-          bossActiveText: "",
-          salary: "",
-          experience: "",
-          education: "",
-          canScroll: true
+          currentJobId: "pane-job",
+          title: "AI application developer",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          bossActiveText: "浠婃棩娲昏穬",
+          salary: "10-15K",
+          experience: "1-3 years",
+          education: "Bachelor",
+          canScroll: false
         };
       }
-      if (expression.includes("window.__bossScrollPane(false)")) paneScrolls.push("down");
-      if (expression.includes("window.__bossScrollPane(true)")) paneScrolls.push("top");
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({
+    browser,
+    sleepFn: async () => {},
+    randomFn: () => 0,
+    accessController: {
+      reserve: async (action, details) => accessActions.push({ action, details })
+    }
+  });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "AI application developer",
+    url: "https://www.zhipin.com/job_detail/pane-job.html"
+  });
+  assert(detail.description.length >= 120);
+  assert.strictEqual(paneReads, 1);
+  assert.deepStrictEqual(accessActions.map((item) => item.action), ["pane_detail_read"]);
+  assert.deepStrictEqual(accessActions[0].details, { jobId: "pane-job" });
+}
+
+async function visiblePaneMissingIdentitySmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          currentJobId: "",
+          title: "pane-job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
       return true;
     }
   };
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
-  const detail = await adapter.readCardDetail("pane-tab", {
-    title: "AI应用开发",
-    url: "https://www.zhipin.com/job_detail/card-facts.html",
-    salary: "10-15K",
-    experience: "1-3年",
-    bossActiveText: "今日活跃"
-  }, 0);
-  assert(detail.description.length >= 120);
-  assert.deepStrictEqual(paneScrolls, ["top"]);
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "pane-job",
+    url: "https://www.zhipin.com/job_detail/pane-job.html"
+  });
+  assert.strictEqual(detail, null, "title-only identity must not authorize pane reuse");
+}
+
+async function visiblePaneTitleIdentitySmoke() {
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          currentJobId: "title-job",
+          title: "AI application developer - senior",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const url = "https://www.zhipin.com/job_detail/title-job.html";
+  const normalized = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "AI application developer",
+    url
+  });
+  assert(normalized.description.length >= 120);
+  const missing = await adapter.readVisiblePaneDetail("pane-tab", { url });
+  assert.strictEqual(missing, null, "missing expected title must fail closed");
+  const empty = await adapter.readVisiblePaneDetail("pane-tab", { title: "   ", url });
+  assert.strictEqual(empty, null, "empty expected title must fail closed");
+}
+
+async function standaloneDetailTimeoutSmoke() {
+  const navigations = [];
+  const browser = {
+    async navigate(_tabId, url) { navigations.push(url); },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("const currentJobId")) {
+        return {
+          currentJobId: "strict-timeout",
+          description: "short",
+          bossActiveText: "",
+          salary: "",
+          experience: "",
+          education: ""
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertDetailPage = async () => ({ jobId: "strict-timeout" });
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "https://www.zhipin.com/job_detail/strict-timeout.html"),
+    (error) => error.code === "BOSS_DETAIL_LOAD_TIMEOUT"
+  );
+  assert.deepStrictEqual(navigations, ["https://www.zhipin.com/job_detail/strict-timeout.html"]);
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "https://example.invalid/job_detail/external.html"),
+    (error) => error.code === "BOSS_DETAIL_URL_INVALID"
+  );
+  await assert.rejects(
+    () => adapter.readDetail("detail-tab", "http://www.zhipin.com/job_detail/insecure.html"),
+    (error) => error.code === "BOSS_DETAIL_URL_INVALID"
+  );
+  assert.deepStrictEqual(
+    navigations,
+    ["https://www.zhipin.com/job_detail/strict-timeout.html"],
+    "an external host must be rejected before browser navigation"
+  );
+}
+
+async function standaloneDetailRoutingSmoke() {
+  const events = [];
+  const detailUrls = [];
+  const outcomes = [];
+  let visiblePaneReads = 0;
+  const browser = {
+    async navigate(tabId, url) { events.push({ type: "list", tabId, url }); }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("direct-1"), card("direct-2")];
+  adapter.readVisiblePaneDetail = async (tabId, job) => {
+    visiblePaneReads += 1;
+    events.push({ type: "visible_pane", tabId, url: job.url });
+    return null;
+  };
+  adapter.readDetail = async (tabId, url) => {
+    events.push({ type: "detail", tabId, url });
+    detailUrls.push(url);
+    return {
+      description: `Complete standalone detail ${url} `.repeat(12),
+      bossActiveText: "active",
+      salary: "10-15K",
+      experience: "1-3 years",
+      education: "bachelor"
+    };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["direct"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 2,
+    onDetailResult: async (result) => outcomes.push(result)
+  });
+  assert.strictEqual(visiblePaneReads, 1);
+  assert.deepStrictEqual(detailUrls, [
+    "https://www.zhipin.com/job_detail/direct-1.html",
+    "https://www.zhipin.com/job_detail/direct-2.html"
+  ]);
+  assert.strictEqual(events.filter((event) => event.type === "list").length, 1);
+  assert.deepStrictEqual(events.map((event) => event.type), ["list", "visible_pane", "detail", "detail"]);
+  assert(events.every((event) => event.tabId === activeBoss.id));
+  assert(events.slice(2).every((event) => event.type === "detail"));
+  assert.strictEqual(events[2].url, detailUrls[0]);
+  assert.strictEqual(events[3].url, detailUrls[1]);
+  assert.strictEqual(jobs.filter((job) => job.detailRead).length, 2);
+  assert.deepStrictEqual(outcomes, [
+    { outcome: "succeeded", errorCode: "", accessMode: "standalone_detail" },
+    { outcome: "succeeded", errorCode: "", accessMode: "standalone_detail" }
+  ]);
+}
+
+async function obsoleteCardActivationUnavailableSmoke() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "adapters", "sites", "boss.js"), "utf8");
+  assert(!source.includes("readCardDetail"), "obsolete readCardDetail API must be unavailable");
+  assert(!source.includes("__bossOpenCard"), "obsolete card activation helper must be unavailable");
+}
+
+async function scanNullPaneOutcomeSmoke() {
+  const browser = {
+    async activeTabId() { return "scan-tab"; },
+    async navigate() {}
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("pane-null")];
+  adapter.readVisiblePaneDetail = async () => null;
+  adapter.readDetail = async () => ({ description: "Complete standalone detail ".repeat(12), bossActiveText: "active" });
+  const outcomes = [];
+  const jobs = await adapter.scanBrowser({
+    tabId: "scan-tab",
+    keywords: ["pane-null"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onDetailResult: async (outcome) => outcomes.push(outcome)
+  });
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(jobs[0].detailRead, true);
+  assert.deepStrictEqual(outcomes, [{ outcome: "succeeded", errorCode: "", accessMode: "standalone_detail" }]);
 }
 
 async function targetIsolationSmoke() {
@@ -547,7 +687,7 @@ async function targetIsolationSmoke() {
     if (browser.keyword === "broken") throw Object.assign(new Error("white page"), { code: "BOSS_WHITE_PAGE" });
     return [card(browser.keyword)];
   };
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -667,8 +807,16 @@ async function scanTargetResumeFilterSmoke() {
   }), (error) => error.code === "BOSS_SCAN_TARGETS_NOT_FOUND");
 }
 
-async function fatalBrowserStopsRemainingTargetsSmoke() {
+async function fatalBudgetAfterCompletedTargetSmoke() {
   const visited = [];
+  const expectedUsage = { "10m": 5, "1h": 15, "24h": 30 };
+  const budgetError = Object.assign(new Error("budget exhausted after first target"), {
+    code: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+    retryAt: "2026-08-10T00:00:00.000Z",
+    action: "detail_open",
+    limit: 30,
+    usage: { ...expectedUsage }
+  });
   const browser = {
     keyword: "",
     async activeTabId() { return activeBoss.id; },
@@ -680,18 +828,20 @@ async function fatalBrowserStopsRemainingTargetsSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => {
-    if (browser.keyword === "second") {
-      throw Object.assign(new Error("edge disconnected"), { code: "BROWSER_DISCONNECTED" });
-    }
-    return [card(browser.keyword)];
+    if (browser.keyword === "first") return [card("first")];
+    return [card("budget-pending"), card("budget-unvisited")];
   };
-  adapter.readCardDetail = async (_tabId, job) => ({
-    description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
-    bossActiveText: "今日活跃"
-  });
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
+    if (job.title !== "first") throw budgetError;
+    return {
+      description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
+      bossActiveText: "今日活跃"
+    };
+  };
   const checkpoints = [];
   const summaries = [];
-  const jobs = await adapter.scanBrowser({
+  let receivedError = null;
+  await assert.rejects(() => adapter.scanBrowser({
     tabId: activeBoss.id,
     keywords: ["first", "second", "third"],
     keywordPlan: [
@@ -704,12 +854,70 @@ async function fatalBrowserStopsRemainingTargetsSmoke() {
     maxDetailTotal: 3,
     onTargetComplete: async (result) => checkpoints.push(result),
     onScanComplete: async (summary) => summaries.push(summary)
+  }), (error) => {
+    receivedError = error;
+    return true;
   });
   assert.deepStrictEqual(visited, ["first", "second"]);
   assert.deepStrictEqual(checkpoints.map((item) => item.status), ["completed", "failed"]);
-  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(checkpoints[0].jobs[0].detailRead, true);
+  assert.strictEqual(checkpoints[1].jobs.length, 2);
+  assert(checkpoints[1].jobs.every((job) => !job.detailRead));
+  const pendingByTitle = new Map(checkpoints[1].jobs.map((job) => [job.title, job]));
+  assert.strictEqual(pendingByTitle.get("budget-pending").detailErrorCode || "", "");
+  assert.strictEqual(pendingByTitle.get("budget-unvisited").detailErrorCode, "BOSS_DETAIL_FAIR_SHARE_PENDING");
   assert.strictEqual(summaries[0].status, "partial");
-  assert.strictEqual(summaries[0].fatalErrorCode, "BROWSER_DISCONNECTED");
+  assert.strictEqual(summaries[0].fatalErrorCode, "BOSS_ACCESS_BUDGET_EXHAUSTED");
+  assert.strictEqual(receivedError, budgetError);
+  assert.strictEqual(receivedError.retryAt, "2026-08-10T00:00:00.000Z");
+  assert.strictEqual(receivedError.action, "detail_open");
+  assert.strictEqual(receivedError.limit, 30);
+  assert.deepStrictEqual(receivedError.usage, expectedUsage);
+}
+
+async function midDetailAbortIsFatalSmoke() {
+  const abortError = Object.assign(new Error("stop during detail"), { code: "SCAN_ABORTED" });
+  const checkpoints = [];
+  const summaries = [];
+  const outcomes = [];
+  let paneAttempts = 0;
+  let standaloneAttempts = 0;
+  let detailWaits = 0;
+  const adapter = new BossSiteAdapter({ browser: { async navigate() {} }, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("aborted-detail")];
+  adapter.readVisiblePaneDetail = async () => {
+    paneAttempts += 1;
+    throw abortError;
+  };
+  adapter.readDetail = async () => {
+    standaloneAttempts += 1;
+    return null;
+  };
+  adapter.waitAfterDetailAction = async () => { detailWaits += 1; };
+  let receivedError = null;
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["aborted"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    onTargetComplete: async (result) => checkpoints.push(result),
+    onDetailResult: async (result) => outcomes.push(result),
+    onScanComplete: async (summary) => summaries.push(summary)
+  }), (error) => {
+    receivedError = error;
+    return true;
+  });
+  assert.strictEqual(receivedError, abortError);
+  assert.strictEqual(paneAttempts, 1);
+  assert.strictEqual(standaloneAttempts, 0);
+  assert.strictEqual(detailWaits, 0);
+  assert.deepStrictEqual(outcomes, []);
+  assert.strictEqual(checkpoints.length, 1);
+  assert.strictEqual(checkpoints[0].status, "failed");
+  assert.strictEqual(checkpoints[0].jobs[0].detailErrorCode || "", "");
+  assert.strictEqual(summaries[0].fatalErrorCode, "SCAN_ABORTED");
 }
 
 async function abortedScanStopsBeforeBrowserUseSmoke() {
@@ -744,7 +952,7 @@ async function partialTargetCheckpointSmoke() {
     growthRounds: 1,
     quietWindows: 0
   });
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -778,16 +986,17 @@ async function pageBudgetSmoke() {
   };
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  const pageBudgetError = Object.assign(new Error("page budget"), { code: "BOSS_PAGE_BUDGET_REACHED" });
   let navigations = 0;
   adapter.navigateWithPacing = async (_tabId, url) => {
     if (navigations >= 1) {
-      throw Object.assign(new Error("page budget"), { code: "BOSS_PAGE_BUDGET_REACHED" });
+      throw pageBudgetError;
     }
     navigations += 1;
     browser.keyword = new URL(url).searchParams.get("query");
   };
   adapter.collectCards = async () => [card(browser.keyword)];
-  adapter.readCardDetail = async (_tabId, job) => ({
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
     description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
     bossActiveText: "今日活跃",
     salary: job.salary,
@@ -795,7 +1004,8 @@ async function pageBudgetSmoke() {
     education: job.education
   });
   const checkpoints = [];
-  const jobs = await adapter.scanBrowser({
+  let receivedError = null;
+  await assert.rejects(() => adapter.scanBrowser({
     tabId: activeBoss.id,
     keywords: ["first", "second", "third"],
     cityScopes: [{ city: "广州", cityCode: "101280100" }],
@@ -803,8 +1013,11 @@ async function pageBudgetSmoke() {
     maxDetailTotal: 3,
     onTargetComplete: async (result) => checkpoints.push(result),
     scoreQuick: () => 1
+  }), (error) => {
+    receivedError = error;
+    return true;
   });
-  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(receivedError, pageBudgetError);
   assert.deepStrictEqual(checkpoints.map((item) => item.status), ["completed", "failed"]);
   assert.strictEqual(checkpoints[1].errorCode, "BOSS_PAGE_BUDGET_REACHED");
 }
@@ -818,7 +1031,7 @@ async function riskControlSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card(browser.keyword)];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => {
     throw Object.assign(new Error("risk control"), { code: "BOSS_RISK_CONTROL" });
   };
   const checkpoints = [];
@@ -856,7 +1069,7 @@ async function fullDetailCoverageSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => fixtures[browser.keyword];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return {
       description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
@@ -865,6 +1078,11 @@ async function fullDetailCoverageSmoke() {
       experience: job.experience,
       education: job.education
     };
+  };
+  adapter.readDetail = async (_tabId, url) => {
+    const sourceId = url.match(/job_detail\/([^./]+)/)?.[1] || "";
+    reads.push(`boss:${sourceId}`);
+    return { description: `瀹屾暣鑱屼綅鎻忚堪 ${sourceId} Python RAG `.repeat(12), bossActiveText: "浠婃棩娲昏穬" };
   };
   const jobs = await adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -896,9 +1114,14 @@ async function fairDetailAllocationSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.title);
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  adapter.readDetail = async (_tabId, url) => {
+    const title = url.match(/job_detail\/([^./]+)/)?.[1] || "";
+    reads.push(title);
+    return { description: `standalone detail ${title} `.repeat(12), bossActiveText: "active" };
   };
   const jobs = await adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -928,9 +1151,14 @@ async function priorityDetailBudgetSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 10 }, (_, index) => card(`${browser.keyword}-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.title);
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  adapter.readDetail = async (_tabId, url) => {
+    const title = url.match(/job_detail\/([^./]+)/)?.[1] || "";
+    reads.push(title);
+    return { description: `standalone detail ${title} `.repeat(12), bossActiveText: "active" };
   };
   await adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -953,7 +1181,7 @@ async function reusableDetailSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("cached"), card("fresh")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return { description: `实时职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
   };
@@ -980,7 +1208,7 @@ async function changedCardFactsRejectCacheSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("changed-cache")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads.push(job.sourceId);
     return {
       description: `实时职位描述 ${job.title} Python RAG `.repeat(12),
@@ -1019,9 +1247,13 @@ async function detailSafetyLimitSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => Array.from({ length: 5 }, (_, index) => card(`safety-${index}`));
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     reads += 1;
     return { description: `完整职位描述 ${job.title} Python RAG `.repeat(12), bossActiveText: "今日活跃" };
+  };
+  adapter.readDetail = async (_tabId, url) => {
+    reads += 1;
+    return { description: `standalone detail ${url} `.repeat(12), bossActiveText: "active" };
   };
   const jobs = await adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -1046,9 +1278,10 @@ async function detailFailureDedupeSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("same-failure")];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => null;
+  adapter.readDetail = async () => {
     reads += 1;
-    throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
+    throw Object.assign(new Error("detail timeout"), { code: "BOSS_DETAIL_LOAD_TIMEOUT" });
   };
   const jobs = await adapter.scanBrowser({
     tabId: activeBoss.id,
@@ -1061,7 +1294,7 @@ async function detailFailureDedupeSmoke() {
   assert.strictEqual(jobs.length, 1);
   assert.strictEqual(jobs[0].detailRequired, true);
   assert.strictEqual(jobs[0].detailRead, false);
-  assert.strictEqual(jobs[0].detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
+  assert.strictEqual(jobs[0].detailErrorCode, "BOSS_DETAIL_LOAD_TIMEOUT");
 }
 
 async function detailOutcomeAuditSmoke() {
@@ -1073,11 +1306,14 @@ async function detailOutcomeAuditSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("audit-success"), card("audit-failure")];
-  adapter.readCardDetail = async (_tabId, job) => {
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
     if (job.title === "audit-failure") {
-      throw Object.assign(new Error("pane timeout"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
+      return null;
     }
     return { description: "Complete detail Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  adapter.readDetail = async () => {
+    throw Object.assign(new Error("detail timeout"), { code: "BOSS_DETAIL_LOAD_TIMEOUT" });
   };
   const outcomes = [];
   const jobs = await adapter.scanBrowser({
@@ -1089,10 +1325,10 @@ async function detailOutcomeAuditSmoke() {
     onDetailResult: async (outcome) => outcomes.push(outcome)
   });
   assert.deepStrictEqual(outcomes, [
-    { outcome: "succeeded", errorCode: "" },
-    { outcome: "failed", errorCode: "BOSS_PANE_SWITCH_TIMEOUT" }
+    { outcome: "succeeded", errorCode: "", accessMode: "visible_pane" },
+    { outcome: "failed", errorCode: "BOSS_DETAIL_LOAD_TIMEOUT", accessMode: "standalone_detail" }
   ]);
-  assert.strictEqual(jobs.find((job) => job.title === "audit-failure").detailErrorCode, "BOSS_PANE_SWITCH_TIMEOUT");
+  assert.strictEqual(jobs.find((job) => job.title === "audit-failure").detailErrorCode, "BOSS_DETAIL_LOAD_TIMEOUT");
   assert(!JSON.stringify(outcomes).includes("audit-failure"));
 }
 
@@ -1105,7 +1341,7 @@ async function detailFatalOutcomeAuditSmoke() {
   const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("audit-fatal")];
-  adapter.readCardDetail = async () => {
+  adapter.readVisiblePaneDetail = async () => {
     throw Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL" });
   };
   const outcomes = [];
@@ -1121,8 +1357,84 @@ async function detailFatalOutcomeAuditSmoke() {
     }
   }), (error) => error.code === "BOSS_RISK_CONTROL");
   assert.deepStrictEqual(outcomes, [
-    { outcome: "failed", errorCode: "BOSS_RISK_CONTROL" }
+    { outcome: "failed", errorCode: "BOSS_RISK_CONTROL", accessMode: "visible_pane" }
   ]);
+}
+
+async function detailBudgetCheckpointSmoke() {
+  const checkpoints = [];
+  const summaries = [];
+  const outcomes = [];
+  const expectedUsage = { "10m": 5, "1h": 15, "24h": 30 };
+  const budgetError = Object.assign(new Error("daily detail budget exhausted; resume at 2026-08-10T00:00:00.000Z"), {
+    code: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+    site: "boss",
+    action: "detail_open",
+    mode: "recovery",
+    window: "24h",
+    limit: 30,
+    usage: { ...expectedUsage },
+    retryAt: "2026-08-10T00:00:00.000Z"
+  });
+  let receivedError = null;
+  let detailCalls = 0;
+  const browser = {
+    async navigate() {}
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [
+    card("budget-complete"),
+    card("budget-pending"),
+    card("budget-unvisited")
+  ];
+  adapter.readVisiblePaneDetail = async () => null;
+  adapter.readDetail = async () => {
+    detailCalls += 1;
+    if (detailCalls === 1) {
+      return {
+        description: "Complete detail before budget stop ".repeat(12),
+        bossActiveText: "浠婃棩娲昏穬"
+      };
+    }
+    throw budgetError;
+  };
+  await assert.rejects(() => adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["budget"],
+    cityScopes: [{ city: "骞垮窞", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 3,
+    onTargetComplete: async (result) => checkpoints.push(result),
+    onDetailResult: async (result) => outcomes.push(result),
+    onScanComplete: async (summary) => summaries.push(summary)
+  }), (error) => {
+    receivedError = error;
+    return true;
+  });
+
+  assert.strictEqual(receivedError, budgetError);
+  assert.strictEqual(receivedError.code, "BOSS_ACCESS_BUDGET_EXHAUSTED");
+  assert.strictEqual(receivedError.retryAt, "2026-08-10T00:00:00.000Z");
+  assert.strictEqual(receivedError.action, "detail_open");
+  assert.strictEqual(receivedError.limit, 30);
+  assert.deepStrictEqual(receivedError.usage, expectedUsage);
+  assert.strictEqual(detailCalls, 2);
+  assert.strictEqual(checkpoints.length, 1);
+  assert.strictEqual(checkpoints[0].status, "failed");
+  const byTitle = new Map(checkpoints[0].jobs.map((job) => [job.title, job]));
+  assert.strictEqual(byTitle.get("budget-complete").detailRead, true);
+  assert.strictEqual(byTitle.get("budget-pending").detailRead, false);
+  assert.strictEqual(byTitle.get("budget-pending").detailErrorCode || "", "");
+  assert.strictEqual(byTitle.get("budget-unvisited").detailRead, false);
+  assert.strictEqual(byTitle.get("budget-unvisited").detailErrorCode || "", "");
+  assert.strictEqual(summaries[0].fatalErrorCode, "BOSS_ACCESS_BUDGET_EXHAUSTED");
+  assert.match(summaries[0].fatalErrorMessage, /2026-08-10T00:00:00\.000Z/);
+  assert.deepStrictEqual(outcomes.at(-1), {
+    outcome: "failed",
+    errorCode: "BOSS_ACCESS_BUDGET_EXHAUSTED",
+    accessMode: "standalone_detail"
+  });
 }
 
 async function refreshSafetySmoke() {
@@ -1168,6 +1480,67 @@ async function refreshSafetySmoke() {
   assert.strictEqual(probes, PRODUCT_POLICY.operations.refreshLimit);
   assert.strictEqual(probed.length, PRODUCT_POLICY.operations.refreshLimit);
   assert(probed.every((job) => job.bossActiveText === "今日活跃"));
+}
+
+async function runtimeBindingAndAbortSmoke() {
+  let bindingIntact = true;
+  const reads = [];
+  const bindingError = Object.assign(new Error("fixed BOSS communication tab changed"), {
+    code: "BOSS_OPERATOR_TABS_CHANGED"
+  });
+  const adapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  adapter.readDetail = async (_tabId, url) => {
+    reads.push(url);
+    bindingIntact = false;
+    return { description: "完整职位描述 Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  await assert.rejects(
+    () => adapter.refreshDetails([card("runtime-binding-1"), card("runtime-binding-2")], {
+      limit: 2,
+      tabId: "fixed-search",
+      assertTabBindings: async () => {
+        if (!bindingIntact) throw bindingError;
+      }
+    }),
+    (error) => error === bindingError
+  );
+  assert.deepStrictEqual(reads, [card("runtime-binding-1").url]);
+
+  const detailController = new AbortController();
+  const detailAbort = Object.assign(new Error("detail refresh aborted"), { code: "SCAN_ABORTED" });
+  let detailSignal = null;
+  const detailAdapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  detailAdapter.readDetail = async (_tabId, _url, signal) => {
+    detailSignal = signal;
+    detailController.abort(detailAbort);
+    return { description: "完整职位描述 Python RAG ".repeat(12), bossActiveText: "今日活跃" };
+  };
+  await assert.rejects(
+    () => detailAdapter.refreshDetails([card("refresh-signal")], {
+      tabId: "fixed-search",
+      signal: detailController.signal
+    }),
+    (error) => error === detailAbort
+  );
+  assert.strictEqual(detailSignal, detailController.signal);
+
+  const activityController = new AbortController();
+  const activityAbort = Object.assign(new Error("activity refresh aborted"), { code: "SCAN_ABORTED" });
+  let activitySignal = null;
+  const activityAdapter = new BossSiteAdapter({ browser: {}, sleepFn: async () => {} });
+  activityAdapter.readActivity = async (_tabId, _url, signal) => {
+    activitySignal = signal;
+    activityController.abort(activityAbort);
+    return "今日活跃";
+  };
+  await assert.rejects(
+    () => activityAdapter.probeActivities([card("activity-signal")], {
+      tabId: "fixed-search",
+      signal: activityController.signal
+    }),
+    (error) => error === activityAbort
+  );
+  assert.strictEqual(activitySignal, activityController.signal);
 }
 
 async function refreshCheckpointBeforeFatalSmoke() {

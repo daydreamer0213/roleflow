@@ -32,7 +32,10 @@ async function inspect(result) {
     ["BOSS_LOGIN_REQUIRED", "login_required"],
     ["BOSS_RISK_CONTROL", "risk_control"],
     ["BOSS_SEARCH_PAGE_INVALID", "search_page_required"],
-    ["BOSS_SEARCH_PAGE_LOST", "search_page_required"]
+    ["BOSS_SEARCH_PAGE_LOST", "search_page_required"],
+    ["BOSS_SEARCH_TAB_CHANGED", "search_page_required"],
+    ["BOSS_COMMUNICATION_PAGE_LOST", "boss_tab_missing"],
+    ["BOSS_OPERATOR_TABS_CHANGED", "boss_tab_missing"]
   ];
   for (const [code, status] of cases) {
     assert.deepStrictEqual(await inspect(codedError(code)), {
@@ -50,6 +53,28 @@ async function inspect(result) {
     message: BROWSER_READINESS_MESSAGES.ready,
     checkedAt: "2099-01-01T00:00:00.000Z"
   });
+
+  const unavailable = await inspectBossBrowserReadiness({
+    preflight: async () => {
+      const error = new Error("bridge unavailable");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    },
+    now: () => "2099-01-01T00:00:00.000Z"
+  });
+  assert.strictEqual(unavailable.status, "browser_unavailable");
+  assert.match(unavailable.message, /Edge Control/);
+
+  const topology = await inspectBossBrowserReadiness({
+    preflight: async () => {
+      const error = new Error("fixed tabs differ");
+      error.code = "BOSS_WINDOW_MISMATCH";
+      throw error;
+    },
+    now: () => "2099-01-01T00:00:00.000Z"
+  });
+  assert.strictEqual(topology.status, "boss_tab_missing");
+  assert.match(topology.message, /搜索页.*沟通页.*同一窗口/);
 
   const privateState = await inspect({
     isSearchPage: true,

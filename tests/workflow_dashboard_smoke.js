@@ -21,6 +21,7 @@ const {
   upsertJob,
   insertWorkflowJobTaskRow,
   setSiteRuntimeState,
+  getSiteRuntimeState,
   clearSiteRuntimeState,
   recordCandidateJobEvent,
   recordSiteAccessEvent
@@ -29,7 +30,12 @@ const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
-const { createDashboardServer } = require("../src/dashboard/server");
+const {
+  createDashboardServer,
+  inspectDashboardBossBrowserReadiness,
+  resolveLiveInheritedContext
+} = require("../src/dashboard/server");
+const boss = require("../src/adapters/sites/boss");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 
 const root = path.join(__dirname, "..");
@@ -149,6 +155,7 @@ let server;
     message: "等待登录：请在 BOSS 标签页完成登录。",
     checkedAt: "2099-01-01T00:00:00.000Z"
   };
+  const browserReadinessInputs = [];
   const inheritedContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
     inheritedResolutionCount += 1;
     inheritedResolutionInput = { browserMode, cdpPort };
@@ -229,7 +236,10 @@ let server;
     },
     logger,
     inheritedContextResolver,
-    browserReadinessProbe: async () => ({ ...browserReadiness }),
+    browserReadinessProbe: async (authority) => {
+      browserReadinessInputs.push(authority);
+      return { ...browserReadiness };
+    },
     workflowResumeBrowserReadinessProbe: async ({ browserMode, cdpPort }) => {
       resumeBrowserProbeInputs.push({ browserMode, cdpPort });
       return {
@@ -262,6 +272,8 @@ let server;
   });
   const baseUrl = await listen(server);
 
+  await testDashboardFixedTabReadinessAndInheritedContext({ db, logger, saved });
+
   const health = await getJson(baseUrl, "/health");
   assert.strictEqual(health.status, 200);
   assert.strictEqual(health.body.ok, true);
@@ -271,6 +283,14 @@ let server;
   const loginReadiness = await getJson(baseUrl, "/api/browser-readiness");
   assert.strictEqual(loginReadiness.status, 200);
   assert.deepStrictEqual(loginReadiness.body, browserReadiness);
+  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "edge", cdpPort: null });
+
+  const portableReadiness = await getJson(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  assert.strictEqual(portableReadiness.status, 200);
+  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "portable", cdpPort: 9222 });
+  const invalidPortableReadiness = await getText(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9223");
+  assert.strictEqual(invalidPortableReadiness.status, 409);
+  assert.match(invalidPortableReadiness.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
 
   const gatedPlanPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(gatedPlanPage.body, /data-browser-readiness-button/);
@@ -286,6 +306,8 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
   await assertSerializedSlowBrowserReadinessGate(readinessScript);
+  await assertBrowserReadinessModeSelection(readinessScript);
+  await assertBrowserReadinessModeSwitchRace(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -329,9 +351,29 @@ let server;
   assert.match(planBefore.body, /data-browser-readiness-button/);
   assert.match(planBefore.body, /data-browser-base-disabled="false"/);
   assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
+  assert.match(planBefore.body, /<option value="edge" selected>/);
+  assert.match(planBefore.body, /\u5f53\u524d\u5df2\u767b\u5f55 Edge\uff08\u63a8\u8350\uff09/);
+  assert.match(planBefore.body, /\u9879\u76ee\u4e13\u7528 Edge\uff08\u624b\u52a8\u5907\u7528\uff0c\u9700\u8981\u72ec\u7acb\u767b\u5f55\uff09/);
   assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
   assert.doesNotMatch(planBefore.body, /上午|下午/);
   assert.match(planBefore.body, /高级扫描与维护/);
+
+  const portableScanSaved = seedProfile(db);
+  const portableScanPlan = db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(portableScanSaved.planId);
+  const portableScanPlanJson = JSON.parse(portableScanPlan.plan_json);
+  portableScanPlanJson.cities = ["广州"];
+  db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
+    .run(JSON.stringify(portableScanPlanJson), portableScanSaved.planId);
+  const scanSpawnCountBeforeInvalidPortable = spawns.length;
+  const invalidPortableScan = await postForm(baseUrl, "/api/scan", {
+    planId: portableScanSaved.planId,
+    browserMode: "portable",
+    cdpPort: 9223,
+    scanKind: "daily"
+  });
+  assert.strictEqual(invalidPortableScan.status, 409);
+  assert.match(invalidPortableScan.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.strictEqual(spawns.length, scanSpawnCountBeforeInvalidPortable);
 
   batchModelReady = false;
   const resolutionCountBeforeModelGate = inheritedResolutionCount;
@@ -368,18 +410,8 @@ let server;
   }
   inheritedFailureCode = "";
 
-  const edgeStart = await postForm(baseUrl, "/api/workflow-run", {
-    planId: saved.planId,
-    browserMode: "edge",
-    action: "start"
-  });
-  assert.strictEqual(edgeStart.status, 409);
-  assert.match(edgeStart.body, /INHERITED_PORTABLE_REQUIRED/);
-
   const started = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "portable",
-    cdpPort: 9222,
     action: "start"
   });
   assert.strictEqual(started.status, 303);
@@ -395,9 +427,9 @@ let server;
   assert(!JSON.stringify(workflow.planner.modelProfiles).includes("apiKey"));
   assert(!JSON.stringify(workflow.planner.modelProfiles).includes("baseUrl"));
   assert.strictEqual(workflow.planner.acquisitionMode, "inherited");
-  assert.deepStrictEqual(inheritedResolutionInput, { browserMode: "portable", cdpPort: 9222 });
-  assert.strictEqual(workflow.planner.browserMode, "portable");
-  assert.strictEqual(workflow.planner.cdpPort, 9222);
+  assert.deepStrictEqual(inheritedResolutionInput, { browserMode: "edge", cdpPort: null });
+  assert.strictEqual(workflow.planner.browserMode, "edge");
+  assert.strictEqual(workflow.planner.cdpPort, null);
   assert.strictEqual(workflow.planner.searchScope.key, `boss:${saved.profileId}:fixture-scope`);
   assert.strictEqual(workflow.planner.platformPolicy.hash, "fixture-policy");
   assert.deepStrictEqual(
@@ -408,9 +440,10 @@ let server;
   assert(spawns[0].args.includes("--workflow-run"));
   assert(spawns[0].args.includes(workflow.id));
   assert.deepStrictEqual(
-    spawns[0].args.slice(spawns[0].args.indexOf("--browser"), spawns[0].args.indexOf("--browser") + 4),
-    ["--browser", "portable", "--cdp-port", "9222"]
+    spawns[0].args.slice(spawns[0].args.indexOf("--browser"), spawns[0].args.indexOf("--browser") + 2),
+    ["--browser", "edge"]
   );
+  assert(!spawns[0].args.includes("--cdp-port"));
 
   const scanningPage = await getText(baseUrl, started.location);
   assert.match(scanningPage.body, /正在筛选岗位/);
@@ -456,9 +489,35 @@ let server;
   assert.strictEqual(interruptedWorkflow.status, "interrupted");
   assert.strictEqual(interruptedWorkflow.sequence, 1);
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
+
+  const portableSaved = seedProfile(db);
+  const portableStarted = await postForm(baseUrl, "/api/workflow-run", {
+    planId: portableSaved.planId,
+    browserMode: "portable",
+    cdpPort: 9222,
+    action: "start"
+  });
+  assert.strictEqual(portableStarted.status, 303);
+  const portableWorkflow = listWorkflowRuns(db, { planId: portableSaved.planId })[0];
+  assert.strictEqual(portableWorkflow.planner.browserMode, "portable");
+  assert.strictEqual(portableWorkflow.planner.cdpPort, 9222);
+  const portableSpawn = spawns.at(-1);
+  assert.deepStrictEqual(
+    portableSpawn.args.slice(
+      portableSpawn.args.indexOf("--browser"),
+      portableSpawn.args.indexOf("--browser") + 4
+    ),
+    ["--browser", "portable", "--cdp-port", "9222"]
+  );
+  portableSpawn.child.emit("error", new Error("portable workflow fixture"));
+  const portableInterruptedPage = await getText(baseUrl, portableStarted.location);
+  assert.match(portableInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
+  assert.match(portableInterruptedPage.body, /<input type="hidden" name="browserMode" value="portable">/);
+
   const inheritedInterruptedPage = await getText(baseUrl, started.location);
-  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="portable">/);
-  assert.match(inheritedInterruptedPage.body, /项目专用 Edge 的 BOSS 搜索页/);
+  assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
+  assert.match(inheritedInterruptedPage.body, /当前已登录 Edge/);
+  assert.doesNotMatch(inheritedInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
   const frozenPlanner = workflow.planner;
@@ -476,7 +535,7 @@ let server;
     const spawnCountBeforeRejectedResume = spawns.length;
     const rejectedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "portable"
+      browserMode: "edge"
     });
     assert.strictEqual(rejectedResume.status, 409);
     assert.match(rejectedResume.body, new RegExp({
@@ -491,7 +550,7 @@ let server;
       db.prepare("SELECT status, updated_at, scan_run_id, scan_batch_id, planner_json FROM workflow_runs WHERE id = ?").get(workflow.id),
       workflowRowBefore
     );
-    assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "portable", cdpPort: 9222 });
+    assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   }
 
   const noScanInherited = createWorkflowRun(db, {
@@ -511,7 +570,7 @@ let server;
   const noScanRowBefore = db.prepare("SELECT status, updated_at FROM workflow_runs WHERE id = ?").get(noScanInherited.id);
   const rejectedNoScanResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: noScanInherited.id,
-    browserMode: "portable"
+    browserMode: "edge"
   });
   assert.strictEqual(rejectedNoScanResume.status, 409);
   assert.deepStrictEqual(
@@ -522,15 +581,15 @@ let server;
   db.prepare("DELETE FROM workflow_runs WHERE id = ?").run(noScanInherited.id);
 
   resumeBrowserReadinessStatus = "ready";
-  const spawnCountBeforePortableResume = spawns.length;
-  const portableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+  const spawnCountBeforeEdgeResume = spawns.length;
+  const edgeResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
-    browserMode: "portable"
+    browserMode: "edge"
   });
-  assert.strictEqual(portableResume.status, 303);
-  assert.strictEqual(portableResume.location, `/workflow?runId=${workflow.id}`);
-  assert.strictEqual(spawns.length, spawnCountBeforePortableResume + 1);
-  spawns.at(-1).child.emit("error", new Error("portable resume fixture"));
+  assert.strictEqual(edgeResume.status, 303);
+  assert.strictEqual(edgeResume.location, `/workflow?runId=${workflow.id}`);
+  assert.strictEqual(spawns.length, spawnCountBeforeEdgeResume + 1);
+  spawns.at(-1).child.emit("error", new Error("edge resume fixture"));
 
   const resolutionCountBeforeMalformedResume = inheritedResolutionCount;
   for (const acquisitionMode of [undefined, "future-mode"]) {
@@ -542,7 +601,7 @@ let server;
     const spawnCountBeforeMalformedResume = spawns.length;
     const malformedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "portable"
+      browserMode: "edge"
     });
     assert.strictEqual(malformedResume.status, 409);
     assert.match(malformedResume.body, /WORKFLOW_ACQUISITION_MODE_INVALID/);
@@ -562,7 +621,7 @@ let server;
     const spawnCountBeforeCorruptInheritedResume = spawns.length;
     const corruptInheritedResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "portable"
+      browserMode: "edge"
     });
     assert.strictEqual(corruptInheritedResume.status, 409);
     assert.match(corruptInheritedResume.body, /WORKFLOW_INHERITED_SNAPSHOT_INVALID/);
@@ -644,7 +703,7 @@ let server;
     const spawnCountBeforeInvalidBatchResume = spawns.length;
     const invalidBatchResume = await postForm(baseUrl, "/api/workflow-run/resume", {
       workflowRunId: workflow.id,
-      browserMode: "portable"
+      browserMode: "edge"
     });
     assert.strictEqual(invalidBatchResume.status, 409);
     assert.match(invalidBatchResume.body, new RegExp(invalid.expectedCode));
@@ -665,15 +724,15 @@ let server;
   attachInterruptedScanBatch(validInheritedResumeBatchId, "valid");
   const resumed = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
-    browserMode: "portable"
+    browserMode: "edge"
   });
   assert.strictEqual(resumed.status, 303);
   assert.strictEqual(resumed.location, `/workflow?runId=${workflow.id}`);
-  assert.strictEqual(spawns.length, 3);
+  assert.strictEqual(spawns.length, 4);
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
   assert.deepStrictEqual(
-    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
-    ["--browser", "portable", "--cdp-port", "9222"]
+    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 2),
+    ["--browser", "edge"]
   );
   const legacyInherited = createWorkflowRun(db, {
     id: "workflow-legacy-inherited-edge",
@@ -701,7 +760,7 @@ let server;
   });
   const legacyPage = await getText(baseUrl, `/workflow?runId=${legacyInherited.id}`);
   assert.match(legacyPage.body, /name="browserMode" value="edge"/);
-  assert.match(legacyPage.body, /旧版当前 Edge/);
+  assert.match(legacyPage.body, /当前已登录 Edge/);
   resumeBrowserReadinessStatus = "login_required";
   const spawnCountBeforeLegacyPreflight = spawns.length;
   const rejectedLegacyResume = await postForm(baseUrl, "/api/workflow-run/resume", {
@@ -711,7 +770,7 @@ let server;
   assert.strictEqual(rejectedLegacyResume.status, 409);
   assert.match(rejectedLegacyResume.body, /BOSS_LOGIN_REQUIRED/);
   assert.strictEqual(spawns.length, spawnCountBeforeLegacyPreflight);
-  assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: 9222 });
+  assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   resumeBrowserReadinessStatus = "ready";
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
 
@@ -858,7 +917,7 @@ let server;
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
-  assert.match(reviewPage.body, /name="browserMode" value="portable"/);
+  assert.match(reviewPage.body, /name="browserMode" value="edge"/);
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
   assert.match(reviewPage.body, /有效候选\s*<strong>/);
@@ -881,7 +940,7 @@ let server;
   const confirmed = await postForm(baseUrl, "/api/communication-batch", {
     workflowRunId: workflow.id,
     planId: saved.planId,
-    browserMode: "portable",
+    browserMode: "edge",
     jobIds: selectedIds
   });
   assert.strictEqual(confirmed.status, 303);
@@ -894,7 +953,7 @@ let server;
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
   transitionWorkflowRun(db, { id: workflow.id, status: "completed", successfulCount: 30, shortfallCode: "WORKFLOW_SUPPLY_EXHAUSTED" });
-  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "pane_detail_read"]) {
+  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "detail_open"]) {
     recordSiteAccessEvent(db, { site: "boss", action, runId: resumedScan.id });
   }
   const completedPage = await getText(baseUrl, confirmed.location);
@@ -1010,17 +1069,27 @@ let server;
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
   batchModelReady = true;
 
-  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+  const rejectedGeneratedPortablePort = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: generatedWorkflow.id,
     browserMode: "portable",
     cdpPort: 9333
+  });
+  assert.strictEqual(rejectedGeneratedPortablePort.status, 409);
+  assert.match(rejectedGeneratedPortablePort.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
+
+  const generatedPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: generatedWorkflow.id,
+    browserMode: "portable",
+    cdpPort: 9222
   });
   assert.strictEqual(generatedPortableResume.status, 303);
   assert.strictEqual(generatedPortableResume.location, `/workflow?runId=${generatedWorkflow.id}`);
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode + 1);
   assert.deepStrictEqual(
     spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
-    ["--browser", "portable", "--cdp-port", "9333"]
+    ["--browser", "portable", "--cdp-port", "9222"]
   );
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
@@ -1053,6 +1122,128 @@ let server;
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch {}
   }
 });
+
+async function testDashboardFixedTabReadinessAndInheritedContext({ db: database, logger, saved }) {
+  assert.strictEqual(typeof inspectDashboardBossBrowserReadiness, "function");
+  const tabs = [
+    { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
+    { id: 33, windowId: 7, url: "https://www.zhipin.com/job_detail/other-boss-page.html" }
+  ];
+  const originalPreflight = boss.BossSiteAdapter.prototype.preflight;
+  const originalInspect = boss.BossSiteAdapter.prototype.inspectInheritedSearchPage;
+  try {
+    const edgePreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      edgePreflightCalls.push(options);
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+    };
+    const readiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "edge",
+      cdpPort: null,
+      logger,
+      browserFactory() {
+        return { async listTabs() { return tabs; } };
+      }
+    });
+    assert.strictEqual(readiness.status, "ready");
+    assert.deepStrictEqual(edgePreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true };
+    };
+    const communicationDriftReadiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "edge",
+      cdpPort: null,
+      logger,
+      browserFactory() {
+        return { async listTabs() { return tabs; } };
+      }
+    });
+    assert.strictEqual(communicationDriftReadiness.status, "boss_tab_missing");
+    assert.strictEqual(communicationDriftReadiness.ready, false);
+
+    const portablePreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      portablePreflightCalls.push(options);
+      return { tabId: 41, isSearchPage: true };
+    };
+    const portableReadiness = await inspectDashboardBossBrowserReadiness({
+      browserMode: "portable",
+      cdpPort: 9222,
+      logger,
+      browserFactory() {
+        return { async listTabs() { throw new Error("portable readiness must not list Edge tabs"); } };
+      }
+    });
+    assert.strictEqual(portableReadiness.status, "ready");
+    assert.deepStrictEqual(portablePreflightCalls, [undefined]);
+
+    const inheritedPreflightCalls = [];
+    boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
+      inheritedPreflightCalls.push(options);
+      return options?.tabId === 31
+        ? { tabId: 31, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+        : { tabId: 32, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+    };
+    boss.BossSiteAdapter.prototype.inspectInheritedSearchPage = async function inspectInheritedSearchPage() {
+      const error = new Error("fixture risk control");
+      error.code = "BOSS_RISK_CONTROL";
+      throw error;
+    };
+    await assert.rejects(
+      () => resolveLiveInheritedContext({
+        db: database,
+        plan: { profileId: saved.profileId },
+        matchingContext: {},
+        logger,
+        browserMode: "edge",
+        cdpPort: null,
+        browserFactory() {
+          return { async listTabs() { return tabs; } };
+        }
+      }),
+      (error) => error?.code === "BOSS_RISK_CONTROL"
+    );
+    assert.deepStrictEqual(inheritedPreflightCalls, [{ tabId: 32 }, { tabId: 31 }]);
+    assert.deepStrictEqual(getSiteRuntimeState(database, "boss"), {
+      site: "boss",
+      status: "blocked",
+      reasonCode: "BOSS_RISK_CONTROL",
+      message: "fixture risk control",
+      details: { phase: "inherited_context" },
+      updatedAt: getSiteRuntimeState(database, "boss").updatedAt
+    });
+    clearSiteRuntimeState(database, "boss");
+
+    boss.BossSiteAdapter.prototype.preflight = async function preflight() {
+      const error = new Error("fixture disconnected");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    };
+    await assert.rejects(
+      () => resolveLiveInheritedContext({
+        db: database,
+        plan: { profileId: saved.profileId },
+        matchingContext: {},
+        logger,
+        browserMode: "edge",
+        cdpPort: null,
+        browserFactory() {
+          return { async listTabs() { return tabs; } };
+        }
+      }),
+      (error) => error?.code === "BROWSER_UNAVAILABLE" && /Edge Control|桥接/.test(error.message)
+    );
+  } finally {
+    boss.BossSiteAdapter.prototype.preflight = originalPreflight;
+    boss.BossSiteAdapter.prototype.inspectInheritedSearchPage = originalInspect;
+  }
+}
 
 async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
   const assertRoute = async ({ pathname, method = "POST", taskProfile, runtime }) => {
@@ -1884,7 +2075,8 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
       intervalCallback = callback;
       intervalMs = interval;
       return 1;
-    }
+    },
+    URLSearchParams
   });
   new vm.Script(readinessScript).runInContext(context);
   await new Promise((resolve) => setImmediate(resolve));
@@ -1893,6 +2085,106 @@ async function assertBrowserReadinessGate({ readinessScript, status = "login_req
   assert.strictEqual(intervalMs, 5000);
   assert.strictEqual(button.disabled, expectedDisabled);
   assert.strictEqual(formSubmitCalls, 0);
+}
+
+async function assertBrowserReadinessModeSelection(readinessScript) {
+  const requests = [];
+  const listeners = new Map();
+  const button = { dataset: { browserBaseDisabled: "false" }, disabled: true };
+  const browserMode = {
+    value: "edge",
+    addEventListener(event, callback) { listeners.set(event, callback); }
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) {
+        if (selector === "[data-browser-readiness-button]") return button;
+        if (selector === "select[name=browserMode]") return browserMode;
+        return null;
+      }
+    },
+    fetch(url) {
+      requests.push(url);
+      const portable = String(url).includes("browserMode=portable") && String(url).includes("cdpPort=9222");
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: portable ? "ready" : "login_required", message: "fixture mode" })
+      });
+    },
+    setInterval() { return 1; },
+    URLSearchParams
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  await flushPromises();
+  assert.deepStrictEqual(requests, ["/api/browser-readiness?browserMode=edge"]);
+  assert.strictEqual(button.disabled, true);
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  await flushPromises();
+  assert.deepStrictEqual(requests, [
+    "/api/browser-readiness?browserMode=edge",
+    "/api/browser-readiness?browserMode=portable&cdpPort=9222"
+  ]);
+  assert.strictEqual(button.disabled, false);
+}
+
+async function assertBrowserReadinessModeSwitchRace(readinessScript) {
+  const requests = [];
+  const listeners = new Map();
+  const button = { dataset: { browserBaseDisabled: "false" }, disabled: true };
+  const browserMode = {
+    value: "edge",
+    addEventListener(event, callback) { listeners.set(event, callback); }
+  };
+  const statusNode = { textContent: "", dataset: {} };
+  const context = vm.createContext({
+    document: {
+      getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
+      querySelector(selector) {
+        if (selector === "[data-browser-readiness-button]") return button;
+        if (selector === "select[name=browserMode]") return browserMode;
+        return null;
+      }
+    },
+    fetch(url) {
+      const request = deferred();
+      requests.push({ url, request });
+      return request.promise;
+    },
+    setInterval() { return 1; },
+    URLSearchParams
+  });
+  new vm.Script(readinessScript).runInContext(context);
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, "/api/browser-readiness?browserMode=edge");
+
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  requests[0].request.resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.notStrictEqual(statusNode.dataset.status, "ready", "a stale Edge response must not update portable readiness");
+  assert.strictEqual(button.disabled, true, "a stale Edge response must not enable the portable selection");
+  assert.strictEqual(requests.length, 2, "finishing a stale Edge request must immediately launch portable readiness");
+  assert.strictEqual(requests[1].url, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  requests[1].request.resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.strictEqual(statusNode.dataset.status, "ready");
+  assert.strictEqual(button.disabled, false);
+
+  browserMode.value = "edge";
+  await listeners.get("change")();
+  browserMode.value = "portable";
+  await listeners.get("change")();
+  requests[2].request.reject(new Error("stale edge failure"));
+  await flushPromises();
+  assert.notStrictEqual(statusNode.dataset.status, "browser_unavailable", "a stale Edge failure must not replace portable readiness");
+  assert.strictEqual(requests.length, 4, "a stale Edge failure must immediately launch portable readiness");
+  assert.strictEqual(requests[3].url, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
+  requests[3].request.resolve(readinessResponse("ready"));
+  await flushPromises();
+  assert.strictEqual(button.disabled, false);
 }
 
 async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
@@ -1918,7 +2210,8 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
       intervalCallback = callback;
       intervalMs = interval;
       return 1;
-    }
+    },
+    URLSearchParams
   });
   new vm.Script(readinessScript).runInContext(context);
   assert.strictEqual(requests.length, 1);

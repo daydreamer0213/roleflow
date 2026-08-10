@@ -71,6 +71,7 @@ const {
 } = require("./core/storage");
 const { listWorkflowInventory } = require("./core/workflow_inventory");
 const { createSiteAccessController } = require("./core/site_access_budget");
+const { isBossDetailAccessAction } = require("./core/site_access_usage");
 const { parseResumeUpload } = require("./core/resume_parser");
 const { renderReports } = require("./reports/render");
 const { createDashboardServer } = require("./dashboard/server");
@@ -102,7 +103,7 @@ const {
 } = require("./core/scan_snapshot");
 const { validateResumeBatch } = require("./core/scan_resume");
 const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
-const { prepareWorkspaceTabs } = require("./core/workspace_tabs");
+const { prepareWorkspaceTabs, inspectBossOperatorTabs, assertBossRuntimeTabBindings } = require("./core/workspace_tabs");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
@@ -170,10 +171,12 @@ async function prepareWorkspaceTabsCommand(
     prepareTabs = prepareWorkspaceTabs
   } = {}
 ) {
-  const browserMode = String(args.browser || "portable").trim().toLowerCase();
+  const browserMode = String(args.browser || "edge").trim().toLowerCase();
   const cdpPort = Number(args["cdp-port"] || 9222);
-  if (browserMode !== "portable" || cdpPort !== 9222) {
+  if (!["edge", "portable"].includes(browserMode)
+    || (browserMode === "portable" && cdpPort !== 9222)) {
     const error = new Error("工作台同窗启动固定使用项目专用 Edge 的 9222 端口。");
+    error.message = "工作台默认复用普通 Edge；项目专用 Edge 仅支持显式 portable/9222。";
     error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
     throw error;
   }
@@ -185,20 +188,41 @@ async function prepareWorkspaceTabsCommand(
     error.code = "WORKSPACE_DASHBOARD_URL_INVALID";
     throw error;
   }
-  const browser = browserFactory({ browser: "portable", "cdp-port": 9222 });
+  const browserArgs = browserMode === "portable"
+    ? { browser: "portable", "cdp-port": 9222 }
+    : { browser: "edge" };
+  const browser = browserFactory(browserArgs);
   const adapter = siteAdapterFactory("boss", { browser, logger });
   const result = await prepareTabs({
     browser,
     dashboardUrl: parsedDashboardUrl.toString(),
-    inspectReadiness: () => inspectBossBrowserReadiness({
-      preflight: () => adapter.preflight()
+    requireFixedBossTabs: browserMode === "edge",
+    inspectReadiness: (fixed) => inspectBossBrowserReadiness({
+      preflight: async () => {
+        if (!fixed) return adapter.preflight();
+        const inspected = await inspectBossOperatorTabs({
+          browser,
+          inspectTab: (tabId) => adapter.preflight({ tabId }),
+          expectedSearchTabId: fixed.searchTab.id,
+          expectedCommunicationTabId: fixed.communicationTab.id
+        });
+        return inspected.searchState;
+      }
     })
   });
   console.log(`RoleFlow workspace tabs ready: ${result.status}`);
   return result;
 }
 
-async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
+async function communicate(
+  db,
+  args,
+  {
+    createBrowserFn = createBrowser,
+    createSiteAdapterFn = createSiteAdapter,
+    runCommunicationBatchFn = runCommunicationBatch
+  } = {}
+) {
   const batchId = Number(args.batch);
   if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
   const batch = getCommunicationBatch(db, batchId);
@@ -218,13 +242,28 @@ async function communicate(db, args, { createBrowserFn = createBrowser } = {}) {
     operation: "communication"
   });
   const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
-  const adapter = createSiteAdapter("boss", { browser, logger: communicationLogger, accessController });
+  const adapter = createSiteAdapterFn("boss", { browser, logger: communicationLogger, accessController });
   const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
 
   try {
-    const browserState = await adapter.preflight();
-    await adapter.prepareCommunicationTab(browserState.tabId);
-    const summary = await runCommunicationBatch({ db, batchId, adapter, accessController, logger: communicationLogger });
+    if (browserMode === "edge") {
+      const inspected = await inspectBossOperatorTabs({
+        browser,
+        inspectTab: (tabId) => adapter.preflight({ tabId })
+      });
+      if (typeof adapter.bindCommunicationTabs !== "function") {
+        throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication requires fixed BOSS operator tab binding.");
+      }
+      adapter.bindCommunicationTabs({
+        searchTabId: inspected.searchTab.id,
+        communicationTabId: inspected.communicationTab.id
+      });
+      await adapter.prepareCommunicationTab(inspected.searchTab.id);
+    } else {
+      const browserState = await adapter.preflight();
+      await adapter.prepareCommunicationTab(browserState.tabId);
+    }
+    const summary = await runCommunicationBatchFn({ db, batchId, adapter, accessController, logger: communicationLogger });
     console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
     return summary;
   } catch (error) {
@@ -705,19 +744,18 @@ async function scan(
     })
     : null;
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
-  let plannedCityScopes = acquisitionMode === "generated"
-    ? resolveCityScopes(args, planRecord, configs)
-    : null;
   let browserState = null;
-  if (!args.input) {
+  const usesFixedBossSearchTab = site === "boss" && String(args.browser || "").trim().toLowerCase() === "edge";
+  const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
     try {
-      browserState = await adapter.preflight();
-      assertScanActive(signal);
-      const priorRuntimeState = getSiteRuntimeState(db, site);
-      if (priorRuntimeState?.status === "blocked") {
-        clearSiteRuntimeState(db, site);
-        scanLogger.info("site_runtime_block_cleared", { site, priorReasonCode: priorRuntimeState.reasonCode });
-      }
+      if (!usesFixedBossSearchTab) return await adapter.preflight();
+      return await preflightBossScanBrowser({
+        browserMode: "edge",
+        browser,
+        adapter,
+        expectedSearchTabId,
+        expectedCommunicationTabId
+      });
     } catch (error) {
       if (error?.code === "BOSS_RISK_CONTROL") {
         setSiteRuntimeState(db, site, {
@@ -728,6 +766,45 @@ async function scan(
         });
       }
       throw error;
+    }
+  };
+  const runWithBoundFixedBossSearchAction = async (action) => {
+    if (!usesFixedBossSearchTab) return action(browserState);
+    try {
+      return await runWithBoundBossScanBrowser({
+        browserMode: "edge",
+        browser,
+        adapter,
+        expectedSearchTabId: browserState.tabId,
+        expectedCommunicationTabId: browserState.communicationTabId,
+        action: async (nextBrowserState) => {
+          browserState = nextBrowserState;
+          assertScanActive(signal);
+          return action(nextBrowserState);
+        }
+      });
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, site, {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
+  };
+  let plannedCityScopes = acquisitionMode === "generated"
+    ? resolveCityScopes(args, planRecord, configs)
+    : null;
+  if (!args.input) {
+    browserState = await preflightBrowser();
+    assertScanActive(signal);
+    const priorRuntimeState = getSiteRuntimeState(db, site);
+    if (priorRuntimeState?.status === "blocked") {
+      clearSiteRuntimeState(db, site);
+      scanLogger.info("site_runtime_block_cleared", { site, priorReasonCode: priorRuntimeState.reasonCode });
     }
   }
   let directSearchContext = null;
@@ -789,7 +866,9 @@ async function scan(
         platformPolicy = storedExecution.platformPolicy || {};
         assertInheritedAcquisitionScope(searchScope);
       } else {
-        const inspected = await adapter.inspectInheritedSearchPage({ tabId: browserState.tabId });
+        const inspected = await runWithBoundFixedBossSearchAction((state) =>
+          adapter.inspectInheritedSearchPage({ tabId: state.tabId })
+        );
         ({ searchTemplate, searchScope } = buildInheritedSearchScope({
           profileId: planRecord.profileId,
           rawUrl: inspected.url
@@ -824,12 +903,17 @@ async function scan(
       }];
     }
   }
+  const generatedFilterCatalog = !args.input && searchTemplate.mode !== "inherited"
+    ? await runWithBoundFixedBossSearchAction((state) =>
+      resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: state.tabId, logger: scanLogger })
+    )
+    : null;
   const nativeFilterSnapshot = args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
     : searchTemplate.mode === "inherited"
       ? { site, scanMode, source: "search_template", params: {}, labels: {}, lanes: [] }
       : applyScanPolicyToFilters(
-        await resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: browserState.tabId, logger: scanLogger }),
+        generatedFilterCatalog,
         scanPolicy
       );
   if (!args.input) {
@@ -1011,9 +1095,9 @@ async function scan(
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
-  const rawJobs = await adapter.scan({
+  const rawJobs = await runWithBoundFixedBossSearchAction((state) => adapter.scan({
     input: args.input,
-    tabId: browserState?.tabId,
+    tabId: state?.tabId,
     keywords,
     keywordPlan,
     cityScopes,
@@ -1052,8 +1136,14 @@ async function scan(
       result
     }),
     onScanComplete: (summary) => { scanSummary = summary; },
-    signal
-  });
+    signal,
+    assertTabBindings: usesFixedBossSearchTab
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+        expectedSearchTabId: state.tabId,
+        expectedCommunicationTabId: state.communicationTabId
+      })
+      : null
+  }));
   assertScanActive(signal);
 
   const detailCoverage = args.input ? null : {
@@ -1389,7 +1479,56 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
   const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
   const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
-  const browserState = await adapter.preflight();
+  const usesFixedBossSearchTab = String(args.browser || "").trim().toLowerCase() === "edge";
+  const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
+    try {
+      return await preflightBossScanBrowser({
+        browserMode: usesFixedBossSearchTab ? "edge" : args.browser,
+        browser,
+        adapter,
+        expectedSearchTabId,
+        expectedCommunicationTabId
+      });
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, "boss", {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
+  };
+  let browserState = await preflightBrowser();
+  const runWithBoundFixedBossRefreshAction = async (action) => {
+    if (!usesFixedBossSearchTab) return action(browserState);
+    try {
+      return await runWithBoundBossScanBrowser({
+        browserMode: "edge",
+        browser,
+        adapter,
+        expectedSearchTabId: browserState.tabId,
+        expectedCommunicationTabId: browserState.communicationTabId,
+        action: async (nextBrowserState) => {
+          browserState = nextBrowserState;
+          assertScanActive(signal);
+          return action(nextBrowserState);
+        }
+      });
+    } catch (error) {
+      if (error?.code === "BOSS_RISK_CONTROL") {
+        setSiteRuntimeState(db, "boss", {
+          status: "blocked",
+          reasonCode: error.code,
+          message: error.message,
+          details: { phase: "preflight" }
+        });
+      }
+      throw error;
+    }
+  };
   assertScanActive(signal);
 
   const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
@@ -1448,16 +1587,22 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   scanLogger.info(activityOnly ? "activity_probe_started" : "detail_refresh_started", { batchId, planId, requested: pending.length, browser: args.browser, analysisConcurrency });
   const refreshMethod = activityOnly ? adapter.probeActivities.bind(adapter) : adapter.refreshDetails.bind(adapter);
   const attemptCounts = { success: 0, failed: 0 };
-  const rawJobs = await refreshMethod(pending, {
+  const rawJobs = await runWithBoundFixedBossRefreshAction((state) => refreshMethod(pending, {
     limit,
-    tabId: browserState.tabId,
+    tabId: state.tabId,
     signal,
+    assertTabBindings: usesFixedBossSearchTab
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+        expectedSearchTabId: state.tabId,
+        expectedCommunicationTabId: state.communicationTabId
+      })
+      : null,
     onAttempt: async (attempt) => {
       assertScanActive(signal);
       persistRefreshAttempt(db, attempt, { batchId, activityOnly });
       if (Object.hasOwn(attemptCounts, attempt.result)) attemptCounts[attempt.result] += 1;
     }
-  });
+  }));
   assertScanActive(signal);
   const analyzedJobs = await mapWithConcurrency(rawJobs, analysisConcurrency, (raw) => {
     assertScanActive(signal);
@@ -1590,10 +1735,15 @@ function scanFailureStatus(error) {
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
     "BOSS_TAB_REQUIRED",
+    "BOSS_SEARCH_TAB_CHANGED",
+    "BOSS_OPERATOR_TABS_CHANGED",
+    "BOSS_COMMUNICATION_PAGE_LOST",
+    "BOSS_WINDOW_MISMATCH",
     "BOSS_SEARCH_PAGE_LOST",
     "BOSS_DETAIL_PAGE_LOST",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BROWSER_TIMEOUT",
+    "BROWSER_COMMAND_FAILED",
     "BROWSER_DISCONNECTED"
   ]).has(code) ? "interrupted" : "failed";
 }
@@ -1718,7 +1868,7 @@ function workflowAccessUsage(db, scanRunId) {
   const usage = { details: 0, pages: 0, scrolls: 0 };
   for (const event of listSiteAccessEvents(db, { site: "boss", limit: 10000 })) {
     if (String(event.details?.runId || "") !== normalizedRunId) continue;
-    if (event.action === "pane_detail_read") usage.details += 1;
+    if (isBossDetailAccessAction(event.action)) usage.details += 1;
     if (event.action === "list_navigation") usage.pages += 1;
     if (event.action === "list_scroll") usage.scrolls += 1;
   }
@@ -1727,6 +1877,9 @@ function workflowAccessUsage(db, scanRunId) {
 
 function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {}) {
   const succeeded = result?.outcome === "succeeded";
+  const accessMode = ["visible_pane", "standalone_detail"].includes(result?.accessMode)
+    ? result.accessMode
+    : "unknown";
   return recordSiteAccessEvent(db, {
     site,
     action: "pane_detail_result",
@@ -1734,7 +1887,8 @@ function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {
     details: {
       batchId: Number(batchId),
       outcome: succeeded ? "succeeded" : "failed",
-      errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_CARD_DETAIL_READ_FAILED")
+      errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_DETAIL_LOAD_TIMEOUT"),
+      accessMode
     }
   });
 }
@@ -1780,6 +1934,48 @@ function codedError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+async function preflightBossScanBrowser({
+  browserMode,
+  browser,
+  adapter,
+  expectedSearchTabId = null,
+  expectedCommunicationTabId = null
+}) {
+  if (String(browserMode || "").trim().toLowerCase() !== "edge") {
+    return adapter.preflight();
+  }
+  const inspected = await inspectBossOperatorTabs({
+    browser,
+    inspectTab: (tabId) => adapter.preflight({ tabId }),
+    expectedSearchTabId,
+    expectedCommunicationTabId
+  });
+  return {
+    ...(inspected.searchState || {}),
+    tabId: inspected.searchTab.id,
+    communicationTabId: inspected.communicationTab.id
+  };
+}
+
+async function runWithBoundBossScanBrowser({
+  browserMode,
+  browser,
+  adapter,
+  expectedSearchTabId = null,
+  expectedCommunicationTabId = null,
+  action
+}) {
+  if (typeof action !== "function") throw new TypeError("runWithBoundBossScanBrowser requires action()");
+  const browserState = await preflightBossScanBrowser({
+    browserMode,
+    browser,
+    adapter,
+    expectedSearchTabId,
+    expectedCommunicationTabId
+  });
+  return action(browserState);
 }
 
 function prevalidateDirectScanResume(db, args = {}) {
@@ -2228,5 +2424,7 @@ module.exports = {
   workflowAccessUsage,
   persistDetailOutcome,
   resolveAnalysisConcurrency,
-  assertWorkflowScanControl
+  assertWorkflowScanControl,
+  preflightBossScanBrowser,
+  runWithBoundBossScanBrowser
 };
