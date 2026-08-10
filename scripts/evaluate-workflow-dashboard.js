@@ -12,7 +12,7 @@ async function main() {
   const options = parse(process.argv.slice(2));
   const { chromium } = require("playwright");
   fs.mkdirSync(options.outputDir, { recursive: true });
-  const result = { schemaVersion: 1, label: options.label, targetRevision: revision(options.targetRoot), browser: { engine: "msedge", headless: true }, viewports: VIEWPORTS, states: STATES, pages: [], errors: [] };
+  const result = { schemaVersion: 2, label: options.label, expectPrimary: options.expectPrimary, targetRevision: revision(options.targetRoot), browser: { engine: "msedge", headless: true }, viewports: VIEWPORTS, states: STATES, pages: [], errors: [] };
   const storage = require(path.join(options.targetRoot, "src", "core", "storage"));
   const { createDashboardServer } = require(path.join(options.targetRoot, "src", "dashboard", "server"));
   const dbPath = path.join(options.outputDir, `.${options.label}.sqlite`);
@@ -24,7 +24,7 @@ async function main() {
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     browser = await chromium.launch({ channel: "msedge", headless: true });
-    for (const state of STATES) for (const viewport of VIEWPORTS) result.pages.push(await audit({ browser, baseUrl, state, runId: runs[state], viewport, outputDir: options.outputDir, label: options.label }));
+    for (const state of STATES) for (const viewport of VIEWPORTS) result.pages.push(await audit({ browser, baseUrl, state, runId: runs[state], viewport, outputDir: options.outputDir, label: options.label, expectPrimary: options.expectPrimary }));
   } catch (error) { result.errors.push(String(error?.stack || error)); throw error; } finally {
     if (browser) await browser.close();
     if (server) await close(server);
@@ -53,26 +53,99 @@ function seed(storage, db) {
   return { scanning: scanning.id, paused: paused.id, review_required: review.id, interrupted: interrupted.id };
 }
 
-async function audit({ browser, baseUrl, state, runId, viewport, outputDir, label }) {
+async function audit({ browser, baseUrl, state, runId, viewport, outputDir, label, expectPrimary }) {
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" }); const page = await context.newPage();
   const consoleErrors = []; const pageErrors = []; const requestFailures = []; const externalRequests = [];
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); }); page.on("pageerror", (e) => pageErrors.push(e.message)); page.on("requestfailed", (r) => requestFailures.push({ url: r.url(), error: r.failure()?.errorText || "unknown" })); page.on("request", (r) => { if (!r.url().startsWith(baseUrl)) externalRequests.push(r.url()); });
   try {
     await page.goto(`${baseUrl}/workflow?runId=${encodeURIComponent(runId)}`, { waitUntil: "networkidle" });
+    const action = page.locator('[data-workflow-primary="true"]');
+    await focusPrimaryWithKeyboard(page, action);
     await page.evaluate(() => window.scrollTo(0, 0));
-    const action = page.locator('[data-workflow-primary="true"]'); if (await action.count() === 1) await action.focus();
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
-    const audit = await page.evaluate(() => { const primary = [...document.querySelectorAll('[data-workflow-primary="true"]')]; const e = primary[0]; const r = e?.getBoundingClientRect(); return { primaryCount: primary.length, primary: e ? { text: String(e.textContent || "").trim(), top: r.top, bottom: r.bottom, left: r.left, right: r.right, fullyWithinViewport: r.top >= 0 && r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, focused: document.activeElement === e, outline: getComputedStyle(e).outlineStyle } : null, horizontalOverflow: document.documentElement.scrollWidth > innerWidth }; });
+    const audit = await page.evaluate(() => {
+      const primary = [...document.querySelectorAll('[data-workflow-primary="true"]')];
+      const visible = primary.filter((element) => Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length));
+      const e = visible[0];
+      const r = e?.getBoundingClientRect();
+      const style = e ? getComputedStyle(e) : null;
+      const documentElement = document.documentElement;
+      const body = document.body;
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        document: { width: documentElement.scrollWidth, clientWidth: documentElement.clientWidth },
+        body: { width: body?.scrollWidth || 0, clientWidth: body?.clientWidth || 0 },
+        primaryCount: primary.length,
+        visiblePrimaryCount: visible.length,
+        primary: e ? {
+          text: String(e.textContent || "").trim(),
+          rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height },
+          fullyWithinViewport: r.top >= 0 && r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+          focused: document.activeElement === e,
+          outline: { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, offset: style.outlineOffset }
+        } : null,
+        motion: { reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, runningAnimations: document.getAnimations().filter((animation) => animation.playState === "running").length },
+        horizontalOverflow: documentElement.scrollWidth > innerWidth
+      };
+    });
     const screenshot = `${label}-${state}-${viewport.width}x${viewport.height}.png`; await page.screenshot({ path: path.join(outputDir, screenshot), fullPage: false });
-    let interaction = "none";
-    if (state === "scanning") { await page.locator('[data-action="stop-preview"]').first().click(); await page.locator('[data-action="stop-cancel"]').click(); interaction = "stop-preview-cancel"; }
-    if (state === "review_required") { const checkbox = page.locator('input[name="jobIds"]').first(); if (await checkbox.count()) { await checkbox.check(); interaction = "review-checkbox"; } }
+    let interaction = { kind: "none", attempted: false, passed: true, result: {} };
+    if (state === "scanning") {
+      await page.locator('[data-action="stop-preview"]').first().click();
+      const confirmationVisible = await page.locator('[data-stop-confirmation]').isVisible();
+      await page.locator('[data-action="stop-cancel"]').click();
+      const confirmationHidden = await page.locator('[data-stop-confirmation]').isHidden();
+      interaction = { kind: "stop-preview-cancel", attempted: true, passed: confirmationVisible && confirmationHidden, result: { confirmationVisible, confirmationHidden } };
+    }
+    if (state === "review_required") {
+      const checkbox = page.locator('input[name="jobIds"]').first();
+      if (await checkbox.count()) {
+        const before = await checkbox.isChecked();
+        await checkbox.setChecked(!before);
+        const after = await checkbox.isChecked();
+        interaction = { kind: "review-checkbox", attempted: true, passed: before !== after, result: { before, after } };
+      }
+    }
     if (viewport.width === 1440 && ["scanning", "paused"].includes(state)) await page.waitForTimeout(2600);
-    return { state, path: `/workflow?runId=${runId}`, screenshot, audit, interaction, consoleErrors, pageErrors, requestFailures, externalRequests };
+    const errors = { console: consoleErrors, page: pageErrors, request: requestFailures, external: externalRequests };
+    const result = { state, path: `/workflow?runId=${runId}`, viewport, screenshot, audit, interaction, errors };
+    if (expectPrimary) assertStrictPrimary(result);
+    return result;
   } finally { await context.close(); }
 }
 
-function parse(args) { const values = new Map(); for (let i = 0; i < args.length; i += 2) values.set(args[i], args[i + 1]); const targetRoot = path.resolve(values.get("--target-root") || process.cwd()); const outputDir = path.resolve(values.get("--output-dir") || path.join(process.cwd(), ".runtime", "workflow-dashboard-evidence")); const label = values.get("--label") || "current"; if (!["--target-root", "--output-dir", "--label"].every((key) => !values.has(key) || values.get(key))) throw new Error("Missing evaluation option value"); return { targetRoot, outputDir, label }; }
+async function focusPrimaryWithKeyboard(page, action) {
+  for (let index = 0; index < 32; index += 1) {
+    if (await action.count() === 1 && await action.evaluate((element) => document.activeElement === element)) return;
+    await page.keyboard.press("Tab");
+  }
+}
+
+function assertStrictPrimary(result) {
+  const failures = [];
+  const primary = result.audit.primary;
+  if (result.audit.visiblePrimaryCount !== 1) failures.push(`visiblePrimaryCount=${result.audit.visiblePrimaryCount}`);
+  if (!primary?.fullyWithinViewport) failures.push("primary outside viewport");
+  if (!primary?.focused) failures.push("primary not focused");
+  if (primary?.outline?.style !== "solid") failures.push(`primary outline=${primary?.outline?.style || "none"}`);
+  if (result.audit.horizontalOverflow) failures.push("horizontal overflow");
+  if (!result.interaction.passed) failures.push(`interaction=${result.interaction.kind}`);
+  for (const [kind, entries] of Object.entries(result.errors)) if (entries.length) failures.push(`${kind} errors=${entries.length}`);
+  if (failures.length) throw new Error(`Workflow evaluator gate failed for ${result.state} ${result.viewport.width}x${result.viewport.height}: ${failures.join(", ")}`);
+}
+
+function parse(args) {
+  const values = new Map(); let expectPrimary = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const key = args[index];
+    if (key === "--expect-primary") { expectPrimary = true; continue; }
+    const value = args[index + 1];
+    if (!key.startsWith("--") || value == null || value.startsWith("--")) throw new Error(`Missing evaluation option value for ${key}`);
+    values.set(key, value); index += 1;
+  }
+  const targetRoot = path.resolve(values.get("--target-root") || process.cwd()); const outputDir = path.resolve(values.get("--output-dir") || path.join(process.cwd(), ".runtime", "workflow-dashboard-evidence")); const label = values.get("--label") || "current";
+  return { targetRoot, outputDir, label, expectPrimary };
+}
 function revision(root) { return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
 function logger() { return { info() {}, warn() {}, error() {}, requestId() { return "workflow-dashboard-evaluation"; }, listRecent() { return []; } }; }
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }

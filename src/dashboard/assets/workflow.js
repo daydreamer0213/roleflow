@@ -12,8 +12,8 @@
   let timer = null;
   let lastKey = page.dataset.pollingKey || "";
 
-  const node = (selector) => panel?.querySelector(selector);
-  const nodes = (selector) => panel ? [...panel.querySelectorAll(selector)] : [];
+  const node = (selector) => page.querySelector(selector);
+  const nodes = (selector) => [...page.querySelectorAll(selector)];
   const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const setText = (selector, value) => { const target = node(selector); if (target) target.textContent = String(value); };
   const controls = (disabled) => nodes("[data-workflow-control]").forEach((button) => { button.disabled = Boolean(disabled); });
