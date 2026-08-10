@@ -334,6 +334,7 @@ Update only existing scenarios that model the normal scan fallback:
 - `scanNullPaneOutcomeSmoke`: expect `detailRead === false`, `BOSS_PANE_SWITCH_TIMEOUT`, and failed `visible_pane` outcome.
 - `detailFailureDedupeSmoke`: make `readVisiblePaneDetail` throw `BOSS_PANE_SWITCH_TIMEOUT`; expect one attempt across duplicate keywords.
 - `detailOutcomeAuditSmoke`: make the failing pane throw `BOSS_PANE_SWITCH_TIMEOUT`; both outcomes use `visible_pane`.
+- `fatalBudgetAfterCompletedTargetSmoke`: keep the same fatal checkpoint behavior but use `action: "pane_detail_read"` and the pane recovery limits.
 - `detailBudgetCheckpointSmoke`: make the second `readVisiblePaneDetail` call throw the existing budget error with `action: "pane_detail_read"`; keep checkpoint assertions.
 
 Leave `refreshDetails()`, `probeActivities()`, communication tests, and their explicit `readDetail()` stubs unchanged.

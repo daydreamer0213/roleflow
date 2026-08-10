@@ -801,27 +801,28 @@ class BossSiteAdapter {
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
-            let visiblePaneProbeAvailable = true;
             for (const entry of detailEntries) {
               throwIfAborted(options.signal);
               await assertRuntimeTabBindings(options.assertTabBindings);
               console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
-              let accessMode = "standalone_detail";
+              const accessMode = "visible_pane";
               let detailOutcome = {
                 outcome: "succeeded",
                 errorCode: "",
                 accessMode
               };
               try {
-                let detail = null;
-                if (visiblePaneProbeAvailable) {
-                  visiblePaneProbeAvailable = false;
-                  accessMode = "visible_pane";
-                  detail = await this.readVisiblePaneDetail(tabId, entry.job, options.signal, options.assertTabBindings);
-                }
+                const detail = await this.readVisiblePaneDetail(
+                  tabId,
+                  entry.job,
+                  options.signal,
+                  options.assertTabBindings
+                );
                 if (!detail) {
-                  accessMode = "standalone_detail";
-                  detail = await this.readDetail(tabId, entry.job.url, options.signal, options.assertTabBindings);
+                  throw bossError(
+                    "BOSS_PANE_SWITCH_TIMEOUT",
+                    `BOSS search pane did not become complete for ${entry.job.sourceId || "unknown"}`
+                  );
                 }
                 throwIfAborted(options.signal);
                 detailOutcome = { outcome: "succeeded", errorCode: "", accessMode };
