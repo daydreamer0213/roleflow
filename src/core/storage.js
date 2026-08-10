@@ -1498,6 +1498,47 @@ function attachWorkflowScan(db, input = {}) {
   });
 }
 
+function attachWorkflowScanRun(db, input = {}) {
+  return immediateTransaction(db, () => {
+    const id = String(input.id || input.workflowRunId || "").trim();
+    const run = getWorkflowRun(db, id);
+    if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+    if (!["scanning", "analyzing", "interrupted"].includes(run.status)) {
+      throw workflowRunError(
+        "WORKFLOW_SCAN_LINK_INVALID",
+        "workflow execution can only be attached during scanning, analyzing, or interruption"
+      );
+    }
+    const scanRunId = String(input.scanRunId || "").trim();
+    if (!scanRunId) throw workflowRunError("WORKFLOW_SCAN_RUN_REQUIRED", "scan run is required");
+    const owner = db.prepare(`
+      SELECT id
+      FROM workflow_runs
+      WHERE scan_run_id = ? AND id <> ?
+      LIMIT 1
+    `).get(scanRunId, id);
+    if (owner) {
+      throw workflowRunError(
+        "WORKFLOW_SCAN_EXECUTION_OWNED",
+        "scan execution is already attached to another workflow run"
+      );
+    }
+    if (run.scanRunId && run.scanRunId !== scanRunId) {
+      const previous = db.prepare("SELECT status, plan_id FROM scan_runs WHERE id = ?").get(run.scanRunId);
+      if (!previous || previous.status === "running" || Number(previous.plan_id || 0) !== run.planId) {
+        throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another active scan");
+      }
+    }
+    const scan = db.prepare("SELECT plan_id, status FROM scan_runs WHERE id = ?").get(scanRunId);
+    if (!scan || Number(scan.plan_id || 0) !== run.planId || scan.status !== "running") {
+      throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "scan run does not belong to this workflow plan");
+    }
+    db.prepare("UPDATE workflow_runs SET scan_run_id = ?, updated_at = ? WHERE id = ?")
+      .run(scanRunId, nowIso(), id);
+    return getWorkflowRun(db, id);
+  });
+}
+
 function attachWorkflowCommunication(db, input = {}) {
   const id = String(input.id || input.workflowRunId || "").trim();
   const run = getWorkflowRun(db, id);
@@ -4902,6 +4943,7 @@ module.exports = {
   getActiveWorkflowRun,
   transitionWorkflowRun,
   attachWorkflowScan,
+  attachWorkflowScanRun,
   attachWorkflowCommunication,
   createBatch,
   createAndBindScanBatch,

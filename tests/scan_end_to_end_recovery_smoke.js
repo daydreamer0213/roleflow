@@ -289,17 +289,100 @@ function runScan(dbPath, planId, runId, mode, {
       ROLEFLOW_SCAN_E2E_ADAPTER: "1",
       ROLEFLOW_SCAN_E2E_MODE: mode,
       ROLEFLOW_SCAN_E2E_DB: dbPath,
-      ROLEFLOW_SCAN_E2E_WORKFLOW: workflowRunId || ""
+      ROLEFLOW_SCAN_E2E_WORKFLOW: workflowRunId || "",
+      ROLEFLOW_SCAN_E2E_RUN_ID: runId
     }
   });
 }
 
 async function workflowPlatformAccessSmoke(storage) {
   const { workflowRunConsumesSlot } = require("../src/core/workflow_control");
+  await scenarioFilterCatalogWaitPrebound(storage);
+  await scenarioPauseAfterDetailCheckpoint(storage);
   await scenarioStopBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioFailureBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot);
   await scenarioRepeatedEntry(storage);
+}
+
+async function scenarioFilterCatalogWaitPrebound(storage) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-filter-wait-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-05", "none");
+    const result = runScan(
+      scenario.dbPath,
+      scenario.planId,
+      "wf-filter-wait-pause",
+      "workflow-filter-wait-pause",
+      {
+        workflowRunId: scenario.workflow.id,
+        keywords: ["RAG", "Agent"]
+      }
+    );
+    assertExit(result, 0, "workflow filter-catalog wait pause");
+    assert.doesNotMatch(result.stderr, /SCAN_RUN_MISSING/);
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const paused = storage.getWorkflowRun(db, scenario.workflow.id);
+      assert.strictEqual(paused.scanRunId, "wf-filter-wait-pause");
+      assert.strictEqual(paused.scanBatchId, null);
+      assert.strictEqual(paused.status, "paused");
+      assert.deepStrictEqual(paused.metrics.scanWait, {
+        runId: "wf-filter-wait-pause",
+        action: "list_navigation",
+        delayMs: 1,
+        retryAt: "2026-10-05T00:01:00.000Z"
+      });
+      assert.strictEqual(storage.getScanRun(db, "wf-filter-wait-pause").stopCode, "WORKFLOW_PAUSE_REQUESTED");
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
+}
+
+async function scenarioPauseAfterDetailCheckpoint(storage) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-detail-pause-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-06", "none");
+    const result = runScan(
+      scenario.dbPath,
+      scenario.planId,
+      "wf-detail-pause",
+      "workflow-pause-after-detail",
+      {
+        workflowRunId: scenario.workflow.id,
+        keywords: ["RAG", "Agent"]
+      }
+    );
+    assertExit(result, 0, "workflow pause after detail checkpoint");
+    assert.doesNotMatch(result.stderr, /SCAN_RUN_MISSING/);
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const paused = storage.getWorkflowRun(db, scenario.workflow.id);
+      const batch = storage.getBatch(db, paused.scanBatchId);
+      const snapshot = batch.filterSnapshot.execution;
+      const observations = db.prepare("SELECT source_id FROM job_observations o JOIN jobs j ON j.id = o.job_id WHERE o.batch_id = ?")
+        .all(batch.id);
+      assert.strictEqual(paused.status, "paused");
+      assert.strictEqual(observations.length, 1, "detail checkpoint must persist its job observation before pausing");
+      assert.strictEqual(storage.listScanTargetResults(db, batch.id).length, 0, "paused target must not be completed");
+      assert.deepStrictEqual(
+        require("../src/core/scan_snapshot").remainingTargetKeys(snapshot, []),
+        snapshot.targets.map((target) => target.targetKey)
+      );
+      assert(
+        storage.listReusableJobDetails(db, { site: "boss", profileId: scenario.workflow.profileId })
+          .some((job) => job.sourceId === observations[0].source_id),
+        "checkpointed complete detail must be reusable"
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
 }
 
 async function scenarioStopBeforeAccess(storage, workflowRunConsumesSlot) {
@@ -595,9 +678,11 @@ function installOfflineBoundaries() {
   const observabilityPath = require.resolve("../src/core/observability");
   const modelSettingsPath = require.resolve("../src/core/model_settings");
   const edgeControlPath = require.resolve("../src/adapters/browser/edge_control");
+  const siteAccessBudgetPath = require.resolve("../src/core/site_access_budget");
   const boss = require(bossPath);
   const observability = require(observabilityPath);
   const modelSettings = require(modelSettingsPath);
+  const siteAccessBudget = require(siteAccessBudgetPath);
   const originalLoad = Module._load;
   const logger = { child: () => logger, debug() {}, info() {}, warn() {}, error() {} };
 
@@ -640,6 +725,10 @@ function installOfflineBoundaries() {
     }
 
     async discoverFilterCatalog() {
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-filter-wait-pause") {
+        assertWorkflowPrebound();
+        await this.accessController?.reserve("list_navigation", { kind: "filter_catalog" });
+      }
       return { site: "boss", source: "offline-smoke", discoveredAt: new Date().toISOString(), fields: {} };
     }
 
@@ -655,6 +744,12 @@ function installOfflineBoundaries() {
       const requested = Array.isArray(options.targetKeys) ? new Set(options.targetKeys) : null;
       const targets = boss.buildBossScanTargets(options).filter((target) => !requested || requested.has(target.targetKey));
       assert(targets.length, "offline adapter received no scan targets");
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-pause-after-detail") {
+        await checkpointDetail(options, targets[0]);
+        markWorkflowPauseRequested();
+        await this.accessController?.reserve("list_navigation", { kind: "post_detail_pause" });
+        return [];
+      }
       if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-stop-after-first-target") {
         assert(targets.length >= 2, "workflow stop fixture needs at least two targets");
         await checkpoint(options, targets[0]);
@@ -706,6 +801,9 @@ function installOfflineBoundaries() {
     try { resolved = Module._resolveFilename(request, parent, isMain); } catch { /* use the original loader */ }
     if (resolved === bossPath) return { ...boss, BossSiteAdapter: OfflineBossSiteAdapter };
     if (resolved === edgeControlPath) return { EdgeControlAdapter: OfflineEdgeControlAdapter };
+    if (resolved === siteAccessBudgetPath && ["workflow-filter-wait-pause", "workflow-pause-after-detail"].includes(process.env.ROLEFLOW_SCAN_E2E_MODE)) {
+      return { ...siteAccessBudget, createSiteAccessController: createOfflineWaitBoundary };
+    }
     if (resolved === reportsPath) return { renderReports: () => ({ mdPath: "offline.md", htmlPath: "offline.html" }) };
     if (resolved === observabilityPath) return { ...observability, createLogger: () => logger };
     if (resolved === modelSettingsPath) return {
@@ -727,6 +825,26 @@ function installOfflineBoundaries() {
       isModelReady: () => true
     };
     return originalLoad.call(this, request, parent, isMain);
+  };
+}
+
+function createOfflineWaitBoundary({ onWait, assertActive }) {
+  return {
+    async reserve(action, details = {}) {
+      const mode = process.env.ROLEFLOW_SCAN_E2E_MODE;
+      if (mode === "workflow-filter-wait-pause" && action === "list_navigation") {
+        await onWait?.({
+          action,
+          delayMs: 1,
+          retryAt: "2026-10-05T00:01:00.000Z"
+        });
+        markWorkflowPauseRequested();
+        assertActive?.();
+      }
+      if (mode === "workflow-pause-after-detail" && details.kind === "post_detail_pause") {
+        assertActive?.();
+      }
+    }
   };
 }
 
@@ -757,6 +875,45 @@ function markWorkflowStopRequested() {
   } finally {
     database.close();
   }
+}
+
+function markWorkflowPauseRequested() {
+  const storage = require("../src/core/storage");
+  const database = storage.openDb(process.env.ROLEFLOW_SCAN_E2E_DB);
+  try {
+    database.prepare(`
+      UPDATE workflow_runs SET
+        control_state = 'pause_requested',
+        updated_at = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), process.env.ROLEFLOW_SCAN_E2E_WORKFLOW);
+  } finally {
+    database.close();
+  }
+}
+
+function assertWorkflowPrebound() {
+  const storage = require("../src/core/storage");
+  const database = storage.openDb(process.env.ROLEFLOW_SCAN_E2E_DB);
+  try {
+    const workflow = storage.getWorkflowRun(database, process.env.ROLEFLOW_SCAN_E2E_WORKFLOW);
+    assert.strictEqual(workflow?.scanRunId, process.env.ROLEFLOW_SCAN_E2E_RUN_ID,
+      "workflow must bind the active scan run before filter-catalog access");
+    assert.strictEqual(workflow?.scanBatchId, null,
+      "pre-bind must not create or change the workflow scan batch link");
+  } finally {
+    database.close();
+  }
+}
+
+async function checkpointDetail(options, target) {
+  const jobs = [offlineJob(target)];
+  await options.onDetailCheckpoint?.({
+    job: jobs[0],
+    outcome: "succeeded",
+    accessMode: "visible_pane"
+  });
+  return jobs;
 }
 
 function offlineJob(target) {

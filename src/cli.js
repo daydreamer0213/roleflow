@@ -26,6 +26,7 @@ const {
   getWorkflowRunByCommunicationBatch,
   transitionWorkflowRun,
   attachWorkflowScan,
+  attachWorkflowScanRun,
   createBatch,
   createAndBindScanBatch,
   getBatch,
@@ -671,6 +672,12 @@ async function scan(
       execution,
       scanLogger,
       analysisConcurrency: resolveAnalysisConcurrency(args, primaryState.concurrency)
+    });
+  }
+  if (workflowRun && execution?.runId) {
+    attachWorkflowScanRun(db, {
+      id: workflowRun.id,
+      scanRunId: execution.runId
     });
   }
   const frozenInherited = workflowAcquisitionMode === "inherited"
