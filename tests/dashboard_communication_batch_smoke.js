@@ -105,7 +105,10 @@ let server;
   assert.strictEqual(spawns.length, spawnsBeforeTamperedStart);
 
   const review = await getText(baseUrl, `/communication?batchId=${batchId}`);
-  assert.match(review.body, /校准状态：calibrated/);
+  assert.match(review.body, /实施：已实现/);
+  assert.match(review.body, /校准：已完成/);
+  assert.match(review.body, /端到端验收：待人工 E2E 验收（e2e_pending）/);
+  assert.match(review.body, /技术执行门：已启用/);
   assert.match(review.body, /name="action" value="start"/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);

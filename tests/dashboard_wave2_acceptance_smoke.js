@@ -83,6 +83,10 @@ try {
   assert.deepEqual(evidence.errors, [], "the focused evaluator must retain its own clean run result");
   assert(evidence.pages.every((page) => !page.audit.horizontalOverflow), "all audited dashboard routes must fit every acceptance viewport without horizontal overflow");
   assert(evidence.pages.every((page) => page.audit.shell.navigationMinTarget >= 44), "shared navigation must provide 44px touch targets across every audited route");
+  const communicationPages = evidence.pages.filter((page) => page.id === "communication-review");
+  assert.strictEqual(communicationPages.length, 4, "communication review must be captured at every viewport");
+  assert(communicationPages.every((page) => page.audit.primary.defined && page.audit.primary.count === 1 && /开始沟通|继续沟通/.test(page.audit.primary.control?.text || "")), "communication review must expose exactly one start-or-resume primary action");
+  assert(communicationPages.every((page) => page.audit.communicationHierarchy?.primarySolid && page.audit.communicationHierarchy?.destructiveOutline), "communication review must keep the destructive withdrawal action visually subordinate");
 } finally {
   fs.rmSync(outputDir, { recursive: true, force: true });
 }

@@ -16,7 +16,7 @@ const PAGE_SPECS = Object.freeze([
   { id: "workflow-scanning", family: "workflow", state: "scanning", primarySelector: '[data-workflow-primary="true"]', path: ({ workflowId }) => `/workflow?runId=${encodeURIComponent(workflowId)}`, interaction: "stop-preview-cancel" },
   { id: "queue-primary", family: "queue", state: "primary", path: ({ planId }) => `/queue?planId=${planId}&pool=primary`, interaction: "details-toggle" },
   { id: "jobs-latest", family: "jobs", state: "latest-batch", path: ({ planId }) => `/jobs?planId=${planId}&batch=latest`, interaction: "details-toggle" },
-  { id: "communication-review", family: "communication", state: "confirmed-offline", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}`, interaction: "none" },
+  { id: "communication-review", family: "communication", state: "confirmed-offline", primarySelector: 'button[name="action"][value="start"],button[name="action"][value="resume"]', path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}`, interaction: "none" },
   { id: "settings", family: "settings", state: "default", path: () => "/settings", interaction: "none" },
   { id: "onboarding-existing", family: "onboarding", state: "existing-profile", path: () => "/onboarding", interaction: "none" },
   { id: "diagnostics", family: "diagnostics", state: "empty-log", path: () => "/diagnostics", interaction: "none" }
@@ -142,7 +142,7 @@ async function auditPage({ browser, baseUrl, spec, fixture, viewport, outputDir,
       ? page.locator(spec.primarySelector).filter({ hasNot: page.locator("[disabled]") }).first()
       : page.locator("main a[href], main button:not([disabled]), main input:not([type=hidden]):not([disabled]), main select:not([disabled]), main summary").first();
     await focusWithKeyboard(page, target);
-    const audit = await page.evaluate(pageAudit, spec.primarySelector || "");
+    const audit = await page.evaluate(pageAudit, { pageId: spec.id, primarySelector: spec.primarySelector || "" });
     const screenshot = `${label}-${spec.id}-${viewport.width}x${viewport.height}.png`;
     await page.screenshot({ path: path.join(outputDir, screenshot), fullPage: false });
     const interaction = await runClientOnlyInteraction(page, spec.interaction);
@@ -183,7 +183,7 @@ async function runClientOnlyInteraction(page, kind) {
   return { kind: "none", attempted: false, passed: true, result: {} };
 }
 
-function pageAudit(primarySelector) {
+function pageAudit({ pageId = "", primarySelector = "" } = {}) {
   const round = (value) => Math.round(value * 100) / 100;
   const visible = (element) => {
     const rect = element.getBoundingClientRect();
@@ -199,6 +199,10 @@ function pageAudit(primarySelector) {
   const actions = [...document.querySelectorAll("main a[href], main button, main input:not([type=hidden]), main select, main summary")].filter(visible);
   const primaryAll = primarySelector ? [...document.querySelectorAll(primarySelector)] : [];
   const primaryVisible = primaryAll.filter(visible);
+  const communicationPrimary = pageId === "communication-review" ? primaryVisible[0] : null;
+  const destructive = pageId === "communication-review" ? document.querySelector('button[name="action"][value="discard"]') : null;
+  const primaryStyle = communicationPrimary ? getComputedStyle(communicationPrimary) : null;
+  const destructiveStyle = destructive ? getComputedStyle(destructive) : null;
   const navigationTargets = [...document.querySelectorAll("nav a")].filter(visible);
   const focused = document.activeElement;
   const focusStyle = focused ? getComputedStyle(focused) : null;
@@ -226,6 +230,7 @@ function pageAudit(primarySelector) {
     },
     actions: actions.slice(0, 40).map(describe),
     primary: { defined: Boolean(primarySelector), selector: primarySelector || null, count: primaryAll.length, visibleCount: primaryVisible.length, control: describe(primaryVisible[0] || null), fullyWithinViewport: primaryVisible.length === 1 && Boolean(describe(primaryVisible[0])?.fullyWithinViewport) },
+    communicationHierarchy: pageId === "communication-review" ? { primarySolid: primaryStyle?.backgroundColor === "rgb(0, 107, 91)" && primaryStyle?.color === "rgb(255, 255, 255)", destructiveOutline: destructiveStyle?.backgroundColor === "rgb(255, 255, 255)" && destructiveStyle?.color === "rgb(178, 58, 50)" && destructiveStyle?.borderColor === "rgb(178, 58, 50)" } : null,
     focus: { focused: Boolean(focused && actions.includes(focused) || primaryVisible.includes(focused)), activeTag: focused?.tagName?.toLowerCase() || null, activeText: text(focused), outlineStyle: focusStyle?.outlineStyle || null, outlineWidth: Number.parseFloat(focusStyle?.outlineWidth || "0"), outlineOffset: focusStyle?.outlineOffset || null },
     reducedMotion: { mediaMatches: matchMedia("(prefers-reduced-motion: reduce)").matches, transitionDuration: getComputedStyle(motionTarget).transitionDuration, animationDuration: getComputedStyle(motionTarget).animationDuration, runningAnimations: document.getAnimations().filter((animation) => animation.playState === "running").length, longRunningAnimations: document.getAnimations().filter((animation) => animation.playState === "running" && Number(animation.effect?.getComputedTiming().duration || 0) > 50).length },
     accessibility: { viewportMeta: document.querySelector('meta[name="viewport"]')?.getAttribute("content") || "", bodyFontSize: Number.parseFloat(getComputedStyle(document.body).fontSize || "0"), headings, headingOrderValid, labelledInputs, alerts: document.querySelectorAll('[role="alert"], [role="status"]').length, structuralEmoji: [...document.querySelectorAll("nav a, button")].filter((element) => /[\u{1F300}-\u{1FAFF}]/u.test(text(element))).map((element) => text(element)) }
@@ -245,6 +250,7 @@ function assertStrictPage(page) {
   if (shell.activeNavigationCount !== 1) failures.push("missing active navigation");
   if (shell.navigationMinTarget < 44) failures.push("navigation touch target");
   if (audit.primary?.defined && (audit.primary.count !== 1 || audit.primary.visibleCount !== 1 || !audit.primary.fullyWithinViewport)) failures.push("primary below the fold");
+  if (page.id === "communication-review" && (!audit.communicationHierarchy?.primarySolid || !audit.communicationHierarchy?.destructiveOutline)) failures.push("communication visual hierarchy");
   if (!audit.focus?.focused || audit.focus?.outlineStyle !== "solid" || audit.focus?.outlineWidth < 2) failures.push("weak keyboard focus");
   if (!audit.reducedMotion?.mediaMatches || audit.reducedMotion?.longRunningAnimations) failures.push("ignored reduced motion");
   if (!audit.accessibility?.viewportMeta.includes("width=device-width") || !audit.accessibility?.headingOrderValid) failures.push("accessibility structure");
