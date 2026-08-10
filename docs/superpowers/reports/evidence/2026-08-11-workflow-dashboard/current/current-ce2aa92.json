@@ -1,0 +1,420 @@
+{
+  "schemaVersion": 1,
+  "label": "current-ce2aa92",
+  "targetRevision": "ce2aa92933631dbec1571965c4f9b7f90be56431",
+  "browser": {
+    "engine": "msedge",
+    "headless": true
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "states": [
+    "scanning",
+    "paused",
+    "review_required",
+    "interrupted"
+  ],
+  "pages": [
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-ce2aa92-scanning-1440x900.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 876.671875,
+          "bottom": 920.671875,
+          "left": 260,
+          "right": 354,
+          "fullyWithinViewport": false,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-ce2aa92-scanning-1024x768.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 871.21875,
+          "bottom": 915.21875,
+          "left": 128,
+          "right": 222,
+          "fullyWithinViewport": false,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-ce2aa92-scanning-768x1024.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 929.671875,
+          "bottom": 973.671875,
+          "left": 120,
+          "right": 214,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-ce2aa92-scanning-375x812.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 1599.546875,
+          "bottom": 1643.546875,
+          "left": 40,
+          "right": 335,
+          "fullyWithinViewport": false,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-ce2aa92-paused-1440x900.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-ce2aa92-paused-1024x768.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-ce2aa92-paused-768x1024.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-ce2aa92-paused-375x812.png",
+      "audit": {
+        "primaryCount": 2,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-ce2aa92-review_required-1440x900.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-ce2aa92-review_required-1024x768.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-ce2aa92-review_required-768x1024.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-ce2aa92-review_required-375x812.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-ce2aa92-interrupted-1440x900.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-ce2aa92-interrupted-1024x768.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-ce2aa92-interrupted-768x1024.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-ce2aa92-interrupted-375x812.png",
+      "audit": {
+        "primaryCount": 3,
+        "primary": {
+          "text": "暂停本轮",
+          "top": 0,
+          "bottom": 0,
+          "left": 0,
+          "right": 0,
+          "fullyWithinViewport": true,
+          "focused": false,
+          "outline": "none"
+        },
+        "horizontalOverflow": false
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    }
+  ],
+  "errors": []
+}
