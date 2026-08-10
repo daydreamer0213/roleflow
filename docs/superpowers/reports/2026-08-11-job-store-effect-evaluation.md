@@ -11,6 +11,8 @@ Reproduce source metrics with `node -e "for (const f of ['src/core/storage.js','
 
 The contract now executes all transaction evidence directly: `upsertJob` under observed outer `BEGIN IMMEDIATE` has no nested begin; bind and rescore each have observed `BEGIN/COMMIT` and a trigger-induced `BEGIN/ROLLBACK` with pre-state restored; reassess has a successful call plus a trigger-induced write failure after analyzer invocation and restores its observation row. Its three validation codes are separately rejected with analyzer count zero and stable observation count. These are execution assertions, not source-reading claims.
 
+Fix round 2 mapping: 1 exports/direct refs/no cycle; 2 profile and legacy report rows; 3 independent decision precedence; 4 governance order plus review/pending queue ordering and a 55-job cap assertion; 5 execution-object filter; 6 application/state/feedback/event round trips; 7 success transaction sequences; 8 trigger rollback snapshots (rescore has two observations and compares the complete ordered batch snapshot); 9 outer upsert sequence; 10 three gate full-table snapshots with analyzer zero; 11 scan/health/migration remains covered by focused `scan_recovery_smoke`, `workflow_health_smoke`, and `storage_migration_smoke` execution; 12 keyword conflict update, cache, hash and idempotent observation assertions. Reproduce all source totals before/after with `git ls-tree -r --name-only <SHA> src | rg '\.js$' | % { $a=Get-Content $_; $p+=@($a).Count; $n+=@($a|?{$_.Trim()}).Count }; "$p $n"`.
+
 ## Structure and ownership
 
 - `src/core/storage.js`: 3482 physical / 3295 nonblank lines; it exports exactly 136 public keys.

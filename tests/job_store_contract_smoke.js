@@ -50,8 +50,13 @@ async function observeExecAsync(action) {
   db.exec = (sql) => { statements.push(String(sql)); return original(sql); };
   try { return { value: await action(), statements }; } finally { db.exec = original; }
 }
+function tableSnapshot(tables) {
+  return Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()]));
+}
 try {
   jobStore.upsertKeywordSource(db, "AI", "smoke");
+  jobStore.upsertKeywordSource(db, "AI", "second-source");
+  assert.deepStrictEqual(db.prepare("SELECT keyword, source FROM keyword_sources WHERE keyword = ?").all("AI").map((row) => ({ ...row })), [{ keyword: "AI", source: "second-source" }]);
   jobStore.saveModelCache(db, { cacheKey: "smoke", kind: "job", provider: "test", model: "test", inputHash: "one", result: { first: true } });
   jobStore.saveModelCache(db, { cacheKey: "smoke", kind: "job", provider: "test", model: "test", inputHash: "two", result: { second: true } });
   assert.deepStrictEqual(jobStore.getModelCache(db, "smoke").result, { second: true });
@@ -117,6 +122,14 @@ try {
     if (status) jobStore.markCandidateJob(db, { profileId, jobId: id, planId, status, note: status });
   }
   assert.deepStrictEqual(jobStore.listDecisionQueue(db, { planId, limit: 1 }).map((row) => row.sourceId), ["queue-review"]);
+  for (let index = 0; index < 55; index += 1) {
+    jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: `queue-cap-${index}`, keyword: "AI", tags: ["salary_target_core"], matches: [], url: `https://www.zhipin.com/job_detail/queue-${index}.html`, bossActiveText: "今日活跃", analysis: { semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 } }, queueBatch);
+  }
+  const cappedQueue = jobStore.listDecisionQueue(db, { planId, limit: 999 });
+  assert.strictEqual(cappedQueue.length, 50);
+  assert.strictEqual(cappedQueue[0].sourceId, "queue-review");
+  const firstPending = cappedQueue.findIndex((row) => !row.applicationStatus || row.applicationStatus === "pending");
+  assert(firstPending > 0 && cappedQueue.slice(0, firstPending).every((row) => row.applicationStatus === "review"));
   assert.strictEqual(jobStore.getLatestMainScanBatchId(db, { planId }), queueBatch);
   const ignored = storage.createBatch(db, "boss", "ignored", "ignored", { profileId, searchPlanId: planId, filterSnapshot: { execution: [] } });
   jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "ignored", tags: [], matches: [] }, ignored);
@@ -139,11 +152,15 @@ try {
   assert.deepStrictEqual(db.prepare("SELECT search_plan_id AS planId FROM batches WHERE id = ?").get(bindFailureBatch), bindBefore);
   db.exec("DROP TRIGGER fail_contract_bind");
 
-  const rescoreObservation = db.prepare("SELECT id, score FROM job_observations WHERE batch_id = ? ORDER BY id LIMIT 1").get(batchId);
+  const rescoreBatch = storage.createBatch(db, "boss", "rescore", "rescore", { profileId, searchPlanId: planId, filterSnapshot: { execution: {} } });
+  jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "rescore-first", score: 0, tags: [], matches: [], url: "https://www.zhipin.com/job_detail/rescore-first.html", bossActiveText: "今日活跃" }, rescoreBatch);
+  jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "rescore-second", score: 0, tags: [], matches: [], url: "https://www.zhipin.com/job_detail/rescore-second.html", bossActiveText: "今日活跃" }, rescoreBatch);
+  const rescoreObservation = db.prepare("SELECT id FROM job_observations WHERE batch_id = ? ORDER BY id DESC LIMIT 1").get(rescoreBatch);
+  const rescoreBefore = db.prepare("SELECT * FROM job_observations WHERE batch_id = ? ORDER BY id").all(rescoreBatch);
   db.exec(`CREATE TRIGGER fail_contract_rescore BEFORE UPDATE ON job_observations WHEN NEW.id = ${rescoreObservation.id} BEGIN SELECT RAISE(ABORT, 'rescore late failure'); END`);
   const rescoreFailure = observeExec(() => assert.throws(() => jobStore.rescorePlanObservations(db, { planId, configs }), /rescore late failure/));
   assert.deepStrictEqual(rescoreFailure.statements, ["BEGIN", "ROLLBACK"]);
-  assert.deepStrictEqual(db.prepare("SELECT id, score FROM job_observations WHERE id = ?").get(rescoreObservation.id), rescoreObservation);
+  assert.deepStrictEqual(db.prepare("SELECT * FROM job_observations WHERE batch_id = ? ORDER BY id").all(rescoreBatch), rescoreBefore);
   db.exec("DROP TRIGGER fail_contract_rescore");
 
   const reassessBatch = storage.createBatch(db, "boss", "reassess", "reassess", { profileId, searchPlanId: planId, filterSnapshot: { execution: {} } });
@@ -161,7 +178,9 @@ try {
   let analyzerCalls = 0;
   const countBeforeGate = db.prepare("SELECT count(*) AS n FROM job_observations").get().n;
   for (const [input, code] of [[{ batchId: null, planId }, "BATCH_ID_REQUIRED"], [{ batchId, planId: null }, "PLAN_ID_REQUIRED"], [{ batchId, planId: planId + 999 }, "BATCH_PLAN_MISMATCH"]]) {
+    const gateBefore = tableSnapshot(["jobs", "job_observations", "events", "candidate_job_events", "job_analysis_attempts"]);
     await assert.rejects(() => jobStore.reassessBatchObservations(db, { ...input, configs, analyzeJob: async () => { analyzerCalls += 1; } }), (error) => error.code === code);
+    assert.deepStrictEqual(tableSnapshot(["jobs", "job_observations", "events", "candidate_job_events", "job_analysis_attempts"]), gateBefore);
   }
   assert.strictEqual(analyzerCalls, 0);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM job_observations").get().n, countBeforeGate);
