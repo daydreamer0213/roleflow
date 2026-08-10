@@ -90,8 +90,20 @@ Open with “需要你处理的岗位” and a short explanation of the current 
 
 1. Add one shared offline stylesheet with tokens, typography, signal rail, cards, badges, form controls, table/card responsive behavior, focus, reduced motion, error and empty states.
 2. Add three self-contained static HTML prototypes that import the shared stylesheet and use only existing RoleFlow route names and data-shaped examples.
-3. Render each page at 1440×900, 1024×768, 768×1024, and 375×812 with the installed local Edge binary; inspect representative screenshots and check computed overflow/focus behavior offline.
+3. Use the installed local Edge executable through Playwright; call `page.setViewportSize({ width, height })` before loading each page, then render each page at 1440×900, 1024×768, 768×1024, and 375×812. Inspect every mobile screenshot and check the root plus each major visible text/container boundary in that same page context.
 4. Record the screenshot evidence in the task report and commit only the assigned prototype/spec/screenshot files.
+
+## Mobile validation correction
+
+The first prototype verification compared only `document.documentElement.scrollWidth` with the viewport width. That check passed while screenshots still showed right-edge text cropping, because it did not inspect intermediate flex/grid children, text paint ranges, or the allowed overflow container itself. The corrected offline gate must, for every page and viewport:
+
+- assert `document.documentElement.scrollWidth === innerWidth` and `body.scrollWidth === innerWidth`;
+- assert every major heading, lede, action-panel text block, metric grid, job filter group, and heading metadata container has `min-width: 0`, `overflow-wrap: anywhere`, and no right edge beyond its parent or viewport;
+- inspect `Range.getClientRects()` for visible text and reject any painted line whose right edge exceeds its text container or viewport;
+- keep the mobile primary navigation inside the viewport with `flex-wrap: nowrap`, `overflow-x: auto`, and a visible “左右滑动查看更多” cue; this is the only intentional local horizontal scroll region;
+- assert the page’s primary action is fully inside the first viewport, keyboard focus is visible, reduced motion is honored, contrast meets AA, and no external URL/font is loaded.
+
+The previous “12/12 无横向溢出” conclusion is superseded: it proved only root document width in a different renderer. Direct CDP inspection of the old Edge CLI command showed `window.innerWidth=496`, `clientWidth=496`, `innerHeight=719`, `outerWidth=522` while the PNG header was `375×812`; the image was therefore a 375px crop of a wider layout. The repaired prototypes must use one Playwright viewport context for both metrics and PNG output, then be visually checked before this wave is accepted.
 
 ## Production migration sequence
 
