@@ -151,6 +151,16 @@ const {
 } = require("../core/workflow_control");
 const { renderWorkflowHealthPanel } = require("./workflow_health_view");
 const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
+const { sendHtml, sendJson, escapeHtml, escapeAttr } = require("./http/response");
+const { renderPage: renderDashboardPage } = require("./ui/shell");
+const { renderNavigation } = require("./ui/navigation");
+
+const DASHBOARD_ASSETS = Object.freeze({
+  "/assets/roleflow.css": {
+    contentType: "text/css; charset=utf-8",
+    file: path.join(__dirname, "assets", "roleflow.css")
+  }
+});
 
 const PROGRESS_ACTIONS = Object.freeze({
   reply_confirmed_sent: {
@@ -325,7 +335,8 @@ function createDashboardServer({
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
-  messageDiscoveryDependencies = {}
+  messageDiscoveryDependencies = {},
+  assetReader = fs.readFileSync
 }) {
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
@@ -450,6 +461,7 @@ function createDashboardServer({
     res.on("finish", () => logger.info("http_request_completed", { requestId, method: req.method, path: url?.pathname || req.url, statusCode: res.statusCode, durationMs: Date.now() - startedAt }));
     try {
       url = new URL(req.url, "http://127.0.0.1");
+      if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname], assetReader);
       if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
       if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
@@ -860,7 +872,7 @@ function renderMatchCardPage({ db, searchParams }) {
         ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
         : `<section class="panel"><h2>匹配偏好卡 #${card.id}（历史版本 · 已被替换）</h2><p class="hint">这张卡已被更新的确认卡替换，仅作历史留档，不能重新确认；当前扫描与岗位匹配不使用它。</p>${renderMatchingCardSummary(card.card)}</section>`;
   return renderPage("匹配偏好卡", `<main>
-  <nav>${navLinks(`/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`)}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
+  <nav>${navLinks({ currentPath: `/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`, todayPath: `/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}` })}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
   <h1>匹配偏好卡</h1>
   <p class="hint">当前扫描使用：${escapeHtml(activeLabel)}</p>
   ${notices.join("\n")}
@@ -2997,7 +3009,7 @@ function renderCommunicationResult({ result, job, profile, plan, hrMessage }) {
   const title = { greeting: "定制招呼语", hr_reply: "HR 回复", follow_up: "无回复跟进" }[result.kind] || "沟通草稿";
   const messages = (result.messages || []).map((message, index) => `<section class="panel"><textarea id="communication-${index}" readonly>${escapeHtml(message)}</textarea><button type="button" onclick="copyCommunication('communication-${index}')">复制</button></section>`).join("");
   const missing = result.missingFact ? `<section class="panel"><p>${escapeHtml(result.missingFact.question)}</p><form class="form-stack" method="post" action="/api/communication"><input type="hidden" name="mode" value="${escapeAttr(result.kind)}"><input type="hidden" name="jobId" value="${job.id}"><input type="hidden" name="profileId" value="${profile.id}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="hrMessage" value="${escapeAttr(hrMessage)}"><input type="hidden" name="factKey" value="${escapeAttr(result.missingFact.key)}"><label>你的真实情况<textarea name="factValue" required></textarea></label><button>保存事实并生成回复</button></form></section>` : "";
-  return renderPage(title, `<main><nav>${navLinks(`/queue?planId=${plan.id}`)}</nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(job.title)} · ${escapeHtml(job.company || "")}。文案只生成到本页，不会自动发送。</p>${missing}${messages || (!missing ? '<section class="panel">没有生成可发送文案。</section>' : "")}</main><script>async function copyCommunication(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>`);
+  return renderPage(title, `<main><nav>${navLinks({ currentPath: `/queue?planId=${plan.id}`, todayPath: `/queue?planId=${plan.id}`, planId: plan.id })}</nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(job.title)} · ${escapeHtml(job.company || "")}。文案只生成到本页，不会自动发送。</p>${missing}${messages || (!missing ? '<section class="panel">没有生成可发送文案。</section>' : "")}</main><script>async function copyCommunication(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>`);
 }
 
 function parseBody(rawBody, contentType) {
@@ -3307,7 +3319,7 @@ function renderProfilePage({ db, searchParams }) {
     ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成搜索建议</button></form>`
     : dependency?.stale ? `<p class="setup-warning">当前筛选方案基于旧画像。请到<a href="/plan?profileId=${profile.id}&planId=${activePlan.id}">筛选方案</a>检查并保存后再扫描；系统不会自动覆盖你的人工条件。</p>` : "";
   return renderPage("画像摘要", `<main>
-  <nav>${navLinks(`/profile?profileId=${profile.id}`)}<a href="/resumes?profileId=${profile.id}">简历版本</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
+  <nav>${navLinks({ currentPath: `/profile?profileId=${profile.id}`, todayPath: `/profile?profileId=${profile.id}` })}<a href="/resumes?profileId=${profile.id}">简历版本</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
   <h1>画像摘要</h1>
   ${saved}
   ${planNotice}
@@ -3339,7 +3351,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
   const versions = listCandidateResumeVersions(db, profile.id);
   const saved = searchParams.get("saved") ? `<p class="notice">简历版本已保存，下一次扫描会优先用启用版本做匹配和推荐。</p>` : "";
   return renderPage("简历版本", `<main>
-  <nav>${navLinks(`/resumes?profileId=${profile.id}`)}<a href="/profile?profileId=${profile.id}">画像确认</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
+  <nav>${navLinks({ currentPath: `/resumes?profileId=${profile.id}`, todayPath: `/resumes?profileId=${profile.id}` })}<a href="/profile?profileId=${profile.id}">画像确认</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
   <h1>简历版本</h1>
   ${saved}
   <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。投递版简历只用于岗位沟通与版本管理：新增、编辑或停用版本不会改变基础候选人画像，也不会替换当前匹配偏好卡。</p>
@@ -3467,7 +3479,7 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
   const status = modelReady ? `${settings.preset || settings.provider} · ${settings.model} · 已验证` : "模型尚未通过连接测试";
   const unavailable = modelReady ? "" : `<p class="setup-warning">解析简历需要可用模型。你仍可查看已有岗位和投递记录；要新建或更新画像，请先<a href="/settings?next=%2Fonboarding">配置并测试模型</a>。</p>`;
   return renderPage("简历分析", `<main>
-  <nav>${navLinks()}</nav>
+  <nav>${navLinks({ currentPath: "/onboarding" })}</nav>
   <h1>简历分析</h1>
   <p class="hint">当前模型：${escapeHtml(status)}</p>
   ${unavailable}
@@ -3533,7 +3545,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   const body = `<style>
     .settings-page{max-width:980px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-profile{scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}
   </style><main class="settings-page">
-    <nav>${navLinks()}</nav>
+    <nav>${navLinks({ currentPath: "/settings" })}</nav>
     <header class="settings-header">
       <p class="eyebrow">按任务选择模型</p>
       <h1>模型设置</h1>
@@ -3812,7 +3824,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     : "";
   const planStyle = '<style>.workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.workflow-kicker{margin:0 0 4px;color:#176b5b;font-size:12px;font-weight:700}.workflow-launch h2{font-size:20px;margin:0}.workflow-start{display:flex;align-items:center;gap:8px}.workflow-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px;border:1px solid #d4dde2}.workflow-metrics div{padding:11px 13px;border-right:1px solid #d4dde2}.workflow-metrics div:last-child{border-right:0}.workflow-metrics span{display:block;color:#5c6870;font-size:12px}.workflow-metrics strong{display:block;margin-top:4px;font-size:19px}.workflow-budget{margin-top:9px;color:#5c6870;font-size:13px}.workflow-primary{min-width:112px;text-align:center;background:#176b5b!important;border-color:#176b5b!important}.plan-settings>summary,.legacy-operations>summary{cursor:pointer;font-weight:600}.plan-settings .plan-form{margin-top:16px}.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}.legacy-operations .scan-panel{padding-top:12px}@media(max-width:760px){.workflow-launch-head{align-items:stretch;flex-direction:column}.workflow-start{display:grid}.workflow-metrics{grid-template-columns:1fr 1fr}.workflow-metrics div:nth-child(2){border-right:0}.workflow-metrics div:nth-child(-n+2){border-bottom:1px solid #d4dde2}.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
   return renderPage("筛选方案", `${planStyle}<main>
-  <nav>${navLinks(`/plan?profileId=${profile.id}&planId=${planRecord.id}`)}</nav>
+  <nav>${navLinks({ currentPath: `/plan?profileId=${profile.id}&planId=${planRecord.id}`, todayPath: `/plan?profileId=${profile.id}&planId=${planRecord.id}`, planId: planRecord.id })}</nav>
   <h1>筛选方案</h1>
   ${renderWorkflowLaunchPanel({ planRecord, workflowState, disabled: workflowStartDisabled })}
   ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
@@ -4052,7 +4064,7 @@ function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth })
     .workflow-live{padding:20px 0;border-bottom:1px solid #ccd7dc}.workflow-live-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.workflow-stage{margin:0;color:#176b5b;font-size:13px;font-weight:700}.workflow-live h2{margin:4px 0 0;font-size:21px}.workflow-model{margin:0;color:#5a6871;font-size:13px}.workflow-meter{width:100%;height:10px;margin:15px 0 17px;accent-color:#176b5b}.workflow-analysis-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;background:#d8e0e5;border:1px solid #d8e0e5;border-radius:7px;overflow:hidden}.workflow-stat{padding:12px;background:#fff}.workflow-stat span{display:block;color:#5a6871;font-size:12px}.workflow-stat strong{display:block;margin-top:4px;font-size:20px}.workflow-live-meta{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:12px}.workflow-live-card{padding:12px 14px;border:1px solid #d8e0e5;border-radius:7px;background:#fff}.workflow-live-card h3{margin:0 0 7px;font-size:13px}.workflow-live-card p{margin:5px 0;color:#46545e;font-size:13px;line-height:1.5}.workflow-control-area{margin-top:14px}.workflow-control-group{display:flex;flex-wrap:wrap;gap:9px;align-items:center}.workflow-control-group[hidden],.workflow-stop-confirmation[hidden],.workflow-inline-error[hidden],.workflow-stale[hidden]{display:none}.workflow-control-group form{margin:0}.workflow-stop{border-color:#b42318;background:#fff;color:#9a332b}.workflow-stop-confirmation{margin-top:12px;padding:13px 14px;border:1px solid #e1b2ae;border-radius:7px;background:#fff7f6}.workflow-stop-confirmation h3{margin:0 0 8px;font-size:15px}.workflow-stop-confirmation p{margin:5px 0}.workflow-inline-error,.workflow-stale{margin-top:12px;padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-stale{border-left-color:#bf8700;background:#fff8e5;color:#765a16}.workflow-control-group button:focus-visible,.workflow-control-group a:focus-visible{outline:3px solid #7cb9e8;outline-offset:2px}
     .workflow-scan-wait[hidden]{display:none}@media(max-width:760px){.workflow-live-head{display:block}.workflow-model{margin-top:7px}.workflow-analysis-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.workflow-live-meta{grid-template-columns:1fr}.workflow-control-group{align-items:stretch;flex-direction:column}.workflow-control-group form,.workflow-control-group button,.workflow-control-group a{width:100%}}
   </style>`;
-  return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks(`/plan?planId=${plan.id}`)}<a href="/workflow?runId=${escapeAttr(workflow.id)}">本轮</a></nav>
+  return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks({ currentPath: `/workflow?runId=${workflow.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id })}</nav>
     <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
       <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
     </header>${renderInheritedScopeSummary(workflow)}${healthPanel}${progressPanel}${phase}</main>${polling}`);
@@ -4383,7 +4395,7 @@ function renderBossFilterPreview(snapshot, catalog) {
 
 function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
   const diagnostic = code ? `<p class="error-code">错误编号：${escapeHtml(code)}${requestId ? ` · 请求编号：${escapeHtml(requestId)}` : ""}</p><p class="hint">可在“诊断”页面查看对应日志。</p>` : "";
-  return renderPage("操作未完成", `<main><nav>${navLinks()}</nav><h1>操作未完成</h1><section class="panel"><p class="risk-text">${escapeHtml(message)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
+  return renderPage("操作未完成", `<main><nav>${navLinks({})}</nav><h1>操作未完成</h1><section class="panel"><p class="risk-text">${escapeHtml(message)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
 }
 
 function modelSettingsBack(error, fallback) {
@@ -4409,7 +4421,7 @@ function renderDiagnosticsPage(entries = []) {
     const message = String(modelSummary || error.message || entry.message || "").slice(0, 240);
     return `<tr><td>${escapeHtml(String(entry.time || "").replace("T", " ").slice(0, 19))}</td><td>${escapeHtml(entry.level || "")}</td><td>${escapeHtml(entry.component || "")}</td><td>${escapeHtml(entry.event || "")}</td><td>${escapeHtml(entry.requestId || "")}</td><td>${escapeHtml(code)}</td><td>${escapeHtml(message)}</td></tr>`;
   }).join("");
-  return renderPage("诊断日志", `<main><nav>${navLinks()}</nav><h1>诊断日志</h1><p class="hint">仅展示最近 120 条脱敏日志。完整 JSONL 位于项目的 .runtime/logs。</p><section class="panel"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main>`);
+  return renderPage("诊断日志", `<main><nav>${navLinks({ currentPath: "/diagnostics" })}</nav><h1>诊断日志</h1><p class="hint">仅展示最近 120 条脱敏日志。完整 JSONL 位于项目的 .runtime/logs。</p><section class="panel"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main>`);
 }
 
 function respondUiError(res, error, back, { logger, requestId, event, fallbackCode }) {
@@ -4470,10 +4482,7 @@ function renderFeedbackInsight(feedback = {}) {
 }
 
 function renderPage(title, body) {
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:0;background:#f6f7f9;color:#1f2328}main{max-width:1160px;margin:0 auto;padding:24px}nav{display:flex;gap:14px;margin-bottom:18px}nav a{color:#0969da;text-decoration:none}h1{font-size:24px;margin:0 0 8px;letter-spacing:0}h2{font-size:16px;margin:0 0 10px}.hint,.line{color:#57606a;margin:7px 0}.notice{color:#0a6b2b}.risk-text{color:#b42318}.error-code{font-family:Consolas,monospace;color:#57606a}.panel{background:#fff;border:1px solid #d8dee4;border-radius:8px;padding:16px;margin:12px 0}.form-stack{display:grid;gap:12px;max-width:560px}.plan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.plan-form .wide{grid-column:1/-1}.plan-form label,.form-stack label,.inline-form label{display:grid;gap:5px;font-size:14px}.plan-form .checkbox{display:flex;align-items:center;gap:8px;padding-top:24px}.plan-form .checkbox input{width:auto}input,select,textarea,button{font:inherit}input,select,textarea{min-width:0;padding:8px;border:1px solid #b8c0cc;border-radius:4px;background:#fff}input,select,button,.button-link{min-height:44px;box-sizing:border-box}textarea{min-height:118px;resize:vertical}button,.button-link{padding:8px 12px;border:1px solid #0969da;border-radius:4px;background:#0969da;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.button-link{line-height:20px}.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}.inline-form input{width:120px}.resume-preview pre{max-height:360px;overflow:auto;white-space:pre-wrap;background:#f6f8fa;padding:10px;border:1px solid #d8dee4}.scan-error{white-space:pre-wrap;background:#fff1f0;padding:10px;max-height:180px;overflow:auto}.profile-summary{display:grid;gap:3px}.validation{border-left:4px solid #bf8700}.validation-error{border-left-color:#b42318}.validation strong{display:block}.validation ul,.profile-diff ul{margin:7px 0 0;padding-left:20px}.profile-diff{border-top:1px solid #d8dee4;padding-top:8px}.diagnostics{width:100%;border-collapse:collapse;font-size:12px}.diagnostics th,.diagnostics td{border-bottom:1px solid #d8dee4;padding:7px;text-align:left;vertical-align:top;word-break:break-word}@media(max-width:760px){main{padding:16px}.plan-form{grid-template-columns:1fr}.plan-form .wide{grid-column:auto}.plan-form .checkbox{padding-top:0}.inline-form{display:grid;grid-template-columns:1fr}.diagnostics{display:block;overflow-x:auto}}
-button:disabled{cursor:not-allowed;background:#8c959f;border-color:#8c959f;opacity:.65}nav{flex-wrap:wrap}
-</style>${body}</html>`;
+  return renderDashboardPage({ title, body });
 }
 
 function keywordLines(keywords = []) {
@@ -4499,10 +4508,8 @@ function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossAc
   }[run.state] || "尚未运行";
 }
 
-function navLinks(current = "") {
-  const planId = String(current).match(/[?&]planId=(\d+)/)?.[1];
-  if (planId) return `<a href="/onboarding">简历</a><a href="${escapeAttr(current)}">今日任务</a><a href="/queue?planId=${escapeAttr(planId)}">当前岗位</a><a href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
-  return `<a href="/onboarding">简历</a><a href="${escapeAttr(current || "/")}">筛选方案</a><a href="/settings">模型设置</a><a href="/diagnostics">诊断</a>`;
+function navLinks({ currentPath = "", todayPath = "", planId = "" } = {}) {
+  return renderNavigation({ currentPath, todayPath, planId });
 }
 
 function redirect(res, location) {
@@ -4575,6 +4582,8 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
     jobs,
     filters: { status: "all", level: "all", fresh: "all", decision: "all", q: "", planId: plan.id, batch: "latest", batchId: null, queuePool: pool, queueScope: scope, queuePage: page, latestMainBatchId },
     latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
+    currentPath: `/queue?${searchParams.toString()}`,
+    todayPath: `/plan?planId=${encodeURIComponent(plan.id)}`,
     title: pool === "no_reply" ? "无回复待跟进" : progressPools.has(pool) ? "求职进展" : "当前待处理岗位",
     hint: pool === "no_reply"
       ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。"
@@ -4703,7 +4712,7 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${plan.id}`)}</nav><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
+  return renderPage("批量沟通清单", `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main class="communication-layout"><nav>${navLinks({ currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id })}</nav><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>`);
 }
 
 function renderCommunicationReviewPage({ db, searchParams }) {
@@ -4723,7 +4732,7 @@ function renderCommunicationReviewPage({ db, searchParams }) {
   const discardControl = ["confirmed", "paused"].includes(batch.status)
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="discard">安全撤回</button></form>` : "";
   const calibrationNotice = calibration.executionEnabled ? "" : `<p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>`;
-  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks(`/plan?planId=${batch.planId}`)}<a href="/communication/new?planId=${batch.planId}">新建沟通清单</a></nav><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
+  return renderPage("批量沟通审阅", `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main class="communication-layout"><nav>${navLinks({ currentPath: `/communication?batchId=${batch.id}`, todayPath: `/plan?planId=${batch.planId}`, planId: batch.planId })}</nav><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>`);
 }
 
 function compactAwaitingAction(job) {
@@ -4738,15 +4747,15 @@ function queueScopeForJob(job, latestMainBatchId) {
 }
 
 function renderCompactDashboard(data) {
-  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "", outcomeAnalyticsPanel = "" } = data;
+  const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "", outcomeAnalyticsPanel = "", currentPath = "", todayPath = "" } = data;
   const analysisRetry = queue?.pool === "analysis_pending" && Number(queue.counts.analysis_pending || 0) > 0
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
+  return renderPage(title, `<style>
 body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main>
-<nav><a href="/onboarding">简历</a>${filters.planId ? `<a href="/plan?planId=${escapeAttr(filters.planId)}">筛选方案</a><a href="/queue?planId=${escapeAttr(filters.planId)}">当前岗位</a>` : ""}<a href="/settings">模型设置</a><a href="/diagnostics">诊断</a></nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
+<nav>${navLinks({ currentPath, todayPath, planId: filters.planId })}</nav><h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
   ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
-${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script></html>`;
+${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>`);
 }
 
 function renderCompactPoolTabs(queue, planId, profileId = "") {
@@ -4983,27 +4992,15 @@ function refererPath(req) {
   }
 }
 
-function sendHtml(res, html, statusCode = 200) {
-  res.writeHead(statusCode, { "content-type": "text/html; charset=utf-8" });
-  res.end(html);
-}
-
-function sendJson(res, statusCode, body) {
-  res.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
+function sendDashboardAsset(res, asset, assetReader) {
+  const body = assetReader(asset.file);
+  res.writeHead(200, { "content-type": asset.contentType });
+  res.end(body);
 }
 
 function sendText(res, statusCode, text) {
   res.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8" });
   res.end(text);
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
-}
-
-function escapeAttr(value) {
-  return escapeHtml(value);
 }
 
 module.exports = {
