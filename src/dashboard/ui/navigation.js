@@ -15,6 +15,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
     ];
     if (currentRoute === "/workflow") links.push(navigationLink(current, "本轮", true));
+    if (currentRoute === "/jobs") links.push(navigationLink(current, "岗位列表", true));
     if (currentRoute === "/communication") links.push(navigationLink(current, "批量沟通审阅", true));
     return links.join("");
   }
