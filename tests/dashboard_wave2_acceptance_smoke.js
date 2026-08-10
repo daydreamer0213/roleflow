@@ -81,6 +81,7 @@ try {
   const evidence = JSON.parse(fs.readFileSync(path.join(outputDir, "smoke.json"), "utf8"));
   assert.strictEqual(evidence.pages.length, 32, "the focused evaluator must capture every page family at all four viewports");
   assert.deepEqual(evidence.errors, [], "the focused evaluator must retain its own clean run result");
+  assert(evidence.pages.every((page) => !page.audit.horizontalOverflow), "all audited dashboard routes must fit every acceptance viewport without horizontal overflow");
   assert(evidence.pages.every((page) => page.audit.shell.navigationMinTarget >= 44), "shared navigation must provide 44px touch targets across every audited route");
 } finally {
   fs.rmSync(outputDir, { recursive: true, force: true });
