@@ -34,6 +34,7 @@ const {
   getWorkflowRun,
   getScanRun,
   attachWorkflowScan,
+  attachWorkflowScanRun,
   getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
@@ -2169,13 +2170,20 @@ function startPlanScan(scanRuns, {
     } : {})
   });
   const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
-  if (workflowRun && persistedResumeBatchId) {
+  if (workflowRun) {
     try {
-      attachWorkflowScan(db, {
-        id: workflowRun.id,
-        scanRunId: runId,
-        scanBatchId: persistedResumeBatchId
-      });
+      if (persistedResumeBatchId) {
+        attachWorkflowScan(db, {
+          id: workflowRun.id,
+          scanRunId: runId,
+          scanBatchId: persistedResumeBatchId
+        });
+      } else {
+        attachWorkflowScanRun(db, {
+          id: workflowRun.id,
+          scanRunId: runId
+        });
+      }
     } catch (error) {
       recordScanRunProcessExit(db, {
         runId,

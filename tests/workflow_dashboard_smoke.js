@@ -257,6 +257,29 @@ let server;
       return timer.handle;
     },
     spawnProcess(file, args, options) {
+      if (args.includes("--workflow-run")) {
+        const workflowRunId = args[args.indexOf("--workflow-run") + 1];
+        const scanRunId = args[args.indexOf("--run-id") + 1];
+        const workflow = getWorkflowRun(db, workflowRunId);
+        const scan = getScanRun(db, scanRunId);
+        assert(workflow, "workflow must be persisted before spawn");
+        assert(scan, "scan run must be persisted before spawn");
+        assert.strictEqual(scan.status, "running");
+        assert.strictEqual(scan.planId, workflow.planId);
+        assert.strictEqual(
+          workflow.scanRunId,
+          scan.id,
+          "workflow must be bound to the persisted scan before spawn"
+        );
+        if (args.includes("--resume-batch")) {
+          assert.strictEqual(
+            String(workflow.scanBatchId),
+            args[args.indexOf("--resume-batch") + 1],
+            "resume batch must be bound to the workflow before spawn"
+          );
+        }
+        if (args.includes("--analysis-only")) assert(!args.includes("--resume-batch"));
+      }
       const child = new EventEmitter();
       child.pid = 6100 + spawns.length;
       child.stdout = new EventEmitter();
@@ -398,6 +421,7 @@ let server;
     "BOSS_LOGIN_REQUIRED",
     "BOSS_SEARCH_PAGE_INVALID"
   ]) {
+    const scanRunCountBeforeRejectedStart = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count);
     inheritedFailureCode = code;
     const rejected = await postForm(baseUrl, "/api/workflow-run", {
       planId: saved.planId,
@@ -407,6 +431,7 @@ let server;
     });
     assert.strictEqual(rejected.status, 409);
     assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 0);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs").get().count), scanRunCountBeforeRejectedStart);
     assert.strictEqual(spawns.length, 0);
   }
   inheritedFailureCode = "";
@@ -438,6 +463,16 @@ let server;
     ["AI应用开发工程师", "大模型应用开发工程师", "Agent开发工程师"]
   );
   assert.strictEqual(spawns.length, 1);
+  assert.strictEqual(spawns[0].file, process.execPath);
+  assert.deepStrictEqual(
+    spawns[0].args.slice(0, 3),
+    ["--disable-warning=ExperimentalWarning", "src/cli.js", "scan"]
+  );
+  assert.deepStrictEqual(spawns[0].options, {
+    cwd: root,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
   assert(spawns[0].args.includes("--workflow-run"));
   assert(spawns[0].args.includes(workflow.id));
   assert.deepStrictEqual(
@@ -753,6 +788,11 @@ let server;
   assert.strictEqual(getWorkflowRun(db, workflow.id).status, "scanning");
   const resumedScan = getLatestScanRun(db, { planId: saved.planId, site: "boss" });
   assert.strictEqual(getWorkflowRun(db, workflow.id).scanRunId, resumedScan.id);
+  assert.strictEqual(
+    spawns.at(-1).args[spawns.at(-1).args.indexOf("--resume-batch") + 1],
+    String(validInheritedResumeBatchId)
+  );
+  assert(!spawns.at(-1).args.includes("--analysis-only"));
   const liveResumedStatus = await getJson(
     baseUrl,
     `/api/workflow-status?runId=${encodeURIComponent(workflow.id)}`

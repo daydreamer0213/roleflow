@@ -18,11 +18,12 @@ decision migrated by this task.
 
 ## Regression-safe
 
-The new offline `tests/workflow_application_smoke.js` covers the public functions,
-plain-data returns, validation-before-persistence/lease/spawn, launch ordering and
-distinct workflow/scan/batch bindings, recovery-before-status snapshot, representative
-start/resume/control/status outputs, and forwarded scan launch input. It is registered
-in `tests/run_all.js`.
+The offline `tests/workflow_application_smoke.js` covers the public functions,
+plain-data returns, application-boundary validation and launch delegation,
+recovery-before-status snapshot, and representative start/resume/control/status outputs.
+The related `tests/workflow_dashboard_smoke.js` uses the real HTTP adapter, temporary
+SQLite database, real `startPlanScan`, and only a child-process spawn stub to prove
+workflow/scan/batch binding and actual argv/options before spawn.
 
 Focused checks passed (8 checks, 8.55 s total):
 
@@ -35,15 +36,16 @@ Focused checks passed (8 checks, 8.55 s total):
 - `scan_end_to_end_recovery_smoke.js` — 4,971 ms
 - `workflow_page_migration_smoke.js` — 114 ms (existing Playwright checks skipped because unavailable)
 
-The default offline suite completed with exit code 0 in 128.3 s. It contains 82 checks,
-including the new application smoke. The earlier 124 s shell limit timed out without a
-test failure; the longer controlled rerun completed successfully.
+Fix-round focused checks passed (8 checks, 8.43 s total), and the default 82-check
+offline suite completed with exit code 0 in 123.6 s. The controller also confirmed the
+strict `workflow_page_migration_smoke.js` browser/evaluator checks pass with the bundled
+Playwright `NODE_PATH`.
 
 ## Evaluated
 
 | Metric | Before (`72a775f`) | After | Effect |
 | --- | ---: | ---: | --- |
-| `src/dashboard/server.js` lines | 4,495 | 4,117 | -378 |
+| `src/dashboard/server.js` lines | 4,495 | 4,125 | -370 |
 | `src/cli.js` lines | 2,471 | 2,471 | 0 |
 | `src/application/workflow/index.js` lines | 0 | 376 | +376 |
 | HTTP workflow handler direct calls to `getWorkflowRun`, `createWorkflowRun`, `transitionWorkflowRun`, `startPlanScan`, `recoverWorkflowRuns` | 14 | 0 | -14 |
@@ -63,6 +65,26 @@ The requested direct-call, dependency-direction, focused-test, full-suite, and
 no-whitespace-error checks pass. Successful HTTP redirects and current failure mapping
 remain in the adapter, while the application functions return only ordinary data.
 No real BOSS, model, communication, browser, or network operation was executed.
+
+## Fix round 1/5
+
+Independent review found that the first application smoke recorded scan persistence,
+binding, and spawn inside one fake. A real HTTP/SQLite RED then showed the initial
+workflow reached the spawn boundary with an empty `scanRunId`, even though the scan run
+already existed. `startPlanScan` now reuses the existing transactional
+`attachWorkflowScanRun` operation for first launches and retains `attachWorkflowScan`
+for resume-batch launches.
+
+The real dashboard spawn hook verifies, before returning a child:
+
+- workflow and scan persistence;
+- workflow-to-scan and resume-batch binding;
+- initial, resume-batch, and analysis-only argv distinctions;
+- executable, `cwd`, `windowsHide`, and stdio options.
+
+Upstream inherited-context rejection still returns the existing `409` contract and now
+proves no workflow, scan run, or spawn was created. The focused RED failed in 378 ms;
+the first GREEN passed in 508 ms.
 
 ## Remaining coupling and next safe improvement
 

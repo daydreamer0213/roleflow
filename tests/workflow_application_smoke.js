@@ -10,7 +10,7 @@ const {
 async function main() {
   exportsAndPlainData();
   await validationPrecedesPersistenceAndLaunch();
-  await launchOrderingAndBindings();
+  await directApplicationContract();
   await resumeControlAndStatusContracts();
   console.log("workflow application smoke passed");
 }
@@ -43,12 +43,12 @@ async function validationPrecedesPersistenceAndLaunch() {
         }
       }
     }),
-    (error) => error.code === "WORKFLOW_PROFILE_NOT_FOUND"
+    (error) => error.code === "WORKFLOW_PROFILE_NOT_FOUND" && error.statusCode === 404
   );
   assert.deepStrictEqual(events, ["validation"]);
 }
 
-async function launchOrderingAndBindings() {
+async function directApplicationContract() {
   const events = [];
   let launch = null;
   const result = await startWorkflow({
@@ -70,9 +70,7 @@ async function launchOrderingAndBindings() {
     "inherited-validation",
     "scan-availability",
     "workflow-persistence",
-    "scan-run-creation",
-    "workflow-scan-binding",
-    "spawn"
+    "launcher"
   ]);
   assert.strictEqual(result.workflow.id, "workflow-1");
   assert.strictEqual(launch.runId, "scan-7");
@@ -160,9 +158,7 @@ function startDeps(events, captureLaunch = () => {}) {
       return { id: "workflow-1", sequence: 1, scanNeeded: true, metrics: input.metrics };
     },
     spawnScan(_scanRuns, input) {
-      events.push("scan-run-creation");
-      events.push("workflow-scan-binding");
-      events.push("spawn");
+      events.push("launcher");
       const launch = { runId: "scan-7", batchId: 91, workflowRunId: input.workflowRunId, input: selectLaunchInput(input) };
       captureLaunch(launch);
       return launch;
