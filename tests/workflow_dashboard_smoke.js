@@ -1482,22 +1482,8 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     assert(!livePanelAndClient.includes(sensitive), `live progress panel must not expose ${sensitive}`);
   }
 
-  const script = extractWorkflowProgressScript(page.body);
-  assert.match(script, /\/api\/workflow-status\?runId=/);
-  assert.match(script, /cache:\s*["']no-store["']/);
-  assert.match(script, /2500/);
-  assert.match(script, /progressRevision/);
-  assert.match(script, /renderWorkflowProgress/);
-  assert.match(script, /renderScanWait/);
-  assert.match(script, /renderScanWait\(snapshot\.progress\.scanWait\)/);
-  assert.match(script, /renderWorkflowControls/);
-  assert.match(script, /textContent/);
-  assert.doesNotMatch(script, /innerHTML/);
-  assert.doesNotMatch(script, /location\.reload/);
-  assert.match(script, /无法读取任务状态/);
-  assert.match(script, /setControlsDisabled\(true\)/);
-  assert.match(script, /renderWorkflowControls\(snapshot\).*if\(nextKey===lastKey\)return/);
-  assert.match(script, /clearInterval/);
+  assert.match(page.body, /<script src="\/assets\/workflow\.js" defer><\/script>/);
+  assert.doesNotMatch(page.body, /data-workflow-progress-client/);
 
   transitionWorkflowRun(database, {
     id: fixture.workflowId,
@@ -2072,12 +2058,6 @@ async function getJson(baseUrl, pathname) {
 function extractBrowserReadinessScript(page) {
   const match = String(page).match(/<script>\s*(\(function\(\)\{[\s\S]*?setInterval\(refreshReadiness, 5000\);[\s\S]*?\}\)\(\);)\s*<\/script>/);
   assert(match, "expected rendered plan page to include the browser-readiness polling script");
-  return match[1];
-}
-
-function extractWorkflowProgressScript(page) {
-  const match = String(page).match(/<script data-workflow-progress-client>([\s\S]*?)<\/script>/);
-  assert(match, "expected rendered workflow page to include the incremental progress script");
   return match[1];
 }
 

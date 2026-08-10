@@ -1,0 +1,676 @@
+{
+  "schemaVersion": 1,
+  "label": "current",
+  "targetRevision": "8fedac5b8dddfe5e647c771d9993ba8221f5e1a6",
+  "browser": {
+    "engine": "msedge",
+    "headless": true
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "states": [
+    "scanning",
+    "paused",
+    "review_required",
+    "interrupted"
+  ],
+  "pages": [
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-scanning-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": false,
+          "outlineStyle": "none"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": true,
+        "details": {
+          "read": "1",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-scanning-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": false
+        },
+        "focus": {
+          "matchesPrimary": false,
+          "outlineStyle": "none"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": true,
+        "details": {
+          "read": "1",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-scanning-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": false,
+          "outlineStyle": "none"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": true,
+        "details": {
+          "read": "1",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "scanning",
+      "path": "/workflow?runId=workflow-eval-scanning",
+      "screenshot": "current-scanning-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": false
+        },
+        "focus": {
+          "matchesPrimary": false,
+          "outlineStyle": "none"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": true,
+        "details": {
+          "read": "1",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "stop-preview-cancel",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-paused-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-paused-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-paused-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "paused",
+      "path": "/workflow?runId=workflow-eval-paused",
+      "screenshot": "current-paused-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "progress"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-review_required-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-review_required-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-review_required-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "review_required",
+      "path": "/workflow?runId=workflow-eval-review",
+      "screenshot": "current-review_required-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "review-checkbox",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-interrupted-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-interrupted-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-interrupted-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "interrupted",
+      "path": "/workflow?runId=workflow-eval-interrupted",
+      "screenshot": "current-interrupted-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "primary": {
+          "text": "简历",
+          "disabled": false,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "matchesPrimary": true,
+          "outlineStyle": "solid"
+        },
+        "reducedMotion": {
+          "matches": true,
+          "transitionDuration": "1e-05s",
+          "animationDuration": "1e-05s"
+        },
+        "scanWaitVisible": false,
+        "details": {
+          "read": "0",
+          "pending": "0",
+          "required": "0"
+        },
+        "pollingKind": "none"
+      },
+      "interaction": "none",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    }
+  ],
+  "errors": []
+}

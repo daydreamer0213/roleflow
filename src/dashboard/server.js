@@ -156,11 +156,17 @@ const { renderPage: renderDashboardPage } = require("./ui/shell");
 const { renderNavigation } = require("./ui/navigation");
 const { buildTodayViewModel } = require("./view_models/today");
 const { renderTodayPage } = require("./pages/today");
+const { buildWorkflowViewModel } = require("./view_models/workflow");
+const { renderWorkflowPage: renderWorkflowDocument } = require("./pages/workflow");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
     contentType: "text/css; charset=utf-8",
     file: path.join(__dirname, "assets", "roleflow.css")
+  },
+  "/assets/workflow.js": {
+    contentType: "application/javascript; charset=utf-8",
+    file: path.join(__dirname, "assets", "workflow.js")
   }
 });
 
@@ -473,7 +479,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
-      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
+      if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
       if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({
         db,
@@ -3870,7 +3876,43 @@ function renderInheritedScopeSummary(workflow) {
   </section>`;
 }
 
-function renderWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
+function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflowHealth }) {
+  const workflowRunId = searchParams.get("runId");
+  const recovery = recoverWorkflowRuns(db, {
+    workflowRunId,
+    orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
+  });
+  if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
+    logger.warn("workflow_page_reconciled", { workflowRunId, ...recovery });
+  }
+  let workflow = getWorkflowRun(db, workflowRunId);
+  if (!workflow) return renderErrorPage("本轮任务不存在。", "/plan", { code: "WORKFLOW_RUN_NOT_FOUND" });
+  if (["review_required", "interrupted"].includes(workflow.status)) {
+    reconcilePlanWorkflowInventory(db, workflow.planId);
+    workflow = getWorkflowRun(db, workflowRunId);
+  }
+  const plan = getSearchPlan(db, workflow.planId);
+  if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
+  const daily = buildWorkflowDashboardState(db, plan);
+  const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
+  const runtimeBlock = communicationRuntimeBlock(db);
+  const progressSnapshot = getWorkflowProgressSnapshot(db, { workflowRunId: workflow.id });
+  let healthPanel = "";
+  try {
+    const snapshot = workflowHealth.getSnapshot(db, { profileId: plan.profileId, planId: plan.id, now: new Date().toISOString() });
+    healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
+  } catch (error) {
+    logger?.warn("workflow_health_render_failed", { workflowRunId: workflow.id, planId: plan.id, errorCode: workflowHealthFailureCode(error) });
+  }
+  return renderWorkflowDocument(buildWorkflowViewModel({
+    workflow, plan, daily, communication, runtimeBlock, progressSnapshot,
+    stopPreview: progressSnapshot ? workflowStopPreview(db, { workflowRunId: workflow.id }) : {}, healthPanel,
+    reviewCandidates: workflow.status === "review_required" && !communication ? listWorkflowReviewCandidates(db, workflow.id) : [],
+    quota: workflow.status === "review_required" && !communication ? communicationQuota(db) : { remaining: 0 }
+  }));
+}
+
+function renderLegacyWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
     workflowRunId,
