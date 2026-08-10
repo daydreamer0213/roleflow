@@ -21,6 +21,29 @@
 - Each implementation task uses its own Codex worktree and branch.
 - Each task commits its own work and reports exact commits, changed files, tests, and remaining risks.
 
+## Effect evaluation gate
+
+Passing regression tests proves compatibility; it does not prove that a module is useful or better. Every completed module must therefore produce a short evaluation report before its wave is accepted:
+
+1. Restate the intended user or architecture outcome in measurable terms.
+2. Compare the new result with the last valid baseline using the same inputs.
+3. Record correctness, safety, recovery, usability, and maintainability evidence separately.
+4. List observed weaknesses and rank the next improvements by impact and risk.
+5. Distinguish “implemented”, “regression-safe”, “evaluated”, and “accepted”; never collapse them into one completion state.
+
+Evaluation surfaces by module:
+
+| Module | Required effect evidence |
+| --- | --- |
+| Dashboard | Exact viewport screenshots plus DOM geometry, focus, contrast, reduced-motion, console/network, primary-action visibility, and existing form/API contract checks |
+| BOSS detail reading | Fresh-run complete-JD coverage, identity mismatch rate, pause/resume checkpoint behavior, and read-only page evidence |
+| Shadow scorecard | Fresh post-baseline precision/recall, tier disagreement, threshold-near stability, repeated-analysis variance, and evidence traceability; no production switch from fixture-only results |
+| Communication | Offline contract and ambiguity coverage, then a separately authorized human end-to-end run; technical calibration is not user acceptance |
+| Application/storage extraction | Behavior parity, failure/recovery parity, dependency direction, changed responsibility ownership, and concentration-file reduction without line-count gaming |
+| Platform boundary | Fake-adapter contract parity first, then per-platform read-only evidence, independent budgets/checkpoints, and no BOSS quality regression |
+
+The repository-scoped `webapp-testing` skill under `.agents/skills/` is a trial tool for dashboard evaluation. Keep it project-local until at least the Wave 2 dashboard acceptance is complete. Retain or promote it only if it catches reproducible issues or materially improves the acceptance workflow; otherwise remove it instead of accumulating unused skills.
+
 ---
 
 ## Wave 0: Confirmed baseline
@@ -59,7 +82,9 @@ Run Tasks 1.1, 1.2, and 1.3 concurrently. They have disjoint production write sc
 - Create: `docs/prototypes/roleflow-dashboard/workflow.html`
 - Create: `docs/prototypes/roleflow-dashboard/queue.html`
 - Create: `docs/prototypes/roleflow-dashboard/roleflow-dashboard.css`
+- Create: `docs/prototypes/roleflow-dashboard/verify.mjs`
 - Create: screenshot evidence under `docs/prototypes/roleflow-dashboard/screenshots/`
+- Create: machine-readable viewport audit under `docs/prototypes/roleflow-dashboard/screenshots/`
 
 **Do not modify:**
 
@@ -92,6 +117,7 @@ Render or open all three static prototypes and capture:
 **Completion gate:**
 
 The main controller reviews the screenshots and data mapping. No production UI work starts before approval.
+The screenshot and DOM checks must run in the same browser page and exact emulated viewport. Persist the verification script and structured results so the claim is independently repeatable.
 
 ### Task 1.2: Read-only shadow scorecard
 
@@ -298,7 +324,9 @@ escapeAttr(value)
 
 - Existing dashboard, workflow, queue, communication, settings, onboarding, and startup smoke checks.
 - Full offline suite.
+- Reproducible browser evaluation using the project-local `webapp-testing` workflow.
 - Manual desktop and narrow-screen screenshot comparison.
+- A Wave 2 dashboard effect report covering task clarity, first-screen primary action, responsive geometry, accessibility, console/network errors, contract parity, and concrete follow-up improvements.
 
 ### Task 2.2: Migrate “Today” page
 
@@ -338,7 +366,7 @@ Preserve pause, resume, stop, polling, immutable communication review, and the r
 
 ### Task 2.4: Frontend acceptance
 
-Run full offline checks, then perform local dashboard-only visual acceptance. This task must not resume the BOSS workflow.
+Run full offline checks, then perform local dashboard-only visual acceptance. Save the reproducible browser audit and the effect report; a visually appealing screenshot alone is not acceptance. This task must not resume the BOSS workflow.
 
 The user separately decides when to perform the logged-in BOSS “continue current run” acceptance.
 
