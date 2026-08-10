@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>当前岗位 · RoleFlow</title>
+  <link rel="stylesheet" href="./roleflow-dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="signal-rail" aria-label="RoleFlow 阶段标记">
+      <div class="rail-mark" aria-hidden="true">RF</div>
+      <div class="rail-label">当前岗位</div>
+      <div class="rail-spacer"></div>
+      <span class="rail-dot attention"></span>
+    </aside>
+    <div class="page">
+      <header class="topbar">
+        <a class="brand" href="./today.html"><strong>RoleFlow</strong><span>本地岗位工作台</span></a>
+        <nav class="primary-nav" aria-label="主导航">
+          <a href="./today.html">今日任务</a>
+          <a href="./workflow.html">本轮执行</a>
+          <a href="./queue.html" aria-current="page">当前岗位</a>
+          <a href="/communication/new?planId=12">批量沟通清单</a>
+          <a href="/settings">模型设置</a>
+        </nav>
+      </header>
+
+      <main id="main-content">
+        <section class="page-heading" aria-labelledby="queue-title">
+          <p class="eyebrow">03 / 岗位复核</p>
+          <div class="queue-head">
+            <div>
+              <h1 id="queue-title">需要你处理的岗位</h1>
+              <p class="lede">先看主投与可投，再处理详情、活跃度和模型失败。推荐结论始终带证据，不把“待分析”当成“不推荐”。</p>
+            </div>
+            <a class="button" href="/queue?planId=12&amp;pool=primary">复核主投岗位 <span aria-hidden="true">→</span></a>
+          </div>
+          <div class="heading-meta"><span>当前方案：AI 应用开发 · 上海</span><span>主扫描批次 #48</span><span>共 46 条待处理</span></div>
+        </section>
+
+        <section class="card pad" aria-labelledby="scope-title">
+          <p class="section-label" id="scope-title">处理范围</p>
+          <div class="pool-tabs" aria-label="岗位范围">
+            <a href="/queue?planId=12&amp;pool=focus&amp;scope=all" aria-current="page">全部待处理 <b>46</b></a>
+            <a href="/queue?planId=12&amp;pool=focus&amp;scope=new">本轮新增 <b>21</b></a>
+            <a href="/queue?planId=12&amp;pool=focus&amp;scope=repeated">本轮重复 <b>13</b></a>
+            <a href="/queue?planId=12&amp;pool=focus&amp;scope=backlog">历史未处理 <b>12</b></a>
+          </div>
+          <div class="pool-tabs" style="margin-top:10px" aria-label="推荐分组">
+            <a href="/queue?planId=12&amp;pool=focus&amp;scope=all" aria-current="page">主投 + 可投 <b>46</b></a>
+            <a href="/queue?planId=12&amp;pool=primary">主投 <b>18</b></a>
+            <a href="/queue?planId=12&amp;pool=apply">可投 <b>28</b></a>
+            <a href="/queue?planId=12&amp;pool=caution">慎投 <b>7</b></a>
+            <a href="/queue?planId=12&amp;pool=analysis_pending">待语义分析 <b>1</b></a>
+            <a href="/queue?planId=12&amp;pool=detail_pending">待读详情 <b>5</b></a>
+            <a href="/queue?planId=12&amp;pool=activity_pending">活跃待核验 <b>4</b></a>
+            <a href="/queue?planId=12&amp;pool=no_reply">无回复跟进 <b>3</b></a>
+          </div>
+          <p class="tiny" style="margin:12px 0 0">当前显示 1–30 / 共 46 条；范围以主扫描批次 #48 为准。</p>
+        </section>
+
+        <section class="card pad" style="margin-top:18px" aria-labelledby="analytics-title">
+          <div class="card-head" style="padding:0 0 12px"><div><p class="section-label">只读观察</p><h2 id="analytics-title">本轮结果结构</h2></div><span class="status info">不用于调参</span></div>
+          <div class="metric-grid" style="margin-inline:-1px">
+            <div class="metric"><span class="metric-label">主投</span><strong class="metric-value">18</strong><span class="metric-note">完整证据</span></div>
+            <div class="metric"><span class="metric-label">可投</span><strong class="metric-value">28</strong><span class="metric-note">可以先聊</span></div>
+            <div class="metric"><span class="metric-label">待分析 / 待刷新</span><strong class="metric-value">10</strong><span class="metric-note">不计入四档比较</span></div>
+            <div class="metric"><span class="metric-label">已记录结果</span><strong class="metric-value">31</strong><span class="metric-note">本轮历史累计</span></div>
+          </div>
+        </section>
+
+        <section class="queue-grid" style="margin-top:18px" aria-labelledby="job-list-title">
+          <h2 id="job-list-title" class="sr-only">岗位列表</h2>
+          <article class="job-card card featured">
+            <div class="job-card-head"><div><p class="section-label">优先处理 · 本轮新增</p><h2><a href="#job-1001">AI 应用工程师 · 星河智算</a></h2><p class="job-subtitle">上海 · 22–32K · 3–5 年 · 双休 · 招聘方 3 日内活跃</p></div><span class="status good">主投</span></div>
+            <div class="evidence-grid">
+              <div class="evidence-box"><p class="section-label">为什么推荐</p><p>RAG 服务化和知识库检索经验与 JD 核心职责重合；匹配置信度高，推荐简历 v3。</p><p>证据：FastAPI、向量检索、线上监控、LLM 应用落地。</p></div>
+              <div class="evidence-box risk"><p class="section-label">沟通前确认</p><p>团队规模和模型供应商未在 JD 中说明。</p><p>这不是硬性阻断；可在先聊时确认。</p></div>
+            </div>
+            <div class="button-row"><a class="button" href="/queue?planId=12&amp;pool=primary&amp;jobId=1001">复核主投岗位</a><a class="button secondary" href="/communication/new?planId=12&amp;jobId=1001">加入沟通清单</a></div>
+            <details class="details"><summary>查看 JD、匹配证据与本地记录</summary><div class="details-body"><p class="tiny">决策来源：模型证据匹配 · 工作节奏：双休 · 首次出现：2026-08-10 10:42 · 最近出现：2026-08-10 10:42</p><div class="chip-row"><span class="chip">薪资与目标贴合</span><span class="chip">历史重复出现</span><span class="chip">详情完整</span></div></div></details>
+          </article>
+
+          <article class="job-card card">
+            <div class="job-card-head"><div><p class="section-label">下一项 · 本轮重复</p><h2><a href="#job-1002">AI 产品工程师 · 远见数据</a></h2><p class="job-subtitle">上海 · 20–28K · 3–5 年 · 工作制待确认 · 招聘方活跃状态已更新</p></div><span class="status info">可投</span></div>
+            <div class="evidence-grid"><div class="evidence-box"><p class="section-label">匹配证据</p><p>LLM 应用与数据管道经验匹配；产品落地证据较强。</p></div><div class="evidence-box risk"><p class="section-label">风险</p><p>工作制和团队规模未说明，建议先问清。</p></div></div>
+            <div class="button-row"><a class="button secondary" href="/queue?planId=12&amp;pool=apply&amp;jobId=1002">查看岗位详情</a><a class="button quiet" href="/queue?planId=12&amp;jobId=1002&amp;status=review">标记待确认</a></div>
+          </article>
+
+          <article class="job-card card">
+            <div class="job-card-head"><div><p class="section-label">需要补齐信息</p><h2>Python 后端工程师 · 墨桥科技</h2><p class="job-subtitle">上海 · 薪资待确认 · 3–5 年 · 详情未完整读取</p></div><span class="status waiting">待读详情</span></div>
+            <div class="alert"><strong>列表信息已保存，但还没有完整 JD</strong><p>在详情补读完成前，不显示匹配结论，也不进入沟通清单。</p></div>
+            <div class="button-row"><a class="button secondary" href="/queue?planId=12&amp;pool=detail_pending">去补读详情</a><a class="button quiet" href="/queue?planId=12&amp;jobId=1003&amp;status=later">稍后处理</a></div>
+          </article>
+
+          <article class="job-card card">
+            <div class="job-card-head"><div><p class="section-label">模型需要重试</p><h2>AI 解决方案工程师 · 云迹实验室</h2><p class="job-subtitle">上海 · 25–40K · 5–8 年 · 详情已保存 · 本轮新增</p></div><span class="status danger">待语义分析</span></div>
+            <div class="alert danger" role="alert"><strong>分析阶段失败，不代表岗位不推荐</strong><p>岗位详情仍安全保存在本地。只重试语义分析，不会重新访问招聘网站。</p></div>
+            <div class="button-row"><a class="button secondary" href="/queue?planId=12&amp;pool=analysis_pending">重试语义分析</a><a class="button quiet" href="/diagnostics">查看失败原因</a></div>
+          </article>
+        </section>
+
+        <nav class="button-row" aria-label="岗位分页" style="justify-content:center;margin-top:18px"><span class="button secondary" aria-disabled="true">上一页</span><span class="tiny">第 1 / 2 页</span><a class="button secondary" href="/queue?planId=12&amp;page=2">下一页</a></nav>
+      </main>
+      <p class="footer-note">原型数据为离线示例；生产迁移时保留现有 pool、scope、page 查询参数与本地状态接口。</p>
+    </div>
+  </div>
+</body>
+</html>

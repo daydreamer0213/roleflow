@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本轮执行 · RoleFlow</title>
+  <link rel="stylesheet" href="./roleflow-dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="signal-rail" aria-label="RoleFlow 阶段标记">
+      <div class="rail-mark" aria-hidden="true">RF</div>
+      <div class="rail-label">本轮执行</div>
+      <div class="rail-spacer"></div>
+      <span class="rail-dot"></span>
+    </aside>
+    <div class="page">
+      <header class="topbar">
+        <a class="brand" href="./today.html"><strong>RoleFlow</strong><span>本地岗位工作台</span></a>
+        <nav class="primary-nav" aria-label="主导航">
+          <a href="./today.html">今日任务</a>
+          <a href="./workflow.html" aria-current="page">本轮执行</a>
+          <a href="./queue.html">当前岗位</a>
+          <a href="/settings">模型设置</a>
+          <a href="/diagnostics">诊断</a>
+        </nav>
+      </header>
+
+      <main id="main-content">
+        <section class="page-heading" aria-labelledby="workflow-title">
+          <p class="eyebrow">02 / 扫描与复核</p>
+          <div class="workflow-live-top">
+            <div>
+              <h1 id="workflow-title">第 2 轮：等待确认本轮清单</h1>
+              <p class="lede">扫描和本地分析已完成。现在只确认你愿意进入下一步的岗位，沟通仍由你在平台上手动完成。</p>
+            </div>
+            <span class="status waiting">等待人工确认</span>
+          </div>
+          <div class="heading-meta"><span>Workflow Run #20260810-02</span><span>创建于 10:42 · 当前范围已冻结</span><a href="./today.html">返回今日任务</a><a class="button" href="#review-title">去确认清单 <span aria-hidden="true">→</span></a></div>
+        </section>
+
+        <section class="card pad workflow-live" aria-labelledby="progress-title">
+          <div class="workflow-live-top">
+            <div><span class="stage-number">阶段 3 / 共 4 阶段</span><h2 id="progress-title" class="stage-title">分析岗位并生成待确认清单</h2></div>
+            <span class="tiny">批量模型 · DeepSeek V3</span>
+          </div>
+          <div class="progress-row"><div class="progress" aria-label="本轮分析完成 100%"><span style="width:100%"></span></div><strong>100%</strong></div>
+          <div class="stats-grid" aria-label="本轮分析数量">
+            <div class="metric"><span class="metric-label">岗位总数</span><strong class="metric-value">64</strong><span class="metric-note">当前冻结范围</span></div>
+            <div class="metric"><span class="metric-label">分析成功</span><strong class="metric-value">58</strong><span class="metric-note">有完整证据</span></div>
+            <div class="metric"><span class="metric-label">分析失败</span><strong class="metric-value">1</strong><span class="metric-note">可离线重试</span></div>
+            <div class="metric"><span class="metric-label">待补读详情</span><strong class="metric-value">5</strong><span class="metric-note">不进入结论</span></div>
+            <div class="metric"><span class="metric-label">跳过 / 失效</span><strong class="metric-value">0</strong><span class="metric-note">未纳入清单</span></div>
+          </div>
+          <div class="button-row"><a class="button secondary" href="/queue?planId=12&amp;pool=analysis_pending">查看分析失败</a><a class="button quiet" href="/diagnostics">打开诊断</a></div>
+        </section>
+
+        <section class="scope-grid" style="margin-top:18px" aria-label="本轮来源与边界">
+          <article class="card pad">
+            <p class="section-label">冻结范围</p>
+            <h2>BOSS 当前页面 · 只读继承</h2>
+            <ul class="scope-list">
+              <li>城市：上海；薪资档：18–30K</li>
+              <li>关键词来源：Search Plan #12</li>
+              <li>本轮关键词：AI 应用、RAG、Python 后端</li>
+              <li>详情读取与页面导航按本轮预算结算</li>
+            </ul>
+          </article>
+          <article class="card pad">
+            <p class="section-label">安全边界</p>
+            <h2>所有外部动作仍需你确认</h2>
+            <div class="alert good"><strong>本地数据安全</strong><p>岗位详情、匹配证据和候选清单已保存；本页不会自动填写、发送或投递。</p></div>
+            <p class="tiny" style="margin:13px 0 0">未解析的页面条件不会被系统猜测；恢复时继续使用本轮冻结范围。</p>
+          </article>
+        </section>
+
+        <section class="card" style="margin-top:18px" aria-labelledby="review-title">
+          <div class="card-head"><div><p class="section-label">下一步</p><h2 id="review-title">确认本轮沟通清单</h2><p>主投与可投默认勾选 4 个；慎投只展示，不自动加入。</p></div><span class="status info">不可变快照</span></div>
+          <div class="card-body">
+            <div class="review-list">
+              <label class="review-row">
+                <input type="checkbox" checked aria-label="选择星河智算 AI 应用工程师">
+                <span class="review-main"><strong>AI 应用工程师 · 星河智算</strong><span class="review-meta">上海 · 22–32K · 3–5 年 · 双休</span><span class="review-reason">职责与 RAG、Agent 服务化经历高度贴合；JD 与简历证据齐全。</span><span class="review-evidence"><span>Python / FastAPI</span><span>RAG 线上项目</span><span>薪资贴合</span></span></span>
+                <span class="tier primary">主投</span>
+              </label>
+              <label class="review-row">
+                <input type="checkbox" checked aria-label="选择远见数据 AI 产品工程师">
+                <span class="review-main"><strong>AI 产品工程师 · 远见数据</strong><span class="review-meta">上海 · 20–28K · 3–5 年 · 双休</span><span class="review-reason">产品落地证据较强；需要在沟通时确认团队规模与模型供应商。</span><span class="review-evidence"><span>LLM 应用</span><span>数据管道</span><span>团队待确认</span></span></span>
+                <span class="tier apply">可投</span>
+              </label>
+              <label class="review-row">
+                <input type="checkbox" checked aria-label="选择墨桥科技 Python 后端工程师">
+                <span class="review-main"><strong>Python 后端工程师 · 墨桥科技</strong><span class="review-meta">上海 · 18–25K · 3–5 年 · 工作制未说明</span><span class="review-reason">核心技术栈匹配；工作节奏与到岗安排需要先聊清。</span><span class="review-evidence"><span>FastAPI</span><span>服务治理</span><span>工作制待确认</span></span></span>
+                <span class="tier apply">可投</span>
+              </label>
+              <label class="review-row">
+                <input type="checkbox" aria-label="选择云迹实验室 AI 解决方案工程师">
+                <span class="review-main"><strong>AI 解决方案工程师 · 云迹实验室</strong><span class="review-meta">上海 · 25–40K · 5–8 年 · 双休</span><span class="review-reason">方向有吸引力，但客户交付占比与资深经验要求偏高。</span><span class="review-evidence"><span>慎投</span><span>经验可冲</span><span>交付占比待确认</span></span></span>
+                <span class="tier caution">慎投</span>
+              </label>
+            </div>
+          </div>
+          <div class="sticky-confirm"><span><strong>已选 3 个岗位</strong><br><span class="tiny" style="color:#cfe1dc">今日剩余额度 18 · 确认后生成不可变快照</span></span><a class="button" href="/communication?batchId=preview-12">确认本轮清单 <span aria-hidden="true">→</span></a></div>
+        </section>
+
+        <div class="alert danger" role="alert" style="margin-top:18px"><strong>1 个岗位模型分析失败</strong><p>失败不等于不推荐。岗位详情仍安全保存在本地；可到“当前岗位 → 待语义分析”单独重试，不需要重新扫描。</p><a href="/queue?planId=12&amp;pool=analysis_pending">去处理分析失败</a></div>
+      </main>
+      <p class="footer-note">原型展示的是“等待确认”终态；生产页沿用现有轮询、暂停、继续、停止和清单确认门禁。</p>
+    </div>
+  </div>
+</body>
+</html>
