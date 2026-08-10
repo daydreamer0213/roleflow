@@ -1,4 +1,4 @@
-const http = require("node:http");
+﻿const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
@@ -3856,26 +3856,6 @@ function workflowHealthFailureCode(error) {
   return /^[A-Z0-9_]{1,80}$/.test(code) ? code : "WORKFLOW_HEALTH_FAILED";
 }
 
-function renderInheritedScopeSummary(workflow) {
-  if (workflow?.planner?.acquisitionMode !== "inherited") return "";
-  const scope = workflow.planner.searchScope || {};
-  const source = workflow.planner.keywordSource || {};
-  const policy = workflow.planner.platformPolicy || {};
-  const filters = (policy.filterSummary || [])
-    .map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const keywords = (source.keywords || [])
-    .map((item) => escapeHtml(item.word || "")).filter(Boolean).join("、");
-  const unresolved = (policy.unresolvedParams || []).map((item) => item.param).filter(Boolean);
-  return `<section class="workflow-scope">
-    <strong>筛选来源：BOSS 当前页面</strong>
-    <ul>${filters || "<li>使用平台默认筛选</li>"}</ul>
-    <p>范围：${escapeHtml(scopeShortId(scope.key))} · 关键词来源：Search Plan #${escapeHtml(source.searchPlanId || "")}</p>
-    <p>本轮关键词：${keywords || "无"}</p>
-    ${unresolved.length ? `<p class="workflow-alert">未解析平台筛选：${escapeHtml(unresolved.join("、"))}；采集 URL 已保留这些条件，本地不会猜值。</p>` : ""}
-    <p class="hint">修改 BOSS 筛选会创建新的统计范围；本轮恢复仍使用当前冻结范围。</p>
-  </section>`;
-}
-
 function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflowHealth }) {
   const workflowRunId = searchParams.get("runId");
   const recovery = recoverWorkflowRuns(db, {
@@ -3897,403 +3877,35 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   const runtimeBlock = communicationRuntimeBlock(db);
   const progressSnapshot = getWorkflowProgressSnapshot(db, { workflowRunId: workflow.id });
-  let healthPanel = "";
+  let healthReport = {};
   try {
     const snapshot = workflowHealth.getSnapshot(db, { profileId: plan.profileId, planId: plan.id, now: new Date().toISOString() });
-    healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
+    healthReport = workflowHealth.buildReport(snapshot);
   } catch (error) {
     logger?.warn("workflow_health_render_failed", { workflowRunId: workflow.id, planId: plan.id, errorCode: workflowHealthFailureCode(error) });
   }
-  return renderWorkflowDocument(buildWorkflowViewModel({
+  return renderPage("执行一轮", renderWorkflowDocument(buildWorkflowViewModel({
     workflow, plan, daily, communication, runtimeBlock, progressSnapshot,
-    stopPreview: progressSnapshot ? workflowStopPreview(db, { workflowRunId: workflow.id }) : {}, healthPanel,
+    stopPreview: progressSnapshot ? workflowStopPreview(db, { workflowRunId: workflow.id }) : {}, healthReport,
     reviewCandidates: workflow.status === "review_required" && !communication ? listWorkflowReviewCandidates(db, workflow.id) : [],
     quota: workflow.status === "review_required" && !communication ? communicationQuota(db) : { remaining: 0 }
-  }));
-}
-
-function renderLegacyWorkflowPage({ db, searchParams, logger = null, workflowHealth }) {
-  const workflowRunId = searchParams.get("runId");
-  const recovery = recoverWorkflowRuns(db, {
-    workflowRunId,
-    orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
-  });
-  if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
-    logger.warn("workflow_page_reconciled", { workflowRunId, ...recovery });
-  }
-  let workflow = getWorkflowRun(db, workflowRunId);
-  if (!workflow) return renderErrorPage("本轮任务不存在。", "/plan", { code: "WORKFLOW_RUN_NOT_FOUND" });
-  if (["review_required", "interrupted"].includes(workflow.status)) {
-    reconcilePlanWorkflowInventory(db, workflow.planId);
-    workflow = getWorkflowRun(db, workflowRunId);
-  }
-  const plan = getSearchPlan(db, workflow.planId);
-  if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
-  const daily = buildWorkflowDashboardState(db, plan);
-  const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
-  const runtimeBlock = communicationRuntimeBlock(db);
-  const phase = renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock });
-  const progressSnapshot = getWorkflowProgressSnapshot(db, {
-    workflowRunId: workflow.id
-  });
-  const progressPanel = progressSnapshot
-    ? renderWorkflowProgressPanel({
-        snapshot: progressSnapshot,
-        workflow,
-        stopPreview: workflowStopPreview(db, { workflowRunId: workflow.id })
-      })
-    : "";
-  let healthPanel = "";
-  try {
-    const snapshot = workflowHealth.getSnapshot(db, {
-      profileId: plan.profileId,
-      planId: plan.id,
-      now: new Date().toISOString()
-    });
-    healthPanel = workflowHealth.renderPanel(workflowHealth.buildReport(snapshot));
-  } catch (error) {
-    logger?.warn("workflow_health_render_failed", {
-      workflowRunId: workflow.id,
-      planId: plan.id,
-      errorCode: workflowHealthFailureCode(error)
-    });
-  }
-  const incrementalProgress = ["created", "scanning", "analyzing", "paused"].includes(workflow.status);
-  const polling = incrementalProgress
-    ? workflowProgressClientScript({
-        runId: workflow.id,
-        initialRevision: progressSnapshot?.workflow?.progressRevision || 0,
-        initialStatus: progressSnapshot?.workflow?.status || workflow.status,
-        initialControlState: progressSnapshot?.workflow?.controlState || workflow.controlState
-      })
-    : shouldPollWorkflow(workflow, communication)
-      ? `<script>(function(){const initial=${JSON.stringify(workflowPollKey(workflow, communication))};const timer=setInterval(async function(){try{const response=await fetch('/api/workflow-status?runId=${encodeURIComponent(workflow.id)}',{cache:'no-store'});if(!response.ok)return;const data=await response.json();const counts=data.communication?.summary?.statusCounts||{};const next=[data.workflow.status,data.communication?.batch?.status||'',data.workflow.successfulCount,counts.succeeded||0,counts.already_communicated||0,data.communication?.summary?.terminal||0].join('|');if(next!==initial){clearInterval(timer);location.reload()}}catch{}},2500)}());</script>`
-      : "";
-  const style = `<style>
-    .workflow-shell{max-width:1040px}.workflow-head{padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #ccd7dc}.workflow-headline{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}.workflow-head h1{margin:2px 0 0}.workflow-sequence{margin:0;color:#176b5b;font-size:12px;font-weight:700}.workflow-progress{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:#46545e;font-size:13px}.workflow-progress strong{color:#202b33;font-size:17px}.workflow-scope{max-width:100%;min-width:0;padding:14px 0;border-bottom:1px solid #ccd7dc;overflow-wrap:anywhere;word-break:break-word}.workflow-scope ul{margin:8px 0;padding-left:20px}.workflow-scope p{margin:8px 0}.workflow-phase{padding:18px 0}.workflow-phase h2{font-size:18px}.workflow-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:14px 0}.workflow-list{border-top:1px solid #d4dde2}.workflow-job{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:start;padding:12px 4px;border-bottom:1px solid #d4dde2}.workflow-job input{width:18px;height:18px;margin-top:2px}.workflow-job-main strong{font-size:15px}.workflow-job-meta,.workflow-job-reason,.workflow-job-evidence{margin-top:4px;color:#5a6871;font-size:13px;line-height:1.45}.workflow-job-evidence{display:block}.workflow-tier{padding:3px 7px;border:1px solid #aab9c2;border-radius:4px;background:#f5f8f9;color:#37454f;font-size:12px;white-space:nowrap}.workflow-tier.primary{border-color:#77a99d;background:#e9f4f1;color:#155f54}.workflow-tier.apply{border-color:#9cbcdc;background:#eef4fa;color:#245b87}.workflow-tier.caution{border-color:#d7b66a;background:#fff7e5;color:#795817}.workflow-sticky{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;background:rgba(246,247,249,.97);border-top:1px solid #bfcbd2}.workflow-status-table{width:100%;border-collapse:collapse}.workflow-status-table th,.workflow-status-table td{padding:8px;border-bottom:1px solid #d8e0e5;text-align:left}.workflow-alert{padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-done{border-left:3px solid #176b5b;padding:10px 12px;background:#edf7f4}@media(max-width:700px){.workflow-headline{display:block}.workflow-job{grid-template-columns:28px minmax(0,1fr)}.workflow-tier{grid-column:2}.workflow-sticky{align-items:stretch;flex-direction:column}.workflow-sticky button{width:100%}}
-    .workflow-live{padding:20px 0;border-bottom:1px solid #ccd7dc}.workflow-live-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.workflow-stage{margin:0;color:#176b5b;font-size:13px;font-weight:700}.workflow-live h2{margin:4px 0 0;font-size:21px}.workflow-model{margin:0;color:#5a6871;font-size:13px}.workflow-meter{width:100%;height:10px;margin:15px 0 17px;accent-color:#176b5b}.workflow-analysis-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;background:#d8e0e5;border:1px solid #d8e0e5;border-radius:7px;overflow:hidden}.workflow-stat{padding:12px;background:#fff}.workflow-stat span{display:block;color:#5a6871;font-size:12px}.workflow-stat strong{display:block;margin-top:4px;font-size:20px}.workflow-live-meta{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:12px}.workflow-live-card{padding:12px 14px;border:1px solid #d8e0e5;border-radius:7px;background:#fff}.workflow-live-card h3{margin:0 0 7px;font-size:13px}.workflow-live-card p{margin:5px 0;color:#46545e;font-size:13px;line-height:1.5}.workflow-control-area{margin-top:14px}.workflow-control-group{display:flex;flex-wrap:wrap;gap:9px;align-items:center}.workflow-control-group[hidden],.workflow-stop-confirmation[hidden],.workflow-inline-error[hidden],.workflow-stale[hidden]{display:none}.workflow-control-group form{margin:0}.workflow-stop{border-color:#b42318;background:#fff;color:#9a332b}.workflow-stop-confirmation{margin-top:12px;padding:13px 14px;border:1px solid #e1b2ae;border-radius:7px;background:#fff7f6}.workflow-stop-confirmation h3{margin:0 0 8px;font-size:15px}.workflow-stop-confirmation p{margin:5px 0}.workflow-inline-error,.workflow-stale{margin-top:12px;padding:10px 12px;border-left:3px solid #b42318;background:#fff1f0;color:#8b3029}.workflow-stale{border-left-color:#bf8700;background:#fff8e5;color:#765a16}.workflow-control-group button:focus-visible,.workflow-control-group a:focus-visible{outline:3px solid #7cb9e8;outline-offset:2px}
-    .workflow-scan-wait[hidden]{display:none}@media(max-width:760px){.workflow-live-head{display:block}.workflow-model{margin-top:7px}.workflow-analysis-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.workflow-live-meta{grid-template-columns:1fr}.workflow-control-group{align-items:stretch;flex-direction:column}.workflow-control-group form,.workflow-control-group button,.workflow-control-group a{width:100%}}
-  </style>`;
-  return renderPage("执行一轮", `${style}<main class="workflow-shell"><nav>${navLinks({ currentPath: `/workflow?runId=${workflow.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id })}</nav>
-    <header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${workflow.sequence} 轮 · ${escapeHtml(workflow.localDay)}</p><h1>${escapeHtml(workflowStatusLabel(workflow.status))}</h1></div><a href="/plan?planId=${plan.id}">返回筛选方案</a></div>
-      <div class="workflow-progress"><span>本轮目标 <strong>${workflow.targetSuccessCount}</strong></span><span>本轮成功 <strong>${workflow.successfulCount}</strong></span><span>今日进度 <strong>${daily.successfulToday} / ${daily.dailyTarget}</strong></span><span>有效候选 <strong>${workflow.inventoryCount}</strong></span></div>
-    </header>${renderInheritedScopeSummary(workflow)}${healthPanel}${progressPanel}${phase}</main>${polling}`);
-}
-
-function renderWorkflowProgressPanel({ snapshot, workflow, stopPreview }) {
-  const analysis = snapshot.progress.analysis;
-  const completed = analysis.succeeded + analysis.failed + analysis.skipped + analysis.stopped;
-  const remaining = analysis.pending + analysis.running + analysis.retryPending;
-  const runningVisible = ["created", "scanning", "analyzing"].includes(snapshot.workflow.status);
-  const pausedVisible = snapshot.workflow.status === "paused";
-  const recentActivity = snapshot.recentActivity.length
-    ? snapshot.recentActivity.map(workflowActivityLabel).join("；")
-    : "还没有新的分析活动。";
-  const scanWaitLabel = workflowScanWaitLabel(snapshot.progress.scanWait);
-  const modelLabel = [snapshot.model.provider, snapshot.model.model].filter(Boolean).join(" · ")
-    || "批量模型待记录";
-  const pauseReason = workflow.errorCode || "本轮已安全暂停";
-  const slotLabel = stopPreview.consumesRunSlot ? "会占用今天一轮" : "不会占用今天一轮";
-  const access = stopPreview.access || {};
-  const controlIdentity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}">`;
-  return `<section class="workflow-live" data-workflow-panel data-progress-revision="${snapshot.workflow.progressRevision}">
-    <div class="workflow-live-head">
-      <div aria-live="polite">
-        <p class="workflow-stage" data-stage-label>第 ${snapshot.progress.stageIndex} 阶段 / 共 ${snapshot.progress.stageCount} 阶段</p>
-        <h2 data-stage-name>${escapeHtml(snapshot.progress.stage)}</h2>
-      </div>
-      <p class="workflow-model">${escapeHtml(modelLabel)}</p>
-    </div>
-    <progress class="workflow-meter" data-analysis-progress aria-label="岗位分析完成进度" max="${Math.max(1, analysis.total)}" value="${completed}">${completed} / ${analysis.total}</progress>
-    <div class="workflow-analysis-grid" aria-label="岗位分析数量">
-      ${workflowProgressStat("总数", analysis.total, "data-analysis-total")}
-      ${workflowProgressStat("成功", analysis.succeeded, "data-analysis-succeeded")}
-      ${workflowProgressStat("处理中", analysis.running, "data-analysis-running")}
-      ${workflowProgressStat("等待重试", analysis.retryPending, "data-analysis-retry-pending")}
-      ${workflowProgressStat("待补详情", analysis.detailRequired, "data-analysis-detail-required")}
-      ${workflowProgressStat("失败", analysis.failed, "data-analysis-failed")}
-      ${workflowProgressStat("剩余", remaining, "data-analysis-remaining")}
-    </div>
-    <div class="workflow-live-meta">
-      <section class="workflow-live-card" aria-labelledby="workflow-timeout-heading">
-        <h3 id="workflow-timeout-heading">超时保护</h3>
-        <p data-analysis-timeouts>当前恢复周期最终超时 ${analysis.circuitTimeoutJobs} / ${analysis.timeoutPauseThreshold} · 本轮累计超时 ${analysis.lifetimeTimeoutJobs}</p>
-        <p data-eta>${escapeHtml(workflowEtaLabel(snapshot.progress.eta))}</p>
-      </section>
-      <section class="workflow-live-card" aria-labelledby="workflow-activity-heading">
-        <h3 id="workflow-activity-heading">最近活动</h3>
-        <p data-recent-activity aria-live="polite">${escapeHtml(recentActivity)}</p>
-      </section>
-    </div>
-    <p class="workflow-scan-wait" data-scan-wait${scanWaitLabel ? "" : " hidden"}>${escapeHtml(scanWaitLabel)}</p>
-    <p class="workflow-stale" data-workflow-stale hidden>任务可能失去活动，请先检查诊断信息，不要重复启动。</p>
-    <p class="workflow-inline-error" data-workflow-error role="alert" hidden>无法读取任务状态</p>
-    <div class="workflow-control-area">
-      <div class="workflow-control-group" data-control-group="running"${runningVisible ? "" : " hidden"}>
-        <form method="post" action="/api/workflow-control" data-workflow-control-form>${controlIdentity}<input type="hidden" name="action" value="pause"><button data-workflow-control data-action="pause"${snapshot.controls.canPause ? "" : " disabled"}>暂停本轮</button></form>
-        <button class="workflow-stop" type="button" data-workflow-control data-action="stop-preview"${snapshot.controls.canStop ? "" : " disabled"}>结束本轮…</button>
-      </div>
-      <div class="workflow-control-group" data-control-group="paused"${pausedVisible ? "" : " hidden"}>
-        <strong>本轮已暂停</strong>
-        <span data-pause-reason>${escapeHtml(pauseReason)}</span>
-        <a class="button-link" href="/settings#model-profile-batch_screening">测试批量模型连接</a>
-        <a class="button-link" href="/settings#model-profile-batch_screening">调整批量模型</a>
-        <form method="post" action="/api/workflow-control" data-workflow-control-form>${controlIdentity}<input type="hidden" name="action" value="resume"><button data-workflow-control data-action="resume"${snapshot.controls.canResume ? "" : " disabled"}>继续本轮</button></form>
-        <button class="workflow-stop" type="button" data-workflow-control data-action="stop-preview"${snapshot.controls.canStop ? "" : " disabled"}>结束本轮…</button>
-      </div>
-      <section class="workflow-stop-confirmation" data-stop-confirmation hidden>
-        <h3>确认结束本轮</h3>
-        <p>已采集 <span data-stop-collected>${stopPreview.collected}</span> · 已分析 <span data-stop-analyzed>${stopPreview.analyzed}</span> · 失败 <span data-stop-failed>${stopPreview.failed}</span> · 未完成 <span data-stop-unfinished>${stopPreview.unfinished}</span></p>
-        <p>网页预算：详情 ${Number(access.details || 0)} · 页面 ${Number(access.pages || 0)} · 滚动 ${Number(access.scrolls || 0)}</p>
-        <p><strong data-stop-slot>${slotLabel}</strong>。结束后不能继续，已保存结果会保留。</p>
-        <div class="workflow-control-group">
-          <form method="post" action="/api/workflow-control" data-workflow-control-form>${controlIdentity}<input type="hidden" name="action" value="stop"><input type="hidden" name="confirmStop" value="1"><button class="workflow-stop" data-workflow-control data-action="stop-confirm">确认结束本轮</button></form>
-          <button type="button" data-action="stop-cancel">取消</button>
-        </div>
-      </section>
-    </div>
-  </section>`;
-}
-
-function workflowProgressStat(label, value, hook) {
-  return `<div class="workflow-stat"><span>${escapeHtml(label)}</span><strong ${hook}>${Number(value || 0)}</strong></div>`;
-}
-
-function workflowScanWaitLabel(scanWait, now = Date.now()) {
-  const retryAt = Date.parse(scanWait?.retryAt || "");
-  if (!Number.isFinite(retryAt) || retryAt <= now) return "";
-  const minutes = Math.max(1, Math.ceil((retryAt - now) / 60000));
-  const time = new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false });
-  return `安全冷却中，预计 ${minutes} 分钟后继续（${time}）`;
-}
-
-function workflowActivityLabel(activity = {}) {
-  const action = {
-    analysis_started: "开始分析",
-    analysis_succeeded: "已成功保存",
-    analysis_failed: "分析失败",
-    analysis_skipped: "已按本地规则处理",
-    waiting_lease_expiry: "正在等待安全收尾",
-    control_requested: "正在执行控制请求"
-  }[activity.type] || "状态已更新";
-  const attempt = activity.attempt ? `，第 ${Number(activity.attempt)} 次尝试` : "";
-  const role = activity.modelRole === "backup" ? "，备用模型" : "";
-  const error = activity.errorCode ? `，${activity.errorCode}` : "";
-  return `任务 #${Number(activity.taskId || 0)} ${action}${attempt}${role}${error}`;
-}
-
-function workflowEtaLabel(eta = {}) {
-  if (eta.status === "available") {
-    return `预计剩余 ${workflowDurationLabel(eta.minSeconds)}～${workflowDurationLabel(eta.maxSeconds)}（基于最近 ${Number(eta.sampleSize || 0)} 个完成岗位估算）`;
-  }
-  if (eta.status === "paused") {
-    if (eta.minSeconds == null || eta.maxSeconds == null) return "已暂停；样本不足，正在估算";
-    return `已暂停；剩余区间冻结为 ${workflowDurationLabel(eta.minSeconds)}～${workflowDurationLabel(eta.maxSeconds)}（${Number(eta.sampleSize || 0)} 个样本）`;
-  }
-  if (eta.status === "estimating") return "正在估算";
-  return "当前阶段不估算剩余时间";
-}
-
-function workflowDurationLabel(seconds) {
-  const value = Math.max(0, Math.ceil(Number(seconds) || 0));
-  if (value < 60) return `${value} 秒`;
-  if (value < 3600) return `${Math.ceil(value / 60)} 分钟`;
-  const hours = Math.floor(value / 3600);
-  const minutes = Math.ceil((value % 3600) / 60);
-  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
-}
-
-function workflowProgressClientScript({
-  runId,
-  initialRevision,
-  initialStatus,
-  initialControlState
-}) {
-  const staleThresholdMs = Math.max(
-    30000,
-    Number(PRODUCT_POLICY.operations.scanOrphanTimeoutMs || 120000)
-  );
-  const initialKey = [
-    Number(initialRevision || 0),
-    initialStatus || "",
-    initialControlState || ""
-  ].join("|");
-  return `<script data-workflow-progress-client>(function(){
-    const runId=${JSON.stringify(String(runId || ""))};
-    const staleThresholdMs=${staleThresholdMs};
-    let lastKey=${JSON.stringify(initialKey)};
-    let pollInFlight=false;
-    let timer=null;
-    const terminalStates=new Set(["review_required","completed","failed","stopped"]);
-    const panel=document.querySelector("[data-workflow-panel]");
-    if(!panel)return;
-    const node=(selector)=>panel.querySelector(selector);
-    const nodes=(selector)=>Array.from(panel.querySelectorAll(selector));
-    const setText=(selector,value)=>{const target=node(selector);if(target)target.textContent=String(value)};
-    const duration=(seconds)=>{const value=Math.max(0,Math.ceil(Number(seconds)||0));if(value<60)return value+" 秒";if(value<3600)return Math.ceil(value/60)+" 分钟";const hours=Math.floor(value/3600);const minutes=Math.ceil((value%3600)/60);return minutes?hours+" 小时 "+minutes+" 分钟":hours+" 小时"};
-    const etaText=(eta)=>{if(eta.status==="available")return "预计剩余 "+duration(eta.minSeconds)+"～"+duration(eta.maxSeconds)+"（基于最近 "+Number(eta.sampleSize||0)+" 个完成岗位估算）";if(eta.status==="paused")return eta.minSeconds==null||eta.maxSeconds==null?"已暂停；样本不足，正在估算":"已暂停；剩余区间冻结为 "+duration(eta.minSeconds)+"～"+duration(eta.maxSeconds)+"（"+Number(eta.sampleSize||0)+" 个样本）";if(eta.status==="estimating")return "正在估算";return "当前阶段不估算剩余时间"};
-    const activityText=(activity)=>{const labels={analysis_started:"开始分析",analysis_succeeded:"已成功保存",analysis_failed:"分析失败",analysis_skipped:"已按本地规则处理",waiting_lease_expiry:"正在等待安全收尾",control_requested:"正在执行控制请求"};const action=labels[activity.type]||"状态已更新";const attempt=activity.attempt?"，第 "+Number(activity.attempt)+" 次尝试":"";const role=activity.modelRole==="backup"?"，备用模型":"";const error=activity.errorCode?"，"+String(activity.errorCode):"";return "任务 #"+Number(activity.taskId||0)+" "+action+attempt+role+error};
-    const setControlsDisabled=(disabled)=>{nodes("[data-workflow-control]").forEach((button)=>{button.disabled=Boolean(disabled)})};
-    const renderWorkflowError=(message)=>{const error=node("[data-workflow-error]");if(error){error.textContent=message||"无法读取任务状态";error.hidden=false}setControlsDisabled(true)};
-    const clearWorkflowError=()=>{const error=node("[data-workflow-error]");if(error)error.hidden=true};
-    const renderActivityHealth=(workflow)=>{const warning=node("[data-workflow-stale]");if(!warning)return;const at=Date.parse(workflow.lastActivityAt||"");const active=["created","scanning","analyzing"].includes(workflow.status);warning.hidden=!(active&&Number.isFinite(at)&&Date.now()-at>staleThresholdMs)};
-    const renderScanWait=(scanWait)=>{const wait=node("[data-scan-wait]");if(!wait)return;const retryAt=Date.parse(scanWait?.retryAt||"");if(!Number.isFinite(retryAt)||retryAt<=Date.now()){wait.hidden=true;return}const minutes=Math.max(1,Math.ceil((retryAt-Date.now())/60000));const time=new Date(retryAt).toLocaleTimeString("zh-CN",{hour12:false});wait.textContent="安全冷却中，预计 "+minutes+" 分钟后继续（"+time+"）";wait.hidden=false};
-    const renderWorkflowProgress=(snapshot)=>{const analysis=snapshot.progress.analysis;const remaining=Number(analysis.pending||0)+Number(analysis.running||0)+Number(analysis.retryPending||0);const detailRequired=Number(analysis.detailRequired||0);const analyzed=Number(analysis.succeeded||0)+Math.max(0,Number(analysis.skipped||0)-detailRequired);const completed=analyzed+detailRequired+Number(analysis.failed||0)+Number(analysis.stopped||0);setText("[data-stage-label]","第 "+Number(snapshot.progress.stageIndex)+" 阶段 / 共 "+Number(snapshot.progress.stageCount)+" 阶段");setText("[data-stage-name]",snapshot.progress.stage);setText("[data-analysis-total]",analysis.total);setText("[data-analysis-succeeded]",analysis.succeeded);setText("[data-analysis-running]",analysis.running);setText("[data-analysis-retry-pending]",analysis.retryPending);setText("[data-analysis-detail-required]",detailRequired);setText("[data-analysis-failed]",analysis.failed);setText("[data-analysis-remaining]",remaining);setText("[data-analysis-timeouts]","当前恢复周期最终超时 "+Number(analysis.circuitTimeoutJobs||0)+" / "+Number(analysis.timeoutPauseThreshold||10)+" · 本轮累计超时 "+Number(analysis.lifetimeTimeoutJobs||0));setText("[data-eta]",etaText(snapshot.progress.eta));setText("[data-recent-activity]",snapshot.recentActivity.length?snapshot.recentActivity.map(activityText).join("；"):"还没有新的分析活动。");setText("[data-stop-collected]",analysis.total);setText("[data-stop-analyzed]",analyzed);setText("[data-stop-failed]",analysis.failed);setText("[data-stop-unfinished]",remaining);setText("[data-stop-slot]",snapshot.controls.stopConsumesRunSlot?"会占用今天一轮":"不会占用今天一轮");const progress=node("[data-analysis-progress]");if(progress){progress.max=Math.max(1,Number(analysis.total||0));progress.value=completed}panel.dataset.progressRevision=String(snapshot.workflow.progressRevision);renderActivityHealth(snapshot.workflow)};
-    const renderWorkflowControls=(snapshot)=>{const paused=snapshot.workflow.status==="paused";const running=["created","scanning","analyzing"].includes(snapshot.workflow.status);const runningGroup=node('[data-control-group="running"]');const pausedGroup=node('[data-control-group="paused"]');if(runningGroup)runningGroup.hidden=!running;if(pausedGroup)pausedGroup.hidden=!paused;const pause=node('[data-action="pause"]');const resume=node('[data-action="resume"]');const stopConfirm=node('[data-action="stop-confirm"]');nodes('[data-action="stop-preview"]').forEach((button)=>{button.disabled=!snapshot.controls.canStop});if(pause)pause.disabled=!snapshot.controls.canPause;if(resume)resume.disabled=!snapshot.controls.canResume;if(stopConfirm)stopConfirm.disabled=!snapshot.controls.canStop;if(paused)setText("[data-pause-reason]",snapshot.workflow.errorCode||"本轮已安全暂停");if(terminalStates.has(snapshot.workflow.status)){setControlsDisabled(true);if(timer)clearInterval(timer)}};
-    const validSnapshot=(snapshot)=>Boolean(snapshot&&snapshot.workflow&&snapshot.progress&&snapshot.progress.analysis&&snapshot.progress.eta&&snapshot.controls&&Array.isArray(snapshot.recentActivity));
-    const pollWorkflowStatus=async()=>{if(pollInFlight)return;pollInFlight=true;try{const response=await fetch("/api/workflow-status?runId="+encodeURIComponent(runId),{cache:"no-store"});if(!response.ok)throw new Error("status response");const snapshot=await response.json();if(!validSnapshot(snapshot))throw new Error("status payload");clearWorkflowError();renderWorkflowControls(snapshot);renderScanWait(snapshot.progress.scanWait);const nextKey=[Number(snapshot.workflow.progressRevision||0),snapshot.workflow.status||"",snapshot.workflow.controlState||""].join("|");renderActivityHealth(snapshot.workflow);if(nextKey===lastKey)return;lastKey=nextKey;renderWorkflowProgress(snapshot)}catch(error){renderWorkflowError("无法读取任务状态")}finally{pollInFlight=false}};
-    nodes("[data-workflow-control-form]").forEach((form)=>form.addEventListener("submit",()=>setControlsDisabled(true)));
-    nodes('[data-action="stop-preview"]').forEach((button)=>button.addEventListener("click",()=>{const confirmation=node("[data-stop-confirmation]");if(confirmation){confirmation.hidden=false;node('[data-action="stop-confirm"]')?.focus()}}));
-    node('[data-action="stop-cancel"]')?.addEventListener("click",()=>{const confirmation=node("[data-stop-confirmation]");if(confirmation)confirmation.hidden=true});
-    timer=setInterval(pollWorkflowStatus,2500);
-  }());</script>`;
-}
-
-function renderWorkflowPhase({ db, workflow, plan, daily, communication, runtimeBlock }) {
-  if (["created", "scanning", "analyzing", "paused"].includes(workflow.status)) return "";
-  if (workflow.status === "review_required") {
-    if (communication) return renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock);
-    return renderWorkflowReview({ db, workflow, plan, runtimeBlock });
-  }
-  if (workflow.status === "communicating") {
-    return renderRunningWorkflowCommunication(workflow, communication, runtimeBlock);
-  }
-  if (workflow.status === "completed") {
-    const shortfall = workflow.shortfallCode
-      ? `<p class="hint">${workflow.shortfallCode === "WORKFLOW_SUPPLY_EXHAUSTED" ? "本轮可用候选已处理完，没有用弱岗位凑数。" : escapeHtml(workflow.shortfallCode)}</p>`
-      : "";
-    return `<section class="workflow-phase"><div class="workflow-done"><h2>本轮已完成</h2><p>本轮成功 ${workflow.successfulCount}，今日进度 ${daily.successfulToday} / ${daily.dailyTarget}。</p>${shortfall}</div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a><a class="button-link" href="/queue?planId=${plan.id}">查看岗位记录</a></div></section>`;
-  }
-  if (workflow.status === "interrupted") {
-    const communicationReview = workflow.communicationBatchId
-      ? `<a class="button-link" href="/communication?batchId=${workflow.communicationBatchId}">检查沟通中断项</a>`
-      : renderWorkflowResumeForm(workflow);
-    return `<section class="workflow-phase"><div class="workflow-alert"><strong>本轮已中断</strong><p>${escapeHtml(workflow.errorCode || "WORKFLOW_INTERRUPTED")} · ${escapeHtml(workflow.errorMessage || "请检查诊断后继续。")}</p></div><div class="workflow-actions">${communicationReview}</div></section>`;
-  }
-  return `<section class="workflow-phase"><div class="workflow-alert"><strong>${escapeHtml(workflowStatusLabel(workflow.status))}</strong><p>${escapeHtml(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。")}</p></div><div class="workflow-actions"><a class="button-link" href="/plan?planId=${plan.id}">返回今日任务</a></div></section>`;
-}
-
-function renderWorkflowResumeForm(workflow) {
-  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}">`;
-  if (workflow.planner?.acquisitionMode === "inherited") {
-    const browserMode = resolveWorkflowResumeBrowserMode(workflow);
-    const label = browserMode === "portable"
-      ? "使用项目专用 Edge 的 BOSS 搜索页"
-      : "使用当前已登录 Edge 中的固定 BOSS 搜索页";
-    const cdpPort = browserMode === "portable" ? `<input type="hidden" name="cdpPort" value="${PORTABLE_CDP_PORT}">` : "";
-    return `<form method="post" action="/api/workflow-run/resume">${identity}${cdpPort}<input type="hidden" name="browserMode" value="${browserMode}"><span class="hint">${label}</span><button>继续本轮</button></form>`;
-  }
-  const selectedMode = resolveWorkflowResumeBrowserMode(workflow);
-  const edgeSelected = selectedMode === "edge" ? " selected" : "";
-  const portableSelected = selectedMode === "portable" ? " selected" : "";
-  return `<form method="post" action="/api/workflow-run/resume">${identity}<select name="browserMode"><option value="edge"${edgeSelected}>当前已登录 Edge</option><option value="portable"${portableSelected}>项目专用 Edge</option></select><button>继续本轮</button></form>`;
-}
-
-function renderWorkflowReview({ db, workflow, plan, runtimeBlock }) {
-  const candidates = listWorkflowReviewCandidates(db, workflow.id);
-  const quota = communicationQuota(db);
-  const browserMode = String(
-    workflow.planner?.browserMode
-      || (workflow.planner?.acquisitionMode === "inherited" ? "edge" : "portable")
-  ).trim().toLowerCase();
-  const defaultCount = candidates.filter((candidate) => candidate.defaultChecked).length;
-  const rows = candidates.map((job) => {
-    const fitReason = (job.analysis?.fitReasons || []).slice(0, 2).join("；") || (job.matches || []).slice(0, 3).join("、") || "匹配证据已保存";
-    const hardBlockers = hardBlockerLabels(job.analysis);
-    const hardBlockerNote = hardBlockers.length ? `<span class="workflow-job-reason">硬性限制：${escapeHtml(hardBlockers.join("；"))}</span>` : "";
-    return `<label class="workflow-job"><input type="checkbox" name="jobIds" value="${job.id}"${job.defaultChecked ? " checked" : ""}><span class="workflow-job-main"><strong><a href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a></strong><span class="workflow-job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.salary || "薪资待确认")} · ${escapeHtml(job.experience || "经验待确认")} · ${escapeHtml(compactScheduleLabel(job.analysis))}</span>${renderRoleEvidenceSummary(job.analysis, "workflow-job-evidence")}<span class="workflow-job-reason">${escapeHtml(fitReason)}</span>${hardBlockerNote}</span><span class="workflow-tier ${workflowTierClass(job.workflowTier)}">${escapeHtml(workflowTierLabel(job.workflowTier))}</span></label>`;
-  }).join("") || `<p class="hint">本轮没有满足有效期、详情和匹配证据要求的候选。</p>`;
-  const blocked = Boolean(runtimeBlock) || quota.remaining <= 0 || defaultCount === 0 || defaultCount > quota.remaining;
-  return `<section class="workflow-phase"><h2>确认本轮沟通清单</h2><p class="hint">本轮成功目标 ${workflow.targetSuccessCount}；主投和可投默认勾选 ${defaultCount} 个，包含补位项。慎投仅展示，需人工决定是否勾选。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</div>` : ""}<form id="workflow-review-form" method="post" action="/api/communication-batch"><input type="hidden" name="workflowRunId" value="${escapeAttr(workflow.id)}"><input type="hidden" name="planId" value="${plan.id}"><input type="hidden" name="browserMode" value="${escapeAttr(browserMode)}"><div class="workflow-list">${rows}</div><div class="workflow-sticky"><span>已选 <output id="workflow-selected-count">${defaultCount}</output> 个 · 今日剩余额度 ${quota.remaining}</span><button id="workflow-confirm"${blocked ? " disabled" : ""}>确认清单</button></div></form></section><script>(function(){const form=document.getElementById('workflow-review-form');const output=document.getElementById('workflow-selected-count');const confirm=document.getElementById('workflow-confirm');if(!form)return;const limit=${quota.remaining};const fixedBlocked=${Boolean(runtimeBlock)};const update=()=>{const count=form.querySelectorAll('input[name="jobIds"]:checked').length;output.value=count;confirm.disabled=fixedBlocked||count===0||count>limit};form.addEventListener('change',update);update()}());</script>`;
-}
-
-function renderConfirmedWorkflowCommunication(workflow, communication, runtimeBlock) {
-  const batch = communication.batch;
-  const action = batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
-  const actionLabel = action === "resume" ? "继续沟通" : "开始沟通";
-  const control = action && communication.calibration.executionEnabled && !runtimeBlock
-    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button name="action" value="${action}">${actionLabel}</button></form>`
-    : "";
-  return `<section class="workflow-phase"><h2>清单已确认</h2><p>已选择 ${communication.summary.total} 个岗位，本轮成功目标 ${workflow.targetSuccessCount}。</p>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}</div>` : ""}<div class="workflow-actions">${control}<a class="button-link" href="/communication?batchId=${batch.id}">检查清单详情</a></div></section>`;
-}
-
-function renderRunningWorkflowCommunication(workflow, communication, runtimeBlock) {
-  if (!communication) return `<section class="workflow-phase"><div class="workflow-alert">沟通批次尚未建立，请查看诊断。</div></section>`;
-  const rows = Object.entries(communication.summary.statusCounts)
-    .map(([status, count]) => `<tr><th>${escapeHtml(status)}</th><td>${count}</td></tr>`)
-    .join("");
-  return `<section class="workflow-phase"><h2>正在沟通</h2>${runtimeBlock ? `<div class="workflow-alert">${escapeHtml(runtimeBlock.reasonCode)}</div>` : ""}<table class="workflow-status-table"><tbody>${rows}</tbody></table><div class="workflow-actions"><a class="button-link" href="/communication?batchId=${communication.batch.id}">查看执行明细</a></div></section>`;
-}
-
-function workflowTierLabel(tier) {
-  return {
-    primary: "主投",
-    apply: "可投",
-    caution: "慎投"
-  }[tier] || "待分析";
-}
-
-function workflowTierClass(tier) {
-  return ["primary", "apply", "caution"].includes(tier) ? tier : "";
+  })));
 }
 
 function roleAlignmentLabel(value) {
-  return {
-    aligned: "一致",
-    mostly_aligned: "基本一致",
-    partially_aligned: "部分一致",
-    misaligned: "不一致",
-    insufficient_evidence: "证据不足，待确认"
-  }[value] || "历史分析，待重新计算";
+  return { aligned: "一致", mostly_aligned: "基本一致", partially_aligned: "部分一致", misaligned: "不一致", insufficient_evidence: "证据不足，待确认" }[value] || "历史分析，待重新计算";
 }
 
-function foundationEvidenceLists(analysis) {
-  const rows = (analysis?.requirementMatches || []).filter(
-    (item) => item?.foundation === true
-  );
-  return {
-    covered: rows.filter((item) =>
-      ["matched", "transferable"].includes(item.state)
-    ).map((item) => item.requirement),
-    unresolved: rows.filter((item) =>
-      !["matched", "transferable"].includes(item.state)
-    ).map((item) => item.requirement)
-  };
+function foundationEvidenceLists(analysis = {}) {
+  const rows = (analysis.requirementMatches || []).filter((item) => item?.foundation === true);
+  return { covered: rows.filter((item) => ["matched", "transferable"].includes(item.state)).map((item) => item.requirement), unresolved: rows.filter((item) => !["matched", "transferable"].includes(item.state)).map((item) => item.requirement) };
 }
 
-function hardBlockerLabels(analysis = {}) {
-  return (analysis.hardBlockers || [])
-    .map((item) => typeof item === "string" ? item : item?.requirement || item?.reason || "")
-    .filter(Boolean);
-}
+function hardBlockerLabels(analysis = {}) { return (analysis.hardBlockers || []).map((item) => typeof item === "string" ? item : item?.requirement || item?.reason || "").filter(Boolean); }
 
 function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "span") {
-  const foundation = foundationEvidenceLists(analysis);
-  const track = analysis.selectedTrackLabel
-    ? `匹配分支：${escapeHtml(analysis.selectedTrackLabel)} · `
-    : "";
-  const roleSummary = String(analysis.roleSummary || "岗位主体待确认");
-  const evidenceCount = Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0;
-  const covered = foundation.covered.filter(Boolean).join("、") || "暂无";
-  const unresolved = foundation.unresolved.filter(Boolean).join("、") || "暂无";
-  return `<${tag} class="${escapeAttr(className)}">${track}岗位主体：${escapeHtml(roleSummary)} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${evidenceCount} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
-}
-
-function shouldPollWorkflow(workflow, communication) {
-  return ["created", "scanning", "analyzing", "communicating"].includes(workflow.status)
-    || ["running", "stopping"].includes(communication?.batch?.status);
-}
-
-function workflowPollKey(workflow, communication) {
-  const counts = communication?.summary?.statusCounts || {};
-  return [
-    workflow.status,
-    communication?.batch?.status || "",
-    workflow.successfulCount,
-    counts.succeeded || 0,
-    counts.already_communicated || 0,
-    communication?.summary?.terminal || 0
-  ].join("|");
+  const foundation = foundationEvidenceLists(analysis); const track = analysis.selectedTrackLabel ? `匹配分支：${escapeHtml(analysis.selectedTrackLabel)} · ` : ""; const covered = foundation.covered.filter(Boolean).join("、") || "暂无"; const unresolved = foundation.unresolved.filter(Boolean).join("、") || "暂无";
+  return `<${tag} class="${escapeAttr(className)}">${track}岗位主体：${escapeHtml(String(analysis.roleSummary || "岗位主体待确认"))} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
 }
 
 function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
@@ -4876,3 +4488,5 @@ module.exports = {
   renderQueuePage,
   renderPlanPage
 };
+
+

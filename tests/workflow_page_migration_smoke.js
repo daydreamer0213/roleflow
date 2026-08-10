@@ -72,7 +72,9 @@ function assertRendererContracts(vm) {
   assert.doesNotMatch(unsafeHtml, /<img src=x onerror=/);
 
   const html = renderWorkflowPage(vm);
-  assert.match(html, /<script src="\/assets\/workflow\.js" defer><\/script>/, "workflow behavior must come from the allowlisted external asset");
+  assert.match(html, /class="app-shell"/, "workflow must use the shared dashboard frame");
+  assert.match(html, /data-workflow-primary="true"[^>]*>暂停本轮/, "scanning must expose pause as its only primary action");
+  assert.match(html, /<script src="\/assets\/workflow\.js"><\/script>/, "workflow behavior must come from the allowlisted external asset");
   assert.strictEqual((html.match(/<script/gi) || []).length, 1, "renderer must not copy client behavior inline");
   assert.match(html, /name="workflowRunId" value="workflow-migration-fixture"/);
   assert.match(html, /name="action" value="pause"/);
@@ -86,9 +88,11 @@ function assertRendererContracts(vm) {
   const paused = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "paused", errorCode: "SAFE_PAUSE" }, progressSnapshot: { workflow: { id: "workflow-migration-fixture", status: "paused", controlState: "", progressRevision: 5, lastActivityAt: new Date().toISOString() }, controls: { canPause: false, canResume: true, canStop: true, stopConsumesRunSlot: true } } })));
   assert.match(paused, /data-control-group="paused"/);
   assert.match(paused, /name="action" value="resume"/);
+  assert.match(paused, /data-workflow-primary="true"[^>]*>继续本轮/);
 
   const review = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 71, url: "https://example.test/immutable", title: "候选岗位", company: "甲公司", salary: "20K", experience: "3年", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
   assert.match(review, /id="workflow-review-form"/);
+  assert.match(review, /data-workflow-primary="true"[^>]*>确认清单/);
   assert.match(review, /name="jobIds" value="71" checked/);
   assert.match(review, /href="https:\/\/example\.test\/immutable"/);
 
@@ -105,18 +109,24 @@ function assertRendererContracts(vm) {
 
   const interrupted = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: 41, errorCode: "SAFE_STOP" }, progressSnapshot: null })));
   assert.match(interrupted, /检查沟通中断项/);
+  assert.match(interrupted, /data-workflow-primary="true"/);
   assert.match(interrupted, /communication\?batchId=41/);
+
+  const unsafeUrl = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 91, url: "javascript:alert(1)", title: "不安全链接", company: "甲", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
+  assert.match(unsafeUrl, /不安全链接/);
+  assert.doesNotMatch(unsafeUrl, /href="javascript:/i, "review must not create executable links from an unsafe URL");
 }
 
 async function assertClientContracts(vm) {
   let chromium;
   try {
     ({ chromium } = require("playwright"));
-  } catch {
+  } catch (error) {
+    if (process.env.ROLEFLOW_REQUIRE_PLAYWRIGHT === "1") throw error;
     console.log("workflow_page_migration_smoke browser checks skipped: Playwright unavailable in NODE_PATH");
     return;
   }
-  let responses = [{ malformed: true }, validSnapshot("completed")];
+  let responses = [{ malformed: true }, validSnapshot("interrupted")];
   let requests = 0;
   let inFlight = 0;
   let maxInFlight = 0;
@@ -128,7 +138,7 @@ async function assertClientContracts(vm) {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await delay(80);
       inFlight -= 1;
-      return json(res, responses.shift() || validSnapshot("completed"));
+      return json(res, responses.shift() || validSnapshot("interrupted"));
     }
     if (req.url === "/workflow") return serve(res, "text/html", renderWorkflowPage(vm));
     res.writeHead(404); res.end();
@@ -137,9 +147,24 @@ async function assertClientContracts(vm) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   try {
     const page = await browser.newPage();
+    const diagnostics = { console: [], pageErrors: [], failed: [], asset: [], cdp: [], config: null };
+    page.on("console", (message) => diagnostics.console.push({ type: message.type(), text: message.text() }));
+    page.on("pageerror", (error) => diagnostics.pageErrors.push({ message: error.message, stack: error.stack || "", name: error.name || "Error" }));
+    page.on("requestfailed", (request) => diagnostics.failed.push({ url: request.url(), error: request.failure()?.errorText || "unknown" }));
+    page.on("response", (response) => { if (response.url().endsWith("/assets/workflow.js")) diagnostics.asset.push({ status: response.status(), url: response.url() }); });
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Runtime.enable");
+    cdp.on("Runtime.exceptionThrown", ({ exceptionDetails }) => diagnostics.cdp.push({ url: exceptionDetails.url || "", lineNumber: exceptionDetails.lineNumber, columnNumber: exceptionDetails.columnNumber, text: exceptionDetails.text, description: exceptionDetails.exception?.description || "" }));
     await page.goto(`${baseUrl}/workflow`, { waitUntil: "networkidle" });
-    await page.locator('[data-action="stop-preview"]').first().click();
-    await assertFocus(page, '[data-action="stop-confirm"]');
+    assert.deepStrictEqual(diagnostics.pageErrors, [], `workflow client must initialize without page errors: ${JSON.stringify(diagnostics.cdp)}`);
+    const state = async () => page.evaluate(() => {
+      const preview = document.querySelector('[data-action="stop-preview"]'); const confirm = document.querySelector('[data-stop-confirmation]');
+      const ancestors = []; for (let node = confirm; node; node = node.parentElement) ancestors.push({ tag: node.tagName, hidden: node.hidden, display: getComputedStyle(node).display });
+      const root = document.querySelector('[data-workflow-page]');
+      return { preview: preview && { visible: !!(preview.offsetWidth || preview.offsetHeight), disabled: preview.disabled }, confirm: confirm && { attr: confirm.hasAttribute("hidden"), hidden: confirm.hidden, display: getComputedStyle(confirm).display, ancestors }, script: document.querySelector('script[src*="workflow.js"]')?.src || "", readyState: document.readyState, page: !!root, panel: !!document.querySelector('[data-workflow-panel]'), config: root && { pollKind: root.dataset.pollingKind, runId: root.dataset.workflowRunId, terminalStates: root.dataset.terminalStates, pollingKey: root.dataset.pollingKey } };
+    });
+    const before = await state(); diagnostics.config = before.config; await page.locator('[data-action="stop-preview"]').first().click(); const after = await state();
+    try { assert.strictEqual(await page.locator('[data-action="stop-confirm"]').isVisible(), true, "stop preview must reveal the confirmation control"); } catch (error) { process.stderr.write(`workflow diagnostic: ${JSON.stringify({ before, after, diagnostics })}\n`); throw error; }
     await page.locator('[data-action="stop-cancel"]').click();
     assert.strictEqual(await page.locator("[data-stop-confirmation]").isHidden(), true, "stop cancellation must hide confirmation");
     await page.waitForTimeout(2700);
@@ -173,9 +198,9 @@ async function assertClientContracts(vm) {
 
 function validSnapshot(status) {
   return {
-    workflow: { status, controlState: "", progressRevision: status === "completed" ? 6 : 5, lastActivityAt: new Date().toISOString(), errorCode: "" },
+    workflow: { status, controlState: "", progressRevision: status === "interrupted" ? 6 : 5, lastActivityAt: new Date().toISOString(), errorCode: "" },
     progress: { stage: "阶段", stageIndex: 1, stageCount: 3, scanWait: null, eta: { status: "estimating" }, analysis: { total: 12, succeeded: 3, running: 0, retryPending: 0, detailRequired: 0, failed: 0, skipped: 0, stopped: 0, pending: 9, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 } },
-    controls: { canPause: status === "scanning", canResume: false, canStop: status !== "completed", stopConsumesRunSlot: true },
+    controls: { canPause: status === "scanning", canResume: false, canStop: status !== "interrupted", stopConsumesRunSlot: true },
     recentActivity: []
   };
 }

@@ -4,7 +4,7 @@ const { scopeShortId } = require("../../core/inherited_search_scope");
 
 function buildWorkflowViewModel({
   workflow = {}, plan = {}, daily = {}, communication = null, runtimeBlock = null,
-  progressSnapshot = null, stopPreview = {}, healthPanel = "", reviewCandidates = [], quota = { remaining: 0 }
+  progressSnapshot = null, stopPreview = {}, healthReport = {}, reviewCandidates = [], quota = { remaining: 0 }
 } = {}) {
   const status = String(workflow.status || "");
   const planner = workflow.planner || {};
@@ -23,7 +23,7 @@ function buildWorkflowViewModel({
       todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), inventoryCount: number(workflow.inventoryCount)
     },
     scope: scopeView(planner),
-    health: { trustedPanel: String(healthPanel || "") },
+    health: { report: JSON.parse(JSON.stringify(healthReport || {})) },
     progress,
     controls: controlView(progressSnapshot, workflow, stopPreview),
     phase,
@@ -95,7 +95,7 @@ function phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewC
 function reviewRow(job = {}) {
   const analysis = job.analysis || {};
   return {
-    id: String(job.id || ""), url: String(job.url || ""), title: String(job.title || ""), company: String(job.company || ""), salary: String(job.salary || "薪资待确认"), experience: String(job.experience || "经验待确认"),
+    id: String(job.id || ""), url: safeExternalUrl(job.url), title: String(job.title || ""), company: String(job.company || ""), salary: String(job.salary || "薪资待确认"), experience: String(job.experience || "经验待确认"),
     schedule: scheduleLabel(analysis), evidence: evidenceLabel(analysis), reason: (analysis.fitReasons || []).slice(0, 2).join("；") || (job.matches || []).slice(0, 3).join("、") || "匹配证据已保存",
     hardBlockers: (analysis.hardBlockers || []).map((item) => typeof item === "string" ? item : item?.requirement || item?.reason || "").filter(Boolean).map(String),
     tier: workflowTier(job.workflowTier), defaultChecked: Boolean(job.defaultChecked)
@@ -116,7 +116,7 @@ function resumeView(workflow) {
 }
 
 function pollingView(status, workflow, communication, snapshot) {
-  if (["created", "scanning", "analyzing", "paused"].includes(status)) return { kind: "progress", runId: String(workflow.id || ""), intervalMs: 2500, initialKey: [number(snapshot?.workflow?.progressRevision), snapshot?.workflow?.status || status, snapshot?.workflow?.controlState || workflow.controlState || ""].join("|"), terminalStates: ["review_required", "completed", "failed", "stopped"] };
+  if (["created", "scanning", "analyzing", "paused"].includes(status)) return { kind: "progress", runId: String(workflow.id || ""), intervalMs: 2500, initialKey: [number(snapshot?.workflow?.progressRevision), snapshot?.workflow?.status || status, snapshot?.workflow?.controlState || workflow.controlState || ""].join("|"), terminalStates: ["review_required", "interrupted", "completed", "failed", "stopped"] };
   if (["communicating"].includes(status) || ["running", "stopping"].includes(communication?.batch?.status)) return { kind: "communication", runId: String(workflow.id || ""), intervalMs: 2500, initialKey: communicationKey(workflow, communication), terminalStates: [] };
   return { kind: "none", runId: String(workflow.id || ""), intervalMs: 2500, initialKey: "", terminalStates: [] };
 }
@@ -124,6 +124,7 @@ function pollingView(status, workflow, communication, snapshot) {
 function communicationKey(workflow, communication) { const counts = communication?.summary?.statusCounts || {}; return [workflow.status, communication?.batch?.status || "", number(workflow.successfulCount), number(counts.succeeded), number(counts.already_communicated), number(communication?.summary?.terminal)].join("|"); }
 function reviewBrowserMode(workflow) { const mode = String(workflow.planner?.browserMode || (workflow.planner?.acquisitionMode === "inherited" ? "edge" : "portable")).trim().toLowerCase(); return mode === "edge" ? "edge" : "portable"; }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
+function safeExternalUrl(value) { try { const url = new URL(String(value || "")); return ["http:", "https:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; } }
 function scanWaitLabel(scanWait, now = Date.now()) { const retryAt = Date.parse(scanWait?.retryAt || ""); if (!Number.isFinite(retryAt) || retryAt <= now) return ""; return `安全冷却中，预计 ${Math.max(1, Math.ceil((retryAt - now) / 60000))} 分钟后继续（${new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false })}）`; }
 function duration(seconds) { const value = Math.max(0, Math.ceil(number(seconds))); if (value < 60) return `${value} 秒`; if (value < 3600) return `${Math.ceil(value / 60)} 分钟`; const hours = Math.floor(value / 3600); const minutes = Math.ceil((value % 3600) / 60); return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`; }
 function etaLabel(eta = {}) { if (eta.status === "available") return `预计剩余 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（基于最近 ${number(eta.sampleSize)} 个完成岗位估算）`; if (eta.status === "paused") return eta.minSeconds == null || eta.maxSeconds == null ? "已暂停；样本不足，正在估算" : `已暂停；剩余区间冻结为 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（${number(eta.sampleSize)} 个样本）`; return eta.status === "estimating" ? "正在估算" : "当前阶段不估算剩余时间"; }

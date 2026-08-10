@@ -1,14 +1,10 @@
 const { escapeHtml, escapeAttr } = require("../http/response");
-const { renderNavigation } = require("../ui/navigation");
+const { renderDashboardFrame } = require("../ui/shell");
 
 function renderTodayPage(vm) {
   const page = vm.page || {};
   const plan = vm.form?.plan || {};
-  const navigation = renderNavigation({ currentPath: page.todayPath, todayPath: page.todayPath, planId: page.planId });
-  return `<a class="skip-link" href="#main-content">跳到主要内容</a>
-<div class="app-shell"><aside class="signal-rail" aria-label="RoleFlow 阶段标记"><div class="rail-mark" aria-hidden="true">RF</div><div class="rail-label">今日任务</div><div class="rail-spacer"></div><span class="rail-dot attention" title="有待处理事项"></span></aside>
-<div class="page today-page"><header class="topbar"><a class="brand" href="${escapeAttr(page.todayPath)}"><strong>RoleFlow</strong><span>本地岗位工作台</span></a><nav class="primary-nav" aria-label="主导航">${navigation}</nav><span class="nav-scroll-hint" aria-hidden="true">左右滑动查看更多</span></header>
-<main id="main-content" class="today-main">
+  return renderDashboardFrame({ currentPath: page.todayPath, todayPath: page.todayPath, planId: page.planId, stage: "今日任务", brandHref: page.todayPath, content: `<main id="main-content" class="today-main">
   <section class="page-heading" aria-labelledby="today-title"><p class="eyebrow">${escapeHtml(vm.heading?.eyebrow || "")}</p><h1 id="today-title">${escapeHtml(vm.heading?.title || "今日任务")}</h1><p class="lede">${escapeHtml(vm.heading?.lede || "")}</p><div class="heading-meta"><span>${escapeHtml(vm.heading?.meta?.[0] || "")}</span><span>${escapeHtml(vm.heading?.meta?.[1] || "")}</span><span class="status ${vm.heading?.status === "方案可用" ? "good" : "waiting"}">${escapeHtml(vm.heading?.status || "")}</span></div></section>
   ${renderPrimaryPanel(vm)}
   ${renderMetrics(vm.metrics)}
@@ -22,9 +18,7 @@ function renderTodayPage(vm) {
   </div>
   ${renderPlanSettings(vm)}
   ${renderAdvancedScan(vm)}
-</main>
-<p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>
-</div></div>${renderClientScripts(vm.run?.state, vm.primary?.type === "form")}`;
+</main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, vm.primary?.type === "form");
 }
 
 function renderPrimaryPanel(vm) {

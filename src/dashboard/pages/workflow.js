@@ -1,15 +1,15 @@
 "use strict";
 
 const { escapeHtml, escapeAttr } = require("../http/response");
-const { renderPage } = require("../ui/shell");
-const { renderNavigation } = require("../ui/navigation");
+const { renderDashboardFrame } = require("../ui/shell");
+const { renderWorkflowHealthPanel } = require("../workflow_health_view");
 
 function renderWorkflowPage(vm = {}) {
   const page = vm.page || {};
-  const navigation = renderNavigation({ currentPath: page.currentPath, todayPath: page.planHref, planId: page.planId });
-  return renderPage({ title: page.title || "执行一轮", body: `<main class="workflow-shell" data-workflow-page data-polling-kind="${escapeAttr(vm.polling?.kind || "none")}" data-workflow-run-id="${escapeAttr(vm.polling?.runId || page.runId)}" data-polling-interval="${Number(vm.polling?.intervalMs || 2500)}" data-polling-key="${escapeAttr(vm.polling?.initialKey || "")}" data-terminal-states="${escapeAttr((vm.polling?.terminalStates || []).join(","))}">
-  <nav>${navigation}</nav>${renderHeader(vm)}${renderScope(vm.scope)}${vm.health?.trustedPanel || ""}${renderProgress(vm.progress, vm.controls)}${renderPhase(vm.phase)}
-</main>`, scripts: ['<script src="/assets/workflow.js" defer></script>'] });
+  const frame = renderDashboardFrame({ currentPath: page.currentPath, todayPath: page.planHref, planId: page.planId, stage: "本轮执行", brandHref: page.planHref, content: `<main id="main-content" class="workflow-shell" data-workflow-page data-polling-kind="${escapeAttr(vm.polling?.kind || "none")}" data-workflow-run-id="${escapeAttr(vm.polling?.runId || page.runId)}" data-polling-interval="${Number(vm.polling?.intervalMs || 2500)}" data-polling-key="${escapeAttr(vm.polling?.initialKey || "")}" data-terminal-states="${escapeAttr((vm.polling?.terminalStates || []).join(","))}">
+  ${renderHeader(vm)}${renderScope(vm.scope)}${vm.health?.report?.status ? renderWorkflowHealthPanel(vm.health.report) : ""}${renderProgress(vm.progress, vm.controls)}${renderPhase(vm.phase)}
+</main><script src="/assets/workflow.js"></script>` });
+  return frame.replace('data-action="pause"', 'data-workflow-primary="true" data-action="pause"').replace('data-action="resume"', 'data-workflow-primary="true" data-action="resume"').replace('id="workflow-confirm"', 'data-workflow-primary="true" id="workflow-confirm"').replace('class="button-link" href="/communication?', 'class="button-link" data-workflow-primary="true" href="/communication?').replace('<button>继续本轮</button>', '<button data-workflow-primary="true">继续本轮</button>').replace(/<a href="" target="_blank" rel="noreferrer">([^<]*)<\/a>/g, "$1");
 }
 
 function renderHeader(vm) {

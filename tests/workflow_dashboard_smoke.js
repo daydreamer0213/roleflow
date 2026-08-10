@@ -1482,7 +1482,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     assert(!livePanelAndClient.includes(sensitive), `live progress panel must not expose ${sensitive}`);
   }
 
-  assert.match(page.body, /<script src="\/assets\/workflow\.js" defer><\/script>/);
+  assert.match(page.body, /<script src="\/assets\/workflow\.js"><\/script>/);
   assert.doesNotMatch(page.body, /data-workflow-progress-client/);
 
   transitionWorkflowRun(database, {

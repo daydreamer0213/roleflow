@@ -17,13 +17,13 @@
   const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const setText = (selector, value) => { const target = node(selector); if (target) target.textContent = String(value); };
   const controls = (disabled) => nodes("[data-workflow-control]").forEach((button) => { button.disabled = Boolean(disabled); });
-  const duration = (seconds) => { const value = Math.max(0, Math.ceil(number(seconds))); if (value < 60) return `${value} 秒`; if (value < 3600) return `${Math.ceil(value / 60)} 分钟`; const hours = Math.floor(value / 3600); const minutes = Math.ceil((value % 3600) / 60); return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`; };
-  const etaText = (eta = {}) => eta.status === "available" ? `预计剩余 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（基于最近 ${number(eta.sampleSize)} 个完成岗位估算）` : eta.status === "paused" ? (eta.minSeconds == null || eta.maxSeconds == null ? "已暂停；样本不足，正在估算" : `已暂停；剩余区间冻结为 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（${number(eta.sampleSize)} 个样本）`) : eta.status === "estimating" ? "正在估算" : "当前阶段不估算剩余时间";
-  const activityText = (activity = {}) => { const action = { analysis_started: "开始分析", analysis_succeeded: "已成功保存", analysis_failed: "分析失败", analysis_skipped: "已按本地规则处理", waiting_lease_expiry: "正在等待安全收尾", control_requested: "正在执行控制请求" }[activity.type] || "状态已更新"; return `任务 #${number(activity.taskId)} ${action}${activity.attempt ? `，第 ${number(activity.attempt)} 次尝试` : ""}${activity.modelRole === "backup" ? "，备用模型" : ""}${activity.errorCode ? `，${String(activity.errorCode)}` : ""}`; };
+  const duration = (seconds) => { const value = Math.max(0, Math.ceil(number(seconds))); if (value < 60) return String(value) + " 秒"; if (value < 3600) return String(Math.ceil(value / 60)) + " 分钟"; const hours = Math.floor(value / 3600); const minutes = Math.ceil((value % 3600) / 60); return minutes ? String(hours) + " 小时 " + String(minutes) + " 分钟" : String(hours) + " 小时"; };
+  const etaText = (eta = {}) => eta.status === "available" ? "预计剩余 " + duration(eta.minSeconds) + "～" + duration(eta.maxSeconds) + "（基于最近 " + number(eta.sampleSize) + " 个完成岗位估算）" : eta.status === "paused" ? (eta.minSeconds == null || eta.maxSeconds == null ? "已暂停；样本不足，正在估算" : "已暂停；剩余区间冻结为 " + duration(eta.minSeconds) + "～" + duration(eta.maxSeconds) + "（" + number(eta.sampleSize) + " 个样本）") : eta.status === "estimating" ? "正在估算" : "当前阶段不估算剩余时间";
+  const activityText = (activity = {}) => { const action = { analysis_started: "开始分析", analysis_succeeded: "已成功保存", analysis_failed: "分析失败", analysis_skipped: "已按本地规则处理", waiting_lease_expiry: "正在等待安全收尾", control_requested: "正在执行控制请求" }[activity.type] || "状态已更新"; return ["任务 #", number(activity.taskId), " ", action, activity.attempt ? "，第 " + number(activity.attempt) + " 次尝试" : "", activity.modelRole === "backup" ? "，备用模型" : "", activity.errorCode ? "，" + String(activity.errorCode) : ""].join(""); };
   const validSnapshot = (snapshot) => Boolean(snapshot && snapshot.workflow && snapshot.progress && snapshot.progress.analysis && snapshot.progress.eta && snapshot.controls && Array.isArray(snapshot.recentActivity));
   const showError = (message = "无法读取任务状态") => { const error = node("[data-workflow-error]"); if (error) { error.textContent = message; error.hidden = false; } controls(true); };
   const clearError = () => { const error = node("[data-workflow-error]"); if (error) error.hidden = true; };
-  const scanWaitText = (scanWait) => { const retryAt = Date.parse(scanWait?.retryAt || ""); if (!Number.isFinite(retryAt) || retryAt <= Date.now()) return ""; return `安全冷却中，预计 ${Math.max(1, Math.ceil((retryAt - Date.now()) / 60000))} 分钟后继续（${new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false })}）`; };
+  const scanWaitText = (scanWait) => { const retryAt = Date.parse(scanWait?.retryAt || ""); if (!Number.isFinite(retryAt) || retryAt <= Date.now()) return ""; return "安全冷却中，预计 " + Math.max(1, Math.ceil((retryAt - Date.now()) / 60000)) + " 分钟后继续（" + new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false }) + "）"; };
   const renderScanWait = (scanWait) => { const wait = node("[data-scan-wait]"); if (!wait) return; const label = scanWaitText(scanWait); wait.hidden = !label; if (label) wait.textContent = label; };
   const renderStale = (workflow) => { const warning = node("[data-workflow-stale]"); if (!warning) return; const at = Date.parse(workflow.lastActivityAt || ""); const active = ["created", "scanning", "analyzing"].includes(workflow.status); warning.hidden = !(active && Number.isFinite(at) && Date.now() - at > 30000); };
   const renderProgress = (snapshot) => {
@@ -32,10 +32,10 @@
     const analyzed = number(analysis.succeeded) + Math.max(0, number(analysis.skipped) - detailRequired);
     const completed = analyzed + detailRequired + number(analysis.failed) + number(analysis.stopped);
     const remaining = number(analysis.pending) + number(analysis.running) + number(analysis.retryPending);
-    setText("[data-stage-label]", `第 ${number(snapshot.progress.stageIndex)} 阶段 / 共 ${number(snapshot.progress.stageCount)} 阶段`);
+    setText("[data-stage-label]", "第 " + number(snapshot.progress.stageIndex) + " 阶段 / 共 " + number(snapshot.progress.stageCount) + " 阶段");
     setText("[data-stage-name]", snapshot.progress.stage || "");
     for (const [selector, value] of [["[data-analysis-total]", analysis.total], ["[data-analysis-succeeded]", analysis.succeeded], ["[data-analysis-running]", analysis.running], ["[data-analysis-retry-pending]", analysis.retryPending], ["[data-analysis-detail-required]", detailRequired], ["[data-detail-read]", snapshot.progress.detailsRead], ["[data-detail-pending]", snapshot.progress.detailsPending], ["[data-analysis-failed]", analysis.failed], ["[data-analysis-remaining]", remaining], ["[data-stop-collected]", snapshot.progress.collected ?? analysis.total], ["[data-stop-analyzed]", analyzed], ["[data-stop-failed]", analysis.failed], ["[data-stop-unfinished]", remaining]]) setText(selector, number(value));
-    setText("[data-analysis-timeouts]", `当前恢复周期最终超时 ${number(analysis.circuitTimeoutJobs)} / ${number(analysis.timeoutPauseThreshold || 10)} · 本轮累计超时 ${number(analysis.lifetimeTimeoutJobs)}`);
+    setText("[data-analysis-timeouts]", "当前恢复周期最终超时 " + number(analysis.circuitTimeoutJobs) + " / " + number(analysis.timeoutPauseThreshold || 10) + " · 本轮累计超时 " + number(analysis.lifetimeTimeoutJobs));
     setText("[data-eta]", etaText(snapshot.progress.eta));
     setText("[data-recent-activity]", snapshot.recentActivity.length ? snapshot.recentActivity.map(activityText).join("；") : "还没有新的分析活动。");
     setText("[data-stop-slot]", snapshot.controls.stopConsumesRunSlot ? "会占用今天一轮" : "不会占用今天一轮");
@@ -59,7 +59,7 @@
     if (pollInFlight || !runId) return;
     pollInFlight = true;
     try {
-      const response = await fetch(`/api/workflow-status?runId=${encodeURIComponent(runId)}`, { cache: "no-store" });
+      const response = await fetch("/api/workflow-status?runId=" + encodeURIComponent(runId), { cache: "no-store" });
       if (!response.ok) throw new Error("status response");
       const snapshot = await response.json();
       if (!validSnapshot(snapshot)) throw new Error("status payload");
@@ -72,7 +72,7 @@
     if (pollInFlight || !runId) return;
     pollInFlight = true;
     try {
-      const response = await fetch(`/api/workflow-status?runId=${encodeURIComponent(runId)}`, { cache: "no-store" });
+      const response = await fetch("/api/workflow-status?runId=" + encodeURIComponent(runId), { cache: "no-store" });
       if (!response.ok) return;
       const data = await response.json();
       const counts = data.communication?.summary?.statusCounts || {};
