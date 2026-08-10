@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "label": "current",
   "expectPrimary": true,
-  "targetRevision": "b49a43023f0f604f7bd622b0ce8515944cfa3044",
+  "targetRevision": "46525282bb1cb8a0db28fcc7f1f236544e0fff35",
   "browser": {
     "engine": "msedge",
     "headless": true
