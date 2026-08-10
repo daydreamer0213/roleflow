@@ -2705,7 +2705,9 @@ function getDashboardData(db, searchParams = new URLSearchParams()) {
     filters,
     jobs,
     latestBatchId: options.batchId || getLatestBatchId(db, options),
-    summary: summarizeJobs(jobs, buildBatchSummary(db, options))
+    summary: summarizeJobs(jobs, buildBatchSummary(db, options)),
+    currentPath: `/jobs?${searchParams.toString()}`,
+    todayPath: filters.planId ? `/plan?planId=${encodeURIComponent(filters.planId)}` : "/plan"
   };
 }
 

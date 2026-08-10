@@ -79,6 +79,10 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.strictEqual((queue.body.match(/<!doctype html>/gi) || []).length, 1, "queue must have one document shell");
     assert.strictEqual((queue.body.match(/<body>/gi) || []).length, 1, "queue must not nest a second body");
     assert.strictEqual((queue.body.match(/<nav(?:\s|>)/gi) || []).length, 1, "single-page queue fixture must not duplicate global navigation");
+
+    const jobs = await getText(baseUrl, `/jobs?planId=${queueFixture.planId}&batch=latest`);
+    assert.strictEqual(jobs.status, 200);
+    assertCurrentLink(jobs.body, `/jobs?planId=${queueFixture.planId}&amp;batch=latest`, "岗位列表");
   } finally {
     await close(server);
     db.close();
