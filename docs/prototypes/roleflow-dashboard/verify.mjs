@@ -133,12 +133,18 @@ try {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       const consoleErrors = [];
       const pageErrors = [];
+      const requestFailures = [];
       page.removeAllListeners("console");
       page.removeAllListeners("pageerror");
+      page.removeAllListeners("requestfailed");
       page.on("console", (message) => {
         if (message.type() === "error") consoleErrors.push(message.text());
       });
       page.on("pageerror", (error) => pageErrors.push(error.message));
+      page.on("requestfailed", (request) => {
+        const url = request.url();
+        if (!/^(file|data|about):/i.test(url)) requestFailures.push(`${url} :: ${request.failure()?.errorText || "unknown error"}`);
+      });
 
       const sourcePath = path.join(root, `${pageName}.html`);
       await page.goto(pathToFileURL(sourcePath).href, { waitUntil: "load" });
@@ -228,6 +234,9 @@ try {
         if (!metrics.navHint || metrics.navHint.display === "none" || metrics.navHint.rect.right > viewport.width + 0.5) checks.push("mobile nav hint missing or out of bounds");
       }
       if (metrics.externalLinks || metrics.externalResources.length) checks.push("external URL or resource");
+      if (consoleErrors.length) checks.push(`console errors: ${consoleErrors.join(" | ")}`);
+      if (pageErrors.length) checks.push(`page errors: ${pageErrors.join(" | ")}`);
+      if (requestFailures.length) checks.push(`request failures: ${requestFailures.join(" | ")}`);
       if (reducedMotion.transitionSeconds > 0.001) checks.push("reduced motion not honored");
       if (focus.tag !== "A" || focus.className !== "skip-link" || focus.outline !== "solid" || focus.outlineWidth !== "3px") checks.push("focus ring");
       if (pageName === "workflow") {
@@ -248,6 +257,7 @@ try {
         png,
         consoleErrors,
         pageErrors,
+        requestFailures,
         reducedMotion,
         focus
       });
