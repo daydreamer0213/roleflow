@@ -7,6 +7,7 @@ const { execFileSync } = require("node:child_process");
 const VIEWPORTS = Object.freeze([
   { width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 768, height: 1024 }, { width: 375, height: 812 }
 ]);
+const RELEVANT_CONTROL_SELECTOR = "main form button, main form input:not([type=hidden]):not([type=checkbox]):not([type=radio]), main form select, main form textarea";
 
 const PAGE_SPECS = Object.freeze([
   { id: "today-ready", family: "today", state: "ready", primaryPolicy: "required", primarySelector: "[data-today-primary]", interaction: "none", interactionPolicy: "read-only-none", path: ({ planId }) => `/plan?planId=${planId}` },
@@ -108,7 +109,7 @@ async function auditPage({ browser, baseUrl, spec, fixture, viewport, outputDir,
   } finally { await context.close(); }
 }
 
-function auditInput(spec) { return { pageId: spec.id, primarySelector: spec.primarySelector || "", primaryPolicy: spec.primaryPolicy, relevantControlSelector: "main form button, main form input:not([type=hidden]), main form select, main form textarea" }; }
+function auditInput(spec) { return { pageId: spec.id, primarySelector: spec.primarySelector || "", primaryPolicy: spec.primaryPolicy, relevantControlSelector: RELEVANT_CONTROL_SELECTOR }; }
 
 async function focusWithKeyboard(page, target) {
   if (!await target.count()) return false;
@@ -230,4 +231,4 @@ function quietLogger() { return { info() {}, warn() {}, error() {}, requestId() 
 function usage() { return ["Usage: node scripts/evaluate-dashboard-wave2.js [options]", "", "Strict prerequisites: ROLEFLOW_REQUIRE_PLAYWRIGHT=1 and NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --browser-channel <name>   Playwright Chromium channel (default: msedge)", "  -h, --help                 Show this help", ""].join("\n"); }
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
-module.exports = { PAGE_SPECS, VIEWPORTS, assertStrictPage, parseArgs };
+module.exports = { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, VIEWPORTS, assertStrictPage, parseArgs };
