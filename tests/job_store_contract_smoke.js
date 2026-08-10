@@ -37,6 +37,12 @@ for (const name of CANDIDATE_EXPORTS) assert.strictEqual(storage[name], candidat
 assert.strictEqual(warnings.filter((warning) => /circular/i.test(warning.message)).length, 0, "facade and direct stores must load without circular warnings");
 
 const db = storage.openDb(":memory:");
+function observeExec(action) {
+  const original = db.exec.bind(db);
+  const statements = [];
+  db.exec = (sql) => { statements.push(String(sql)); return original(sql); };
+  try { return { value: action(), statements }; } finally { db.exec = original; }
+}
 try {
   jobStore.upsertKeywordSource(db, "AI", "smoke");
   jobStore.saveModelCache(db, { cacheKey: "smoke", kind: "job", provider: "test", model: "test", inputHash: "one", result: { first: true } });
@@ -45,7 +51,27 @@ try {
   db.prepare("UPDATE model_cache SET result_json = 'bad json' WHERE cache_key = 'smoke'").run();
   assert.deepStrictEqual(jobStore.getModelCache(db, "smoke").result, {});
 
-  const batchId = storage.createBatch(db, "boss", "AI", "job-store contract");
+  // Independent, ready fixtures freeze decision precedence rather than inheriting refresh tags.
+  const ready = { score: 90, level: "优先", risks: [], qualityTags: [], bossActiveDays: 0, description: "x".repeat(160), title: "PM", company: "A", location: "Shanghai" };
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 } }), "primary");
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "partial" } }), "analysis_pending");
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "failed" } }), "analysis_pending");
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "stale" } }), "analysis_pending");
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "complete", hardBlockers: [{ kind: "safety", requirement: "required", jdEvidence: "required", resumeEvidence: "missing" }] } }), "not_recommended");
+  assert.strictEqual(jobStore.decisionBucket({ ...ready, analysis: { semanticStatus: "complete", jobQuality: { level: "risk" } } }), "not_recommended");
+
+  const governedOrder = jobStore.applyJobQualityGovernance([{ ...ready, lastSeenAt: "2026-07-20T00:00:00.000Z", bossActiveDays: 1, previousContentHash: "different" }], { now: "2026-08-11T00:00:00.000Z" })[0];
+  assert.deepStrictEqual(governedOrder.qualityTags, ["detail_changed", "activity_snapshot_aged", "stale_or_unknown_active", "needs_recheck"]);
+
+  const profileSave = storage.saveProfileAnalysis(db, {
+    profile: { candidate: { name: "Job Contract", city: "Shanghai", targetTitles: ["PM"] }, skills: [], projects: [] },
+    document: { originalFileName: "contract.txt", format: "text", contentHash: "contract-v1", text: "resume", diagnostics: {} },
+    searchPlan: { name: "contract plan", cities: ["Shanghai"], keywords: ["AI"] }
+  });
+  const profileId = profileSave.profileId;
+  const planId = profileSave.planId;
+
+  const batchId = storage.createBatch(db, "boss", "AI", "job-store contract", { profileId, searchPlanId: planId, filterSnapshot: { execution: { source: "contract" } } });
   db.exec("BEGIN IMMEDIATE");
   const jobId = jobStore.upsertJob(db, {
     source: "boss", sourceId: "job-store-contract", keyword: "AI", title: "Product Manager", company: "RoleFlow",
@@ -59,12 +85,31 @@ try {
   assert.strictEqual(report[0].sourceId, "job-store-contract");
   assert.strictEqual(report[0].previousContentHash, "");
   assert.strictEqual(jobStore.sourceContentHash(report[0]).length, 64);
+  assert.strictEqual(db.prepare("SELECT content_hash FROM job_observations WHERE job_id = ?").get(jobId).content_hash, jobStore.sourceContentHash({ title: "Product Manager", company: "RoleFlow" }));
 
-  const governed = jobStore.applyJobQualityGovernance([{ ...report[0], analysis: { semanticStatus: "complete", recommendation: "recommended", recommendationSchemaVersion: 2 }, lastSeenAt: "2026-08-01T00:00:00.000Z", bossActiveDays: 1 }], { now: "2026-08-05T00:00:00.000Z" });
-  assert.deepStrictEqual(governed[0].qualityTags.slice(-2), ["activity_snapshot_aged", "stale_or_unknown_active"]);
-  assert.strictEqual(jobStore.decisionBucket({ ...governed[0], analysis: { semanticStatus: "failed" } }), "refresh");
-  assert.strictEqual(jobStore.decisionBucket({ ...governed[0], analysis: { semanticStatus: "complete", hardBlockers: ["blocker"] } }), "refresh");
-  assert.strictEqual(jobStore.isActivityProbeDue(governed[0], { now: Date.parse("2026-08-05T00:00:00.000Z") }), true);
+  jobStore.markApplication(db, jobId, "applied", "legacy note");
+  jobStore.markCandidateJob(db, { profileId, jobId, planId, status: "review", note: "profile note", reviewAt: "2026-08-12" });
+  jobStore.recordRecommendationFeedback(db, { profileId, jobId, planId, reasonCode: "other", note: "feedback" });
+  jobStore.recordCandidateJobEvent(db, { profileId, jobId, planId, eventType: "manual", payload: { source: "contract" } });
+  const profileReport = jobStore.listReportJobs(db, { planId, profileId, batch: "all" })[0];
+  const legacyReport = jobStore.listReportJobs(db, { batch: "all" }).find((row) => row.id === jobId);
+  assert.strictEqual(profileReport.applicationStatus, "review");
+  assert.strictEqual(profileReport.applicationNote, "profile note");
+  assert.strictEqual(legacyReport.applicationStatus, "applied");
+  assert.deepStrictEqual(jobStore.listCandidateJobEvents(db, { profileId, jobId, planId, limit: 10 }).map((event) => event.eventType).sort(), ["manual", "recommendation_feedback", "review"]);
+  assert.deepStrictEqual(jobStore.listCandidateJobEvents(db, { profileId, jobId, eventType: "manual" })[0].payload, { source: "contract" });
+
+  const queueBatch = storage.createBatch(db, "boss", "queue", "queue", { profileId, searchPlanId: planId, filterSnapshot: { execution: {} } });
+  for (const [sourceId, status] of [["queue-review", "review"], ["queue-pending", ""]]) {
+    const id = jobStore.upsertJob(db, { ...ready, source: "boss", sourceId, keyword: "AI", tags: [], matches: [], analysis: { semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 } }, queueBatch);
+    if (status) jobStore.markCandidateJob(db, { profileId, jobId: id, planId, status, note: status });
+  }
+  assert.deepStrictEqual(jobStore.listDecisionQueue(db, { planId, limit: 1 }).map((row) => row.sourceId), ["queue-review"]);
+  assert.strictEqual(jobStore.getLatestMainScanBatchId(db, { planId }), queueBatch);
+  const ignored = storage.createBatch(db, "boss", "ignored", "ignored", { profileId, searchPlanId: planId, filterSnapshot: { execution: [] } });
+  jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "ignored", tags: [], matches: [] }, ignored);
+  assert.strictEqual(jobStore.getLatestMainScanBatchId(db, { planId }), queueBatch);
+
 } finally {
   db.close();
 }

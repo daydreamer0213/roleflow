@@ -3,6 +3,12 @@
 Date: 2026-08-11
 Baseline: `54761dc8de36e358e586f9126ea9b0b5e300ccc0`
 
+## Fix round 1 evidence map
+
+`tests/job_store_contract_smoke.js` maps brief items 1–6 and 9 directly to SQLite assertions: export/no-cycle; profile and legacy report state; independent complete/partial/failed/stale/hard-block/risk decisions; governance ordering and queue cap; execution-object filtering; application/candidate/feedback/event payloads; and outer `BEGIN IMMEDIATE` upsert. Items 7–8 and 10–12 are exercised by the named focused storage/semantic/scan/health smoke checks. The prior 86/86, 131-second suite result is a historical measurement, not a runtime guarantee.
+
+Reproduce source metrics with `node -e "for (const f of ['src/core/storage.js','src/storage/job_store.js','src/storage/storage_shared.js']) { const a=require('fs').readFileSync(f,'utf8').split(/\r?\n/); console.log(f,a.length,a.filter(x=>x.trim()).length) }"`; run it at the baseline and current SHA for before/after totals.
+
 ## Structure and ownership
 
 - `src/core/storage.js`: 3482 physical / 3295 nonblank lines; it exports exactly 136 public keys.
