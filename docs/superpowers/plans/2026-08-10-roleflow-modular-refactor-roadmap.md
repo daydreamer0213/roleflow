@@ -422,13 +422,19 @@ Migrate one store per branch. Do not run these branches in parallel.
 
 Create a platform registry and capability declaration without touching real sites. Add a fake second platform that supports only list/detail/template read operations.
 
+Use a small static registry of ordinary objects/functions. Unknown platform ids fail with `PLATFORM_NOT_REGISTERED`; missing capabilities fail with `PLATFORM_CAPABILITY_UNSUPPORTED`. Never fall back to BOSS. The fake adapter is deterministic and fixture-only, performs no browser/network operation, and explicitly rejects communication, application, login, live filter discovery, and any BOSS-specific operation.
+
 ### Task 5.2: Route BOSS through registry
 
 Move only adapter selection and capability checks. Preserve BOSS DOM helpers, fixed-tab topology, pacing, limits, checkpoints, and right-pane detail behavior.
 
+The default platform remains `boss`. The registry does not own browser tabs, pacing, SQLite checkpoints, communication state, or risk-control behavior. Existing BOSS adapter construction, fixed two-tab checks, right-pane identity validation, access-budget reservations, random waits/cooldowns, target/detail checkpoints, and recovery snapshots remain in their current owners; the new registry adds no extra navigation or detail read.
+
 ### Task 5.3: Decide real second platform
 
 The user selects the platform. A new design requires one separately approved minimum read-only probe before selectors or filter mappings are implemented.
+
+This decision does not block Tasks 5.1 or 5.2. Before Task 5.3, the fake platform proves only the boundary; it must never be described as a real multi-platform integration.
 
 ---
 

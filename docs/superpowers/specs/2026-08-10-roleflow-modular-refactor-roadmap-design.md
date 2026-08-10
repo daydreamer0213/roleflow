@@ -318,10 +318,12 @@ acceptance = e2e_pending
 
 ### 阶段 5：平台注册表
 
-- 建立平台能力声明和只读扫描端口。
-- 用假第二平台验证编排不依赖 BOSS。
-- 把 BOSS 迁移到通用入口，行为保持不变。
-- 经用户决定后再规划真实智联。
+- 用普通对象/函数建立静态平台注册表和能力声明，不引入插件框架或 DI 容器。
+- 未注册平台必须 fail closed，不能回退到 BOSS；能力缺失必须在执行前明确拒绝。
+- 用 deterministic fixture 假第二平台验证 list/detail/template-read 边界。假平台不联网、不启动浏览器，并明确拒绝 communication、apply、login 和 live filter discovery。
+- 把 BOSS 的“选择与能力检查”迁移到注册表；DOM helper、固定双 tab、随机 pacing/cooldown、预算、checkpoint、right-pane identity 和恢复仍由现有模块负责。
+- 默认平台保持 BOSS；注册表不得增加导航、详情读取或安全动作次数。
+- 经用户决定真实第二平台并批准一次最小只读探针后，才设计其 selector/filter mapping。假平台不能被表述为真实多平台已接入。
 
 ## 9. 并行与合并规则
 
