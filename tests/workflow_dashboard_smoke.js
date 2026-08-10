@@ -715,6 +715,26 @@ let server;
     );
   }
 
+  const bindingFailureBatchId = createBatch(db, "boss", "binding-failure", "resume binding failure", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "interrupted",
+    filterSnapshot: { execution: validInheritedResumeSnapshot }
+  });
+  attachInterruptedScanBatch(bindingFailureBatchId, "binding-failure");
+  const bindingFailureScanId = getWorkflowRun(db, workflow.id).scanRunId;
+  db.prepare("UPDATE scan_runs SET plan_id = NULL WHERE id = ?").run(bindingFailureScanId);
+  const spawnCountBeforeBindingFailure = spawns.length;
+  const bindingFailureResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "edge"
+  });
+  assert.strictEqual(bindingFailureResume.status, 400);
+  assert.match(bindingFailureResume.body, /WORKFLOW_SCAN_LINK_MISMATCH/);
+  assert.strictEqual(spawns.length, spawnCountBeforeBindingFailure);
+  assert.strictEqual(getLatestScanRun(db, { planId: saved.planId, site: "boss" }).status, "failed");
+  assert.strictEqual(getWorkflowRun(db, workflow.id).status, "interrupted");
+
   const validInheritedResumeBatchId = createBatch(db, "boss", "valid-resume", "valid attached resume", {
     profileId: saved.profileId,
     searchPlanId: saved.planId,

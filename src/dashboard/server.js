@@ -1821,43 +1821,48 @@ async function handleWorkflowRunResume(req, res, {
       assertWorkflowResumeBrowserReady(readiness);
     }
     if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
-      if (resumesAnalysis) {
-        transitionWorkflowRun(db, {
-          id: workflow.id,
-          status: "analyzing",
-          resumePhase: null
-        });
-        startPlanScan(scanRuns, {
-          db,
-          root,
-          dbPath,
-          planId: workflow.planId,
-          cdpPort,
-          browserMode,
-          scanKind: "daily",
-          workflowRunId: workflow.id,
-          logger,
-          requestId,
-          spawnProcess
-        });
-      } else if (workflow.scanNeeded) {
-        assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
-        startPlanScan(scanRuns, {
-          db,
-          root,
-          dbPath,
-          planId: workflow.planId,
-          cdpPort,
-          browserMode,
-          scanKind: "daily",
-          resumeBatchId: workflow.scanBatchId,
-          workflowRunId: workflow.id,
-          logger,
-          requestId,
-          spawnProcess
-        });
-      } else {
-        transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
+      try {
+        if (resumesAnalysis) {
+          transitionWorkflowRun(db, {
+            id: workflow.id,
+            status: "analyzing",
+            resumePhase: null
+          });
+          startPlanScan(scanRuns, {
+            db,
+            root,
+            dbPath,
+            planId: workflow.planId,
+            cdpPort,
+            browserMode,
+            scanKind: "daily",
+            workflowRunId: workflow.id,
+            logger,
+            requestId,
+            spawnProcess
+          });
+        } else if (workflow.scanNeeded) {
+          assertWorkflowScanAvailable(db, scanRuns, workflow.planId, logger);
+          startPlanScan(scanRuns, {
+            db,
+            root,
+            dbPath,
+            planId: workflow.planId,
+            cdpPort,
+            browserMode,
+            scanKind: "daily",
+            resumeBatchId: workflow.scanBatchId,
+            workflowRunId: workflow.id,
+            logger,
+            requestId,
+            spawnProcess
+          });
+        } else {
+          transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
+        }
+      } catch (launchError) {
+        settleFailedWorkflowLaunch(db, scanRuns, workflow, launchError);
+        throw launchError;
       }
     }
     redirect(res, `/workflow?runId=${encodeURIComponent(workflow.id)}`);
