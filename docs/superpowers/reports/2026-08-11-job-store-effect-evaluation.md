@@ -9,6 +9,8 @@ Baseline: `54761dc8de36e358e586f9126ea9b0b5e300ccc0`
 
 Reproduce source metrics with `node -e "for (const f of ['src/core/storage.js','src/storage/job_store.js','src/storage/storage_shared.js']) { const a=require('fs').readFileSync(f,'utf8').split(/\r?\n/); console.log(f,a.length,a.filter(x=>x.trim()).length) }"`; run it at the baseline and current SHA for before/after totals.
 
+The contract now executes all transaction evidence directly: `upsertJob` under observed outer `BEGIN IMMEDIATE` has no nested begin; bind and rescore each have observed `BEGIN/COMMIT` and a trigger-induced `BEGIN/ROLLBACK` with pre-state restored; reassess has a successful call plus a trigger-induced write failure after analyzer invocation and restores its observation row. Its three validation codes are separately rejected with analyzer count zero and stable observation count. These are execution assertions, not source-reading claims.
+
 ## Structure and ownership
 
 - `src/core/storage.js`: 3482 physical / 3295 nonblank lines; it exports exactly 136 public keys.

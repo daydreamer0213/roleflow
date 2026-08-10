@@ -44,6 +44,12 @@ function observeExec(action) {
   db.exec = (sql) => { statements.push(String(sql)); return original(sql); };
   try { return { value: action(), statements }; } finally { db.exec = original; }
 }
+async function observeExecAsync(action) {
+  const original = db.exec.bind(db);
+  const statements = [];
+  db.exec = (sql) => { statements.push(String(sql)); return original(sql); };
+  try { return { value: await action(), statements }; } finally { db.exec = original; }
+}
 try {
   jobStore.upsertKeywordSource(db, "AI", "smoke");
   jobStore.saveModelCache(db, { cacheKey: "smoke", kind: "job", provider: "test", model: "test", inputHash: "one", result: { first: true } });
@@ -73,13 +79,18 @@ try {
   const planId = profileSave.planId;
 
   const batchId = storage.createBatch(db, "boss", "AI", "job-store contract", { profileId, searchPlanId: planId, filterSnapshot: { execution: { source: "contract" } } });
+  const outerUpsert = observeExec(() => {
   db.exec("BEGIN IMMEDIATE");
-  const jobId = jobStore.upsertJob(db, {
+  const value = jobStore.upsertJob(db, {
     source: "boss", sourceId: "job-store-contract", keyword: "AI", title: "Product Manager", company: "RoleFlow",
     location: "Shanghai", salary: "25k", experience: "3 years", education: "Bachelor", tags: ["AI"],
     description: "A complete job description for the job storage contract smoke test.", url: "https://example.invalid/job-store-contract"
   }, batchId);
   db.exec("COMMIT");
+  return value;
+  });
+  assert.deepStrictEqual(outerUpsert.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+  const jobId = outerUpsert.value;
   assert.strictEqual(jobStore.upsertJob(db, { source: "boss", sourceId: "job-store-contract", title: "Product Manager", company: "RoleFlow" }, batchId), jobId);
   const report = jobStore.listReportJobs(db, { batch: "all" });
   assert.strictEqual(report.length, 1);
@@ -118,6 +129,33 @@ try {
   assert.deepStrictEqual(bind.statements, ["BEGIN", "COMMIT"]);
   const rescored = observeExec(() => jobStore.rescorePlanObservations(db, { planId, configs }));
   assert.deepStrictEqual(rescored.statements, ["BEGIN", "COMMIT"]);
+  const bindFailureBatch = storage.createBatch(db, "boss", "bind-failure", "bind-failure");
+  const bindFailureJob = jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "bind-failure", tags: [], matches: [] }, bindFailureBatch);
+  jobStore.markApplication(db, bindFailureJob, "applied", "legacy");
+  const bindBefore = db.prepare("SELECT search_plan_id AS planId FROM batches WHERE id = ?").get(bindFailureBatch);
+  db.exec(`CREATE TRIGGER fail_contract_bind BEFORE INSERT ON candidate_job_states WHEN NEW.job_id = ${bindFailureJob} BEGIN SELECT RAISE(ABORT, 'bind late failure'); END`);
+  const bindFailure = observeExec(() => assert.throws(() => jobStore.bindBatchToPlan(db, { batchId: bindFailureBatch, planId }), /bind late failure/));
+  assert.deepStrictEqual(bindFailure.statements, ["BEGIN", "ROLLBACK"]);
+  assert.deepStrictEqual(db.prepare("SELECT search_plan_id AS planId FROM batches WHERE id = ?").get(bindFailureBatch), bindBefore);
+  db.exec("DROP TRIGGER fail_contract_bind");
+
+  const rescoreObservation = db.prepare("SELECT id, score FROM job_observations WHERE batch_id = ? ORDER BY id LIMIT 1").get(batchId);
+  db.exec(`CREATE TRIGGER fail_contract_rescore BEFORE UPDATE ON job_observations WHEN NEW.id = ${rescoreObservation.id} BEGIN SELECT RAISE(ABORT, 'rescore late failure'); END`);
+  const rescoreFailure = observeExec(() => assert.throws(() => jobStore.rescorePlanObservations(db, { planId, configs }), /rescore late failure/));
+  assert.deepStrictEqual(rescoreFailure.statements, ["BEGIN", "ROLLBACK"]);
+  assert.deepStrictEqual(db.prepare("SELECT id, score FROM job_observations WHERE id = ?").get(rescoreObservation.id), rescoreObservation);
+  db.exec("DROP TRIGGER fail_contract_rescore");
+
+  const reassessBatch = storage.createBatch(db, "boss", "reassess", "reassess", { profileId, searchPlanId: planId, filterSnapshot: { execution: {} } });
+  jobStore.upsertJob(db, { ...ready, source: "boss", sourceId: "reassess-late", keyword: "AI", tags: [], matches: [], description: "short", url: "https://www.zhipin.com/job_detail/reassess.html", bossActiveText: "今日活跃" }, reassessBatch);
+  const reassessObservation = db.prepare("SELECT id, analysis_json FROM job_observations WHERE batch_id = ? ORDER BY id LIMIT 1").get(reassessBatch);
+  db.exec(`CREATE TRIGGER fail_contract_reassess BEFORE UPDATE ON job_observations WHEN NEW.id = ${reassessObservation.id} BEGIN SELECT RAISE(ABORT, 'reassess late failure'); END`);
+  let lateAnalyzerCalls = 0;
+  const reassessFailure = await observeExecAsync(() => assert.rejects(() => jobStore.reassessBatchObservations(db, { batchId: reassessBatch, planId, configs, analyzeJob: async () => { lateAnalyzerCalls += 1; return { semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }; } }), /reassess late failure/));
+  assert.deepStrictEqual(reassessFailure.statements, ["BEGIN", "ROLLBACK"]);
+  assert(lateAnalyzerCalls > 0);
+  assert.deepStrictEqual(db.prepare("SELECT id, analysis_json FROM job_observations WHERE id = ?").get(reassessObservation.id), reassessObservation);
+  db.exec("DROP TRIGGER fail_contract_reassess");
   const reassessed = await jobStore.reassessBatchObservations(db, { batchId, planId, configs, analyzeJob: async () => ({ semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }) });
   assert.strictEqual(reassessed.batchId, batchId);
   let analyzerCalls = 0;
