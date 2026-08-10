@@ -44,7 +44,7 @@ function getWorkflowProgressSnapshot(db, {
       circuit_timeout_job_count, lifetime_timeout_job_count,
       progress_revision, last_activity_at, model_config_revision,
       planner_json, metrics_json, platform_access_started_at,
-      scan_batch_id, communication_batch_id, review_ready_at,
+      scan_run_id, scan_batch_id, communication_batch_id, review_ready_at,
       EXISTS(
         SELECT 1 FROM workflow_job_tasks t
         WHERE t.workflow_run_id = workflow_runs.id
@@ -91,6 +91,19 @@ function getWorkflowProgressSnapshot(db, {
 
   const stageIndex = stageIndexFor(workflow);
   const metrics = parseJson(workflow.metrics_json, {});
+  const scanHeartbeat = workflow.scan_run_id
+    ? db.prepare("SELECT heartbeat_at FROM scan_runs WHERE id = ?").get(workflow.scan_run_id)?.heartbeat_at
+    : null;
+  const lastActivityAt = laterValidIso(workflow.last_activity_at, scanHeartbeat);
+  const scanWait = status === "scanning"
+    && metrics.scanWait?.runId === workflow.scan_run_id
+    && Date.parse(metrics.scanWait.retryAt) > Date.parse(clock)
+    ? {
+        action: String(metrics.scanWait.action || ""),
+        retryAt: metrics.scanWait.retryAt,
+        delayMs: Math.max(0, Number(metrics.scanWait.delayMs || 0))
+      }
+    : null;
   const runForSlot = {
     status,
     platformAccessStartedAt: workflow.platform_access_started_at || null,
@@ -102,7 +115,7 @@ function getWorkflowProgressSnapshot(db, {
       id,
       status,
       controlState: String(workflow.control_state || "none"),
-      lastActivityAt: workflow.last_activity_at || null,
+      lastActivityAt,
       progressRevision: Number(workflow.progress_revision || 0)
     },
     progress: {
@@ -112,6 +125,7 @@ function getWorkflowProgressSnapshot(db, {
       collected,
       detailsRead,
       detailsPending,
+      scanWait,
       analysis: {
         total: counts.total,
         succeeded: counts.succeeded,
@@ -459,6 +473,14 @@ function buildRecentActivity(db, workflowRunId, now, limit, controlling) {
 function validIso(value) {
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : new Date().toISOString();
+}
+
+function laterValidIso(...values) {
+  const valid = values
+    .filter((value) => Number.isFinite(Date.parse(value)))
+    .map((value) => new Date(value).toISOString());
+  if (!valid.length) return null;
+  return valid.reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest));
 }
 
 function parseJson(text, fallback) {

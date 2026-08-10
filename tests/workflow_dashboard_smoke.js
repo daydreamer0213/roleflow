@@ -1409,6 +1409,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     "data-analysis-remaining",
     "data-analysis-timeouts",
     "data-eta",
+    "data-scan-wait",
     "data-recent-activity",
     "data-stop-collected",
     "data-stop-slot",
@@ -1425,6 +1426,9 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(page.body, /本轮累计超时\s*0/);
   assert.match(page.body, /正在估算/);
   assert.match(page.body, /data-action="pause"/);
+  assert.match(page.body, /name="action" value="pause"/);
+  assert.match(page.body, /name="action" value="resume"/);
+  assert.doesNotMatch(page.body, /data-action="pause" name="action"/);
   assert.match(page.body, /data-action="stop-preview"/);
   assert.match(page.body, /action="\/api\/workflow-control"/);
   assert.match(
@@ -1454,6 +1458,8 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(script, /2500/);
   assert.match(script, /progressRevision/);
   assert.match(script, /renderWorkflowProgress/);
+  assert.match(script, /renderScanWait/);
+  assert.match(script, /renderScanWait\(snapshot\.progress\.scanWait\)/);
   assert.match(script, /renderWorkflowControls/);
   assert.match(script, /textContent/);
   assert.doesNotMatch(script, /innerHTML/);

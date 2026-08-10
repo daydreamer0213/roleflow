@@ -2127,6 +2127,34 @@ function requestWorkflowRunConfigurationPause(db, { workflowRunId, now }) {
   `).run(now, now, workflowRunId);
 }
 
+function recordWorkflowScanWait(db, {
+  workflowRunId,
+  runId,
+  action,
+  delayMs,
+  retryAt,
+  now
+}) {
+  const id = String(workflowRunId || "").trim();
+  if (!id) return null;
+  const clock = String(now || nowIso());
+  const wait = JSON.stringify({
+    runId: String(runId || ""),
+    action: String(action || ""),
+    delayMs: Math.max(0, Number(delayMs || 0)),
+    retryAt: String(retryAt || "")
+  });
+  const result = db.prepare(`
+    UPDATE workflow_runs SET
+      metrics_json = json_set(COALESCE(metrics_json, '{}'), '$.scanWait', json(?)),
+      last_activity_at = ?,
+      updated_at = ?,
+      progress_revision = progress_revision + 1
+    WHERE id = ?
+  `).run(wait, clock, clock, id);
+  return Number(result.changes || 0) > 0 ? getWorkflowRun(db, id) : null;
+}
+
 function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
   const id = String(workflowRunId || "").trim();
   if (!id) return null;
@@ -2134,10 +2162,10 @@ function recordWorkflowPlatformAccess(db, { workflowRunId, now }) {
   const result = db.prepare(`
     UPDATE workflow_runs SET
       platform_access_started_at = COALESCE(platform_access_started_at, ?),
-      last_activity_at = COALESCE(last_activity_at, ?),
+      metrics_json = json_remove(COALESCE(metrics_json, '{}'), '$.scanWait'),
+      last_activity_at = ?,
       updated_at = ?,
-      progress_revision = progress_revision + CASE
-        WHEN platform_access_started_at IS NULL THEN 1 ELSE 0 END
+      progress_revision = progress_revision + 1
     WHERE id = ?
   `).run(clock, clock, clock, id);
   return Number(result.changes || 0) > 0 ? getWorkflowRun(db, id) : null;
@@ -4818,6 +4846,7 @@ module.exports = {
   selectEarliestRetryAvailableAt,
   markWorkflowJobTasksStopped,
   requestWorkflowRunConfigurationPause,
+  recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
   selectExpiredLeaseWorkflowJobTaskRows,
   completeWorkflowJobTaskRow,
