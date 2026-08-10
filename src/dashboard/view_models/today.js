@@ -1,0 +1,124 @@
+const { formatNativeFilterSummary } = require("../../core/platform_filters");
+const { feedbackReasonLabel } = require("../../core/feedback");
+
+function buildTodayViewModel(input = {}) {
+  const profile = input.profile || {};
+  const planRecord = input.planRecord || {};
+  const plan = input.plan || {};
+  const workflow = input.workflowState || {};
+  const dependency = input.planDependency || {};
+  const validation = input.validation || { valid: false, errors: [], warnings: [] };
+  const inheritedValidation = input.inheritedWorkflowValidation || validation;
+  const activeRun = workflow.activeRun || null;
+  const nextPlan = workflow.nextPlan || null;
+  const runtimeBlock = input.bossRuntimeBlock || null;
+  const scanBlocked = input.run?.state === "running" || !validation.valid || dependency.stale || dependency.matchingCardRequired || Boolean(runtimeBlock);
+  const startBlocked = !inheritedValidation.valid || dependency.stale || dependency.matchingCardRequired || Boolean(runtimeBlock)
+    || Boolean(nextPlan?.scanNeeded && input.run?.state === "running");
+  const profileId = Number(profile.id || planRecord.profileId || 0);
+  const planId = Number(planRecord.id || 0);
+  const candidate = profile.profile?.candidate || {};
+  const remainingBudget = workflow.remainingBudget || { details: 0, pages: 0 };
+
+  return {
+    page: { title: "今日任务", profileId, planId, todayPath: `/plan?profileId=${profileId}&planId=${planId}` },
+    heading: {
+      eyebrow: "01 / 准备与筛选",
+      title: "今天先把高质量机会推进到人工确认。",
+      lede: "RoleFlow 会保留完整 JD 与匹配证据；只有你确认清单后才会进入沟通。",
+      meta: [`Search Plan #${planId}`, plan.name || "未命名筛选方案"],
+      status: dependency.stale || dependency.matchingCardRequired ? "方案待确认" : "方案可用"
+    },
+    primary: buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }),
+    metrics: {
+      successfulToday: Number(workflow.successfulToday || 0),
+      dailyTarget: Number(workflow.dailyTarget || 0),
+      inventoryCount: Array.isArray(workflow.inventory) ? workflow.inventory.length : Number(workflow.inventoryCount || 0),
+      remainingDetails: Number(remainingBudget.details || 0),
+      slotsUsed: Number(workflow.slotsUsed || 0),
+      maxRuns: Number(workflow.maxRuns || 0),
+      targetSuccessCount: Number(activeRun?.targetSuccessCount ?? nextPlan?.targetSuccessCount ?? 0),
+      remainingPages: Number(remainingBudget.pages || 0)
+    },
+    blockers: buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }),
+    confirmation: String(input.confirmation || ""),
+    run: { state: String(input.run?.state || "idle"), label: String(input.runLabel || "尚未运行"), error: String(input.run?.error || "") },
+    scan: {
+      disabled: Boolean(scanBlocked),
+      resumableBatchId: input.resumableBatch?.id || null,
+      daily: input.dailyScan || {},
+      broad: input.broadScan || {},
+      dailyBCardLimit: Number(input.dailyBCardLimit || 0)
+    },
+    form: {
+      plan,
+      validation: { valid: Boolean(validation.valid), errors: [...(validation.errors || [])], warnings: [...(validation.warnings || [])] },
+      options: { ...(input.options || {}), platformSalaryLanes: [...(input.bossSalaryOptions || [])] },
+      selectedBossSalaryLanes: [...(input.selectedBossSalaryLanes || [])],
+      scanBounds: input.scanBounds || {},
+      scanDefaults: input.scanDefaults || {}
+    },
+    profile: {
+      id: profileId,
+      name: candidate.name || profile.displayName || "候选人待确认",
+      city: candidate.city || "目标城市待确认",
+      targetTitles: [...(candidate.targetTitles || [])],
+      skills: (profile.profile?.skills || []).map((item) => item?.name || item).filter(Boolean),
+      projects: (profile.profile?.projects || []).map((item) => item?.name || item).filter(Boolean),
+      versionDiff: buildVersionDiff(input.versionDiff),
+      feedback: buildFeedback(input.feedback),
+      bossFilter: buildBossFilter(input.bossFilterPreview, input.bossCatalog)
+    },
+    runtime: { workflowStartDisabled: Boolean(startBlocked) }
+  };
+}
+
+function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }) {
+  if (activeRun) return { type: "link", label: "继续本轮", href: `/workflow?runId=${encodeURIComponent(activeRun.id)}`, status: workflowStatusLabel(activeRun.status), detail: "本轮已经建立，继续在本轮执行页查看进度与恢复状态。" };
+  if (dependency.matchingCardRequired) return { type: "link", label: "确认匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}`, status: "扫描前需要确认", detail: "确认当前草稿后，才会启用扫描和岗位匹配。" };
+  if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
+  if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: "BOSS 安全暂停中", detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
+  if (nextPlan?.errorCode) return { type: "notice", label: "今日任务暂不能继续", status: workflowBlockedMessage(nextPlan.errorCode, nextPlan), detail: workflowShortfallLabel(nextPlan.shortfallReason || nextPlan.errorCode) };
+  return { type: "form", label: "执行一轮", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "沿用已保存的关键词、城市和预算；不会自动发送消息或投递。", disabled: Boolean(startBlocked) };
+}
+
+function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }) {
+  const blockers = [];
+  if (dependency.stale) blockers.push({ tone: "danger", title: "方案需要重新确认", detail: "画像已更新，当前方案仍基于旧画像。保存一次即可重新绑定，人工条件不会被覆盖。", action: { label: "调整筛选条件", href: "#plan-settings" } });
+  if (dependency.matchingCardRequired) blockers.push({ tone: "danger", title: "尚未确认匹配偏好卡", detail: "扫描和岗位匹配只会使用已确认的偏好卡。", action: { label: "检查匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}` } });
+  if (runtimeBlock) blockers.push({ tone: "danger", title: "BOSS 扫描因安全验证暂停", detail: `限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。${runtimeBlock.reasonCode ? ` ${runtimeBlock.reasonCode}` : ""}`, action: { label: "查看诊断", href: "/diagnostics" } });
+  for (const error of validation.errors || []) blockers.push({ tone: "waiting", title: "扫描前需要修正", detail: String(error), action: { label: "调整筛选条件", href: "#plan-settings" } });
+  if (nextPlan?.shortfallReason) blockers.push({ tone: "waiting", title: "本轮质量护栏", detail: workflowShortfallLabel(nextPlan.shortfallReason) });
+  if (!blockers.length) blockers.push({ tone: "good", title: "当前数据安全", detail: "方案、候选人画像和已读取的岗位详情均保存在本地；不会自动沟通或投递。" });
+  return blockers;
+}
+
+function buildVersionDiff(diff = {}) {
+  if (!diff.current) return null;
+  return { current: `${diff.current.fileName || "当前简历"} · ${String(diff.current.createdAt || "").slice(0, 10)}`, changes: (diff.changes || []).map((change) => ({ label: String(change.label || ""), before: String(change.before || ""), after: String(change.after || ""), added: [...(change.added || [])], removed: [...(change.removed || [])] })) };
+}
+
+function buildFeedback(feedback = {}) {
+  const reasons = Object.entries(feedback.reasonCounts || {}).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, count]) => `${feedbackReasonLabel(reason)} ${count} 次`);
+  const keywords = Object.entries(feedback.keywordReasons || {}).map(([keyword, entries]) => [keyword, Object.values(entries).reduce((sum, count) => sum + count, 0)]).filter(([, count]) => count >= 2).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([keyword, count]) => `${keyword}（反馈 ${count}）`);
+  return { reasons, keywords };
+}
+
+function buildBossFilter(snapshot, catalog) {
+  if (!catalog) return { known: false, summary: "BOSS 站内预筛条件会在首次扫描时自动预读，之后按本方案的薪资与经验条件组装 URL。" };
+  return { known: true, summary: formatNativeFilterSummary(snapshot) || "未命中可用的 BOSS 预筛档位", discoveredAt: String(catalog.discoveredAt || "").replace("T", " ").slice(0, 16) };
+}
+
+function workflowStatusLabel(status) {
+  return { created: "本轮已建立", scanning: "正在筛选岗位", analyzing: "正在分析岗位", paused: "本轮已暂停", review_required: "等待确认本轮清单", communicating: "正在沟通", interrupted: "本轮已中断，等待继续", completed: "本轮已完成", failed: "本轮未完成", stopped: "本轮已停止" }[status] || "本轮进行中";
+}
+
+function workflowShortfallLabel(code) {
+  return { WORKFLOW_PROJECTED_SUPPLY_SHORTFALL: "预计候选可能不足，不会用明显弱岗位凑数", WORKFLOW_SCAN_BUDGET_EMPTY: "今日安全预算不足", WORKFLOW_NO_KEYWORDS: "没有可用搜索关键词" }[code] || "候选可能不足";
+}
+
+function workflowBlockedMessage(code, plan = {}) {
+  return { WORKFLOW_DAILY_RUN_LIMIT: "今天的三轮任务都已创建。", WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。", WORKFLOW_THIRD_SCAN_NOT_NEEDED: "当前候选库存已足够，不需要追加第三轮扫描。", WORKFLOW_SCAN_INTERVAL: plan.nextRunAt ? `两轮扫描至少间隔 2 小时，下次可在 ${new Date(plan.nextRunAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 开始。` : "两轮扫描至少间隔 2 小时。" }[code] || "当前不能创建新一轮。";
+}
+
+module.exports = { buildTodayViewModel, workflowStatusLabel, workflowShortfallLabel };

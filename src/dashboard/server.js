@@ -154,6 +154,8 @@ const { listScopedKeywordStats } = require("../core/scoped_keyword_stats");
 const { sendHtml, sendJson, escapeHtml, escapeAttr } = require("./http/response");
 const { renderPage: renderDashboardPage } = require("./ui/shell");
 const { renderNavigation } = require("./ui/navigation");
+const { buildTodayViewModel } = require("./view_models/today");
+const { renderTodayPage } = require("./pages/today");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
@@ -462,6 +464,7 @@ function createDashboardServer({
     try {
       url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname], assetReader);
+      if (req.method === "GET" && url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
       if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
       if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
@@ -3767,14 +3770,6 @@ const PLAN_EXPERIENCE_OPTIONS = PRODUCT_POLICY.searchPlan.experienceOptions;
 const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
 const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
-function renderPlanChoices(name, options, selectedValues = []) {
-  const selected = new Set(selectedValues || []);
-  return options.map((value) => {
-    const checked = selected.has(value) ? " checked" : "";
-    return '<label class="choice-item"><input type="checkbox" name="' + escapeAttr(name) + '" value="' + escapeAttr(value) + '"' + checked + '><span>' + escapeHtml(value) + "</span></label>";
-  }).join("");
-}
-
 function renderPlanPage({ db, searchParams, scanRuns }) {
   const profiles = listCandidateProfiles(db);
   const requestedPlan = getSearchPlan(db, searchParams.get("planId"));
@@ -3788,170 +3783,43 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const broadScan = resolveScanPolicy(plan, "broad");
   const scanDefaults = PRODUCT_POLICY.searchPlan.broadScanDefaults;
   const scanBounds = PRODUCT_POLICY.searchPlan.scanBounds;
-  const dailyBCardLimit = boss.weightedCardLimit("B", dailyScan.maxCards);
-  const selectedExperience = plan.experience;
-  const candidate = profile.profile.candidate || {};
-  const run = scanStatus(scanRuns, planRecord.id, db);
-  const resumableBatch = getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" });
-  const validation = validateSearchPlan(plan, profile.profile);
-  const inheritedWorkflowValidation = validateSearchPlan(plan, profile.profile, {
-    validatePlatformCities: false
-  });
-  const planDependency = getSearchPlanDependency(db, planRecord.id);
-  const versionDiff = compareProfileVersions(db, profile.id);
-  const feedback = buildFeedbackSummary(db, { profileId: profile.id });
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
-  const bossRuntimeBlock = communicationRuntimeBlock(db);
-  const workflowState = buildWorkflowDashboardState(db, planRecord);
-  const scanDisabled = run.state === "running" || !validation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock);
-  const workflowStartDisabled = !inheritedWorkflowValidation.valid || planDependency.stale || planDependency.matchingCardRequired || Boolean(bossRuntimeBlock)
-    || Boolean(workflowState.nextPlan?.scanNeeded && run.state === "running");
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
-  const bossSalaryOptions = bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [];
-  const resumeButton = resumableBatch
-    ? `<button data-scan-button name="resumeBatchId" value="${resumableBatch.id}"${scanDisabled ? " disabled" : ""}>继续未完成扫描 #${resumableBatch.id}</button>`
-    : "";
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
   const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
-  const dependencyNotice = planDependency.stale ? `<section class="panel validation validation-error"><strong>方案需要重新确认</strong><p>画像已更新，但当前方案仍基于旧画像。检查下方条件并保存一次即可重新绑定；系统不会自动覆盖你的人工设置。</p></section>` : "";
-  const matchingCardNotice = planDependency.matchingCardRequired
-    ? `<section class="panel validation validation-error"><strong>尚未确认匹配偏好卡</strong><p>扫描和岗位匹配只依据已确认的匹配偏好卡。请到<a href="/match-card?profileId=${profile.id}${planDependency.draftCardId ? `&cardId=${planDependency.draftCardId}` : ""}">匹配偏好卡</a>检查并确认现有草稿；无需重新上传简历。</p></section>`
-    : "";
-  const riskControlNotice = bossRuntimeBlock
-    ? `<section class="panel validation validation-error"><strong>BOSS 扫描已因安全验证暂停</strong><p>限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。</p><p class="error-code">${escapeHtml(bossRuntimeBlock.reasonCode)}${bossRuntimeBlock.blockedUntil ? ` · 恢复时间 ${escapeHtml(bossRuntimeBlock.blockedUntil)}` : ""}</p></section>`
-    : "";
-  const planStyle = '<style>.workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.workflow-kicker{margin:0 0 4px;color:#176b5b;font-size:12px;font-weight:700}.workflow-launch h2{font-size:20px;margin:0}.workflow-start{display:flex;align-items:center;gap:8px}.workflow-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px;border:1px solid #d4dde2}.workflow-metrics div{padding:11px 13px;border-right:1px solid #d4dde2}.workflow-metrics div:last-child{border-right:0}.workflow-metrics span{display:block;color:#5c6870;font-size:12px}.workflow-metrics strong{display:block;margin-top:4px;font-size:19px}.workflow-budget{margin-top:9px;color:#5c6870;font-size:13px}.workflow-primary{min-width:112px;text-align:center;background:#176b5b!important;border-color:#176b5b!important}.plan-settings>summary,.legacy-operations>summary{cursor:pointer;font-weight:600}.plan-settings .plan-form{margin-top:16px}.plan-form{max-width:none}.plan-form .choice-section{grid-column:1/-1;display:grid;gap:8px}.choice-list{display:flex;flex-wrap:wrap;gap:8px}.choice-item{display:flex!important;align-items:center;gap:6px;border:1px solid #d8dee4;border-radius:4px;padding:7px 9px;font-size:14px}.choice-item input{width:auto}.plan-note{grid-column:1/-1;margin:0;color:#57606a;font-size:13px}.plan-advanced{grid-column:1/-1;border-top:1px solid #d8dee4;padding-top:14px}.plan-advanced summary{cursor:pointer;font-weight:600}.plan-advanced-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.plan-advanced-body .wide{grid-column:1/-1}.legacy-operations .scan-panel{padding-top:12px}@media(max-width:760px){.workflow-launch-head{align-items:stretch;flex-direction:column}.workflow-start{display:grid}.workflow-metrics{grid-template-columns:1fr 1fr}.workflow-metrics div:nth-child(2){border-right:0}.workflow-metrics div:nth-child(-n+2){border-bottom:1px solid #d4dde2}.plan-advanced-body{grid-template-columns:1fr}.plan-advanced-body .wide{grid-column:auto}}</style>';
-  return renderPage("筛选方案", `${planStyle}<main>
-  <nav>${navLinks({ currentPath: `/plan?profileId=${profile.id}&planId=${planRecord.id}`, todayPath: `/plan?profileId=${profile.id}&planId=${planRecord.id}`, planId: planRecord.id })}</nav>
-  <h1>筛选方案</h1>
-  ${renderWorkflowLaunchPanel({ planRecord, workflowState, disabled: workflowStartDisabled })}
-  ${confirmation ? `<p class="notice">${escapeHtml(confirmation)}</p>` : ""}
-  ${dependencyNotice}
-  ${matchingCardNotice}
-  ${riskControlNotice}
-  ${renderPlanValidation(validation)}
-  <section class="panel profile-summary">
-    <div><a href="/onboarding?profileId=${profile.id}">重新解析简历</a>　<a href="/profile?profileId=${profile.id}">编辑画像</a>　<a href="/resumes?profileId=${profile.id}">管理简历版本</a></div>
-    <div><strong>${escapeHtml(candidate.name || profile.displayName)}</strong> · ${escapeHtml(candidate.city || "目标城市待确认")} · ${escapeHtml((candidate.targetTitles || []).join("、") || "目标岗位待确认")}</div>
-    <div class="line">技能：${escapeHtml((profile.profile.skills || []).map((item) => item.name || item).join("、") || "待确认")}</div>
-    <div class="line">项目：${escapeHtml((profile.profile.projects || []).map((item) => item.name || item).join("、") || "待确认")}</div>
-    ${renderProfileDiff(versionDiff)}
-    ${renderFeedbackInsight(feedback)}
-    ${renderBossFilterPreview(bossFilterPreview, bossCatalog)}
-  </section>
-  <details class="panel plan-settings"><summary>调整筛选条件</summary><form id="plan-form" class="plan-form" method="post" action="/api/plan">
-    <input type="hidden" name="profileId" value="${profile.id}"><input type="hidden" name="planId" value="${planRecord.id}">
-    <label class="wide">方案名称<input name="name" value="${escapeAttr(plan.name || "")}" required></label>
-    <div class="choice-section"><strong>目标城市</strong><div class="choice-list">${renderPlanChoices("cities", PLAN_CITY_OPTIONS, plan.cities)}</div></div>
-    <div class="choice-section"><strong>工作经验</strong><div class="choice-list">${renderPlanChoices("experience", PLAN_EXPERIENCE_OPTIONS, selectedExperience)}</div></div>
-    <div class="choice-section"><strong>求职类型</strong><div class="choice-list">${renderPlanChoices("jobTypes", bossCatalog?.fields?.jobType?.options?.map((item) => item.label) || PLAN_JOB_TYPE_OPTIONS, plan.jobTypes)}</div></div>
-    <div class="choice-section"><strong>学历筛选（可选，不选则不限制）</strong><div class="choice-list">${renderPlanChoices("degrees", bossCatalog?.fields?.degree?.options?.map((item) => item.label) || PLAN_DEGREE_OPTIONS, plan.degrees)}</div></div>
-    <label>最低薪资（K）<input type="number" min="0" max="100" name="salaryMinK" value="${escapeAttr(plan.salary?.minK || "")}"></label>
-    <label>最高薪资（K）<input type="number" min="0" max="100" name="salaryMaxK" value="${escapeAttr(plan.salary?.maxK || "")}"></label>
-    ${bossSalaryOptions.length ? `<div class="choice-section"><strong>BOSS 薪资抓取档位</strong><div class="choice-list">${renderPlanChoices("platformSalaryLanes", bossSalaryOptions, selectedBossSalaryLanes)}</div></div>` : ""}
-    <label>薪资策略<select name="salaryMode"><option value="wide"${plan.salaryMode !== "strict" ? " selected" : ""}>宽松排序，范围外保留</option><option value="strict"${plan.salaryMode === "strict" ? " selected" : ""}>严格范围，低于下限不推荐</option></select></label>
-    <label>工作节奏<select name="workSchedulePreference"><option value="prefer_double_weekend"${plan.workSchedulePreference !== "no_preference" ? " selected" : ""}>优先双休，其他仍保留</option><option value="no_preference"${plan.workSchedulePreference === "no_preference" ? " selected" : ""}>不作为排序依据</option></select></label>
-    <label class="wide">目标方向<input name="directions" value="${escapeAttr((plan.directions || []).join("，"))}" placeholder="例如：AI应用开发、RAG、Python后端"></label>
-    <p class="plan-note">岗位质量会自动优先保留招聘方近 ${escapeHtml(plan.bossActiveDays)} 天活跃的岗位，并对超过经验范围但薪资偏初中级的岗位保留“可冲”标记。</p>
-    <label class="wide">搜索关键词<textarea name="keywords" required>${escapeHtml(keywordLines(plan.keywords))}</textarea></label>
-    <details class="plan-advanced"><summary>广泛扫描预算</summary><div class="plan-advanced-body"><label class="wide">排除词<input name="excludeWords" value="${escapeAttr((plan.excludeWords || []).join("，"))}"></label><label class="wide">硬排除词<input name="hardExcludes" value="${escapeAttr((plan.hardExcludes || []).join("，"))}"></label><label>A类每词岗位数<input type="number" min="${scanBounds.maxCards[0]}" max="${scanBounds.maxCards[1]}" name="maxCards" value="${escapeAttr(plan.scan.maxCards ?? scanDefaults.maxCards)}"></label><label>右栏详情安全上限<input type="number" min="${scanBounds.maxDetailTotal[0]}" max="${scanBounds.maxDetailTotal[1]}" name="maxDetailTotal" value="${escapeAttr(plan.scan.maxDetailTotal ?? scanDefaults.maxDetailTotal)}"></label><label>搜索页面安全上限<input type="number" min="${scanBounds.browserPageBudget[0]}" max="${scanBounds.browserPageBudget[1]}" name="browserPageBudget" value="${escapeAttr(plan.scan.browserPageBudget ?? scanDefaults.browserPageBudget)}"></label></div><p class="field-help">这些上限只控制低频广泛扫描。日常扫描会自动收敛到 A/B 关键词，主薪资档覆盖全部关键词，补充薪资档只覆盖最高优先关键词；每个 A 词最多 ${dailyScan.maxCards} 张主档卡片，补充档最多 ${dailyScan.supplementalSalaryLaneCardLimit} 张卡片和 ${dailyScan.supplementalSalaryLaneDetailLimit} 个右栏详情。两种模式都使用单标签串行、随机等待和风控即停。</p></details>
-    <div class="wide"><button>保存筛选方案</button><span id="plan-dirty-note" class="hint" hidden> 条件有修改，请先保存再扫描。</span></div>
-  </form></details>
-  <details class="panel legacy-operations"><summary>高级扫描与维护</summary><section class="scan-panel">
-    <div><strong>扫描状态：</strong>${escapeHtml(scanLabel(run, plan.bossActiveDays))}</div>
-    <p class="field-help">日常扫描：${dailyScan.keywordPlan.length} 个 A/B 关键词，主薪资档全部覆盖，补充薪资档仅覆盖前 ${dailyScan.supplementalSalaryLaneKeywordLimit} 个关键词；A/B 主档每词最多 ${dailyScan.maxCards}/${dailyBCardLimit} 张卡片和 ${dailyScan.detailLimits.A}/${dailyScan.detailLimits.B} 个新详情，补充档最多 ${dailyScan.supplementalSalaryLaneCardLimit} 张卡片和 ${dailyScan.supplementalSalaryLaneDetailLimit} 个新详情，总详情预算 ${dailyScan.maxDetailTotal}。广泛扫描：${broadScan.keywordPlan.length} 个全部关键词、所有薪资档、详情最多 ${broadScan.maxDetailTotal} 个。</p>
-    ${run.error ? `<pre class="scan-error">${escapeHtml(run.error)}</pre>` : ""}
-    <form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${planRecord.id}"><input type="hidden" name="cdpPort" value="9222"><select name="browserMode" title="浏览器模式"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用，需要独立登录）</option></select><button data-scan-button name="scanKind" value="daily"${scanDisabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scanDisabled ? " disabled" : ""}>广泛扫描</button>${resumeButton}<button data-scan-button name="scanKind" value="refresh"${scanDisabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scanDisabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button-link" href="/queue?planId=${planRecord.id}">待处理队列</a><a class="button-link" href="/jobs?planId=${planRecord.id}&batch=latest">查看岗位</a></form>
-  </section></details>
-</main><script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${run.state === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`);
-}
-
-function renderWorkflowLaunchPanel({ planRecord, workflowState, disabled = false }) {
-  const active = workflowState.activeRun;
-  const next = workflowState.nextPlan;
-  const target = active?.targetSuccessCount ?? next?.targetSuccessCount ?? 0;
-  const action = active
-    ? `<a class="button-link workflow-primary" href="/workflow?runId=${escapeAttr(active.id)}">继续本轮</a>`
-    : next?.errorCode
-      ? `<button class="workflow-primary" disabled>今日任务已结束</button>`
-      : `<form class="workflow-start" method="post" action="/api/workflow-run">
-          <input type="hidden" name="planId" value="${planRecord.id}">
-          <input type="hidden" name="cdpPort" value="9222">
-          <label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用，需要独立登录）</option></select></label>
-          <span class="hint">使用普通 Edge 中已登录的固定 BOSS 搜索页</span>
-          <button
-            class="workflow-primary"
-            name="action"
-            value="start"
-            data-browser-readiness-button
-            data-browser-base-disabled="${disabled ? "true" : "false"}"
-            disabled>执行一轮</button>
-        </form>`;
-  const status = active ? workflowStatusLabel(active.status) : next?.errorCode ? workflowBlockedMessage(next.errorCode, next) : "可以开始新一轮";
-  return `<section class="workflow-launch" aria-labelledby="workflow-launch-title">
-    <div class="workflow-launch-head"><div><p class="workflow-kicker">今日求职任务</p><h2 id="workflow-launch-title">${escapeHtml(status)}</h2></div>${action}</div>
-    <div class="workflow-metrics">
-      <div><span>今日进度</span><strong>${workflowState.successfulToday} / ${workflowState.dailyTarget}</strong></div>
-      <div><span>${active ? "本轮目标" : "下一轮目标"}</span><strong>${target}</strong></div>
-      <div><span>可用候选</span><strong>${workflowState.inventory.length}</strong></div>
-      <div><span>已用轮次</span><strong>${workflowState.slotsUsed} / ${workflowState.maxRuns}</strong></div>
-    </div>
-    <div class="workflow-budget">剩余详情读取预算 ${workflowState.remainingBudget.details} · 剩余搜索页预算 ${workflowState.remainingBudget.pages}${next?.shortfallReason ? ` · ${escapeHtml(workflowShortfallLabel(next.shortfallReason))}` : ""}</div>
-    <div id="browser-readiness-status" class="workflow-budget" role="status">正在检查当前已登录 Edge 与固定 BOSS 页面状态…</div>
-    <script>
-    (function(){
-      const statusNode = document.getElementById('browser-readiness-status');
-      const button = document.querySelector('[data-browser-readiness-button]');
-      const browserMode = document.querySelector('select[name=browserMode]');
-      if (!statusNode || !button) return;
-      const baseDisabled = button.dataset.browserBaseDisabled === 'true';
-      let readinessInFlight = false;
-      let queuedRefresh = false;
-      let selectionVersion = 0;
-      function readinessUrl() {
-        const mode = browserMode?.value === 'portable' ? 'portable' : 'edge';
-        const params = new URLSearchParams({browserMode:mode});
-        if (mode === 'portable') params.set('cdpPort','9222');
-        return '/api/browser-readiness?'+params.toString();
-      }
-      async function refreshReadiness({queueIfBusy=false}={}) {
-        if (readinessInFlight) {
-          if (queueIfBusy) queuedRefresh = true;
-          return;
-        }
-        const requestVersion = selectionVersion;
-        const requestUrl = readinessUrl();
-        readinessInFlight = true;
-        button.disabled = true;
-        try {
-          const response = await fetch(requestUrl, {cache:'no-store'});
-          if (!response.ok) throw new Error('readiness request failed');
-          const state = await response.json();
-          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
-          statusNode.textContent = state.message || '浏览器状态未知。';
-          statusNode.dataset.status = state.status || 'unknown';
-          button.disabled = baseDisabled || state.status !== 'ready';
-        } catch {
-          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
-          statusNode.textContent = '无法确认当前已登录 Edge 状态，请检查本地服务。';
-          statusNode.dataset.status = 'browser_unavailable';
-          button.disabled = true;
-        } finally {
-          readinessInFlight = false;
-          if (queuedRefresh || requestVersion !== selectionVersion || requestUrl !== readinessUrl()) {
-            queuedRefresh = false;
-            void refreshReadiness();
-          }
-        }
-      }
-      refreshReadiness();
-      browserMode?.addEventListener('change', function(){selectionVersion+=1;void refreshReadiness({queueIfBusy:true})});
-      setInterval(refreshReadiness, 5000);
-    })();
-    </script>
-  </section>`;
+  const viewModel = buildTodayViewModel({
+    profile,
+    planRecord,
+    plan,
+    dailyScan,
+    broadScan,
+    scanDefaults,
+    scanBounds,
+    dailyBCardLimit: boss.weightedCardLimit("B", dailyScan.maxCards),
+    run: scanStatus(scanRuns, planRecord.id, db),
+    resumableBatch: getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" }),
+    validation: validateSearchPlan(plan, profile.profile),
+    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { validatePlatformCities: false }),
+    planDependency: getSearchPlanDependency(db, planRecord.id),
+    versionDiff: compareProfileVersions(db, profile.id),
+    feedback: buildFeedbackSummary(db, { profileId: profile.id }),
+    bossCatalog,
+    bossRuntimeBlock: communicationRuntimeBlock(db),
+    workflowState: buildWorkflowDashboardState(db, planRecord),
+    bossFilterPreview,
+    bossSalaryOptions: bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [],
+    selectedBossSalaryLanes,
+    confirmation,
+    options: {
+      cities: PLAN_CITY_OPTIONS,
+      experience: PLAN_EXPERIENCE_OPTIONS,
+      jobTypes: bossCatalog?.fields?.jobType?.options?.map((item) => item.label) || PLAN_JOB_TYPE_OPTIONS,
+      degrees: bossCatalog?.fields?.degree?.options?.map((item) => item.label) || PLAN_DEGREE_OPTIONS
+    }
+  });
+  return renderPage("今日任务", renderTodayPage(viewModel));
 }
 
 function workflowStatusLabel(status) {
@@ -4386,13 +4254,6 @@ function workflowPollKey(workflow, communication) {
   ].join("|");
 }
 
-function renderBossFilterPreview(snapshot, catalog) {
-  if (!catalog) return '<p class="plan-note">BOSS \u7ad9\u5185\u9884\u7b5b\u6761\u4ef6\u5c06\u5728\u9996\u6b21\u626b\u63cf\u65f6\u81ea\u52a8\u9884\u8bfb\uff0c\u4e4b\u540e\u6309\u672c\u65b9\u6848\u7684\u85aa\u8d44\u4e0e\u7ecf\u9a8c\u6761\u4ef6\u7ec4\u88c5 URL\u3002</p>';
-  const summary = formatNativeFilterSummary(snapshot) || "\u672a\u547d\u4e2d\u53ef\u7528\u7684 BOSS \u9884\u7b5b\u6863\u4f4d";
-  const refreshedAt = String(catalog.discoveredAt || "").replace("T", " ").slice(0, 16);
-  return `<p class="plan-note">BOSS \u7ad9\u5185\u9884\u7b5b\uff1a${escapeHtml(summary)}\u3002\u89c4\u5219\u8bfb\u53d6\u4e8e ${escapeHtml(refreshedAt || "\u672a\u77e5\u65f6\u95f4")}\uff1b\u626b\u63cf\u65f6\u4ecd\u4f1a\u4fdd\u7559 JD \u5339\u914d\u3001\u6d3b\u8dc3\u5ea6\u548c\u5c97\u4f4d\u98ce\u9669\u5224\u65ad\u3002</p>`;
-}
-
 function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
   const diagnostic = code ? `<p class="error-code">错误编号：${escapeHtml(code)}${requestId ? ` · 请求编号：${escapeHtml(requestId)}` : ""}</p><p class="hint">可在“诊断”页面查看对应日志。</p>` : "";
   return renderPage("操作未完成", `<main><nav>${navLinks({})}</nav><h1>操作未完成</h1><section class="panel"><p class="risk-text">${escapeHtml(message)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
@@ -4434,51 +4295,6 @@ function respondUnexpectedError(res, error, requestId, requestPath) {
   const issue = publicError(error, { fallbackCode: "INTERNAL_ERROR", fallbackMessage: "服务处理失败，请查看错误编号对应的诊断日志。", statusCode: 500 });
   if (String(requestPath || "").startsWith("/api/")) return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code, requestId });
   sendHtml(res, renderErrorPage(issue.message, "/", { code: issue.code, requestId }), issue.statusCode);
-}
-
-function renderPlanValidation(validation) {
-  if (!validation.errors.length && !validation.warnings.length) return "";
-  const errors = validation.errors.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const warnings = validation.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  return `<section class="panel validation ${validation.valid ? "" : "validation-error"}">
-    ${errors ? `<strong>扫描前需要修正</strong><ul>${errors}</ul>` : ""}
-    ${warnings ? `<strong>建议确认</strong><ul>${warnings}</ul>` : ""}
-  </section>`;
-}
-
-function renderProfileDiff(diff) {
-  if (!diff.current) return "";
-  const current = `${diff.current.fileName || "当前简历"} · ${String(diff.current.createdAt || "").slice(0, 10)}`;
-  if (!diff.previous) return `<div class="line profile-diff"><strong>简历版本：</strong>${escapeHtml(current)}（初始版本）</div>`;
-  if (!diff.changes.length) return `<div class="line profile-diff"><strong>简历版本：</strong>${escapeHtml(current)}（与上一版画像无关键差异）</div>`;
-  const items = diff.changes.map((change) => {
-    if (change.added || change.removed) {
-      const details = [change.added?.length ? `新增：${change.added.join("、")}` : "", change.removed?.length ? `移除：${change.removed.join("、")}` : ""].filter(Boolean).join("；");
-      return `<li>${escapeHtml(change.label)}：${escapeHtml(details)}</li>`;
-    }
-    return `<li>${escapeHtml(change.label)}：${escapeHtml(change.before || "未填写")} → ${escapeHtml(change.after || "未填写")}</li>`;
-  }).join("");
-  return `<div class="line profile-diff"><strong>简历版本：</strong>${escapeHtml(current)}，相对上一版：<ul>${items}</ul></div>`;
-}
-
-function renderFeedbackInsight(feedback = {}) {
-  const reasonRows = Object.entries(feedback.reasonCounts || {})
-    .filter(([, count]) => count > 0)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([reason, count]) => `${feedbackReasonLabel(reason)} ${count} 次`);
-  const keywordRows = Object.entries(feedback.keywordReasons || {})
-    .map(([keyword, reasons]) => [keyword, Object.values(reasons).reduce((sum, count) => sum + count, 0)])
-    .filter(([, count]) => count >= 2)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([keyword, count]) => `${keyword}（反馈 ${count}）`);
-  if (!reasonRows.length && !keywordRows.length) return "";
-  const sections = [
-    reasonRows.length ? `高频跳过原因：${reasonRows.join("；")}` : "",
-    keywordRows.length ? `待排查的关键词：${keywordRows.join("、")}` : ""
-  ].filter(Boolean);
-  return `<div class="line profile-diff"><strong>历史反馈：</strong>${escapeHtml(sections.join("。"))}。仅用于诊断，不自动调整筛选或排序。</div>`;
 }
 
 function renderPage(title, body) {

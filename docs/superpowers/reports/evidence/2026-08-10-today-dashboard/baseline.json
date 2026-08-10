@@ -1,0 +1,479 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-10T15:54:05.927Z",
+  "label": "baseline",
+  "targetRevision": "f943400d1970a46dee661f20a3f60e51f5cfd7f8",
+  "fixture": {
+    "id": "today-dashboard-v1",
+    "candidateCity": "上海",
+    "targetTitle": "AI 应用开发工程师",
+    "keywords": [
+      "RAG",
+      "Python"
+    ],
+    "salary": {
+      "minK": 15,
+      "maxK": 25
+    }
+  },
+  "browser": {
+    "engine": "chromium",
+    "channel": "msedge",
+    "headless": true
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "pages": [
+    {
+      "state": "ready",
+      "path": "/plan?planId=1",
+      "screenshot": "baseline-ready-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 20,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": false,
+          "top": 133.5,
+          "right": 1276,
+          "bottom": 177.5,
+          "left": 1164,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": true,
+          "activeTag": "button",
+          "activeText": "执行一轮",
+          "outlineStyle": "solid",
+          "outlineWidth": "3px",
+          "outlineOffset": "2px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=1&planId=1"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "ready",
+      "path": "/plan?planId=1",
+      "screenshot": "baseline-ready-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 20,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": false,
+          "top": 147,
+          "right": 1000,
+          "bottom": 191,
+          "left": 888,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": true,
+          "activeTag": "button",
+          "activeText": "执行一轮",
+          "outlineStyle": "solid",
+          "outlineWidth": "3px",
+          "outlineOffset": "2px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=1&planId=1"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "ready",
+      "path": "/plan?planId=1",
+      "screenshot": "baseline-ready-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 20,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": false,
+          "top": 148.5,
+          "right": 744,
+          "bottom": 192.5,
+          "left": 632,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": true,
+          "activeTag": "button",
+          "activeText": "执行一轮",
+          "outlineStyle": "solid",
+          "outlineWidth": "3px",
+          "outlineOffset": "2px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=1&planId=1"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "ready",
+      "path": "/plan?planId=1",
+      "screenshot": "baseline-ready-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 20,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": false,
+          "top": 340,
+          "right": 366,
+          "bottom": 384,
+          "left": 16,
+          "width": 350,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": true,
+          "activeTag": "button",
+          "activeText": "执行一轮",
+          "outlineStyle": "solid",
+          "outlineWidth": "3px",
+          "outlineOffset": "2px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=1&planId=1"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "blocked",
+      "path": "/plan?planId=2",
+      "screenshot": "baseline-blocked-1440x900.png",
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentWidth": 1440,
+        "bodyWidth": 1440,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 21,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": true,
+          "top": 133.5,
+          "right": 1276,
+          "bottom": 177.5,
+          "left": 1164,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": false,
+          "activeTag": "body",
+          "activeText": ".workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-conte",
+          "outlineStyle": "none",
+          "outlineWidth": "3px",
+          "outlineOffset": "0px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=2&planId=2"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "blocked",
+      "path": "/plan?planId=2",
+      "screenshot": "baseline-blocked-1024x768.png",
+      "audit": {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "documentWidth": 1024,
+        "bodyWidth": 1024,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 21,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": true,
+          "top": 147,
+          "right": 1000,
+          "bottom": 191,
+          "left": 888,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": false,
+          "activeTag": "body",
+          "activeText": ".workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-conte",
+          "outlineStyle": "none",
+          "outlineWidth": "3px",
+          "outlineOffset": "0px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=2&planId=2"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "blocked",
+      "path": "/plan?planId=2",
+      "screenshot": "baseline-blocked-768x1024.png",
+      "audit": {
+        "viewport": {
+          "width": 768,
+          "height": 1024
+        },
+        "documentWidth": 768,
+        "bodyWidth": 768,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 21,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": true,
+          "top": 148.5,
+          "right": 744,
+          "bottom": 192.5,
+          "left": 632,
+          "width": 112,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": false,
+          "activeTag": "body",
+          "activeText": ".workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-conte",
+          "outlineStyle": "none",
+          "outlineWidth": "3px",
+          "outlineOffset": "0px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=2&planId=2"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    },
+    {
+      "state": "blocked",
+      "path": "/plan?planId=2",
+      "screenshot": "baseline-blocked-375x812.png",
+      "audit": {
+        "viewport": {
+          "width": 375,
+          "height": 812
+        },
+        "documentWidth": 375,
+        "bodyWidth": 375,
+        "horizontalOverflow": false,
+        "overflowElements": [],
+        "actionCount": 21,
+        "primaryCount": 0,
+        "primary": null,
+        "recommendedAction": {
+          "tag": "button",
+          "text": "执行一轮",
+          "disabled": true,
+          "top": 340,
+          "right": 366,
+          "bottom": 384,
+          "left": 16,
+          "width": 350,
+          "height": 44,
+          "fullyWithinViewport": true
+        },
+        "focus": {
+          "focusedRecommendedAction": false,
+          "activeTag": "body",
+          "activeText": ".workflow-launch{margin:16px 0 20px;padding:18px 0;border-top:3px solid #176b5b;border-bottom:1px solid #cfd8dc}.workflow-launch-head{display:flex;justify-conte",
+          "outlineStyle": "none",
+          "outlineWidth": "3px",
+          "outlineOffset": "0px"
+        },
+        "reducedMotion": {
+          "mediaMatches": true,
+          "transitionDuration": "0s",
+          "animationDuration": "0s"
+        },
+        "currentNavigation": [
+          {
+            "text": "今日任务",
+            "href": "/plan?profileId=2&planId=2"
+          }
+        ],
+        "nestedDocuments": 0
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestFailures": [],
+      "externalRequests": []
+    }
+  ],
+  "errors": []
+}

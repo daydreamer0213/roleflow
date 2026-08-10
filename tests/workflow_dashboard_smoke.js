@@ -342,11 +342,12 @@ let server;
 
   const unconfirmed = seedProfile(db, { confirmCard: false });
   const blockedPage = await getText(baseUrl, `/plan?planId=${unconfirmed.planId}`);
-  assert.match(blockedPage.body, /data-browser-base-disabled="true"/);
+  assert.match(blockedPage.body, /data-today-primary="true"[^>]*href="\/match-card\?profileId=\d+&amp;cardId=\d+"/);
+  assert.doesNotMatch(blockedPage.body, /data-browser-readiness-button/);
 
   const planBefore = await getText(baseUrl, `/plan?planId=${saved.planId}`);
-  assert.match(planBefore.body, /今日进度<\/span><strong>0\s*\/\s*70/);
-  assert.match(planBefore.body, /下一轮目标<\/span><strong>35/);
+  assert.match(planBefore.body, /今日进度\s*<strong>0\s*\/\s*70/);
+  assert.match(planBefore.body, /下一轮目标 35/);
   assert.match(planBefore.body, /<button[^>]*data-browser-readiness-button[^>]*disabled>/);
   assert.match(planBefore.body, /data-browser-readiness-button/);
   assert.match(planBefore.body, /data-browser-base-disabled="false"/);
@@ -921,7 +922,8 @@ let server;
     const failedReadiness = await getText(failOpenBaseUrl, "/api/browser-readiness");
     assert.strictEqual(failedReadiness.status, 500);
     const failedReadinessPlan = await getText(failOpenBaseUrl, `/plan?planId=${unconfirmed.planId}`);
-    assert.match(failedReadinessPlan.body, /data-browser-readiness-button[^>]*disabled/);
+    assert.match(failedReadinessPlan.body, /data-today-primary="true"[^>]*href="\/match-card\?profileId=\d+&amp;cardId=\d+"/);
+    assert.doesNotMatch(failedReadinessPlan.body, /data-browser-readiness-button/);
     const failOpenPage = await getText(failOpenBaseUrl, started.location);
     assert.strictEqual(failOpenPage.status, 200);
     assert.match(failOpenPage.body, /\u786e\u8ba4\u672c\u8f6e\u6c9f\u901a\u6e05\u5355/);
@@ -989,9 +991,10 @@ let server;
   assert.match(completedPage.body, /本轮成功\s*<strong>30/);
 
   const planAfter = await getText(baseUrl, `/plan?planId=${saved.planId}`);
-  assert.match(planAfter.body, /今日进度<\/span><strong>30\s*\/\s*70/);
-  assert.match(planAfter.body, /下一轮目标<\/span><strong>40/);
-  assert.match(planAfter.body, /剩余详情读取预算 356 · 剩余搜索页预算 58/);
+  assert.match(planAfter.body, /今日进度\s*<strong>30\s*\/\s*70/);
+  assert.match(planAfter.body, /下一轮目标 40/);
+  assert.match(planAfter.body, /剩余详情读取预算<\/span><strong class="metric-value">356/);
+  assert.match(planAfter.body, /剩余搜索页 58/);
   assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
   assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
 
