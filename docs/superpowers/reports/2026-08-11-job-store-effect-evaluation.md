@@ -1,0 +1,29 @@
+# Job Store Effect Evaluation
+
+Date: 2026-08-11
+Baseline: `54761dc8de36e358e586f9126ea9b0b5e300ccc0`
+
+## Structure and ownership
+
+- `src/core/storage.js`: 3482 physical / 3295 nonblank lines; it exports exactly 136 public keys.
+- `src/storage/job_store.js`: 710 physical / 661 nonblank lines; it directly exports exactly the required 26 operations.
+- `src/storage/candidate_store.js`: unchanged from baseline, remains 570 physical / 531 nonblank lines and its 29 direct facade references are unchanged.
+- `src/storage/storage_shared.js`: 35 physical / 29 nonblank lines. Its complete export set is exactly `nowIso`, `parseJson`, `OUTCOME_STATUSES`, `storageError`, `optionalInteger`, and `optionalPositiveInteger`.
+
+The facade reference audit returned `facade=136`, `job=26`, `jobDirect=true`, `candidate=29`, and `candidateDirect=true`. Each moved operation and its job-only helpers have one implementation owner in `job_store.js`; the facade holds direct references only. `levelRank` and `hardRiskRank` had no callers and were not moved.
+
+## Dependency and behavior evidence
+
+`job_store.js` imports only Node crypto, storage shared, the candidate `getSearchPlan` boundary, and existing core policy/normalization modules. It has no `core/storage`, schema, migration, openDb, workflow, communication, browser, transport, dashboard, CLI, or application import. The facade retains schema/migration/scan/health ownership and calls job-store references for observation-hash migration, scan checkpoint job writes, and health report/event reads. No circular-load warning was observed.
+
+The contract and focused smoke checks exercised keyword/cache conflict update plus JSON fallback, job idempotency and outer transaction composition, observation/report row mapping, candidate and legacy application state paths, quality/decision precedence, queue ordering, scan execution filtering, feedback/event payloads, and cross-domain facade consumption. Existing transaction implementations retain deferred `BEGIN`, direct `COMMIT`/`ROLLBACK`, no transaction in `upsertJob`, and the reassessment validation codes `BATCH_ID_REQUIRED`, `PLAN_ID_REQUIRED`, and `BATCH_PLAN_MISMATCH` before analyzer/write work. The full suite also preserves source acquisition refresh behavior because `listReusableJobDetails` and refresh-attempt operations remain in the facade for Task 4.3.
+
+## Verification
+
+- Focused offline checks: 12/12 passed in 7.951 s: job/candidate contracts, data visibility, screening, semantic pipeline, scan recovery, batch consistency, outcome analytics, communication, workflow health, analysis application, and source acquisition.
+- Full offline suite: 86/86 passed. `tests/run_all.js` began at 07:00:11 and completed at 07:02:22 (131 s); the previous foreground attempt was stopped only by its 120 s command limit, without a test failure.
+- `git diff --check 54761dc8de36e358e586f9126ea9b0b5e300ccc0`: passed before commit.
+
+## Remaining boundary
+
+Task 4.3 remains responsible for `listReusableJobDetails`, `recordJobRefreshAttempt`, `listJobRefreshAttempts`, and `getLatestJobRefreshAttempt`. Scan/workflow/cross-cutting schema, migrations, health and transaction orchestration remain in the facade by design; this task did not change JD coverage, scoring, recommendation policy, models, BOSS/browser, communication, workflow task, or lease behavior.
