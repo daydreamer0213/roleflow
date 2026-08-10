@@ -50,6 +50,9 @@
     const pausedGroup = node('[data-control-group="paused"]'); if (pausedGroup) pausedGroup.hidden = !paused;
     const pause = node('[data-action="pause"]'); if (pause) pause.disabled = !snapshot.controls.canPause;
     const resume = node('[data-action="resume"]'); if (resume) resume.disabled = !snapshot.controls.canResume;
+    const primary = running ? pause : paused ? resume : null;
+    nodes('[data-workflow-primary="true"]').forEach((button) => button.removeAttribute("data-workflow-primary"));
+    if (primary) { primary.dataset.workflowPrimary = "true"; if (!primary.disabled) primary.focus(); }
     nodes('[data-action="stop-preview"]').forEach((button) => { button.disabled = !snapshot.controls.canStop; });
     const stopConfirm = node('[data-action="stop-confirm"]'); if (stopConfirm) stopConfirm.disabled = !snapshot.controls.canStop;
     if (paused) setText("[data-pause-reason]", snapshot.workflow.errorCode || "本轮已安全暂停");

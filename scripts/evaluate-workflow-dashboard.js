@@ -124,6 +124,7 @@ async function focusPrimaryWithKeyboard(page, action) {
 function assertStrictPrimary(result) {
   const failures = [];
   const primary = result.audit.primary;
+  if (result.audit.primaryCount !== 1) failures.push(`primaryCount=${result.audit.primaryCount}`);
   if (result.audit.visiblePrimaryCount !== 1) failures.push(`visiblePrimaryCount=${result.audit.visiblePrimaryCount}`);
   if (!primary?.fullyWithinViewport) failures.push("primary outside viewport");
   if (!primary?.focused) failures.push("primary not focused");
@@ -152,3 +153,4 @@ function listen(server) { return new Promise((resolve) => server.listen(0, "127.
 function close(server) { return new Promise((resolve) => server.close(resolve)); }
 function chinaDay() { const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()); const value = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value])); return `${value.year}-${value.month}-${value.day}`; }
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
+module.exports = { assertStrictPrimary };
