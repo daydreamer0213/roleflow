@@ -118,12 +118,13 @@ const {
   getCommunicationStatus,
   resolveAmbiguousCommunication
 } = require("../application/communication");
+const {
+  retryOneJobAnalysis,
+  retryPendingJobAnalyses
+} = require("../application/analysis");
 const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
-const { scoreJob, decisionState } = require("../core/scoring");
-const { createJobAnalysisRunner } = require("../core/job_analysis");
-const { mapWithConcurrency } = require("../core/async_pool");
 const {
   chinaLocalDay,
   planWorkflowRun,
@@ -134,7 +135,8 @@ const {
 const {
   workflowEligibility,
   listWorkflowInventory,
-  listWorkflowReviewCandidates
+  listWorkflowReviewCandidates,
+  reconcilePlanWorkflowInventory
 } = require("../core/workflow_inventory");
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
 const { getWorkflowProgressSnapshot } = require("../core/workflow_progress");
@@ -345,6 +347,7 @@ function createDashboardServer({
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
+  analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
   assetReader = fs.readFileSync
 }) {
@@ -538,8 +541,8 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
-      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true });
+      if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
+      if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
@@ -616,103 +619,40 @@ async function handleResumePreview(req, res, { root, logger, requestId }) {
   }
 }
 
-async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false }) {
+async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelReady, logger, requestId, bulk = false, analysisRetryRunnerFactory = null }) {
   let planId = 0;
   try {
-    if (!modelReady) {
-      throw appError(
-        "MODEL_CONFIGURATION_REQUIRED",
-        "重试语义分析前，请先完成批量筛选模型连接测试。",
-        { statusCode: 409 }
-      );
-    }
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId);
-    const plan = getSearchPlan(db, planId);
-    if (!plan) throw new Error("Search Plan 不存在。");
-    const matchingContext = getCandidateMatchingContext(db, plan.profileId);
-    if (!matchingContext) {
-      throw appError("MATCHING_CARD_CONFIRMATION_REQUIRED", "重试语义分析前，请先在工作台确认匹配偏好卡。", {
-        statusCode: 409,
-        details: { profileId: plan.profileId, cardId: getSearchPlanDependency(db, plan.id).draftCardId }
-      });
-    }
-    const pool = listDecisionPool(db, { planId });
-    const requestedJobId = Number(params.jobId);
-    const jobs = bulk
-      ? pool.filter((job) => job.decisionBucket === "analysis_pending" && isJobAwaitingAction(job))
-        .slice(0, PRODUCT_POLICY.operations.modelAnalysis.maxRetryJobs)
-      : pool.filter((job) => job.id === requestedJobId);
-    if (!jobs.length) throw new Error(bulk ? "当前没有待重试的语义分析岗位。" : "岗位不存在或不属于当前筛选方案。");
-    const baseConfigs = loadConfigs(root);
-    baseConfigs.model = modelConfig;
-    const configs = profileToRuntimeConfigs(baseConfigs, matchingContext.candidateProfile, plan.plan, listMatchingResumeVersions(db, plan.profileId), matchingContext.matchingCard);
-    const analyze = createJobAnalysisRunner(configs, plan.plan.keywords || [], { db, logger });
-    const batchId = createBatch(db, jobs[0].source || "boss", bulk ? "analysis-retry-bulk" : "analysis-retry", bulk
-      ? `analysis-retry-bulk:plan:${planId}:jobs:${jobs.length}`
-      : `analysis-retry:plan:${planId}:job:${jobs[0].id}`, {
-      profileId: plan.profileId,
-      searchPlanId: planId,
-      filterSnapshot: { mode: bulk ? "analysis-retry-bulk" : "analysis-retry", jobIds: jobs.map((job) => job.id) }
+    const result = await (bulk ? retryPendingJobAnalyses : retryOneJobAnalysis)({
+      db,
+      input: params,
+      deps: { root, modelConfig, modelReady, logger, createJobAnalysisRunner: analysisRetryRunnerFactory || undefined }
     });
-    const retryConcurrency = bulk ? PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency : 1;
-    const results = await mapWithConcurrency(jobs, retryConcurrency, async (job) => {
-      const scored = scoreJob(job, configs);
-      if (decisionState(scored) !== "ready") return { job, scored, sourcePending: true, analysis: job.analysis };
-      const analysis = await analyze({ ...job, ...scored, greeting: job.greeting || "" });
-      return { job, scored, sourcePending: false, analysis };
-    });
-    let completed = 0;
-    let failed = 0;
-    let sourcePending = 0;
-    for (const result of results) {
-      if (result.sourcePending) {
-        sourcePending += 1;
-        continue;
-      }
-      upsertJob(db, { ...result.job, ...result.scored, analysis: result.analysis, greeting: result.job.greeting || "" }, batchId);
-      if (result.analysis.semanticStatus === "failed") failed += 1;
-      else completed += 1;
-    }
-    reconcilePlanWorkflowInventory(db, planId);
     logger.info(bulk ? "job_analysis_bulk_retried" : "job_analysis_retried", {
       requestId,
-      planId,
-      jobIds: jobs.map((job) => job.id),
-      batchId,
-      requested: jobs.length,
-      completed,
-      failed,
-      sourcePending,
-      concurrency: retryConcurrency
+      planId: result.planId,
+      jobIds: result.jobIds,
+      batchId: result.batchId,
+      requested: result.requested,
+      completed: result.completed,
+      failed: result.failed,
+      sourcePending: result.sourcePending,
+      concurrency: result.concurrency
     });
-    if (!bulk && failed) {
-      const analysis = results[0].analysis;
+    if (!bulk && result.failed) {
+      const analysis = result.results[0].analysis;
       const error = new Error(analysis.error || "语义分析仍未完成，请稍后重试。");
       error.code = analysis.errorCode || "MODEL_ANALYSIS_FAILED";
       throw error;
     }
-    redirect(res, `/queue?planId=${planId}${failed || sourcePending ? "&pool=analysis_pending" : ""}`);
+    redirect(res, `/queue?planId=${planId}${result.failed || result.sourcePending ? "&pool=analysis_pending" : ""}`);
   } catch (error) {
     respondUiError(res, error, modelSettingsBack(
       error,
       planId ? `/queue?planId=${planId}&pool=analysis_pending` : "/"
     ), { logger, requestId, event: "job_analysis_retry_failed", fallbackCode: "JOB_ANALYSIS_RETRY_FAILED" });
   }
-}
-
-function reconcilePlanWorkflowInventory(db, planId) {
-  const inventoryCount = listWorkflowInventory(db, { planId }).length;
-  for (const workflow of listWorkflowRuns(db, {
-    planId,
-    localDay: chinaLocalDay(),
-    statuses: ["review_required", "interrupted"],
-    limit: 500
-  })) {
-    if (workflow.inventoryCount === inventoryCount) continue;
-    transitionWorkflowRun(db, { id: workflow.id, status: workflow.status, inventoryCount });
-  }
-  return inventoryCount;
 }
 
 function redirectHome(res, db) {
