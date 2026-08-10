@@ -23,6 +23,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     { currentPath: "/plan?planId=17", todayPath: "/plan?planId=17", label: "今日任务" },
     { currentPath: "/workflow?runId=workflow-17", todayPath: "/plan?planId=17", label: "本轮" },
     { currentPath: "/queue?planId=17&pool=primary", href: "/queue?planId=17", todayPath: "/plan?planId=17", label: "当前岗位" },
+    { currentPath: "/jobs?planId=17&batch=latest", href: "/jobs?planId=17&amp;batch=latest", todayPath: "/plan?planId=17", label: "岗位列表" },
     { currentPath: "/communication/new?planId=17", todayPath: "/plan?planId=17", label: "批量沟通清单" },
     { currentPath: "/communication?batchId=17", todayPath: "/plan?planId=17", label: "批量沟通审阅" },
     { currentPath: "/settings", label: "模型设置" },
