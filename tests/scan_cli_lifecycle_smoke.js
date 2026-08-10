@@ -363,7 +363,8 @@ function terminalAggregationSmoke() {
     "BOSS_SEARCH_TAB_CHANGED",
     "BOSS_OPERATOR_TABS_CHANGED",
     "BOSS_COMMUNICATION_PAGE_LOST",
-    "BOSS_WINDOW_MISMATCH"
+    "BOSS_WINDOW_MISMATCH",
+    "BROWSER_COMMAND_FAILED"
   ]) {
     assert.strictEqual(scanFailureStatus({ code }), "interrupted", `${code} must interrupt the run`);
   }

@@ -1743,6 +1743,7 @@ function scanFailureStatus(error) {
     "BOSS_DETAIL_PAGE_LOST",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BROWSER_TIMEOUT",
+    "BROWSER_COMMAND_FAILED",
     "BROWSER_DISCONNECTED"
   ]).has(code) ? "interrupted" : "failed";
 }
