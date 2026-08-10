@@ -1,6 +1,6 @@
 # Job Store Effect Evaluation
 
-Date: 2026-08-11  
+Date: 2026-08-11
 Baseline: `54761dc8de36e358e586f9126ea9b0b5e300ccc0`
 
 ## Brief evidence map
