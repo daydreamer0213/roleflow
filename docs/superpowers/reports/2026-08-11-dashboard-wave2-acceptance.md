@@ -1,48 +1,52 @@
-# RoleFlow Wave 2.4 dashboard acceptance
+# RoleFlow Wave 2.4 dashboard acceptance evidence
 
-## Conclusion
+## Current status
 
-Wave 2.4 local dashboard acceptance is accepted for commit `e10098409329088e0c8e7371a18c2fff57eee772`. This is an offline, local-only result: the evaluation used temporary SQLite data, `forceMock`, mocked browser readiness, and headless Edge. It did not open a real BOSS page, call a model, resume a workflow, start communication, or send anything.
+Wave 2.4 has been implemented, regression-tested, and evaluated locally at code commit `901a508c15ff78c8b1657b3d30ba0d3d779bca2e`. It is **not accepted yet**: this report is the strict, reproducible evidence package for the independent review.
 
-Communication remains `e2e_pending`: the review page now states this plainly while preserving the independently enabled technical gate. A real manual communication E2E acceptance remains outside this task and needs separate approval.
+The run was offline and local-only. It used temporary SQLite data, `forceMock`, a mocked ready browser probe, and headless Edge. It did not open a real BOSS page, call a model, parse a real resume, resume a workflow, start communication, discard a batch, or send anything.
 
-## Status
+Communication remains `e2e_pending`. The review page preserves these facts: implementation is `implemented`, calibration is `calibrated`, E2E acceptance is `e2e_pending`, and the technical execution gate is enabled. `开始沟通` remains the sole solid teal primary; `安全撤回` remains a red-outline secondary. No execution behavior changed.
 
-| Status | Result | Evidence |
-| --- | --- | --- |
-| implemented | yes | Combined evaluator `scripts/evaluate-dashboard-wave2.js`; legacy-shell CSS; active `/jobs` navigation; communication acceptance facts and destructive hierarchy. Code commits: `7ad3e3e`, `723c5a0`, `e26226b`, `9e08226`, `e6f1c4b`, `e100984`. |
-| regression-safe | yes | Focused shell, communication, Today, Workflow and combined Playwright smokes passed; `node tests/run_all.js` ended `All 81 offline checks passed.` |
-| evaluated | yes | Canonical evidence contains exactly 32 first-screen PNGs plus one JSON manifest, all generated against clean `e100984…`. |
-| accepted | yes, local dashboard only | Every strict gate passed. This does not accept real BOSS login state, manual workflow continuation, real model calls, or communication execution. |
+## Code checkpoints
+
+- `3c3e3b9d17a2cfa4dbdaf6fdb6606f031687d5e3` — strict evaluator, shared legacy-page frame wrapper, shell/communication tests.
+- `28af7010c9cdc27eca266aeed5e7ebaccc835d9a` — excludes compact choice controls from standalone touch targets.
+- `18c83ea81f25f45d835c6c724e803214f5015dcf` — keeps Jobs filters inside the shared-shell width.
+- `e2db6f1296efa78d68d3a462ab233d6e27ca7572` — makes the existing Onboarding primary visible in the first viewport without changing its form contract.
+- `901a508c15ff78c8b1657b3d30ba0d3d779bca2e` — audits keyboard focus on read-only pages through the primary navigation.
 
 ## Canonical evidence
 
 Directory: [evidence/2026-08-11-dashboard-wave2-acceptance](evidence/2026-08-11-dashboard-wave2-acceptance/)
 
-- Exact count: **33 files** = `current.json` + **32 PNG** screenshots.
-- Eight route/state samples × four viewports (1440×900, 1024×768, 768×1024, 375×812):
+- Exactly 33 files: 32 PNG screenshots and one valid UTF-8 `current.json` manifest.
+- Eight route/state samples × four viewports (1440×900, 1024×768, 768×1024, 375×812).
+- The strict run started on clean revision `901a508…`; its manifest records `strict: true`, `targetCleanAtStart: true`, 32/32 shared frames, 32/32 single primary navs, zero horizontal overflow, and zero console/page/request/external errors.
+- For every page the JSON order is `scrollTop=0 → screenshot → keyboard-focus → client-only-interaction`; the saved PNG is therefore captured before synthetic focus outlines or interactions.
 
-| Family | State | PNG count |
-| --- | --- | ---: |
-| Today | ready | 4 |
-| Workflow | scanning | 4 |
-| Queue | primary | 4 |
-| Jobs | latest-batch | 4 |
-| Communication | confirmed-offline | 4 |
-| Settings | default | 4 |
-| Onboarding | existing-profile | 4 |
-| Diagnostics | empty-log | 4 |
+I inspected Queue, Jobs, Communication, Settings, Onboarding, and Diagnostics at 1440×900 and 375×812. All six show the common rail/topbar shell, one active primary-navigation entry, and no duplicate inner navigation.
 
-The manifest records per page: route, state, revision, viewport, scroll position, document/body widths, overflow elements, stylesheet/frame/nav/main presence, active navigation, visible actions, defined primary control, keyboard focus outline, reduced-motion state, headings/labels/alerts, console/page/request/external errors, and client-only interactions.
+## Explicit policies
 
-Strict summary from `current.json`:
+| Family | Primary policy | Interaction policy |
+| --- | --- | --- |
+| Today | required | read-only-none |
+| Workflow | required | exercised (stop-preview/cancel) |
+| Queue | none-expected: several local record actions | exercised (details only) |
+| Jobs | none-expected: filters and local record actions | exercised (details only) |
+| Communication | required | safety-not-executed |
+| Settings | none-expected: save can test a model connection | safety-not-executed |
+| Onboarding | required | safety-not-executed |
+| Diagnostics | none-expected: read-only log surface | read-only-none |
 
-- `targetRevision`: `e10098409329088e0c8e7371a18c2fff57eee772`
-- `targetCleanAtStart`: `true`
-- horizontal overflow, missing shell/main/nav, missing active navigation, targets below 44px, invalid defined-primary placement/count, weak keyboard focus, reduced-motion failures, captured errors, failed interactions: **0 / 32** each.
-- Communication review: four of four pages report exactly one visible start/resume primary, solid teal primary treatment, and red-outline destructive withdrawal treatment.
+`none-expected` now fails strict evaluation when a page-level primary marker appears. Required pages must have exactly one visible, first-viewport marker. There is no undeclared-primary auto-pass.
 
-I visually inspected the final 375×812 communication review screenshot. It shows `开始沟通` as the only solid teal primary, `安全撤回` as a red outline, and separate implementation/calibration/E2E/technical-gate facts. I also inspected representative desktop/mobile Today, Workflow, queue/jobs, settings, onboarding, and diagnostics screenshots while developing the acceptance.
+## Touch and accessibility evidence
+
+The strict 44px gate applies to primary-nav links, a defined required primary, and relevant standalone form controls. It deliberately does not claim every action or every inline link is 44px: the manifest separately records **25 undersized inline links** across the 32 screenshots. Compact checkboxes/radios are also excluded from the standalone-action touch gate.
+
+Keyboard focus, reduced motion, heading order, labels, shell geometry, and the safe client-only interactions all passed their strict gates. The default `tests/run_all.js` now remains portable: `dashboard_wave2_acceptance_smoke.js` is pure/synthetic and does not require Playwright, Edge, `NODE_PATH`, or the 32-page browser run. Playwright is lazy-loaded only by the explicit evaluator command below.
 
 ## Reproduce
 
@@ -55,24 +59,12 @@ node scripts/evaluate-dashboard-wave2.js `
   --output-dir docs\superpowers\reports\evidence\2026-08-11-dashboard-wave2-acceptance
 ```
 
-The evaluator fails closed when Playwright is unavailable, the target revision is dirty at start, or any required visual/accessibility/network invariant fails.
+The evaluator rejects unknown arguments including `--no-strict`, a dirty target revision, unavailable Playwright, missing/duplicate shared shell, missing active navigation, undeclared primary policy, invalid primary placement, overflow, touch-gate failures, focus failures, errors, or an invalid artifact set.
 
-## Verification run
+## Verification recorded for this round
 
-```powershell
-node tests/dashboard_communication_batch_smoke.js
-node tests/dashboard_wave2_acceptance_smoke.js
-node tests/today_dashboard_smoke.js
-$env:NODE_PATH='C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
-$env:ROLEFLOW_REQUIRE_PLAYWRIGHT='1'
-node tests/workflow_page_migration_smoke.js
-node tests/run_all.js
-git diff --check 99fe9a52ec842489f0a953bbd2287e3cad046040..HEAD
-```
+- Default offline suite without `NODE_PATH`: `All 81 offline checks passed.` in 126.549 seconds.
+- Focused pure checks after the final code work: `dashboard_wave2_acceptance_smoke`, `dashboard_shell_smoke`, and `dashboard_communication_batch_smoke` passed.
+- Strict explicit evaluator against clean code commit `901a508…`: passed in 30.399 seconds.
 
-Focused checks passed. The full command completed with `All 81 offline checks passed.` The cumulative `git diff --check` command exited 0.
-
-## Remaining improvements
-
-- Perform the separately approved real manual communication E2E only when an operator explicitly authorizes it; until then the UI must retain `e2e_pending`.
-- Legacy page renderers still contain route-local inline CSS. They now share the RoleFlow visual identity, but a future, separately scoped cleanup could move those declarations into the shared stylesheet without changing business behavior.
+The next state change is independent review; a real BOSS or communication E2E acceptance still requires separate explicit approval.
