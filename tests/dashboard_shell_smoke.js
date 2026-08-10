@@ -63,7 +63,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.match(health.contentType, /^application\/json(?:;|$)/);
     assert.strictEqual(health.body.ok, true);
 
-    for (const pathname of ["/onboarding", "/settings", "/plan", "/workflow", "/queue", "/communication/new"]) {
+    for (const pathname of ["/onboarding", "/settings", "/plan", "/workflow", "/queue", "/communication/new", "/jobs", "/diagnostics"]) {
       const page = await getText(baseUrl, pathname);
       assert.strictEqual(page.status, 200, `${pathname} must keep its HTML response`);
       assert.match(page.contentType, /^text\/html(?:;|$)/);
@@ -78,10 +78,32 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assertCurrentLink(queue.body, `/queue?planId=${queueFixture.planId}`, "当前岗位");
     assert.strictEqual((queue.body.match(/<!doctype html>/gi) || []).length, 1, "queue must have one document shell");
     assert.strictEqual((queue.body.match(/<body>/gi) || []).length, 1, "queue must not nest a second body");
-    assert.strictEqual((queue.body.match(/<nav(?:\s|>)/gi) || []).length, 1, "single-page queue fixture must not duplicate global navigation");
+    assertSharedFrame(queue.body, `/queue?planId=${queueFixture.planId}`, "queue");
+    assert.match(queue.body, /<form class="quick-actions" method="post" action="\/api\/mark/);
 
     const jobs = await getText(baseUrl, `/jobs?planId=${queueFixture.planId}&batch=latest`);
     assert.strictEqual(jobs.status, 200);
+    assertSharedFrame(jobs.body, `/jobs?planId=${queueFixture.planId}&amp;batch=latest`, "jobs");
+    assert.match(jobs.body, /<form class="panel filters" method="get" action="\/jobs">/);
+
+    const builder = await getText(baseUrl, `/communication/new?planId=${queueFixture.planId}`);
+    assertSharedFrame(builder.body, `/communication\/new\?planId=${queueFixture.planId}`, "communication builder");
+    assert.match(builder.body, /<form id="communication-batch-form" method="post" action="\/api\/communication-batch">/);
+    assert.match(builder.body, /name="browserMode"/);
+
+    const onboarding = await getText(baseUrl, "/onboarding");
+    assertSharedFrame(onboarding.body, "/onboarding", "onboarding");
+    assert.match(onboarding.body, /data-onboarding-primary="true"/);
+    assert.match(onboarding.body, /<form class="panel form-stack" method="post" action="\/api\/resume" enctype="multipart\/form-data">/);
+
+    const settings = await getText(baseUrl, "/settings");
+    assertSharedFrame(settings.body, "/settings", "settings");
+    assert.match(settings.body, /<form class="model-profile-form" method="post" action="\/api\/settings\/model"/);
+    assert.doesNotMatch(settings.body, /data-page-primary=/, "settings must explicitly have no page-level primary marker");
+
+    const diagnostics = await getText(baseUrl, "/diagnostics");
+    assertSharedFrame(diagnostics.body, "/diagnostics", "diagnostics");
+    assert.doesNotMatch(diagnostics.body, /data-page-primary=/, "diagnostics must explicitly have no page-level primary marker");
     assertCurrentLink(jobs.body, `/jobs?planId=${queueFixture.planId}&amp;batch=latest`, "岗位列表");
   } finally {
     await close(server);
@@ -115,6 +137,13 @@ async function getJson(baseUrl, pathname) {
 
 function assertCurrentLink(markup, href, label) {
   assert.match(markup, new RegExp(`<a href="${escapeRegExp(href)}" aria-current="page">${label}</a>`));
+}
+
+function assertSharedFrame(markup, href, name) {
+  assert.strictEqual((markup.match(/class="app-shell"/g) || []).length, 1, `${name} must use exactly one shared app shell`);
+  assert.strictEqual((markup.match(/class="primary-nav"/g) || []).length, 1, `${name} must use exactly one primary navigation`);
+  assert.doesNotMatch(markup, /<main[^>]*>\s*<nav(?:\s|>)/, `${name} must not retain an inner duplicate navigation`);
+  assert.match(markup, new RegExp(`<a href="${escapeRegExp(href)}" aria-current="page">`), `${name} must preserve its active navigation`);
 }
 
 function escapeRegExp(value) {
