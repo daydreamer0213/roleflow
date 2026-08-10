@@ -1618,7 +1618,8 @@ async function handleWorkflowRunStart(req, res, {
         assertSearchPlanReady, buildDashboardState: buildWorkflowDashboardState, workflowBlockedMessage,
         resolveNewInheritedBrowser, inheritedContextResolver, assertInheritedAcquisitionScope,
         scanAvailability: assertWorkflowScanAvailable, workflowModelProfilesSnapshot,
-        createWorkflowRun, transitionWorkflowRun, spawnScan: startPlanScan, logger
+        createWorkflowRun, transitionWorkflowRun, spawnScan: startPlanScan,
+        settleFailedWorkflowLaunch, logger
       }
     });
     redirect(res, `/workflow?runId=${encodeURIComponent(result.workflow.id)}`);

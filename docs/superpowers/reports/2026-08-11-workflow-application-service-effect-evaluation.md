@@ -45,9 +45,9 @@ Playwright `NODE_PATH`.
 
 | Metric | Before (`72a775f`) | After | Effect |
 | --- | ---: | ---: | --- |
-| `src/dashboard/server.js` lines | 4,495 | 4,125 | -370 |
+| `src/dashboard/server.js` lines | 4,495 | 4,126 | -369 |
 | `src/cli.js` lines | 2,471 | 2,471 | 0 |
-| `src/application/workflow/index.js` lines | 0 | 376 | +376 |
+| `src/application/workflow/index.js` lines | 0 | 382 | +382 |
 | HTTP workflow handler direct calls to `getWorkflowRun`, `createWorkflowRun`, `transitionWorkflowRun`, `startPlanScan`, `recoverWorkflowRuns` | 14 | 0 | -14 |
 | Application-module dashboard/HTTP/render/argv/browser-adapter imports | 0 | 0 | unchanged |
 
@@ -85,6 +85,28 @@ The real dashboard spawn hook verifies, before returning a child:
 Upstream inherited-context rejection still returns the existing `409` contract and now
 proves no workflow, scan run, or spawn was created. The focused RED failed in 378 ms;
 the first GREEN passed in 508 ms.
+
+## Fix round 2/5
+
+A plan-scoped SQLite trigger forced the real initial workflow-to-scan binding operation
+to fail before child spawn. The RED preserved HTTP `400`, public
+`ERR_SQLITE_ERROR`, request ID, stable error message, zero spawn, and a failed scan run,
+but found the workflow incorrectly remained `scanning`.
+
+`startWorkflow` now uses the same injected `settleFailedWorkflowLaunch` dependency as
+resume/control when `spawnScan` throws, then rethrows the original error. No transition
+logic was copied into the HTTP adapter or launcher. The workflow reaches the existing
+recoverable `interrupted` state immediately with the original code/message, while the
+public HTTP mapping remains unchanged. Resume-batch binding continues through
+`attachWorkflowScan`.
+
+- RED: `node tests/workflow_dashboard_smoke.js` — expected failure in 1,881 ms
+  (`scanning` versus `interrupted`).
+- First GREEN: `node tests/workflow_dashboard_smoke.js` — exit 0 in 2,275 ms.
+- Final focused checks: 8/8 passed; the seven non-page checks took 8.19 s and strict
+  `workflow_page_migration_smoke.js` took 46.48 s.
+- Full suite: all 82 checks passed in 165.7 s with bundled Playwright `NODE_PATH`, so
+  the workflow page browser/evaluator checks ran without skips.
 
 ## Remaining coupling and next safe improvement
 

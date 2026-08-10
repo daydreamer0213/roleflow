@@ -16,6 +16,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     createWorkflowRun,
     transitionWorkflowRun,
     spawnScan,
+    settleFailedWorkflowLaunch,
     logger
   } = deps;
   const planId = Number(input.planId || 0);
@@ -107,19 +108,24 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
       }
     });
     if (workflow.scanNeeded) {
-      spawnScan(input.scanRuns, {
-        db,
-        root: input.root,
-        dbPath: input.dbPath,
-        planId: plan.id,
-        cdpPort: browserAuthority.cdpPort,
-        browserMode: browserAuthority.browserMode,
-        scanKind: "daily",
-        workflowRunId: workflow.id,
-        logger,
-        requestId: input.requestId,
-        spawnProcess: input.spawnProcess
-      });
+      try {
+        spawnScan(input.scanRuns, {
+          db,
+          root: input.root,
+          dbPath: input.dbPath,
+          planId: plan.id,
+          cdpPort: browserAuthority.cdpPort,
+          browserMode: browserAuthority.browserMode,
+          scanKind: "daily",
+          workflowRunId: workflow.id,
+          logger,
+          requestId: input.requestId,
+          spawnProcess: input.spawnProcess
+        });
+      } catch (launchError) {
+        settleFailedWorkflowLaunch(db, input.scanRuns, workflow, launchError);
+        throw launchError;
+      }
     } else {
       workflow = transitionWorkflowRun(db, {
         id: workflow.id,

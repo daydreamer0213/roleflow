@@ -436,6 +436,46 @@ let server;
   }
   inheritedFailureCode = "";
 
+  const initialBindingFailure = seedProfile(db);
+  const initialBindingTrigger = "workflow_initial_scan_binding_failure";
+  db.exec(`
+    CREATE TRIGGER ${initialBindingTrigger}
+    BEFORE UPDATE OF scan_run_id ON workflow_runs
+    WHEN OLD.plan_id = ${Number(initialBindingFailure.planId)}
+      AND OLD.scan_batch_id IS NULL
+      AND NEW.scan_run_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'WORKFLOW_INITIAL_SCAN_BINDING_FAILED');
+    END
+  `);
+  const spawnCountBeforeInitialBindingFailure = spawns.length;
+  let rejectedInitialBinding;
+  try {
+    rejectedInitialBinding = await postForm(baseUrl, "/api/workflow-run", {
+      planId: initialBindingFailure.planId,
+      browserMode: "edge",
+      action: "start"
+    });
+    assert.strictEqual(rejectedInitialBinding.status, 400);
+    assert.strictEqual(rejectedInitialBinding.location, null);
+    assert.match(rejectedInitialBinding.body, /ERR_SQLITE_ERROR/);
+    assert.match(rejectedInitialBinding.body, /WORKFLOW_INITIAL_SCAN_BINDING_FAILED/);
+    assert.match(rejectedInitialBinding.body, /workflow-dashboard-smoke/);
+    assert.strictEqual(spawns.length, spawnCountBeforeInitialBindingFailure);
+    const rejectedWorkflow = listWorkflowRuns(db, { planId: initialBindingFailure.planId })[0];
+    const rejectedScan = getLatestScanRun(db, { planId: initialBindingFailure.planId, site: "boss" });
+    assert(rejectedWorkflow);
+    assert(rejectedScan);
+    assert.strictEqual(rejectedScan.status, "failed");
+    assert.strictEqual(rejectedScan.stopCode, "ERR_SQLITE_ERROR");
+    assert.match(rejectedScan.stopMessage, /WORKFLOW_INITIAL_SCAN_BINDING_FAILED/);
+    assert.strictEqual(rejectedWorkflow.status, "interrupted");
+    assert.strictEqual(rejectedWorkflow.errorCode, "ERR_SQLITE_ERROR");
+    assert.match(rejectedWorkflow.errorMessage, /WORKFLOW_INITIAL_SCAN_BINDING_FAILED/);
+  } finally {
+    db.exec(`DROP TRIGGER IF EXISTS ${initialBindingTrigger}`);
+  }
+
   const started = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
     action: "start"
