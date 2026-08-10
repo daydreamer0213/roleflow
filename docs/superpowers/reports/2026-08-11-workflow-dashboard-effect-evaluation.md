@@ -1,28 +1,42 @@
-# Workflow 页面迁移效果评估
+# Workflow 页面最终效果评估
 
 ## 结论
 
-- implemented：`/workflow` 现在由 server 收集既有事实、纯 `buildWorkflowViewModel` 组装展示数据、纯 `renderWorkflowPage` 输出 HTML，浏览器行为迁入 allowlist 资产 `/assets/workflow.js`。
-- regression-safe：现有 workflow API、恢复、控制、进度、沟通和 dashboard shell 聚焦 smoke 均通过；没有改动 core、storage、BOSS 或沟通执行代码。
-- evaluated：使用隔离临时 SQLite、`forceMock` readiness 与 headless Edge，对 scanning、paused、review_required、interrupted 各 4 个视口生成 32 张 PNG 和 2 份 JSON。
-- accepted：仅接受本地 Workflow 页面迁移；这不代表真实 BOSS、人工沟通或投递操作验收。
+`/workflow` 的页面层现在按 phase 明确渲染 primary 操作，不再对完整 HTML 做全局字符串替换。每个渲染状态恰有一个可见的 `data-workflow-primary="true"`：scanning 为暂停、paused 为继续、review 为确认清单，其他结束/沟通状态也各自只有一个恢复或查看操作。
 
-## 比较与证据
+scanning 与 paused 的真实 pause/resume 表单位于 workflow header 之后、scope/health/metric details 之前。review 的真实确认表单位于 header 后且在岗位列表之前；候选列表没有删减。客户端控件查询覆盖整个 workflow page，因此移动后的 pause/resume/stop-preview/cancel 与轮询 fail-closed 状态仍生效。
 
-基线是只读 `D:\Guo\ZhiPing`，HEAD 为 `8fedac5b8dddfe5e647c771d9993ba8221f5e1a6`。当前 worktree 的 HEAD 相同但带本任务未提交 diff；两次评估均标记了该 SHA，差异由 artifact label（`baseline-8fedac5` / `current`）与生成目录区分。
+## 严格浏览器评估
 
-- [baseline JSON](evidence/2026-08-11-workflow-dashboard/baseline-8fedac5/baseline-8fedac5.json)：16 页、0 evaluation error、0 横向溢出、0 console error。
-- [current JSON](evidence/2026-08-11-workflow-dashboard/current/current.json)：16 页、0 evaluation error、0 横向溢出、0 console error。
-- 各目录含 1440x900、1024x768、768x1024、375x812 的精确 viewport PNG；scanning 记录 scanWait 和 detail counters，且执行 stop-preview/cancel；paused 记录轮询；review_required 检查 review UI；interrupted 记录恢复安全边界。所有 context 启用 reduced-motion 并记录 focus、request/page/external error。
+最终 evaluator 位于 `scripts/evaluate-workflow-dashboard.js`，使用隔离 SQLite、`forceMock` readiness 和 headless Edge；不访问真实 BOSS、沟通、网络模型或外部平台。
 
-## 实测行为与安全契约
+- [baseline JSON](evidence/2026-08-11-workflow-dashboard/baseline/baseline.json) 由最终 evaluator 针对 detached `8fedac5b8dddfe5e647c771d9993ba8221f5e1a6` 生成。
+- [current JSON](evidence/2026-08-11-workflow-dashboard/current/current.json) 由同一 evaluator 针对干净 code-fix `b49a43023f0f604f7bd622b0ce8515944cfa3044` 生成，启用 `--expect-primary`。
+- 两个目录各含 16 张 PNG（scanning、paused、review_required、interrupted × 1440×900、1024×768、768×1024、375×812）和一份 JSON，没有混入旧 artifact。
 
-- 新 smoke 先 RED（缺少 Workflow VM），GREEN 后在实际 HTTP + headless Edge 中验证：2500ms 串行 polling、无效 payload fail-closed、终态停止 timer、stop 二次确认、review checkbox quota/count。
-- `/workflow` 仍在读页时执行 recover/reconcile；所有 POST/API 路径、字段、错误码、303/400/404/409 和服务端门禁保持在 `server.js`。
-- review 链接使用保存的岗位 URL；页面只展示 immutable snapshot，未移动 communication batch/executor 校验。
+current JSON 的 16/16 页面均记录：`visiblePrimaryCount=1`、primary 完整位于初始 viewport、键盘 focus 为真、outline style 为 `solid`、无水平溢出、reduced-motion 为真、console/page/request/external errors 均为空。截图和这些首屏审计在 stop/review 交互之前、`scrollTo(0, 0)` 之后完成；交互结果随后以结构化字段保存。
 
-## 弱点与下一步
+baseline 保留非严格对照结果：其 16 页没有新 primary marker。这是 `8fedac5` 的已测量旧行为，而不是 current 的验收依据。
 
-- 默认 `NODE_PATH=D:\Guo\ZhiPing\node_modules` 没有 Playwright；全量 smoke 因而只跳过新增 smoke 的浏览器子段。浏览器 smoke 和本报告使用了另一个已存在 workspace 的无哈希 `node_modules\.pnpm\node_modules` 路径，未安装依赖。
-- 评估 review fixture 的候选清单为空，因此视觉评估未实际切换 checkbox；该交互已由新增 HTTP + Edge smoke 覆盖。
-- `server.js` 中的旧 renderer helper 仍是未调用死代码；新 route 已无调用路径。后续专门清理可在独立小任务中删除它，避免在本迁移中扩大差异。
+## 验证
+
+使用既有 `NODE_PATH`/worktree junction，未安装或更新依赖：
+
+```powershell
+$env:ROLEFLOW_REQUIRE_PLAYWRIGHT='1'
+node tests/workflow_dashboard_smoke.js
+node tests/workflow_progress_smoke.js
+node tests/workflow_control_smoke.js
+node tests/workflow_recovery_smoke.js
+node tests/workflow_communication_smoke.js
+node tests/dashboard_shell_smoke.js
+node tests/workflow_page_migration_smoke.js
+git diff --check
+node tests/run_all.js
+```
+
+focused tests 均输出 `ok`；`workflow_page_migration_smoke` 实际执行严格 evaluator；完整离线套件输出 `All 80 offline checks passed.`。
+
+## 边界
+
+本次只改 workflow renderer、浏览器 asset、浏览器 smoke 和 evaluator。未改 core/storage/CLI/adapters/BOSS/communication executor/matching，也未执行真实 BOSS、沟通或应用操作。
