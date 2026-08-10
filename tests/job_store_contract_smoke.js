@@ -44,6 +44,12 @@ function observeExec(action) {
   db.exec = (sql) => { statements.push(String(sql)); return original(sql); };
   try { return { value: action(), statements }; } finally { db.exec = original; }
 }
+function observeExecFor(database, action) {
+  const original = database.exec.bind(database);
+  const statements = [];
+  database.exec = (sql) => { statements.push(String(sql)); return original(sql); };
+  try { return { value: action(), statements }; } finally { database.exec = original; }
+}
 async function observeExecAsync(action) {
   const original = db.exec.bind(db);
   const statements = [];
@@ -173,7 +179,9 @@ try {
   assert(lateAnalyzerCalls > 0);
   assert.deepStrictEqual(db.prepare("SELECT id, analysis_json FROM job_observations WHERE id = ?").get(reassessObservation.id), reassessObservation);
   db.exec("DROP TRIGGER fail_contract_reassess");
-  const reassessed = await jobStore.reassessBatchObservations(db, { batchId, planId, configs, analyzeJob: async () => ({ semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }) });
+  const reassessedSuccess = await observeExecAsync(() => jobStore.reassessBatchObservations(db, { batchId, planId, configs, analyzeJob: async () => ({ semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }) }));
+  assert.deepStrictEqual(reassessedSuccess.statements, ["BEGIN", "COMMIT"]);
+  const reassessed = reassessedSuccess.value;
   assert.strictEqual(reassessed.batchId, batchId);
   let analyzerCalls = 0;
   const countBeforeGate = db.prepare("SELECT count(*) AS n FROM job_observations").get().n;
@@ -184,6 +192,29 @@ try {
   }
   assert.strictEqual(analyzerCalls, 0);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM job_observations").get().n, countBeforeGate);
+
+  // Isolated plan: exactly two observations, with a UDF-triggered failure on the second real update.
+  const isolated = storage.openDb(":memory:");
+  try {
+    const isolatedSave = storage.saveProfileAnalysis(isolated, {
+      profile: { candidate: { name: "Atomic Contract", city: "Shanghai", targetTitles: ["PM"] }, skills: [], projects: [] },
+      document: { originalFileName: "atomic.txt", format: "text", contentHash: "atomic-v1", text: "resume", diagnostics: {} },
+      searchPlan: { name: "atomic plan", cities: ["Shanghai"], keywords: ["AI"] }
+    });
+    const isolatedBatch = storage.createBatch(isolated, "boss", "atomic", "atomic", { profileId: isolatedSave.profileId, searchPlanId: isolatedSave.planId, filterSnapshot: { execution: {} } });
+    for (const sourceId of ["atomic-first", "atomic-second"]) jobStore.upsertJob(isolated, { ...ready, source: "boss", sourceId, score: 0, keyword: "AI", tags: [], matches: [], url: `https://www.zhipin.com/job_detail/${sourceId}.html`, bossActiveText: "今日活跃" }, isolatedBatch);
+    const isolatedConfigs = { ...configs, candidateProfile: { candidate: { targetTitles: ["PM"] } }, searchPlan: { name: "atomic plan", cities: ["Shanghai"], keywords: ["AI"] } };
+    const isolatedRows = () => isolated.prepare(`SELECT o.*, j.source, j.source_id FROM job_observations o JOIN batches b ON b.id = o.batch_id JOIN jobs j ON j.id = o.job_id WHERE b.search_plan_id = ? ORDER BY o.id`).all(isolatedSave.planId).map((row) => ({ ...row }));
+    assert.strictEqual(isolatedRows().length, 2);
+    let updateCalls = 0;
+    isolated.function("contract_second_update", () => { updateCalls += 1; if (updateCalls === 2) throw new Error("second rescore update"); return 0; });
+    isolated.exec("CREATE TRIGGER fail_second_rescore BEFORE UPDATE ON job_observations BEGIN SELECT contract_second_update(); END");
+    const atomicBefore = isolatedRows();
+    const atomicFailure = observeExecFor(isolated, () => assert.throws(() => jobStore.rescorePlanObservations(isolated, { planId: isolatedSave.planId, configs: isolatedConfigs }), /second rescore update|SQLITE/));
+    assert.deepStrictEqual(atomicFailure.statements, ["BEGIN", "ROLLBACK"]);
+    assert.strictEqual(updateCalls, 2);
+    assert.deepStrictEqual(isolatedRows(), atomicBefore);
+  } finally { isolated.close(); }
 } finally {
   db.close();
 }
