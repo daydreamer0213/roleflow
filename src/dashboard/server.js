@@ -76,6 +76,7 @@ const {
 const {
   getCommunicationBatch,
   setCommunicationBatchStatus,
+  communicationBatchSummary,
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
 const {
@@ -1735,9 +1736,7 @@ function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
       orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs,
       progressSnapshot: getWorkflowProgressSnapshot,
       getWorkflowRun,
-      getSearchPlan,
-      buildDashboardState: buildWorkflowDashboardState,
-      communicationStatus,
+      communicationBatchSummary,
       publicCommunicationStatus,
       publicWorkflow,
       logger

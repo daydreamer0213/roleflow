@@ -41,6 +41,12 @@ const {
 } = require("../src/dashboard/server");
 const boss = require("../src/adapters/sites/boss");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
+const {
+  BUDGET: workflowStatusReadBudget,
+  STALE_BUDGET: workflowStatusStaleReadBudget,
+  measureWorkflowStatusRead,
+  measureLegacyWorkflowStatusRead
+} = require("../scripts/benchmark-workflow-status-read-model");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -1257,6 +1263,7 @@ let server;
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
 
   for (const spawned of spawns) spawned.child.emit("close", 0, null);
+  testWorkflowStatusReadBudget();
   const progressPanelFixture = await testWorkflowStatusApi(baseUrl, db, saved);
   await testWorkflowProgressPanel(baseUrl, db, progressPanelFixture);
   await testWorkflowControlApi(
@@ -1512,10 +1519,8 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   assert.deepStrictEqual(Object.keys(response.body).sort(), [
     "communication",
     "controls",
-    "model",
     "progress",
     "recentActivity",
-    "today",
     "workflow"
   ]);
   assert.strictEqual(response.body.workflow.id, fixture.workflowId);
@@ -1524,8 +1529,6 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   assert.strictEqual(response.body.progress.analysis.succeeded, 1);
   assert.strictEqual(response.body.progress.analysis.pending, 1);
   assert.strictEqual(response.body.progress.stageIndex, 4);
-  assert.strictEqual(response.body.model.profile, "batch_screening");
-  assert.strictEqual(response.body.model.model, "fixture-batch-model");
   assert.strictEqual(response.body.controls.stopConsumesRunSlot, true);
   assert(Array.isArray(response.body.recentActivity));
   assert.deepStrictEqual(Object.keys(response.body.communication).sort(), ["batch", "summary"]);
@@ -1552,7 +1555,63 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   const unknown = await getJson(baseUrl, "/api/workflow-status?runId=missing-workflow-api-run");
   assert.strictEqual(unknown.status, 404);
   assert.strictEqual(unknown.body.errorCode, "WORKFLOW_RUN_NOT_FOUND");
+  const missingCommunication = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-09",
+    resumePhase: "analyzing"
+  });
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.prepare("UPDATE workflow_runs SET communication_batch_id = ? WHERE id = ?")
+      .run(999999, missingCommunication.workflowId);
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+  const missingCommunicationResponse = await getJson(
+    baseUrl,
+    `/api/workflow-status?runId=${encodeURIComponent(missingCommunication.workflowId)}`
+  );
+  assert.strictEqual(missingCommunicationResponse.status, 404);
+  assert.deepStrictEqual(missingCommunicationResponse.body, {
+    error: "本轮沟通批次不存在。",
+    errorCode: "COMMUNICATION_BATCH_NOT_FOUND"
+  });
   return fixture;
+}
+
+function testWorkflowStatusReadBudget() {
+  const forbiddenTables = new Set([
+    "batches", "candidate_job_events", "candidate_job_states", "candidate_progress_cards",
+    "events", "job_refresh_attempts", "jobs", "search_plans", "site_runtime_states"
+  ]);
+  for (const [label, options] of [["active", {}], ["communication", { communication: true }]]) {
+    const { metrics, result } = measureWorkflowStatusRead(options);
+    const legacy = measureLegacyWorkflowStatusRead(options);
+    assert.strictEqual(result.statusCode, 200, `${label} read must return the current workflow`);
+    assert(
+      legacy.metrics.statements > workflowStatusReadBudget.statements || legacy.metrics.rows > workflowStatusReadBudget.rows,
+      `${label} legacy read must exceed the lightweight budget`
+    );
+    assert(metrics.statements <= workflowStatusReadBudget.statements,
+      `${label} status read used ${metrics.statements} statements; budget is ${workflowStatusReadBudget.statements}`);
+    assert(metrics.rows <= workflowStatusReadBudget.rows,
+      `${label} status read returned ${metrics.rows} rows; budget is ${workflowStatusReadBudget.rows}`);
+    assert(!metrics.tables.some((table) => forbiddenTables.has(table)),
+      `${label} status read touched plan-wide/history tables: ${metrics.tables.join(", ")}`);
+    if (label === "active") {
+      assert(!metrics.tables.includes("communication_batch_items"), "non-communication status reads must not load communication items");
+    }
+  }
+  const stale = measureWorkflowStatusRead({ stale: true });
+  assert.strictEqual(stale.result.statusCode, 200);
+  assert.strictEqual(stale.result.body.workflow.status, "interrupted", "status reads must reconcile stale runs before responding");
+  assert.strictEqual(stale.result.body.workflow.progressRevision, 7, "recovery response must retain the progress revision");
+  assert(stale.metrics.statements <= workflowStatusStaleReadBudget.statements,
+    `stale status read used ${stale.metrics.statements} statements; budget is ${workflowStatusStaleReadBudget.statements}`);
+  assert(stale.metrics.rows <= workflowStatusStaleReadBudget.rows,
+    `stale status read returned ${stale.metrics.rows} rows; budget is ${workflowStatusStaleReadBudget.rows}`);
+  assert(stale.metrics.executed.run >= 1, "stale status read must execute recovery writes");
+  assert(!stale.metrics.tables.some((table) => forbiddenTables.has(table)),
+    `stale status read touched plan-wide/history tables: ${stale.metrics.tables.join(", ")}`);
 }
 
 async function testWorkflowProgressPanel(baseUrl, database, fixture) {
