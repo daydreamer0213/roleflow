@@ -28,19 +28,19 @@ function renderWorkflowHealthPanel(report = {}) {
     : "";
 
   return `<section class="panel workflow-health">
-    <details${report.status === "blocked" ? " open" : ""}>
+    <details>
       <summary><strong>流程体检：${escapeHtml(statusLabel)}</strong>
         · 已检查岗位 ${Number(summary.jobsChecked || 0)}
         · 问题 ${Number(summary.issueCount || 0)}
       </summary>
       <p class="hint">这里只读取现有记录，不会自动修复、重新分析、扫描或沟通。</p>
       ${truncatedNote}
-      <h2>需要关注</h2>
+      <h3>需要关注</h3>
       <table class="diagnostics">
         <thead><tr><th>级别</th><th>问题</th><th>对象</th><th>操作</th></tr></thead>
         <tbody>${issueRows || "<tr><td colspan=\"4\">当前未发现流程数据问题</td></tr>"}</tbody>
       </table>
-      <h2>最近状态变化</h2>
+      <h3>最近状态变化</h3>
       <table class="diagnostics">
         <thead><tr><th>时间</th><th>状态</th><th>岗位</th></tr></thead>
         <tbody>${eventRows || "<tr><td colspan=\"3\">暂无状态变化记录</td></tr>"}</tbody>

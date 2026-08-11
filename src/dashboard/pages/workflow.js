@@ -6,20 +6,31 @@ const { renderWorkflowHealthPanel } = require("../workflow_health_view");
 
 function renderWorkflowPage(vm = {}) {
   const page = vm.page || {};
-  return renderDashboardFrame({ currentPath: page.currentPath, todayPath: page.planHref, planId: page.planId, stage: "本轮执行", brandHref: page.planHref, content: `<main id="main-content" class="workflow-shell" data-workflow-page data-polling-kind="${escapeAttr(vm.polling?.kind || "none")}" data-workflow-run-id="${escapeAttr(vm.polling?.runId || page.runId)}" data-polling-interval="${Number(vm.polling?.intervalMs || 2500)}" data-polling-key="${escapeAttr(vm.polling?.initialKey || "")}" data-terminal-states="${escapeAttr((vm.polling?.terminalStates || []).join(","))}">
-  ${renderHeader(vm)}${renderPrimaryCommand(vm.phase, vm.controls)}${renderPhase(vm.phase)}${renderScope(vm.scope)}${vm.health?.report?.status ? renderWorkflowHealthPanel(vm.health.report) : ""}${renderProgress(vm.progress)}
+  return renderDashboardFrame({ currentPath: page.currentPath, todayPath: page.planHref, planId: page.planId, stage: "本轮执行", brandHref: page.planHref, content: `<main id="main-content" class="workflow-shell" data-workflow-page data-polling-kind="${escapeAttr(vm.polling?.kind || "none")}" data-workflow-run-id="${escapeAttr(vm.polling?.runId || page.runId)}" data-polling-interval="${Number(vm.polling?.intervalMs || 2500)}" data-polling-key="${escapeAttr(vm.polling?.initialKey || "")}" data-terminal-states="${escapeAttr((vm.polling?.terminalStates || []).join(","))}" data-workflow-status="${escapeAttr(vm.progress?.status || vm.phase?.status || "")}" data-workflow-control-state="${escapeAttr(vm.progress?.controlState || "")}">
+  ${renderHeader(vm)}${renderPrimary(vm)}${renderPrimaryCommand(vm.phase, vm.controls)}${renderPhase(vm.phase)}<details class="workflow-technical"><summary>技术明细</summary>${renderRunMetrics(vm.header)}${renderScope(vm.scope)}${vm.health?.report?.status ? renderWorkflowHealthPanel(vm.health.report) : ""}${renderProgress(vm.progress)}</details>
 </main><script src="/assets/workflow.js"></script>` });
 }
 
 function renderHeader(vm) {
   const header = vm.header || {};
   const page = vm.page || {};
-  return `<header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${number(header.sequence)} 轮 · ${escapeHtml(header.localDay)}</p><h1>${escapeHtml(header.statusLabel)}</h1></div><a href="${escapeAttr(page.planHref)}">返回筛选方案</a></div><div class="workflow-progress"><span>本轮目标 <strong>${number(header.targetSuccessCount)}</strong></span><span>本轮成功 <strong>${number(header.successfulCount)}</strong></span><span>今日进度 <strong>${number(header.todaySuccessful)} / ${number(header.dailyTarget)}</strong></span><span>有效候选 <strong>${number(header.inventoryCount)}</strong></span></div></header>`;
+  return `<header class="workflow-head"><div class="workflow-headline"><div><p class="workflow-sequence">第 ${number(header.sequence)} 轮 · ${escapeHtml(header.localDay)}</p><h1>${escapeHtml(header.statusLabel)}</h1></div><a href="${escapeAttr(page.planHref)}">返回筛选方案</a></div></header>`;
 }
+
+function renderPrimary(vm = {}) {
+  const overview = vm.overview || {};
+  const blocker = overview.blocker || {};
+  const cooldown = overview.cooldown || {};
+  const blockerDetail = `<span data-overview-blocker-stable${cooldown.active ? " hidden" : ""}>${escapeHtml(blocker.label || "")}：${escapeHtml(blocker.detail || "")}；${escapeHtml(blocker.recovery || "")}</span><span data-cooldown data-retry-at="${escapeAttr(cooldown.retryAt || "")}"${cooldown.active ? "" : " hidden"}>安全冷却中：<span data-cooldown-reason>${escapeHtml(cooldown.reason || "")}</span>；重试时间 <time data-cooldown-retry-time datetime="${escapeAttr(cooldown.retryAt || "")}">${escapeHtml(cooldown.retryAtLabel || "")}</time>；<span data-cooldown-countdown data-retry-at="${escapeAttr(cooldown.retryAt || "")}" aria-hidden="true"></span></span>`;
+  return `<section class="workflow-primary" role="region" aria-labelledby="workflow-primary-title"><h2 id="workflow-primary-title">本轮概览</h2><dl class="workflow-primary-grid">${primaryField("当前阶段", overview.currentPhase, false, "phase")}${primaryField("整体进度", overview.overallProgress, false, "progress")}${primaryField("可用推荐", overview.usableRecommendations, false, "recommendations")}${primaryField("剩余工作", overview.remainingWork, false, "remaining")}${primaryField("预计继续时间", overview.estimatedContinuation, false, "eta")}${primaryField("暂停/阻塞原因", blockerDetail, true, "blocker")}${primaryField("下一步", overview.nextAction, false, "next-action")}</dl></section>`;
+}
+
+function primaryField(label, value, trusted = false, hook = "") { return `<div class="workflow-primary-field" data-workflow-primary-field><dt>${escapeHtml(label)}</dt><dd${hook ? ` data-overview-${escapeAttr(hook)}` : ""}>${trusted ? value : escapeHtml(String(value ?? ""))}</dd></div>`; }
+function renderRunMetrics(header = {}) { return `<section class="workflow-run-metrics"><h2>本轮统计</h2><dl><div><dt>本轮目标</dt><dd>${number(header.targetSuccessCount)}</dd></div><div><dt>本轮成功</dt><dd>${number(header.successfulCount)}</dd></div><div><dt>今日进度</dt><dd>${number(header.todaySuccessful)} / ${number(header.dailyTarget)}</dd></div></dl></section>`; }
 
 function renderScope(scope = {}) {
   if (!scope.visible) return "";
-  return `<section class="workflow-scope"><strong>筛选来源：BOSS 当前页面</strong><ul>${(scope.filters || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("") || "<li>使用平台默认筛选</li>"}</ul><p>范围：${escapeHtml(scope.scopeKey)} · 关键词来源：Search Plan #${escapeHtml(scope.sourcePlanId)}</p><p>本轮关键词：${escapeHtml((scope.keywords || []).join("、") || "无")}</p>${scope.unresolved?.length ? `<p class="workflow-alert">未解析平台筛选：${escapeHtml(scope.unresolved.join("、"))}；采集 URL 已保留这些条件，本地不会猜值。</p>` : ""}<p class="hint">修改 BOSS 筛选会创建新的统计范围；本轮恢复仍使用当前冻结范围。</p></section>`;
+  return `<section class="workflow-scope" data-workflow-diagnostics><h2>采集与筛选明细</h2><strong>筛选来源：BOSS 当前页面</strong><ul>${(scope.filters || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("") || "<li>使用平台默认筛选</li>"}</ul><p>范围：${escapeHtml(scope.scopeKey)} · 关键词来源：Search Plan #${escapeHtml(scope.sourcePlanId)}</p><p>本轮关键词：${escapeHtml((scope.keywords || []).join("、") || "无")}</p>${scope.unresolved?.length ? `<p class="workflow-alert">未解析平台筛选：${escapeHtml(scope.unresolved.join("、"))}；采集 URL 已保留这些条件，本地不会猜值。</p>` : ""}<p class="hint">修改 BOSS 筛选会创建新的统计范围；本轮恢复仍使用当前冻结范围。</p></section>`;
 }
 
 function renderPrimaryCommand(phase = {}, controls = {}) {

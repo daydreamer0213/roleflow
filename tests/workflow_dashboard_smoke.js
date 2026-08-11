@@ -527,7 +527,7 @@ let server;
 
   const scanningPage = await getText(baseUrl, started.location);
   assert.match(scanningPage.body, /正在筛选岗位/);
-  assert.match(scanningPage.body, /本轮目标\s*<strong>35/);
+  assert.match(scanningPage.body, /<section class="workflow-run-metrics"><h2>本轮统计<\/h2><dl><div><dt>本轮目标<\/dt><dd>35<\/dd>/);
   assert.doesNotMatch(scanningPage.body, /上午|下午/);
   for (const text of [
     "筛选来源：BOSS 当前页面",
@@ -549,7 +549,8 @@ let server;
     ...workflow.planner,
     platformPolicy: {
       ...workflow.planner.platformPolicy,
-      unresolvedParams: [{ param: "industry", codes: ["100020"] }]
+      filters: { location: { mode: "specific", cities: ["Guangzhou"], districts: ["Tianhe"] } },
+      unresolvedParams: [{ param: "industry", codes: ["100020"] }, { param: "multiBusinessDistrict", codes: ["510108"] }]
     },
     browserState: {
       cookie: "raw-authenticated-browser-state"
@@ -559,6 +560,14 @@ let server;
     .run(JSON.stringify(unresolvedPlanner), workflow.id);
   const unresolvedPage = await getText(baseUrl, started.location);
   assert.match(unresolvedPage.body, /未解析平台筛选：industry/);
+  const unresolvedPrimary = unresolvedPage.body.slice(
+    unresolvedPage.body.indexOf('class="workflow-primary"'),
+    unresolvedPage.body.indexOf('class="workflow-technical"')
+  );
+  const unresolvedTechnical = unresolvedPage.body.slice(unresolvedPage.body.indexOf('class="workflow-technical"'));
+  assert.doesNotMatch(unresolvedPrimary, /industry|multiBusinessDistrict/);
+  assert.match(unresolvedTechnical, /multiBusinessDistrict/);
+  assert.match(unresolvedTechnical, /地点：广州、天河/);
   assert.doesNotMatch(unresolvedPage.body, /100020/);
   assert.doesNotMatch(unresolvedPage.body, /raw-authenticated-browser-state/);
   db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
@@ -1033,7 +1042,7 @@ let server;
   assert.match(reviewPage.body, /name="browserMode" value="edge"/);
   assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
-  assert.match(reviewPage.body, /有效候选\s*<strong>/);
+  assert.match(reviewPage.body, /<dt>可用推荐<\/dt><dd[^>]*>6<\/dd>/);
   assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount >= 6, true);
   for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
     assert.match(reviewPage.body, new RegExp(label));
@@ -1111,8 +1120,8 @@ let server;
   }
   const completedPage = await getText(baseUrl, confirmed.location);
   assert.match(completedPage.body, /本轮已完成/);
-  assert.match(completedPage.body, /今日进度\s*<strong>30\s*\/\s*70/);
-  assert.match(completedPage.body, /本轮成功\s*<strong>30/);
+  assert.match(completedPage.body, /今日进度<\/dt><dd>30\s*\/\s*70/);
+  assert.match(completedPage.body, /本轮成功<\/dt><dd>30<\/dd>/);
 
   const planAfter = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(planAfter.body, /今日进度\s*<strong>30\s*\/\s*70/);
@@ -1552,6 +1561,34 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`
   );
   assert.strictEqual(page.status, 200);
+  // Break caught: moving raw progress, health, or scope diagnostics back into the first-view workflow summary.
+  const primaryStart = page.body.indexOf('class="workflow-primary"');
+  const primaryEnd = page.body.indexOf("</section>", primaryStart) + "</section>".length;
+  const technicalStart = page.body.indexOf('class="workflow-technical"');
+  assert(primaryStart >= 0, "workflow must expose a semantic primary summary region");
+  assert(primaryEnd > primaryStart, "workflow primary summary must have a section boundary");
+  assert(technicalStart > primaryStart, "technical details must follow the primary summary");
+  const primary = page.body.slice(primaryStart, primaryEnd);
+  assert.match(primary, /role="region"[^>]*aria-labelledby="workflow-primary-title"/);
+  assert.strictEqual(
+    (primary.match(/data-workflow-primary-field/g) || []).length,
+    7,
+    "the primary summary must contain only the seven decision fields"
+  );
+  for (const label of ["当前阶段", "整体进度", "可用推荐", "剩余工作", "预计继续时间", "暂停/阻塞原因", "下一步"]) {
+    assert(primary.includes(label), `primary summary must identify ${label}`);
+  }
+  for (const hook of ["phase", "progress", "recommendations", "remaining", "eta", "blocker", "next-action"]) {
+    assert.match(primary, new RegExp(`data-overview-${hook}`), `primary summary must expose the ${hook} update hook`);
+  }
+  assert.doesNotMatch(primary, /data-stop-|data-workflow-control|data-action="stop/, "primary summary must contain fields only, not stop diagnostics or controls");
+  assert.doesNotMatch(primary, /任务 #|最近活动|已检查岗位|未解析平台筛选/);
+  const technical = page.body.slice(technicalStart);
+  assert.match(technical, /^class="workflow-technical"/);
+  assert.match(page.body, /<details class="workflow-technical">/);
+  assert.doesNotMatch(page.body, /<details class="workflow-technical" open>/);
+  assert.match(technical, /data-recent-activity/);
+  assert.match(technical, /data-analysis-timeouts/);
   for (const hook of [
     "data-workflow-panel",
     "data-progress-revision",
@@ -1609,6 +1646,30 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(page.body, /<script src="\/assets\/workflow\.js"><\/script>/);
   assert.doesNotMatch(page.body, /data-workflow-progress-client/);
 
+  const waitingMetrics = {
+    ...getWorkflowRun(database, fixture.workflowId).metrics,
+    scanWait: {
+      runId: fixture.scanRunId,
+      action: "detail_open",
+      delayMs: 600000,
+      retryAt: "2099-02-01T00:10:00.000Z"
+    }
+  };
+  database.prepare("UPDATE workflow_runs SET status = 'scanning', metrics_json = ? WHERE id = ?")
+    .run(JSON.stringify(waitingMetrics), fixture.workflowId);
+  const cooldownPage = await getText(baseUrl, `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`);
+  assert.strictEqual(cooldownPage.status, 200);
+  const cooldownPrimary = cooldownPage.body.slice(
+    cooldownPage.body.indexOf('class="workflow-primary"'),
+    cooldownPage.body.indexOf('class="workflow-technical"')
+  );
+  assert.match(cooldownPrimary, /data-cooldown[^>]*data-retry-at="2099-02-01T00:10:00\.000Z"/);
+  assert.match(cooldownPrimary, /data-cooldown-reason[^>]*>正在读取岗位详情</);
+  assert.match(cooldownPrimary, /data-cooldown-retry-time/);
+  assert.match(cooldownPrimary, /data-cooldown-countdown[^>]*aria-hidden="true"/);
+  await assertWorkflowCooldownClient();
+  await assertWorkflowSummaryAndTimerLifecycleClient();
+
   transitionWorkflowRun(database, {
     id: fixture.workflowId,
     status: "paused",
@@ -1627,6 +1688,174 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(pausedPage.body, /data-action="resume"/);
   assert.match(pausedPage.body, /继续本轮/);
   assert.match(pausedPage.body, /结束本轮…/);
+}
+
+async function assertWorkflowSummaryAndTimerLifecycleClient() {
+  const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "workflow.js"), "utf8");
+  let clock = Date.parse("2099-02-01T00:09:57.000Z");
+  let timerId = 0;
+  let reloads = 0;
+  const timers = new Map();
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const textNode = (textContent) => ({ textContent });
+  const overviewProgress = textNode("stale progress");
+  const overviewRemaining = textNode("99");
+  const overviewEta = textNode("stale eta");
+  const blockerStable = { textContent: "没有阻塞", hidden: false };
+  const cooldown = { dataset: {}, hidden: true };
+  const cooldownReason = textNode("");
+  const cooldownRetry = { textContent: "", dateTime: "" };
+  const countdown = { dataset: {}, textContent: "" };
+  const panel = { dataset: {} };
+  const page = {
+    dataset: {
+      pollingKind: "progress", workflowRunId: "summary-fixture", pollingInterval: "2500",
+      terminalStates: "review_required,interrupted,completed,failed,stopped",
+      workflowStatus: "scanning", workflowControlState: ""
+    },
+    querySelector(selector) {
+      return {
+        "[data-workflow-panel]": panel,
+        "[data-overview-progress]": overviewProgress,
+        "[data-overview-remaining]": overviewRemaining,
+        "[data-overview-eta]": overviewEta,
+        "[data-overview-blocker-stable]": blockerStable,
+        "[data-cooldown]": cooldown,
+        "[data-cooldown-reason]": cooldownReason,
+        "[data-cooldown-retry-time]": cooldownRetry,
+        "[data-cooldown-countdown]": countdown
+      }[selector] || null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const sameStatus = {
+    workflow: { status: "scanning", controlState: "", progressRevision: 2, lastActivityAt: "2099-02-01T00:09:57.000Z" },
+    progress: {
+      stage: "分析岗位", stageIndex: 4, stageCount: 5,
+      scanWait: { action: "detail_open", retryAt: "2099-02-01T00:10:00.000Z" },
+      eta: { status: "available", minSeconds: 60, maxSeconds: 120, sampleSize: 3 },
+      analysis: { pending: 2, running: 1, retryPending: 1 }
+    },
+    controls: { canPause: true, canResume: false, canStop: true },
+    recentActivity: []
+  };
+  const changedStatus = {
+    ...sameStatus,
+    workflow: { ...sameStatus.workflow, status: "paused", progressRevision: 3 }
+  };
+  const responses = [sameStatus, changedStatus];
+  class ClockDate extends Date {
+    constructor(value) { super(value === undefined ? clock : value); }
+    static now() { return clock; }
+  }
+  const document = {
+    hidden: false,
+    querySelector(selector) { return selector === "[data-workflow-page]" ? page : null; },
+    getElementById() { return null; },
+    addEventListener(event, callback) { documentListeners.set(event, callback); }
+  };
+  const window = {
+    addEventListener(event, callback) { windowListeners.set(event, callback); }
+  };
+  const context = vm.createContext({
+    document, window, Date: ClockDate,
+    fetch: async () => ({ ok: true, json: async () => responses.shift() || changedStatus }),
+    setInterval(callback, interval) { assert.strictEqual(interval, 1000); timerId += 1; timers.set(timerId, callback); return timerId; },
+    clearInterval(id) { timers.delete(id); },
+    encodeURIComponent,
+    location: { reload() { reloads += 1; } }
+  });
+  new vm.Script(script).runInContext(context);
+  await flushPromises();
+
+  assert.strictEqual(overviewProgress.textContent, "第 4 / 5 阶段", "same-status polling must refresh overview progress");
+  assert.strictEqual(overviewRemaining.textContent, "4", "same-status polling must refresh overview remaining work");
+  assert.match(overviewEta.textContent, /安全冷却至/, "same-status polling must refresh overview ETA from retryAt");
+  assert.strictEqual(cooldownReason.textContent, "正在读取岗位详情");
+  assert.strictEqual(cooldown.hidden, false);
+  assert.strictEqual(blockerStable.hidden, true);
+  assert.strictEqual(reloads, 0, "a progress revision alone must not reload the page");
+  assert.strictEqual(timers.size, 1, "workflow client must start one timer");
+
+  document.hidden = true;
+  documentListeners.get("visibilitychange")();
+  assert.strictEqual(timers.size, 0, "hidden documents must stop the timer");
+  document.hidden = false;
+  documentListeners.get("visibilitychange")();
+  documentListeners.get("visibilitychange")();
+  assert.strictEqual(timers.size, 1, "visible documents must resume with at most one timer");
+  windowListeners.get("pagehide")();
+  assert.strictEqual(timers.size, 0, "pagehide must stop the timer");
+  windowListeners.get("pageshow")();
+  windowListeners.get("pageshow")();
+  assert.strictEqual(timers.size, 1, "pageshow must resume with at most one timer");
+
+  clock += 3000;
+  await [...timers.values()][0]();
+  await flushPromises();
+  assert.strictEqual(reloads, 1, "workflow status changes must reload once for server-rendered phase and action markup");
+}
+
+async function assertWorkflowCooldownClient() {
+  const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "workflow.js"), "utf8");
+  let clock = Date.parse("2099-02-01T00:09:57.000Z");
+  let intervalCallback = null;
+  let intervalCount = 0;
+  let fetches = 0;
+  const countdown = { dataset: { retryAt: "2099-02-01T00:10:00.000Z" }, textContent: "" };
+  const cooldown = { dataset: { retryAt: "2099-02-01T00:10:00.000Z" }, hidden: false };
+  const panel = { dataset: {} };
+  const page = {
+    dataset: { pollingKind: "progress", workflowRunId: "cooldown-fixture", pollingInterval: "2500", terminalStates: "", workflowStatus: "scanning", workflowControlState: "" },
+    querySelector(selector) {
+      return {
+        "[data-workflow-panel]": panel,
+        "[data-cooldown]": cooldown,
+        "[data-cooldown-countdown]": countdown
+      }[selector] || null;
+    },
+    querySelectorAll() { return []; }
+  };
+  class ClockDate extends Date {
+    constructor(value) { super(value === undefined ? clock : value); }
+    static now() { return clock; }
+  }
+  const document = {
+    hidden: false,
+    querySelector(selector) { return selector === "[data-workflow-page]" ? page : null; },
+    getElementById() { return null; },
+    addEventListener() {}
+  };
+  const context = vm.createContext({
+    document,
+    window: { addEventListener() {} },
+    Date: ClockDate,
+    fetch: async () => { fetches += 1; return { ok: true, json: async () => validWorkflowSnapshot() }; },
+    setInterval(callback, interval) { intervalCallback = callback; intervalCount += 1; assert.strictEqual(interval, 1000, "cooldown must reuse one one-second page tick"); return 1; },
+    clearInterval() {},
+    encodeURIComponent,
+    location: { reload() {} }
+  });
+  new vm.Script(script).runInContext(context);
+  assert.strictEqual(intervalCount, 1, "workflow page must register one interval");
+  assert.strictEqual(countdown.textContent, "3 秒", "countdown must be calculated from the server retry timestamp");
+  clock += 1000;
+  await intervalCallback();
+  assert.strictEqual(countdown.textContent, "2 秒", "the local tick must progress without a new server timestamp");
+  clock += 3000;
+  await intervalCallback();
+  assert.strictEqual(countdown.textContent, "0 秒", "a completed cooldown must wait for polling rather than trigger an action");
+  assert(fetches >= 1 && fetches <= 2, "cooldown ticks must preserve the existing polling cadence");
+}
+
+function validWorkflowSnapshot() {
+  return {
+    workflow: { status: "scanning", controlState: "", progressRevision: 1, lastActivityAt: "2099-02-01T00:09:57.000Z" },
+    progress: { scanWait: null, eta: { status: "estimating" }, analysis: {} },
+    controls: { canPause: true, canResume: false, canStop: true },
+    recentActivity: []
+  };
 }
 
 function seedSensitiveCommunicationFixture(database, fixture) {

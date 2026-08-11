@@ -11,6 +11,7 @@ function buildWorkflowViewModel({
   const planner = workflow.planner || {};
   const progress = progressSnapshot ? progressView(progressSnapshot) : null;
   const phase = phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewCandidates, quota });
+  const controls = controlView(progressSnapshot, workflow, stopPreview);
   return {
     page: {
       title: "执行一轮", runId: String(workflow.id || ""), planId: String(plan.id || workflow.planId || ""),
@@ -26,8 +27,9 @@ function buildWorkflowViewModel({
     scope: scopeView(planner),
     health: { report: JSON.parse(JSON.stringify(healthReport || {})) },
     progress,
-    controls: controlView(progressSnapshot, workflow, stopPreview),
+    controls,
     phase,
+    overview: overviewView({ workflow, progress, phase, controls, runtimeBlock }),
     polling: pollingView(status, workflow, communication, progressSnapshot)
   };
 }
@@ -36,9 +38,10 @@ function scopeView(planner) {
   if (planner?.acquisitionMode !== "inherited") return { visible: false, filters: [], keywords: [], unresolved: [] };
   const policy = planner.platformPolicy || {};
   const source = planner.keywordSource || {};
+  const region = workRegionLabel(policy);
   return {
     visible: true, scopeKey: scopeShortId(planner.searchScope?.key) || "未记录", sourcePlanId: String(source.searchPlanId || ""),
-    filters: (policy.filterSummary || []).map(String), keywords: (source.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
+    filters: [region, ...(policy.filterSummary || []).map(String).filter((item) => !String(item).includes("未解析参数"))].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index), keywords: (source.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
     unresolved: (policy.unresolvedParams || []).map((item) => String(item?.param || "")).filter(Boolean)
   };
 }
@@ -60,10 +63,45 @@ function progressView(snapshot) {
       collected: number(analysis.total), detailsRead: number(snapshot?.progress?.detailsRead), detailsPending: number(snapshot?.progress?.detailsPending),
       circuitTimeoutJobs: number(analysis.circuitTimeoutJobs), timeoutPauseThreshold: number(analysis.timeoutPauseThreshold || 10), lifetimeTimeoutJobs: number(analysis.lifetimeTimeoutJobs)
     },
-    scanWaitLabel: scanWaitLabel(snapshot?.progress?.scanWait), etaLabel: etaLabel(snapshot?.progress?.eta),
+    cooldown: cooldownView(snapshot?.progress?.scanWait), scanWaitLabel: scanWaitLabel(snapshot?.progress?.scanWait), etaLabel: etaLabel(snapshot?.progress?.eta),
     recentActivityLabel: (snapshot?.recentActivity || []).length ? snapshot.recentActivity.map(activityLabel).join("；") : "还没有新的分析活动。",
     staleEligible: ["created", "scanning", "analyzing"].includes(snapshot?.workflow?.status)
   };
+}
+
+function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
+  const target = number(workflow.targetSuccessCount);
+  const successful = number(workflow.successfulCount);
+  const cooldown = progress?.cooldown || { active: false };
+  return {
+    currentPhase: workflowStatusLabel(workflow.status),
+    overallProgress: progress?.visible
+      ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
+      : target ? `${successful} / ${target}` : "等待状态更新",
+    usableRecommendations: number(workflow.inventoryCount),
+    remainingWork: progress?.visible ? number(progress.analysis?.remaining) : Math.max(0, target - successful),
+    estimatedContinuation: cooldown.active ? `安全冷却至 ${cooldown.retryAtLabel}` : progress?.etaLabel || "当前阶段不估算剩余时间",
+    blocker: blockerView({ workflow, cooldown, runtimeBlock }),
+    nextAction: nextActionLabel(phase, controls),
+    cooldown
+  };
+}
+
+function blockerView({ workflow, cooldown, runtimeBlock }) {
+  if (cooldown.active) return { label: "安全冷却中", detail: cooldown.reason, recovery: "到达重试时间后等待本地状态刷新" };
+  if (runtimeBlock) return { label: "运行环境已阻塞", detail: runtimeBlockLabel(runtimeBlock.reasonCode), recovery: "检查运行环境后再查看本轮状态" };
+  if (workflow.status === "paused") return { label: "本轮已暂停", detail: String(workflow.errorCode || "安全暂停"), recovery: "检查原因后继续本轮" };
+  if (["interrupted", "failed", "stopped"].includes(workflow.status)) return { label: "本轮需要处理", detail: String(workflow.errorCode || workflow.shortfallCode || "状态已停止"), recovery: String(workflow.errorMessage || "检查技术明细后选择下一步") };
+  return { label: "没有阻塞", detail: "本轮按当前安全规则进行", recovery: "等待下一次状态更新" };
+}
+
+function nextActionLabel(phase, controls) {
+  if (phase.kind === "active") return controls.pausedVisible ? "继续本轮" : "暂停本轮";
+  return {
+    review: "确认清单", confirmed: phase.communication?.actionLabel || phase.communication?.detailsLabel,
+    communicating: "查看执行明细", completed: "返回今日任务", interrupted: phase.communicationHref ? phase.communication?.detailsLabel : "继续本轮",
+    fallback: "返回今日任务"
+  }[phase.kind] || "查看本轮状态";
 }
 
 function controlView(snapshot, workflow, stopPreview) {
@@ -133,6 +171,11 @@ function communicationKey(workflow, communication) { const counts = communicatio
 function reviewBrowserMode(workflow) { const mode = String(workflow.planner?.browserMode || (workflow.planner?.acquisitionMode === "inherited" ? "edge" : "portable")).trim().toLowerCase(); return mode === "edge" ? "edge" : "portable"; }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
 function safeExternalUrl(value) { try { const url = new URL(String(value || "")); return ["http:", "https:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; } }
+function workRegionLabel(policy = {}) { const location = policy.filters?.location || policy.filterSnapshot?.filters?.location || {}; if (location.mode === "nationwide") return "地点：全国"; const cities = (location.cities || []).map(localizedRegion).filter(Boolean); const districts = (location.districts || []).map(localizedRegion).filter(Boolean); if (!cities.length && !districts.length) return ""; return `地点：${[...cities, ...districts].join("、")}`; }
+function localizedRegion(value) { const text = String(value || "").trim(); return { Guangzhou: "广州", Shenzhen: "深圳", Shanghai: "上海", Beijing: "北京", Hangzhou: "杭州", Chengdu: "成都", Tianhe: "天河", Panyu: "番禺", Nanshan: "南山", Pudong: "浦东" }[text] || (/^[\u3400-\u9fff·]+$/.test(text) ? text : ""); }
+function cooldownView(scanWait = {}) { const retryAt = String(scanWait?.retryAt || ""); const retryMs = Date.parse(retryAt); if (!Number.isFinite(retryMs) || retryMs <= Date.now()) return { active: false }; return { active: true, reason: cooldownReason(scanWait.action), retryAt, retryAtLabel: new Date(retryMs).toLocaleString("zh-CN", { hour12: false }) }; }
+function cooldownReason(action) { return { detail_open: "正在读取岗位详情", pane_detail_read: "正在读取岗位详情", list_navigation: "正在切换岗位列表" }[String(action || "")] || "平台访问正在安全冷却"; }
+function runtimeBlockLabel(code) { return { BOSS_RISK_CONTROL: "平台风险控制仍在生效", BOSS_LOGIN_REQUIRED: "需要在浏览器中重新登录", BOSS_BROWSER_UNAVAILABLE: "浏览器连接不可用" }[String(code || "")] || "运行环境暂不可用"; }
 function scanWaitLabel(scanWait, now = Date.now()) { const retryAt = Date.parse(scanWait?.retryAt || ""); if (!Number.isFinite(retryAt) || retryAt <= now) return ""; return `安全冷却中，预计 ${Math.max(1, Math.ceil((retryAt - now) / 60000))} 分钟后继续（${new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false })}）`; }
 function duration(seconds) { const value = Math.max(0, Math.ceil(number(seconds))); if (value < 60) return `${value} 秒`; if (value < 3600) return `${Math.ceil(value / 60)} 分钟`; const hours = Math.floor(value / 3600); const minutes = Math.ceil((value % 3600) / 60); return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`; }
 function etaLabel(eta = {}) { if (eta.status === "available") return `预计剩余 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（基于最近 ${number(eta.sampleSize)} 个完成岗位估算）`; if (eta.status === "paused") return eta.minSeconds == null || eta.maxSeconds == null ? "已暂停；样本不足，正在估算" : `已暂停；剩余区间冻结为 ${duration(eta.minSeconds)}～${duration(eta.maxSeconds)}（${number(eta.sampleSize)} 个样本）`; return eta.status === "estimating" ? "正在估算" : "当前阶段不估算剩余时间"; }
