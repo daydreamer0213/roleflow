@@ -338,7 +338,7 @@ Recommendation Policy -> 薪资/地点/经验硬边界、证据、权重、阈�
 ### AGPLv3 是否合理
 
 如果目标是“允许使用和商业化，但修改后作为网络服务提供时也必须向用户提供对应源码”，AGPLv3 很合理。GNU AGPLv3 第 13 节要求修改版通过网络与用户交互时向这些用户提供对应源码：
-[GNU AGPLv3](https://www.gnu.org/licenses/agpl-3.0.html)。
+[GNU AGPLv3](https://www.gnu.org/licenses/agpl.en.html)。
 
 但 AGPLv3 **不能禁止盈利或商业使用**。OSI 的开源定义要求许可证不得限制商业领域，并明确说明所有开源软件都可以用于商业目的：
 [Open Source Definition](https://opensource.org/osd)、
@@ -400,3 +400,66 @@ PolyForm Noncommercial 的官方文本只授权许可范围内的非商业用途
 - 外部动作：广东睿云尝试未建联；趋势智能成功建联一次；没有沟通第三个岗位，也没有投递。
 - Dashboard：普通 Edge 当前打开“BOSS 消息只读发现”的失败状态页，显示需要人工处理。
 - Wave 5：未启动。
+
+## 2026-08-12 Gate A 修复后复验
+
+### 已合并
+
+- `ba414d5`：采集策略与推荐策略分离。
+- `5239d40`：沟通结果脱敏观测和明确失败状态。
+- `c547ecd`：消息发现复用 Dashboard 的普通 Edge authority。
+- `250687c`：所有入口在存在未解决 ambiguity 时禁止开始/恢复，并提供精确人工处理锚点。
+- `77bd113`：未匹配消息会话持久留存，不阻断后续合法队列。
+- `4eafb82`：默认简历诊断、文件显示名和历史读取 DTO 脱敏。
+
+### 验证证据
+
+- 每个分支在 review clean 后分别通过 89 项离线全套测试。
+- Task 3、Task 4A、Task 9 逐项合并后，main 又分别通过 89 项全套测试。
+- `git diff --check checkpoint/pre-wave4-acceptance-remediation-20260811..HEAD` 通过。
+- ambiguity 恢复已覆盖 application、CLI/core executor、workflow 页面和 legacy review：
+  - summary、items 任一显示 ambiguity 或两者计数漂移都 fail-closed；
+  - reserve 后出现 ambiguity 时，未检查的 item 回到 `pending`，batch/workflow 进入 `interrupted`；
+  - inspect、dispatch 和 click 均为 0；
+  - 人工 resolution 带 evidence 后可使用既有恢复路径；
+  - 最坏代价是一次访问预算保守多计，不会换取额外平台操作。
+- 消息未匹配留存已覆盖：
+  - exact identity gate 不变；
+  - 未匹配项不调用模型、不生成进展事件或草稿；
+  - 后续合法队列继续；
+  - 打开后变为已读的会话仍通过 digest-only marker 重排；
+  - idle/内存清理后页面仍从 SQLite 显示真实未解决数量；
+  - v11 迁移保留 v10 通信数据、preview 数据、外键和索引。
+
+### 真实 Edge 只读复验
+
+复验使用现有普通 Edge 同一窗口和同一登录会话：
+
+- 固定 BOSS 沟通页：`/web/geek/chat`；
+- 固定 BOSS 搜索页：`/web/geek/jobs?...`；
+- 本地 Dashboard：`/messages?profileId=1`。
+
+Edge Control bridge 与扩展均为 healthy。Dashboard 产品入口返回 HTTP 202 并完成真实 reader：
+
+- 状态：`completed`；
+- 真实会话行：40；
+- 当前未读：0；
+- 本轮 queued：0；
+- processed：0；
+- unresolved：0；
+- 本地 preview baseline：40；
+- SQLite `PRAGMA quick_check`：`ok`。
+
+复验后：
+
+- BOSS 仍停留在固定 `/web/geek/chat`；
+- `.chat-input` 为空；
+- 发送控件保持 disabled 样式；
+- 没有填写消息、没有发送、没有执行沟通点击；
+- Dashboard 显示“本次发现已完成”，不再出现 `BROWSER_DISCONNECTED`。
+
+因为复验时没有新的未读消息，真实环境没有再次触发“未匹配持久 marker”分支；该分支由真实 SQLite 的双轮/过期/恢复离线回归覆盖。后续出现映射到当前进展卡的新消息时，仍需补一次“分类与草稿生成”的人工端到端验收。
+
+### Gate A 结论
+
+Gate A 通过。消息分类与草稿生成的真实样本缺口保留到 Gate D 验收，不授权也不要求新的真实沟通或发送。Wave 5 继续停止。
