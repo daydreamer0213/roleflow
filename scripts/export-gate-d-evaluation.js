@@ -88,9 +88,17 @@ function sourceSnapshot(source, tempRoot, hooks) {
     if (typeof hooks.afterSourceSnapshot === "function") hooks.afterSourceSnapshot();
     return { directory, snapshot };
   } catch (error) {
-    removeAll([snapshot]); removeDirs([directory]);
+    const cleanupErrors = cleanupSnapshot({ snapshot, directory }, hooks);
+    if (cleanupErrors.length) error.cleanupError = new AggregateError(cleanupErrors, "snapshot cleanup failed");
     throw error;
   }
+}
+
+function cleanupSnapshot({ snapshot, directory }, hooks) {
+  return [
+    ...removeAll([snapshot], hooks.snapshotUnlink || fs.unlinkSync),
+    ...removeDirs([directory], hooks.snapshotRmdir || fs.rmdirSync)
+  ];
 }
 
 function assertTask13({ dbPath, reportPath, receiptPath, root }) {
@@ -117,7 +125,7 @@ function assertTask13({ dbPath, reportPath, receiptPath, root }) {
 }
 
 function assertCompletedCohort(db) {
-  const batches = db.prepare("SELECT id, status FROM batches ORDER BY id").all();
+  const batches = db.prepare("SELECT id, keyword, status FROM batches ORDER BY id").all();
   const runs = db.prepare("SELECT id, batch_id, status FROM scan_runs ORDER BY id").all();
   const targets = db.prepare("SELECT batch_id, status FROM scan_target_results ORDER BY id").all();
   if (!batches.length) throw new Error("fresh baseline has no batches");
@@ -126,6 +134,9 @@ function assertCompletedCohort(db) {
   for (const batch of batches) {
     if (!runs.some((run) => Number(run.batch_id) === Number(batch.id))) throw new Error("every fresh batch requires a completed scan_run");
     const batchTargets = targets.filter((row) => Number(row.batch_id) === Number(batch.id));
+    if (!batchTargets.length && ["detail-refresh", "activity-probe", "analysis-retry"].includes(text(batch.keyword))) {
+      throw new Error("formal full-scan cohort does not support maintenance batches without scan targets");
+    }
     if (!batchTargets.length || batchTargets.some((row) => row.status !== "completed")) throw new Error("every fresh batch requires completed scan targets");
   }
   const distribution = (rows) => Object.fromEntries([...new Set(rows.map((row) => row.status))].sort().map((status) => [status, rows.filter((row) => row.status === status).length]));
@@ -135,10 +146,23 @@ function assertCompletedCohort(db) {
 function redact(value, secrets) {
   let result = text(value);
   for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) result = result.replace(new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[REDACTED]");
-  return result.replace(/https?:\/\/\S+/gi, "[REDACTED-URL]")
+  return result
+    .replace(/(?:^|\r?\n)\s*(?:联系人|招聘负责人|招聘经理|HR(?:姓名)?|人事(?:联系人)?|Hiring Manager)\s*[:：].*(?=\r?\n|$)/gim, "\n[REDACTED-CONTACT-LINE]")
+    .replace(/(?:^|\r?\n)\s*(?:办公地址|公司地址|工作地址|详细地址)\s*[:：].*(?=\r?\n|$)/gim, "\n[REDACTED-ADDRESS-LINE]")
+    .replace(/https?:\/\/\S+/gi, "[REDACTED-URL]")
     .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[REDACTED-EMAIL]")
     .replace(/(?<!\d)1\d{10}(?!\d)/g, "[REDACTED-PHONE]")
-    .replace(/(?:微信|wechat|weixin)\s*[:：]?\s*[\w-]+/gi, "[REDACTED-CONTACT]");
+    .replace(/(?<!\d)0\d{2,3}[-\s]?\d{7,8}(?:-\d{1,6})?(?!\d)/g, "[REDACTED-LANDLINE]")
+    .replace(/(?:微信|wechat|weixin|QQ|钉钉|DingTalk|Telegram)\s*[:：]?\s*@?[\w-]+/gi, "[REDACTED-CONTACT]")
+    .replace(/[\u4e00-\u9fff]{2,}(?:路|街|大道|巷|弄)\d*(?:号)?(?:[\u4e00-\u9fffA-Za-z0-9-]*(?:大厦|中心|园区|栋|座|楼|室))?/g, "[REDACTED-ADDRESS]");
+}
+
+function coarseLocation(value, secrets) {
+  const raw = text(value);
+  const district = raw.match(/^(?:.+?市)?[^市]+?(?:区|县)/);
+  if (district) return redact(district[0], secrets);
+  const city = raw.match(/^.+?市/);
+  return city ? redact(city[0], secrets) : redact(raw, secrets);
 }
 
 function matchProjection(item, secrets) {
@@ -160,9 +184,12 @@ function frozenInput(analysis, secrets) {
   };
 }
 
-function technicalBucket(analysis, completeJd) {
+function technicalBucket(analysis, completeJd, attempt) {
   if (!completeJd) return "incomplete_jd";
-  if (text(analysis.errorCode) === "MODEL_CONTRACT_INVALID") return "contract_failure";
+  if (attempt.latestStatus === "running") return "analysis_running";
+  if (attempt.latestStatus === "failed" && attempt.latestErrorCode === "MODEL_CONTRACT_INVALID") return "contract_failure";
+  if (attempt.latestStatus === "failed") return "analysis_failed";
+  if (!attempt.latestStatus && text(analysis.errorCode) === "MODEL_CONTRACT_INVALID") return "contract_failure";
   if (text(analysis.semanticStatus) !== "complete") return `semantic_${text(analysis.semanticStatus) || "unknown"}`;
   if (!list(analysis.requirementMatches).length || !list(analysis.responsibilityMatches).length || !text(analysis.roleAlignment)) return "decision_evidence_missing";
   return null;
@@ -188,10 +215,68 @@ function createdDirectories(directories, made, mkdir) {
     for (const item of missing) { mkdir(item); made.push(item); }
   }
 }
-function removeAll(files) { const errors = []; for (const file of files) try { fs.unlinkSync(file); } catch (error) { if (error.code !== "ENOENT") errors.push(error); } return errors; }
-function removeDirs(directories) { const errors = []; for (const directory of [...directories].reverse()) try { fs.rmdirSync(directory); } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) errors.push(error); } return errors; }
+function removeAll(files, unlink = fs.unlinkSync) {
+  const errors = [];
+  for (const file of files) {
+    try {
+      unlink(file);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      errors.push(error);
+      if (unlink !== fs.unlinkSync) {
+        try { fs.unlinkSync(file); } catch (fallbackError) { if (fallbackError.code !== "ENOENT") errors.push(fallbackError); }
+      }
+    }
+  }
+  return errors;
+}
+function removeDirs(directories, rmdir = fs.rmdirSync) {
+  const errors = [];
+  for (const directory of [...directories].reverse()) {
+    try {
+      rmdir(directory);
+    } catch (error) {
+      if (["ENOENT", "ENOTEMPTY"].includes(error.code)) continue;
+      errors.push(error);
+      if (rmdir !== fs.rmdirSync) {
+        try { fs.rmdirSync(directory); } catch (fallbackError) { if (!["ENOENT", "ENOTEMPTY"].includes(fallbackError.code)) errors.push(fallbackError); }
+      }
+    }
+  }
+  return errors;
+}
 function partial(file) { return path.join(path.dirname(file), `.partial-${randomUUID()}-${path.basename(file)}`); }
 function publish(partialFile, finalFile, published, hooks) { (hooks.link || fs.linkSync)(partialFile, finalFile); published.push(finalFile); (hooks.unlinkPartial || fs.unlinkSync)(partialFile); }
+
+function attemptSummaries(db) {
+  const rows = db.prepare(`SELECT id, job_id, status, error_code, finished_at, updated_at, created_at
+    FROM job_analysis_attempts
+    ORDER BY job_id ASC,
+      (COALESCE(finished_at, updated_at, created_at) IS NULL) ASC,
+      COALESCE(finished_at, updated_at, created_at) DESC,
+      updated_at DESC,
+      id DESC`).all();
+  const grouped = new Map();
+  for (const row of rows) {
+    const jobId = Number(row.job_id);
+    const items = grouped.get(jobId) || [];
+    items.push(row);
+    grouped.set(jobId, items);
+  }
+  return new Map([...grouped].map(([jobId, items]) => {
+    const latest = items[0];
+    const priorFailure = items.slice(1).some((item) => item.status === "failed");
+    const recoveryOutcome = latest.status === "succeeded"
+      ? (priorFailure ? "recovered" : "succeeded")
+      : latest.status === "running" ? "in_progress" : "unrecovered_failure";
+    return [jobId, {
+      attemptCount: items.length,
+      latestStatus: text(latest.status),
+      latestErrorCode: latest.status === "failed" ? text(latest.error_code) : "",
+      recoveryOutcome
+    }];
+  }));
+}
 
 function exportEvaluation(options, hooks = {}) {
   const test = hooks.testOnly;
@@ -210,19 +295,27 @@ function exportEvaluation(options, hooks = {}) {
   const before = fingerprint(dbPath);
   const snapshot = sourceSnapshot(dbPath, "D:\\DevData", hooks);
   let rawObservations; let cohort; let attemptsByJob;
+  let snapshotReadError = null;
   try {
     const db = new DatabaseSync(snapshot.snapshot, { readOnly: true });
     try {
       if (Number(db.prepare("PRAGMA user_version").get().user_version || 0) !== SCHEMA_VERSION) throw new Error(`baseline database schema must be v${SCHEMA_VERSION}`);
       cohort = assertCompletedCohort(db);
       rawObservations = db.prepare(`SELECT o.*, j.id AS job_id FROM job_observations o JOIN jobs j ON j.id=o.job_id ORDER BY o.job_id, o.seen_at, o.id`).all();
-      attemptsByJob = new Map(db.prepare(`SELECT job_id, count(*) AS attempt_count, max(error_code) AS final_error_code
-        FROM job_analysis_attempts GROUP BY job_id`).all().map((row) => [Number(row.job_id), row]));
+      attemptsByJob = attemptSummaries(db);
       const jobs = db.prepare("SELECT id FROM jobs").all();
       const observed = new Set(rawObservations.map((row) => Number(row.job_id)));
       if (jobs.some((job) => !observed.has(Number(job.id)))) throw new Error("fresh baseline contains an orphan job without an observation");
     } finally { db.close(); }
-  } finally { removeAll([snapshot.snapshot]); removeDirs([snapshot.directory]); }
+  } catch (error) {
+    snapshotReadError = error;
+  }
+  const snapshotCleanupErrors = cleanupSnapshot(snapshot, hooks);
+  if (snapshotReadError) {
+    if (snapshotCleanupErrors.length) snapshotReadError.cleanupError = new AggregateError(snapshotCleanupErrors, "snapshot cleanup failed");
+    throw snapshotReadError;
+  }
+  if (snapshotCleanupErrors.length) throw new AggregateError(snapshotCleanupErrors, "snapshot cleanup failed");
   if (typeof hooks.beforeAfterFingerprint === "function") hooks.beforeAfterFingerprint();
   const after = fingerprint(dbPath);
   if (!samePersistentBundle(before, after)) throw new Error("source database/WAL changed during read-only snapshot export");
@@ -230,20 +323,34 @@ function exportEvaluation(options, hooks = {}) {
   for (const row of rawObservations) selected.set(Number(row.job_id), row);
   const cases = [...selected.values()].map((row) => {
     const analysis = parseJson(row.analysis_json, {});
-    const attempt = attemptsByJob.get(Number(row.job_id)) || {};
+    const attempt = attemptsByJob.get(Number(row.job_id)) || {
+      attemptCount: 0,
+      latestStatus: "",
+      latestErrorCode: "",
+      recoveryOutcome: "not_recorded"
+    };
     const secrets = [text(row.company), text(analysis.recruiter), text(analysis.recruiterName), text(analysis.contactName)];
     const input = frozenInput(analysis, secrets);
     const completeJd = hasCompleteJobDescription({ description: row.description, quality_tags_json: row.quality_tags_json });
-    const technical = technicalBucket(analysis, completeJd);
+    const technical = technicalBucket(analysis, completeJd, attempt);
     const matrixTier = technical ? null : safeTier(deriveMatrixDecision(input, DECISION_POLICY).matrixRecommendation);
     const guardedTier = technical ? null : safeTier(buildShadowScorecard(input, DECISION_POLICY).candidateTier);
     const sourceContentHash = text(row.content_hash);
     return {
-      id: evaluationId(key, sourceContentHash, row.job_id), evaluationId: evaluationId(key, sourceContentHash, row.job_id), sourceContentHash,
+      id: evaluationId(key, sourceContentHash, row.job_id), evaluationId: evaluationId(key, sourceContentHash, row.job_id),
       selectedObservationId: Number(row.id), observationSelectionRule: "latest-fresh-observation-by-seen_at,id",
       scanEvidence: { completeJd, detailRead: !list(parseJson(row.quality_tags_json, [])).includes("detail_unverified") },
-      modelContract: { semanticStatus: text(analysis.semanticStatus) || "unknown", invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null, repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null, finalFailure: text(analysis.errorCode || attempt.final_error_code) || null, attemptCount: Number(attempt.attempt_count || 0) },
-      jd: { title: redact(row.title, secrets), location: redact(row.location, secrets), salary: redact(row.salary, secrets), experience: redact(row.experience, secrets), education: redact(row.education, secrets), text: redact(row.description, secrets) },
+      modelContract: {
+        semanticStatus: text(analysis.semanticStatus) || "unknown",
+        invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null,
+        repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null,
+        finalFailure: attempt.latestStatus ? (attempt.latestErrorCode || null) : (text(analysis.errorCode) || null),
+        attemptCount: attempt.attemptCount,
+        finalAttemptStatus: attempt.latestStatus || null,
+        recoveryOutcome: attempt.recoveryOutcome,
+        attemptSelectionRule: "latest-by-coalesced-finished-updated-created-desc-id"
+      },
+      jd: { title: redact(row.title, secrets), location: coarseLocation(row.location, secrets), salary: redact(row.salary, secrets), experience: redact(row.experience, secrets), education: redact(row.education, secrets), text: redact(row.description, secrets) },
       input, technicalBucket: technical, productionMatrixTier: matrixTier, guardedTier,
       analysisPolicyHash: text(analysis.decisionPolicyHash) || null, evaluationMatrixPolicyHash: decisionPolicyHash(DECISION_POLICY), shadowPolicyHash: decisionPolicyHash(DECISION_POLICY), shadowVersion: SHADOW_SCORECARD_VERSION,
       fixedSalaryBoundary: analysis.fixedSalaryBoundary === true || list(parseJson(row.quality_tags_json, [])).includes("salary_out_of_range"), crossStackPromotion: analysis.crossStackPromotion === true || list(parseJson(row.quality_tags_json, [])).includes("cross_stack_promotion"),
@@ -253,20 +360,79 @@ function exportEvaluation(options, hooks = {}) {
   const fixture = { schemaVersion: "gate-d-evaluation-fixture-v2", artifactIdentity: "external-hmac-v1", policy: DECISION_POLICY, cases };
   const labels = { schemaVersion: "gate-d-evaluation-labels-v2", confirmedMetrics: "deferred: merge confirmed worksheet labels before confirmed metrics", rows: cases.map((item) => ({ evaluationId: item.evaluationId, status: "pending-human", directionFit: null, hardBoundaryPass: null, expectedTier: null, evidenceSufficiency: null, rationale: "", labeler: "", labeledAt: null, aiProvisional: { productionMatrixTier: item.productionMatrixTier, guardedTier: item.guardedTier } })) };
   const fixtureBytes = `${JSON.stringify(fixture, null, 2)}\n`; const labelsBytes = `${JSON.stringify(labels, null, 2)}\n`;
-  const fixtureSha256 = sha(fixtureBytes); const labelsSha256 = sha(labelsBytes); const qualityEligible = cases.filter((item) => !item.technicalBucket).length;
-  const manifest = { artifact: "gate-d-evaluation-export", createdAtUtc: new Date().toISOString(), sourceCommit: lineage.sourceCommit, evaluatedCommit: toolCommit(), schemaVersion: SCHEMA_VERSION, databaseSha256: before.files.find((item) => item.name === "database").sha256, sourceBundle: { before, after }, freshBatchIds: cohort.batchIds, counts: { rawObservations: rawObservations.length, uniqueJobs: cases.length, collapsedObservations: rawObservations.length - cases.length }, qualityEligible, runStatusDistribution: { batches: cohort.batchStatusDistribution, scanRuns: cohort.scanRunStatusDistribution, targets: cohort.targetStatusDistribution }, fixtureSha256, labelsSha256, analysisPolicyHashes: counts(cases, "analysisPolicyHash"), evaluationMatrixPolicyHash: decisionPolicyHash(DECISION_POLICY), shadow: { version: SHADOW_SCORECARD_VERSION, policyHash: decisionPolicyHash(DECISION_POLICY) }, matrixTierCounts: counts(cases, "productionMatrixTier"), guardedTierCounts: counts(cases, "guardedTier"), technicalBucketCounts: counts(cases, "technicalBucket"), mandatoryReviewIds: cases.filter((item) => item.fixedSalaryBoundary || item.crossStackPromotion).map((item) => item.evaluationId).sort(), confirmedMetrics: "deferred until confirmed worksheet labels are merged; labels are the sole editable human source" };
+  const fixtureSha256 = sha(fixtureBytes);
+  const labelsSha256 = sha(labelsBytes);
+  const qualityEligibleCaseCount = cases.filter((item) => !item.technicalBucket).length;
+  const runStatusDistribution = {
+    batches: cohort.batchStatusDistribution,
+    scanRuns: cohort.scanRunStatusDistribution,
+    targets: cohort.targetStatusDistribution
+  };
+  const manifest = {
+    artifact: "gate-d-evaluation-export",
+    createdAtUtc: new Date().toISOString(),
+    sourceCommit: lineage.sourceCommit,
+    evaluatedCommit: toolCommit(),
+    schemaVersion: SCHEMA_VERSION,
+    databaseSha256: before.files.find((item) => item.name === "database").sha256,
+    sourceBundle: { before, after },
+    cohortContract: "formal-full-scan-only-v1",
+    maintenanceBatchesSupported: false,
+    freshBatchIds: cohort.batchIds,
+    counts: {
+      rawObservations: rawObservations.length,
+      uniqueJobs: cases.length,
+      collapsedObservations: rawObservations.length - cases.length,
+      technicalCases: cases.length - qualityEligibleCaseCount
+    },
+    qualityEligible: true,
+    qualityEligibleCaseCount,
+    runStatusDistribution,
+    fixtureSha256,
+    labelsSha256,
+    privacy: {
+      artifactClass: "private-local",
+      redactionPolicyVersion: "gate-d-private-redaction-v2",
+      limitation: "pattern-based redaction reduces known identifiers but cannot guarantee perfect entity recognition"
+    },
+    analysisPolicyHashes: counts(cases, "analysisPolicyHash"),
+    evaluationMatrixPolicyHash: decisionPolicyHash(DECISION_POLICY),
+    shadow: { version: SHADOW_SCORECARD_VERSION, policyHash: decisionPolicyHash(DECISION_POLICY) },
+    matrixTierCounts: counts(cases, "productionMatrixTier"),
+    guardedTierCounts: counts(cases, "guardedTier"),
+    technicalBucketCounts: counts(cases, "technicalBucket"),
+    mandatoryReviewIds: cases.filter((item) => item.fixedSalaryBoundary || item.crossStackPromotion).map((item) => item.evaluationId).sort(),
+    confirmedMetrics: "deferred until confirmed worksheet labels are merged; labels are the sole editable human source"
+  };
+  const receipt = {
+    artifact: "gate-d-evaluation-receipt",
+    complete: true,
+    createdAtUtc: new Date().toISOString(),
+    fixtureSha256,
+    labelsSha256,
+    qualityEligible: true,
+    qualityEligibleCaseCount,
+    runStatusDistribution
+  };
   const finals = [path.join(outputRoot, "fixtures", "gate-d-evaluation-fixture.json"), path.join(outputRoot, "labels", "gate-d-evaluation-labels.json"), path.join(outputRoot, "reports", "gate-d-evaluation-manifest.json"), path.join(outputRoot, "reports", "gate-d-evaluation-receipt.json")];
   if (finals.some(fs.existsSync)) throw new Error("refusing to overwrite an existing evaluation artifact");
   const partials = finals.map(partial); const published = []; let made = [];
   try {
     createdDirectories([...new Set(finals.map(path.dirname))], made, hooks.mkdir || fs.mkdirSync);
     const write = hooks.writeFile || fs.writeFileSync;
-    write(partials[0], fixtureBytes, { encoding: "utf8", flag: "wx" }); write(partials[1], labelsBytes, { encoding: "utf8", flag: "wx" }); write(partials[2], `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" }); write(partials[3], `${JSON.stringify({ artifact: "gate-d-evaluation-receipt", complete: true, createdAtUtc: new Date().toISOString(), fixtureSha256, labelsSha256, qualityEligible, runStatusDistribution: manifest.runStatusDistribution }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    write(partials[0], fixtureBytes, { encoding: "utf8", flag: "wx" });
+    write(partials[1], labelsBytes, { encoding: "utf8", flag: "wx" });
+    write(partials[2], `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
     if (typeof hooks.beforePublish === "function") hooks.beforePublish();
-    for (let i = 0; i < finals.length; i += 1) publish(partials[i], finals[i], published, hooks);
+    for (let i = 0; i < 3; i += 1) publish(partials[i], finals[i], published, hooks);
+    write(partials[3], `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    (hooks.renameReceipt || fs.renameSync)(partials[3], finals[3]);
     return { fixture: finals[0], labels: finals[1], manifest: finals[2], receipt: finals[3] };
   } catch (error) {
-    const cleanup = [...removeAll(partials), ...removeAll(published), ...removeDirs(made)];
+    const cleanup = [
+      ...removeAll([...partials, ...published, finals[3]], hooks.cleanupUnlink || fs.unlinkSync),
+      ...removeDirs(made, hooks.cleanupRmdir || fs.rmdirSync)
+    ];
     if (cleanup.length) error.cleanupError = new AggregateError(cleanup, "evaluation artifact cleanup failed");
     throw error;
   }

@@ -62,6 +62,7 @@ function seedDb() {
   const db = openDb(DB_PATH);
   const now = "2026-08-12T00:00:00.000Z";
   try {
+    db.exec("PRAGMA foreign_keys = OFF");
     const batchId = Number(insert(db, `INSERT INTO batches(site, keyword, started_at, status, finished_at)
       VALUES ('boss', 'node', ?, 'completed', ?)`, now, now).lastInsertRowid);
     insert(db, `INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
@@ -71,7 +72,8 @@ function seedDb() {
         sourceId: "platform-source-id-must-not-leak",
         title: "Node.js Engineer",
         company: "Sensitive Company Ltd",
-        description: "Sensitive Company Ltd is hiring. Recruiter Secret Recruiter requires Node.js and reliable delivery; recruiter@example.test, 13800138000 and 微信secretwx are private. This detailed job description is intentionally longer than one hundred and twenty characters for the production readiness predicate.",
+        location: "上海市浦东新区张江路88号A座",
+        description: "Sensitive Company Ltd is hiring. Recruiter Secret Recruiter requires Node.js and reliable delivery.\n联系人：张三\n招聘负责人：李经理\nHR姓名：王女士\n座机：021-12345678\nQQ：12345678\n钉钉：ding-secret\nTelegram：@tele_secret\n办公地址：上海市浦东新区张江路88号A座\nrecruiter@example.test, 13800138000 and 微信secretwx are private. This detailed job description is intentionally longer than one hundred and twenty characters for the production readiness predicate.",
         contentHash: "a".repeat(64),
         analysis: analysis({ recruiter: "Secret Recruiter" }),
         qualityTags: []
@@ -80,6 +82,7 @@ function seedDb() {
         sourceId: "salary-boundary-source-id",
         title: "Platform Engineer",
         company: "Boundary Company",
+        location: "上海市徐汇区",
         description: "Boundary Company requires platform engineering, Node.js and a carefully bounded salary range. This detailed job description is intentionally longer than one hundred and twenty characters for the production readiness predicate.",
         contentHash: "a".repeat(64),
         analysis: analysis({ recommendation: "apply", fixedSalaryBoundary: true }),
@@ -89,23 +92,52 @@ function seedDb() {
         sourceId: "technical-bucket-source-id",
         title: "Cross stack Engineer",
         company: "Technical Company",
+        location: "上海市静安区",
         description: "Technical Company requires Node.js work while a cross stack promotion must be reviewed. This detailed job description is intentionally longer than one hundred and twenty characters for the production readiness predicate.",
         contentHash: "d".repeat(64),
         analysis: analysis({ semanticStatus: "failed", decisionSource: "analysis_pending", recommendation: null, errorCode: "MODEL_TIMEOUT", crossStackPromotion: true }),
         qualityTags: []
       }
     ];
+    const jobIds = [];
     for (const row of rows) {
-      const jobId = Number(insert(db, `INSERT INTO jobs(source, source_id, title, company, url, description, analysis_json, first_seen_at, last_seen_at, batch_id)
-        VALUES ('boss', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.sourceId, row.title, row.company,
+      const jobId = Number(insert(db, `INSERT INTO jobs(source, source_id, title, company, location, url, description, analysis_json, first_seen_at, last_seen_at, batch_id)
+        VALUES ('boss', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.sourceId, row.title, row.company, row.location,
       `https://private.example/${row.sourceId}`, row.description, JSON.stringify(row.analysis), now, now, batchId).lastInsertRowid);
-      insert(db, `INSERT INTO job_observations(job_id, batch_id, title, company, url, description, analysis_json, quality_tags_json, content_hash, seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, jobId, batchId, row.title, row.company,
+      jobIds.push(jobId);
+      insert(db, `INSERT INTO job_observations(job_id, batch_id, title, company, location, url, description, analysis_json, quality_tags_json, content_hash, seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, jobId, batchId, row.title, row.company, row.location,
       `https://private.example/${row.sourceId}`, row.description, JSON.stringify(row.analysis), JSON.stringify(row.qualityTags), row.contentHash, now);
     }
     insert(db, `INSERT INTO scan_target_results(batch_id, target_key, status, started_at, finished_at)
       VALUES (?, 'fresh-target', 'completed', ?, ?)`, batchId, now, now);
-    return batchId;
+    const secondBatchId = Number(insert(db, `INSERT INTO batches(site, keyword, started_at, status, finished_at)
+      VALUES ('boss', 'node-tie', ?, 'completed', ?)`, now, now).lastInsertRowid);
+    insert(db, `INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
+      VALUES ('fresh-scan-tie', 'boss', ?, 'completed', ?, ?, ?)`, secondBatchId, now, now, now);
+    insert(db, `INSERT INTO scan_target_results(batch_id, target_key, status, started_at, finished_at)
+      VALUES (?, 'fresh-target-tie', 'completed', ?, ?)`, secondBatchId, now, now);
+    const selectedObservationId = Number(insert(db, `INSERT INTO job_observations(
+      job_id, batch_id, title, company, location, url, description, analysis_json, quality_tags_json, content_hash, seen_at
+    ) VALUES (?, ?, 'Node.js Engineer latest tie', ?, ?, 'https://private.example/tie', ?, ?, '[]', ?, ?)`,
+    jobIds[0], secondBatchId, rows[0].company, rows[0].location, rows[0].description,
+    JSON.stringify(rows[0].analysis), "f".repeat(64), now).lastInsertRowid);
+
+    const addAttempt = ({ taskId, jobId, attempt, status, errorCode = null, finishedAt, updatedAt }) => insert(db, `INSERT INTO job_analysis_attempts(
+      workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation, total_attempt_number,
+      profile_kind, model_config_revision, provider, model, thinking_mode, reasoning_effort,
+      status, error_code, started_at, finished_at, created_at, updated_at
+    ) VALUES ('fixture-workflow', ?, ?, 0, ?, ?, 'batch_screening', 'fixture-revision',
+      'fixture-provider', 'fixture-model', 'off', 'low', ?, ?, ?, ?, ?, ?)`,
+    taskId, jobId, attempt, attempt, status, errorCode,
+    `2026-08-12T00:0${attempt}:00.000Z`, finishedAt, now, updatedAt);
+    addAttempt({ taskId: 101, jobId: jobIds[0], attempt: 2, status: "succeeded", finishedAt: "2026-08-12T00:02:00.000Z", updatedAt: "2026-08-12T00:02:00.000Z" });
+    addAttempt({ taskId: 101, jobId: jobIds[0], attempt: 1, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", finishedAt: "2026-08-12T00:01:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z" });
+    addAttempt({ taskId: 102, jobId: jobIds[1], attempt: 1, status: "succeeded", finishedAt: "2026-08-12T00:01:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z" });
+    addAttempt({ taskId: 102, jobId: jobIds[1], attempt: 2, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
+    addAttempt({ taskId: 103, jobId: jobIds[2], attempt: 1, status: "succeeded", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
+    addAttempt({ taskId: 103, jobId: jobIds[2], attempt: 2, status: "running", finishedAt: null, updatedAt: "2026-08-12T00:04:00.000Z" });
+    return { batchId, selectedObservationId };
   } finally {
     db.close();
   }
@@ -162,7 +194,7 @@ function assertNoOutput(outputRoot) {
 }
 
 try {
-  const batchId = seedDb();
+  const { batchId, selectedObservationId } = seedDb();
   const artifacts = task13Artifacts(batchId);
   const dbHashBefore = hash(DB_PATH);
   const firstRoot = path.join(TEST_ROOT, "first");
@@ -178,12 +210,26 @@ try {
   const fixture = json(exported.fixture);
   const labels = json(exported.labels);
   const manifest = json(exported.manifest);
+  const receipt = json(exported.receipt);
   assert.strictEqual(fixture.cases.length, 3, "every fresh job must enter the denominator");
   assert.deepStrictEqual(fixture.cases.map((item) => item.id), [...fixture.cases.map((item) => item.id)].sort());
   assert(fixture.cases.every((item) => /^[a-f0-9]{64}$/.test(item.id)), "evaluation IDs must be non-reversible hashes");
   assert.strictEqual(new Set(fixture.cases.map((item) => item.id)).size, fixture.cases.length, "same-content jobs need distinct artifact-local evaluation IDs");
-  assert.strictEqual(fixture.cases.find((item) => item.technicalBucket === "semantic_failed").productionMatrixTier, null);
-  assert.strictEqual(manifest.technicalBucketCounts.semantic_failed, 1, "technical buckets must not be forced into tiers");
+  assert.deepStrictEqual(manifest.technicalBucketCounts, { analysis_running: 1, contract_failure: 1 },
+    "latest failed/running attempts must remain technical");
+  const recoveredCase = fixture.cases.find((item) => item.selectedObservationId === selectedObservationId);
+  assert(recoveredCase, "seen_at ties must select the higher observation id");
+  assert.strictEqual(recoveredCase.modelContract.attemptCount, 2);
+  assert.strictEqual(recoveredCase.modelContract.finalAttemptStatus, "succeeded");
+  assert.strictEqual(recoveredCase.modelContract.recoveryOutcome, "recovered");
+  assert.strictEqual(recoveredCase.technicalBucket, null);
+  const contractFailureCase = fixture.cases.find((item) => item.technicalBucket === "contract_failure");
+  assert.strictEqual(contractFailureCase.modelContract.finalAttemptStatus, "failed");
+  assert.strictEqual(contractFailureCase.modelContract.finalFailure, "MODEL_CONTRACT_INVALID");
+  const runningCase = fixture.cases.find((item) => item.technicalBucket === "analysis_running");
+  assert.strictEqual(runningCase.modelContract.finalAttemptStatus, "running");
+  assert.strictEqual(runningCase.modelContract.attemptCount, 2);
+  assert.strictEqual(runningCase.productionMatrixTier, null);
   assert.deepStrictEqual(labels.rows.map((row) => row.status), ["pending-human", "pending-human", "pending-human"]);
   assert(labels.rows.every((row) => row.directionFit === null && row.expectedTier === null && row.labeledAt === null));
   assert(labels.rows.every((row) => Object.hasOwn(row, "aiProvisional")), "AI suggestions must stay in a separate field");
@@ -193,15 +239,37 @@ try {
     assert.strictEqual(labelsBytes.includes(privateValue), false, `labels leaked private value: ${privateValue}`);
   }
   assert.strictEqual(fixtureBytes.includes("Node.js and reliable delivery"), true, "redacted JD text must remain available locally");
-  assert.strictEqual(buildShadowReport(fixture).total, 3, "fixture must feed the existing scorecard directly");
-  assert.strictEqual(fixture.cases.find((item) => item.technicalBucket === "semantic_failed").scanEvidence.completeJd, true,
+  const shadowReport = buildShadowReport(fixture);
+  assert.strictEqual(shadowReport.rawTotal, 3, "fixture must feed the existing scorecard directly");
+  assert.strictEqual(shadowReport.qualityEligibleCaseCount, 1);
+  assert.strictEqual(shadowReport.matrixVsGuardedScorecard.total, 1);
+  assert.deepStrictEqual(shadowReport.technicalBucketCounts, { analysis_running: 1, contract_failure: 1 });
+  assert.strictEqual(runningCase.scanEvidence.completeJd, true,
     "complete JD must use the production readiness predicate rather than semantic status");
   const allArtifacts = [exported.fixture, exported.labels, exported.manifest, exported.receipt].map((file) => fs.readFileSync(file, "utf8")).join("\n");
-  for (const privateValue of ["platform-source-id-must-not-leak", "private.example", "Sensitive Company Ltd", "Secret Recruiter", "Resume evidence must stay private", "recruiter@example.test", "13800138000", "微信secretwx"]) {
+  for (const privateValue of [
+    "platform-source-id-must-not-leak", "private.example", "Sensitive Company Ltd", "Secret Recruiter",
+    "Resume evidence must stay private", "recruiter@example.test", "13800138000", "微信secretwx",
+    "张三", "李经理", "王女士", "021-12345678", "12345678", "ding-secret", "@tele_secret", "张江路88号A座"
+  ]) {
     assert.strictEqual(allArtifacts.includes(privateValue), false, `every artifact must omit ${privateValue}`);
   }
-  assert.deepStrictEqual(manifest.counts, { rawObservations: 3, uniqueJobs: 3, collapsedObservations: 0 });
-  assert.strictEqual(manifest.qualityEligible, 2);
+  for (const rawHash of ["a".repeat(64), "d".repeat(64), "f".repeat(64)]) {
+    assert.strictEqual(allArtifacts.includes(rawHash), false, "raw observation content hashes must never leave memory");
+  }
+  assert.strictEqual(allArtifacts.includes("sourceContentHash"), false);
+  assert.deepStrictEqual(manifest.counts, { rawObservations: 4, uniqueJobs: 3, collapsedObservations: 1, technicalCases: 2 });
+  assert.strictEqual(manifest.qualityEligible, true);
+  assert.strictEqual(manifest.qualityEligibleCaseCount, 1);
+  assert.strictEqual(receipt.qualityEligible, true);
+  assert.strictEqual(receipt.qualityEligibleCaseCount, 1);
+  assert.strictEqual(manifest.cohortContract, "formal-full-scan-only-v1");
+  assert.deepStrictEqual(manifest.privacy, {
+    artifactClass: "private-local",
+    redactionPolicyVersion: "gate-d-private-redaction-v2",
+    limitation: "pattern-based redaction reduces known identifiers but cannot guarantee perfect entity recognition"
+  });
+  assert.strictEqual(recoveredCase.jd.location, "上海市浦东新区");
 
   const second = exportEvaluation(options(path.join(TEST_ROOT, "second"), artifacts), testSeam());
   assert.strictEqual(fs.readFileSync(second.fixture, "utf8"), fixtureBytes, "fixture must be byte-deterministic across output roots");
@@ -241,6 +309,15 @@ try {
   targetResetDb.prepare("UPDATE scan_target_results SET status = 'completed'").run();
   targetResetDb.close();
 
+  for (const hookName of ["snapshotUnlink", "snapshotRmdir"]) {
+    const snapshotRoot = path.join(TEST_ROOT, `fault-${hookName}`);
+    assert.throws(() => exportEvaluation(options(snapshotRoot, artifacts), {
+      ...testSeam(),
+      [hookName]() { throw new Error(`injected ${hookName} failure`); }
+    }), /snapshot cleanup failed/i);
+    assertNoOutput(snapshotRoot);
+  }
+
   for (const [label, hooks] of [
     ["link", { link() { throw new Error("injected link failure"); } }],
     ["unlink", { unlinkPartial() { throw new Error("injected unlink failure"); } }],
@@ -257,6 +334,52 @@ try {
     mkdir(directory) { mkdirCalls += 1; if (mkdirCalls === 3) throw new Error("injected mkdir failure"); fs.mkdirSync(directory); }
   }), /injected mkdir failure/);
   assertNoOutput(mkdirRoot);
+
+  const atomicRoot = path.join(TEST_ROOT, "receipt-atomic");
+  const linkedFinals = [];
+  let receiptRenamed = false;
+  const atomic = exportEvaluation(options(atomicRoot, artifacts), {
+    ...testSeam(),
+    link(partialFile, finalFile) { linkedFinals.push(finalFile); fs.linkSync(partialFile, finalFile); },
+    renameReceipt(partialFile, finalFile) {
+      assert.strictEqual(linkedFinals.length, 3, "fixture, labels and manifest must publish before receipt");
+      assert.strictEqual(fs.existsSync(finalFile), false, "complete-looking receipt must not exist before atomic rename");
+      receiptRenamed = true;
+      fs.renameSync(partialFile, finalFile);
+    }
+  });
+  assert.strictEqual(receiptRenamed, true);
+  assert(fs.existsSync(atomic.receipt));
+
+  const renameRoot = path.join(TEST_ROOT, "receipt-rename-failure");
+  assert.throws(() => exportEvaluation(options(renameRoot, artifacts), {
+    ...testSeam(),
+    renameReceipt() { throw new Error("injected receipt rename failure"); }
+  }), /injected receipt rename failure/);
+  assertNoOutput(renameRoot);
+
+  const cleanupRoot = path.join(TEST_ROOT, "cleanup-final-failure");
+  let cleanupFailureInjected = false;
+  let cleanupError;
+  try {
+    exportEvaluation(options(cleanupRoot, artifacts), {
+      ...testSeam(),
+      unlinkPartial() { throw new Error("trigger cleanup after final link"); },
+      cleanupUnlink(file) {
+        if (!cleanupFailureInjected && !file.includes(".partial-")) {
+          cleanupFailureInjected = true;
+          throw new Error("injected cleanup final failure");
+        }
+        fs.unlinkSync(file);
+      }
+    });
+    assert.fail("cleanup fault must reject export");
+  } catch (error) {
+    cleanupError = error;
+    assert.match(error.message, /trigger cleanup after final link/);
+  }
+  assert(cleanupError.cleanupError, "cleanup failures must be attached for audit");
+  assertNoOutput(cleanupRoot);
 
   const existingRoot = path.join(TEST_ROOT, "existing");
   const existingFinal = path.join(existingRoot, "fixtures", "gate-d-evaluation-fixture.json");
@@ -306,6 +429,21 @@ try {
     beforePublish() { throw new Error("injected partial publish failure"); }
   }), /injected partial publish failure/);
   assertNoOutput(partialRoot);
+
+  const maintenanceDb = new DatabaseSync(DB_PATH);
+  const maintenanceBatchId = Number(maintenanceDb.prepare(`INSERT INTO batches(site, keyword, started_at, status, finished_at)
+    VALUES ('boss', 'detail-refresh', '2026-08-12T01:00:00.000Z', 'completed', '2026-08-12T01:01:00.000Z')`).run().lastInsertRowid);
+  maintenanceDb.prepare(`INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
+    VALUES ('maintenance-refresh', 'boss', ?, 'completed', '2026-08-12T01:00:00.000Z', '2026-08-12T01:00:00.000Z', '2026-08-12T01:01:00.000Z')`).run(maintenanceBatchId);
+  maintenanceDb.close();
+  const maintenanceRoot = path.join(TEST_ROOT, "maintenance");
+  assert.throws(() => exportEvaluation(options(maintenanceRoot, artifacts), testSeam()),
+    /formal full-scan cohort does not support maintenance batches without scan targets/i);
+  assertNoOutput(maintenanceRoot);
+  const maintenanceCleanupDb = new DatabaseSync(DB_PATH);
+  maintenanceCleanupDb.prepare("DELETE FROM scan_runs WHERE id = 'maintenance-refresh'").run();
+  maintenanceCleanupDb.prepare("DELETE FROM batches WHERE id = ?").run(maintenanceBatchId);
+  maintenanceCleanupDb.close();
 
   let historyDb = new DatabaseSync(DB_PATH);
   historyDb.prepare("INSERT INTO batches(site, keyword, started_at, status, finished_at) VALUES ('boss', 'old', '2026-01-01T00:00:00.000Z', 'completed', '2026-01-01T00:00:00.000Z')").run();
