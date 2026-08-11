@@ -10,6 +10,7 @@ const STATES = ["scanning", "paused", "review_required", "interrupted"];
 
 async function main() {
   const options = parse(process.argv.slice(2));
+  if (options.help) return process.stdout.write(usage());
   const { chromium } = require("playwright");
   fs.mkdirSync(options.outputDir, { recursive: true });
   const result = { schemaVersion: 2, label: options.label, expectPrimary: options.expectPrimary, targetRevision: revision(options.targetRoot), browser: { engine: "msedge", headless: true }, viewports: VIEWPORTS, states: STATES, pages: [], errors: [] };
@@ -139,14 +140,16 @@ function parse(args) {
   const values = new Map(); let expectPrimary = false;
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
+    if (key === "--help" || key === "-h") return { help: true };
     if (key === "--expect-primary") { expectPrimary = true; continue; }
     const value = args[index + 1];
     if (!key.startsWith("--") || value == null || value.startsWith("--")) throw new Error(`Missing evaluation option value for ${key}`);
     values.set(key, value); index += 1;
   }
   const targetRoot = path.resolve(values.get("--target-root") || process.cwd()); const outputDir = path.resolve(values.get("--output-dir") || path.join(process.cwd(), ".runtime", "workflow-dashboard-evidence")); const label = values.get("--label") || "current";
-  return { targetRoot, outputDir, label, expectPrimary };
+  return { help: false, targetRoot, outputDir, label, expectPrimary };
 }
+function usage() { return ["Usage: node scripts/evaluate-workflow-dashboard.js [options]", "", "Strict prerequisites: NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --expect-primary           Fail on primary-action, overflow, interaction, or error gate violations", "  -h, --help                 Show this help", ""].join("\n"); }
 function revision(root) { return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
 function logger() { return { info() {}, warn() {}, error() {}, requestId() { return "workflow-dashboard-evaluation"; }, listRecent() { return []; } }; }
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
