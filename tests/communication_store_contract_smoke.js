@@ -22,6 +22,7 @@ const candidateStore = require("../src/storage/candidate_store");
 const jobStore = require("../src/storage/job_store");
 const scanStore = require("../src/storage/scan_store");
 const sharedStore = require("../src/storage/storage_shared");
+const { communicationCalibrationStatus } = require("../src/core/communication_calibration");
 process.removeListener("warning", onWarning);
 
 assert.deepStrictEqual(Object.keys(store).sort(), COMMUNICATION_EXPORTS);
@@ -67,6 +68,7 @@ function runOwnerContract() {
   const db = openDb(":memory:");
   try {
     const seeded = seed(db, "owner");
+    const calibrationSnapshot = communicationCalibrationStatus();
     const baseline = tableSnapshot(db);
     const originalExec = db.exec.bind(db);
     let commitFailed = false;
@@ -91,15 +93,18 @@ function runOwnerContract() {
       planId: seeded.planId,
       jobIds: seeded.ids.slice(0, 8),
       browserMode: "portable",
-      policySnapshot: { delayMs: [15000, 20000] },
+      policySnapshot: { delayMs: [15000, 20000], calibration: calibrationSnapshot },
       now: "2030-01-02T08:00:00.000Z"
     }));
     assert.deepStrictEqual(creation.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
     const batch = creation.value;
     assert.deepStrictEqual(batch.policySnapshot, {
       delayMs: [15000, 20000],
+      calibration: calibrationSnapshot,
       browser: { mode: "portable", cdpPort: 9222 }
     });
+    assert.strictEqual(batch.policySnapshot.calibration.acceptance, "e2e_pending");
+    assert.strictEqual(batch.policySnapshot.calibration.executionEnabled, true);
     assert.strictEqual(batch.status, "confirmed");
     const items = listCommunicationBatchItems(db, batch.id);
     assert.strictEqual(items.length, 8);
@@ -219,6 +224,52 @@ function runOwnerContract() {
       () => resolveAmbiguousCommunicationItem(db, { itemId: ambiguousItem.id, resolution: "succeeded" }),
       (error) => error.code === "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED"
     );
+    const resolutionTables = [
+      "communication_batch_items",
+      "events",
+      "candidate_progress_cards",
+      "candidate_progress_events"
+    ];
+    const beforeResolutionRollback = rowContentSnapshot(db, resolutionTables);
+    const originalResolutionExec = db.exec.bind(db);
+    const rollbackStatements = [];
+    db.exec = (sql) => {
+      const statement = String(sql);
+      rollbackStatements.push(statement);
+      if (statement === "SAVEPOINT candidate_progress_verified") {
+        throw new Error("injected candidate progress savepoint failure");
+      }
+      return originalResolutionExec(sql);
+    };
+    try {
+      assert.throws(
+        () => resolveAmbiguousCommunicationItem(db, {
+          itemId: ambiguousItem.id,
+          status: "succeeded",
+          evidenceNote: "Injected late rollback fixture",
+          now: "2030-01-02T08:03:30.000Z"
+        }),
+        /injected candidate progress savepoint failure/
+      );
+    } finally {
+      db.exec = originalResolutionExec;
+    }
+    assert.deepStrictEqual(rollbackStatements, [
+      "BEGIN IMMEDIATE",
+      "SAVEPOINT candidate_progress_verified",
+      "ROLLBACK"
+    ]);
+    const afterResolutionRollback = rowContentSnapshot(db, resolutionTables);
+    assert.deepStrictEqual(afterResolutionRollback, beforeResolutionRollback);
+    assert.strictEqual(
+      listCommunicationBatchItems(db, batch.id).find((item) => item.id === ambiguousItem.id).status,
+      "ambiguous"
+    );
+    assert.strictEqual(db.prepare(`SELECT id FROM events
+      WHERE event_type = 'communication_manual_resolution'
+        AND json_extract(payload_json, '$.itemId') = ?`).get(ambiguousItem.id), undefined);
+    assert.deepStrictEqual(afterResolutionRollback.candidate_progress_cards, beforeResolutionRollback.candidate_progress_cards);
+    assert.deepStrictEqual(afterResolutionRollback.candidate_progress_events, beforeResolutionRollback.candidate_progress_events);
     const resolved = observeTransactions(db, () => resolveAmbiguousCommunicationItem(db, {
       id: ambiguousItem.id, resolution: "succeeded", evidenceNote: "Verified local fixture", now: "2030-01-02T08:04:00.000Z"
     }));
@@ -381,6 +432,13 @@ function observeTransactions(db, action) {
 function tableSnapshot(db) {
   return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all().map(({ name }) => [name, Number(db.prepare(`SELECT COUNT(*) AS count FROM \"${name}\"`).get().count)]));
+}
+
+function rowContentSnapshot(db, tables) {
+  return Object.fromEntries(tables.map((table) => [
+    table,
+    db.prepare(`SELECT * FROM \"${table}\" ORDER BY rowid`).all()
+  ]));
 }
 
 function assertNoPartialBatch(db, action, code) {
