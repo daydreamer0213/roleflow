@@ -368,10 +368,10 @@ const staleBoundaryJob = scoreJob(job({
   tags: ["实习", "单休"],
   description: "RAG 外包项目，单休。"
 }), staleBoundaryConfigs);
-assert.strictEqual(decisionState(staleBoundaryJob), "ready");
+assert.strictEqual(decisionState(staleBoundaryJob), "blocked");
 assert(staleBoundaryJob.qualityTags.includes("platform_filter_unresolved"));
-for (const staleTag of ["hard_exclude", "inactive_boss", "internship_role", "salary_out_of_range"]) {
-  assert(!staleBoundaryJob.qualityTags.includes(staleTag), `继承模式不得保留旧方案边界：${staleTag}`);
+for (const recommendationTag of ["hard_exclude", "inactive_boss", "internship_role", "salary_out_of_range"]) {
+  assert(staleBoundaryJob.qualityTags.includes(recommendationTag), `继承模式必须保留推荐边界：${recommendationTag}`);
 }
 assert(!staleBoundaryJob.qualityTags.includes("experience_stretch"));
 assert(!staleBoundaryJob.matches.includes("3日内活跃"));

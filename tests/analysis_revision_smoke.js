@@ -1,0 +1,72 @@
+const assert = require("node:assert/strict");
+const {
+  applyPlatformRuntimePolicy,
+  evaluatePlatformBoundaries
+} = require("../src/core/platform_runtime_policy");
+const {
+  buildAnalysisRevision,
+  analysisStaleReasons
+} = require("../src/core/analysis_revision");
+
+const recommendation = {
+  candidateProfile: { candidate: { targetTitles: ["AI应用开发工程师"] } },
+  matchingCard: { targetDirections: ["AI应用开发"] },
+  searchPlan: {
+    cities: ["广州"],
+    salary: { minK: 9, maxK: 14 },
+    experience: ["经验不限"],
+    jobTypes: ["全职"],
+    directions: ["AI应用开发"],
+    bossActiveDays: 1,
+    workSchedulePreference: "prefer_double_weekend",
+    excludeWords: ["外包"]
+  },
+  targetPolicy: { directions: ["AI应用开发"], jobTypes: ["全职"], skills: ["Python"] },
+  profile: { location: { target_cities: ["广州"] } },
+  scoring: {
+    positive_keywords: [{ word: "RAG", weight: 4, label: "RAG" }],
+    risk_rules: [{ word: "外包", penalty: 10, risk: "外包风险" }],
+    exclude_words: ["外包"],
+    boss_activity: { max_active_days: 1, unknown_penalty: 3, inactive_penalty: 10 },
+    work_schedule: { preference: "prefer_double_weekend" },
+    salary: { expected_min_k: 9, expected_max_k: 14, hard_max_k: 35 }
+  }
+};
+
+const narrowAcquisition = {
+  site: "boss",
+  templateHash: "template-5-10",
+  filters: {
+    location: { mode: "specific", codes: ["101280100"], cities: ["广州"], districts: [] },
+    salary: { codes: ["405"], labels: ["5-10K"], ranges: [{ minK: 5, maxK: 10 }] }
+  },
+  unresolvedParams: [],
+  filterSummary: ["薪资：5-10K"],
+  hash: "acquisition-5-10"
+};
+const inherited = applyPlatformRuntimePolicy(recommendation, narrowAcquisition);
+assert.deepStrictEqual(inherited.searchPlan.salary, { minK: 9, maxK: 14 });
+assert.deepStrictEqual(inherited.scoring.risk_rules, recommendation.scoring.risk_rules);
+assert.deepStrictEqual(inherited.scoring.exclude_words, ["外包"]);
+assert.strictEqual(inherited.scoring.boss_activity.max_active_days, 1);
+assert.strictEqual(inherited.scoring.work_schedule.preference, "prefer_double_weekend");
+assert.deepStrictEqual(inherited.acquisitionPolicy.filters.salary.ranges, [{ minK: 5, maxK: 10 }]);
+assert.match(inherited.acquisitionPolicyHash, /^[a-f0-9]{64}$|^acquisition-5-10$/);
+
+const strictBoundary = evaluatePlatformBoundaries({ salary: "5-10K" }, narrowAcquisition);
+assert(strictBoundary.qualityTags.includes("platform_salary_unverified") === false);
+const revision = buildAnalysisRevision(inherited, "job-source-1");
+assert.deepStrictEqual(analysisStaleReasons({ revision }, buildAnalysisRevision(inherited, "job-source-1")), []);
+const changedAcquisition = applyPlatformRuntimePolicy(recommendation, {
+  ...narrowAcquisition,
+  hash: "acquisition-10-20",
+  filters: { ...narrowAcquisition.filters, salary: { codes: ["406"], labels: ["10-20K"], ranges: [{ minK: 10, maxK: 20 }] } }
+});
+assert.strictEqual(changedAcquisition.recommendationPolicyHash, inherited.recommendationPolicyHash);
+assert.notStrictEqual(changedAcquisition.acquisitionPolicyHash, inherited.acquisitionPolicyHash);
+assert.deepStrictEqual(
+  analysisStaleReasons({ revision }, buildAnalysisRevision(changedAcquisition, "job-source-1")),
+  []
+);
+
+console.log("analysis_revision_smoke ok");
