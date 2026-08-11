@@ -102,6 +102,8 @@ function normalizeInheritedContext(input = {}) {
 function assertScanSnapshotCompatible(stored, current) {
   const differences = [...schemaDifferences(stored, "stored"), ...schemaDifferences(current, "current")];
   if (stored && current && typeof stored === "object" && typeof current === "object") {
+    if (!snapshotHashMatchesPayload(stored)) differences.push("stored.snapshotHash is invalid");
+    if (!snapshotHashMatchesPayload(current)) differences.push("current.snapshotHash is invalid");
     if (stored.schemaVersion !== current.schemaVersion) {
       differences.push(`schemaVersion differs: stored=${stored.schemaVersion}, current=${current.schemaVersion}`);
     }

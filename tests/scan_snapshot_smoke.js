@@ -140,6 +140,14 @@ assert.throws(
   })),
   (error) => error.code === "SCAN_SNAPSHOT_MISMATCH"
 );
+const identicalTamperedLegacy = {
+  ...legacySnapshot,
+  runtimePolicyHash: "tampered-without-rehash"
+};
+assert.throws(
+  () => assertScanSnapshotCompatible(identicalTamperedLegacy, { ...identicalTamperedLegacy }),
+  (error) => error.code === "SCAN_SNAPSHOT_MISMATCH"
+);
 
 const volatileMetadata = buildScanExecutionSnapshot({
   ...input,

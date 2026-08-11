@@ -95,6 +95,7 @@ const replay104 = {
 };
 assert.strictEqual(replay104.jobs.length, 104);
 const replayResults = replay104.jobs.map((job) => scoreJob(job, inherited));
+const replayResultsBySourceId = new Map(replay104.jobs.map((job, index) => [job.sourceId, replayResults[index]]));
 const boundaryResults = replayResults.filter((result) => result.qualityTags.includes("salary_out_of_range"));
 assert.strictEqual(replayResults.length, 104);
 assert.strictEqual(boundaryResults.length, 6);
@@ -106,6 +107,24 @@ assert(boundaryResults.every((result) => !["primary", "apply", "caution"].includ
     analysis: { semanticStatus: "complete", recommendation: "apply" }
   })
 )));
+for (const [sourceId, salary] of [
+  ["replay-001", "5-6K"],
+  ["replay-002", "5-7K"],
+  ["replay-003", "6-7K"],
+  ["replay-004", "6-8K"],
+  ["replay-005", "7-8K"],
+  ["replay-006", "8-8K"]
+]) {
+  const result = replayResultsBySourceId.get(sourceId);
+  assert(result, `${sourceId} must be scored independently`);
+  assert.strictEqual(replay104.jobs.find((job) => job.sourceId === sourceId).salary, salary);
+  assert(result.qualityTags.includes("salary_out_of_range"), `${sourceId} ${salary} must be out of range`);
+  assert.strictEqual(decisionState(result), "blocked", `${sourceId} ${salary} must be blocked`);
+  assert(!["primary", "apply", "caution"].includes(decisionBucket({
+    ...result,
+    analysis: { semanticStatus: "complete", recommendation: "apply" }
+  })), `${sourceId} ${salary} must not enter a selected bucket`);
+}
 console.log(JSON.stringify({ replay: replay104.batchId, jobs: replay104.jobs.length, boundaryCases: boundaryResults.length }));
 
 console.log("analysis_revision_smoke ok");
