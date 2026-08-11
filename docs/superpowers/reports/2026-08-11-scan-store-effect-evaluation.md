@@ -4,6 +4,7 @@
 
 - Baseline blob: `b63b1798b856c2ff786ed82663009208623f05aa`
 - Implementation commit: `5fe034c024b56116752829923fd90212752e2925`
+- Report correction commit: recorded in Git history after this verification.
 - All measurements below use `git show <sha>:<path>` blobs; physical lines include blank lines and nonblank lines exclude them.
 
 | Scope | Baseline physical/nonblank | Current physical/nonblank |
@@ -56,9 +57,11 @@ The focused suite was run after implementation and all 14 commands exited 0:
 | dashboard scan lifecycle | 274 |
 | storage migration | 957 |
 
-Focused total: approximately 10.8 seconds (PowerShell loop reported 11 seconds). `git diff --check b63b179..HEAD` is clean.
+Focused total: approximately 10.8 seconds (PowerShell loop reported 11 seconds).
 
-`node tests/run_all.js` currently stops at the first `self_check.js` entry (86 registered entries) because this worktree has no `node_modules/pdfjs-dist`; package.json and package-lock.json declare `pdfjs-dist` 5.4.296. This is an environment/dependency checkout issue outside the Task 4.3 diff; no network install or unrelated source change was made.
+After the worktree dependency junction was established, a fresh `node tests/run_all.js` completed with exit code 0: `All 87 offline checks passed` in 136.8 seconds, including `scan_store_contract_smoke ok (13 behavior contracts)`. The junction is a local, untracked D: drive reuse of `D:\Guo\ZhiPing\node_modules` at `D:\DevData\RoleFlow-worktrees\wave-4-3-scan-store\node_modules`; it involved no package installation, copying, network access, or source-code change. `git diff --check b63b179..HEAD` is clean.
+
+Validation after `01d652c` confirmed `git diff 01d652c..HEAD -- src tests` is empty: no production or test files changed for this report correction.
 
 ## Boundary / remaining work
 
