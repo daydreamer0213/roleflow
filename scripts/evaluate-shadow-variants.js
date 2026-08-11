@@ -57,7 +57,7 @@ function evaluateVariant(fixture, variant, metadata) {
   const rejectionReasons = [];
   addViolationReason(rejectionReasons, "verified_hard_boundary_guarded_scorecard", comparison.verifiedHardBoundaryViolations.guardedScorecard);
   addViolationReason(rejectionReasons, "verified_severe_risk_guarded_scorecard", comparison.verifiedSevereRiskViolations.guardedScorecard);
-  addViolationReason(rejectionReasons, "missing_bound_evidence_guarded_scorecard", comparison.independentEvidenceViolations.guardedScorecard);
+  addViolationReason(rejectionReasons, "below_production_evidence_floor_guarded_scorecard", comparison.guardedEvidenceSafetyViolations);
   const fixedSalaryEscapes = comparison.fixedSalaryBoundaryEscapes.guardedScorecard.map((violation) => ({
     id: violation.id,
     candidateTier: violation.tier

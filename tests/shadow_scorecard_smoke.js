@@ -183,6 +183,27 @@ try {
           risks: []
         },
         humanLabel: { status: "confirmed", expectedTier: "caution" }
+      },
+      {
+        id: "five-bound-one-unknown",
+        input: {
+          roleAlignment: "aligned",
+          responsibilityMatches: [
+            { state: "matched", jdEvidence: "JD duty 1", resumeEvidence: "resume duty 1" },
+            { state: "matched", jdEvidence: "JD duty 2", resumeEvidence: "resume duty 2" }
+          ],
+          requirementMatches: [
+            { state: "matched", foundation: true, requirement: "core 1", jdEvidence: "JD core 1", resumeEvidence: "resume core 1" },
+            { state: "matched", central: true, requirement: "core 2", jdEvidence: "JD core 2", resumeEvidence: "resume core 2" },
+            { state: "matched", central: true, requirement: "core 3", jdEvidence: "JD core 3", resumeEvidence: "resume core 3" },
+            { state: "matched", central: true, requirement: "core 4", jdEvidence: "JD core 4", resumeEvidence: "resume core 4" },
+            { state: "matched", requirement: "support 1", jdEvidence: "JD support 1", resumeEvidence: "resume support 1" },
+            { state: "unknown", requirement: "support 2", jdEvidence: "", resumeEvidence: "" }
+          ],
+          boundaries: [],
+          risks: []
+        },
+        humanLabel: { status: "pending-human" }
       }
     ],
     variants: [
@@ -223,15 +244,18 @@ try {
   assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.guardedScorecard, []);
   assert.strictEqual(evaluationReport.verifiedSevereRiskViolations.matrixPreGuardRisk[0].id, "verified-severe-risk");
   assert.deepStrictEqual(evaluationReport.verifiedSevereRiskViolations.guardedScorecard, []);
-  assert.deepStrictEqual(evaluationReport.boundEvidenceViolations, evaluationReport.independentEvidenceViolations);
-  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.pairedEvidenceBound, 10,
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.pairedEvidenceBound, 15,
     "identical JD and resume text still counts as two bound evidence fields");
-  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.coverageRate, 10 / 11);
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.coverageRate, 15 / 17);
+  const fiveBoundOneUnknown = evaluationReport.rows.find((row) => row.id === "five-bound-one-unknown");
+  assert.strictEqual(fiveBoundOneUnknown.candidateTier, "primary");
+  assert.strictEqual(fiveBoundOneUnknown.scorecard.evidenceCoverage.overall, 0.85);
+  assert(!evaluationReport.guardedEvidenceSafetyViolations.some((violation) => violation.id === "five-bound-one-unknown"));
   assert.strictEqual(evaluationReport.explanationCoverage.status, "available");
   assert.strictEqual(evaluationReport.explanationCoverage.requirements.explained, 9);
-  assert.strictEqual(evaluationReport.explanationCoverage.requirements.coverageRate, 9 / 11);
+  assert.strictEqual(evaluationReport.explanationCoverage.requirements.coverageRate, 9 / 17);
   assert.strictEqual(evaluationReport.confirmedLabelCount, 2);
-  assert.strictEqual(evaluationReport.pendingLabelCount, 2);
+  assert.strictEqual(evaluationReport.pendingLabelCount, 3);
   assert.strictEqual(evaluationReport.rankingUsefulness.status, "available");
 
   const samePathResult = spawnSync(process.execPath, [
@@ -257,7 +281,7 @@ try {
     "matrix pre-guard risk alone must not reject the guarded default policy");
   assert.strictEqual(variantsReport.variants[1].rejected, false);
   assert.strictEqual(variantsReport.variants[2].rejected, true);
-  assert(variantsReport.variants[2].rejectionReasons.some((reason) => reason.code === "missing_bound_evidence_guarded_scorecard"));
+  assert(variantsReport.variants[2].rejectionReasons.some((reason) => reason.code === "below_production_evidence_floor_guarded_scorecard"));
 
   const variantsSamePathResult = spawnSync(process.execPath, [
     "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
@@ -369,6 +393,35 @@ try {
   assert.strictEqual(tiedRanking.status, "insufficient_sample", "tied predictions provide no comparable ranking pair");
   assert.strictEqual(tiedRanking.ndcgAtK, null);
   assert.strictEqual(tiedRanking.pairwiseConcordance, null);
+
+  const splitRankingPath = path.join(tempDir, "split-ranking.json");
+  const splitRankingReportPath = path.join(tempDir, "split-ranking-report.json");
+  fs.writeFileSync(splitRankingPath, JSON.stringify({
+    cases: [
+      { id: "split-a", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "primary" } },
+      {
+        id: "split-b",
+        input: {
+          ...fullyBoundInput(),
+          boundaries: [{ verified: true, blocked: true, reason: "split ranking boundary" }]
+        },
+        humanLabel: { status: "confirmed", expectedTier: "not_recommended" }
+      }
+    ]
+  }), "utf8");
+  const splitRankingResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", splitRankingPath, "--output", splitRankingReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(splitRankingResult.status, 0, splitRankingResult.stderr || splitRankingResult.stdout);
+  const splitRanking = JSON.parse(fs.readFileSync(splitRankingReportPath, "utf8")).rankingUsefulness;
+  assert.strictEqual(splitRanking.status, "partial");
+  assert.strictEqual(splitRanking.matrix.status, "insufficient_pairs");
+  assert.strictEqual(splitRanking.matrix.ndcgAtK, null);
+  assert.strictEqual(splitRanking.guardedScorecard.status, "available");
+  assert.notStrictEqual(splitRanking.guardedScorecard.ndcgAtK, null);
+  assert.notStrictEqual(splitRanking.guardedScorecard.pairwiseConcordance, null);
+  assert.strictEqual(splitRanking.ndcgAtK, splitRanking.guardedScorecard.ndcgAtK);
+  assert.strictEqual(splitRanking.pairwiseConcordance, splitRanking.guardedScorecard.pairwiseConcordance);
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }

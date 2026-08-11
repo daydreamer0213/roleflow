@@ -53,7 +53,16 @@ function buildShadowReport(fixture, metadata = {}) {
   const matrixVsGuardedScorecard = comparisonSummary(rows);
   const hardBoundaryViolations = tierViolations(rows, "verifiedHardBoundary", nonRejectedTiers());
   const severeRiskViolations = tierViolations(rows, "verifiedSevereRisk", nonRejectedTiers());
-  const independentEvidenceViolations = tierViolations(rows, "missingBoundEvidence", new Set(["primary", "apply"]));
+  const guardedEvidenceSafetyViolations = rows.filter((row) => (
+    ["primary", "apply"].includes(row.candidateTier)
+      && row.scorecard.evidenceCoverage.overall < DECISION_POLICY.minEvidenceCoverageForAutoSelect
+  )).map((row) => ({
+    id: row.id,
+    tier: row.candidateTier,
+    coverage: row.scorecard.evidenceCoverage.overall,
+    minimumCoverage: DECISION_POLICY.minEvidenceCoverageForAutoSelect,
+    finalReasons: row.scorecard.reasons.map((reason) => reason.code)
+  }));
   const fixedSalaryBoundaryEscapes = tierViolations(rows, "fixedSalaryBoundary", nonRejectedTiers());
   return {
     version: REPORT_VERSION,
@@ -75,13 +84,11 @@ function buildShadowReport(fixture, metadata = {}) {
     agreementRate: matrixVsGuardedScorecard.agreementRate,
     verifiedHardBoundaryViolations: hardBoundaryViolations,
     verifiedSevereRiskViolations: severeRiskViolations,
-    independentEvidenceViolations,
-    boundEvidenceViolations: independentEvidenceViolations,
+    guardedEvidenceSafetyViolations,
     fixedSalaryBoundaryEscapes,
     matrixPreGuardRisk: {
       verifiedHardBoundaryViolations: hardBoundaryViolations.matrixPreGuardRisk,
       verifiedSevereRiskViolations: severeRiskViolations.matrixPreGuardRisk,
-      independentEvidenceViolations: independentEvidenceViolations.matrixPreGuardRisk,
       fixedSalaryBoundaryEscapes: fixedSalaryBoundaryEscapes.matrixPreGuardRisk
     },
     explanationCoverage: explanationCoverage(rows),
@@ -124,7 +131,6 @@ function buildRows(cases, policy) {
       candidateTier: scorecard.candidateTier,
       verifiedHardBoundary: scorecard.hardBoundary.blocked,
       verifiedSevereRisk: scorecard.hardBoundary.severeRisk,
-      missingBoundEvidence: hasMissingBoundEvidence(item.input),
       evidenceBinding: evidenceBinding(item.input),
       explanationBinding: explanationBinding(item, item.input),
       scorecard
@@ -146,13 +152,6 @@ function hasFixedSalaryBoundary(item) {
   return item.fixedSalaryBoundary === true
     || item.input?.fixedSalaryBoundary === true
     || asItems(item.input?.boundaries).some((boundary) => boundary?.fixedSalaryBoundary === true);
-}
-
-function hasMissingBoundEvidence(input) {
-  return [
-    ...asItems(input.requirementMatches),
-    ...asItems(input.responsibilityMatches)
-  ].some((item) => isEvaluableItem(item) && !(hasText(item.jdEvidence) && hasText(item.resumeEvidence)));
 }
 
 function asItems(value) {
@@ -314,17 +313,17 @@ function rankingMetrics(rows) {
   if (rows.length < 2) return insufficientRanking(rows.length, k);
   const matrix = rankMetrics(rows, "productionMatrixTier", k);
   const guardedScorecard = rankMetrics(rows, "candidateTier", k);
-  if (matrix.comparablePairCount === 0 || guardedScorecard.comparablePairCount === 0) {
-    return insufficientRanking(rows.length, k, matrix, guardedScorecard);
-  }
+  const matrixResult = rankingSide(matrix);
+  const guardedResult = rankingSide(guardedScorecard);
+  const availableCount = Number(matrixResult.status === "available") + Number(guardedResult.status === "available");
   return {
-    status: "available",
+    status: availableCount === 2 ? "available" : availableCount === 1 ? "partial" : "insufficient_sample",
     confirmedLabelCount: rows.length,
     k,
-    matrix,
-    guardedScorecard,
-    ndcgAtK: guardedScorecard.ndcgAtK,
-    pairwiseConcordance: guardedScorecard.pairwiseConcordance
+    matrix: matrixResult,
+    guardedScorecard: guardedResult,
+    ndcgAtK: guardedResult.ndcgAtK,
+    pairwiseConcordance: guardedResult.pairwiseConcordance
   };
 }
 
@@ -372,18 +371,29 @@ function tieAwareDiscountedGain(group, offset, k) {
   }, 0);
 }
 
-function insufficientRanking(confirmedLabelCount, k, matrix = null, guardedScorecard = null) {
-  const unavailable = (metrics) => ({
+function rankingSide(metrics) {
+  if (metrics.comparablePairCount > 0) return { status: "available", ...metrics };
+  return {
+    status: "insufficient_pairs",
     ndcgAtK: null,
     pairwiseConcordance: null,
-    comparablePairCount: metrics?.comparablePairCount || 0
-  });
+    comparablePairCount: 0
+  };
+}
+
+function insufficientRanking(confirmedLabelCount, k) {
+  const unavailable = {
+    status: "insufficient_sample",
+    ndcgAtK: null,
+    pairwiseConcordance: null,
+    comparablePairCount: 0
+  };
   return {
     status: "insufficient_sample",
     confirmedLabelCount,
     k,
-    matrix: unavailable(matrix),
-    guardedScorecard: unavailable(guardedScorecard),
+    matrix: unavailable,
+    guardedScorecard: unavailable,
     ndcgAtK: null,
     pairwiseConcordance: null
   };
