@@ -47,6 +47,14 @@ The store has only the three permitted dependency classes; it does not import `c
 - `getWorkflowHealthSnapshot` remains in `storage.js` because it is the cross-domain read joining candidate, job, workflow, scan, and communication state; it now directly calls `workflowStore.listWorkflowRuns` and retains all frozen links, limits, row shapes, truncation flags, and read-only behavior.
 - The transaction primitive moved unchanged to `storage_shared`; no second database handle or duplicate `BEGIN IMMEDIATE` helper was introduced.
 
+## Transaction-owner inventory
+
+| Site | Frozen base | Final | Evidence |
+| --- | --- | --- | --- |
+| Workflow scan-link helper | `core/storage.immediateTransaction` | `storage_shared.immediateTransaction`, re-exported by `core/storage` | The normalized helper body is identical; facade and shared references are identical; exactly one `function immediateTransaction(` exists. |
+| Workflow store | Helper from the facade | Imports the shared helper | No `function immediateTransaction(` or `BEGIN IMMEDIATE` appears in `workflow_store.js`. |
+| Schema migrations | Direct `BEGIN IMMEDIATE` in `core/storage.js` | Direct `BEGIN IMMEDIATE` remains in `core/storage.js` | This pre-existing schema-owner transaction is distinct from the moved helper and remains unchanged. |
+
 ## Evidence map
 
 | Evidence type | What it proves |
@@ -61,12 +69,11 @@ Error-code/message evidence remains frozen by normalized body equivalence and ex
 
 | Command | Result | Duration |
 | --- | --- | --- |
-| Baseline `workflow_health_smoke`, `workflow_storage_smoke`, `workflow_task_storage_smoke` | 3/3 passed | 0.716s |
-| RED `workflow_store_contract_smoke.js` before store creation | Failed as intended: `MODULE_NOT_FOUND` for `workflow_store` | 0.126s |
-| Final direct owner contract | passed | 17.182s |
-| Direct required-child set (17 named brief checks) | 17/17 passed | 33.560s |
-| Final `npm.cmd test` | 89/89 offline checks passed, exit 0 | 157s (11:50:20–11:52:57) |
-| Static export/dependency/transaction checks | passed: 136/39/29/26/35/14/9 and one transaction body | completed before report |
+| Baseline `workflow_health_smoke`, `workflow_storage_smoke`, `workflow_task_storage_smoke` | 3/3 passed | 0.702s |
+| Final direct owner contract | passed | 16.802s |
+| Direct required-child set (16 files named by the brief) | 16/16 passed | 16.447s |
+| Final foreground `npm.cmd test` | 89/89 offline checks passed, exit 0 | 163.399s |
+| Static export/dependency/transaction checks | passed: exact 136/39/29/26/35/14/9 exports, 39 facade identities, permitted dependency graph, body inventory, one shared transaction-helper body, and the retained schema-migration transaction | completed after this report update |
 | `git diff --check` | passed | completed before report; rerun after report before commit |
 
 SQLite experimental warnings were emitted by Node during offline tests; they are pre-existing runtime warnings and no test reported an assertion failure.
@@ -74,7 +81,7 @@ SQLite experimental warnings were emitted by Node during offline tests; they are
 ## Weaknesses and next improvements
 
 1. High impact/risk: independent controller review is still required before merge; this report does not replace it.
-2. Medium: `tests/communication_store_contract_smoke.js` also had to update its exact shared-export count from 8 to 9. The brief listed the scan-store expectation only; this narrowly necessary matching assertion update was reported before changing it.
+2. Medium: `tests/communication_store_contract_smoke.js` also updates its exact shared-export count from 8 to 9. Although the brief explicitly names the scan-store assertion, this matching exact architecture assertion needed the same narrowly scoped correction.
 3. Low: source ownership remains a large pure move. Future cleanup of the private, currently unused `TERMINAL_WORKFLOW_RUN_STATUSES` must be a separate evidence-backed task.
 
-No real BOSS, browser, network, communication, application, or live acceptance action occurred. Communication technical acceptance remains `e2e_pending`. Wave 5 is explicitly deferred; the next task is the consolidated Wave 0 evaluation.
+No real BOSS, browser session, external network, communication, application, or live acceptance action occurred. The offline suite uses local fixtures, temporary databases, and local test HTTP servers only. Communication technical acceptance remains `e2e_pending`. Wave 5 is explicitly deferred; the next task is the consolidated Wave 0 evaluation.
