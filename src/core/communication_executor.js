@@ -41,7 +41,7 @@ async function runCommunicationBatch({
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-  if (["confirmed", "paused"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
@@ -92,6 +92,7 @@ async function runCommunicationBatch({
     }
     const afterReserve = observeControl(db, batchId, signal, logger);
     if (afterReserve) return afterReserve;
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
 
     let inspection;
     try {
