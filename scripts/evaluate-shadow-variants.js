@@ -55,17 +55,13 @@ function variantPolicies(fixture) {
 function evaluateVariant(fixture, variant, metadata) {
   const comparison = buildShadowReport({ ...fixture, policy: variant.policy }, metadata);
   const rejectionReasons = [];
-  addViolationReason(rejectionReasons, "verified_hard_boundary_matrix", comparison.verifiedHardBoundaryViolations.matrix);
   addViolationReason(rejectionReasons, "verified_hard_boundary_guarded_scorecard", comparison.verifiedHardBoundaryViolations.guardedScorecard);
-  addViolationReason(rejectionReasons, "missing_independent_evidence_matrix", comparison.independentEvidenceViolations.matrix);
-  addViolationReason(rejectionReasons, "missing_independent_evidence_guarded_scorecard", comparison.independentEvidenceViolations.guardedScorecard);
-  const fixedSalaryEscapes = comparison.rows.filter((row) => row.fixedSalaryBoundary
-    && (row.productionMatrixTier !== "not_recommended" || row.candidateTier !== "not_recommended"))
-    .map((row) => ({
-      id: row.id,
-      matrixTier: row.productionMatrixTier,
-      guardedScorecardTier: row.candidateTier
-    }));
+  addViolationReason(rejectionReasons, "verified_severe_risk_guarded_scorecard", comparison.verifiedSevereRiskViolations.guardedScorecard);
+  addViolationReason(rejectionReasons, "missing_bound_evidence_guarded_scorecard", comparison.independentEvidenceViolations.guardedScorecard);
+  const fixedSalaryEscapes = comparison.fixedSalaryBoundaryEscapes.guardedScorecard.map((violation) => ({
+    id: violation.id,
+    candidateTier: violation.tier
+  }));
   addViolationReason(rejectionReasons, "fixed_salary_boundary_escape", fixedSalaryEscapes);
   return {
     id: variant.id,
@@ -79,6 +75,7 @@ function evaluateVariant(fixture, variant, metadata) {
     agreementRate: comparison.agreementRate,
     explanationCoverage: comparison.explanationCoverage,
     evidenceCoverage: comparison.evidenceCoverage,
+    matrixPreGuardRisk: comparison.matrixPreGuardRisk,
     rejected: rejectionReasons.length > 0,
     rejectionReasons
   };

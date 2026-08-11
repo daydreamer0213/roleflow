@@ -51,11 +51,16 @@ function buildShadowReport(fixture, metadata = {}) {
   const confirmedRows = rows.filter((row) => isConfirmedLabel(row.humanLabel));
   const pendingRows = rows.filter((row) => row.humanLabel && !isConfirmedLabel(row.humanLabel));
   const matrixVsGuardedScorecard = comparisonSummary(rows);
-  const rankingUsefulness = confirmedRows.length ? rankingMetrics(confirmedRows) : null;
+  const hardBoundaryViolations = tierViolations(rows, "verifiedHardBoundary", nonRejectedTiers());
+  const severeRiskViolations = tierViolations(rows, "verifiedSevereRisk", nonRejectedTiers());
+  const independentEvidenceViolations = tierViolations(rows, "missingBoundEvidence", new Set(["primary", "apply"]));
+  const fixedSalaryBoundaryEscapes = tierViolations(rows, "fixedSalaryBoundary", nonRejectedTiers());
   return {
     version: REPORT_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
     evaluation: EVALUATION_NAME,
+    sharedDecisionEngine: "deriveMatrixDecision",
+    comparisonInterpretation: "matrix-vs-matrix-plus-guardrails residual",
     scorecardVersion: SHADOW_SCORECARD_VERSION,
     inputFixtureSha256: String(metadata.inputFixtureSha256 || ""),
     evaluatedGitCommit: String(metadata.evaluatedGitCommit || ""),
@@ -68,14 +73,23 @@ function buildShadowReport(fixture, metadata = {}) {
     changedCandidateTierCount: comparableRows.filter((row) => row.candidateTier !== row.finalRecommendation).length,
     matrixVsGuardedScorecard,
     agreementRate: matrixVsGuardedScorecard.agreementRate,
-    verifiedHardBoundaryViolations: tierViolations(rows, "verifiedHardBoundary"),
-    independentEvidenceViolations: tierViolations(rows, "missingIndependentEvidence"),
+    verifiedHardBoundaryViolations: hardBoundaryViolations,
+    verifiedSevereRiskViolations: severeRiskViolations,
+    independentEvidenceViolations,
+    boundEvidenceViolations: independentEvidenceViolations,
+    fixedSalaryBoundaryEscapes,
+    matrixPreGuardRisk: {
+      verifiedHardBoundaryViolations: hardBoundaryViolations.matrixPreGuardRisk,
+      verifiedSevereRiskViolations: severeRiskViolations.matrixPreGuardRisk,
+      independentEvidenceViolations: independentEvidenceViolations.matrixPreGuardRisk,
+      fixedSalaryBoundaryEscapes: fixedSalaryBoundaryEscapes.matrixPreGuardRisk
+    },
     explanationCoverage: explanationCoverage(rows),
     evidenceCoverage: evidenceCoverage(rows),
     confirmedLabelCount: confirmedRows.length,
     pendingLabelCount: pendingRows.length,
     unlabeledCount: rows.length - confirmedRows.length - pendingRows.length,
-    rankingUsefulness,
+    rankingUsefulness: rankingMetrics(confirmedRows),
     rows
   };
 }
@@ -96,20 +110,23 @@ function buildRows(cases, policy) {
     if (!item.input || typeof item.input !== "object" || Array.isArray(item.input)) {
       throw new Error(`case ${id} input must be a non-array object`);
     }
+    const humanLabel = normalizedHumanLabel(item.humanLabel);
     const scorecard = buildShadowScorecard(item.input, policy);
     const productionMatrixTier = scorecard.score.productionMatrixTier;
-    const independentEvidence = hasIndependentEvidence(item.input);
     return {
       id,
       finalRecommendation: item.finalRecommendation ?? null,
       decisionBucket: item.decisionBucket ?? null,
       defaultSelectedForBatch: item.defaultSelectedForBatch ?? null,
-      humanLabel: normalizedHumanLabel(item.humanLabel),
+      humanLabel,
       fixedSalaryBoundary: hasFixedSalaryBoundary(item),
       productionMatrixTier,
       candidateTier: scorecard.candidateTier,
-      verifiedHardBoundary: scorecard.hardBoundary.blocked || scorecard.hardBoundary.severeRisk,
-      missingIndependentEvidence: !independentEvidence,
+      verifiedHardBoundary: scorecard.hardBoundary.blocked,
+      verifiedSevereRisk: scorecard.hardBoundary.severeRisk,
+      missingBoundEvidence: hasMissingBoundEvidence(item.input),
+      evidenceBinding: evidenceBinding(item.input),
+      explanationBinding: explanationBinding(item, item.input),
       scorecard
     };
   }).sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
@@ -119,6 +136,9 @@ function normalizedHumanLabel(label) {
   if (!label || typeof label !== "object" || Array.isArray(label)) return null;
   const status = String(label.status || "").trim();
   const expectedTier = String(label.expectedTier || "").trim();
+  if (status === "confirmed" && !RECOMMENDATION_TIERS.includes(expectedTier)) {
+    throw new Error("confirmed human labels must define a canonical expectedTier");
+  }
   return { status, expectedTier };
 }
 
@@ -128,15 +148,11 @@ function hasFixedSalaryBoundary(item) {
     || asItems(item.input?.boundaries).some((boundary) => boundary?.fixedSalaryBoundary === true);
 }
 
-function hasIndependentEvidence(input) {
+function hasMissingBoundEvidence(input) {
   return [
     ...asItems(input.requirementMatches),
     ...asItems(input.responsibilityMatches)
-  ].some((item) => {
-    const jdEvidence = String(item?.jdEvidence || "").trim();
-    const resumeEvidence = String(item?.resumeEvidence || "").trim();
-    return Boolean(jdEvidence) && Boolean(resumeEvidence) && jdEvidence !== resumeEvidence;
-  });
+  ].some((item) => isEvaluableItem(item) && !(hasText(item.jdEvidence) && hasText(item.resumeEvidence)));
 }
 
 function asItems(value) {
@@ -166,15 +182,12 @@ function comparisonSummary(rows) {
   };
 }
 
-function tierViolations(rows, field) {
-  const result = { matrix: [], guardedScorecard: [] };
-  const eligibleTiers = field === "missingIndependentEvidence"
-    ? new Set(["primary", "apply"])
-    : new Set(RECOMMENDATION_TIERS.filter((tier) => tier !== "not_recommended"));
+function tierViolations(rows, field, eligibleTiers) {
+  const result = { matrixPreGuardRisk: [], guardedScorecard: [] };
   for (const row of rows) {
     if (!row[field]) continue;
     if (eligibleTiers.has(row.productionMatrixTier)) {
-      result.matrix.push({ id: row.id, tier: row.productionMatrixTier });
+      result.matrixPreGuardRisk.push({ id: row.id, tier: row.productionMatrixTier });
     }
     if (eligibleTiers.has(row.candidateTier)) {
       result.guardedScorecard.push({ id: row.id, tier: row.candidateTier });
@@ -185,31 +198,127 @@ function tierViolations(rows, field) {
 }
 
 function explanationCoverage(rows) {
-  return {
-    matrix: coverage(rows, (row) => Boolean(row.scorecard.score.fitBand && row.scorecard.score.effectiveRoleAlignment)),
-    guardedScorecard: coverage(rows, (row) => row.scorecard.reasons.length > 0)
-  };
+  const requirements = aggregateExplanations(rows.map((row) => row.explanationBinding.requirements));
+  const responsibilities = aggregateExplanations(rows.map((row) => row.explanationBinding.responsibilities));
+  const hasExplicitExplanation = rows.some((row) => row.explanationBinding.hasExplicitExplanation);
+  const overall = aggregateExplanations([requirements, responsibilities]);
+  if (!hasExplicitExplanation || overall.eligible === 0) return unavailableCoverage(requirements, responsibilities, overall);
+  return { status: "available", requirements, responsibilities, ...overall };
 }
 
 function evidenceCoverage(rows) {
-  const matrix = coverage(rows, (row) => row.scorecard.score.weightedFit !== null);
-  const guardedScorecard = coverage(rows, (row) => row.scorecard.evidenceCoverage.overall >= 0);
+  const requirements = aggregateBindings(rows.map((row) => row.evidenceBinding.requirements));
+  const responsibilities = aggregateBindings(rows.map((row) => row.evidenceBinding.responsibilities));
+  return { requirements, responsibilities, ...aggregateBindings([requirements, responsibilities]) };
+}
+
+function evidenceBinding(input) {
   return {
-    matrix: { ...matrix, mean: mean(rows.map((row) => row.scorecard.evidenceCoverage.overall)) },
-    guardedScorecard: { ...guardedScorecard, mean: mean(rows.map((row) => row.scorecard.evidenceCoverage.overall)) }
+    requirements: bindingStats(asItems(input.requirementMatches)),
+    responsibilities: bindingStats(asItems(input.responsibilityMatches))
   };
 }
 
-function coverage(rows, predicate) {
-  const covered = rows.filter(predicate).length;
-  return { covered, total: rows.length, rate: rate(covered, rows.length) };
+function explanationBinding(item, input) {
+  const sourceTexts = explicitExplanationTexts(item, input);
+  const matches = [...asItems(input.requirementMatches), ...asItems(input.responsibilityMatches)];
+  return {
+    hasExplicitExplanation: sourceTexts.length > 0 || matches.some((match) => hasText(match.explanation) || hasText(match.rationale)),
+    requirements: explanationStats(asItems(input.requirementMatches), sourceTexts),
+    responsibilities: explanationStats(asItems(input.responsibilityMatches), sourceTexts)
+  };
+}
+
+function bindingStats(items, isBound = (item) => hasText(item.jdEvidence) && hasText(item.resumeEvidence)) {
+  const eligible = items.filter(isEvaluableItem);
+  const jdEvidenceBound = eligible.filter((item) => hasText(item.jdEvidence)).length;
+  const resumeEvidenceBound = eligible.filter((item) => hasText(item.resumeEvidence)).length;
+  const pairedEvidenceBound = eligible.filter(isBound).length;
+  return {
+    eligible: eligible.length,
+    jdEvidenceBound,
+    resumeEvidenceBound,
+    pairedEvidenceBound,
+    coverageRate: rate(pairedEvidenceBound, eligible.length)
+  };
+}
+
+function aggregateBindings(items) {
+  const totals = items.reduce((result, item) => ({
+    eligible: result.eligible + item.eligible,
+    jdEvidenceBound: result.jdEvidenceBound + item.jdEvidenceBound,
+    resumeEvidenceBound: result.resumeEvidenceBound + item.resumeEvidenceBound,
+    pairedEvidenceBound: result.pairedEvidenceBound + item.pairedEvidenceBound
+  }), { eligible: 0, jdEvidenceBound: 0, resumeEvidenceBound: 0, pairedEvidenceBound: 0 });
+  return { ...totals, coverageRate: rate(totals.pairedEvidenceBound, totals.eligible) };
+}
+
+function explanationStats(items, sourceTexts) {
+  const eligible = items.filter(isEvaluableItem);
+  const explained = eligible.filter((item) => itemExplanationBound(item, sourceTexts)).length;
+  return { eligible: eligible.length, explained, coverageRate: rate(explained, eligible.length) };
+}
+
+function aggregateExplanations(items) {
+  const totals = items.reduce((result, item) => ({
+    eligible: result.eligible + item.eligible,
+    explained: result.explained + item.explained
+  }), { eligible: 0, explained: 0 });
+  return { ...totals, coverageRate: rate(totals.explained, totals.eligible) };
+}
+
+function unavailableCoverage(requirements, responsibilities, overall) {
+  const unavailable = (item) => ({ ...item, explained: null, coverageRate: null });
+  return {
+    status: "unavailable",
+    requirements: unavailable(requirements),
+    responsibilities: unavailable(responsibilities),
+    ...unavailable(overall)
+  };
+}
+
+function explicitExplanationTexts(item, input) {
+  const values = [item.explanation, item.rationale, input.explanation, input.rationale];
+  for (const key of ["fitReasons", "missingPoints", "blockingGaps", "hiddenRisks"]) {
+    values.push(item[key], input[key]);
+  }
+  return values.flatMap(textValues).filter(hasText);
+}
+
+function textValues(value) {
+  if (Array.isArray(value)) return value.flatMap(textValues);
+  if (value && typeof value === "object") return Object.values(value).flatMap(textValues);
+  return [String(value || "").trim()];
+}
+
+function itemExplanationBound(item, sourceTexts) {
+  if (hasText(item.explanation) || hasText(item.rationale)) return true;
+  const label = String(item.requirement || item.label || item.name || "").trim();
+  return Boolean(label) && sourceTexts.some((text) => text.includes(label));
+}
+
+function isEvaluableItem(item) {
+  return Boolean(item) && typeof item === "object" && !Array.isArray(item);
+}
+
+function hasText(value) {
+  return Boolean(String(value || "").trim());
+}
+
+function nonRejectedTiers() {
+  return new Set(RECOMMENDATION_TIERS.filter((tier) => tier !== "not_recommended"));
 }
 
 function rankingMetrics(rows) {
   const k = Math.min(5, rows.length);
+  if (rows.length < 2) return insufficientRanking(rows.length, k);
   const matrix = rankMetrics(rows, "productionMatrixTier", k);
   const guardedScorecard = rankMetrics(rows, "candidateTier", k);
+  if (matrix.comparablePairCount === 0 || guardedScorecard.comparablePairCount === 0) {
+    return insufficientRanking(rows.length, k, matrix, guardedScorecard);
+  }
   return {
+    status: "available",
     confirmedLabelCount: rows.length,
     k,
     matrix,
@@ -220,9 +329,21 @@ function rankingMetrics(rows) {
 }
 
 function rankMetrics(rows, field, k) {
-  const sorted = [...rows].sort((left, right) => tierValue(right[field]) - tierValue(left[field]) || compareIds(left, right));
-  const ideal = [...rows].sort((left, right) => tierValue(right.humanLabel.expectedTier) - tierValue(left.humanLabel.expectedTier) || compareIds(left, right));
-  const dcg = discountedGain(sorted.slice(0, k));
+  const groups = new Map();
+  for (const row of rows) {
+    const value = tierValue(row[field]);
+    const group = groups.get(value) || [];
+    group.push(row);
+    groups.set(value, group);
+  }
+  const dcg = [...groups.entries()]
+    .sort(([left], [right]) => right - left)
+    .reduce((total, [, group], groupIndex, entries) => total + tieAwareDiscountedGain(
+      group,
+      entries.slice(0, groupIndex).reduce((count, [, prior]) => count + prior.length, 0),
+      k
+    ), 0);
+  const ideal = [...rows].sort((left, right) => tierValue(right.humanLabel.expectedTier) - tierValue(left.humanLabel.expectedTier));
   const idealDcg = discountedGain(ideal.slice(0, k));
   let concordant = 0;
   let comparablePairs = 0;
@@ -230,8 +351,9 @@ function rankMetrics(rows, field, k) {
     for (let right = left + 1; right < rows.length; right += 1) {
       const expectedDifference = tierValue(rows[left].humanLabel.expectedTier) - tierValue(rows[right].humanLabel.expectedTier);
       if (expectedDifference === 0) continue;
-      comparablePairs += 1;
       const observedDifference = tierValue(rows[left][field]) - tierValue(rows[right][field]);
+      if (observedDifference === 0) continue;
+      comparablePairs += 1;
       if (observedDifference !== 0 && Math.sign(observedDifference) === Math.sign(expectedDifference)) concordant += 1;
     }
   }
@@ -239,6 +361,31 @@ function rankMetrics(rows, field, k) {
     ndcgAtK: idealDcg === 0 ? null : dcg / idealDcg,
     pairwiseConcordance: comparablePairs ? concordant / comparablePairs : null,
     comparablePairCount: comparablePairs
+  };
+}
+
+function tieAwareDiscountedGain(group, offset, k) {
+  const averageGain = group.reduce((total, row) => total + ((2 ** tierValue(row.humanLabel.expectedTier)) - 1), 0) / group.length;
+  return group.reduce((total, _row, index) => {
+    const rank = offset + index;
+    return rank < k ? total + averageGain / Math.log2(rank + 2) : total;
+  }, 0);
+}
+
+function insufficientRanking(confirmedLabelCount, k, matrix = null, guardedScorecard = null) {
+  const unavailable = (metrics) => ({
+    ndcgAtK: null,
+    pairwiseConcordance: null,
+    comparablePairCount: metrics?.comparablePairCount || 0
+  });
+  return {
+    status: "insufficient_sample",
+    confirmedLabelCount,
+    k,
+    matrix: unavailable(matrix),
+    guardedScorecard: unavailable(guardedScorecard),
+    ndcgAtK: null,
+    pairwiseConcordance: null
   };
 }
 
@@ -250,16 +397,8 @@ function tierValue(tier) {
   return RECOMMENDATION_TIERS.length - RECOMMENDATION_TIERS.indexOf(tier);
 }
 
-function compareIds(left, right) {
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-}
-
 function isConfirmedLabel(label) {
   return label?.status === "confirmed" && RECOMMENDATION_TIERS.includes(label.expectedTier);
-}
-
-function mean(values) {
-  return values.length ? values.reduce((total, value) => total + Number(value || 0), 0) / values.length : 0;
 }
 
 function rate(numerator, denominator) {

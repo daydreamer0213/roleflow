@@ -28,6 +28,40 @@ function baseInput() {
   };
 }
 
+function fullyBoundInput({ sameEvidence = false, explanation = false } = {}) {
+  const input = baseInput();
+  input.requirementMatches = input.requirementMatches.map((item, index) => ({
+    ...item,
+    jdEvidence: sameEvidence ? `shared requirement evidence ${index}` : `JD requirement ${index}`,
+    resumeEvidence: sameEvidence ? `shared requirement evidence ${index}` : `resume requirement ${index}`,
+    ...(explanation ? { rationale: `requirement rationale ${index}` } : {})
+  }));
+  input.responsibilityMatches = input.responsibilityMatches.map((item, index) => ({
+    ...item,
+    jdEvidence: sameEvidence ? `shared responsibility evidence ${index}` : `JD responsibility ${index}`,
+    resumeEvidence: sameEvidence ? `shared responsibility evidence ${index}` : `resume responsibility ${index}`,
+    ...(explanation ? { explanation: `responsibility explanation ${index}` } : {})
+  }));
+  return input;
+}
+
+function applyTierInput() {
+  return {
+    roleAlignment: "partially_aligned",
+    responsibilityMatches: [
+      { state: "transferable", jdEvidence: "JD duty 1", resumeEvidence: "resume duty 1" },
+      { state: "transferable", jdEvidence: "JD duty 2", resumeEvidence: "resume duty 2" },
+      { state: "transferable", jdEvidence: "JD duty 3", resumeEvidence: "resume duty 3" }
+    ],
+    requirementMatches: [
+      { state: "missing", central: true, requirement: "core", jdEvidence: "JD core", resumeEvidence: "resume core" },
+      { state: "transferable", requirement: "support", jdEvidence: "JD support", resumeEvidence: "resume support" }
+    ],
+    boundaries: [],
+    risks: []
+  };
+}
+
 const stableInput = baseInput();
 const before = JSON.parse(JSON.stringify(stableInput));
 const first = buildShadowScorecard(stableInput, DECISION_POLICY);
@@ -108,42 +142,62 @@ try {
 
   const evaluationFixturePath = path.join(tempDir, "evaluation-fixture.json");
   const evaluationReportPaths = [1, 2, 3].map((run) => path.join(tempDir, `evaluation-report-${run}.json`));
-  const variantsReportPath = path.join(tempDir, "variants-report.json");
+  const variantsReportPaths = [1, 2, 3].map((run) => path.join(tempDir, `variants-report-${run}.json`));
   const evaluationFixture = {
     cases: [
       {
         id: "confirmed-primary",
-        input: baseInput(),
+        input: fullyBoundInput({ sameEvidence: true, explanation: true }),
         humanLabel: { status: "confirmed", expectedTier: "primary" }
       },
       {
         id: "fixed-salary-boundary",
         fixedSalaryBoundary: true,
         input: {
-          ...baseInput(),
+          ...fullyBoundInput({ explanation: true }),
           boundaries: [{ verified: true, blocked: true, reason: "fixed salary boundary" }]
         },
         humanLabel: { status: "pending-human" }
       },
       {
-        id: "missing-independent-evidence",
+        id: "verified-severe-risk",
         input: {
-          ...baseInput(),
-          responsibilityMatches: [
-            { state: "matched", jdEvidence: "same evidence", resumeEvidence: "same evidence" },
-            { state: "matched", jdEvidence: "same evidence 2", resumeEvidence: "same evidence 2" }
-          ]
+          ...fullyBoundInput({ explanation: true }),
+          risks: [{ verified: true, severity: "severe" }]
         },
         humanLabel: { status: "ai-provisional", expectedTier: "primary" }
+      },
+      {
+        id: "variant-evidence-escape",
+        input: {
+          roleAlignment: "aligned",
+          responsibilityMatches: [
+            { state: "matched", jdEvidence: "JD duty 1", resumeEvidence: "resume duty 1" },
+            { state: "matched", jdEvidence: "JD duty 2", resumeEvidence: "resume duty 2" }
+          ],
+          requirementMatches: [
+            { state: "matched", requirement: "known support", jdEvidence: "JD known", resumeEvidence: "resume known" },
+            { state: "unknown", requirement: "unbound support", jdEvidence: "", resumeEvidence: "" }
+          ],
+          boundaries: [],
+          risks: []
+        },
+        humanLabel: { status: "confirmed", expectedTier: "caution" }
       }
     ],
-    variants: [{
-      id: "alternate-weights",
-      policy: {
-        ...DECISION_POLICY,
-        requirementWeights: { core: 0.6, supporting: 0.4 }
+    variants: [
+      {
+        id: "safe-weights",
+        policy: {
+          ...DECISION_POLICY,
+          requirementWeights: { core: 0.6, supporting: 0.4 }
+        }
+      },
+      {
+        id: "unsafe-evidence-coverage",
+        policy: { ...DECISION_POLICY, minEvidenceCoverageForAutoSelect: 0.5 }
       }
-    }]
+    ]
   };
   fs.writeFileSync(evaluationFixturePath, `${JSON.stringify(evaluationFixture, null, 2)}\n`, "utf8");
 
@@ -162,29 +216,53 @@ try {
   assert.match(evaluationReport.inputFixtureSha256, /^[a-f0-9]{64}$/);
   assert.match(evaluationReport.evaluatedGitCommit, /^[a-f0-9]{40}$/);
   assert.strictEqual(evaluationReport.evaluation, "matrix-vs-guarded-scorecard");
-  assert.strictEqual(evaluationReport.matrixVsGuardedScorecard.confusion.primary.primary, 2);
-  assert.strictEqual(evaluationReport.verifiedHardBoundaryViolations.matrix[0].id, "fixed-salary-boundary");
-  assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.scorecard, []);
-  assert.strictEqual(evaluationReport.independentEvidenceViolations.matrix[0].id, "missing-independent-evidence");
-  assert.strictEqual(evaluationReport.confirmedLabelCount, 1);
+  assert.strictEqual(evaluationReport.sharedDecisionEngine, "deriveMatrixDecision");
+  assert.strictEqual(evaluationReport.comparisonInterpretation, "matrix-vs-matrix-plus-guardrails residual");
+  assert.strictEqual(evaluationReport.matrixVsGuardedScorecard.confusion.primary.not_recommended, 2);
+  assert.strictEqual(evaluationReport.verifiedHardBoundaryViolations.matrixPreGuardRisk[0].id, "fixed-salary-boundary");
+  assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.guardedScorecard, []);
+  assert.strictEqual(evaluationReport.verifiedSevereRiskViolations.matrixPreGuardRisk[0].id, "verified-severe-risk");
+  assert.deepStrictEqual(evaluationReport.verifiedSevereRiskViolations.guardedScorecard, []);
+  assert.deepStrictEqual(evaluationReport.boundEvidenceViolations, evaluationReport.independentEvidenceViolations);
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.pairedEvidenceBound, 10,
+    "identical JD and resume text still counts as two bound evidence fields");
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.coverageRate, 10 / 11);
+  assert.strictEqual(evaluationReport.explanationCoverage.status, "available");
+  assert.strictEqual(evaluationReport.explanationCoverage.requirements.explained, 9);
+  assert.strictEqual(evaluationReport.explanationCoverage.requirements.coverageRate, 9 / 11);
+  assert.strictEqual(evaluationReport.confirmedLabelCount, 2);
   assert.strictEqual(evaluationReport.pendingLabelCount, 2);
-  assert.strictEqual(evaluationReport.rankingUsefulness.confirmedLabelCount, 1);
-  assert.strictEqual(evaluationReport.rankingUsefulness.ndcgAtK, 1);
+  assert.strictEqual(evaluationReport.rankingUsefulness.status, "available");
 
   const samePathResult = spawnSync(process.execPath, [
     "scripts/compare-shadow-scorecard.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
   ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
   assert.notStrictEqual(samePathResult.status, 0, "CLI must fail closed when input and output are identical");
 
-  const variantsResult = spawnSync(process.execPath, [
-    "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", variantsReportPath
-  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
-  assert.strictEqual(variantsResult.status, 0, variantsResult.stderr || variantsResult.stdout);
-  const variantsReport = JSON.parse(fs.readFileSync(variantsReportPath, "utf8"));
-  assert.strictEqual(variantsReport.variants.length, 2);
+  for (const outputPath of variantsReportPaths) {
+    const variantsResult = spawnSync(process.execPath, [
+      "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", outputPath
+    ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+    assert.strictEqual(variantsResult.status, 0, variantsResult.stderr || variantsResult.stdout);
+  }
+  const repeatedVariantReports = variantsReportPaths.map((reportPath) => fs.readFileSync(reportPath, "utf8"));
+  assert.strictEqual(repeatedVariantReports[0], repeatedVariantReports[1]);
+  assert.strictEqual(repeatedVariantReports[1], repeatedVariantReports[2]);
+  const variantsReport = JSON.parse(repeatedVariantReports[0]);
+  assert.strictEqual(variantsReport.variants.length, 3);
   assert(variantsReport.variants.every((variant) => /^[a-f0-9]{64}$/.test(variant.policyHash)));
-  assert(variantsReport.variants.every((variant) => variant.rejected === true));
-  assert(variantsReport.variants.every((variant) => variant.rejectionReasons.some((reason) => reason.code === "fixed_salary_boundary_escape")));
+  assert.strictEqual(variantsReport.variants[0].id, "default");
+  assert.strictEqual(variantsReport.variants[0].policyHash, decisionPolicyHash(DECISION_POLICY));
+  assert.strictEqual(variantsReport.variants[0].rejected, false,
+    "matrix pre-guard risk alone must not reject the guarded default policy");
+  assert.strictEqual(variantsReport.variants[1].rejected, false);
+  assert.strictEqual(variantsReport.variants[2].rejected, true);
+  assert(variantsReport.variants[2].rejectionReasons.some((reason) => reason.code === "missing_bound_evidence_guarded_scorecard"));
+
+  const variantsSamePathResult = spawnSync(process.execPath, [
+    "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(variantsSamePathResult.status, 0, "variants CLI must fail closed when input and output are identical");
 
   const invalidVariantsPath = path.join(tempDir, "invalid-variants.json");
   fs.writeFileSync(invalidVariantsPath, JSON.stringify({
@@ -192,9 +270,105 @@ try {
     variants: [{ id: "invalid", policy: { ...DECISION_POLICY, modelRecommendationMode: "invalid" } }]
   }), "utf8");
   const invalidVariantsResult = spawnSync(process.execPath, [
-    "scripts/evaluate-shadow-variants.js", "--input", invalidVariantsPath, "--output", variantsReportPath
+    "scripts/evaluate-shadow-variants.js", "--input", invalidVariantsPath, "--output", variantsReportPaths[0]
   ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
   assert.notStrictEqual(invalidVariantsResult.status, 0, "variants must assert their decision policy before evaluation");
+
+  const invalidConfirmedLabelPath = path.join(tempDir, "invalid-confirmed-label.json");
+  fs.writeFileSync(invalidConfirmedLabelPath, JSON.stringify({
+    cases: [{ id: "invalid-confirmed", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "invalid" } }]
+  }), "utf8");
+  const invalidConfirmedLabelResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", invalidConfirmedLabelPath, "--output", path.join(tempDir, "invalid-confirmed-report.json")
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(invalidConfirmedLabelResult.status, 0, "invalid confirmed labels must fail closed");
+
+  const unexplainedFixturePath = path.join(tempDir, "unexplained.json");
+  const unexplainedReportPath = path.join(tempDir, "unexplained-report.json");
+  fs.writeFileSync(unexplainedFixturePath, JSON.stringify({ cases: [{ id: "unexplained", input: fullyBoundInput() }] }), "utf8");
+  const unexplainedResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", unexplainedFixturePath, "--output", unexplainedReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(unexplainedResult.status, 0, unexplainedResult.stderr || unexplainedResult.stdout);
+  const unexplainedReport = JSON.parse(fs.readFileSync(unexplainedReportPath, "utf8"));
+  assert.strictEqual(unexplainedReport.explanationCoverage.status, "unavailable");
+  assert.strictEqual(unexplainedReport.explanationCoverage.coverageRate, null);
+
+  const noEligibleExplanationPath = path.join(tempDir, "no-eligible-explanation.json");
+  const noEligibleExplanationReportPath = path.join(tempDir, "no-eligible-explanation-report.json");
+  fs.writeFileSync(noEligibleExplanationPath, JSON.stringify({
+    cases: [{
+      id: "no-eligible-explanation",
+      explanation: "case-level explanation without an evaluable match item",
+      input: { roleAlignment: "aligned", responsibilityMatches: [], requirementMatches: [], boundaries: [], risks: [] }
+    }]
+  }), "utf8");
+  const noEligibleExplanationResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", noEligibleExplanationPath, "--output", noEligibleExplanationReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(noEligibleExplanationResult.status, 0, noEligibleExplanationResult.stderr || noEligibleExplanationResult.stdout);
+  const noEligibleExplanation = JSON.parse(fs.readFileSync(noEligibleExplanationReportPath, "utf8")).explanationCoverage;
+  assert.strictEqual(noEligibleExplanation.status, "unavailable");
+  assert.strictEqual(noEligibleExplanation.coverageRate, null);
+
+  const rankingFixture = {
+    cases: [
+      { id: "rank-a", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "primary" } },
+      { id: "rank-b", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "caution" } },
+      { id: "rank-c", input: applyTierInput(), humanLabel: { status: "confirmed", expectedTier: "not_recommended" } }
+    ]
+  };
+  const rankingFixturePath = path.join(tempDir, "ranking.json");
+  const renamedRankingFixturePath = path.join(tempDir, "ranking-renamed.json");
+  const rankingReportPath = path.join(tempDir, "ranking-report.json");
+  const renamedRankingReportPath = path.join(tempDir, "ranking-renamed-report.json");
+  fs.writeFileSync(rankingFixturePath, JSON.stringify(rankingFixture), "utf8");
+  fs.writeFileSync(renamedRankingFixturePath, JSON.stringify({
+    cases: rankingFixture.cases.map((item, index) => ({ ...item, id: `renamed-${index}` }))
+  }), "utf8");
+  for (const [inputPath, outputPath] of [[rankingFixturePath, rankingReportPath], [renamedRankingFixturePath, renamedRankingReportPath]]) {
+    const rankingResult = spawnSync(process.execPath, [
+      "scripts/compare-shadow-scorecard.js", "--input", inputPath, "--output", outputPath
+    ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+    assert.strictEqual(rankingResult.status, 0, rankingResult.stderr || rankingResult.stdout);
+  }
+  const rankingUsefulness = JSON.parse(fs.readFileSync(rankingReportPath, "utf8")).rankingUsefulness;
+  const renamedRankingUsefulness = JSON.parse(fs.readFileSync(renamedRankingReportPath, "utf8")).rankingUsefulness;
+  assert.strictEqual(rankingUsefulness.status, "available");
+  assert.notStrictEqual(rankingUsefulness.ndcgAtK, null);
+  assert.deepStrictEqual(rankingUsefulness, renamedRankingUsefulness,
+    "tie-aware ranking metrics must not depend on fixture IDs");
+
+  const insufficientRankingPath = path.join(tempDir, "insufficient-ranking.json");
+  const insufficientRankingReportPath = path.join(tempDir, "insufficient-ranking-report.json");
+  fs.writeFileSync(insufficientRankingPath, JSON.stringify({
+    cases: [{ id: "only-one", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "primary" } }]
+  }), "utf8");
+  const insufficientRankingResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", insufficientRankingPath, "--output", insufficientRankingReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(insufficientRankingResult.status, 0, insufficientRankingResult.stderr || insufficientRankingResult.stdout);
+  const insufficientRanking = JSON.parse(fs.readFileSync(insufficientRankingReportPath, "utf8")).rankingUsefulness;
+  assert.strictEqual(insufficientRanking.status, "insufficient_sample");
+  assert.strictEqual(insufficientRanking.ndcgAtK, null);
+  assert.strictEqual(insufficientRanking.pairwiseConcordance, null);
+
+  const tiedRankingPath = path.join(tempDir, "tied-ranking.json");
+  const tiedRankingReportPath = path.join(tempDir, "tied-ranking-report.json");
+  fs.writeFileSync(tiedRankingPath, JSON.stringify({
+    cases: [
+      { id: "tie-a", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "primary" } },
+      { id: "tie-b", input: fullyBoundInput(), humanLabel: { status: "confirmed", expectedTier: "caution" } }
+    ]
+  }), "utf8");
+  const tiedRankingResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", tiedRankingPath, "--output", tiedRankingReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(tiedRankingResult.status, 0, tiedRankingResult.stderr || tiedRankingResult.stdout);
+  const tiedRanking = JSON.parse(fs.readFileSync(tiedRankingReportPath, "utf8")).rankingUsefulness;
+  assert.strictEqual(tiedRanking.status, "insufficient_sample", "tied predictions provide no comparable ranking pair");
+  assert.strictEqual(tiedRanking.ndcgAtK, null);
+  assert.strictEqual(tiedRanking.pairwiseConcordance, null);
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
