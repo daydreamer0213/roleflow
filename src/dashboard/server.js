@@ -91,6 +91,7 @@ const {
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
+const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
@@ -690,6 +691,7 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
       error.message = `${source}解析失败：${error.message}`;
       throw error;
     }
+    maskResumeDocumentDiagnostics(resume);
     logger.info("resume_parsed", { requestId, source: file ? "file" : "pasted_text", format: resume.format, charCount: resume.charCount, textTruncated: resume.textTruncated });
     const requestedProfileId = Number(form.fields.profileId || 0) || null;
     const existing = requestedProfileId ? getCandidateProfile(db, requestedProfileId) : null;
@@ -726,6 +728,7 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
     }
     return redirect(res, `/match-card?profileId=${saved.profileId}&cardId=${cardId}`);
   } catch (error) {
+    maskResumeParseErrorDiagnostics(error);
     const failedFile = form.files?.resume;
     try {
       if (!parseRecorded) recordResumeParseAttempt(db, {
@@ -795,7 +798,7 @@ function renderMatchCardPage({ db, searchParams }) {
   const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
   const activeDocument = activeCard?.resumeDocumentId ? getResumeDocument(db, activeCard.resumeDocumentId) : null;
   const activeLabel = activeCard
-    ? `${activeDocument?.originalFileName || "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
+    ? `${activeDocument?.originalFileName ? maskResumeFileName(activeDocument.originalFileName) : "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
     : "尚无已确认的匹配偏好卡";
   const draftLinks = drafts
     .filter((item) => item.id !== card?.id)
@@ -1035,6 +1038,7 @@ async function handleResumeVersionSave(req, res, { db, root, modelConfig, modelR
       document = file
         ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
         : parseResumeText({ text: pastedText, fileName: "pasted_resume_version.txt" });
+      maskResumeDocumentDiagnostics(document);
     }
     if (!document && !Number(form.fields.versionId)) throw new Error("请选择简历文件、粘贴简历文本，或编辑已有版本。");
     let analysis = null;
@@ -1053,6 +1057,7 @@ async function handleResumeVersionSave(req, res, { db, root, modelConfig, modelR
     logger.info("resume_version_saved", { requestId, profileId, versionId: saved.versionId, hasDocument: Boolean(document) });
     redirect(res, `/resumes?profileId=${profileId}&saved=1`);
   } catch (error) {
+    maskResumeParseErrorDiagnostics(error);
     const profileId = Number(form.fields?.profileId || 0);
     const file = form.files?.resumeVersion;
     try {
@@ -1080,6 +1085,18 @@ function persistResumeSourceFile({ db, root, documentId, file, logger, requestId
   } catch (error) {
     logger.warn("resume_source_file_save_failed", { requestId, documentId, error: errorMeta(error) });
   }
+}
+
+function maskResumeDocumentDiagnostics(document) {
+  if (document?.diagnostics) document.diagnostics = maskResumeDiagnostics(document.diagnostics);
+  return document;
+}
+
+function maskResumeParseErrorDiagnostics(error) {
+  if (error?.details?.diagnostics) {
+    error.details = { ...error.details, diagnostics: maskResumeDiagnostics(error.details.diagnostics) };
+  }
+  return error;
 }
 
 async function handlePlanRecommend(req, res, { db, modelConfig, modelReady, logger, requestId }) {
@@ -2897,7 +2914,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
 }
 
 function renderResumeVersion(version, profileId) {
-  const file = version.fileName ? `${version.fileName} / ${version.format || "text"}` : "仅元数据版本";
+  const file = version.fileName ? `${maskResumeContacts(version.fileName)} / ${version.format || "text"}` : "仅元数据版本";
   const sourceFile = version.storedFilePath && version.resumeDocumentId
     ? ` · <a href="/resume-file?id=${escapeAttr(version.resumeDocumentId)}" target="_blank">打开原文件</a>`
     : "";
@@ -2945,7 +2962,7 @@ function profileCredentialLines(items = []) {
 
 function renderParseAttempts(attempts) {
   if (!attempts.length) return `<p class="hint">暂无解析记录。</p>`;
-  const rows = attempts.map((attempt) => `<tr><td>${escapeHtml(String(attempt.createdAt || "").slice(0, 16).replace("T", " "))}</td><td>${escapeHtml(attempt.status)}</td><td>${escapeHtml(attempt.fileName)}</td><td>${escapeHtml(attempt.extractionMethod || "-")}</td><td>${escapeHtml(attempt.charCount)}</td><td>${escapeHtml(parseQualityLabel(attempt.diagnostics?.quality))}</td><td>${escapeHtml(parseOcrLabel(attempt.diagnostics?.ocr))}</td><td>${escapeHtml(attempt.errorCode || "-")}</td><td>${escapeHtml(attempt.preview || attempt.errorMessage || "-")}</td></tr>`).join("");
+  const rows = attempts.map((attempt) => `<tr><td>${escapeHtml(String(attempt.createdAt || "").slice(0, 16).replace("T", " "))}</td><td>${escapeHtml(attempt.status)}</td><td>${escapeHtml(maskResumeContacts(attempt.fileName || ""))}</td><td>${escapeHtml(attempt.extractionMethod || "-")}</td><td>${escapeHtml(attempt.charCount)}</td><td>${escapeHtml(parseQualityLabel(attempt.diagnostics?.quality))}</td><td>${escapeHtml(parseOcrLabel(attempt.diagnostics?.ocr))}</td><td>${escapeHtml(attempt.errorCode || "-")}</td><td>${escapeHtml(maskResumeContacts(attempt.preview || attempt.errorMessage || "-"))}</td></tr>`).join("");
   return `<table class="diagnostics"><thead><tr><th>时间</th><th>结果</th><th>文件</th><th>提取方式</th><th>字数</th><th>文本质量</th><th>扫描件兜底</th><th>错误码</th><th>预览/原因</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 

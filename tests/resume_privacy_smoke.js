@@ -1,7 +1,8 @@
 const assert = require("node:assert");
 const {
   prepareResumeTextForModel,
-  assertResumeIdentityRedacted
+  assertResumeIdentityRedacted,
+  maskResumeDiagnostics
 } = require("../src/core/resume_privacy");
 const { analyzeResumeProfile } = require("../src/core/profile_onboarding");
 const { parseResumeText } = require("../src/core/resume_parser");
@@ -20,6 +21,57 @@ const identity = {
   phones: ["13800138000"],
   emails: ["candidate@example.com"]
 };
+
+const chineseContactFixture = [
+  "个人信息",
+  "手机：13912345678",
+  "邮箱：privacy.fixture@example.com",
+  "联系地址：上海市浦东新区示例路 88 号",
+  "项目经历：KnowledgeFlow"
+].join("\n");
+const maskedDiagnostics = maskResumeDiagnostics({
+  extractionMethod: "pasted_text",
+  charCount: chineseContactFixture.length,
+  preview: chineseContactFixture
+});
+for (const secret of ["13912345678", "privacy.fixture@example.com", "上海市浦东新区示例路 88 号"]) {
+  assert(!JSON.stringify(maskedDiagnostics).includes(secret), `diagnostics must mask contact: ${secret}`);
+}
+assert(maskedDiagnostics.preview.includes("手机:[已隐藏]"));
+assert(maskedDiagnostics.preview.includes("邮箱:[邮箱已隐藏]"));
+assert(maskedDiagnostics.preview.includes("联系地址:[已隐藏]"));
+assert(maskedDiagnostics.preview.includes("KnowledgeFlow"));
+assert.deepStrictEqual(maskResumeDiagnostics(maskedDiagnostics), maskedDiagnostics);
+
+const continuedAddressDiagnostics = maskResumeDiagnostics({
+  extractionMethod: "pasted_text",
+  quality: { status: "good", detectedSections: ["project"] },
+  preview: "联系地址：\n上海市浦东新区续行路 66 号\n项目经历：KnowledgeFlow"
+});
+assert(!continuedAddressDiagnostics.preview.includes("上海市浦东新区续行路 66 号"));
+assert(continuedAddressDiagnostics.preview.includes("联系地址:\n[已隐藏]"));
+assert(continuedAddressDiagnostics.preview.includes("项目经历:KnowledgeFlow"));
+assert.deepStrictEqual(maskResumeDiagnostics(continuedAddressDiagnostics), continuedAddressDiagnostics);
+assert.deepStrictEqual(continuedAddressDiagnostics.quality, { status: "good", detectedSections: ["project"] });
+
+const immutableDiagnosticsInput = {
+  extractionMethod: "pasted_text",
+  preview: "手机：13512345678\n项目经历：KnowledgeFlow",
+  quality: { status: "good", detectedSections: ["project"] },
+  modelInput: {
+    preview: "邮箱：immutable@example.com\n项目经历：KnowledgeFlow",
+    redactions: { phone: 1, email: 1 }
+  }
+};
+const immutableDiagnosticsSnapshot = JSON.parse(JSON.stringify(immutableDiagnosticsInput));
+const immutableDiagnosticsResult = maskResumeDiagnostics(immutableDiagnosticsInput);
+assert.deepStrictEqual(immutableDiagnosticsInput, immutableDiagnosticsSnapshot);
+assert.notStrictEqual(immutableDiagnosticsResult, immutableDiagnosticsInput);
+assert.notStrictEqual(immutableDiagnosticsResult.modelInput, immutableDiagnosticsInput.modelInput);
+assert(!immutableDiagnosticsResult.preview.includes("13512345678"));
+assert(!immutableDiagnosticsResult.modelInput.preview.includes("immutable@example.com"));
+assert.deepStrictEqual(immutableDiagnosticsResult.quality, immutableDiagnosticsInput.quality);
+assert.deepStrictEqual(immutableDiagnosticsResult.modelInput.redactions, immutableDiagnosticsInput.modelInput.redactions);
 
 const prepared = prepareResumeTextForModel(input, {
   originalFileName: "测试候选人-AI应用开发.pdf",

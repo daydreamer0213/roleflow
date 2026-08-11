@@ -123,7 +123,8 @@ const generatedReports = [];
   );
 
   const sampleResumeText = fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8");
-  const identityFileName = "测试候选人-AI应用开发.txt";
+  const privateFileNameContacts = ["13987654321", "上海市浦东新区默认文件名路88号"];
+  const identityFileName = `测试候选人-${privateFileNameContacts[0]}-联系地址${privateFileNameContacts[1]}.txt`;
   const upload = await uploadResume(baseUrl, identityFileName, fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain");
   assert.strictEqual(upload.status, 303);
   const parsedLog = latestLogEvent(root, "resume_parsed");
@@ -139,6 +140,48 @@ const generatedReports = [];
   const profileId = Number(matchCardQuery.get("profileId"));
   const cardId = Number(matchCardQuery.get("cardId"));
   assert(profileId > 0 && cardId > 0, "match-card redirect must carry profileId and cardId");
+
+  const defaultPrivacyContacts = [
+    "13912345678",
+    "default-privacy-contact@example.com",
+    "上海市浦东新区默认脱敏路 88 号"
+  ];
+  const defaultPrivacyResume = [
+    "隐私回归候选人",
+    `手机：${defaultPrivacyContacts[0]}`,
+    `邮箱：${defaultPrivacyContacts[1]}`,
+    `联系地址：${defaultPrivacyContacts[2]}`,
+    "求职意向：AI 应用开发",
+    "项目经历：KnowledgeFlow，负责 RAG 检索服务与评估。",
+    "专业技能：Python、FastAPI、RAG、SQLite。",
+    "工作经历：Example Labs，负责知识库问答产品。"
+  ].join("\n");
+  const defaultPrivacyUpload = await uploadResumeText(baseUrl, defaultPrivacyResume);
+  assert.strictEqual(defaultPrivacyUpload.status, 303, await defaultPrivacyUpload.text());
+  const defaultPrivacyLocation = defaultPrivacyUpload.headers.get("location");
+  const defaultPrivacyProfileId = Number(new URL(`${baseUrl}${defaultPrivacyLocation}`).searchParams.get("profileId"));
+  assert(defaultPrivacyProfileId > 0, "privacy fixture upload must create a profile");
+  const defaultPrivacyReupload = await uploadResumeText(baseUrl, defaultPrivacyResume, defaultPrivacyProfileId);
+  assert.strictEqual(defaultPrivacyReupload.status, 303, await defaultPrivacyReupload.text());
+  const privacyProfilePage = await fetch(`${baseUrl}/profile?profileId=${defaultPrivacyProfileId}`);
+  const privacyProfileHtml = await privacyProfilePage.text();
+  assert.strictEqual(privacyProfilePage.status, 200);
+  const privacyDb = openDb(dbPath);
+  const privacyAttempts = listResumeParseAttempts(privacyDb, defaultPrivacyProfileId);
+  privacyDb.close();
+  for (const secret of defaultPrivacyContacts) {
+    assert(!privacyProfileHtml.includes(secret), `default profile diagnostics must not expose ${secret}`);
+    assert(!JSON.stringify(privacyAttempts).includes(secret), `stored parse diagnostics must not expose ${secret}`);
+  }
+  assert(privacyProfileHtml.includes("手机:[已隐藏]"));
+  assert(privacyProfileHtml.includes("邮箱:[邮箱已隐藏]"));
+  assert(privacyProfileHtml.includes("联系地址:[已隐藏]"));
+  const defaultDiagnosticsResponse = await fetch(`${baseUrl}/diagnostics`);
+  const defaultDiagnosticsHtml = await defaultDiagnosticsResponse.text();
+  assert.strictEqual(defaultDiagnosticsResponse.status, 200);
+  for (const secret of defaultPrivacyContacts) {
+    assert(!defaultDiagnosticsHtml.includes(secret), `default diagnostics logs must not expose ${secret}`);
+  }
 
   const docxPath = path.join(smokeDir, `onboarding-${Date.now()}.docx`);
   const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8", windowsHide: true });
@@ -196,6 +239,18 @@ const generatedReports = [];
   }
 
   const db = openDb(dbPath);
+  const automaticVersion = listCandidateResumeVersions(db, profileId)
+    .find((version) => Number(version.resumeDocumentId) > 0);
+  assert(automaticVersion, "automatic resume version must be stored");
+  assert.strictEqual(automaticVersion.name, "基础简历");
+  assert.strictEqual(automaticVersion.fileName, "简历文件.txt");
+  for (const secret of privateFileNameContacts) {
+    assert(!JSON.stringify(automaticVersion).includes(secret), `candidate storage DTO must not expose filename contact: ${secret}`);
+  }
+  const originalResumeFile = await fetch(`${baseUrl}/resume-file?id=${automaticVersion.resumeDocumentId}`);
+  assert.strictEqual(originalResumeFile.status, 200);
+  assert(originalResumeFile.headers.get("content-disposition").includes(encodeURIComponent(identityFileName)), "explicit source-file action must keep the original filename");
+
   const planId = getActiveSearchPlan(db, profileId)?.id;
   assert(planId, "upload must still recommend a search plan, but it is not user confirmation");
   db.prepare("UPDATE search_plans SET is_active = 0 WHERE id = ?").run(planId);
@@ -215,6 +270,9 @@ const generatedReports = [];
   const matchCardPage = await fetch(`${baseUrl}/match-card?profileId=${profileId}&cardId=${cardId}`);
   const matchCardHtml = await matchCardPage.text();
   assert.strictEqual(matchCardPage.status, 200);
+  for (const secret of privateFileNameContacts) {
+    assert(!matchCardHtml.includes(secret), `matching-card page must not expose filename contact: ${secret}`);
+  }
   assert(matchCardHtml.includes("目标方向"));
   assert(matchCardHtml.includes("强证据"));
   assert(matchCardHtml.includes("可迁移能力"));
@@ -303,6 +361,9 @@ const generatedReports = [];
   assert(versionsHtml.includes("打开原文件"));
   assert(versionsHtml.includes("不会改变基础候选人画像"), "resume versions page must state it never rewrites the base profile");
   assert(versionsHtml.includes("不会替换当前匹配偏好卡"), "resume versions page must state it never replaces the active matching card");
+  for (const secret of privateFileNameContacts) {
+    assert(!versionsHtml.includes(secret), `resume versions page must not expose filename contact: ${secret}`);
+  }
   const savedVersion = listCandidateResumeVersions(db, profileId).find((version) => version.name === "AI Resume Variant");
   assert(savedVersion?.resumeTextExcerpt.includes("测试候选人"));
   assert(savedVersion?.storedFilePath.includes(path.join(".runtime", "resumes")));
