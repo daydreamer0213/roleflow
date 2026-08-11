@@ -32,7 +32,7 @@ assert.strictEqual(Object.keys(storage).length, 136);
 assert.strictEqual(Object.keys(candidateStore).length, 29);
 assert.strictEqual(Object.keys(jobStore).length, 26);
 assert.strictEqual(Object.keys(scanStore).length, 35);
-assert.strictEqual(Object.keys(sharedStore).length, 8);
+assert.strictEqual(Object.keys(sharedStore).length, 9);
 assert.strictEqual(storage.getSearchPlan, candidateStore.getSearchPlan);
 assert.strictEqual(storage.listDecisionPool, jobStore.listDecisionPool);
 assert.strictEqual(storage.listSiteAccessEvents, scanStore.listSiteAccessEvents);

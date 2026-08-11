@@ -5,7 +5,7 @@ const {
   getWorkflowRun,
   attachWorkflowCommunication,
   transitionWorkflowRun
-} = require("../core/storage");
+} = require("./workflow_store");
 const { isBossJobUrl } = require("../core/scoring");
 const { PRODUCT_POLICY } = require("../core/product_policy");
 const { chinaDayStartMs } = require("../core/site_access_budget");

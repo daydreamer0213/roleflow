@@ -53,7 +53,7 @@ function contract01ExportsAndReferences() {
   for (const name of Object.keys(candidateStore)) assert.equal(storage[name], candidateStore[name]);
   for (const name of Object.keys(jobStore)) assert.equal(storage[name], jobStore[name]);
   assert.deepEqual(Object.keys(shared).sort(), [
-    "OUTCOME_STATUSES", "nowIso", "nullableText", "optionalInteger", "optionalPositiveInteger", "parseJson", "storageError", "validDate"
+    "OUTCOME_STATUSES", "immediateTransaction", "nowIso", "nullableText", "optionalInteger", "optionalPositiveInteger", "parseJson", "storageError", "validDate"
   ]);
 }
 

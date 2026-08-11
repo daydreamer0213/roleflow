@@ -43,4 +43,16 @@ function validDate(value, label) {
   return date;
 }
 
-module.exports = { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate };
+function immediateTransaction(db, work) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = work();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+module.exports = { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate, immediateTransaction };
