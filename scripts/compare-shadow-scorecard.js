@@ -8,6 +8,7 @@ const {
   assertDecisionPolicy,
   decisionPolicyHash
 } = require("./../src/core/decision_policy");
+const { fixtureLabelSource, loadLabelsFile, mergeLabels } = require("./lib/gate_d_labels");
 const { buildShadowScorecard, SHADOW_SCORECARD_VERSION } = require("./lib/shadow_scorecard");
 
 const REPORT_VERSION = "shadow-scorecard-report-v1";
@@ -22,16 +23,25 @@ const BASELINE_SAFETY_CODES = new Set([
 ]);
 
 function main(argv = process.argv.slice(2)) {
-  const { inputPath, outputPath } = parseArgs(argv);
+  const { inputPath, outputPath, labelsPath } = parseArgs(argv);
   const resolvedInput = path.resolve(inputPath);
   const resolvedOutput = path.resolve(outputPath);
   if (sameFileIdentity(resolvedInput, resolvedOutput)) {
     throw new Error("input and output must refer to different files");
   }
   const { fixture, inputFixtureSha256 } = readFixture(resolvedInput);
-  const report = buildShadowReport(fixture, {
+  let labels = null;
+  if (labelsPath) {
+    const resolvedLabels = path.resolve(labelsPath);
+    if (sameFileIdentity(resolvedLabels, resolvedInput) || sameFileIdentity(resolvedLabels, resolvedOutput)) {
+      throw new Error("input, labels and output must refer to different files");
+    }
+    labels = mergeLabels(fixture, loadLabelsFile(resolvedLabels));
+  }
+  const report = buildShadowReport(labels ? labels.fixture : fixture, {
     inputFixtureSha256,
-    evaluatedGitCommit: evaluatedGitCommit()
+    evaluatedGitCommit: evaluatedGitCommit(),
+    labelSource: labels ? labels.labelSource : null
   });
   fs.writeFileSync(resolvedOutput, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return report;
@@ -90,6 +100,7 @@ function buildShadowReport(fixture, metadata = {}) {
     scorecardVersion: SHADOW_SCORECARD_VERSION,
     inputFixtureSha256: String(metadata.inputFixtureSha256 || ""),
     evaluatedGitCommit: String(metadata.evaluatedGitCommit || ""),
+    labelSource: metadata.labelSource || fixtureLabelSource(fixture),
     policyVersion: String(policy.version),
     policyHash: decisionPolicyHash(policy),
     total: qualityRows.length,
@@ -490,8 +501,8 @@ function sameFileIdentity(leftPath, rightPath) {
   const leftRealPath = fs.realpathSync.native(leftPath);
   const rightRealPath = fs.realpathSync.native(rightPath);
   if (samePlatformPath(leftRealPath, rightRealPath)) return true;
-  const leftStat = fs.statSync(leftRealPath);
-  const rightStat = fs.statSync(rightRealPath);
+  const leftStat = fs.statSync(leftRealPath, { bigint: true });
+  const rightStat = fs.statSync(rightRealPath, { bigint: true });
   return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
 }
 
@@ -505,15 +516,19 @@ function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag !== "--input" && flag !== "--output") throw new Error("usage: node scripts/compare-shadow-scorecard.js --input <fixture.json> --output <report.json>");
+    if (!["--input", "--output", "--labels"].includes(flag)) {
+      throw new Error("usage: node scripts/compare-shadow-scorecard.js --input <fixture.json> --output <report.json> [--labels <labels.json>]");
+    }
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
     if (values[flag.slice(2)]) throw new Error(`duplicate ${flag} argument`);
     values[flag.slice(2)] = value;
     index += 1;
   }
-  if (!values.input || !values.output) throw new Error("usage: node scripts/compare-shadow-scorecard.js --input <fixture.json> --output <report.json>");
-  return { inputPath: values.input, outputPath: values.output };
+  if (!values.input || !values.output) {
+    throw new Error("usage: node scripts/compare-shadow-scorecard.js --input <fixture.json> --output <report.json> [--labels <labels.json>]");
+  }
+  return { inputPath: values.input, outputPath: values.output, labelsPath: values.labels || null };
 }
 
 if (require.main === module) {
