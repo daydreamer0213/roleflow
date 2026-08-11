@@ -4,497 +4,273 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
+const { hasCompleteJobDescription } = require("../src/core/job_description_readiness");
 const { DECISION_POLICY, RECOMMENDATION_TIERS, decisionPolicyHash } = require("../src/core/decision_policy");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
-const { buildShadowScorecard } = require("./lib/shadow_scorecard");
+const { buildShadowScorecard, SHADOW_SCORECARD_VERSION } = require("./lib/shadow_scorecard");
 
 const ROOT = path.resolve(__dirname, "..");
-const GATE_D_BASELINE_ROOT = "D:\\DevData\\RoleFlow-gate-d\\baseline";
-const PRODUCTION_DB = path.join(ROOT, "data", "jobs.sqlite");
+const BASELINE_ROOT = "D:\\DevData\\RoleFlow-gate-d\\baseline";
 const ARCHIVE_ROOT = "D:\\DevData\\RoleFlow-gate-d\\archive";
+const PRODUCTION_DB = path.join(ROOT, "data", "jobs.sqlite");
 const SCHEMA_VERSION = 11;
-const TERMINAL_SCAN_STATUSES = new Set(["completed", "partial", "failed", "interrupted"]);
-const FIXTURE_NAME = "gate-d-evaluation-fixture.json";
-const LABELS_NAME = "gate-d-evaluation-labels.json";
-const MANIFEST_NAME = "gate-d-evaluation-manifest.json";
-const RECEIPT_NAME = "gate-d-evaluation-receipt.json";
+const OPERATIONAL_TABLES = [
+  "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
+  "job_analysis_attempts", "workflow_job_tasks", "workflow_runs", "candidate_progress_events", "candidate_progress_cards",
+  "message_preview_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
+  "candidate_job_events", "candidate_job_states", "applications", "events", "job_refresh_attempts", "job_observations",
+  "scan_target_results", "scan_runs", "batches", "jobs"
+];
 
 function parseArgs(argv) {
-  const values = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (!new Set(["--db", "--report", "--receipt", "--output-root"]).has(flag)) {
-      throw new Error("usage: node scripts/export-gate-d-evaluation.js --db <baseline.sqlite> [--report <baseline.report.json>] [--receipt <baseline.receipt.json>] --output-root <baseline-root>");
-    }
-    const value = argv[index + 1];
+  const result = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (!new Set(["--db", "--report", "--receipt", "--output-root"]).has(flag)) throw new Error("usage: node scripts/export-gate-d-evaluation.js --db <baseline.sqlite> [--report <baseline.report.json>] [--receipt <baseline.receipt.json>] --output-root <baseline-root>");
+    const value = argv[i + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
     const key = flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-    if (values[key]) throw new Error(`duplicate ${flag}`);
-    values[key] = value;
-    index += 1;
+    if (result[key]) throw new Error(`duplicate ${flag}`);
+    result[key] = value;
+    i += 1;
   }
-  if (!values.db || !values.outputRoot) {
-    throw new Error("usage: node scripts/export-gate-d-evaluation.js --db <baseline.sqlite> [--report <baseline.report.json>] [--receipt <baseline.receipt.json>] --output-root <baseline-root>");
-  }
-  return values;
-}
-
-function normalizePath(file) {
-  const value = path.normalize(file);
-  return process.platform === "win32" ? value.toLowerCase() : value;
-}
-
-function samePath(left, right) {
-  return normalizePath(left) === normalizePath(right);
-}
-
-function canonicalExisting(file, label) {
-  const resolved = path.resolve(file);
-  if (!fs.existsSync(resolved)) throw new Error(`${label} does not exist: ${resolved}`);
-  return fs.realpathSync.native(resolved);
-}
-
-function canonicalTarget(file, label) {
-  const resolved = path.resolve(file);
-  if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
-  const missing = [];
-  let cursor = resolved;
-  while (!fs.existsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) throw new Error(`cannot resolve ${label}: ${resolved}`);
-    missing.unshift(path.basename(cursor));
-    cursor = parent;
-  }
-  if (!fs.statSync(cursor).isDirectory()) throw new Error(`${label} parent is not a directory: ${cursor}`);
-  return path.join(fs.realpathSync.native(cursor), ...missing);
-}
-
-function isWithin(child, parent) {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function sha256(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
-}
-
-function hashFile(file) {
-  return sha256(fs.readFileSync(file));
-}
-
-function fingerprintBundle(dbPath) {
-  const files = [];
-  for (const [name, file] of [["database", dbPath], ["wal", `${dbPath}-wal`], ["shm", `${dbPath}-shm`]]) {
-    if (!fs.existsSync(file)) continue;
-    const before = fs.statSync(file);
-    if (!before.isFile()) throw new Error(`database bundle member is not a file: ${file}`);
-    const bytes = fs.readFileSync(file);
-    const after = fs.statSync(file);
-    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
-      throw new Error(`database bundle member changed while reading: ${file}`);
-    }
-    files.push({ name, size: bytes.length, sha256: sha256(bytes) });
-  }
-  if (!files.some((item) => item.name === "database")) throw new Error("database bundle is missing its database file");
-  return { algorithm: "sha256", files };
-}
-
-function immutableReadOnlyUri(dbPath) {
-  const normalized = dbPath.replace(/\\/g, "/");
-  const encoded = normalized.split("/").map((part, index) => index === 0 ? part : encodeURIComponent(part)).join("/");
-  return `file:${encoded}?mode=ro&immutable=1`;
-}
-
-function parseJson(value, fallback = {}) {
-  try {
-    const parsed = JSON.parse(String(value || ""));
-    return parsed && typeof parsed === "object" ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function text(value) {
-  return String(value || "").trim();
-}
-
-function redactor(values) {
-  const expressions = values.map(text).filter(Boolean)
-    .sort((left, right) => right.length - left.length)
-    .map((value) => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"));
-  return (value) => expressions.reduce((result, expression) => result.replace(expression, "[REDACTED]"), text(value));
-}
-
-function evidenceText(value, redact) {
-  return text(value) ? redact(value) : "";
-}
-
-function matchInput(item, redact) {
-  const match = item && typeof item === "object" && !Array.isArray(item) ? item : {};
-  const result = {
-    state: text(match.state) || "unknown",
-    jdEvidence: evidenceText(match.jdEvidence, redact),
-    resumeEvidence: text(match.resumeEvidence) ? "[resume-evidence-present]" : ""
-  };
-  for (const key of ["foundation", "central", "indispensable", "soft"]) {
-    if (typeof match[key] === "boolean") result[key] = match[key];
-  }
-  for (const key of ["requirement", "label", "name"]) {
-    if (text(match[key])) result[key] = redact(match[key]);
-  }
-  if (text(match.explanation) || text(match.rationale)) result.explanation = "[analysis-explanation-present]";
+  if (!result.db || !result.outputRoot) throw new Error("usage: node scripts/export-gate-d-evaluation.js --db <baseline.sqlite> [--report <baseline.report.json>] [--receipt <baseline.receipt.json>] --output-root <baseline-root>");
   return result;
 }
 
-function boundaryInput(analysis, redact) {
-  const explicit = asArray(analysis.boundaries).map((item) => ({
-    verified: item?.verified === true,
-    blocked: item?.blocked === true,
-    reason: text(item?.reason || item?.requirement) ? "[boundary-evidence-present]" : ""
-  }));
-  const blockers = asArray(analysis.hardBlockers).map((item) => ({
-    verified: true,
-    blocked: true,
-    reason: "[boundary-evidence-present]"
-  }));
-  return [...explicit, ...blockers];
+function normalizedPath(file) { return (process.platform === "win32" ? path.normalize(file).toLowerCase() : path.normalize(file)); }
+function samePath(left, right) { return normalizedPath(left) === normalizedPath(right); }
+function inside(child, parent) { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
+function existing(file, label) { const resolved = path.resolve(file); if (!fs.existsSync(resolved)) throw new Error(`${label} does not exist: ${resolved}`); return fs.realpathSync.native(resolved); }
+function target(file, label) {
+  const resolved = path.resolve(file);
+  if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
+  const tail = []; let parent = resolved;
+  while (!fs.existsSync(parent)) { const next = path.dirname(parent); if (next === parent) throw new Error(`cannot resolve ${label}`); tail.unshift(path.basename(parent)); parent = next; }
+  if (!fs.statSync(parent).isDirectory()) throw new Error(`${label} parent is not a directory`);
+  return path.join(fs.realpathSync.native(parent), ...tail);
+}
+function text(value) { return String(value || "").trim(); }
+function sha(value) { return crypto.createHash("sha256").update(value).digest("hex"); }
+function fileSha(file) { return sha(fs.readFileSync(file)); }
+function parseJson(value, fallback) { try { const parsed = JSON.parse(String(value || "")); return parsed && typeof parsed === "object" ? parsed : fallback; } catch { return fallback; } }
+function list(value) { return Array.isArray(value) ? value : []; }
+
+function fingerprint(dbPath) {
+  const files = [];
+  for (const [name, file] of [["database", dbPath], ["wal", `${dbPath}-wal`], ["shm", `${dbPath}-shm`]]) {
+    if (!fs.existsSync(file)) continue;
+    const before = fs.statSync(file); const bytes = fs.readFileSync(file); const after = fs.statSync(file);
+    if (!before.isFile() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error(`source bundle member changed while reading: ${name}`);
+    files.push({ name, size: bytes.length, sha256: sha(bytes) });
+  }
+  if (!files.some((item) => item.name === "database")) throw new Error("source database bundle is missing database");
+  return { algorithm: "sha256", files };
 }
 
-function riskInput(analysis, redact) {
-  return [...asArray(analysis.risks), ...asArray(analysis.hiddenRisks)].map((item) => ({
-    verified: item?.verified === true,
-    severity: text(item?.severity) || "unknown",
-    reason: text(typeof item === "string" ? item : (item?.reason || item?.label)) ? "[risk-evidence-present]" : ""
-  }));
+function samePersistentBundle(before, after) {
+  const databaseBefore = before.files.find((item) => item.name === "database");
+  const databaseAfter = after.files.find((item) => item.name === "database");
+  if (JSON.stringify(databaseBefore) !== JSON.stringify(databaseAfter)) return false;
+  const walBefore = before.files.find((item) => item.name === "wal");
+  const walAfter = after.files.find((item) => item.name === "wal");
+  if (walBefore || walAfter?.size) return JSON.stringify(walBefore || null) === JSON.stringify(walAfter || null);
+  return true; // SHM is SQLite reader coordination state and may be created/changed by a read-only reader.
 }
 
-function technicalBucket(analysis, qualityTags) {
-  if (["failed", "stale", "pending"].includes(text(analysis.semanticStatus))) return "analysis_pending";
-  if (qualityTags.includes("detail_unverified") || qualityTags.includes("activity_unverified")) return "refresh";
-  if (text(analysis.errorCode)) return "contract_failure";
-  return null;
-}
-
-function safeTier(value) {
-  return RECOMMENDATION_TIERS.includes(value) ? value : null;
-}
-
-function stableEvaluationId(sourceContentHash, jobId) {
-  return crypto.createHmac("sha256", "RoleFlow Gate D private evaluation identity v1")
-    .update(`${sourceContentHash}\0${jobId}`)
-    .digest("hex");
-}
-
-function modelContract(analysis, attempts) {
-  const finalAttempt = attempts.at(-1) || {};
-  return {
-    semanticStatus: text(analysis.semanticStatus) || "unknown",
-    contractStatus: text(analysis.contractStatus) || (text(analysis.errorCode) ? "failed" : "not_recorded"),
-    invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null,
-    repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null,
-    finalFailure: text(analysis.errorCode || finalAttempt.error_code) || null,
-    attemptCount: attempts.length,
-    finalAttemptStatus: text(finalAttempt.status) || null
-  };
-}
-
-function readRows(db, freshBatchIds) {
-  const fresh = new Set(freshBatchIds);
-  const batches = db.prepare("SELECT id, status FROM batches ORDER BY id").all();
-  const actualBatchIds = batches.map((row) => Number(row.id));
-  if (actualBatchIds.length !== fresh.size || actualBatchIds.some((id) => !fresh.has(id))) {
-    throw new Error("fresh batch set does not exactly match the baseline; historical batches are forbidden");
-  }
-  if (batches.some((row) => !TERMINAL_SCAN_STATUSES.has(text(row.status)))) {
-    throw new Error("fresh baseline contains a non-terminal batch");
-  }
-  const scanRuns = db.prepare("SELECT batch_id, status FROM scan_runs ORDER BY id").all();
-  if (scanRuns.some((row) => fresh.has(Number(row.batch_id)) && !TERMINAL_SCAN_STATUSES.has(text(row.status)))) {
-    throw new Error("fresh baseline scan controller is not terminal");
-  }
-  if (actualBatchIds.some((batchId) => !scanRuns.some((row) => Number(row.batch_id) === batchId && TERMINAL_SCAN_STATUSES.has(text(row.status))))) {
-    throw new Error("every fresh batch requires a terminal scan controller record");
-  }
-  const observations = db.prepare(`SELECT o.*, j.source, j.source_id, j.id AS job_id
-    FROM job_observations o JOIN jobs j ON j.id = o.job_id ORDER BY o.job_id, o.id`).all();
-  if (observations.some((row) => !fresh.has(Number(row.batch_id)))) {
-    throw new Error("historical observations are forbidden in the fresh denominator");
-  }
-  const observationsByJob = new Map();
-  for (const row of observations) {
-    const list = observationsByJob.get(Number(row.job_id)) || [];
-    list.push(row);
-    observationsByJob.set(Number(row.job_id), list);
-  }
-  const jobs = db.prepare("SELECT id, batch_id FROM jobs ORDER BY id").all();
-  if (jobs.some((job) => !observationsByJob.has(Number(job.id)))) {
-    throw new Error("fresh baseline contains a job without a fresh observation");
-  }
-  if (jobs.some((job) => job.batch_id != null && !fresh.has(Number(job.batch_id)))) {
-    throw new Error("fresh baseline contains a job linked to a historical batch");
-  }
-  return [...observationsByJob.entries()].map(([jobId, rows]) => {
-    const row = rows.at(-1);
-    const attempts = db.prepare("SELECT status, error_code FROM job_analysis_attempts WHERE job_id = ? ORDER BY total_attempt_number, id").all(jobId);
-    return { row, attempts };
-  });
-}
-
-function validateLineage({ dbPath, reportPath, receiptPath, baselineRoot }) {
-  const report = parseJson(fs.readFileSync(reportPath, "utf8"), null);
-  const receipt = parseJson(fs.readFileSync(receiptPath, "utf8"), null);
-  if (!report || !receipt) throw new Error("Task 13 report and receipt must be JSON objects");
-  if (receipt.complete !== true) throw new Error("Task 13 receipt is not complete");
-  if (!samePath(report.baselinePath, dbPath) || !samePath(receipt.baselinePath, dbPath)) {
-    throw new Error("Task 13 report/receipt baseline path does not match --db");
-  }
-  if (!samePath(report.archivePath, receipt.archivePath)) throw new Error("Task 13 report/receipt archive lineage does not match");
-  if (Number(report.schemaVersion) !== SCHEMA_VERSION || (receipt.schemaVersion !== undefined && Number(receipt.schemaVersion) !== SCHEMA_VERSION)) {
-    throw new Error(`Task 13 lineage must use schema v${SCHEMA_VERSION}`);
-  }
-  const after = report.operational?.after;
-  if (!after || typeof after !== "object" || Array.isArray(after) || Object.values(after).some((value) => Number(value) !== 0)) {
-    throw new Error("Task 13 baseline report operational.after must contain only zeroes");
-  }
-  if (receipt.scanTerminal !== true) throw new Error("Task 13 receipt does not confirm a terminal fresh scan");
-  const archiveManifestPath = `${canonicalExisting(report.archivePath, "Task 13 archive")}.manifest.json`;
-  const archive = parseJson(fs.readFileSync(archiveManifestPath, "utf8"), null);
-  const sourceCommit = text(archive?.sourceCommit);
-  if (!archive || Number(archive.schemaVersion) !== SCHEMA_VERSION || !/^[0-9a-f]{40}$/i.test(sourceCommit)) {
-    throw new Error("Task 13 archive manifest lacks schema v11 source-commit lineage");
-  }
-  if (!samePath(report.sourcePath, archive.sourcePath)) throw new Error("Task 13 source path lineage does not match archive manifest");
-  for (const value of [receipt.sourceCommit, report.sourceCommit].filter((item) => item !== undefined)) {
-    if (text(value).toLowerCase() !== sourceCommit.toLowerCase()) throw new Error("Task 13 source commit lineage does not match archive manifest");
-  }
-  const freshBatchIds = [...new Set(asArray(receipt.freshBatchIds).map(Number))].sort((left, right) => left - right);
-  if (!freshBatchIds.length || freshBatchIds.some((id) => !Number.isInteger(id) || id <= 0)) {
-    throw new Error("Task 13 receipt requires explicit fresh batch IDs");
-  }
-  if (!isWithin(dbPath, baselineRoot)) throw new Error("baseline database must be under the approved Gate D baseline root");
-  return { report, receipt, sourceCommit, freshBatchIds };
-}
-
-function createDirectories(directories) {
-  const created = [];
-  for (const directory of directories) {
-    const missing = [];
-    let cursor = directory;
-    while (!fs.existsSync(cursor)) {
-      missing.unshift(cursor);
-      const parent = path.dirname(cursor);
-      if (parent === cursor) throw new Error(`cannot create output directory: ${directory}`);
-      cursor = parent;
-    }
-    for (const item of missing) {
-      fs.mkdirSync(item);
-      created.push(item);
-    }
-  }
-  return created;
-}
-
-function removeFiles(files) {
-  for (const file of files) {
-    try { fs.unlinkSync(file); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  }
-}
-
-function removeEmptyDirectories(directories) {
-  for (const directory of [...directories].reverse()) {
-    try { fs.rmdirSync(directory); } catch (error) { if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error; }
-  }
-}
-
-function partialPath(file) {
-  return path.join(path.dirname(file), `.partial-${randomUUID()}-${path.basename(file)}`);
-}
-
-function publish(partial, finalPath, published) {
-  fs.linkSync(partial, finalPath);
-  published.push(finalPath);
-  fs.unlinkSync(partial);
-}
-
-function toolCommit() {
-  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
-}
-
-function exportEvaluation(options, hooks = {}) {
-  const testOnly = hooks.testOnly && typeof hooks.testOnly === "object" ? hooks.testOnly : null;
-  const baselineRoot = canonicalExisting(testOnly?.baselineRoot || GATE_D_BASELINE_ROOT, "approved Gate D baseline root");
-  const requestedDb = path.resolve(options.db || "");
-  if (samePath(requestedDb, PRODUCTION_DB)) throw new Error("project production database is forbidden");
-  if (isWithin(requestedDb, ARCHIVE_ROOT)) throw new Error("archive database is forbidden");
-  const dbPath = canonicalExisting(options.db, "baseline database");
-  if (!isWithin(dbPath, baselineRoot)) throw new Error("baseline database must be under the approved Gate D baseline root");
-  const reportPath = canonicalExisting(options.report || `${dbPath}.report.json`, "Task 13 baseline report");
-  const receiptPath = canonicalExisting(options.receipt || `${dbPath}.receipt.json`, "Task 13 baseline receipt");
-  const outputRoot = canonicalTarget(options.outputRoot, "output root");
-  if (!testOnly && !samePath(outputRoot, baselineRoot)) throw new Error("output root must be the approved Gate D baseline root");
-  const lineage = validateLineage({ dbPath, reportPath, receiptPath, baselineRoot });
-  const beforeBundle = fingerprintBundle(dbPath);
-  const db = new DatabaseSync(immutableReadOnlyUri(dbPath), { readOnly: true });
-  let rows;
+function quote(file) { return file.replace(/'/g, "''"); }
+function sourceSnapshot(source, tempRoot, hooks) {
+  const directory = fs.mkdtempSync(path.join(tempRoot, "roleflow-gate-d-evaluation-snapshot-"));
+  const snapshot = path.join(directory, "snapshot.sqlite");
   try {
-    const schemaVersion = Number(db.prepare("PRAGMA user_version").get().user_version || 0);
-    if (schemaVersion !== SCHEMA_VERSION) throw new Error(`baseline database schema must be v${SCHEMA_VERSION}`);
-    rows = readRows(db, lineage.freshBatchIds);
-  } finally {
-    db.close();
-  }
-  if (typeof hooks.beforeAfterFingerprint === "function") hooks.beforeAfterFingerprint();
-  const afterBundle = fingerprintBundle(dbPath);
-  if (JSON.stringify(beforeBundle) !== JSON.stringify(afterBundle)) throw new Error("baseline database bundle changed during read-only export");
-
-  const cases = rows.map(({ row, attempts }) => {
-    const analysis = parseJson(row.analysis_json, {});
-    const qualityTags = asArray(parseJson(row.quality_tags_json, [])).map(text);
-    const redact = redactor([row.company, analysis.recruiter, analysis.recruiterName, analysis.contactName]);
-    const input = {
-      roleAlignment: text(analysis.roleAlignment) || "insufficient_evidence",
-      responsibilityMatches: asArray(analysis.responsibilityMatches).map((item) => matchInput(item, redact)),
-      requirementMatches: asArray(analysis.requirementMatches).map((item) => matchInput(item, redact)),
-      boundaries: boundaryInput(analysis, redact),
-      risks: riskInput(analysis, redact)
-    };
-    const bucket = technicalBucket(analysis, qualityTags);
-    const matrix = bucket ? null : safeTier(deriveMatrixDecision(input, DECISION_POLICY).matrixRecommendation);
-    const guarded = bucket ? null : safeTier(buildShadowScorecard(input, DECISION_POLICY).candidateTier);
-    const fixedSalaryBoundary = analysis.fixedSalaryBoundary === true || qualityTags.includes("salary_out_of_range");
-    const crossStackPromotion = analysis.crossStackPromotion === true || qualityTags.includes("cross_stack_promotion");
-    return {
-      id: stableEvaluationId(row.content_hash, row.job_id),
-      evaluationId: stableEvaluationId(row.content_hash, row.job_id),
-      sourceContentHash: text(row.content_hash),
-      scanEvidence: {
-        completeJd: text(analysis.semanticStatus) === "complete" && !qualityTags.includes("detail_unverified"),
-        detailRead: !qualityTags.includes("detail_unverified"),
-        detailReadEvidence: qualityTags.includes("detail_unverified") ? "detail_unverified_tag" : "stored_detail_evidence"
-      },
-      modelContract: modelContract(analysis, attempts),
-      jd: {
-        title: redact(row.title),
-        location: redact(row.location),
-        salary: redact(row.salary),
-        experience: redact(row.experience),
-        education: redact(row.education),
-        text: redact(row.description)
-      },
-      input,
-      hardBoundary: input.boundaries.some((item) => item.verified && item.blocked),
-      risk: input.risks,
-      evidence: {
-        requirements: input.requirementMatches.map((item) => ({ jd: Boolean(item.jdEvidence), resume: Boolean(item.resumeEvidence) })),
-        responsibilities: input.responsibilityMatches.map((item) => ({ jd: Boolean(item.jdEvidence), resume: Boolean(item.resumeEvidence) }))
-      },
-      decisionBucket: bucket || text(analysis.recommendation) || null,
-      technicalBucket: bucket,
-      productionMatrixTier: matrix,
-      guardedTier: guarded,
-      policyHash: text(analysis.decisionPolicyHash) || decisionPolicyHash(DECISION_POLICY),
-      fixedSalaryBoundary,
-      crossStackPromotion,
-      finalRecommendation: safeTier(analysis.recommendation),
-      humanLabel: {
-        status: "pending-human",
-        directionFit: null,
-        hardBoundaryPass: null,
-        expectedTier: null,
-        evidenceSufficiency: null,
-        rationale: "",
-        labeler: "",
-        labeledAt: null
-      }
-    };
-  }).sort((left, right) => left.id.localeCompare(right.id));
-  const labels = {
-    schemaVersion: "gate-d-evaluation-labels-v1",
-    confirmedMetrics: "deferred: merge confirmed worksheet labels into a comparison fixture before computing confirmed metrics",
-    rows: cases.map((item) => ({
-      evaluationId: item.evaluationId,
-      status: "pending-human",
-      directionFit: null,
-      hardBoundaryPass: null,
-      expectedTier: null,
-      evidenceSufficiency: null,
-      rationale: "",
-      labeler: "",
-      labeledAt: null,
-      aiProvisional: {
-        productionMatrixTier: item.productionMatrixTier,
-        guardedTier: item.guardedTier
-      }
-    }))
-  };
-  const fixture = {
-    schemaVersion: "gate-d-evaluation-fixture-v1",
-    policy: DECISION_POLICY,
-    cases
-  };
-  const fixtureBytes = `${JSON.stringify(fixture, null, 2)}\n`;
-  const labelsBytes = `${JSON.stringify(labels, null, 2)}\n`;
-  const fixtureSha256 = sha256(fixtureBytes);
-  const labelsSha256 = sha256(labelsBytes);
-  const tierCounts = Object.fromEntries(RECOMMENDATION_TIERS.map((tier) => [tier, cases.filter((item) => item.productionMatrixTier === tier).length]));
-  const technicalBucketCounts = Object.fromEntries([...new Set(cases.map((item) => item.technicalBucket).filter(Boolean))]
-    .sort().map((bucket) => [bucket, cases.filter((item) => item.technicalBucket === bucket).length]));
-  const mandatoryReviewIds = cases.filter((item) => item.fixedSalaryBoundary || item.crossStackPromotion).map((item) => item.evaluationId).sort();
-  const manifest = {
-    artifact: "gate-d-evaluation-export",
-    createdAtUtc: new Date().toISOString(),
-    sourceCommit: lineage.sourceCommit,
-    evaluatedCommit: toolCommit(),
-    schemaVersion: SCHEMA_VERSION,
-    databaseSha256: beforeBundle.files.find((item) => item.name === "database").sha256,
-    databaseBundle: beforeBundle,
-    freshBatchIds: lineage.freshBatchIds,
-    fixtureSha256,
-    labelsSha256,
-    counts: { jobs: cases.length, batches: lineage.freshBatchIds.length, observations: rows.length },
-    tierCounts,
-    technicalBucketCounts,
-    mandatoryReviewIds,
-    confirmedMetrics: "deferred until confirmed worksheet labels are merged; labels are the sole editable human source"
-  };
-  const fixturePath = path.join(outputRoot, "fixtures", FIXTURE_NAME);
-  const labelsPath = path.join(outputRoot, "labels", LABELS_NAME);
-  const manifestPath = path.join(outputRoot, "reports", MANIFEST_NAME);
-  const receiptPathOut = path.join(outputRoot, "reports", RECEIPT_NAME);
-  const finals = [fixturePath, labelsPath, manifestPath, receiptPathOut];
-  if (finals.some((file) => fs.existsSync(file))) throw new Error("refusing to overwrite an existing evaluation artifact");
-  const createdDirectories = createDirectories([...new Set(finals.map((file) => path.dirname(file)))]);
-  const partials = finals.map(partialPath);
-  const published = [];
-  try {
-    fs.writeFileSync(partials[0], fixtureBytes, { encoding: "utf8", flag: "wx" });
-    fs.writeFileSync(partials[1], labelsBytes, { encoding: "utf8", flag: "wx" });
-    fs.writeFileSync(partials[2], `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    fs.writeFileSync(partials[3], `${JSON.stringify({ artifact: "gate-d-evaluation-receipt", complete: true, createdAtUtc: new Date().toISOString(), fixtureSha256, labelsSha256 }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    if (typeof hooks.beforePublish === "function") hooks.beforePublish();
-    publish(partials[0], fixturePath, published);
-    publish(partials[1], labelsPath, published);
-    publish(partials[2], manifestPath, published);
-    publish(partials[3], receiptPathOut, published);
-    return { fixture: fixturePath, labels: labelsPath, manifest: manifestPath, receipt: receiptPathOut };
+    const reader = new DatabaseSync(source, { readOnly: true });
+    try { reader.exec(`VACUUM INTO '${quote(snapshot)}'`); } finally { reader.close(); }
+    if (typeof hooks.afterSourceSnapshot === "function") hooks.afterSourceSnapshot();
+    return { directory, snapshot };
   } catch (error) {
-    removeFiles([...partials, ...published]);
-    removeEmptyDirectories(createdDirectories);
+    removeAll([snapshot]); removeDirs([directory]);
     throw error;
   }
 }
 
-if (require.main === module) {
+function assertTask13({ dbPath, reportPath, receiptPath, root }) {
+  const report = parseJson(fs.readFileSync(reportPath, "utf8"), null);
+  const receipt = parseJson(fs.readFileSync(receiptPath, "utf8"), null);
+  if (!report || !receipt || receipt.complete !== true) throw new Error("Task 13 report/complete receipt is required");
+  if (!samePath(report.baselinePath, dbPath) || !samePath(receipt.baselinePath, dbPath)) throw new Error("Task 13 report/receipt baseline path does not match --db");
+  if (!samePath(report.archivePath, receipt.archivePath)) throw new Error("Task 13 report/receipt archive path does not match");
+  if (Number(report.schemaVersion) !== SCHEMA_VERSION) throw new Error(`Task 13 report must use schema v${SCHEMA_VERSION}`);
+  const after = report.operational?.after;
+  if (!after || typeof after !== "object" || Array.isArray(after)
+    || Object.keys(after).length !== OPERATIONAL_TABLES.length
+    || OPERATIONAL_TABLES.some((name) => !Object.hasOwn(after, name) || Number(after[name]) !== 0)) {
+    throw new Error("Task 13 report operational.after must be the complete zeroed operational-table set");
+  }
+  const archive = existing(report.archivePath, "Task 13 archive");
+  if (!/^[a-f0-9]{64}$/i.test(text(receipt.archiveSha256)) || fileSha(archive) !== receipt.archiveSha256.toLowerCase()) throw new Error("Task 13 receipt archive SHA-256 does not match");
+  const archiveManifest = parseJson(fs.readFileSync(`${archive}.manifest.json`, "utf8"), null);
+  const sourceCommit = text(archiveManifest?.sourceCommit).toLowerCase();
+  if (!archiveManifest || Number(archiveManifest.schemaVersion) !== SCHEMA_VERSION || !/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error("Task 13 archive manifest source commit/schema lineage is invalid");
+  if (!samePath(report.sourcePath, archiveManifest.sourcePath)) throw new Error("Task 13 report/archive source path lineage does not match");
+  if (!inside(dbPath, root)) throw new Error("baseline database is outside the approved Gate D baseline root");
+  return { sourceCommit };
+}
+
+function assertCompletedCohort(db) {
+  const batches = db.prepare("SELECT id, status FROM batches ORDER BY id").all();
+  const runs = db.prepare("SELECT id, batch_id, status FROM scan_runs ORDER BY id").all();
+  const targets = db.prepare("SELECT batch_id, status FROM scan_target_results ORDER BY id").all();
+  if (!batches.length) throw new Error("fresh baseline has no batches");
+  if (batches.some((row) => row.status !== "completed")) throw new Error("formal evaluation requires every batch to be completed");
+  if (!runs.length || runs.some((row) => row.status !== "completed" || !Number.isInteger(Number(row.batch_id)))) throw new Error("formal evaluation requires every scan_run to be completed");
+  for (const batch of batches) {
+    if (!runs.some((run) => Number(run.batch_id) === Number(batch.id))) throw new Error("every fresh batch requires a completed scan_run");
+    const batchTargets = targets.filter((row) => Number(row.batch_id) === Number(batch.id));
+    if (!batchTargets.length || batchTargets.some((row) => row.status !== "completed")) throw new Error("every fresh batch requires completed scan targets");
+  }
+  const distribution = (rows) => Object.fromEntries([...new Set(rows.map((row) => row.status))].sort().map((status) => [status, rows.filter((row) => row.status === status).length]));
+  return { batchIds: batches.map((row) => Number(row.id)), batchStatusDistribution: distribution(batches), scanRunStatusDistribution: distribution(runs), targetStatusDistribution: distribution(targets) };
+}
+
+function redact(value, secrets) {
+  let result = text(value);
+  for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) result = result.replace(new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[REDACTED]");
+  return result.replace(/https?:\/\/\S+/gi, "[REDACTED-URL]")
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[REDACTED-EMAIL]")
+    .replace(/(?<!\d)1\d{10}(?!\d)/g, "[REDACTED-PHONE]")
+    .replace(/(?:微信|wechat|weixin)\s*[:：]?\s*[\w-]+/gi, "[REDACTED-CONTACT]");
+}
+
+function matchProjection(item, secrets) {
+  const value = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+  const output = { id: redact(value.id, secrets), state: text(value.state) || "unknown", text: redact(value.text, secrets), jdEvidence: redact(value.jdEvidence, secrets), resumeEvidence: text(value.resumeEvidence) ? "[resume-evidence-present]" : "" };
+  for (const key of ["requirement", "label", "name"]) if (text(value[key])) output[key] = redact(value[key], secrets);
+  for (const key of ["foundation", "central", "indispensable", "soft"]) if (typeof value[key] === "boolean") output[key] = value[key];
+  if (text(value.explanation) || text(value.rationale)) output.explanation = "[analysis-explanation-present]";
+  return output;
+}
+
+function frozenInput(analysis, secrets) {
+  return {
+    roleAlignment: text(analysis.roleAlignment) || "insufficient_evidence",
+    responsibilityMatches: list(analysis.responsibilityMatches).map((item) => matchProjection(item, secrets)),
+    requirementMatches: list(analysis.requirementMatches).map((item) => matchProjection(item, secrets)),
+    boundaries: [...list(analysis.boundaries), ...list(analysis.hardBlockers)].map((item) => ({ verified: item?.verified !== false, blocked: item?.blocked !== false, reason: "[boundary-evidence-present]" })),
+    risks: [...list(analysis.risks), ...list(analysis.hiddenRisks)].map((item) => ({ verified: item?.verified === true, severity: text(item?.severity) || "unknown", reason: "[risk-evidence-present]" }))
+  };
+}
+
+function technicalBucket(analysis, completeJd) {
+  if (!completeJd) return "incomplete_jd";
+  if (text(analysis.errorCode) === "MODEL_CONTRACT_INVALID") return "contract_failure";
+  if (text(analysis.semanticStatus) !== "complete") return `semantic_${text(analysis.semanticStatus) || "unknown"}`;
+  if (!list(analysis.requirementMatches).length || !list(analysis.responsibilityMatches).length || !text(analysis.roleAlignment)) return "decision_evidence_missing";
+  return null;
+}
+
+function safeTier(value) { return RECOMMENDATION_TIERS.includes(value) ? value : null; }
+function identityKey(hooks) {
+  const test = hooks.testOnly;
+  if (test) {
+    if (process.env.NODE_ENV !== "test" || test.enabled !== true) throw new Error("testOnly seam is restricted to NODE_ENV=test wrappers");
+    return text(test.identityKey);
+  }
+  return text(process.env.ROLEFLOW_GATE_D_EVALUATION_IDENTITY_KEY);
+}
+function evaluationId(key, hash) { if (key.length < 24) throw new Error("an external evaluation identity key is required"); return crypto.createHmac("sha256", key).update(`gate-d-evaluation-v2\0${hash}`).digest("hex"); }
+function counts(items, field) { return Object.fromEntries([...new Set(items.map((item) => item[field]).filter(Boolean))].sort().map((value) => [value, items.filter((item) => item[field] === value).length])); }
+function toolCommit() { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(); }
+
+function createdDirectories(directories, made, mkdir) {
+  for (const directory of directories) {
+    const missing = []; let parent = directory;
+    while (!fs.existsSync(parent)) { missing.unshift(parent); const next = path.dirname(parent); if (next === parent) throw new Error("cannot create evaluation output directory"); parent = next; }
+    for (const item of missing) { mkdir(item); made.push(item); }
+  }
+}
+function removeAll(files) { const errors = []; for (const file of files) try { fs.unlinkSync(file); } catch (error) { if (error.code !== "ENOENT") errors.push(error); } return errors; }
+function removeDirs(directories) { const errors = []; for (const directory of [...directories].reverse()) try { fs.rmdirSync(directory); } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) errors.push(error); } return errors; }
+function partial(file) { return path.join(path.dirname(file), `.partial-${randomUUID()}-${path.basename(file)}`); }
+function publish(partialFile, finalFile, published, hooks) { (hooks.link || fs.linkSync)(partialFile, finalFile); published.push(finalFile); (hooks.unlinkPartial || fs.unlinkSync)(partialFile); }
+
+function exportEvaluation(options, hooks = {}) {
+  const test = hooks.testOnly;
+  const root = existing(test?.baselineRoot || BASELINE_ROOT, "approved Gate D baseline root");
+  const requested = path.resolve(options.db || "");
+  if (samePath(requested, PRODUCTION_DB)) throw new Error("project production database is forbidden");
+  if (inside(requested, ARCHIVE_ROOT)) throw new Error("archive database is forbidden");
+  const dbPath = existing(options.db, "baseline database");
+  if (!inside(dbPath, root)) throw new Error("baseline database is outside the approved Gate D baseline root");
+  const reportPath = existing(options.report || `${dbPath}.report.json`, "Task 13 report");
+  const receiptPath = existing(options.receipt || `${dbPath}.receipt.json`, "Task 13 receipt");
+  const outputRoot = target(options.outputRoot, "output root");
+  if (!test && !samePath(outputRoot, root)) throw new Error("output root must be the approved Gate D baseline root");
+  const lineage = assertTask13({ dbPath, reportPath, receiptPath, root });
+  const key = identityKey(hooks);
+  const before = fingerprint(dbPath);
+  const snapshot = sourceSnapshot(dbPath, "D:\\DevData", hooks);
+  let rawObservations; let cohort; let attemptsByJob;
   try {
-    console.log(JSON.stringify(exportEvaluation(parseArgs(process.argv.slice(2)))));
+    const db = new DatabaseSync(snapshot.snapshot, { readOnly: true });
+    try {
+      if (Number(db.prepare("PRAGMA user_version").get().user_version || 0) !== SCHEMA_VERSION) throw new Error(`baseline database schema must be v${SCHEMA_VERSION}`);
+      cohort = assertCompletedCohort(db);
+      rawObservations = db.prepare(`SELECT o.*, j.id AS job_id FROM job_observations o JOIN jobs j ON j.id=o.job_id ORDER BY o.job_id, o.seen_at, o.id`).all();
+      attemptsByJob = new Map(db.prepare(`SELECT job_id, count(*) AS attempt_count, max(error_code) AS final_error_code
+        FROM job_analysis_attempts GROUP BY job_id`).all().map((row) => [Number(row.job_id), row]));
+      const jobs = db.prepare("SELECT id FROM jobs").all();
+      const observed = new Set(rawObservations.map((row) => Number(row.job_id)));
+      if (jobs.some((job) => !observed.has(Number(job.id)))) throw new Error("fresh baseline contains an orphan job without an observation");
+    } finally { db.close(); }
+  } finally { removeAll([snapshot.snapshot]); removeDirs([snapshot.directory]); }
+  if (typeof hooks.beforeAfterFingerprint === "function") hooks.beforeAfterFingerprint();
+  const after = fingerprint(dbPath);
+  if (!samePersistentBundle(before, after)) throw new Error("source database/WAL changed during read-only snapshot export");
+  const selected = new Map();
+  for (const row of rawObservations) selected.set(Number(row.job_id), row);
+  const cases = [...selected.values()].map((row) => {
+    const analysis = parseJson(row.analysis_json, {});
+    const attempt = attemptsByJob.get(Number(row.job_id)) || {};
+    const secrets = [text(row.company), text(analysis.recruiter), text(analysis.recruiterName), text(analysis.contactName)];
+    const input = frozenInput(analysis, secrets);
+    const completeJd = hasCompleteJobDescription({ description: row.description, quality_tags_json: row.quality_tags_json });
+    const technical = technicalBucket(analysis, completeJd);
+    const matrixTier = technical ? null : safeTier(deriveMatrixDecision(input, DECISION_POLICY).matrixRecommendation);
+    const guardedTier = technical ? null : safeTier(buildShadowScorecard(input, DECISION_POLICY).candidateTier);
+    const sourceContentHash = text(row.content_hash);
+    return {
+      id: evaluationId(key, sourceContentHash), evaluationId: evaluationId(key, sourceContentHash), sourceContentHash,
+      selectedObservationId: Number(row.id), observationSelectionRule: "latest-fresh-observation-by-seen_at,id",
+      scanEvidence: { completeJd, detailRead: !list(parseJson(row.quality_tags_json, [])).includes("detail_unverified") },
+      modelContract: { semanticStatus: text(analysis.semanticStatus) || "unknown", invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null, repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null, finalFailure: text(analysis.errorCode || attempt.final_error_code) || null, attemptCount: Number(attempt.attempt_count || 0) },
+      jd: { title: redact(row.title, secrets), location: redact(row.location, secrets), salary: redact(row.salary, secrets), experience: redact(row.experience, secrets), education: redact(row.education, secrets), text: redact(row.description, secrets) },
+      input, technicalBucket: technical, productionMatrixTier: matrixTier, guardedTier,
+      analysisPolicyHash: text(analysis.decisionPolicyHash) || null, evaluationMatrixPolicyHash: decisionPolicyHash(DECISION_POLICY), shadowPolicyHash: decisionPolicyHash(DECISION_POLICY), shadowVersion: SHADOW_SCORECARD_VERSION,
+      fixedSalaryBoundary: analysis.fixedSalaryBoundary === true || list(parseJson(row.quality_tags_json, [])).includes("salary_out_of_range"), crossStackPromotion: analysis.crossStackPromotion === true || list(parseJson(row.quality_tags_json, [])).includes("cross_stack_promotion"),
+      finalRecommendation: safeTier(analysis.recommendation), humanLabel: { status: "pending-human", directionFit: null, hardBoundaryPass: null, expectedTier: null, evidenceSufficiency: null, rationale: "", labeler: "", labeledAt: null }
+    };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  const fixture = { schemaVersion: "gate-d-evaluation-fixture-v2", artifactIdentity: "external-hmac-v1", policy: DECISION_POLICY, cases };
+  const labels = { schemaVersion: "gate-d-evaluation-labels-v2", confirmedMetrics: "deferred: merge confirmed worksheet labels before confirmed metrics", rows: cases.map((item) => ({ evaluationId: item.evaluationId, status: "pending-human", directionFit: null, hardBoundaryPass: null, expectedTier: null, evidenceSufficiency: null, rationale: "", labeler: "", labeledAt: null, aiProvisional: { productionMatrixTier: item.productionMatrixTier, guardedTier: item.guardedTier } })) };
+  const fixtureBytes = `${JSON.stringify(fixture, null, 2)}\n`; const labelsBytes = `${JSON.stringify(labels, null, 2)}\n`;
+  const fixtureSha256 = sha(fixtureBytes); const labelsSha256 = sha(labelsBytes); const qualityEligible = cases.filter((item) => !item.technicalBucket).length;
+  const manifest = { artifact: "gate-d-evaluation-export", createdAtUtc: new Date().toISOString(), sourceCommit: lineage.sourceCommit, evaluatedCommit: toolCommit(), schemaVersion: SCHEMA_VERSION, databaseSha256: before.files.find((item) => item.name === "database").sha256, sourceBundle: { before, after }, freshBatchIds: cohort.batchIds, counts: { rawObservations: rawObservations.length, uniqueJobs: cases.length, collapsedObservations: rawObservations.length - cases.length }, qualityEligible, runStatusDistribution: { batches: cohort.batchStatusDistribution, scanRuns: cohort.scanRunStatusDistribution, targets: cohort.targetStatusDistribution }, fixtureSha256, labelsSha256, analysisPolicyHashes: counts(cases, "analysisPolicyHash"), evaluationMatrixPolicyHash: decisionPolicyHash(DECISION_POLICY), shadow: { version: SHADOW_SCORECARD_VERSION, policyHash: decisionPolicyHash(DECISION_POLICY) }, matrixTierCounts: counts(cases, "productionMatrixTier"), guardedTierCounts: counts(cases, "guardedTier"), technicalBucketCounts: counts(cases, "technicalBucket"), mandatoryReviewIds: cases.filter((item) => item.fixedSalaryBoundary || item.crossStackPromotion).map((item) => item.evaluationId).sort(), confirmedMetrics: "deferred until confirmed worksheet labels are merged; labels are the sole editable human source" };
+  const finals = [path.join(outputRoot, "fixtures", "gate-d-evaluation-fixture.json"), path.join(outputRoot, "labels", "gate-d-evaluation-labels.json"), path.join(outputRoot, "reports", "gate-d-evaluation-manifest.json"), path.join(outputRoot, "reports", "gate-d-evaluation-receipt.json")];
+  if (finals.some(fs.existsSync)) throw new Error("refusing to overwrite an existing evaluation artifact");
+  const partials = finals.map(partial); const published = []; let made = [];
+  try {
+    createdDirectories([...new Set(finals.map(path.dirname))], made, hooks.mkdir || fs.mkdirSync);
+    const write = hooks.writeFile || fs.writeFileSync;
+    write(partials[0], fixtureBytes, { encoding: "utf8", flag: "wx" }); write(partials[1], labelsBytes, { encoding: "utf8", flag: "wx" }); write(partials[2], `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" }); write(partials[3], `${JSON.stringify({ artifact: "gate-d-evaluation-receipt", complete: true, createdAtUtc: new Date().toISOString(), fixtureSha256, labelsSha256, qualityEligible, runStatusDistribution: manifest.runStatusDistribution }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    if (typeof hooks.beforePublish === "function") hooks.beforePublish();
+    for (let i = 0; i < finals.length; i += 1) publish(partials[i], finals[i], published, hooks);
+    return { fixture: finals[0], labels: finals[1], manifest: finals[2], receipt: finals[3] };
   } catch (error) {
-    console.error(`export-gate-d-evaluation: ${error.message}`);
-    process.exitCode = 1;
+    const cleanup = [...removeAll(partials), ...removeAll(published), ...removeDirs(made)];
+    if (cleanup.length) error.cleanupError = new AggregateError(cleanup, "evaluation artifact cleanup failed");
+    throw error;
   }
 }
 
+if (require.main === module) { try { console.log(JSON.stringify(exportEvaluation(parseArgs(process.argv.slice(2))))); } catch (error) { console.error(`export-gate-d-evaluation: ${error.message}`); process.exitCode = 1; } }
 module.exports = { exportEvaluation, parseArgs };
