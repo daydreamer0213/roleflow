@@ -110,6 +110,25 @@ async function workflowCommunicationSmoke() {
       detailsHref: "/communication?batchId=91#communication-item-41",
       detailsLabel: "处理不明确结果"
     });
+    const interruptedWorkflowPhase = buildWorkflowViewModel({
+      workflow: {
+        id: workflow.id,
+        planId,
+        status: "interrupted",
+        communicationBatchId: 91,
+        errorCode: "COMMUNICATION_RESULT_AMBIGUOUS"
+      },
+      plan: { id: planId },
+      communication: {
+        batch: { id: 91, status: "interrupted" },
+        calibration: { executionEnabled: true },
+        summary: { total: 2, terminal: 1, statusCounts: { ambiguous: 1, pending: 1 } },
+        items: [{ id: 41, status: "ambiguous" }, { id: 42, status: "pending" }]
+      }
+    }).phase;
+    assert.strictEqual(interruptedWorkflowPhase.kind, "interrupted");
+    assert.strictEqual(interruptedWorkflowPhase.communication.detailsLabel, "处理不明确结果");
+    assert.strictEqual(interruptedWorkflowPhase.communication.detailsHref, "/communication?batchId=91#communication-item-41");
 
     assert.throws(
       () => createCommunicationBatch(db, {

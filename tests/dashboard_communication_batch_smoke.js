@@ -16,7 +16,7 @@ const {
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
-const { createDashboardServer } = require("../src/dashboard/server");
+const { createDashboardServer, renderCommunicationReviewResult } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -126,6 +126,29 @@ let server;
   assert.strictEqual(Object.prototype.hasOwnProperty.call(status.body.calibration, "status"), false);
   assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
+  assert.strictEqual(typeof renderCommunicationReviewResult, "function");
+  const reviewItem = listCommunicationBatchItems(db, batchId)[0];
+  const summaryDriftReview = renderCommunicationReviewResult({
+    batch: { ...getCommunicationBatch(db, batchId), status: "interrupted" },
+    summary: { total: 2, terminal: 1, statusCounts: { ambiguous: 1, pending: 1 } },
+    items: [{ ...reviewItem, status: "pending" }],
+    quota: status.body.quota,
+    calibration: status.body.calibration,
+    runtimeBlock: null
+  });
+  assert.doesNotMatch(summaryDriftReview, /name="action" value="(?:start|resume)"/);
+  assert.match(summaryDriftReview, /沟通记录不一致[^<]*刷新/);
+  const itemDriftReview = renderCommunicationReviewResult({
+    batch: { ...getCommunicationBatch(db, batchId), status: "interrupted" },
+    summary: { total: 2, terminal: 0, statusCounts: { pending: 2 } },
+    items: [{ ...reviewItem, status: "ambiguous" }],
+    quota: status.body.quota,
+    calibration: status.body.calibration,
+    runtimeBlock: null
+  });
+  assert.doesNotMatch(itemDriftReview, /name="action" value="(?:start|resume)"/);
+  assert.match(itemDriftReview, /处理不明确结果/);
+  assert.match(itemDriftReview, new RegExp(`#communication-item-${reviewItem.id}`));
 
   const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
   assert.strictEqual(started.status, 200);

@@ -13,6 +13,7 @@ const {
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
+const { communicate } = require("../src/cli");
 const {
   getProgressCardForJob,
   listProgressEvents
@@ -225,6 +226,74 @@ async function pauseResumeSmoke() {
   assert.strictEqual(inspected, 2);
   assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "completed");
   fixture.close();
+}
+
+async function pausedAmbiguityEntryGuardSmoke() {
+  const direct = createFixture(2);
+  pauseWithAmbiguousFirstItem(direct);
+  const directBefore = getCommunicationBatch(direct.db, direct.batch.id);
+  let directReserves = 0;
+  let directDispatches = 0;
+  let directError;
+  try {
+    await runPermittedBatch({
+      db: direct.db,
+      batchId: direct.batch.id,
+      accessController: { async reserve() { directReserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { directDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    directError = error;
+  }
+
+  const cli = createFixture(2);
+  pauseWithAmbiguousFirstItem(cli);
+  const cliBefore = getCommunicationBatch(cli.db, cli.batch.id);
+  let cliDispatches = 0;
+  let cliError;
+  try {
+    await communicate(cli.db, { batch: cli.batch.id, browser: "edge" }, {
+      createBrowserFn: () => ({
+        async listTabs() {
+          return [
+            { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+            { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" }
+          ];
+        }
+      }),
+      createSiteAdapterFn: () => ({
+        async preflight({ tabId }) {
+          return tabId === 31
+            ? { tabId, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+            : { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+        },
+        bindCommunicationTabs() {},
+        async prepareCommunicationTab() { return 32; },
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { cliDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      })
+    });
+  } catch (error) {
+    cliError = error;
+  }
+
+  assert.strictEqual(directError?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.strictEqual(cliError?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.deepStrictEqual(getCommunicationBatch(direct.db, direct.batch.id), directBefore);
+  assert.deepStrictEqual(getCommunicationBatch(cli.db, cli.batch.id), cliBefore);
+  assert.strictEqual(directReserves, 0);
+  assert.strictEqual(directDispatches, 0);
+  assert.strictEqual(cliDispatches, 0);
+  assert.deepStrictEqual(listCommunicationBatchItems(direct.db, direct.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
+  assert.deepStrictEqual(listCommunicationBatchItems(cli.db, cli.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
+  direct.close();
+  cli.close();
 }
 
 async function stopDuringSlicedPacingSmoke() {
@@ -671,6 +740,16 @@ function clickAudit(item) {
   };
 }
 
+function pauseWithAmbiguousFirstItem(fixture) {
+  const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(first) });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+}
+
 function createFixture(count) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
@@ -727,6 +806,7 @@ Promise.resolve()
   .then(unavailableAndMismatchContinueSmoke)
   .then(ambiguousAndFatalStopSmoke)
   .then(pauseResumeSmoke)
+  .then(pausedAmbiguityEntryGuardSmoke)
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
   .then(observedOutcomeFailureSmoke)

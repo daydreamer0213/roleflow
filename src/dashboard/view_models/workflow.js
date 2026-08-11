@@ -88,7 +88,10 @@ function phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewC
   }
   if (status === "communicating") return { ...common, kind: "communicating", communication: communicationView(communication, runtimeBlock) };
   if (status === "completed") return { ...common, kind: "completed", successfulCount: number(workflow.successfulCount), todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), shortfall: shortfallText(workflow.shortfallCode) };
-  if (status === "interrupted") return { ...common, kind: "interrupted", errorCode: String(workflow.errorCode || "WORKFLOW_INTERRUPTED"), errorMessage: String(workflow.errorMessage || "请检查诊断后继续。"), communicationHref: workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : "", resume: workflow.communicationBatchId ? null : resumeView(workflow) };
+  if (status === "interrupted") {
+    const communicationDetails = communication ? communicationView(communication, runtimeBlock) : null;
+    return { ...common, kind: "interrupted", errorCode: String(workflow.errorCode || "WORKFLOW_INTERRUPTED"), errorMessage: String(workflow.errorMessage || "请检查诊断后继续。"), communication: communicationDetails, communicationHref: communicationDetails?.detailsHref || (workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : ""), resume: workflow.communicationBatchId ? null : resumeView(workflow) };
+  }
   return { ...common, kind: ["created", "scanning", "analyzing", "paused"].includes(status) ? "active" : "fallback", errorCode: String(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。") };
 }
 

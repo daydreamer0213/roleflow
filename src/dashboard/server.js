@@ -3700,17 +3700,23 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
 function renderCommunicationReviewPage({ db, searchParams }) {
   const result = communicationApiResult(() => communicationStatus(db, searchParams.get("batchId")));
   if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
-  const { batch, summary, items, quota, calibration, runtimeBlock } = result.body;
+  return renderCommunicationReviewResult(result.body);
+}
+
+function renderCommunicationReviewResult({ batch, summary, items, quota, calibration, runtimeBlock }) {
   const counts = Object.entries(summary.statusCounts).map(([status, count]) => `${escapeHtml(status)}: ${count}`).join(" · ") || "pending: 0";
   const rows = items.map((item) => {
     const resolution = item.status === "ambiguous" ? `<form class="communication-resolution" method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><label>处理依据<input name="evidenceNote" maxlength="1000" placeholder="例如：聊天页已显示对应岗位和招聘方" required></label><div><button name="status" value="succeeded">确认已沟通</button><button name="status" value="stopped">标记停止</button></div></form>` : "";
     return `<tr id="communication-item-${item.id}"><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
   }).join("");
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  const ambiguousItem = Number(summary.statusCounts?.ambiguous || 0) > 0 ? items.find((item) => item.status === "ambiguous") : null;
-  const action = ambiguousItem ? "" : batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
+  const ambiguousItem = items.find((item) => item.status === "ambiguous");
+  const hasAmbiguity = Number(summary.statusCounts?.ambiguous || 0) > 0 || Boolean(ambiguousItem);
+  const action = hasAmbiguity ? "" : batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
   const executeControl = ambiguousItem
     ? `<a class="button-link communication-primary" data-page-primary="true" href="/communication?batchId=${batch.id}#communication-item-${ambiguousItem.id}">处理不明确结果</a>`
+    : hasAmbiguity
+    ? `<p class="communication-warning">沟通记录不一致，请刷新页面；若仍无法定位不明确项，请停止操作并检查诊断。</p>`
     : action && calibration.executionEnabled && !runtimeBlock
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button class="communication-primary" data-page-primary="true" name="action" value="${action}">${action === "start" ? "开始沟通" : "继续沟通"}</button></form>`
     : batch.status === "running" ? "<strong>沟通执行中</strong>" : "";
@@ -4003,5 +4009,6 @@ module.exports = {
   filterJobs,
   renderDashboard,
   renderQueuePage,
-  renderPlanPage
+  renderPlanPage,
+  renderCommunicationReviewResult
 };

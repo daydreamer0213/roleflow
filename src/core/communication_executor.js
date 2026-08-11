@@ -39,6 +39,7 @@ async function runCommunicationBatch({
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
+  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
@@ -65,6 +66,7 @@ async function runCommunicationBatch({
 
     const afterClaim = observeControl(db, batchId, signal, logger);
     if (afterClaim) return afterClaim;
+    assertNoUnresolvedAmbiguity(db, batchId);
     try {
       await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
     } catch (error) {
@@ -142,6 +144,12 @@ async function runCommunicationBatch({
   }
 }
 
+function assertNoUnresolvedAmbiguity(db, batchId) {
+  if (Number(communicationBatchSummary(db, batchId).statusCounts.ambiguous || 0) > 0) {
+    throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "communication batch contains an unresolved ambiguous item");
+  }
+}
+
 function communicationInspectionEvidence(inspection = {}, state = "") {
   const statusLabel = String(inspection?.statusLabel || "").trim().slice(0, 100);
   return {
@@ -155,6 +163,7 @@ function communicationInspectionEvidence(inspection = {}, state = "") {
 async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate }) {
   const beforeDispatch = observeControl(db, batchId, signal, logger);
   if (beforeDispatch) return beforeDispatch;
+  assertNoUnresolvedAmbiguity(db, batchId);
   try {
     assertExecutionEnabled(executionGate);
   } catch (error) {
