@@ -469,6 +469,7 @@ function checkpointScanTarget(db, input = {}) {
       throw scanRunError("SCAN_LEASE_LOST", "scan lease was lost before the checkpoint could be saved");
     }
     const jobIds = input.jobs.map((job) => jobStore.upsertJob(db, job, batchId));
+    updateBatchRuntimeSnapshot(db, batch, input.runtime);
     const target = input.target && typeof input.target === "object" ? { ...input.target, ...input } : input;
     db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
     const attemptNumber = recordScanTargetResult(db, {
@@ -518,6 +519,7 @@ function checkpointScanProgress(db, input = {}) {
       throw scanRunError("SCAN_LEASE_LOST", "scan lease was lost before the checkpoint could be saved");
     }
     const jobIds = input.jobs.map((job) => jobStore.upsertJob(db, job, batchId));
+    updateBatchRuntimeSnapshot(db, batch, input.runtime);
     db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
     db.exec("COMMIT");
     return { runId, batchId, jobCount: input.jobs.length, jobIds };
@@ -525,6 +527,16 @@ function checkpointScanProgress(db, input = {}) {
     rollback(db);
     throw error;
   }
+}
+
+function updateBatchRuntimeSnapshot(db, batch, runtime) {
+  if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) return;
+  const current = parseJson(batch?.filter_snapshot_json, {});
+  const previousRuntime = current.runtime && typeof current.runtime === "object" && !Array.isArray(current.runtime)
+    ? current.runtime
+    : {};
+  db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?")
+    .run(JSON.stringify({ ...current, runtime: { ...previousRuntime, ...runtime } }), batch.id);
 }
 
 function recordScanTargetResult(db, input = {}) {
@@ -647,7 +659,7 @@ function requireRunningScanRun(db, runId) {
 }
 
 function validateScanRunBatch(db, run, batchId) {
-  const batch = db.prepare("SELECT id, site, search_plan_id, status FROM batches WHERE id = ?").get(batchId);
+  const batch = db.prepare("SELECT id, site, search_plan_id, status, filter_snapshot_json FROM batches WHERE id = ?").get(batchId);
   if (!batch) throw scanRunError("SCAN_BATCH_NOT_FOUND", "scan batch not found");
   if (String(batch.site || "").toLowerCase() !== run.site) {
     throw scanRunError("SCAN_RUN_BATCH_MISMATCH", "scan batch belongs to another site");

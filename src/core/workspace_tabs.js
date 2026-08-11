@@ -1,6 +1,7 @@
-function workspaceError(code, message) {
+function workspaceError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
+  Object.assign(error, details);
   return error;
 }
 
@@ -19,6 +20,22 @@ function bossPath(tab) {
   } catch {
     return "";
   }
+}
+
+function bossLocation(tab) {
+  try {
+    const url = new URL(tab?.url || "");
+    return /(^|\.)zhipin\.com$/i.test(url.hostname)
+      ? { origin: url.origin, path: url.pathname }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function searchTabChanged(message, tab = null) {
+  const observedLocation = bossLocation(tab);
+  return workspaceError("BOSS_SEARCH_TAB_CHANGED", message, observedLocation ? { observedLocation } : {});
 }
 
 function assertBossOperatorTabs(tabs = []) {
@@ -85,7 +102,7 @@ async function inspectBossOperatorTabs({
     if (error?.code !== "BOSS_TAB_REQUIRED") throw error;
     const currentSearchTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.searchTab.id));
     if (!currentSearchTab || bossPath(currentSearchTab) !== "/web/geek/jobs") {
-      throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab path changed during preflight.");
+      throw searchTabChanged("BOSS fixed search tab path changed during preflight.", currentSearchTab);
     }
     const currentCommunicationTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.communicationTab.id));
     if (!currentCommunicationTab || bossPath(currentCommunicationTab) !== "/web/geek/chat") {
@@ -94,7 +111,7 @@ async function inspectBossOperatorTabs({
     throw error;
   }
   if (String(refreshed.searchTab.id) !== String(fixed.searchTab.id)) {
-    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed during preflight.");
+    throw searchTabChanged("BOSS fixed search tab changed during preflight.", refreshed.searchTab);
   }
   if (String(refreshed.communicationTab.id) !== String(fixed.communicationTab.id)) {
     throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during preflight.");
@@ -110,7 +127,7 @@ async function inspectBossOperatorTabs({
 function assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expectedCommunicationTabId }) {
   if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
     && String(fixed.searchTab.id) !== String(expectedSearchTabId)) {
-    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed before preflight.");
+    throw searchTabChanged("BOSS fixed search tab changed before preflight.", fixed.searchTab);
   }
   if (expectedCommunicationTabId !== null && expectedCommunicationTabId !== undefined
     && String(fixed.communicationTab.id) !== String(expectedCommunicationTabId)) {
@@ -124,7 +141,7 @@ function assertBossRuntimeTabBindings(tabs = [], {
 } = {}) {
   const searchTab = tabs.find((tab) => String(tab.id) === String(expectedSearchTabId));
   if (!searchTab) {
-    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab changed during runtime.");
+    throw searchTabChanged("BOSS fixed search tab changed during runtime.");
   }
   const communicationTab = tabs.find((tab) => String(tab.id) === String(expectedCommunicationTabId));
   if (!communicationTab) {
@@ -138,7 +155,7 @@ function assertBossRuntimeTabBindings(tabs = [], {
   }
   if (!/^\/web\/geek\/jobs\/?$/i.test(bossPath(searchTab))
     && !/^\/job_detail\/[^/?#]+\.html$/i.test(bossPath(searchTab))) {
-    throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS fixed search tab left its permitted runtime path.");
+    throw searchTabChanged("BOSS fixed search tab left its permitted runtime path.", searchTab);
   }
   if (bossPath(communicationTab) !== "/web/geek/chat") {
     throw workspaceError("BOSS_COMMUNICATION_PAGE_LOST", "BOSS fixed communication tab left its required page.");

@@ -506,25 +506,7 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
     }
     const status = scanFailureStatus(error);
     transitionWorkflowScanFailure(db, execution?.workflowRunId, status, error);
-    if (error?.code === "BOSS_RISK_CONTROL") {
-      const site = execution?.site || "boss";
-      setSiteRuntimeState(db, site, {
-        status: "blocked",
-        reasonCode: error.code,
-        message: error.message,
-        details: { phase: "tracked_run", runId }
-      });
-      recordSiteAccessEvent(db, {
-        site,
-        action: "risk_control",
-        runId,
-        details: {
-          errorCode: error.code,
-          errorMessage: error.message,
-          blockedUntil: error.blockedUntil || ""
-        }
-      });
-    }
+    persistBossRiskControl(db, { site: execution?.site || "boss", runId, phase: "tracked_run", error });
     try {
       const finished = finishScanRun(db, {
         runId,
@@ -1134,6 +1116,7 @@ async function scan(
     supplementalSalaryLaneCardLimit: scanLimits.supplementalSalaryLaneCardLimit,
     supplementalSalaryLaneDetailLimit: scanLimits.supplementalSalaryLaneDetailLimit,
     targetKeys: resumeTargetKeys,
+    pacingState: validatedResume?.runtime?.bossPacing || null,
     scoreQuick: (job) => scoreJob(job, configs).score,
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
     getReusableDetail: (job) => reusableDetails.get(job.sourceId),
@@ -1171,6 +1154,15 @@ async function scan(
         checkpointError.cause = error;
         throw checkpointError;
       }
+    },
+    onPacingCheckpoint: args.input ? null : async (pacingState) => {
+      checkpointScanProgress(db, {
+        runId: execution.runId,
+        batchId,
+        leaseOwner: execution.leaseOwner,
+        jobs: [],
+        runtime: { bossPacing: pacingState }
+      });
     },
     onDetailResult: args.input ? null : async (result) => persistDetailOutcome(db, {
       site,
@@ -1789,6 +1781,40 @@ function scanFailureStatus(error) {
     "BROWSER_COMMAND_FAILED",
     "BROWSER_DISCONNECTED"
   ]).has(code) ? "interrupted" : "failed";
+}
+
+function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs = Date.now() } = {}) {
+  if (!isBossRiskControl(error)) return false;
+  const blockedUntil = new Date(Number(nowMs) + PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000).toISOString();
+  const observedLocation = safeBossRiskLocation(error?.observedLocation);
+  const details = {
+    phase: String(phase || ""),
+    errorCode: String(error?.code || "BOSS_RISK_CONTROL"),
+    blockedUntil,
+    recovery: true,
+    ...(observedLocation ? { observedLocation } : {})
+  };
+  setSiteRuntimeState(db, site, {
+    status: "blocked",
+    reasonCode: details.errorCode,
+    message: "BOSS risk control detected; scanning safely stopped.",
+    details
+  });
+  recordSiteAccessEvent(db, { site, action: "risk_control", runId, details });
+  return true;
+}
+
+function isBossRiskControl(error) {
+  if (error?.code === "BOSS_RISK_CONTROL") return true;
+  return error?.code === "BOSS_SEARCH_TAB_CHANGED" && Boolean(safeBossRiskLocation(error?.observedLocation));
+}
+
+function safeBossRiskLocation(location) {
+  const origin = String(location?.origin || "");
+  const path = String(location?.path || "");
+  return origin === "https://www.zhipin.com" && /^\/web\/passport\/zp\/(?:verify|403)\.html$/i.test(path)
+    ? { origin, path }
+    : null;
 }
 
 function prepareWorkflowExecution(db, args, planId) {
@@ -2469,5 +2495,6 @@ module.exports = {
   resolveAnalysisConcurrency,
   assertWorkflowScanControl,
   preflightBossScanBrowser,
-  runWithBoundBossScanBrowser
+  runWithBoundBossScanBrowser,
+  persistBossRiskControl
 };
