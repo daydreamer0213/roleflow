@@ -2,6 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const {
   DECISION_POLICY,
   decisionPolicyHash
@@ -104,6 +105,96 @@ try {
       `each CLI case must reject ${id}`
     );
   }
+
+  const evaluationFixturePath = path.join(tempDir, "evaluation-fixture.json");
+  const evaluationReportPaths = [1, 2, 3].map((run) => path.join(tempDir, `evaluation-report-${run}.json`));
+  const variantsReportPath = path.join(tempDir, "variants-report.json");
+  const evaluationFixture = {
+    cases: [
+      {
+        id: "confirmed-primary",
+        input: baseInput(),
+        humanLabel: { status: "confirmed", expectedTier: "primary" }
+      },
+      {
+        id: "fixed-salary-boundary",
+        fixedSalaryBoundary: true,
+        input: {
+          ...baseInput(),
+          boundaries: [{ verified: true, blocked: true, reason: "fixed salary boundary" }]
+        },
+        humanLabel: { status: "pending-human" }
+      },
+      {
+        id: "missing-independent-evidence",
+        input: {
+          ...baseInput(),
+          responsibilityMatches: [
+            { state: "matched", jdEvidence: "same evidence", resumeEvidence: "same evidence" },
+            { state: "matched", jdEvidence: "same evidence 2", resumeEvidence: "same evidence 2" }
+          ]
+        },
+        humanLabel: { status: "ai-provisional", expectedTier: "primary" }
+      }
+    ],
+    variants: [{
+      id: "alternate-weights",
+      policy: {
+        ...DECISION_POLICY,
+        requirementWeights: { core: 0.6, supporting: 0.4 }
+      }
+    }]
+  };
+  fs.writeFileSync(evaluationFixturePath, `${JSON.stringify(evaluationFixture, null, 2)}\n`, "utf8");
+
+  for (const outputPath of evaluationReportPaths) {
+    const result = spawnSync(process.execPath, [
+      "scripts/compare-shadow-scorecard.js", "--input", evaluationFixturePath, "--output", outputPath
+    ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+  }
+  const repeatedReports = evaluationReportPaths.map((reportPath) => fs.readFileSync(reportPath, "utf8"));
+  assert.strictEqual(repeatedReports[0], repeatedReports[1], "same fixture and commit must produce byte-identical reports");
+  assert.strictEqual(repeatedReports[1], repeatedReports[2], "repeated deterministic comparison must remain byte-identical");
+  const evaluationReport = JSON.parse(repeatedReports[0]);
+  assert.strictEqual(evaluationReport.version, "shadow-scorecard-report-v1", "existing report version remains compatible");
+  assert.strictEqual(evaluationReport.schemaVersion, "shadow-scorecard-report-v2");
+  assert.match(evaluationReport.inputFixtureSha256, /^[a-f0-9]{64}$/);
+  assert.match(evaluationReport.evaluatedGitCommit, /^[a-f0-9]{40}$/);
+  assert.strictEqual(evaluationReport.evaluation, "matrix-vs-guarded-scorecard");
+  assert.strictEqual(evaluationReport.matrixVsGuardedScorecard.confusion.primary.primary, 2);
+  assert.strictEqual(evaluationReport.verifiedHardBoundaryViolations.matrix[0].id, "fixed-salary-boundary");
+  assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.scorecard, []);
+  assert.strictEqual(evaluationReport.independentEvidenceViolations.matrix[0].id, "missing-independent-evidence");
+  assert.strictEqual(evaluationReport.confirmedLabelCount, 1);
+  assert.strictEqual(evaluationReport.pendingLabelCount, 2);
+  assert.strictEqual(evaluationReport.rankingUsefulness.confirmedLabelCount, 1);
+  assert.strictEqual(evaluationReport.rankingUsefulness.ndcgAtK, 1);
+
+  const samePathResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(samePathResult.status, 0, "CLI must fail closed when input and output are identical");
+
+  const variantsResult = spawnSync(process.execPath, [
+    "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", variantsReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(variantsResult.status, 0, variantsResult.stderr || variantsResult.stdout);
+  const variantsReport = JSON.parse(fs.readFileSync(variantsReportPath, "utf8"));
+  assert.strictEqual(variantsReport.variants.length, 2);
+  assert(variantsReport.variants.every((variant) => /^[a-f0-9]{64}$/.test(variant.policyHash)));
+  assert(variantsReport.variants.every((variant) => variant.rejected === true));
+  assert(variantsReport.variants.every((variant) => variant.rejectionReasons.some((reason) => reason.code === "fixed_salary_boundary_escape")));
+
+  const invalidVariantsPath = path.join(tempDir, "invalid-variants.json");
+  fs.writeFileSync(invalidVariantsPath, JSON.stringify({
+    cases: evaluationFixture.cases,
+    variants: [{ id: "invalid", policy: { ...DECISION_POLICY, modelRecommendationMode: "invalid" } }]
+  }), "utf8");
+  const invalidVariantsResult = spawnSync(process.execPath, [
+    "scripts/evaluate-shadow-variants.js", "--input", invalidVariantsPath, "--output", variantsReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(invalidVariantsResult.status, 0, "variants must assert their decision policy before evaluation");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
