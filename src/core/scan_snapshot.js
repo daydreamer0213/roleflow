@@ -6,6 +6,7 @@ const PAYLOAD_FIELDS = [
   "site",
   "scanKind",
   "runtimePolicyHash",
+  "recommendationPolicyHash",
   "searchTemplate",
   "searchScope",
   "keywordSource",
@@ -54,6 +55,9 @@ function buildScanExecutionSnapshot(input = {}) {
     site: String(input.site || "boss").trim().toLowerCase(),
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
+    ...(String(input.recommendationPolicyHash || "").trim()
+      ? { recommendationPolicyHash: String(input.recommendationPolicyHash).trim() }
+      : {}),
     searchTemplate,
     searchScope,
     keywordSource,
@@ -98,13 +102,23 @@ function normalizeInheritedContext(input = {}) {
 function assertScanSnapshotCompatible(stored, current) {
   const differences = [...schemaDifferences(stored, "stored"), ...schemaDifferences(current, "current")];
   if (stored && current && typeof stored === "object" && typeof current === "object") {
+    if (!snapshotHashMatchesPayload(stored)) differences.push("stored.snapshotHash is invalid");
+    if (!snapshotHashMatchesPayload(current)) differences.push("current.snapshotHash is invalid");
     if (stored.schemaVersion !== current.schemaVersion) {
       differences.push(`schemaVersion differs: stored=${stored.schemaVersion}, current=${current.schemaVersion}`);
     }
     for (const field of PAYLOAD_FIELDS) {
+      if (field === "recommendationPolicyHash" && (!stored[field] || !current[field])) continue;
       if (comparableHash(stored[field]) !== comparableHash(current[field])) differences.push(`${field} differs`);
     }
-    if (stored.snapshotHash !== current.snapshotHash) {
+    const legacyRecommendationField = !stored.recommendationPolicyHash || !current.recommendationPolicyHash;
+    const legacyPayloadMatches = legacyRecommendationField
+      && stableHash(snapshotPayloadWithoutRecommendation(stored))
+        === stableHash(snapshotPayloadWithoutRecommendation(current));
+    const storedHashValid = snapshotHashMatchesPayload(stored);
+    const currentHashValid = snapshotHashMatchesPayload(current);
+    if (stored.snapshotHash !== current.snapshotHash
+      && !(legacyRecommendationField && legacyPayloadMatches && storedHashValid && currentHashValid)) {
       differences.push(`snapshotHash differs: stored=${stored.snapshotHash || "(missing)"}, current=${current.snapshotHash || "(missing)"}`);
     }
   }
@@ -152,6 +166,19 @@ function deterministicPayload(snapshot) {
   ]);
 }
 
+function snapshotPayloadWithoutRecommendation(snapshot) {
+  const payload = deterministicPayload(snapshot);
+  delete payload.recommendationPolicyHash;
+  return payload;
+}
+
+function snapshotHashMatchesPayload(snapshot) {
+  const payload = snapshot.recommendationPolicyHash
+    ? deterministicPayload(snapshot)
+    : snapshotPayloadWithoutRecommendation(snapshot);
+  return stableHash(payload) === snapshot.snapshotHash;
+}
+
 function indexLatestResults(snapshot, latestResults) {
   if (!Array.isArray(snapshot?.targets)) throw snapshotMismatch(["snapshot.targets must be an array"]);
   const knownKeys = new Set(snapshot.targets.map((target) => target.targetKey));
@@ -175,6 +202,7 @@ function schemaDifferences(snapshot, label) {
     differences.push(`${label}.schemaVersion is ${snapshot.schemaVersion ?? "missing"}; expected ${SCHEMA_VERSION}`);
   }
   for (const field of PAYLOAD_FIELDS) {
+    if (field === "recommendationPolicyHash" && !Object.hasOwn(snapshot, field)) continue;
     if (!Object.hasOwn(snapshot, field)) differences.push(`${label}.${field} is missing`);
   }
   if (!Object.hasOwn(snapshot, "snapshotHash")) differences.push(`${label}.snapshotHash is missing`);

@@ -99,78 +99,29 @@ function compilePlatformRuntimePolicy({ searchScope, catalog, urlOptions = [], c
 }
 
 function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
-  const filters = policy.filters || {};
-  const cities = filters.location?.mode === "specific" ? filters.location.cities || [] : [];
-  const salaryBounds = unionSalaryBounds(filters.salary?.ranges || []);
-  const experience = filters.experience?.labels || [];
-  const jobTypes = filters.jobType?.labels || [];
-  const degrees = filters.degree?.labels || [];
   const sourcePlan = configs.searchPlan || {};
-  const projectedPlan = {
-    directions: sourcePlan.directions || [],
-    keywords: projectConfirmedKeywords(sourcePlan.keywords),
-    cities,
-    salary: salaryBounds,
-    salaryMode: salaryBounds.maxK > 0 ? "strict" : "wide",
-    experience,
-    jobTypes,
-    degrees
+  const recommendationPolicy = {
+    candidateProfile: configs.candidateProfile || {},
+    searchPlan: sourcePlan,
+    targetPolicy: configs.targetPolicy || {},
+    scoring: configs.scoring || {}
   };
   const projected = {
     ...configs,
     acquisitionMode: "inherited",
     platformPolicy: policy,
-    searchPlan: projectedPlan,
-    targetPolicy: {
-      directions: configs.targetPolicy?.directions || sourcePlan.directions || [],
-      skills: configs.targetPolicy?.skills || [],
-      jobTypes,
-      enforceJobTypes: jobTypes.length > 0
-    },
-    profile: {
-      ...(configs.profile || {}),
-      location: {
-        ...(configs.profile?.location || {}),
-        target_cities: cities,
-        default_city: cities[0] || "",
-        boss_city_code: filters.location?.codes?.[0] || ""
-      }
-    },
-    scoring: {
-      positive_keywords: configs.scoring?.positive_keywords || [],
-      risk_rules: [],
-      exclude_words: [],
-      boss_activity: {
-        enforce: false,
-        max_active_days: Number.MAX_SAFE_INTEGER,
-        unknown_penalty: 0,
-        inactive_penalty: 0
-      },
-      work_schedule: {
-        preference: "no_preference",
-        double_weekend_bonus: 0,
-        alternating_weekend_penalty: 0,
-        single_weekend_penalty: 0
-      },
-      allowExperienceStretch: false,
-      experience: { selected: [], allowStretch: false },
-      experience_stretch_keywords: [],
-      salary: {
-        mode: salaryBounds.maxK > 0 ? "strict" : "wide",
-        expected_min_k: salaryBounds.minK,
-        expected_max_k: salaryBounds.maxK,
-        preferred_max_k: salaryBounds.maxK || Number.MAX_SAFE_INTEGER,
-        hard_max_k: Number.MAX_SAFE_INTEGER,
-        experience_flex_max_k: salaryBounds.maxK || Number.MAX_SAFE_INTEGER
-      }
-    }
+    acquisitionPolicy: policy,
+    acquisitionPolicyHash: policy.hash || stableHash(policy),
+    recommendationPolicyHash: stableHash(recommendationPolicy)
   };
   return {
     ...projected,
     analysisContext: runtimeAnalysisContext(
       projected.candidateProfile,
-      projectedPlan,
-      projected.matchingCard
+      sourcePlan,
+      projected.matchingCard,
+      projected.targetPolicy,
+      projected.scoring
     )
   };
 }
@@ -276,14 +227,6 @@ function isSemanticallyDecodable(fieldKey, label) {
   return true;
 }
 
-function projectConfirmedKeywords(keywords) {
-  return (Array.isArray(keywords) ? keywords : []).map((item) => ({
-    word: String(typeof item === "string" ? item : item?.word || "").trim(),
-    priority: ["A", "B", "C"].includes(item?.priority) ? item.priority : "B",
-    reason: String(item?.reason || "").trim()
-  })).filter((item) => item.word);
-}
-
 function parseSalaryRangeK(value) {
   const text = String(value || "");
   const range = text.match(/(\d+)\s*[-~—]\s*(\d+)\s*K/i);
@@ -306,14 +249,6 @@ function dedupeUnresolved(items) {
   }
   return [...byParam.entries()].sort(([left], [right]) => left.localeCompare(right))
     .map(([param, codes]) => ({ param, codes: [...codes].sort() }));
-}
-
-function unionSalaryBounds(ranges) {
-  if (!ranges.length) return { minK: 0, maxK: 0 };
-  return {
-    minK: Math.min(...ranges.map((range) => range.minK)),
-    maxK: Math.max(...ranges.map((range) => range.maxK))
-  };
 }
 
 function experienceBucket(value) {

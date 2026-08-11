@@ -319,46 +319,35 @@ const baseConfigs = {
   }
 };
 const inheritedConfigs = applyPlatformRuntimePolicy(baseConfigs, nationwidePolicy);
-assert.deepStrictEqual(inheritedConfigs.profile.location.target_cities, []);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.cities, []);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.salary, { minK: 10, maxK: 20 });
-assert.deepStrictEqual(inheritedConfigs.searchPlan.experience, ["1-3年"]);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.jobTypes, ["全职"]);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.degrees, ["本科"]);
+assert.deepStrictEqual(inheritedConfigs.profile.location.target_cities, ["广州"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.cities, ["广州"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.salary, { minK: 9, maxK: 14 });
+assert.deepStrictEqual(inheritedConfigs.searchPlan.experience, ["经验不限"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.jobTypes, ["实习"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.degrees, ["硕士"]);
 assert.deepStrictEqual(inheritedConfigs.searchPlan.directions, ["AI应用开发"]);
-assert.deepStrictEqual(inheritedConfigs.searchPlan.keywords, [
-  { word: "RAG", priority: "A", reason: "主方向" },
-  { word: "Agent", priority: "B", reason: "42" },
-  { word: "LangChain", priority: "B", reason: "" }
-]);
-assert(!JSON.stringify(inheritedConfigs.searchPlan).includes("not copied"));
-assert(!JSON.stringify(inheritedConfigs.analysisContext).includes("not copied"));
-const cleanKeywordConfigs = applyPlatformRuntimePolicy({
-  ...baseConfigs,
-  searchPlan: {
-    ...baseConfigs.searchPlan,
-    keywords: inheritedConfigs.searchPlan.keywords
-  }
-}, nationwidePolicy);
-assert.deepStrictEqual(inheritedConfigs.analysisContext, cleanKeywordConfigs.analysisContext);
-assert(!Object.hasOwn(inheritedConfigs.searchPlan, "bossActiveDays"));
-assert(!Object.hasOwn(inheritedConfigs.searchPlan, "workSchedulePreference"));
-assert(!Object.hasOwn(inheritedConfigs.searchPlan, "allowExperienceStretch"));
-assert(!Object.hasOwn(inheritedConfigs.searchPlan, "excludeWords"));
-assert(!Object.hasOwn(inheritedConfigs.searchPlan, "hardExcludes"));
+assert.deepStrictEqual(inheritedConfigs.searchPlan, baseConfigs.searchPlan);
+assert.strictEqual(inheritedConfigs.searchPlan.bossActiveDays, 1);
+assert.strictEqual(inheritedConfigs.searchPlan.workSchedulePreference, "prefer_double_weekend");
+assert.strictEqual(inheritedConfigs.searchPlan.allowExperienceStretch, true);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.excludeWords, ["外包"]);
+assert.deepStrictEqual(inheritedConfigs.searchPlan.hardExcludes, ["外包"]);
 assert.deepStrictEqual(inheritedConfigs.targetPolicy.directions, ["AI应用开发"]);
-assert.strictEqual(inheritedConfigs.scoring.salary.expected_min_k, 10);
-assert.strictEqual(inheritedConfigs.scoring.salary.expected_max_k, 20);
+assert.strictEqual(inheritedConfigs.scoring.salary.expected_min_k, 9);
+assert.strictEqual(inheritedConfigs.scoring.salary.expected_max_k, 14);
 assert.deepStrictEqual(inheritedConfigs.scoring.positive_keywords, [
   { word: "RAG", weight: 4, label: "RAG" }
 ]);
-assert.deepStrictEqual(inheritedConfigs.scoring.risk_rules, []);
-assert.deepStrictEqual(inheritedConfigs.scoring.exclude_words, []);
-assert.strictEqual(inheritedConfigs.scoring.boss_activity.max_active_days, Number.MAX_SAFE_INTEGER);
-assert.strictEqual(inheritedConfigs.scoring.boss_activity.enforce, false);
-assert.strictEqual(inheritedConfigs.scoring.work_schedule.preference, "no_preference");
-assert.strictEqual(inheritedConfigs.scoring.allowExperienceStretch, false);
-assert.deepStrictEqual(inheritedConfigs.scoring.experience_stretch_keywords, []);
+assert.deepStrictEqual(inheritedConfigs.scoring.risk_rules, baseConfigs.scoring.risk_rules);
+assert.deepStrictEqual(inheritedConfigs.scoring.exclude_words, ["外包"]);
+assert.strictEqual(inheritedConfigs.scoring.boss_activity.max_active_days, 1);
+assert.strictEqual(inheritedConfigs.scoring.work_schedule.preference, "prefer_double_weekend");
+assert.strictEqual(inheritedConfigs.scoring.allowExperienceStretch, true);
+assert.deepStrictEqual(inheritedConfigs.scoring.experience_stretch_keywords, ["RAG"]);
+assert.match(inheritedConfigs.acquisitionPolicyHash, /^[a-f0-9]{64}$/);
+assert.match(inheritedConfigs.recommendationPolicyHash, /^[a-f0-9]{64}$/);
+assert.notStrictEqual(inheritedConfigs.acquisitionPolicyHash, inheritedConfigs.recommendationPolicyHash);
+assert.deepStrictEqual(inheritedConfigs.acquisitionPolicy.filters.salary.ranges, [{ minK: 10, maxK: 20 }]);
 
 assert.deepStrictEqual(
   evaluatePlatformBoundaries({

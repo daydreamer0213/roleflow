@@ -135,7 +135,7 @@ async function main() {
       { resumeBatchId: corruptInheritedBatchId }
     );
     assertExit(corruptInheritedResume, 1, "corrupt inherited resume rejection");
-    assert.match(corruptInheritedResume.stderr, /继承模式快照不完整/);
+    assert.match(corruptInheritedResume.stderr, /snapshotHash/);
 
     db = storage.openDb(dbPath);
     assert.strictEqual(storage.getScanRun(db, "scan-e2e-legacy-resume"), null);
