@@ -277,6 +277,75 @@ async function dispatchFailureSmoke() {
   fixture.close();
 }
 
+async function observedOutcomeFailureSmoke() {
+  const fixture = createFixture(2);
+  let dispatches = 0;
+  const results = [
+    {
+      state: "platform_rejected",
+      evidence: {
+        endpoints: [{
+          endpointKind: "friend_add",
+          httpStatus: 403,
+          businessCode: "10003",
+          businessCategory: "business_rejected",
+          elapsedMs: 44,
+          url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=secret-security",
+          responseBody: "private BOSS response"
+        }],
+        pageState: "request_rejected",
+        chatIdentity: "secret-chat"
+      }
+    },
+    {
+      state: "transport_failed",
+      evidence: {
+        endpoints: [{ endpointKind: "friend_add", businessCategory: "network_rejected", elapsedMs: 17 }],
+        pageState: "request_failed"
+      }
+    }
+  ];
+  await runPermittedBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() { return { state: "ready" }; },
+      async dispatchCommunication() { dispatches += 1; },
+      async verifyCommunicationResult() { return results.shift(); }
+    },
+    sleepFn: async () => {}
+  });
+  const items = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  assert.deepStrictEqual(items.map((item) => item.status), ["platform_rejected", "transport_failed"]);
+  assert.deepStrictEqual(items.map((item) => item.clickCount), [1, 1]);
+  assert.deepStrictEqual(items[0].evidence, {
+    outcome: {
+      endpoints: [{ endpointKind: "friend_add", httpStatus: 403, businessCode: "10003", businessCategory: "business_rejected", elapsedMs: 44 }],
+      pageState: "request_rejected"
+    }
+  });
+  assert.strictEqual(items[0].errorMessage, "BOSS rejected the communication request.");
+  assert.strictEqual(items[1].errorMessage, "The communication request did not reach BOSS.");
+  const persisted = fixture.db.prepare("SELECT evidence_json, error_message FROM communication_batch_items ORDER BY position").all();
+  assert(!JSON.stringify(persisted).includes("secret-security"));
+  assert(!JSON.stringify(persisted).includes("private BOSS response"));
+  assert(!JSON.stringify(persisted).includes("secret-chat"));
+  await runPermittedBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    accessController: { async reserve() { throw new Error("terminal items must not reserve again"); } },
+    adapter: {
+      async inspectCommunicationJob() { throw new Error("terminal items must not inspect again"); },
+      async dispatchCommunication() { dispatches += 1; },
+      async verifyCommunicationResult() { throw new Error("terminal items must not verify again"); }
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(dispatches, 2, "an explicit failed result must not dispatch a second click");
+  fixture.close();
+}
+
 async function auditSanitizationSmoke() {
   const fixture = createFixture(1);
   await runPermittedBatch({
@@ -660,6 +729,7 @@ Promise.resolve()
   .then(pauseResumeSmoke)
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
+  .then(observedOutcomeFailureSmoke)
   .then(auditSanitizationSmoke)
   .then(claimBeforeReserveSmoke)
   .then(incompleteRecoverySmoke)

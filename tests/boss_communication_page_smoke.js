@@ -255,6 +255,8 @@ function fakeBrowser({
   tabs = [],
   fixtures = new Map(),
   afterClickFixtures = new Map(),
+  observerOutcomes = [],
+  snapshotSequence = [],
   guardedClickGate = null,
   guardedClickStarted = null,
   guardedClickDriftUrl = "",
@@ -266,6 +268,8 @@ function fakeBrowser({
   const contexts = new Map();
   const helperExpressions = new Map();
   const snapshots = [];
+  const queuedObserverOutcomes = [...observerOutcomes];
+  const queuedSnapshots = [...snapshotSequence];
   return {
     calls,
     snapshots,
@@ -301,6 +305,20 @@ function fakeBrowser({
           currentTabs = currentTabs.map((tab) => tab.id === tabId ? { ...tab, url: guardedClickDriftUrl } : tab);
           contexts.delete(tabId);
         }
+      }
+      if (expression === "(() => window.__bossCommunicationSnapshot())()" && queuedSnapshots.length) {
+        const snapshot = queuedSnapshots.shift();
+        snapshots.push(snapshot);
+        return snapshot;
+      }
+      if (expression.includes("__bossCommunicationOutcomeResult")) {
+        return queuedObserverOutcomes.shift() || {
+          state: "accepted",
+          evidence: {
+            endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "0", businessCategory: "success", elapsedMs: 1 }],
+            pageState: "request_accepted"
+          }
+        };
       }
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       if (!contexts.has(tabId)) {
@@ -599,6 +617,87 @@ function assertNoPreparationAction(browser, before) {
   );
   assert.strictEqual(executionBrowser.calls.clickAt.length, 0);
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
+
+  const observedSuccessBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, sentFixture()]]),
+    observerOutcomes: [{
+      state: "accepted",
+      evidence: {
+        endpoints: [{
+          endpointKind: "friend_add",
+          httpStatus: 200,
+          businessCode: "0",
+          businessCategory: "success",
+          elapsedMs: 291,
+          url: `${jobUrl}?securityId=fixture-security&chatId=private-chat`,
+          responseBody: "private message body"
+        }],
+        pageState: "request_accepted",
+        securityId: "fixture-security"
+      }
+    }]
+  });
+  const observedSuccessAdapter = new BossSiteAdapter({ browser: observedSuccessBrowser, sleepFn: async () => {} });
+  const observedSuccessInspection = await observedSuccessAdapter.inspectCommunicationJob(expectedJob);
+  await observedSuccessAdapter.dispatchCommunication(observedSuccessInspection);
+  const observedSuccess = await observedSuccessAdapter.verifyCommunicationResult(expectedJob);
+  assert.deepStrictEqual(observedSuccess, {
+    state: "succeeded",
+    jobId: "fake123",
+    evidence: {
+      endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "0", businessCategory: "success", elapsedMs: 291 }],
+      pageState: "succeeded"
+    }
+  });
+  assert(!JSON.stringify(observedSuccess).includes("fixture-security"));
+  assert(!JSON.stringify(observedSuccess).includes("private message body"));
+  assert(observedSuccessBrowser.calls.guardedClick[0][1].includes("__bossRegisterCommunicationOutcomeObserver"));
+
+  for (const [name, observerOutcome, expectedState] of [
+    ["HTTP failure", {
+      state: "platform_rejected",
+      evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 503, businessCategory: "http_failure", elapsedMs: 91 }] }
+    }, "platform_rejected"],
+    ["network rejection", {
+      state: "transport_failed",
+      evidence: { endpoints: [{ endpointKind: "friend_add", businessCategory: "network_rejected", elapsedMs: 17 }] }
+    }, "transport_failed"],
+    ["non-zero BOSS business result", {
+      state: "platform_rejected",
+      evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "10003", businessCategory: "business_rejected", elapsedMs: 44 }] }
+    }, "platform_rejected"],
+    ["observer timeout", { state: "timeout", evidence: { pageState: "observer_timeout" } }, "ambiguous"],
+    ["no matching request", { state: "no_matching_request", evidence: { pageState: "no_matching_request" } }, "ambiguous"]
+  ]) {
+    const browser = fakeBrowser({
+      tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+      observerOutcomes: [observerOutcome]
+    });
+    const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+    const inspected = await adapter.inspectCommunicationJob(expectedJob);
+    await adapter.dispatchCommunication(inspected);
+    const result = await adapter.verifyCommunicationResult(expectedJob);
+    assert.strictEqual(result.state, expectedState, name);
+    assert(!JSON.stringify(result).includes("securityId"), `${name} must keep evidence sanitized`);
+  }
+
+  const unstableReadinessBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    snapshotSequence: [
+      readySnapshot,
+      readySnapshot,
+      readySnapshot,
+      { ...readySnapshot, login: true }
+    ]
+  });
+  const unstableReadinessAdapter = new BossSiteAdapter({ browser: unstableReadinessBrowser, sleepFn: async () => {} });
+  const unstableReadinessInspection = await unstableReadinessAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => unstableReadinessAdapter.dispatchCommunication(unstableReadinessInspection),
+    (error) => error.code === "BOSS_LOGIN_REQUIRED"
+  );
+  assert.strictEqual(unstableReadinessBrowser.calls.guardedClick.length, 0, "unstable fixed-tab readiness must stop before click");
 
   const inlineChatBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],

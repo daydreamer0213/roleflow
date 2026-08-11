@@ -339,6 +339,143 @@ const PAGE_HELPERS = String.raw`
       inlineChatSent
     };
   };
+
+  window.__bossRegisterCommunicationOutcomeObserver = function() {
+    const existing = window.__bossCommunicationOutcomeObserver;
+    if (existing && typeof existing.result === "function") return existing;
+    const startedAt = Date.now();
+    const events = [];
+    let matchedRequests = 0;
+    let closed = false;
+    const endpointKind = (value) => {
+      try {
+        const path = new URL(String(value || ""), location.origin).pathname;
+        if (path === "/wapi/zpchat/config/get") return "chat_config";
+        if (path === "/wapi/zpgeek/friend/add.json") return "friend_add";
+      } catch {}
+      return "";
+    };
+    const businessCode = (value) => {
+      const code = String(value === undefined || value === null ? "" : value).trim();
+      return /^[A-Za-z0-9_-]{1,32}$/.test(code) ? code : "";
+    };
+    const responseCode = (text) => {
+      try {
+        const body = JSON.parse(String(text || ""));
+        return businessCode(body?.code);
+      } catch {
+        return "";
+      }
+    };
+    const record = ({ kind, status = null, code = "", category = "", elapsedMs = 0 }) => {
+      if (closed || !kind) return;
+      events.push({
+        endpointKind: kind,
+        ...(Number.isInteger(Number(status)) && Number(status) >= 100 && Number(status) <= 599 ? { httpStatus: Number(status) } : {}),
+        ...(businessCode(code) ? { businessCode: businessCode(code) } : {}),
+        businessCategory: category,
+        elapsedMs: Math.max(0, Math.min(60_000, Math.floor(Number(elapsedMs) || 0)))
+      });
+    };
+    const classifyResponse = (kind, status, text, elapsedMs) => {
+      if (Number(status) < 200 || Number(status) >= 300) {
+        record({ kind, status, category: "http_failure", elapsedMs });
+        return;
+      }
+      const code = responseCode(text);
+      record({
+        kind,
+        status,
+        code,
+        category: code === "0" ? "success" : code ? "business_rejected" : "response_unparsed",
+        elapsedMs
+      });
+    };
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === "function") {
+      window.fetch = function(input) {
+        const kind = endpointKind(typeof input === "string" ? input : input?.url);
+        if (!kind || closed) return originalFetch.apply(this, arguments);
+        const requestStartedAt = Date.now();
+        matchedRequests += 1;
+        return Promise.resolve(originalFetch.apply(this, arguments)).then((response) => {
+          const copy = typeof response?.clone === "function" ? response.clone() : null;
+          return Promise.resolve(copy?.text?.() || "").then((text) => {
+            classifyResponse(kind, response?.status, text, Date.now() - requestStartedAt);
+            return response;
+          }, () => {
+            record({ kind, status: response?.status, category: "response_unparsed", elapsedMs: Date.now() - requestStartedAt });
+            return response;
+          });
+        }, () => {
+          record({ kind, category: "network_rejected", elapsedMs: Date.now() - requestStartedAt });
+          throw arguments[0];
+        });
+      };
+    }
+    const OriginalXhr = window.XMLHttpRequest;
+    if (typeof OriginalXhr === "function") {
+      const originalOpen = OriginalXhr.prototype.open;
+      const originalSend = OriginalXhr.prototype.send;
+      OriginalXhr.prototype.open = function(method, url) {
+        this.__bossCommunicationEndpointKind = endpointKind(url);
+        return originalOpen.apply(this, arguments);
+      };
+      OriginalXhr.prototype.send = function() {
+        const kind = this.__bossCommunicationEndpointKind;
+        if (!kind || closed) return originalSend.apply(this, arguments);
+        const requestStartedAt = Date.now();
+        matchedRequests += 1;
+        let handled = false;
+        const once = (category) => {
+          if (handled) return;
+          handled = true;
+          if (category) record({ kind, category, elapsedMs: Date.now() - requestStartedAt });
+          else classifyResponse(kind, this.status, this.responseText, Date.now() - requestStartedAt);
+        };
+        this.addEventListener("loadend", () => once(""), { once: true });
+        this.addEventListener("error", () => once("network_rejected"), { once: true });
+        this.addEventListener("timeout", () => once("network_timeout"), { once: true });
+        return originalSend.apply(this, arguments);
+      };
+    }
+    const restore = () => {
+      if (closed) return;
+      closed = true;
+      if (typeof originalFetch === "function") window.fetch = originalFetch;
+      if (typeof OriginalXhr === "function") {
+        OriginalXhr.prototype.open = originalOpen;
+        OriginalXhr.prototype.send = originalSend;
+      }
+    };
+    const observer = {
+      result() {
+        const rejected = events.find((event) => event.businessCategory === "network_rejected" || event.businessCategory === "network_timeout");
+        if (rejected) {
+          restore();
+          return { state: "transport_failed", evidence: { endpoints: events, pageState: "request_failed" } };
+        }
+        const platformRejected = events.find((event) => event.businessCategory === "http_failure" || event.businessCategory === "business_rejected");
+        if (platformRejected) {
+          restore();
+          return { state: "platform_rejected", evidence: { endpoints: events, pageState: "request_rejected" } };
+        }
+        const accepted = events.find((event) => event.endpointKind === "friend_add" && event.businessCategory === "success");
+        if (accepted) {
+          restore();
+          return { state: "accepted", evidence: { endpoints: events, pageState: "request_accepted" } };
+        }
+        if (matchedRequests && Date.now() - startedAt >= 15_000) {
+          restore();
+          return { state: "timeout", evidence: { endpoints: events, pageState: "observer_timeout" } };
+        }
+        return { state: "pending", evidence: { endpoints: events, pageState: matchedRequests ? "request_pending" : "no_matching_request" } };
+      }
+    };
+    window.__bossCommunicationOutcomeObserver = observer;
+    window.__bossCommunicationOutcomeResult = () => observer.result();
+    return observer;
+  };
   return true;
 })()
 `;
