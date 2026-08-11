@@ -83,6 +83,10 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await accessReservationSmoke();
   await visiblePaneIdentitySmoke();
   await visiblePaneActivationWaitSmoke();
+  await visiblePaneTrustedClickOrderSmoke();
+  await visiblePaneLocateFailureNoClickSmoke();
+  await visiblePaneClickIdentityDriftSmoke();
+  await visiblePaneClickCapabilityFailClosedSmoke();
   await visiblePaneSelectionMismatchSmoke();
   await visiblePaneMissingIdentitySmoke();
   await visiblePaneTitleIdentitySmoke();
@@ -502,18 +506,24 @@ async function visiblePaneIdentitySmoke() {
 
 async function visiblePaneActivationWaitSmoke() {
   let paneReads = 0;
-  let activations = 0;
+  let locates = 0;
+  let clicks = 0;
+  let fronts = 0;
   let navigations = 0;
   const accessActions = [];
+  const expressions = [];
   const browser = {
     async navigate() { navigations += 1; },
+    async bringToFront() { fronts += 1; },
+    async clickAt() { clicks += 1; },
     async evalValue(_tabId, expression) {
+      expressions.push(expression);
       if (expression.includes("isRiskPage:")) {
         return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
       }
-      if (expression.includes("(() => window.__bossActivateCard(")) {
-        activations += 1;
-        return { activated: true, jobId: "slow-pane-job", reason: "" };
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) {
+        locates += 1;
+        return { ready: true, jobId: "slow-pane-job", x: 360, y: 480, reason: "" };
       }
       if (expression.includes("window.__bossPaneState()")) {
         paneReads += 1;
@@ -557,12 +567,244 @@ async function visiblePaneActivationWaitSmoke() {
   });
   assert(detail.description.length >= 120);
   assert(paneReads > 8, "must survive the old eight-poll timeout");
-  assert.strictEqual(activations, 1);
+  assert.strictEqual(locates, 1);
+  assert.strictEqual(clicks, 1);
+  assert.strictEqual(fronts, 1);
   assert.strictEqual(navigations, 0);
+  assert(
+    expressions.every((expression) => !expression.includes("__bossActivateCard")),
+    "old page-internal activate path must never be used"
+  );
   assert.deepStrictEqual(accessActions, [{
     action: "pane_detail_read",
     details: { jobId: "slow-pane-job" }
   }]);
+}
+
+async function visiblePaneTrustedClickOrderSmoke() {
+  const events = [];
+  const expressions = [];
+  let navigations = 0;
+  let paneReads = 0;
+  const browser = {
+    async navigate() { navigations += 1; },
+    async bringToFront(tabId) { events.push({ type: "bring_to_front", tabId }); },
+    async clickAt(tabId, point) { events.push({ type: "click_at", tabId, point }); },
+    async evalValue(_tabId, expression) {
+      expressions.push(expression);
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) {
+        events.push({ type: "locate" });
+        return { ready: true, jobId: "click-job", x: 123, y: 456, reason: "" };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        paneReads += 1;
+        events.push({ type: "pane_state" });
+        if (paneReads === 1) {
+          return {
+            activeJobId: "old-job",
+            componentCurrentJobId: "old-job",
+            paneJobId: "old-job",
+            currentJobId: "old-job",
+            title: "Old job",
+            description: "Old detail",
+            canScroll: false
+          };
+        }
+        return {
+          activeJobId: "click-job",
+          componentCurrentJobId: "click-job",
+          paneJobId: "click-job",
+          currentJobId: "click-job",
+          jobDetailLoading: false,
+          title: "Click job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Click job",
+    url: "https://www.zhipin.com/job_detail/click-job.html"
+  });
+  assert(detail.description.length >= 120);
+  assert.deepStrictEqual(events.map((event) => event.type).slice(0, 5), [
+    "pane_state",
+    "locate",
+    "bring_to_front",
+    "click_at",
+    "pane_state"
+  ]);
+  assert.deepStrictEqual(
+    events.find((event) => event.type === "click_at"),
+    { type: "click_at", tabId: "pane-tab", point: { x: 123, y: 456 } }
+  );
+  assert.deepStrictEqual(
+    events.find((event) => event.type === "bring_to_front"),
+    { type: "bring_to_front", tabId: "pane-tab" }
+  );
+  assert.strictEqual(events.filter((event) => event.type === "click_at").length, 1);
+  assert.strictEqual(navigations, 0);
+  assert(
+    expressions.every((expression) => !expression.includes("__bossActivateCard")),
+    "trusted click must replace the page-internal activate path"
+  );
+}
+
+async function visiblePaneLocateFailureNoClickSmoke() {
+  let locates = 0;
+  let clicks = 0;
+  let fronts = 0;
+  const browser = {
+    async bringToFront() { fronts += 1; },
+    async clickAt() { clicks += 1; },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) {
+        locates += 1;
+        return { ready: false, jobId: "", x: 0, y: 0, reason: "card_not_found" };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        return {
+          activeJobId: "old-job",
+          componentCurrentJobId: "old-job",
+          paneJobId: "old-job",
+          currentJobId: "old-job",
+          title: "Old job",
+          description: "Old detail",
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Missing job",
+    url: "https://www.zhipin.com/job_detail/missing-job.html"
+  });
+  assert.strictEqual(detail, null, "failed card location must fail closed");
+  assert.strictEqual(locates, 1);
+  assert.strictEqual(clicks, 0);
+  assert.strictEqual(fronts, 0);
+}
+
+async function visiblePaneClickIdentityDriftSmoke() {
+  let paneReads = 0;
+  let locates = 0;
+  let clicks = 0;
+  let fronts = 0;
+  const browser = {
+    async bringToFront() { fronts += 1; },
+    async clickAt() { clicks += 1; },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("isRiskPage:")) {
+        return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+      }
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) {
+        locates += 1;
+        return { ready: true, jobId: "drift-job", x: 200, y: 300, reason: "" };
+      }
+      if (expression.includes("window.__bossPaneState()")) {
+        paneReads += 1;
+        if (paneReads === 1) {
+          return {
+            activeJobId: "old-job",
+            componentCurrentJobId: "old-job",
+            paneJobId: "old-job",
+            currentJobId: "old-job",
+            title: "Old job",
+            description: "Old detail",
+            canScroll: false
+          };
+        }
+        return {
+          activeJobId: "other-job",
+          componentCurrentJobId: "other-job",
+          paneJobId: "other-job",
+          currentJobId: "other-job",
+          jobDetailLoading: false,
+          title: "Other job",
+          description: "Complete Python RAG Agent job description ".repeat(12),
+          canScroll: false
+        };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  const detail = await adapter.readVisiblePaneDetail("pane-tab", {
+    title: "Drift job",
+    url: "https://www.zhipin.com/job_detail/drift-job.html"
+  });
+  assert.strictEqual(detail, null, "identity drift after trusted click must not be adopted");
+  assert.strictEqual(locates, 1);
+  assert.strictEqual(clicks, 1);
+  assert.strictEqual(fronts, 1);
+  assert(paneReads >= 2, "pane identity must be rechecked after the trusted click");
+}
+
+async function visiblePaneClickCapabilityFailClosedSmoke() {
+  const paneState = {
+    activeJobId: "old-job",
+    componentCurrentJobId: "old-job",
+    paneJobId: "old-job",
+    currentJobId: "old-job",
+    title: "Old job",
+    description: "Old detail",
+    canScroll: false
+  };
+  const locatePoint = (x, y) => ({ ready: true, jobId: "cap-job", x, y, reason: "" });
+  const evalValue = (expression, point) => {
+    if (expression.includes("isRiskPage:")) {
+      return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
+    }
+    if (expression.includes("(() => window.__bossCardActivationPoint(")) return point;
+    if (expression.includes("window.__bossPaneState()")) return paneState;
+    return true;
+  };
+
+  let noClickAtLocates = 0;
+  let noClickAtFronts = 0;
+  const noClickAtBrowser = {
+    async bringToFront() { noClickAtFronts += 1; },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) noClickAtLocates += 1;
+      return evalValue(expression, locatePoint(100, 100));
+    }
+  };
+  const adapterNoClick = new BossSiteAdapter({ browser: noClickAtBrowser, sleepFn: async () => {} });
+  assert.strictEqual(await adapterNoClick.readVisiblePaneDetail("pane-tab", {
+    title: "Cap job",
+    url: "https://www.zhipin.com/job_detail/cap-job.html"
+  }), null, "browser without trusted click support must fail closed");
+  assert.strictEqual(noClickAtLocates, 1);
+  assert.strictEqual(noClickAtFronts, 0);
+
+  let invalidPointClicks = 0;
+  let invalidPointLocates = 0;
+  const invalidPointBrowser = {
+    async bringToFront() {},
+    async clickAt() { invalidPointClicks += 1; },
+    async evalValue(_tabId, expression) {
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) invalidPointLocates += 1;
+      return evalValue(expression, locatePoint("not-a-number", 100));
+    }
+  };
+  const adapterInvalidPoint = new BossSiteAdapter({ browser: invalidPointBrowser, sleepFn: async () => {} });
+  assert.strictEqual(await adapterInvalidPoint.readVisiblePaneDetail("pane-tab", {
+    title: "Cap job",
+    url: "https://www.zhipin.com/job_detail/cap-job.html"
+  }), null, "non-finite click coordinates must fail closed");
+  assert.strictEqual(invalidPointLocates, 1);
+  assert.strictEqual(invalidPointClicks, 0);
 }
 
 async function visiblePaneSelectionMismatchSmoke() {
@@ -733,8 +975,11 @@ async function searchPaneDetailRoutingSmoke() {
 }
 
 async function componentActivationUnavailableSmoke() {
-  let activations = 0;
+  let locates = 0;
+  let clicks = 0;
   const browser = {
+    async bringToFront() {},
+    async clickAt() { clicks += 1; },
     async evalValue(_tabId, expression) {
       if (expression.includes("isRiskPage:")) {
         return { isRiskPage: false, isLoginPage: false, isSearchPage: true };
@@ -750,9 +995,9 @@ async function componentActivationUnavailableSmoke() {
           canScroll: false
         };
       }
-      if (expression.includes("(() => window.__bossActivateCard(")) {
-        activations += 1;
-        return { activated: false, jobId: "", reason: "component_unavailable" };
+      if (expression.includes("(() => window.__bossCardActivationPoint(")) {
+        locates += 1;
+        return { ready: false, jobId: "", x: 0, y: 0, reason: "component_unavailable" };
       }
       return true;
     }
@@ -763,7 +1008,8 @@ async function componentActivationUnavailableSmoke() {
     url: "https://www.zhipin.com/job_detail/target-job.html"
   });
   assert.strictEqual(detail, null);
-  assert.strictEqual(activations, 1);
+  assert.strictEqual(locates, 1);
+  assert.strictEqual(clicks, 0);
 }
 
 async function scanNullPaneOutcomeSmoke() {

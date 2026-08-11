@@ -69,27 +69,34 @@ const PAGE_HELPERS = String.raw`
     });
   };
 
-  window.__bossActivateCard = function(jobId) {
+  window.__bossCardActivationPoint = function(jobId) {
     const expectedJobId = String(jobId || "").trim();
-    if (!expectedJobId) return { activated: false, jobId: "", reason: "job_id_missing" };
+    if (!expectedJobId) return { ready: false, jobId: "", x: 0, y: 0, reason: "job_id_missing" };
     const card = window.__bossCards().find((item) => {
       const href = (item.querySelector('a[href*="/job_detail/"]') || item.querySelector("a"))?.href || "";
       const id = (href.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
       return id === expectedJobId;
     });
-    if (!card) return { activated: false, jobId: "", reason: "card_not_found" };
+    if (!card) return { ready: false, jobId: "", x: 0, y: 0, reason: "card_not_found" };
     const wrap = card.closest(".job-card-wrap") || card;
     const component = wrap.__vue__ || card.__vue__ || null;
     const componentJobId = String(component?.data?.encryptJobId || "").trim();
     if (componentJobId !== expectedJobId) {
-      return { activated: false, jobId: componentJobId, reason: "component_job_mismatch" };
-    }
-    if (typeof component?.clickJobCard !== "function") {
-      return { activated: false, jobId: componentJobId, reason: "component_unavailable" };
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "component_job_mismatch" };
     }
     wrap.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
-    component.clickJobCard();
-    return { activated: true, jobId: componentJobId, reason: "" };
+    const rect = wrap.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!(rect.width > 0 && rect.height > 0)) {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "card_not_visible" };
+    }
+    if (!(x >= 0 && y >= 0 && x <= viewportWidth && y <= viewportHeight)) {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "point_out_of_viewport" };
+    }
+    return { ready: true, jobId: componentJobId, x, y, reason: "" };
   };
 
   window.__bossExtractCards = function(maxCards) {
@@ -1427,11 +1434,30 @@ class BossSiteAdapter {
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
         }
       } else if (!selectionMatches && !activationAttempted) {
+        await assertRuntimeTabBindings(assertTabBindings);
+        await this.assertSearchPage(tabId);
         const activation = await this.browser.evalValue(
           tabId,
-          `(() => window.__bossActivateCard(${JSON.stringify(expectedJobId)}))()`
+          `(() => window.__bossCardActivationPoint(${JSON.stringify(expectedJobId)}))()`
         );
-        if (!activation?.activated || activation.jobId !== expectedJobId) return null;
+        await assertRuntimeTabBindings(assertTabBindings);
+        await this.assertSearchPage(tabId);
+        const pointX = Number(activation?.x);
+        const pointY = Number(activation?.y);
+        if (!activation || activation.ready !== true || activation.jobId !== expectedJobId
+          || !Number.isFinite(pointX) || !Number.isFinite(pointY)
+          || pointX < 0 || pointY < 0) {
+          return null;
+        }
+        if (typeof this.browser.bringToFront !== "function" || typeof this.browser.clickAt !== "function") {
+          return null;
+        }
+        await this.browser.bringToFront(tabId);
+        await assertRuntimeTabBindings(assertTabBindings);
+        await this.assertSearchPage(tabId);
+        await this.browser.clickAt(tabId, { x: pointX, y: pointY });
+        await assertRuntimeTabBindings(assertTabBindings);
+        await this.assertSearchPage(tabId);
         activationAttempted = true;
       }
       await this.waitWithPacing("card_retry", { signal, assertTabBindings });
