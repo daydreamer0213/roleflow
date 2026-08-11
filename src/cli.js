@@ -947,6 +947,7 @@ async function scan(
       site,
       scopeId: scopeShortId(searchScope.key),
       platformPolicyHash: platformPolicy.hash || "",
+      recommendationPolicyHash: configs.recommendationPolicyHash || "",
       keywordCatalogHash: keywordSource.catalogHash || ""
     });
   }
@@ -978,6 +979,7 @@ async function scan(
     site,
     scanKind: scanMode,
     runtimePolicyHash,
+    recommendationPolicyHash: configs.recommendationPolicyHash || "",
     searchTemplate,
     searchScope,
     keywordSource,

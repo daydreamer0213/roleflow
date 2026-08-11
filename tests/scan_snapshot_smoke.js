@@ -10,6 +10,7 @@ const input = {
   site: "boss",
   scanKind: "daily",
   runtimePolicyHash: "policy-v1",
+  recommendationPolicyHash: "recommendation-policy-v1",
   searchTemplate: {
     mode: "inherited",
     url: "https://www.zhipin.com/web/geek/jobs?city=101280100&district=101280105&salary=405",
@@ -114,6 +115,7 @@ const reordered = buildScanExecutionSnapshot({
     { cityCode: "101280600", city: "Shenzhen" }
   ],
   runtimePolicyHash: "policy-v1",
+  recommendationPolicyHash: "recommendation-policy-v1",
   searchTemplate: input.searchTemplate,
   searchScope: input.searchScope,
   keywordSource: input.keywordSource,
@@ -123,6 +125,10 @@ const reordered = buildScanExecutionSnapshot({
 });
 assert.strictEqual(reordered.snapshotHash, snapshot.snapshotHash);
 assertScanSnapshotCompatible(snapshot, { ...reordered, createdAt: "2099-01-01T00:00:00.000Z" });
+assert.strictEqual(snapshot.recommendationPolicyHash, "recommendation-policy-v1");
+const legacyInput = { ...input };
+delete legacyInput.recommendationPolicyHash;
+assertScanSnapshotCompatible(buildScanExecutionSnapshot(legacyInput), snapshot);
 
 const volatileMetadata = buildScanExecutionSnapshot({
   ...input,
@@ -141,7 +147,8 @@ assert.strictEqual(volatileMetadata.snapshotHash, snapshot.snapshotHash);
 for (const mutate of [
   (value) => { value.searchScope.key = "boss:7:scope-v2"; },
   (value) => { value.keywordSource.catalogHash = "catalog-v2"; },
-  (value) => { value.platformPolicy.hash = "platform-policy-v2"; }
+  (value) => { value.platformPolicy.hash = "platform-policy-v2"; },
+  (value) => { value.recommendationPolicyHash = "recommendation-policy-v2"; }
 ]) {
   const changedInput = JSON.parse(JSON.stringify(input));
   mutate(changedInput);

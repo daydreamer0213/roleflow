@@ -6,6 +6,7 @@ const PAYLOAD_FIELDS = [
   "site",
   "scanKind",
   "runtimePolicyHash",
+  "recommendationPolicyHash",
   "searchTemplate",
   "searchScope",
   "keywordSource",
@@ -54,6 +55,9 @@ function buildScanExecutionSnapshot(input = {}) {
     site: String(input.site || "boss").trim().toLowerCase(),
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
+    ...(String(input.recommendationPolicyHash || "").trim()
+      ? { recommendationPolicyHash: String(input.recommendationPolicyHash).trim() }
+      : {}),
     searchTemplate,
     searchScope,
     keywordSource,
@@ -102,9 +106,10 @@ function assertScanSnapshotCompatible(stored, current) {
       differences.push(`schemaVersion differs: stored=${stored.schemaVersion}, current=${current.schemaVersion}`);
     }
     for (const field of PAYLOAD_FIELDS) {
+      if (field === "recommendationPolicyHash" && (!stored[field] || !current[field])) continue;
       if (comparableHash(stored[field]) !== comparableHash(current[field])) differences.push(`${field} differs`);
     }
-    if (stored.snapshotHash !== current.snapshotHash) {
+    if (stored.snapshotHash !== current.snapshotHash && stored.recommendationPolicyHash && current.recommendationPolicyHash) {
       differences.push(`snapshotHash differs: stored=${stored.snapshotHash || "(missing)"}, current=${current.snapshotHash || "(missing)"}`);
     }
   }
@@ -175,6 +180,7 @@ function schemaDifferences(snapshot, label) {
     differences.push(`${label}.schemaVersion is ${snapshot.schemaVersion ?? "missing"}; expected ${SCHEMA_VERSION}`);
   }
   for (const field of PAYLOAD_FIELDS) {
+    if (field === "recommendationPolicyHash" && !Object.hasOwn(snapshot, field)) continue;
     if (!Object.hasOwn(snapshot, field)) differences.push(`${label}.${field} is missing`);
   }
   if (!Object.hasOwn(snapshot, "snapshotHash")) differences.push(`${label}.snapshotHash is missing`);

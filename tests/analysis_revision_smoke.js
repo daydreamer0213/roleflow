@@ -8,6 +8,7 @@ const {
   analysisStaleReasons
 } = require("../src/core/analysis_revision");
 const { scoreJob, decisionState } = require("../src/core/scoring");
+const { decisionBucket } = require("../src/core/storage");
 
 const recommendation = {
   candidateProfile: { candidate: { targetTitles: ["AI应用开发工程师"] } },
@@ -58,6 +59,17 @@ const strictBoundary = evaluatePlatformBoundaries({ salary: "5-10K" }, narrowAcq
 assert(strictBoundary.qualityTags.includes("platform_salary_unverified") === false);
 const revision = buildAnalysisRevision(inherited, "job-source-1");
 assert.deepStrictEqual(analysisStaleReasons({ revision }, buildAnalysisRevision(inherited, "job-source-1")), []);
+for (const changedRecommendation of [
+  { searchPlan: { ...recommendation.searchPlan, salary: { minK: 5, maxK: 10 } } },
+  { scoring: { ...recommendation.scoring, salary: { ...recommendation.scoring.salary, expected_min_k: 10 } } },
+  { targetPolicy: { ...recommendation.targetPolicy, directions: ["平台运营"] } }
+]) {
+  const changed = applyPlatformRuntimePolicy({ ...recommendation, ...changedRecommendation }, narrowAcquisition);
+  assert.notStrictEqual(
+    buildAnalysisRevision(changed, "job-source-1").searchPlanVersion,
+    revision.searchPlanVersion
+  );
+}
 const changedAcquisition = applyPlatformRuntimePolicy(recommendation, {
   ...narrowAcquisition,
   hash: "acquisition-10-20",
@@ -82,12 +94,18 @@ const replay104 = {
   }))
 };
 assert.strictEqual(replay104.jobs.length, 104);
-const boundaryResults = replay104.jobs
-  .filter((job) => knownSalaryBoundaryCases.includes(job.salary))
-  .map((job) => scoreJob(job, inherited));
+const replayResults = replay104.jobs.map((job) => scoreJob(job, inherited));
+const boundaryResults = replayResults.filter((result) => result.qualityTags.includes("salary_out_of_range"));
+assert.strictEqual(replayResults.length, 104);
 assert.strictEqual(boundaryResults.length, 6);
 assert(boundaryResults.every((result) => result.qualityTags.includes("salary_out_of_range")));
 assert(boundaryResults.every((result) => decisionState(result) === "blocked"));
+assert(boundaryResults.every((result) => !["primary", "apply", "caution"].includes(
+  decisionBucket({
+    ...result,
+    analysis: { semanticStatus: "complete", recommendation: "apply" }
+  })
+)));
 console.log(JSON.stringify({ replay: replay104.batchId, jobs: replay104.jobs.length, boundaryCases: boundaryResults.length }));
 
 console.log("analysis_revision_smoke ok");

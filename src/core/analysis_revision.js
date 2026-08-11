@@ -57,16 +57,25 @@ function modelInferenceConfig(modelConfig = {}) {
 function modelSearchPlanContext(searchPlan = {}) {
   return {
     cities: searchPlan.cities || [],
+    salary: searchPlan.salary || {},
     experience: searchPlan.experience || [],
     jobTypes: searchPlan.jobTypes || [],
     directions: searchPlan.directions || []
   };
 }
 
-function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = null) {
+function recommendationPolicyContext(searchPlan = {}, targetPolicy = {}, scoring = {}) {
+  return {
+    searchPlan: modelSearchPlanContext(searchPlan),
+    targetPolicy: targetPolicy || {},
+    scoring: scoring || {}
+  };
+}
+
+function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = null, targetPolicy = {}, scoring = {}) {
   return {
     profileVersion: stableHash(candidateProfile || {}),
-    searchPlanVersion: stableHash(modelSearchPlanContext(searchPlan)),
+    searchPlanVersion: stableHash(recommendationPolicyContext(searchPlan, targetPolicy, scoring)),
     matchingCardVersion: matchingCard ? matchingCardRevision(matchingCard) : null
   };
 }
@@ -74,7 +83,11 @@ function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = nul
 function buildAnalysisRevision(configs, sourceContentHash) {
   return {
     profileVersion: configs.analysisContext?.profileVersion || stableHash(configs.candidateProfile || {}),
-    searchPlanVersion: configs.analysisContext?.searchPlanVersion || stableHash(modelSearchPlanContext(configs.searchPlan)),
+    searchPlanVersion: stableHash(recommendationPolicyContext(
+      configs.searchPlan,
+      configs.targetPolicy,
+      configs.scoring
+    )),
     matchingCardVersion: configs.analysisContext?.matchingCardVersion ?? null,
     sourceContentHash: String(sourceContentHash || ""),
     semanticMatchingMode: configs.semanticMatchingMode
