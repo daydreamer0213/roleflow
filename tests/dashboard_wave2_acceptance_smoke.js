@@ -58,8 +58,25 @@ const noPrimaryMarker = structuredClone(passingPage);
 noPrimaryMarker.audit.primary = { policy: "none-expected", defined: false, markerCount: 1, count: 0, visibleCount: 0, fullyWithinViewport: false, control: null };
 assert.throws(() => assertStrictPage(noPrimaryMarker), /unexpected page-level primary marker/, "none-expected pages must fail if a page-level primary marker is present");
 
+const unlabeledStrictPage = structuredClone(passingPage);
+unlabeledStrictPage.audit.accessibility.unlabeledVisibleControlCount = 1;
+unlabeledStrictPage.audit.accessibility.unlabeledVisibleControls = [{ tag: "input", name: "hrMessage" }];
+assert.throws(() => assertStrictPage(unlabeledStrictPage), /unlabeled visible controls.*input\[name=hrMessage\]/, "the pure strict gate must reject an unnamed visible control without Playwright");
+
+const namedStrictPage = structuredClone(passingPage);
+namedStrictPage.audit.accessibility.unlabeledVisibleControlCount = 0;
+namedStrictPage.audit.accessibility.unlabeledVisibleControls = [];
+assert.doesNotThrow(() => assertStrictPage(namedStrictPage), "the pure strict gate must accept a named visible control without Playwright");
+
 async function assertAccessibleNameRegression() {
-  const { chromium } = require("playwright");
+  let chromium;
+  try {
+    ({ chromium } = require("playwright"));
+  } catch (error) {
+    if (process.env.ROLEFLOW_REQUIRE_PLAYWRIGHT === "1") throw error;
+    console.log("dashboard_wave2_acceptance_smoke skipped-runtime-fixture: Playwright is unavailable; pure strict-gate coverage still ran");
+    return;
+  }
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   try {
     for (const [html, expectedUnlabeled] of [
@@ -79,6 +96,7 @@ async function assertAccessibleNameRegression() {
   } finally {
     await browser.close();
   }
+  console.log("dashboard_wave2_acceptance_smoke runtime-fixture ok");
 }
 
 const workflowHelp = spawnSync(process.execPath, [path.join(__dirname, "..", "scripts", "evaluate-workflow-dashboard.js"), "--help"], { encoding: "utf8" });
