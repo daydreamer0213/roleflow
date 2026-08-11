@@ -143,6 +143,8 @@ async function main() {
   await messageDiscoveryClientResponseSmoke(page.body);
   await messageDiscoveryDuplicateSubmitSmoke(page.body);
   await messageDiscoveryPollingSmoke(page.body);
+  await messageDiscoveryMalformedResponseSmoke(page.body);
+  await messageDiscoveryActionPollRaceSmoke(page.body);
 
   setSiteRuntimeState(db, "boss", {
     status: "blocked",
@@ -1082,6 +1084,47 @@ async function messageDiscoveryPollingSmoke(markup) {
   assert.strictEqual(runningPoll.timerCount(), 2, "each successful running poll must schedule exactly one successor");
 }
 
+async function messageDiscoveryMalformedResponseSmoke(markup) {
+  for (const scenario of [
+    { name: "array", body: [] },
+    { name: "empty object", body: {} },
+    { name: "empty error code", body: { status: "running", errorCode: "" } },
+    { name: "invalid status", body: { status: "unknown" } }
+  ]) {
+    const action = runMessageDiscoveryClient(markup, { response: jsonResponse(202, scenario.body) });
+    await assert.doesNotReject(action.submit(), `a 2xx ${scenario.name} action response must stay in the current page`);
+    assert.strictEqual(action.reloads(), 0, `a 2xx ${scenario.name} action response must not reload`);
+
+    const poll = runMessageDiscoveryClient(markup, { response: jsonResponse(200, scenario.body) }, { status: "running" });
+    await assert.doesNotReject(poll.runTimer(0), `a 2xx ${scenario.name} poll response must stay handled`);
+    assert.strictEqual(poll.reloads(), 0, `a 2xx ${scenario.name} poll response must not reload`);
+  }
+}
+
+async function messageDiscoveryActionPollRaceSmoke(markup) {
+  const pollResponse = deferred();
+  const actionResponse = deferred();
+  const client = runMessageDiscoveryClient(markup, {
+    fetch(url) {
+      return String(url).includes("message-discovery-status") ? pollResponse.promise : actionResponse.promise;
+    }
+  }, { status: "running" });
+  const poll = client.runTimer(0);
+  await Promise.resolve();
+  const action = client.submit();
+  await Promise.resolve();
+  actionResponse.resolve(jsonResponse(409, { errorCode: "BOSS_RISK_CONTROL" }));
+  await action;
+  assert.match(client.feedback.textContent, /安全检查/, "a failed manual action must keep its recovery feedback");
+  assert.strictEqual(client.timerCount(), 2, "a failed action on a running page must restore one poll");
+
+  pollResponse.resolve(jsonResponse(200, { status: "completed" }));
+  await poll;
+  assert.strictEqual(client.reloads(), 0, "a poll that began before a manual action must not refresh later");
+  assert.match(client.feedback.textContent, /安全检查/, "a late poll must not overwrite failed action feedback");
+  assert.strictEqual(client.timerCount(), 2, "a late poll must not add a duplicate timer");
+}
+
 async function messageDiscoveryDuplicateSubmitSmoke(markup) {
   let resolveResponse;
   const pendingResponse = new Promise((resolve) => { resolveResponse = resolve; });
@@ -1159,4 +1202,10 @@ function jsonResponse(status, body) {
 
 function textResponse(status, body) {
   return { ok: status >= 200 && status < 300, status, text: async () => body };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
 }
