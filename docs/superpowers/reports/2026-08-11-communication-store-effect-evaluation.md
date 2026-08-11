@@ -57,7 +57,7 @@ The final line is the intentional temporary Task 4.4 dependency. Task 4.5 must r
 - batch/item aliases, state guards, row keys/conversions, summary shape, terminal and optimistic-CAS behavior;
 - click audit exact payload, click count zero-to-one, injected audit rollback, and cross-batch duplicate-click rejection;
 - reservation rollback, interrupted resume/requires-review, and ambiguous resolver validation/evidence/audit;
-- late manual-resolution failure at `SAVEPOINT candidate_progress_verified`, with full row-content equality for `communication_batch_items`, `events`, `candidate_progress_cards`, and `candidate_progress_events`; the item remains ambiguous, no manual-resolution audit survives, and candidate progress is unchanged.
+- late manual-resolution failure from a fixture-targeted TEMP trigger on `candidate_progress_events` insert. Its condition requires the referenced target `candidate_progress_cards` row to exist, proving `ensureProgressCard` already wrote inside `SAVEPOINT candidate_progress_verified`. The observed sequence is `BEGIN IMMEDIATE`, `SAVEPOINT`, `ROLLBACK TO`, `RELEASE`, outer `ROLLBACK`; full row-content equality holds for `communication_batch_items`, `events`, `candidate_progress_cards`, and `candidate_progress_events`. The item remains ambiguous, no manual-resolution audit survives, candidate progress is unchanged, and the trigger is dropped in `finally` without entering the production schema.
 
 Child-process evidence covers unchanged core-facade consumers in `communication_batch_storage_smoke.js`, `communication_executor_smoke.js`, `communication_calibration_gate_smoke.js`, `communication_cli_authority_smoke.js`, `communication_application_smoke.js`, `dashboard_communication_batch_smoke.js`, `workflow_communication_smoke.js`, `workflow_end_to_end_smoke.js`, `workflow_recovery_smoke.js`, and `storage_migration_smoke.js`.
 
@@ -65,11 +65,11 @@ The five direct transaction owners remain in the store: `createCommunicationBatc
 
 ## Error mapping
 
-`D` is the direct contract; `CBS`, `WCS`, `DCBS`, `WDS`, and `CAS` are respectively `communication_batch_storage_smoke.js`, `workflow_communication_smoke.js`, `dashboard_communication_batch_smoke.js`, `workflow_dashboard_smoke.js`, and `communication_application_smoke.js`; `B` is baseline body equivalence with no dedicated error assertion.
+`D` is the direct contract; `CBS`, `WCS`, `DCBS`, and `CAS` are respectively `communication_batch_storage_smoke.js`, `workflow_communication_smoke.js`, `dashboard_communication_batch_smoke.js`, and `communication_application_smoke.js`; `B` is baseline body equivalence with no dedicated exact owner assertion.
 
 | Code | Condition and exact message | Test/evidence |
 | --- | --- | --- |
-| `WORKFLOW_RUN_NOT_FOUND` | Missing workflow ID — `workflow run was not found` | `WDS` |
+| `WORKFLOW_RUN_NOT_FOUND` | Missing workflow ID — `workflow run was not found` | `B` |
 | `WORKFLOW_COMMUNICATION_LINK_MISMATCH` | Plan/profile differs from workflow — `communication plan does not belong to this workflow run` | `B` |
 | `WORKFLOW_COMMUNICATION_LINK_INVALID` | Workflow is not in review — `workflow communication can only be confirmed during review` | `B` |
 | `WORKFLOW_COMMUNICATION_ALREADY_LINKED` | Workflow already has a batch — `workflow run already has a communication batch` | `B` |
@@ -83,7 +83,7 @@ The five direct transaction owners remain in the store: `createCommunicationBatc
 | `COMMUNICATION_JOB_INELIGIBLE` | Empty/invalid/duplicate or filtered job — `at least one jobId is required`, `invalid jobId`, `jobIds must not contain duplicates`, or `job <id> is not eligible for communication` | `D`, `CBS`, `DCBS` |
 | `COMMUNICATION_BATCH_INVALID` | Batch ID is not positive — `batchId is required` | `B` |
 | `COMMUNICATION_BATCH_NOT_FOUND` | Batch row missing — `communication batch not found` | `B` |
-| `COMMUNICATION_BATCH_STATUS_INVALID` | Unknown status or resume target not interrupted — `invalid communication batch status` / `resume requires an interrupted communication batch` | `DCBS` |
+| `COMMUNICATION_BATCH_STATUS_INVALID` | Unknown status or resume target not interrupted — `invalid communication batch status` / `resume requires an interrupted communication batch` | `B` |
 | `COMMUNICATION_BATCH_TERMINAL` | Transition from terminal batch — `terminal communication batch cannot resume` | `D`, `CBS` |
 | `COMMUNICATION_BATCH_TRANSITION_INVALID` | Edge absent from batch graph — `invalid communication batch transition` | `D`, `CBS` |
 | `COMMUNICATION_BATCH_ITEMS_UNFINISHED` | Complete requested with nonterminal items — `communication batch cannot complete while items remain unfinished` | `D`, `CBS` |
@@ -120,6 +120,10 @@ The calibration child test independently checks the full calibration API shape. 
 | `node tests/run_all.js` | `All 88 offline checks passed.` | 142,598 ms |
 | Review-fix focused contract plus 10 explicit child tests | 11/11 pass | 15,637 ms |
 | Review-fix `npm.cmd test` | exit 0; 88 offline checks pass | 154.2 s |
+| Review-fix round 2 RED with old three-statement expectation | expected fail; actual adds `ROLLBACK TO` and `RELEASE` | 0.4 s |
+| Review-fix round 2 focused contract | pass | 7,904 ms |
+| Review-fix round 2 relevant child set | 10/10 pass | 7,530 ms |
+| Review-fix round 2 `npm.cmd test` | exit 0; 88 offline checks pass | 141.3 s |
 
 The full suite emitted Node's known experimental SQLite warning. Its workflow-page smoke also reported Playwright unavailable and skipped only its optional browser checks; the test itself passed. No real BOSS page, browser control, communication, application, network request, or production database was used.
 

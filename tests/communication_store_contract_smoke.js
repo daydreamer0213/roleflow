@@ -231,14 +231,25 @@ function runOwnerContract() {
       "candidate_progress_events"
     ];
     const beforeResolutionRollback = rowContentSnapshot(db, resolutionTables);
+    const rollbackTrigger = "fail_target_candidate_progress_event";
+    const rollbackIdempotencyKey = `communication:${batch.id}:${ambiguousItem.id}:succeeded`;
+    db.exec(`CREATE TEMP TRIGGER ${rollbackTrigger}
+      BEFORE INSERT ON candidate_progress_events
+      WHEN NEW.idempotency_key = '${rollbackIdempotencyKey}'
+        AND EXISTS (
+          SELECT 1 FROM candidate_progress_cards
+          WHERE id = NEW.card_id
+            AND profile_id = ${batch.profileId}
+            AND job_id = ${ambiguousItem.jobId}
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'injected candidate progress event failure after card insert');
+      END`);
     const originalResolutionExec = db.exec.bind(db);
     const rollbackStatements = [];
     db.exec = (sql) => {
       const statement = String(sql);
       rollbackStatements.push(statement);
-      if (statement === "SAVEPOINT candidate_progress_verified") {
-        throw new Error("injected candidate progress savepoint failure");
-      }
       return originalResolutionExec(sql);
     };
     try {
@@ -249,14 +260,21 @@ function runOwnerContract() {
           evidenceNote: "Injected late rollback fixture",
           now: "2030-01-02T08:03:30.000Z"
         }),
-        /injected candidate progress savepoint failure/
+        /injected candidate progress event failure after card insert/
       );
     } finally {
       db.exec = originalResolutionExec;
+      db.exec(`DROP TRIGGER IF EXISTS ${rollbackTrigger}`);
     }
+    assert.strictEqual(db.prepare(`SELECT name FROM sqlite_temp_master
+      WHERE type = 'trigger' AND name = ?`).get(rollbackTrigger), undefined);
+    assert.strictEqual(db.prepare(`SELECT name FROM sqlite_master
+      WHERE type = 'trigger' AND name = ?`).get(rollbackTrigger), undefined);
     assert.deepStrictEqual(rollbackStatements, [
       "BEGIN IMMEDIATE",
       "SAVEPOINT candidate_progress_verified",
+      "ROLLBACK TO candidate_progress_verified",
+      "RELEASE candidate_progress_verified",
       "ROLLBACK"
     ]);
     const afterResolutionRollback = rowContentSnapshot(db, resolutionTables);
