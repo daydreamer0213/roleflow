@@ -34,7 +34,7 @@ function hasStandardPii(text) {
   return /(?<![\dA-Za-z])(?:\+?\s*86[\s()\-]*)?1[\s()\-]*[3-9](?:[\s()\-]*\d){9}(?!\d)/.test(value)
     || /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(value)
     || /(?<!\d)\d{17}[\dXx](?!\d)/.test(value)
-    || /(?:^|\n)\s*(?:\u5bb6\u5ead\u4f4f\u5740|\u901a\u8baf\u5730\u5740|\u8be6\u7ec6\u5730\u5740|\u73b0\u4f4f\u5740|\u4f4f\u5740|\u5730\u5740)(?:\s*[\uff1a:]\s*|\s+)(?!\[[^\]\n]*\])\S+/i.test(value);
+    || /(?:^|\n)\s*(?:\u5bb6\u5ead\u4f4f\u5740|\u901a\u8baf\u5730\u5740|\u8054\u7cfb\u5730\u5740|\u8be6\u7ec6\u5730\u5740|\u73b0\u4f4f\u5740|\u4f4f\u5740|\u5730\u5740)(?:\s*[\uff1a:]\s*|\s+)(?!\[[^\]\n]*\])\S+/i.test(value);
 }
 
 function normalizeIdentity(value) {
@@ -89,11 +89,27 @@ function redactStandardFields(value) {
     });
   };
   replace(/(^|\n)(\s*(?:手机|电话|联系电话|联系方式)\s*[：:]?\s*)[^\n]+/gi, "phone", (_match, line, prefix) => `${line}${prefix}[已隐藏]`);
-  replace(/(^|\n)(\s*(?:家庭住址|通讯地址|详细地址|现住址|住址|地址)\s*[：:]?\s*)[^\n]+/gi, "address", (_match, line, prefix) => `${line}${prefix}[已隐藏]`);
+  replace(/(^|\n)(\s*(?:家庭住址|通讯地址|联系地址|详细地址|现住址|住址|地址)\s*[：:]?\s*)[^\n]+/gi, "address", (_match, line, prefix) => `${line}${prefix}[已隐藏]`);
   replace(/(?<![\dA-Za-z])(?:\+?\s*86[\s()\-]*)?1[\s()\-]*[3-9](?:[\s()\-]*\d){9}(?!\d)/g, "phone", "[手机号已隐藏]");
   replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "email", "[邮箱已隐藏]");
   replace(/(?<!\d)\d{17}[\dXx](?!\d)/g, "idCard", "[身份证号已隐藏]");
   return { text, redactions };
+}
+
+function maskResumeContacts(value) {
+  return redactStandardFields(normalizeUnicode(value)).text;
+}
+
+function maskResumeDiagnostics(diagnostics = {}) {
+  const value = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
+  const modelInput = value.modelInput && typeof value.modelInput === "object"
+    ? { ...value.modelInput, preview: maskResumeContacts(value.modelInput.preview || "") }
+    : value.modelInput;
+  return {
+    ...value,
+    preview: maskResumeContacts(value.preview || ""),
+    ...(modelInput ? { modelInput } : {})
+  };
 }
 
 function assertResumeIdentityRedacted(text, identity) {
@@ -128,4 +144,4 @@ function prepareResumeTextForModel(
   return { text, preview: text.slice(0, 1200), redactions };
 }
 
-module.exports = { prepareResumeTextForModel, assertResumeIdentityRedacted };
+module.exports = { prepareResumeTextForModel, assertResumeIdentityRedacted, maskResumeContacts, maskResumeDiagnostics };

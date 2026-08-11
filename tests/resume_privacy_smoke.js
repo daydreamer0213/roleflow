@@ -1,7 +1,8 @@
 const assert = require("node:assert");
 const {
   prepareResumeTextForModel,
-  assertResumeIdentityRedacted
+  assertResumeIdentityRedacted,
+  maskResumeDiagnostics
 } = require("../src/core/resume_privacy");
 const { analyzeResumeProfile } = require("../src/core/profile_onboarding");
 const { parseResumeText } = require("../src/core/resume_parser");
@@ -20,6 +21,26 @@ const identity = {
   phones: ["13800138000"],
   emails: ["candidate@example.com"]
 };
+
+const chineseContactFixture = [
+  "个人信息",
+  "手机：13912345678",
+  "邮箱：privacy.fixture@example.com",
+  "联系地址：上海市浦东新区示例路 88 号",
+  "项目经历：KnowledgeFlow"
+].join("\n");
+const maskedDiagnostics = maskResumeDiagnostics({
+  extractionMethod: "pasted_text",
+  charCount: chineseContactFixture.length,
+  preview: chineseContactFixture
+});
+for (const secret of ["13912345678", "privacy.fixture@example.com", "上海市浦东新区示例路 88 号"]) {
+  assert(!JSON.stringify(maskedDiagnostics).includes(secret), `diagnostics must mask contact: ${secret}`);
+}
+assert(maskedDiagnostics.preview.includes("手机:[已隐藏]"));
+assert(maskedDiagnostics.preview.includes("邮箱:[邮箱已隐藏]"));
+assert(maskedDiagnostics.preview.includes("联系地址:[已隐藏]"));
+assert(maskedDiagnostics.preview.includes("KnowledgeFlow"));
 
 const prepared = prepareResumeTextForModel(input, {
   originalFileName: "测试候选人-AI应用开发.pdf",

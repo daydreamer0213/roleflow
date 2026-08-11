@@ -140,6 +140,48 @@ const generatedReports = [];
   const cardId = Number(matchCardQuery.get("cardId"));
   assert(profileId > 0 && cardId > 0, "match-card redirect must carry profileId and cardId");
 
+  const defaultPrivacyContacts = [
+    "13912345678",
+    "default-privacy-contact@example.com",
+    "上海市浦东新区默认脱敏路 88 号"
+  ];
+  const defaultPrivacyResume = [
+    "隐私回归候选人",
+    `手机：${defaultPrivacyContacts[0]}`,
+    `邮箱：${defaultPrivacyContacts[1]}`,
+    `联系地址：${defaultPrivacyContacts[2]}`,
+    "求职意向：AI 应用开发",
+    "项目经历：KnowledgeFlow，负责 RAG 检索服务与评估。",
+    "专业技能：Python、FastAPI、RAG、SQLite。",
+    "工作经历：Example Labs，负责知识库问答产品。"
+  ].join("\n");
+  const defaultPrivacyUpload = await uploadResumeText(baseUrl, defaultPrivacyResume);
+  assert.strictEqual(defaultPrivacyUpload.status, 303, await defaultPrivacyUpload.text());
+  const defaultPrivacyLocation = defaultPrivacyUpload.headers.get("location");
+  const defaultPrivacyProfileId = Number(new URL(`${baseUrl}${defaultPrivacyLocation}`).searchParams.get("profileId"));
+  assert(defaultPrivacyProfileId > 0, "privacy fixture upload must create a profile");
+  const defaultPrivacyReupload = await uploadResumeText(baseUrl, defaultPrivacyResume, defaultPrivacyProfileId);
+  assert.strictEqual(defaultPrivacyReupload.status, 303, await defaultPrivacyReupload.text());
+  const privacyProfilePage = await fetch(`${baseUrl}/profile?profileId=${defaultPrivacyProfileId}`);
+  const privacyProfileHtml = await privacyProfilePage.text();
+  assert.strictEqual(privacyProfilePage.status, 200);
+  const privacyDb = openDb(dbPath);
+  const privacyAttempts = listResumeParseAttempts(privacyDb, defaultPrivacyProfileId);
+  privacyDb.close();
+  for (const secret of defaultPrivacyContacts) {
+    assert(!privacyProfileHtml.includes(secret), `default profile diagnostics must not expose ${secret}`);
+    assert(!JSON.stringify(privacyAttempts).includes(secret), `stored parse diagnostics must not expose ${secret}`);
+  }
+  assert(privacyProfileHtml.includes("手机:[已隐藏]"));
+  assert(privacyProfileHtml.includes("邮箱:[邮箱已隐藏]"));
+  assert(privacyProfileHtml.includes("联系地址:[已隐藏]"));
+  const defaultDiagnosticsResponse = await fetch(`${baseUrl}/diagnostics`);
+  const defaultDiagnosticsHtml = await defaultDiagnosticsResponse.text();
+  assert.strictEqual(defaultDiagnosticsResponse.status, 200);
+  for (const secret of defaultPrivacyContacts) {
+    assert(!defaultDiagnosticsHtml.includes(secret), `default diagnostics logs must not expose ${secret}`);
+  }
+
   const docxPath = path.join(smokeDir, `onboarding-${Date.now()}.docx`);
   const docxFixture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "tests", "make_docx_fixture.ps1"), "-Path", docxPath], { encoding: "utf8", windowsHide: true });
   assert.strictEqual(docxFixture.status, 0, docxFixture.stderr || docxFixture.stdout);
