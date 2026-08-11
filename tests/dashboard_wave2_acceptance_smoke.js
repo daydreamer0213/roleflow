@@ -9,6 +9,8 @@ assert.deepEqual(PAGE_SPECS.map((page) => page.id), ["today-ready", "workflow-sc
 assert.deepEqual(parseArgs(["--help"]), { help: true }, "the evaluator must expose a dependency-free help path");
 assert.throws(() => parseArgs(["--no-strict"]), /Unknown argument: --no-strict/, "the canonical evaluator must never offer a non-strict path");
 assert.equal(parseArgs([]).strict, true, "the evaluator must always report strict mode");
+const matchCardSpec = PAGE_SPECS.find((page) => page.id === "match-card");
+assert.equal(matchCardSpec.path({ profileId: 17, matchCardId: 23 }), "/match-card?profileId=17&cardId=23", "the match-card audit must open the confirmed card detail from its fixture");
 assert.match(RELEVANT_CONTROL_SELECTOR, /:not\(\[type=checkbox\]\).*:not\(\[type=radio\]\)/, "touch gates must exclude compact choice controls from standalone action targets");
 assert.deepEqual(Object.fromEntries(PAGE_SPECS.map((page) => [page.family, page.primaryPolicy])), {
   today: "required", workflow: "required", queue: "none-expected", jobs: "none-expected",
