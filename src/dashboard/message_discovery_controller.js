@@ -1,5 +1,4 @@
 const { randomUUID } = require("node:crypto");
-const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
@@ -23,9 +22,10 @@ function createMessageDiscoveryController(deps = {}) {
     acquireLease,
     renewLease,
     releaseLease,
-    createBrowser = () => new CdpBrowserAdapter({ port: 9222 }),
+    createBrowser = null,
     cleanupBrowser = async (browser) => {
-      if (browser && typeof browser.close === "function") await browser.close();
+      if (browser && typeof browser.disconnect === "function") await browser.disconnect();
+      else if (browser && typeof browser.cleanup === "function") await browser.cleanup();
     },
     createReader = ({ browser }) => createBossMessageReader({ browser }),
     createAnalyzer = ({ modelConfig, logger: analyzerLogger }) => createMessageReplyAnalyzer({
@@ -115,6 +115,13 @@ function createMessageDiscoveryController(deps = {}) {
 
     let browser = null;
     run.completion = Promise.resolve().then(async () => {
+      if (typeof createBrowser !== "function") {
+        throw messageDiscoveryError(
+          "MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE",
+          "message discovery requires the dashboard browser authority",
+          503
+        );
+      }
       browser = createBrowser();
       const reader = createReader({ browser });
       const analyzer = createAnalyzer({

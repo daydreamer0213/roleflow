@@ -55,6 +55,7 @@ async function main() {
   const scenarios = [];
   const cleanupTimers = controllableTimers();
   const browsers = [];
+  let discoveryBrowserAuthority = null;
   const readerCalls = [];
   const reader = {
     async scanConversationRows() {
@@ -88,13 +89,14 @@ async function main() {
     dbPath,
     forceMock: true,
     logger,
+    browserFactory({ browserMode, cdpPort }) {
+      browserCreations += 1;
+      discoveryBrowserAuthority = { browserMode, cdpPort };
+      const browser = { kind: "fake-browser", cleanupCalls: 0 };
+      browsers.push(browser);
+      return browser;
+    },
     messageDiscoveryDependencies: {
-      createBrowser() {
-        browserCreations += 1;
-        const browser = { port: 9222, kind: "fake-browser", cleanupCalls: 0 };
-        browsers.push(browser);
-        return browser;
-      },
       async cleanupBrowser(browser) {
         browser.cleanupCalls += 1;
         if (cleanupFailure) {
@@ -183,7 +185,11 @@ async function main() {
   });
   assert.strictEqual(response.status, 202);
   await firstPending.started;
-  assert.strictEqual(browsers[0].port, 9222, "portable message discovery must use fixed CDP port 9222");
+  assert.deepStrictEqual(
+    discoveryBrowserAuthority,
+    { browserMode: "edge", cdpPort: null },
+    "message discovery must use the dashboard's default Edge browser authority"
+  );
   assert.strictEqual(
     db.prepare("SELECT command FROM site_scan_leases WHERE site = 'boss'").get().command,
     "discover-messages"

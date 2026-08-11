@@ -349,6 +349,7 @@ function createDashboardServer({
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
   analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
+  browserFactory = createDashboardBrowser,
   assetReader = fs.readFileSync
 }) {
   const scanRuns = new Map();
@@ -465,6 +466,7 @@ function createDashboardServer({
     acquireLease: acquireSiteScanLease,
     renewLease: renewSiteScanLease,
     releaseLease: releaseSiteScanLease,
+    createBrowser: () => browserFactory({ browserMode: "edge", cdpPort: null }),
     ...messageDiscoveryDependencies
   });
   const dashboardServer = http.createServer(async (req, res) => {
