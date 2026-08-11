@@ -145,6 +145,7 @@ async function main() {
   await messageDiscoveryPollingSmoke(page.body);
   await messageDiscoveryMalformedResponseSmoke(page.body);
   await messageDiscoveryActionPollRaceSmoke(page.body);
+  await messageDiscoveryAcceptedActionStopsPollSmoke(page.body);
 
   setSiteRuntimeState(db, "boss", {
     status: "blocked",
@@ -1123,6 +1124,31 @@ async function messageDiscoveryActionPollRaceSmoke(markup) {
   assert.strictEqual(client.reloads(), 0, "a poll that began before a manual action must not refresh later");
   assert.match(client.feedback.textContent, /安全检查/, "a late poll must not overwrite failed action feedback");
   assert.strictEqual(client.timerCount(), 2, "a late poll must not add a duplicate timer");
+}
+
+async function messageDiscoveryAcceptedActionStopsPollSmoke(markup) {
+  const pollResponse = deferred();
+  const actionResponse = deferred();
+  const client = runMessageDiscoveryClient(markup, {
+    fetch(url) {
+      return String(url).includes("message-discovery-status") ? pollResponse.promise : actionResponse.promise;
+    }
+  }, { status: "running" });
+  const poll = client.runTimer(0);
+  await Promise.resolve();
+  const action = client.submit();
+  await Promise.resolve();
+  actionResponse.resolve(jsonResponse(202, { status: "stopped" }));
+  await action;
+  const feedbackAfterReload = client.feedback.textContent;
+  assert.strictEqual(client.reloads(), 1, "an accepted stop action must request one reload");
+  assert.strictEqual(client.timerCount(), 1, "an accepted stop action must not schedule another poll");
+
+  pollResponse.resolve(jsonResponse(200, { status: "running" }));
+  await poll;
+  assert.strictEqual(client.reloads(), 1, "a late poll after accepted reload must not reload again");
+  assert.strictEqual(client.timerCount(), 1, "a late poll after accepted reload must not schedule a timer");
+  assert.strictEqual(client.feedback.textContent, feedbackAfterReload, "a late poll after accepted reload must not change feedback");
 }
 
 async function messageDiscoveryDuplicateSubmitSmoke(markup) {
