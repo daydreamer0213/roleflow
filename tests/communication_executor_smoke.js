@@ -340,6 +340,46 @@ async function ambiguityDriftEntryGuardSmoke() {
   }
 }
 
+async function postClaimAmbiguityRollbackSmoke() {
+  const fixture = createFixture(2);
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  const batchBefore = getCommunicationBatch(fixture.db, fixture.batch.id);
+  const itemsBefore = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  let ambiguityReads = 0;
+  let reserves = 0;
+  let dispatches = 0;
+  let caught;
+  try {
+    await runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      ambiguityReader() {
+        ambiguityReads += 1;
+        return ambiguityReads === 1
+          ? { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null }
+          : { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null };
+      },
+      accessController: { async reserve() { reserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.strictEqual(ambiguityReads, 2);
+  assert.deepStrictEqual(getCommunicationBatch(fixture.db, fixture.batch.id), batchBefore);
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id), itemsBefore);
+  assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "pending");
+  assert.strictEqual(reserves, 0);
+  assert.strictEqual(dispatches, 0);
+  fixture.close();
+}
+
 async function stopDuringSlicedPacingSmoke() {
   const fixture = createFixture(2);
   let inspected = 0;
@@ -852,6 +892,7 @@ Promise.resolve()
   .then(pauseResumeSmoke)
   .then(pausedAmbiguityEntryGuardSmoke)
   .then(ambiguityDriftEntryGuardSmoke)
+  .then(postClaimAmbiguityRollbackSmoke)
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
   .then(observedOutcomeFailureSmoke)

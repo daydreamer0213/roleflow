@@ -41,7 +41,7 @@ async function runCommunicationBatch({
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+  if (["confirmed", "paused"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
@@ -52,15 +52,22 @@ async function runCommunicationBatch({
     const control = observeControl(db, batchId, signal, logger);
     if (control) return control;
     if (workflowTargetReached(db, batchId)) {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
       stopPendingReplacements(db, batchId, logger);
       return finalizeBatch(db, batchId, logger);
     }
     const item = listCommunicationBatchItems(db, batchId).find((candidate) => !TERMINAL_ITEM_STATUSES.has(candidate.status));
-    if (!item) return finalizeBatch(db, batchId, logger);
-    if (item.status !== "pending") return recoverIncompleteItem(db, batchId, item, logger);
+    if (!item) {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+      return finalizeBatch(db, batchId, logger);
+    }
+    if (item.status !== "pending") {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+      return recoverIncompleteItem(db, batchId, item, logger);
+    }
 
     try {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "opening" });
+      claimPendingCommunicationItem(db, batchId, item, ambiguityReader);
     } catch (error) {
       if (error.code === "COMMUNICATION_ITEM_TRANSITION_CONFLICT") continue;
       throw error;
@@ -144,6 +151,20 @@ async function runCommunicationBatch({
     if (workflowTargetReached(db, batchId)) continue;
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
     if (pacing) return pacing;
+  }
+}
+
+function claimPendingCommunicationItem(db, batchId, item, ambiguityReader) {
+  db.exec("SAVEPOINT communication_item_claim");
+  try {
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "opening" });
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    db.exec("RELEASE SAVEPOINT communication_item_claim");
+  } catch (error) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_item_claim"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_item_claim"); } catch {}
+    throw error;
   }
 }
 
