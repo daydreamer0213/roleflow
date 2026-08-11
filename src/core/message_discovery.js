@@ -7,6 +7,9 @@ const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom")
 const {
   listPreviewStates,
   recordPreviewState,
+  listUnresolvedMessageDiscoveryItems,
+  recordUnresolvedMessageDiscoveryItem,
+  clearUnresolvedMessageDiscoveryItem,
   planMessageDiscoveryQueue,
   commitProcessedPreview
 } = require("./message_preview_state");
@@ -33,20 +36,23 @@ async function runBossMessageDiscovery({
   }
   const profile = messageReplyProfile(storedProfile.profile);
   const facts = listCandidateFacts(db, profileId);
+  let retained = unresolvedSummary(db, profileId);
   let scan;
   try {
     throwIfAborted(signal);
     scan = await reader.scanConversationRows();
   } catch (error) {
     if (shouldInterrupt(error, signal)) throw error;
-    return emitStopped(errorCode(error), 0, [], logger, onStatus);
+    return emitStopped(errorCode(error), 0, [], logger, onStatus, retained);
   }
   if (!scan || !Array.isArray(scan.rows)) {
-    return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus);
+    return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus, retained);
   }
   const baselines = new Map(listPreviewStates(db, { profileId })
     .map((state) => [state.conversationKey, state]));
-  const planned = planMessageDiscoveryQueue({ rows: scan.rows, baselines });
+  const unresolvedByConversation = new Map(listUnresolvedMessageDiscoveryItems(db, { profileId })
+    .map((item) => [item.conversationKey, item]));
+  const planned = planMessageDiscoveryQueue({ rows: scan.rows, baselines, unresolved: unresolvedByConversation });
   for (const baseline of planned.baselineWrites) {
     recordPreviewState(db, {
       profileId,
@@ -62,12 +68,12 @@ async function runBossMessageDiscovery({
   let results = [];
   let processed = 0;
   let openedCount = 0;
-  emitStatus(safeStatus("running", { queued: queue.length }), logger, onStatus);
+  emitStatus(safeStatus("running", { queued: queue.length, unresolved: retained.count, reasonCode: retained.reasonCode }), logger, onStatus);
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
     const target = queue[queueIndex];
     throwIfAborted(signal);
     if (target.previewKind === "unsupported") {
-      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus);
+      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed);
     }
     let selected;
     try {
@@ -75,7 +81,7 @@ async function runBossMessageDiscovery({
       selected = await reader.openQueuedConversation(target, signal);
     } catch (error) {
       if (shouldInterrupt(error, signal)) throw error;
-      return emitStopped(errorCode(error), queue.length, results, logger, onStatus);
+      return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained, processed);
     }
     if (selected?.skipped) {
       await paceBeforeNext({
@@ -92,7 +98,32 @@ async function runBossMessageDiscovery({
     const resolved = resolveUniqueCandidate(candidates, selected);
     if (!resolved.ok) {
       clearSelectedSnapshot(selected);
-      return emitStopped(resolved.reasonCode, queue.length, results, logger, onStatus);
+      recordUnresolvedMessageDiscoveryItem(db, {
+        profileId,
+        platform: "boss",
+        conversationKey: target.conversationKey,
+        previewDigest: target.previewDigest,
+        previewKind: target.previewKind,
+        reasonCode: resolved.reasonCode,
+        observedAt: now()
+      });
+      retained = unresolvedSummary(db, profileId);
+      emitStatus(safeStatus("running", {
+        queued: queue.length,
+        processed,
+        unresolved: retained.count,
+        reasonCode: retained.reasonCode,
+        results
+      }), logger, onStatus);
+      await paceBeforeNext({
+        queueIndex,
+        queueLength: queue.length,
+        openedCount,
+        sleepFn,
+        randomFn,
+        signal
+      });
+      continue;
     }
     let incoming;
     try {
@@ -111,6 +142,12 @@ async function runBossMessageDiscovery({
       clearSelectedSnapshot(selected);
       if (incoming.skipped) {
         commitBaseline(db, profileId, target, now());
+        clearUnresolvedMessageDiscoveryItem(db, {
+          profileId,
+          platform: "boss",
+          conversationKey: target.conversationKey
+        });
+        retained = unresolvedSummary(db, profileId);
         await paceBeforeNext({
           queueIndex,
           queueLength: queue.length,
@@ -121,7 +158,7 @@ async function runBossMessageDiscovery({
         });
         continue;
       }
-      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus);
+      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed);
     }
 
     let classification;
@@ -150,11 +187,17 @@ async function runBossMessageDiscovery({
       occurredAt: now()
     });
     commitBaseline(db, profileId, target, now());
+    clearUnresolvedMessageDiscoveryItem(db, {
+      profileId,
+      platform: "boss",
+      conversationKey: target.conversationKey
+    });
+    retained = unresolvedSummary(db, profileId);
     results = results.filter((item) => item.cardId !== card.id);
     processed += 1;
     results.push(safeResult(card, classification));
     emitStatus(
-      safeStatus("running", { queued: queue.length, processed, results }),
+      safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode }),
       logger,
       onStatus
     );
@@ -167,9 +210,12 @@ async function runBossMessageDiscovery({
       signal
     });
   }
-  const completed = safeStatus("completed", {
+  retained = unresolvedSummary(db, profileId);
+  const completed = safeStatus(retained.count ? "needs_user_action" : "completed", {
     queued: queue.length,
     processed,
+    unresolved: retained.count,
+    reasonCode: retained.reasonCode,
     results
   });
   emitStatus(completed, logger, onStatus);
@@ -362,6 +408,7 @@ function safeStatus(status, value = {}) {
     status,
     queued: Number(value.queued || 0),
     processed: Number(value.processed || 0),
+    unresolved: Number(value.unresolved || 0),
     reasonCode: String(value.reasonCode || ""),
     results: Array.isArray(value.results)
       ? value.results.map((item) => ({
@@ -372,17 +419,23 @@ function safeStatus(status, value = {}) {
   };
 }
 
-function stoppedSummary(reasonCode, queued, results) {
+function unresolvedSummary(db, profileId) {
+  const items = listUnresolvedMessageDiscoveryItems(db, { profileId });
+  return { count: items.length, reasonCode: items[0]?.reasonCode || "" };
+}
+
+function stoppedSummary(reasonCode, queued, results, retained = {}, processed = 0) {
   return safeStatus("needs_user_action", {
     reasonCode,
     queued,
-    processed: 0,
+    processed,
+    unresolved: retained.count,
     results
   });
 }
 
-function emitStopped(reasonCode, queued, results, logger, onStatus) {
-  const stopped = stoppedSummary(reasonCode, queued, results);
+function emitStopped(reasonCode, queued, results, logger, onStatus, retained, processed) {
+  const stopped = stoppedSummary(reasonCode, queued, results, retained, processed);
   emitStatus(stopped, logger, onStatus);
   return stopped;
 }
@@ -394,6 +447,7 @@ function emitStatus(status, logger, onStatus) {
       status: status.status,
       queued: status.queued,
       processed: status.processed,
+      unresolved: status.unresolved,
       reasonCode: status.reasonCode
     });
   }
