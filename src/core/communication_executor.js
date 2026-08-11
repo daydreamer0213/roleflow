@@ -189,13 +189,30 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
   } catch (error) {
     return ambiguousAndThrow(db, batchId, item, error, logger);
   }
-  if (communicationState(result) !== "succeeded") {
+  const resultState = communicationState(result);
+  if (["platform_rejected", "transport_failed"].includes(resultState)) {
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      batchId,
+      expectedStatus: "click_dispatched",
+      status: resultState,
+      evidence: { outcome: communicationOutcomeEvidence(result) },
+      errorCode: resultState === "platform_rejected" ? "COMMUNICATION_PLATFORM_REJECTED" : "COMMUNICATION_TRANSPORT_FAILED",
+      errorMessage: resultState === "platform_rejected"
+        ? "BOSS rejected the communication request."
+        : "The communication request did not reach BOSS."
+    });
+    recordAudit(db, item, "communication_result", resultState);
+    return;
+  }
+  if (resultState !== "succeeded") {
     return ambiguousAndThrow(
       db,
       batchId,
       item,
       codedError("COMMUNICATION_RESULT_AMBIGUOUS", "communication result could not be verified"),
-      logger
+      logger,
+      communicationOutcomeEvidence(result)
     );
   }
   commitVerifiedCommunication(db, {
@@ -203,19 +220,21 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     item,
     expectedStatus: "click_dispatched",
     status: "succeeded",
-    outcome: "succeeded"
+    outcome: "succeeded",
+    evidence: { outcome: communicationOutcomeEvidence(result) }
   });
   recordAudit(db, item, "communication_result", "succeeded");
 }
 
-function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, outcome }) {
+function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, outcome, evidence }) {
   db.exec("BEGIN IMMEDIATE");
   try {
     transitionCommunicationItem(db, {
       itemId: item.id,
       batchId: batch.id,
       expectedStatus,
-      status
+      status,
+      ...(evidence ? { evidence } : {})
     });
     recordVerifiedCommunicationStart(db, { batch, item, outcome });
     db.exec("COMMIT");
@@ -377,13 +396,14 @@ function transitionToUnavailable(db, batchId, item, error) {
   recordAudit(db, item, "communication_result", "action_unavailable");
 }
 
-function ambiguousAndThrow(db, batchId, item, error, logger) {
+function ambiguousAndThrow(db, batchId, item, error, logger, evidence = undefined) {
   transitionCommunicationItem(db, {
     itemId: item.id,
     batchId,
     expectedStatus: "click_dispatched",
     status: "ambiguous",
-    errorCode: errorCode(error)
+    errorCode: errorCode(error),
+    ...(evidence ? { evidence: { outcome: evidence } } : {})
   });
   recordAudit(db, item, "communication_result", "ambiguous");
   return interruptAndThrow(db, batchId, error, logger);
@@ -459,6 +479,31 @@ function immutableJob(item) {
 
 function communicationState(value) {
   return String(typeof value === "string" ? value : value?.state || "").trim().toLowerCase();
+}
+
+function communicationOutcomeEvidence(value = {}) {
+  const evidence = value?.evidence || {};
+  const endpoints = Array.isArray(evidence.endpoints) ? evidence.endpoints : [];
+  const categories = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "response_unparsed"]);
+  const pageStates = new Set(["request_accepted", "request_rejected", "request_failed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
+  return {
+    endpoints: endpoints.map((endpoint) => {
+      const endpointKind = String(endpoint?.endpointKind || "").trim();
+      if (!["chat_config", "friend_add"].includes(endpointKind)) return null;
+      const httpStatus = Number(endpoint?.httpStatus);
+      const businessCode = String(endpoint?.businessCode || "").trim();
+      const businessCategory = String(endpoint?.businessCategory || "").trim();
+      const elapsedMs = Number(endpoint?.elapsedMs);
+      return {
+        endpointKind,
+        ...(Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { httpStatus } : {}),
+        ...(/^[A-Za-z0-9_-]{1,32}$/.test(businessCode) ? { businessCode } : {}),
+        ...(categories.has(businessCategory) ? { businessCategory } : {}),
+        ...(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? { elapsedMs: Math.min(60_000, Math.floor(elapsedMs)) } : {})
+      };
+    }).filter(Boolean),
+    ...(pageStates.has(String(evidence.pageState || "").trim()) ? { pageState: String(evidence.pageState).trim() } : {})
+  };
 }
 
 function randomDelay([first, second], randomFn) {

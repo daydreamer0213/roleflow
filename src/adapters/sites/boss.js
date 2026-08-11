@@ -407,16 +407,18 @@ const PAGE_HELPERS = String.raw`
             record({ kind, status: response?.status, category: "response_unparsed", elapsedMs: Date.now() - requestStartedAt });
             return response;
           });
-        }, () => {
+        }, (error) => {
           record({ kind, category: "network_rejected", elapsedMs: Date.now() - requestStartedAt });
-          throw arguments[0];
+          throw error;
         });
       };
     }
     const OriginalXhr = window.XMLHttpRequest;
+    let originalOpen = null;
+    let originalSend = null;
     if (typeof OriginalXhr === "function") {
-      const originalOpen = OriginalXhr.prototype.open;
-      const originalSend = OriginalXhr.prototype.send;
+      originalOpen = OriginalXhr.prototype.open;
+      originalSend = OriginalXhr.prototype.send;
       OriginalXhr.prototype.open = function(method, url) {
         this.__bossCommunicationEndpointKind = endpointKind(url);
         return originalOpen.apply(this, arguments);
@@ -449,7 +451,7 @@ const PAGE_HELPERS = String.raw`
       }
     };
     const observer = {
-      result() {
+      result(finalize = false) {
         const rejected = events.find((event) => event.businessCategory === "network_rejected" || event.businessCategory === "network_timeout");
         if (rejected) {
           restore();
@@ -469,11 +471,12 @@ const PAGE_HELPERS = String.raw`
           restore();
           return { state: "timeout", evidence: { endpoints: events, pageState: "observer_timeout" } };
         }
+        if (finalize) restore();
         return { state: "pending", evidence: { endpoints: events, pageState: matchedRequests ? "request_pending" : "no_matching_request" } };
       }
     };
     window.__bossCommunicationOutcomeObserver = observer;
-    window.__bossCommunicationOutcomeResult = () => observer.result();
+    window.__bossCommunicationOutcomeResult = (finalize = false) => observer.result(finalize);
     return observer;
   };
   return true;
@@ -1647,11 +1650,7 @@ class BossSiteAdapter {
       throwIfAborted(signal);
       const tabId = await this.prepareCommunicationTab();
       await this.browser.evalValue(tabId, PAGE_HELPERS);
-      const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
-      const freshInspection = classifyBossCommunicationSnapshot(snapshot, expectedJob);
-      if (freshInspection.state !== "ready" || freshInspection.jobId !== expectedJob.jobId) {
-        throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The BOSS detail page changed before communication dispatch.");
-      }
+      await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
       this.communicationDispatchedJobIds.add(expectedJob.jobId);
       const clickResult = await this.browser.evalValue(tabId, guardedBossCommunicationClickExpression(expectedJob));
@@ -1669,6 +1668,26 @@ class BossSiteAdapter {
     } finally {
       this.finishCommunicationOperation("dispatch");
     }
+  }
+
+  async waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal) {
+    let readySnapshots = 0;
+    for (let attempt = 0; attempt < COMMUNICATION_DISPATCH_READINESS_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+      const inspection = classifyBossCommunicationSnapshot(snapshot, expectedJob);
+      if (inspection.state === "ready" && inspection.jobId === expectedJob.jobId) {
+        readySnapshots += 1;
+        if (readySnapshots >= COMMUNICATION_READY_SNAPSHOTS) return inspection;
+      } else {
+        if (["target_mismatch", "job_unavailable", "action_unavailable"].includes(inspection.state)) {
+          throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The BOSS detail page changed before communication dispatch.");
+        }
+        readySnapshots = 0;
+      }
+      if (attempt < COMMUNICATION_DISPATCH_READINESS_ATTEMPTS - 1) await this.waitWithPacing("retry");
+    }
+    throw bossError("BOSS_COMMUNICATION_READINESS_TIMEOUT", "The fixed BOSS communication tab did not remain ready before click dispatch.");
   }
 
   async verifyCommunicationResult(job, signal = null) {
@@ -1693,14 +1712,32 @@ class BossSiteAdapter {
       }
       await this.waitWithPacing("detail");
       await this.browser.evalValue(tabId, PAGE_HELPERS);
+      let observation = { state: "pending", evidence: { endpoints: [], pageState: "no_matching_request" } };
       for (let attempt = 0; attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS; attempt += 1) {
         throwIfAborted(signal);
+        observation = sanitizeCommunicationObservation(await this.browser.evalValue(
+          tabId,
+          "(() => window.__bossCommunicationOutcomeResult?.())()"
+        ));
+        if (["platform_rejected", "transport_failed"].includes(observation.state)) return observation;
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         const result = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
-        if (["succeeded", "target_mismatch", "job_unavailable"].includes(result.state)) return result;
+        if (["target_mismatch", "job_unavailable"].includes(result.state)) return result;
+        if (result.state === "succeeded" && observation.state === "accepted") {
+          return { ...result, evidence: communicationOutcomeEvidence(observation, "succeeded") };
+        }
         if (attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS - 1) await this.waitWithPacing("retry");
       }
-      return { state: "ambiguous" };
+      if (["pending", "no_matching_request"].includes(observation.state)) {
+        observation = sanitizeCommunicationObservation(await this.browser.evalValue(
+          tabId,
+          "(() => window.__bossCommunicationOutcomeResult?.(true))()"
+        ));
+      }
+      const pageState = ["observer_timeout", "no_matching_request"].includes(observation.evidence.pageState)
+        ? observation.evidence.pageState
+        : "page_unverified";
+      return { state: "ambiguous", evidence: communicationOutcomeEvidence(observation, pageState) };
     } finally {
       this.finishCommunicationOperation("verification");
     }
@@ -2235,6 +2272,10 @@ const NORMALIZED_UNAVAILABLE_BOSS_JOB_STATUSES = new Set(
 const COMMUNICATION_SNAPSHOT_ATTEMPTS = 40;
 const COMMUNICATION_READY_SNAPSHOTS = 2;
 const COMMUNICATION_SETTLED_UNAVAILABLE_SNAPSHOTS = 4;
+const COMMUNICATION_DISPATCH_READINESS_ATTEMPTS = 4;
+const COMMUNICATION_OUTCOME_STATES = new Set(["accepted", "pending", "platform_rejected", "transport_failed", "timeout", "no_matching_request"]);
+const COMMUNICATION_OUTCOME_PAGE_STATES = new Set(["request_accepted", "request_rejected", "request_failed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
+const COMMUNICATION_OUTCOME_CATEGORIES = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "response_unparsed"]);
 
 function isExplicitlyUnavailableBossJobStatus(value) {
   return NORMALIZED_UNAVAILABLE_BOSS_JOB_STATUSES.has(normalizeCommunicationText(value));
@@ -2250,6 +2291,39 @@ function communicationJobId(url) {
   } catch {
     return "";
   }
+}
+
+function sanitizeCommunicationObservation(value = {}) {
+  const state = String(value?.state || "pending").trim().toLowerCase();
+  return {
+    state: COMMUNICATION_OUTCOME_STATES.has(state) ? state : "pending",
+    evidence: communicationOutcomeEvidence(value)
+  };
+}
+
+function communicationOutcomeEvidence(value = {}, pageState = "") {
+  const source = value?.evidence || value || {};
+  const endpoints = Array.isArray(source.endpoints) ? source.endpoints : [];
+  const sanitizedEndpoints = endpoints.map((endpoint) => {
+    const endpointKind = String(endpoint?.endpointKind || "").trim();
+    if (!["chat_config", "friend_add"].includes(endpointKind)) return null;
+    const httpStatus = Number(endpoint?.httpStatus);
+    const businessCode = String(endpoint?.businessCode || "").trim();
+    const businessCategory = String(endpoint?.businessCategory || "").trim();
+    const elapsedMs = Number(endpoint?.elapsedMs);
+    return {
+      endpointKind,
+      ...(Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { httpStatus } : {}),
+      ...(/^[A-Za-z0-9_-]{1,32}$/.test(businessCode) ? { businessCode } : {}),
+      ...(COMMUNICATION_OUTCOME_CATEGORIES.has(businessCategory) ? { businessCategory } : {}),
+      ...(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? { elapsedMs: Math.min(60_000, Math.floor(elapsedMs)) } : {})
+    };
+  }).filter(Boolean);
+  const observedPageState = String(pageState || source.pageState || "").trim();
+  return {
+    endpoints: sanitizedEndpoints,
+    ...(COMMUNICATION_OUTCOME_PAGE_STATES.has(observedPageState) ? { pageState: observedPageState } : {})
+  };
 }
 
 function normalizeTrustedBossCommunicationUrl(url) {
@@ -2378,6 +2452,8 @@ function guardedBossCommunicationClickExpression(expectedJob) {
       }
     });
     if (candidates.length !== 1) return fail("action_not_unique");
+    if (typeof window.__bossRegisterCommunicationOutcomeObserver !== "function") return fail("outcome_observer_unavailable");
+    window.__bossRegisterCommunicationOutcomeObserver();
     candidates[0].click();
     return { clicked: true, jobId: expected.jobId, operation };
   })()`;

@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS communication_batch_items (
   job_url TEXT NOT NULL,
   title_snapshot TEXT NOT NULL,
   company_snapshot TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL CHECK(status IN ('pending','opening','verified','click_dispatched','succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable','ambiguous','stopped')),
+  status TEXT NOT NULL CHECK(status IN ('pending','opening','verified','click_dispatched','succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable','platform_rejected','transport_failed','ambiguous','stopped')),
   click_count INTEGER NOT NULL DEFAULT 0 CHECK(click_count BETWEEN 0 AND 1),
   evidence_json TEXT NOT NULL DEFAULT '{}',
   error_code TEXT,
@@ -761,6 +761,13 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(MESSAGE_PREVIEW_STATES_SCHEMA);
     }
+  },
+  {
+    version: 10,
+    name: "communication_outcome_statuses_v1",
+    apply(db) {
+      migrateCommunicationOutcomeStatuses(db);
+    }
   }
 ];
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -842,6 +849,34 @@ function databaseMigrationError(code, message, cause) {
   error.code = code;
   if (cause) error.cause = cause;
   return error;
+}
+
+function migrateCommunicationOutcomeStatuses(db) {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'communication_batch_items'").get();
+  if (!table) {
+    db.exec(COMMUNICATION_SCHEMA);
+    return;
+  }
+  const sql = String(table.sql || "");
+  if (sql.includes("platform_rejected") && sql.includes("transport_failed")) return;
+  db.exec(`
+    DROP INDEX IF EXISTS idx_communication_items_batch;
+    DROP INDEX IF EXISTS idx_communication_items_job;
+    ALTER TABLE communication_batch_items RENAME TO communication_batch_items_v9;
+  `);
+  db.exec(COMMUNICATION_SCHEMA);
+  db.exec(`
+    INSERT INTO communication_batch_items(
+      id, batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+      status, click_count, evidence_json, error_code, error_message,
+      started_at, clicked_at, finished_at, updated_at
+    ) SELECT
+      id, batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+      status, click_count, evidence_json, error_code, error_message,
+      started_at, clicked_at, finished_at, updated_at
+    FROM communication_batch_items_v9;
+    DROP TABLE communication_batch_items_v9;
+  `);
 }
 
 function migrateWorkflowRunSlots(db) {

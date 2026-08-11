@@ -311,8 +311,9 @@ function fakeBrowser({
         snapshots.push(snapshot);
         return snapshot;
       }
-      if (expression.includes("__bossCommunicationOutcomeResult")) {
-        return queuedObserverOutcomes.shift() || {
+      if (expression.includes("window.__bossCommunicationOutcomeResult?.(")) {
+        const outcome = queuedObserverOutcomes.shift() || observerOutcomes.at(-1);
+        return outcome || {
           state: "accepted",
           evidence: {
             endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "0", businessCategory: "success", elapsedMs: 1 }],
@@ -654,7 +655,7 @@ function assertNoPreparationAction(browser, before) {
   assert(!JSON.stringify(observedSuccess).includes("private message body"));
   assert(observedSuccessBrowser.calls.guardedClick[0][1].includes("__bossRegisterCommunicationOutcomeObserver"));
 
-  for (const [name, observerOutcome, expectedState] of [
+  for (const [name, observerOutcome, expectedState, expectedPageState] of [
     ["HTTP failure", {
       state: "platform_rejected",
       evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 503, businessCategory: "http_failure", elapsedMs: 91 }] }
@@ -667,8 +668,8 @@ function assertNoPreparationAction(browser, before) {
       state: "platform_rejected",
       evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "10003", businessCategory: "business_rejected", elapsedMs: 44 }] }
     }, "platform_rejected"],
-    ["observer timeout", { state: "timeout", evidence: { pageState: "observer_timeout" } }, "ambiguous"],
-    ["no matching request", { state: "no_matching_request", evidence: { pageState: "no_matching_request" } }, "ambiguous"]
+    ["observer timeout", { state: "timeout", evidence: { pageState: "observer_timeout" } }, "ambiguous", "observer_timeout"],
+    ["no matching request", { state: "no_matching_request", evidence: { pageState: "no_matching_request" } }, "ambiguous", "no_matching_request"]
   ]) {
     const browser = fakeBrowser({
       tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
@@ -679,6 +680,7 @@ function assertNoPreparationAction(browser, before) {
     await adapter.dispatchCommunication(inspected);
     const result = await adapter.verifyCommunicationResult(expectedJob);
     assert.strictEqual(result.state, expectedState, name);
+    if (expectedPageState) assert.strictEqual(result.evidence?.pageState, expectedPageState, name);
     assert(!JSON.stringify(result).includes("securityId"), `${name} must keep evidence sanitized`);
   }
 
@@ -706,10 +708,7 @@ function assertNoPreparationAction(browser, before) {
   const inlineChatAdapter = new BossSiteAdapter({ browser: inlineChatBrowser, sleepFn: async () => {} });
   const inlineChatInspection = await inlineChatAdapter.inspectCommunicationJob(expectedJob);
   await inlineChatAdapter.dispatchCommunication(inlineChatInspection);
-  assert.deepStrictEqual(
-    await inlineChatAdapter.verifyCommunicationResult(expectedJob),
-    { state: "succeeded", jobId: "fake123" }
-  );
+  assert.strictEqual((await inlineChatAdapter.verifyCommunicationResult(expectedJob)).state, "succeeded");
   const inlineChatSnapshot = JSON.parse(JSON.stringify(inlineChatBrowser.snapshots.at(-1)));
   assert.strictEqual(inlineChatSnapshot.successDialog.visible, false);
   assert.strictEqual(inlineChatSnapshot.inlineChatSent, true);
@@ -726,10 +725,7 @@ function assertNoPreparationAction(browser, before) {
     await latestStatusAdapter.dispatchCommunication(latestStatusInspection),
     { state: "dispatched", jobId: "fake123" }
   );
-  assert.deepStrictEqual(
-    await latestStatusAdapter.verifyCommunicationResult(expectedJob),
-    { state: "succeeded", jobId: "fake123" }
-  );
+  assert.strictEqual((await latestStatusAdapter.verifyCommunicationResult(expectedJob)).state, "succeeded");
 
   assert.deepStrictEqual(
     classifyBossCommunicationSnapshot({ ...readySnapshot, documentReadyState: "loading" }, expectedJob),
@@ -781,8 +777,9 @@ function assertNoPreparationAction(browser, before) {
   loadingBeforeClickBrowser.setFixture(jobUrl, { documentReadyState: "loading" });
   await assert.rejects(
     () => loadingBeforeClickAdapter.dispatchCommunication(loadingBeforeClickInspection),
-    (error) => error?.code === "BOSS_COMMUNICATION_TARGET_CHANGED"
+    (error) => error?.code === "BOSS_COMMUNICATION_READINESS_TIMEOUT"
   );
+  assert.strictEqual(loadingBeforeClickBrowser.calls.guardedClick.length, 0, "readiness timeout must stop before click");
 
   const delayedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }]
@@ -798,9 +795,9 @@ function assertNoPreparationAction(browser, before) {
   });
   const delayedSuccessInspection = await delayedSuccessAdapter.inspectCommunicationJob(expectedJob);
   await delayedSuccessAdapter.dispatchCommunication(delayedSuccessInspection);
-  assert.deepStrictEqual(
-    await delayedSuccessAdapter.verifyCommunicationResult(expectedJob),
-    { state: "succeeded", jobId: "fake123" },
+  assert.strictEqual(
+    (await delayedSuccessAdapter.verifyCommunicationResult(expectedJob)).state,
+    "succeeded",
     "verification must tolerate a success state that appears after the legacy four-poll window"
   );
   assert(delayedSuccessSleeps >= 5);
@@ -817,19 +814,12 @@ function assertNoPreparationAction(browser, before) {
     const untrustedInlineChatAdapter = new BossSiteAdapter({ browser: untrustedInlineChatBrowser, sleepFn: async () => {} });
     const untrustedInlineChatInspection = await untrustedInlineChatAdapter.inspectCommunicationJob(expectedJob);
     await untrustedInlineChatAdapter.dispatchCommunication(untrustedInlineChatInspection);
-    assert.deepStrictEqual(
-      await untrustedInlineChatAdapter.verifyCommunicationResult(expectedJob),
-      { state: "ambiguous" },
-      description
-    );
+    assert.strictEqual((await untrustedInlineChatAdapter.verifyCommunicationResult(expectedJob)).state, "ambiguous", description);
   }
   assert.strictEqual(executionBrowser.calls.guardedClick[0][0], "communication-created");
   assert.match(executionBrowser.calls.guardedClick[0][1], /__bossGuardedCommunicationClick/);
   assert.match(executionBrowser.calls.guardedClick[0][1], /fake123/);
-  assert.deepStrictEqual(
-    await executionAdapter.verifyCommunicationResult(expectedJob),
-    { state: "succeeded", jobId: "fake123" }
-  );
+  assert.strictEqual((await executionAdapter.verifyCommunicationResult(expectedJob)).state, "succeeded");
   assert.deepStrictEqual(executionBrowser.calls.navigate, [["communication-created", jobUrl]]);
   await assert.rejects(
     () => executionAdapter.dispatchCommunication(executionInspection),
@@ -914,11 +904,8 @@ function assertNoPreparationAction(browser, before) {
   const continuedWithoutSuccessEvidenceAdapter = new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} });
   const ambiguousInspection = await continuedWithoutSuccessEvidenceAdapter.inspectCommunicationJob(expectedJob);
   await continuedWithoutSuccessEvidenceAdapter.dispatchCommunication(ambiguousInspection);
-  assert.deepStrictEqual(
-    await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob),
-    { state: "ambiguous" }
-  );
-  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 43);
+  assert.strictEqual((await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob)).state, "ambiguous");
+  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 44);
   await assert.rejects(
     () => new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} }).verifyCommunicationResult(expectedJob),
     (error) => error.code === "BOSS_COMMUNICATION_VERIFICATION_UNAVAILABLE"
@@ -931,10 +918,7 @@ function assertNoPreparationAction(browser, before) {
   const missingStatusAdapter = new BossSiteAdapter({ browser: missingStatusBrowser, sleepFn: async () => {} });
   const missingStatusInspection = await missingStatusAdapter.inspectCommunicationJob(expectedJob);
   await missingStatusAdapter.dispatchCommunication(missingStatusInspection);
-  assert.deepStrictEqual(
-    await missingStatusAdapter.verifyCommunicationResult(expectedJob),
-    { state: "ambiguous" }
-  );
+  assert.strictEqual((await missingStatusAdapter.verifyCommunicationResult(expectedJob)).state, "ambiguous");
 
   for (const [bodyText, errorCode] of [
     ["\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a", "BOSS_RISK_CONTROL"],

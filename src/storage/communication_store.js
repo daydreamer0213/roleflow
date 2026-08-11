@@ -13,8 +13,8 @@ const { listWorkflowReviewCandidates } = require("../core/workflow_inventory");
 const { recordVerifiedCommunicationStart } = require("../core/candidate_progress");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
-const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
-const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "ambiguous", "stopped"]);
+const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
+const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
 const ALLOWED_BUCKETS = new Set(["primary", "apply", "caution"]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const BATCH_TRANSITIONS = new Map([
@@ -27,7 +27,7 @@ const ITEM_TRANSITIONS = new Map([
   ["pending", new Set(["opening", "stopped"])],
   ["opening", new Set(["verified", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "stopped"])],
   ["verified", new Set(["click_dispatched", "stopped"])],
-  ["click_dispatched", new Set(["succeeded", "already_communicated", "ambiguous", "stopped"])],
+  ["click_dispatched", new Set(["succeeded", "already_communicated", "platform_rejected", "transport_failed", "ambiguous", "stopped"])],
   ["ambiguous", new Set(["succeeded", "stopped"])]
 ]);
 const PORTABLE_CDP_PORT = 9222;
@@ -102,7 +102,7 @@ function createCommunicationBatch(db, input = {}) {
     const conflicts = db.prepare(`SELECT communication_batch_items.id FROM communication_batch_items
       JOIN communication_batches ON communication_batches.id = communication_batch_items.batch_id
       WHERE communication_batch_items.job_id = ?
-        AND communication_batch_items.status IN ('click_dispatched', 'ambiguous', 'succeeded', 'already_communicated')
+        AND communication_batch_items.status IN ('click_dispatched', 'platform_rejected', 'transport_failed', 'ambiguous', 'succeeded', 'already_communicated')
       LIMIT 1`);
     const selected = jobIds.map((jobId) => {
       const job = jobsById.get(jobId);
