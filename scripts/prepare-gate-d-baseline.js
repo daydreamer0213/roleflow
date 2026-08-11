@@ -213,14 +213,24 @@ function partialPath(finalPath) {
 }
 
 function removeFiles(files) {
+  const failures = [];
   for (const file of files) {
-    try { fs.unlinkSync(file); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try {
+      fs.unlinkSync(file);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        error.file = file;
+        failures.push(error);
+      }
+    }
   }
+  return failures.length ? new AggregateError(failures, "failed to remove one or more Gate D artifacts") : null;
 }
 
-function publish(partial, finalPath) {
+function publish(partial, finalPath, published, unlinkPartial) {
   fs.linkSync(partial, finalPath);
-  fs.unlinkSync(partial);
+  published.push(finalPath);
+  unlinkPartial(partial, finalPath);
 }
 
 function prepare(options, hooks = {}) {
@@ -301,13 +311,12 @@ function prepare(options, hooks = {}) {
     fs.writeFileSync(partialReceipt, `${JSON.stringify({ artifact: "gate-d-baseline-receipt", complete: true, createdAtUtc: new Date().toISOString(), archivePath: archive.path, baselinePath: baseline.path, archiveSha256: archiveSnapshot.sha256 }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 
     for (const [partial, finalPath] of [[partialArchive, archive.path], [partialBaseline, baseline.path], [partialManifest, archiveManifest], [partialReport, baselineReport], [partialReceipt, receipt]]) {
-      publish(partial, finalPath);
-      published.push(finalPath);
+      publish(partial, finalPath, published, hooks.unlinkPartial || fs.unlinkSync);
     }
     return { archive: archive.path, archiveManifest, baseline: baseline.path, baselineReport, receipt };
   } catch (error) {
-    removeFiles(partials);
-    removeFiles(published);
+    const cleanupErrors = [removeFiles(partials), removeFiles(published)].filter(Boolean);
+    if (cleanupErrors.length) error.cleanupError = new AggregateError(cleanupErrors, "Gate D artifact cleanup failed");
     throw error;
   }
 }

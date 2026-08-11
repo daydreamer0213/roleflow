@@ -277,6 +277,21 @@ try {
   );
   assertNoArtifacts(changingArchive, changingBaseline);
 
+  const receiptUnlinkSource = path.join(TEST_ROOT, "receipt-unlink.sqlite");
+  createFixture(receiptUnlinkSource);
+  const receiptUnlinkArchive = path.join(TEST_ROOT, "archive", "receipt-unlink.sqlite");
+  const receiptUnlinkBaseline = path.join(TEST_ROOT, "baseline", "receipt-unlink.sqlite");
+  assert.throws(
+    () => prepare({ source: receiptUnlinkSource, sourceCommit: SOURCE_COMMIT, archive: receiptUnlinkArchive, baseline: receiptUnlinkBaseline, protectedDbs: [WORKTREE_PROTECTED_DB] }, {
+      unlinkPartial(partial, finalPath) {
+        if (finalPath.endsWith(".receipt.json")) throw new Error("injected receipt partial unlink failure");
+        fs.unlinkSync(partial);
+      }
+    }),
+    /injected receipt partial unlink failure/
+  );
+  assertNoArtifacts(receiptUnlinkArchive, receiptUnlinkBaseline);
+
   console.log("gate_d_baseline_smoke ok");
 } finally {
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
