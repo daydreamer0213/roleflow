@@ -43,7 +43,9 @@ const boss = require("../src/adapters/sites/boss");
 const { renderWorkflowHealthPanel } = require("../src/dashboard/workflow_health_view");
 const {
   BUDGET: workflowStatusReadBudget,
-  measureWorkflowStatusRead
+  STALE_BUDGET: workflowStatusStaleReadBudget,
+  measureWorkflowStatusRead,
+  measureLegacyWorkflowStatusRead
 } = require("../scripts/benchmark-workflow-status-read-model");
 
 const root = path.join(__dirname, "..");
@@ -1553,6 +1555,26 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   const unknown = await getJson(baseUrl, "/api/workflow-status?runId=missing-workflow-api-run");
   assert.strictEqual(unknown.status, 404);
   assert.strictEqual(unknown.body.errorCode, "WORKFLOW_RUN_NOT_FOUND");
+  const missingCommunication = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-09",
+    resumePhase: "analyzing"
+  });
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.prepare("UPDATE workflow_runs SET communication_batch_id = ? WHERE id = ?")
+      .run(999999, missingCommunication.workflowId);
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+  const missingCommunicationResponse = await getJson(
+    baseUrl,
+    `/api/workflow-status?runId=${encodeURIComponent(missingCommunication.workflowId)}`
+  );
+  assert.strictEqual(missingCommunicationResponse.status, 404);
+  assert.deepStrictEqual(missingCommunicationResponse.body, {
+    error: "本轮沟通批次不存在。",
+    errorCode: "COMMUNICATION_BATCH_NOT_FOUND"
+  });
   return fixture;
 }
 
@@ -1563,7 +1585,12 @@ function testWorkflowStatusReadBudget() {
   ]);
   for (const [label, options] of [["active", {}], ["communication", { communication: true }]]) {
     const { metrics, result } = measureWorkflowStatusRead(options);
+    const legacy = measureLegacyWorkflowStatusRead(options);
     assert.strictEqual(result.statusCode, 200, `${label} read must return the current workflow`);
+    assert(
+      legacy.metrics.statements > workflowStatusReadBudget.statements || legacy.metrics.rows > workflowStatusReadBudget.rows,
+      `${label} legacy read must exceed the lightweight budget`
+    );
     assert(metrics.statements <= workflowStatusReadBudget.statements,
       `${label} status read used ${metrics.statements} statements; budget is ${workflowStatusReadBudget.statements}`);
     assert(metrics.rows <= workflowStatusReadBudget.rows,
@@ -1578,6 +1605,13 @@ function testWorkflowStatusReadBudget() {
   assert.strictEqual(stale.result.statusCode, 200);
   assert.strictEqual(stale.result.body.workflow.status, "interrupted", "status reads must reconcile stale runs before responding");
   assert.strictEqual(stale.result.body.workflow.progressRevision, 7, "recovery response must retain the progress revision");
+  assert(stale.metrics.statements <= workflowStatusStaleReadBudget.statements,
+    `stale status read used ${stale.metrics.statements} statements; budget is ${workflowStatusStaleReadBudget.statements}`);
+  assert(stale.metrics.rows <= workflowStatusStaleReadBudget.rows,
+    `stale status read returned ${stale.metrics.rows} rows; budget is ${workflowStatusStaleReadBudget.rows}`);
+  assert(stale.metrics.executed.run >= 1, "stale status read must execute recovery writes");
+  assert(!stale.metrics.tables.some((table) => forbiddenTables.has(table)),
+    `stale status read touched plan-wide/history tables: ${stale.metrics.tables.join(", ")}`);
 }
 
 async function testWorkflowProgressPanel(baseUrl, database, fixture) {

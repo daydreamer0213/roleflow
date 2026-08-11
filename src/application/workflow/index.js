@@ -362,7 +362,20 @@ function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
   const snapshot = progressSnapshot(db, { workflowRunId });
   if (!snapshot) return { statusCode: 404, body: { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
   const workflow = getWorkflowRun(db, workflowRunId);
-  const summary = workflow.communicationBatchId ? communicationBatchSummary(db, workflow.communicationBatchId) : null;
+  let summary = null;
+  if (workflow.communicationBatchId) {
+    try {
+      summary = communicationBatchSummary(db, workflow.communicationBatchId);
+    } catch (error) {
+      if (error?.code === "COMMUNICATION_BATCH_NOT_FOUND") {
+        return {
+          statusCode: 404,
+          body: { error: "本轮沟通批次不存在。", errorCode: "COMMUNICATION_BATCH_NOT_FOUND" }
+        };
+      }
+      throw error;
+    }
+  }
   const communication = summary ? publicCommunicationStatus({
     batch: { id: summary.batchId, status: summary.batchStatus },
     summary

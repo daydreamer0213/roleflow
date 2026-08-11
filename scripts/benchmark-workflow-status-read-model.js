@@ -11,21 +11,33 @@ const {
   transitionWorkflowRun,
   insertWorkflowJobTaskRow,
   getWorkflowRun,
+  getSearchPlan,
   recordSiteAccessEvent
 } = require("../src/core/storage");
 const { getWorkflowStatus } = require("../src/application/workflow");
 const { recoverWorkflowRuns } = require("../src/core/workflow_run");
 const { getWorkflowProgressSnapshot } = require("../src/core/workflow_progress");
+const { buildWorkflowDashboardState } = require("../src/dashboard/server");
+const { getCommunicationStatus } = require("../src/application/communication");
 const { communicationBatchSummary } = require("../src/core/communication_batches");
 
 const FIXTURE_NOW = "2099-02-01T00:10:00.000Z";
 const BUDGET = Object.freeze({ statements: 15, rows: 120 });
+const STALE_BUDGET = Object.freeze({ statements: 18, rows: 120 });
 
 function measureWorkflowStatusRead({ communication = false, stale = false } = {}) {
+  return measureStatusComposition({ communication, stale, read: getWorkflowStatus });
+}
+
+function measureLegacyWorkflowStatusRead({ communication = false, stale = false } = {}) {
+  return measureStatusComposition({ communication, stale, read: legacyWorkflowStatusRead });
+}
+
+function measureStatusComposition({ communication, stale, read }) {
   const db = openDb(":memory:");
   try {
     const fixture = seedFixture(db, { communication, stale });
-    const measured = observeDb(db, () => getWorkflowStatus({
+    const measured = observeDb(db, () => read({
       db,
       workflowRunId: fixture.workflowRunId,
       deps: {
@@ -45,6 +57,30 @@ function measureWorkflowStatusRead({ communication = false, stale = false } = {}
   } finally {
     db.close();
   }
+}
+
+function legacyWorkflowStatusRead({ db, workflowRunId, deps }) {
+  deps.recover(db, { workflowRunId, orphanTimeoutMs: deps.orphanTimeoutMs });
+  const snapshot = deps.progressSnapshot(db, { workflowRunId });
+  if (!snapshot) return { statusCode: 404, body: { errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
+  const workflow = deps.getWorkflowRun(db, workflowRunId);
+  const plan = getSearchPlan(db, workflow.planId);
+  const daily = plan ? buildWorkflowDashboardState(db, plan) : null;
+  const communication = workflow.communicationBatchId
+    ? publicCommunicationStatus(getCommunicationStatus({ db, batchId: workflow.communicationBatchId }))
+    : null;
+  return {
+    statusCode: 200,
+    body: {
+      workflow: publicWorkflow({ ...snapshot.workflow, errorCode: workflow.errorCode }),
+      progress: snapshot.progress,
+      model: snapshot.model,
+      controls: snapshot.controls,
+      recentActivity: snapshot.recentActivity,
+      communication,
+      today: daily ? { successful: daily.successfulToday, target: daily.dailyTarget, slotsUsed: daily.slotsUsed } : null
+    }
+  };
 }
 
 function seedFixture(db, { communication, stale }) {
@@ -173,9 +209,20 @@ function publicCommunicationStatus(communication) {
 
 if (require.main === module) {
   for (const [label, options] of [["active", {}], ["communication", { communication: true }], ["stale", { stale: true }]]) {
-    const { metrics, result } = measureWorkflowStatusRead(options);
-    console.log(JSON.stringify({ label, statusCode: result.statusCode, workflowStatus: result.body.workflow?.status, ...metrics }));
+    const legacy = measureLegacyWorkflowStatusRead(options);
+    const current = measureWorkflowStatusRead(options);
+    console.log(JSON.stringify({
+      label,
+      statusCode: current.result.statusCode,
+      workflowStatus: current.result.body.workflow?.status,
+      legacy: legacy.metrics,
+      current: current.metrics,
+      delta: {
+        statements: current.metrics.statements - legacy.metrics.statements,
+        rows: current.metrics.rows - legacy.metrics.rows
+      }
+    }));
   }
 }
 
-module.exports = { BUDGET, measureWorkflowStatusRead };
+module.exports = { BUDGET, STALE_BUDGET, measureWorkflowStatusRead, measureLegacyWorkflowStatusRead };
