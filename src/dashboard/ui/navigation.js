@@ -17,14 +17,17 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
     ];
     if (currentRoute === "/workflow") links.push(navigationLink(current, "本轮", true));
     if (currentRoute === "/jobs") links.push(navigationLink(current, "岗位列表", true));
+    if (currentRoute === "/messages") links.push(navigationLink(current, "消息发现", true));
     return links.join("");
   }
-  return [
+  const links = [
     navigationLink("/onboarding", "简历", currentRoute === "/onboarding"),
     navigationLink(todayPath || "/", "筛选方案", currentRoute === "/plan"),
     navigationLink("/settings", "模型设置", currentRoute === "/settings"),
     navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
-  ].join("");
+  ];
+  if (currentRoute === "/messages") links.push(navigationLink(current, "消息发现", true));
+  return links.join("");
 }
 
 function planIdFromPath(value) {

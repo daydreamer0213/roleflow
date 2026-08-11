@@ -2488,6 +2488,7 @@ function messageDiscoveryViewHelpers() {
     getCandidateProfile,
     renderErrorPage,
     renderPage,
+    renderFramedPage: renderDashboardFramedPage,
     navLinks,
     escapeHtml,
     escapeAttr,

@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
+const vm = require("node:vm");
 const {
   openDb,
   saveProfileAnalysis,
@@ -138,6 +139,13 @@ async function main() {
   assert(!page.body.includes(".chat-input"));
   assert(!page.body.includes(".btn-send"));
   assert(!page.body.includes('name="hrMessage"'));
+  assertMessageDiscoveryProductFrame(page.body, fixture);
+  await messageDiscoveryClientResponseSmoke(page.body);
+  await messageDiscoveryDuplicateSubmitSmoke(page.body);
+  await messageDiscoveryPollingSmoke(page.body);
+  await messageDiscoveryMalformedResponseSmoke(page.body);
+  await messageDiscoveryActionPollRaceSmoke(page.body);
+  await messageDiscoveryAcceptedActionStopsPollSmoke(page.body);
 
   setSiteRuntimeState(db, "boss", {
     status: "blocked",
@@ -296,6 +304,7 @@ async function main() {
   const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(completedPage.status, 200);
   assert(completedPage.body.includes(PRIVATE_DRAFT));
+  assertManualProgressRemainsOrdinary(completedPage.body);
   assertNoPrivateData(completedPage.body);
 
   response = await postJson(base, "/api/message-discovery", {
@@ -407,6 +416,18 @@ async function main() {
   assertNoPrivateData(durableStatus);
   let durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
   assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "the no-run page state must show durable unresolved work");
+  assertNoPrivateData(durablePage.body);
+  scenarios.push(completedRun({ fixture: retainedFixture, drafts: ["durable-cleanup-draft"] }));
+  await startAndWait(base, retainedFixture.profileId, "completed");
+  await waitForLeaseRelease();
+  response = await postJson(base, "/api/message-discovery", {
+    action: "dismiss",
+    profileId: retainedFixture.profileId
+  });
+  assert.strictEqual(response.status, 200);
+  durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
+  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "a fresh GET must retain the durable unresolved count after dismiss");
+  assert(durablePage.body.includes("无法确认本地岗位与会话是否一致"), "a fresh GET must retain the first safe durable reason after dismiss");
   assertNoPrivateData(durablePage.body);
   scenarios.push(completedRun({ fixture: retainedFixture, drafts: ["durable-cleanup-draft"] }));
   await startAndWait(base, retainedFixture.profileId, "completed");
@@ -1017,4 +1038,200 @@ function assertNoDraftMessagesInJson(value) {
 
 function requestKey(sequence) {
   return `progress:00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
+}
+
+function assertMessageDiscoveryProductFrame(markup, fixture) {
+  assert.match(markup, /class="app-shell"/, "message discovery must use the shared dashboard frame");
+  assert.match(markup, /class="primary-nav"/, "message discovery must have one shared primary navigation");
+  assert.match(markup, /href="\/messages\?profileId=\d+" aria-current="page">消息发现<\/a>/, "message discovery must be the active navigation destination");
+  assert.strictEqual((markup.match(/<nav\b/g) || []).length, 1, "message discovery must not render a competing inner navigation");
+  assert.strictEqual((markup.match(/<style>/g) || []).length, 0, "message discovery styles must come from the shared stylesheet");
+  assert.match(markup, /data-discovery-feedback[^>]*role="status"[^>]*aria-live="polite"/, "action feedback must be announced in a live status region");
+  assert.match(markup, new RegExp(`href="/messages\\?profileId=${fixture.profileId}" aria-current="page">消息发现`));
+}
+
+function assertManualProgressRemainsOrdinary(markup) {
+  assert.match(markup, /<form method="post" action="\/api\/progress">[\s\S]*?name="action" value="reply_confirmed_sent"/, "manual sent must remain an ordinary progress form");
+  assert.doesNotMatch(markup, /<form[^>]*action="\/api\/progress"[^>]*data-discovery-form/, "manual sent must stay outside discovery fetch wiring");
+}
+
+async function messageDiscoveryClientResponseSmoke(markup) {
+  for (const scenario of [
+    { name: "accepted JSON", response: jsonResponse(202, { status: "running" }), reloads: 1, feedback: "" },
+    { name: "already running conflict", response: jsonResponse(409, { errorCode: "MESSAGE_DISCOVERY_ALREADY_RUNNING" }), reloads: 0, feedback: "正在运行" },
+    { name: "application error", response: jsonResponse(409, { errorCode: "BOSS_RISK_CONTROL" }), reloads: 0, feedback: "安全检查" },
+    { name: "non-JSON response", response: textResponse(502, "bad gateway"), reloads: 0, feedback: "本地服务" },
+    { name: "network rejection", reject: new Error("offline"), reloads: 0, feedback: "Edge" }
+  ]) {
+    const client = runMessageDiscoveryClient(markup, scenario);
+    await assert.doesNotReject(client.submit(), `${scenario.name} must stay handled in the current page`);
+    assert.strictEqual(client.reloads(), scenario.reloads, `${scenario.name} must reload only after an accepted JSON response`);
+    assert.strictEqual(client.feedback.busy, "false", `${scenario.name} must clear busy state after the request settles`);
+    assert.strictEqual(client.button.disabled, false, `${scenario.name} must re-enable controls after a rejected request`);
+    if (scenario.feedback) assert.match(client.feedback.textContent, new RegExp(scenario.feedback));
+  }
+}
+
+async function messageDiscoveryPollingSmoke(markup) {
+  const failedPoll = runMessageDiscoveryClient(markup, { response: textResponse(502, "bad gateway") }, { status: "running" });
+  assert.strictEqual(failedPoll.timerCount(), 1, "a running page must schedule one poll");
+  await assert.doesNotReject(failedPoll.runTimer(0), "a failed poll must be handled in the current page");
+  assert.strictEqual(failedPoll.reloads(), 0, "a failed poll must never reload the page");
+  assert.match(failedPoll.feedback.textContent, /本地服务/);
+  assert.strictEqual(failedPoll.timerCount(), 1, "a failed poll must not add a duplicate interval");
+
+  const runningPoll = runMessageDiscoveryClient(markup, { response: jsonResponse(200, { status: "running" }) }, { status: "running" });
+  await runningPoll.runTimer(0);
+  assert.strictEqual(runningPoll.timerCount(), 2, "each successful running poll must schedule exactly one successor");
+}
+
+async function messageDiscoveryMalformedResponseSmoke(markup) {
+  for (const scenario of [
+    { name: "array", body: [] },
+    { name: "empty object", body: {} },
+    { name: "empty error code", body: { status: "running", errorCode: "" } },
+    { name: "invalid status", body: { status: "unknown" } }
+  ]) {
+    const action = runMessageDiscoveryClient(markup, { response: jsonResponse(202, scenario.body) });
+    await assert.doesNotReject(action.submit(), `a 2xx ${scenario.name} action response must stay in the current page`);
+    assert.strictEqual(action.reloads(), 0, `a 2xx ${scenario.name} action response must not reload`);
+
+    const poll = runMessageDiscoveryClient(markup, { response: jsonResponse(200, scenario.body) }, { status: "running" });
+    await assert.doesNotReject(poll.runTimer(0), `a 2xx ${scenario.name} poll response must stay handled`);
+    assert.strictEqual(poll.reloads(), 0, `a 2xx ${scenario.name} poll response must not reload`);
+  }
+}
+
+async function messageDiscoveryActionPollRaceSmoke(markup) {
+  const pollResponse = deferred();
+  const actionResponse = deferred();
+  const client = runMessageDiscoveryClient(markup, {
+    fetch(url) {
+      return String(url).includes("message-discovery-status") ? pollResponse.promise : actionResponse.promise;
+    }
+  }, { status: "running" });
+  const poll = client.runTimer(0);
+  await Promise.resolve();
+  const action = client.submit();
+  await Promise.resolve();
+  actionResponse.resolve(jsonResponse(409, { errorCode: "BOSS_RISK_CONTROL" }));
+  await action;
+  assert.match(client.feedback.textContent, /安全检查/, "a failed manual action must keep its recovery feedback");
+  assert.strictEqual(client.timerCount(), 2, "a failed action on a running page must restore one poll");
+
+  pollResponse.resolve(jsonResponse(200, { status: "completed" }));
+  await poll;
+  assert.strictEqual(client.reloads(), 0, "a poll that began before a manual action must not refresh later");
+  assert.match(client.feedback.textContent, /安全检查/, "a late poll must not overwrite failed action feedback");
+  assert.strictEqual(client.timerCount(), 2, "a late poll must not add a duplicate timer");
+}
+
+async function messageDiscoveryAcceptedActionStopsPollSmoke(markup) {
+  const pollResponse = deferred();
+  const actionResponse = deferred();
+  const client = runMessageDiscoveryClient(markup, {
+    fetch(url) {
+      return String(url).includes("message-discovery-status") ? pollResponse.promise : actionResponse.promise;
+    }
+  }, { status: "running" });
+  const poll = client.runTimer(0);
+  await Promise.resolve();
+  const action = client.submit();
+  await Promise.resolve();
+  actionResponse.resolve(jsonResponse(202, { status: "stopped" }));
+  await action;
+  const feedbackAfterReload = client.feedback.textContent;
+  assert.strictEqual(client.reloads(), 1, "an accepted stop action must request one reload");
+  assert.strictEqual(client.timerCount(), 1, "an accepted stop action must not schedule another poll");
+
+  pollResponse.resolve(jsonResponse(200, { status: "running" }));
+  await poll;
+  assert.strictEqual(client.reloads(), 1, "a late poll after accepted reload must not reload again");
+  assert.strictEqual(client.timerCount(), 1, "a late poll after accepted reload must not schedule a timer");
+  assert.strictEqual(client.feedback.textContent, feedbackAfterReload, "a late poll after accepted reload must not change feedback");
+}
+
+async function messageDiscoveryDuplicateSubmitSmoke(markup) {
+  let resolveResponse;
+  const pendingResponse = new Promise((resolve) => { resolveResponse = resolve; });
+  const client = runMessageDiscoveryClient(markup, { fetch: async () => pendingResponse });
+  const first = client.submit();
+  const second = client.submit();
+  assert.strictEqual(client.fetchCalls(), 1, "a pending discovery request must reject duplicate submits");
+  assert.strictEqual(client.button.disabled, true, "a pending discovery request must disable the visible control");
+  assert.strictEqual(client.feedback.busy, "true", "a pending discovery request must mark the status region busy");
+  assert.match(client.feedback.textContent, /正在处理/, "a pending discovery request must visibly report that it is busy");
+  resolveResponse(jsonResponse(202, { status: "running" }));
+  await Promise.all([first, second]);
+  assert.strictEqual(client.reloads(), 1, "the accepted pending request must reload once");
+}
+
+function runMessageDiscoveryClient(markup, scenario, options = {}) {
+  const script = markup.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert(script, "message discovery must provide its client behavior");
+  const clientScript = options.status ? script.replace(/"status":"[^"]+"/, `"status":"${options.status}"`) : script;
+  const handlers = new Map();
+  const button = { disabled: false, dataset: {} };
+  const form = {
+    action: "http://127.0.0.1/api/message-discovery",
+    formData: [["action", "start"], ["profileId", "1"]],
+    querySelectorAll(selector) { return selector === "button" ? [button] : []; },
+    addEventListener(type, handler) { handlers.set(type, handler); }
+  };
+  const feedback = { textContent: "", dataset: {}, setAttribute(name, value) { if (name === "aria-busy") this.busy = value; } };
+  const document = {
+    querySelector(selector) {
+      return selector === "[data-discovery-feedback]" ? feedback : null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "[data-discovery-form]") return [form];
+      if (selector === "[data-copy-draft]") return [];
+      return [];
+    },
+    getElementById() { return null; }
+  };
+  let reloadCount = 0;
+  let fetchCallCount = 0;
+  const timers = [];
+  const context = {
+    document,
+    URLSearchParams,
+    FormData: class FormData { constructor(target) { return target.formData; } },
+    fetch: async (...args) => {
+      fetchCallCount += 1;
+      if (scenario.fetch) return scenario.fetch(...args);
+      if (scenario.reject) throw scenario.reject;
+      return scenario.response;
+    },
+    navigator: { clipboard: { writeText: async () => {} } },
+    location: { reload() { reloadCount += 1; } },
+    setTimeout(callback) { timers.push(callback); return timers.length; },
+    clearTimeout() {},
+    encodeURIComponent,
+    console
+  };
+  vm.runInNewContext(clientScript, context);
+  return {
+    button,
+    feedback,
+    fetchCalls: () => fetchCallCount,
+    reloads: () => reloadCount,
+    timerCount: () => timers.length,
+    runTimer: (index) => timers[index](),
+    submit: () => handlers.get("submit")({ preventDefault() {} })
+  };
+}
+
+function jsonResponse(status, body) {
+  return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) };
+}
+
+function textResponse(status, body) {
+  return { ok: status >= 200 && status < 300, status, text: async () => body };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
 }
