@@ -105,8 +105,12 @@ function reviewRow(job = {}) {
 function communicationView(communication, runtimeBlock) {
   const batch = communication?.batch || {};
   const status = String(batch.status || "");
-  const action = status === "confirmed" ? "start" : ["paused", "interrupted"].includes(status) ? "resume" : "";
-  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : "开始沟通", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary: { total: number(communication?.summary?.total), terminal: number(communication?.summary?.terminal), statusCounts: Object.fromEntries(Object.entries(communication?.summary?.statusCounts || {}).map(([key, value]) => [String(key), number(value)])) }, runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref: batch.id ? `/communication?batchId=${encodeURIComponent(batch.id)}` : "" };
+  const summary = { total: number(communication?.summary?.total), terminal: number(communication?.summary?.terminal), statusCounts: Object.fromEntries(Object.entries(communication?.summary?.statusCounts || {}).map(([key, value]) => [String(key), number(value)])) };
+  const needsAmbiguityReview = number(summary.statusCounts.ambiguous) > 0;
+  const ambiguousItem = needsAmbiguityReview ? (communication?.items || []).find((item) => item?.status === "ambiguous") : null;
+  const action = needsAmbiguityReview ? "" : status === "confirmed" ? "start" : ["paused", "interrupted"].includes(status) ? "resume" : "";
+  const detailsHref = batch.id ? `/communication?batchId=${encodeURIComponent(batch.id)}${ambiguousItem ? `#communication-item-${encodeURIComponent(ambiguousItem.id)}` : ""}` : "";
+  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : action === "start" ? "开始沟通" : "", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary, runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref, detailsLabel: needsAmbiguityReview ? "处理不明确结果" : "检查清单详情" };
 }
 
 function resumeView(workflow) {

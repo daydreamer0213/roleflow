@@ -152,11 +152,13 @@ let server;
   assert(spawns[0].args.includes(String(batchId)));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
-  const ambiguousItem = listCommunicationBatchItems(db, batchId)[0];
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(ambiguousItem) });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  const [ambiguousItem, secondAmbiguousItem] = listCommunicationBatchItems(db, batchId);
+  for (const item of [ambiguousItem, secondAmbiguousItem]) {
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "pending", status: "opening" });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "opening", status: "verified" });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  }
   setCommunicationBatchStatus(db, {
     batchId,
     status: "interrupted",
@@ -165,6 +167,10 @@ let server;
   });
   const ambiguousReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
+  assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
+  assert.match(ambiguousReview.body, /处理不明确结果/);
+  assert.match(ambiguousReview.body, new RegExp(`href="/communication\\?batchId=${batchId}#communication-item-${ambiguousItem.id}"`));
+  assert.match(ambiguousReview.body, new RegExp(`id="communication-item-${ambiguousItem.id}"`));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "pending", evidenceNote: "invalid status" }, "COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID");
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "stopped" }, "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED");
@@ -175,6 +181,10 @@ let server;
   const resolutionAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(fixture.primaryId);
   assert.strictEqual(JSON.parse(resolutionAudit.payload_json).note, evidenceNote);
   assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
+  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
+  const secondResolved = await postJson(baseUrl, "/api/communication-resolve", { batchId, itemId: secondAmbiguousItem.id, status: "stopped", evidenceNote: "第二个岗位已人工核对并停止" });
+  assert.strictEqual(secondResolved.status, 200);
+  assert.strictEqual(secondResolved.body.item.status, "stopped");
   const resumedAfterReview = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
   assert.strictEqual(resumedAfterReview.status, 200);
   assert.strictEqual(resumedAfterReview.body.batch.status, "running");

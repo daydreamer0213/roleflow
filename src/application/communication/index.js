@@ -35,12 +35,16 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
   if (action === "start" || action === "resume") {
-    assertCommunicationExecutionEnabled();
-    assertBossRuntimeAvailable(db);
     const expected = action === "start" ? ["confirmed"] : ["paused", "interrupted"];
     if (!expected.includes(batch.status)) {
       throw appError("COMMUNICATION_BATCH_STATUS_INVALID", `${action} requires a ${expected.join(" or ")} communication batch`, { statusCode: 409 });
     }
+    const summary = communicationBatchSummary(db, batchId);
+    if (action === "resume" && Number(summary.statusCounts.ambiguous || 0) > 0) {
+      throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
+    }
+    assertCommunicationExecutionEnabled();
+    assertBossRuntimeAvailable(db);
     if (typeof deps.spawnCommunication !== "function") {
       throw appError("COMMUNICATION_PROCESS_LAUNCHER_REQUIRED", "communication process launcher is required", { statusCode: 500 });
     }

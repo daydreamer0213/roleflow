@@ -30,6 +30,7 @@ const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
+const { setCommunicationBatchStatus } = require("../src/core/communication_batches");
 const {
   createDashboardServer,
   inspectDashboardBossBrowserReadiness,
@@ -1058,6 +1059,25 @@ let server;
   const confirmedPage = await getText(baseUrl, confirmed.location);
   assert.match(confirmedPage.body, /清单已确认/);
   assert.match(confirmedPage.body, /name="action" value="start"/);
+  const communicationBatchId = getWorkflowRun(db, workflow.id).communicationBatchId;
+  const ambiguousCommunicationItem = db.prepare(`
+    SELECT id FROM communication_batch_items WHERE batch_id = ? ORDER BY position LIMIT 1
+  `).get(communicationBatchId);
+  db.prepare(`UPDATE communication_batch_items
+    SET status = 'ambiguous', click_count = 1, finished_at = ?, updated_at = ?
+    WHERE id = ?`).run("2099-01-01T00:00:03.000Z", "2099-01-01T00:00:03.000Z", ambiguousCommunicationItem.id);
+  setCommunicationBatchStatus(db, { batchId: communicationBatchId, status: "running" });
+  setCommunicationBatchStatus(db, {
+    batchId: communicationBatchId,
+    status: "interrupted",
+    stopCode: "COMMUNICATION_RESULT_AMBIGUOUS",
+    stopMessage: "manual review required"
+  });
+  const ambiguityWorkflowPage = await getText(baseUrl, confirmed.location);
+  assert.doesNotMatch(ambiguityWorkflowPage.body, /name="action" value="resume"/);
+  assert.doesNotMatch(ambiguityWorkflowPage.body, /action="\/api\/communication-control"/);
+  assert.match(ambiguityWorkflowPage.body, /处理不明确结果/);
+  assert.match(ambiguityWorkflowPage.body, new RegExp(`/communication\\?batchId=${communicationBatchId}#communication-item-${ambiguousCommunicationItem.id}`));
   assert.match(confirmedPage.body, /开始沟通/);
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
