@@ -1,7 +1,7 @@
 # Wave 4.5 workflow-store effect evaluation
 
-Date: 2026-08-11  
-Base: `96087de2c495398808da9d2ed03b25697b23a284`  
+Date: 2026-08-11
+Base: `96087de2c495398808da9d2ed03b25697b23a284`
 Worktree branch: `codex/roleflow-wave-4-5-workflow-store`
 
 ## Status
