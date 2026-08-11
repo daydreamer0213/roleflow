@@ -12,6 +12,7 @@
   let timer = null;
   let lastKey = page.dataset.pollingKey || "";
   let nextPollAt = 0;
+  let reloadRequested = false;
 
   const node = (selector) => page.querySelector(selector);
   const nodes = (selector) => [...page.querySelectorAll(selector)];
@@ -20,6 +21,7 @@
   const controls = (disabled) => nodes("[data-workflow-control]").forEach((button) => { button.disabled = Boolean(disabled); });
   const duration = (seconds) => { const value = Math.max(0, Math.ceil(number(seconds))); if (value < 60) return String(value) + " 秒"; if (value < 3600) return String(Math.ceil(value / 60)) + " 分钟"; const hours = Math.floor(value / 3600); const minutes = Math.ceil((value % 3600) / 60); return minutes ? String(hours) + " 小时 " + String(minutes) + " 分钟" : String(hours) + " 小时"; };
   const etaText = (eta = {}) => eta.status === "available" ? "预计剩余 " + duration(eta.minSeconds) + "～" + duration(eta.maxSeconds) + "（基于最近 " + number(eta.sampleSize) + " 个完成岗位估算）" : eta.status === "paused" ? (eta.minSeconds == null || eta.maxSeconds == null ? "已暂停；样本不足，正在估算" : "已暂停；剩余区间冻结为 " + duration(eta.minSeconds) + "～" + duration(eta.maxSeconds) + "（" + number(eta.sampleSize) + " 个样本）") : eta.status === "estimating" ? "正在估算" : "当前阶段不估算剩余时间";
+  const cooldownReasonText = (action) => ({ detail_open: "正在读取岗位详情", pane_detail_read: "正在读取岗位详情", list_navigation: "正在切换岗位列表" }[String(action || "")] || "平台访问正在安全冷却");
   const activityText = (activity = {}) => { const action = { analysis_started: "开始分析", analysis_succeeded: "已成功保存", analysis_failed: "分析失败", analysis_skipped: "已按本地规则处理", waiting_lease_expiry: "正在等待安全收尾", control_requested: "正在执行控制请求" }[activity.type] || "状态已更新"; return ["任务 #", number(activity.taskId), " ", action, activity.attempt ? "，第 " + number(activity.attempt) + " 次尝试" : "", activity.modelRole === "backup" ? "，备用模型" : "", activity.errorCode ? "，" + String(activity.errorCode) : ""].join(""); };
   const validSnapshot = (snapshot) => Boolean(snapshot && snapshot.workflow && snapshot.progress && snapshot.progress.analysis && snapshot.progress.eta && snapshot.controls && Array.isArray(snapshot.recentActivity));
   const showError = (message = "无法读取任务状态") => { const error = node("[data-workflow-error]"); if (error) { error.textContent = message; error.hidden = false; } controls(true); };
@@ -29,12 +31,37 @@
   const renderCooldown = (scanWait) => {
     const countdown = node("[data-cooldown-countdown]");
     const container = node("[data-cooldown]");
-    const retryAt = Date.parse(scanWait?.retryAt || countdown?.dataset.retryAt || "");
+    const retryValue = scanWait === undefined ? countdown?.dataset.retryAt : scanWait?.retryAt;
+    const retryAt = Date.parse(retryValue || "");
     if (!countdown) return;
     if (!Number.isFinite(retryAt)) { countdown.textContent = ""; if (container) container.hidden = true; return; }
     const seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
-    countdown.textContent = String(seconds) + " 秒";
+    countdown.textContent = seconds >= 86400 ? String(Math.ceil(seconds / 86400)) + " 天" : duration(seconds);
     if (container) container.hidden = false;
+  };
+  const renderOverview = (snapshot) => {
+    const analysis = snapshot.progress.analysis || {};
+    const remaining = number(analysis.pending) + number(analysis.running) + number(analysis.retryPending);
+    const scanWait = snapshot.progress.scanWait;
+    const retryAt = Date.parse(scanWait?.retryAt || "");
+    const cooldown = node("[data-cooldown]");
+    const stable = node("[data-overview-blocker-stable]");
+    const countdown = node("[data-cooldown-countdown]");
+    setText("[data-overview-progress]", "第 " + number(snapshot.progress.stageIndex) + " / " + number(snapshot.progress.stageCount) + " 阶段");
+    setText("[data-overview-remaining]", remaining);
+    setText("[data-overview-eta]", Number.isFinite(retryAt) && retryAt > Date.now() ? "安全冷却至 " + new Date(retryAt).toLocaleString("zh-CN", { hour12: false }) : etaText(snapshot.progress.eta));
+    if (Number.isFinite(retryAt) && retryAt > Date.now()) {
+      if (stable) stable.hidden = true;
+      if (cooldown) { cooldown.hidden = false; cooldown.dataset.retryAt = scanWait.retryAt; }
+      if (countdown) countdown.dataset.retryAt = scanWait.retryAt;
+      setText("[data-cooldown-reason]", cooldownReasonText(scanWait.action));
+      const retry = node("[data-cooldown-retry-time]"); if (retry) { retry.dateTime = scanWait.retryAt; retry.textContent = new Date(retryAt).toLocaleString("zh-CN", { hour12: false }); }
+    } else {
+      if (stable) stable.hidden = false;
+      if (cooldown) { cooldown.hidden = true; cooldown.dataset.retryAt = ""; }
+      if (countdown) countdown.dataset.retryAt = "";
+    }
+    renderCooldown(scanWait);
   };
   const renderStale = (workflow) => { const warning = node("[data-workflow-stale]"); if (!warning) return; const at = Date.parse(workflow.lastActivityAt || ""); const active = ["created", "scanning", "analyzing"].includes(workflow.status); warning.hidden = !(active && Number.isFinite(at) && Date.now() - at > 30000); };
   const renderProgress = (snapshot) => {
@@ -67,8 +94,12 @@
     nodes('[data-action="stop-preview"]').forEach((button) => { button.disabled = !snapshot.controls.canStop; });
     const stopConfirm = node('[data-action="stop-confirm"]'); if (stopConfirm) stopConfirm.disabled = !snapshot.controls.canStop;
     if (paused) setText("[data-pause-reason]", snapshot.workflow.errorCode || "本轮已安全暂停");
-    if (terminal.has(status)) { controls(true); if (timer) { clearInterval(timer); timer = null; } }
+    if (terminal.has(status)) { controls(true); stopTimer(); }
   };
+  function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+  function requestReload() { if (reloadRequested) return; reloadRequested = true; stopTimer(); location.reload(); }
+  const structureChanged = (snapshot) => String(snapshot.workflow.status || "") !== String(page.dataset.workflowStatus || "")
+    || String(snapshot.workflow.controlState || "") !== String(page.dataset.workflowControlState || "");
   const pollProgress = async () => {
     if (pollInFlight || !runId) return;
     pollInFlight = true;
@@ -77,7 +108,8 @@
       if (!response.ok) throw new Error("status response");
       const snapshot = await response.json();
       if (!validSnapshot(snapshot)) throw new Error("status payload");
-      clearError(); renderControls(snapshot); renderScanWait(snapshot.progress.scanWait); renderCooldown(snapshot.progress.scanWait); renderStale(snapshot.workflow);
+      if (structureChanged(snapshot)) { requestReload(); return; }
+      clearError(); renderControls(snapshot); renderScanWait(snapshot.progress.scanWait); renderOverview(snapshot); renderStale(snapshot.workflow);
       const nextKey = [number(snapshot.workflow.progressRevision), snapshot.workflow.status || "", snapshot.workflow.controlState || ""].join("|");
       if (nextKey !== lastKey) { lastKey = nextKey; renderProgress(snapshot); }
     } catch { showError(); } finally { pollInFlight = false; }
@@ -91,7 +123,7 @@
       const data = await response.json();
       const counts = data.communication?.summary?.statusCounts || {};
       const key = [data.workflow?.status || "", data.communication?.batch?.status || "", number(data.workflow?.successfulCount), number(counts.succeeded), number(counts.already_communicated), number(data.communication?.summary?.terminal)].join("|");
-      if (key !== lastKey) { if (timer) clearInterval(timer); location.reload(); }
+      if (key !== lastKey) requestReload();
     } catch {} finally { pollInFlight = false; }
   };
 
@@ -114,8 +146,13 @@
     if (pollKind === "progress" && panel) return pollProgress();
     if (pollKind === "communication") return pollCommunication();
   };
-  if ((pollKind === "progress" && panel) || pollKind === "communication") {
+  const startTimer = () => {
+    if (timer || reloadRequested || document.hidden) return;
     timer = setInterval(tick, 1000);
     tick();
-  }
+  };
+  document.addEventListener("visibilitychange", () => document.hidden ? stopTimer() : startTimer());
+  window.addEventListener("pagehide", stopTimer);
+  window.addEventListener("pageshow", startTimer);
+  if ((pollKind === "progress" && panel) || pollKind === "communication") startTimer();
 })();
