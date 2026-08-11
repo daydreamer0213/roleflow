@@ -32,4 +32,15 @@ function optionalPositiveInteger(value, label) {
   return parsed;
 }
 
-module.exports = { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger };
+function nullableText(value, limit = Infinity) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, limit) : null;
+}
+
+function validDate(value, label) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new TypeError(`${label} must be a valid date`);
+  return date;
+}
+
+module.exports = { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate };
