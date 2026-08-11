@@ -7,9 +7,9 @@ const {
   resolveAmbiguousCommunicationItem,
   transitionCommunicationItem,
   communicationBatchSummary,
-  communicationQuotaSnapshot,
-  communicationAmbiguityStateForBatch
+  communicationQuotaSnapshot
 } = require("../../core/communication_batches");
+const { communicationAmbiguityStateForBatch } = require("../../core/communication_ambiguity");
 const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../../core/communication_calibration");
 const { appError } = require("../../core/observability");
 const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../../core/communication_runtime");

@@ -19,10 +19,12 @@ const {
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
   communicationBatchSummary,
-  communicationQuotaSnapshot,
+  communicationQuotaSnapshot
+} = require("../src/core/communication_batches");
+const {
   communicationAmbiguityState,
   communicationAmbiguityStateForBatch
-} = require("../src/core/communication_batches");
+} = require("../src/core/communication_ambiguity");
 const {
   getProgressCardForJob,
   listProgressEvents

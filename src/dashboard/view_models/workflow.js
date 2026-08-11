@@ -1,7 +1,7 @@
 "use strict";
 
 const { scopeShortId } = require("../../core/inherited_search_scope");
-const { communicationAmbiguityState } = require("../../core/communication_batches");
+const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 
 function buildWorkflowViewModel({
   workflow = {}, plan = {}, daily = {}, communication = null, runtimeBlock = null,

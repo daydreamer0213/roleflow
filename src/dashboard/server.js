@@ -76,9 +76,9 @@ const {
 const {
   getCommunicationBatch,
   setCommunicationBatchStatus,
-  communicationQuotaSnapshot,
-  communicationAmbiguityState
+  communicationQuotaSnapshot
 } = require("../core/communication_batches");
+const { communicationAmbiguityState } = require("../core/communication_ambiguity");
 const {
   PROGRESS_STAGES,
   ensureProgressCard,

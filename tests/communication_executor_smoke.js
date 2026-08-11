@@ -13,6 +13,8 @@ const {
   createCommunicationBatch,
   getCommunicationBatch,
   listCommunicationBatchItems,
+  resumeInterruptedCommunicationBatch,
+  resolveAmbiguousCommunicationItem,
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
@@ -346,19 +348,7 @@ async function ambiguityDriftEntryGuardSmoke() {
 
 async function runningAmbiguityEntryGuardSmoke() {
   const fixture = createFixture(2);
-  const workflow = createWorkflowRun(fixture.db, {
-    profileId: fixture.profileId,
-    planId: fixture.planId,
-    localDay: "2026-08-11",
-    sequence: 1,
-    targetSuccessCount: 2,
-    inventoryCount: 2,
-    candidateGap: 0,
-    scanNeeded: false,
-    planner: { browserMode: "edge" }
-  });
-  transitionWorkflowRun(fixture.db, { id: workflow.id, status: "review_required" });
-  attachWorkflowCommunication(fixture.db, { id: workflow.id, communicationBatchId: fixture.batch.id });
+  const workflow = attachReviewWorkflow(fixture);
   setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
   const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
   transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
@@ -444,6 +434,23 @@ async function postClaimAmbiguityRollbackSmoke() {
 
 async function ambiguityAfterReserveGuardSmoke() {
   const fixture = createFixture(2);
+  const workflow = attachReviewWorkflow(fixture);
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  const [ambiguousItem, reservedItem] = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  transitionCommunicationItem(fixture.db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: clickAudit(ambiguousItem)
+  });
+  transitionCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    expectedStatus: "click_dispatched",
+    status: "ambiguous"
+  });
+  const clickCountsBefore = listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.clickCount);
   let blocked = false;
   let reserves = 0;
   let inspections = 0;
@@ -474,13 +481,29 @@ async function ambiguityAfterReserveGuardSmoke() {
   } catch (error) {
     caught = error;
   }
-  const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  const interruptedItems = listCommunicationBatchItems(fixture.db, fixture.batch.id);
   assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
   assert.strictEqual(reserves, 1);
   assert.strictEqual(inspections, 0);
   assert.strictEqual(dispatches, 0);
-  assert.strictEqual(first.status, "opening");
-  assert.strictEqual(first.clickCount, 0);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "interrupted");
+  assert.strictEqual(getWorkflowRun(fixture.db, workflow.id).status, "interrupted");
+  assert.deepStrictEqual(interruptedItems.map((item) => item.status), ["ambiguous", "pending"]);
+  assert.deepStrictEqual(interruptedItems.map((item) => item.clickCount), clickCountsBefore);
+  assert.strictEqual(interruptedItems.find((item) => item.id === reservedItem.id).clickCount, 0);
+
+  resolveAmbiguousCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    status: "stopped",
+    evidenceNote: "Manual review confirmed no additional communication was sent."
+  });
+  const resumed = resumeInterruptedCommunicationBatch(fixture.db, { batchId: fixture.batch.id });
+  assert.strictEqual(resumed.requiresReview, false);
+  assert.strictEqual(resumed.batch.status, "running");
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status),
+    ["stopped", "pending"]
+  );
   fixture.close();
 }
 
@@ -936,6 +959,25 @@ function pauseWithAmbiguousFirstItem(fixture) {
   transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(first) });
   transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+}
+
+function attachReviewWorkflow(fixture) {
+  const workflow = createWorkflowRun(fixture.db, {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    localDay: "2026-08-11",
+    sequence: 1,
+    targetSuccessCount: 2,
+    inventoryCount: 2,
+    candidateGap: 0,
+    scanNeeded: false,
+    planner: { browserMode: "edge" }
+  });
+  transitionWorkflowRun(fixture.db, { id: workflow.id, status: "review_required" });
+  return attachWorkflowCommunication(fixture.db, {
+    id: workflow.id,
+    communicationBatchId: fixture.batch.id
+  });
 }
 
 function createFixture(count) {

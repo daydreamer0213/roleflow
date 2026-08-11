@@ -19,7 +19,7 @@ const {
 const {
   communicationAmbiguityState,
   communicationAmbiguityStateForBatch
-} = require("../src/core/communication_batches");
+} = require("../src/core/communication_ambiguity");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");

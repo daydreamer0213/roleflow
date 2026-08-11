@@ -12,9 +12,9 @@ const {
   pauseCommunicationBatchAfterReservationFailure,
   setCommunicationBatchStatus,
   transitionCommunicationItem,
-  communicationBatchSummary,
-  communicationAmbiguityStateForBatch
+  communicationBatchSummary
 } = require("./communication_batches");
+const { communicationAmbiguityStateForBatch } = require("./communication_ambiguity");
 
 const FATAL_CODES = new Set([
   "BOSS_RISK_CONTROL",
@@ -92,7 +92,20 @@ async function runCommunicationBatch({
     }
     const afterReserve = observeControl(db, batchId, signal, logger);
     if (afterReserve) return afterReserve;
-    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    try {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    } catch (error) {
+      try {
+        pauseCommunicationBatchAfterReservationFailure(db, { batchId, itemId: item.id });
+      } catch (rollbackError) {
+        logger?.error("communication_reservation_rollback_failed", {
+          batchId,
+          itemId: item.id,
+          code: errorCode(rollbackError)
+        });
+      }
+      return interruptAndThrow(db, batchId, error, logger);
+    }
 
     let inspection;
     try {
