@@ -2,6 +2,7 @@ const { randomUUID } = require("node:crypto");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
+const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
 const {
   getSiteRuntimeState,
   setSiteRuntimeState,
@@ -220,14 +221,14 @@ function createMessageDiscoveryController(deps = {}) {
     const profileId = messageDiscoveryProfileId(profileIdValue);
     clearExpiredRun(profileId);
     const run = runs.get(profileId);
-    return run ? publicRun(run) : emptyStatus(profileId);
+    return run ? publicRun(run) : durableStatus(profileId);
   }
 
   function pageState(profileIdValue) {
     const profileId = messageDiscoveryProfileId(profileIdValue);
     clearExpiredRun(profileId);
     const run = runs.get(profileId);
-    return run ? pageRun(run) : emptyStatus(profileId);
+    return run ? pageRun(run) : durableStatus(profileId);
   }
 
   function clearDraftForCard(profileIdValue, cardIdValue) {
@@ -365,6 +366,17 @@ function createMessageDiscoveryController(deps = {}) {
       startedAt: "",
       updatedAt: "",
       expiresAt: ""
+    };
+  }
+
+  function durableStatus(profileId) {
+    const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
+    if (unresolved.length === 0) return emptyStatus(profileId);
+    return {
+      ...emptyStatus(profileId),
+      status: "needs_user_action",
+      unresolved: unresolved.length,
+      reasonCode: safeCode(unresolved[0].reasonCode)
     };
   }
 

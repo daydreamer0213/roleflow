@@ -73,7 +73,7 @@ async function runBossMessageDiscovery({
     const target = queue[queueIndex];
     throwIfAborted(signal);
     if (target.previewKind === "unsupported") {
-      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained);
+      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed);
     }
     let selected;
     try {
@@ -81,7 +81,7 @@ async function runBossMessageDiscovery({
       selected = await reader.openQueuedConversation(target, signal);
     } catch (error) {
       if (shouldInterrupt(error, signal)) throw error;
-      return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained);
+      return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained, processed);
     }
     if (selected?.skipped) {
       await paceBeforeNext({
@@ -158,7 +158,7 @@ async function runBossMessageDiscovery({
         });
         continue;
       }
-      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained);
+      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed);
     }
 
     let classification;
@@ -424,18 +424,18 @@ function unresolvedSummary(db, profileId) {
   return { count: items.length, reasonCode: items[0]?.reasonCode || "" };
 }
 
-function stoppedSummary(reasonCode, queued, results, retained = {}) {
+function stoppedSummary(reasonCode, queued, results, retained = {}, processed = 0) {
   return safeStatus("needs_user_action", {
     reasonCode,
     queued,
-    processed: 0,
+    processed,
     unresolved: retained.count,
     results
   });
 }
 
-function emitStopped(reasonCode, queued, results, logger, onStatus, retained) {
-  const stopped = stoppedSummary(reasonCode, queued, results, retained);
+function emitStopped(reasonCode, queued, results, logger, onStatus, retained, processed) {
+  const stopped = stoppedSummary(reasonCode, queued, results, retained, processed);
   emitStatus(stopped, logger, onStatus);
   return stopped;
 }

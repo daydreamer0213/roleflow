@@ -19,6 +19,7 @@ const {
   ensureProgressCard,
   transitionProgressCard
 } = require("../src/core/candidate_progress");
+const { recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 const { installDashboardSignalHandlers } = require("../src/cli");
@@ -388,6 +389,36 @@ async function main() {
   assert.strictEqual(response.status, 200, manualHtml);
   assert(manualHtml.includes('id="communication-0"'), "manual paste must still return a draft");
   assert(!manualHtml.includes("你有 Python 和 RAG 项目经验吗？"));
+
+  const retainedFixture = createFixture();
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: retainedFixture.profileId,
+    platform: "boss",
+    conversationKey: `sha256:${"d".repeat(64)}`,
+    previewDigest: `sha256:${"e".repeat(64)}`,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-11T08:00:00.000Z"
+  });
+  let durableStatus = await getStatus(base, retainedFixture.profileId);
+  assert.strictEqual(durableStatus.status, "needs_user_action", "an inactive controller must surface durable unresolved work");
+  assert.strictEqual(durableStatus.unresolved, 1);
+  assert.strictEqual(durableStatus.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
+  assertNoPrivateData(durableStatus);
+  let durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
+  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "the no-run page state must show durable unresolved work");
+  assertNoPrivateData(durablePage.body);
+  scenarios.push(completedRun({ fixture: retainedFixture, drafts: ["durable-cleanup-draft"] }));
+  await startAndWait(base, retainedFixture.profileId, "completed");
+  await waitForLeaseRelease();
+  cleanupTimers.fire(cleanupTimers.latest().id);
+  durableStatus = await getStatus(base, retainedFixture.profileId);
+  assert.strictEqual(durableStatus.status, "needs_user_action", "30-minute cleanup must not hide durable unresolved work");
+  assert.strictEqual(durableStatus.unresolved, 1);
+  assert.strictEqual(durableStatus.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
+  durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
+  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"));
+  assertNoPrivateData(durablePage.body);
 
   const closeRace = closeRaceRun(fixture);
   scenarios.push(closeRace.run);

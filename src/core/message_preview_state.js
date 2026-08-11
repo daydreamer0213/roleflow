@@ -91,40 +91,62 @@ function clearUnresolvedMessageDiscoveryItem(db, input = {}) {
 }
 
 function planMessageDiscoveryQueue({ rows = [], baselines = new Map(), unresolved = new Map() } = {}) {
-  const unreadQueue = [];
-  const unresolvedQueue = [];
-  const previewChangedQueue = [];
-  const baselineWrites = [];
+  const targets = new Map();
   for (const row of rows || []) {
     if (!row || typeof row !== "object") continue;
     const conversationKey = String(row.conversationKey || "").trim();
     const previewDigest = String(row.previewDigest || "").trim();
     const previewKind = previewKindValue(row.previewKind || "unknown");
+    if (!isDigest(conversationKey) || !isDigest(previewDigest)) continue;
     if (row.unread === true) {
-      unreadQueue.push(queueTarget("unread", row, conversationKey, previewDigest, previewKind));
+      replaceHigherPriorityTarget(targets, conversationKey, {
+        priority: 3,
+        target: queueTarget("unread", row, conversationKey, previewDigest, previewKind)
+      });
       continue;
     }
-    if (!/^sha256:[a-f0-9]{64}$/.test(conversationKey)) continue;
     if (unresolved.get(conversationKey)) {
-      unresolvedQueue.push(queueTarget("durable_unresolved", row, conversationKey, previewDigest, previewKind));
+      replaceHigherPriorityTarget(targets, conversationKey, {
+        priority: 2,
+        target: queueTarget("durable_unresolved", row, conversationKey, previewDigest, previewKind)
+      });
       continue;
     }
     const baseline = baselines.get(conversationKey);
     if (!baseline) {
-      baselineWrites.push(baselineWrite(conversationKey, previewDigest, previewKind));
+      replaceHigherPriorityTarget(targets, conversationKey, {
+        priority: 0,
+        baseline: baselineWrite(conversationKey, previewDigest, previewKind)
+      });
       continue;
     }
     if (baseline.previewDigest === previewDigest) continue;
     if (previewKind === "possible_hr_reply" || previewKind === "unsupported") {
-      previewChangedQueue.push(queueTarget("preview_changed", row, conversationKey, previewDigest, previewKind));
+      replaceHigherPriorityTarget(targets, conversationKey, {
+        priority: 1,
+        target: queueTarget("preview_changed", row, conversationKey, previewDigest, previewKind)
+      });
       continue;
     }
-    baselineWrites.push(baselineWrite(conversationKey, previewDigest, previewKind));
+    replaceHigherPriorityTarget(targets, conversationKey, {
+      priority: 0,
+      baseline: baselineWrite(conversationKey, previewDigest, previewKind)
+    });
   }
+  const selected = [...targets.values()];
   return {
-    queue: Object.freeze([...unreadQueue, ...unresolvedQueue, ...previewChangedQueue]),
-    baselineWrites: Object.freeze(baselineWrites)
+    queue: Object.freeze([3, 2, 1].flatMap((priority) => selected
+      .filter((item) => item.priority === priority)
+      .map((item) => item.target))),
+    baselineWrites: Object.freeze(selected
+      .filter((item) => item.priority === 0)
+      .map((item) => item.baseline))
   };
+}
+
+function replaceHigherPriorityTarget(targets, conversationKey, next) {
+  const previous = targets.get(conversationKey);
+  if (!previous || next.priority > previous.priority) targets.set(conversationKey, next);
 }
 
 function commitProcessedPreview(db, input = {}) {
@@ -179,7 +201,7 @@ function previewKindValue(value) {
 
 function digestKey(value, name) {
   const key = String(value || "").trim().toLowerCase();
-  if (!/^sha256:[a-f0-9]{64}$/.test(key)) {
+  if (!isDigest(key)) {
     throw previewError("PREVIEW_DIGEST_INVALID", `${name} must be a SHA-256 digest`);
   }
   return key;
@@ -201,6 +223,10 @@ function isoText(value) {
 
 function shortText(value, maxLength) {
   return String(value || "").trim().slice(0, maxLength);
+}
+
+function isDigest(value) {
+  return /^sha256:[a-f0-9]{64}$/.test(String(value || "").trim().toLowerCase());
 }
 
 function safeReasonCode(value) {

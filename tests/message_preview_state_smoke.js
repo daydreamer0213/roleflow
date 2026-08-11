@@ -124,6 +124,33 @@ try {
     "unread rows must outrank retained unresolved rows, which outrank preview changes"
   );
   assert.strictEqual(planned.baselineWrites.length, 0, "a retained unresolved row must never become a read-history baseline");
+  planned = planMessageDiscoveryQueue({
+    rows: [
+      { ...unreadRow(digest("conversation-b"), digest("duplicate-unread-a")), rowIndex: 1 },
+      { ...unreadRow(digest("conversation-b"), digest("duplicate-unread-b")), rowIndex: 2 },
+      { ...readRow(digest("conversation-b"), digest("duplicate-unread-c")), rowIndex: 3 },
+      { ...readRow(digest("conversation-c"), digest("durable-unresolved")), rowIndex: 4 },
+      { ...readRow(digest("conversation-a"), digest("changed-again")), rowIndex: 5 },
+      { ...unreadRow("", digest("invalid-unread")), rowIndex: 6 }
+    ],
+    baselines: new Map([[digest("conversation-a"), {
+      previewDigest: digest("changed"),
+      previewKind: "possible_hr_reply"
+    }]]),
+    unresolved: new Map([
+      [digest("conversation-b"), { reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND" }],
+      [digest("conversation-c"), unresolved[0]]
+    ])
+  });
+  assert.deepStrictEqual(
+    planned.queue.map((item) => [item.operation, item.conversationKey]),
+    [
+      ["unread", digest("conversation-b")],
+      ["durable_unresolved", digest("conversation-c")],
+      ["preview_changed", digest("conversation-a")]
+    ],
+    "queue targets must deduplicate by conversation digest while retaining unread, unresolved, preview priority"
+  );
   clearUnresolvedMessageDiscoveryItem(db, {
     profileId,
     platform,

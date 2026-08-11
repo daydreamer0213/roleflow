@@ -47,6 +47,7 @@ async function main() {
   await unsupportedPreviewSmoke();
   await classificationOutcomeSmoke();
   await readerStopSmoke();
+  await terminalAfterProcessedSmoke();
   await abortAfterClassificationSmoke();
   await pacingAndInterruptSmoke();
   console.log("message_discovery_smoke ok");
@@ -782,6 +783,48 @@ async function readerStopSmoke() {
     (error) => error === riskError
   );
   assert.deepStrictEqual(riskCalls, [0], "risk control must stop the immutable queue");
+}
+
+async function terminalAfterProcessedSmoke() {
+  for (const [suffix, code] of [
+    ["page-lost", "BOSS_MESSAGE_PAGE_LOST"],
+    ["login-required", "BOSS_MESSAGE_LOGIN_REQUIRED"],
+    ["reader-error", "MESSAGE_DISCOVERY_READER_ERROR"]
+  ]) {
+    const fixture = createFixture({ suffix: `terminal-after-${suffix}`, title: `Terminal ${suffix} Engineer` });
+    const terminal = Object.assign(new Error("redacted terminal"), { code });
+    let modelCalls = 0;
+    const summary = await runBossMessageDiscovery({
+      db,
+      profileId: fixture.profileId,
+      reader: {
+        async scanConversationRows() {
+          return {
+            tabId: "fake-tab",
+            path: "/web/geek/chat",
+            rows: Object.freeze([
+              Object.freeze(messageRow(0, true, safeDigest(["conversation", `${suffix}-first`]), safeDigest(["preview", `${suffix}-first`]))),
+              Object.freeze(messageRow(1, true, safeDigest(["conversation", `${suffix}-second`]), safeDigest(["preview", `${suffix}-second`])))
+            ])
+          };
+        },
+        async openQueuedConversation(target) {
+          if (target.rowIndex === 1) throw terminal;
+          return selectedConversation({ title: fixture.title, messageId: "123456789012510" });
+        }
+      },
+      classifyMessageGroup: async () => {
+        modelCalls += 1;
+        return classification();
+      },
+      sleepFn: async () => {}
+    });
+    assert.strictEqual(summary.status, "needs_user_action");
+    assert.strictEqual(summary.reasonCode, code);
+    assert.strictEqual(summary.processed, 1, "a later terminal failure must preserve earlier successful processing");
+    assert.strictEqual(summary.results.length, 1, "terminal summary results must match its processed count");
+    assert.strictEqual(modelCalls, 1);
+  }
 }
 
 async function abortAfterClassificationSmoke() {
