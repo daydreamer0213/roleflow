@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "audit_kind": "static-commonjs-export-owner-database-audit",
+  "audited_commit": "483a40cd5bdc6508c2ff88564280f8f13ac26a70",
+  "architecture_final_main_commit": "25d5c26",
+  "method": {
+    "source_root": "src",
+    "source_file_glob": "**/*.js",
+    "require_parser": "literal CommonJS require(\"...\") / require('...') calls",
+    "relative_resolution": ["path", "path.js", "path/index.js"],
+    "cycle_algorithm": "depth-first search over resolved source edges",
+    "limitation": "Computed/dynamic require calls are intentionally outside this literal-call audit."
+  },
+  "source_files": 92,
+  "requires": {
+    "static_calls": 302,
+    "resolved_source_edges": {
+      "count": 255,
+      "sources_with_edges": 56,
+      "ordered_triples_sha256": "8e94c8d5bb55787e210d60f58e47adcafc8389465a219c272a2dae860b29d12c",
+      "edges_by_source": {
+        "src/adapters/browser/index.js": 1,
+        "src/adapters/models/index.js": 2,
+        "src/adapters/models/mock.js": 1,
+        "src/adapters/models/openai_compatible.js": 2,
+        "src/adapters/sites/boss.js": 5,
+        "src/adapters/sites/boss_message_reader.js": 1,
+        "src/application/analysis/index.js": 9,
+        "src/application/communication/index.js": 4,
+        "src/cli.js": 36,
+        "src/core/analysis_revision.js": 2,
+        "src/core/communication_batches.js": 1,
+        "src/core/communication_calibration.js": 2,
+        "src/core/communication_executor.js": 8,
+        "src/core/communication_runtime.js": 2,
+        "src/core/four_tier_decision.js": 1,
+        "src/core/inherited_search_scope.js": 1,
+        "src/core/job_analysis.js": 12,
+        "src/core/llm_analyzer.js": 2,
+        "src/core/message_discovery.js": 4,
+        "src/core/message_reply_analyzer.js": 1,
+        "src/core/message_reply_contract.js": 1,
+        "src/core/model_contract.js": 1,
+        "src/core/model_settings.js": 2,
+        "src/core/plan_validation.js": 3,
+        "src/core/platform_runtime_policy.js": 2,
+        "src/core/profile_onboarding.js": 3,
+        "src/core/profile_schema.js": 2,
+        "src/core/resume_parser.js": 2,
+        "src/core/scan_execution.js": 1,
+        "src/core/scan_resume.js": 2,
+        "src/core/scan_snapshot.js": 2,
+        "src/core/scoped_keyword_stats.js": 2,
+        "src/core/scoring.js": 1,
+        "src/core/search_plan.js": 2,
+        "src/core/site_access_budget.js": 2,
+        "src/core/split_semantic_matching.js": 2,
+        "src/core/storage.js": 15,
+        "src/core/workflow_analysis_executor.js": 3,
+        "src/core/workflow_analysis_tasks.js": 2,
+        "src/core/workflow_control.js": 2,
+        "src/core/workflow_inventory.js": 6,
+        "src/core/workflow_progress.js": 3,
+        "src/core/workflow_run.js": 5,
+        "src/dashboard/message_discovery_controller.js": 6,
+        "src/dashboard/pages/today.js": 2,
+        "src/dashboard/pages/workflow.js": 3,
+        "src/dashboard/server.js": 48,
+        "src/dashboard/ui/navigation.js": 1,
+        "src/dashboard/ui/shell.js": 3,
+        "src/dashboard/view_models/today.js": 2,
+        "src/dashboard/view_models/workflow.js": 1,
+        "src/storage/candidate_store.js": 2,
+        "src/storage/communication_store.js": 9,
+        "src/storage/job_store.js": 10,
+        "src/storage/scan_store.js": 3,
+        "src/storage/workflow_store.js": 2
+      }
+    },
+    "unresolved_relative_requires": [],
+    "external_requires_count": 47
+  },
+  "cycles": [],
+  "forbidden_edge_policies": [
+    { "policy": "storage_to_core_storage", "findings": [] },
+    { "policy": "storage_to_dashboard", "findings": [] },
+    { "policy": "storage_to_application", "findings": [] },
+    { "policy": "storage_to_browser_adapter", "findings": [] },
+    { "policy": "application_to_dashboard", "findings": [] },
+    { "policy": "application_to_browser_adapter", "findings": [] }
+  ],
+  "exports": {
+    "storage_facade": { "count": 136, "module": "src/core/storage.js" },
+    "workflow_store": { "count": 39, "module": "src/storage/workflow_store.js" },
+    "candidate_store": { "count": 29, "module": "src/storage/candidate_store.js" },
+    "job_store": { "count": 26, "module": "src/storage/job_store.js" },
+    "scan_store": { "count": 35, "module": "src/storage/scan_store.js", "note": "34 operations plus SCAN_RUN_STATUSES" },
+    "communication_store": { "count": 14, "module": "src/storage/communication_store.js" },
+    "storage_shared": { "count": 9, "module": "src/storage/storage_shared.js" }
+  },
+  "facade_identities": {
+    "workflow": {
+      "count": 39,
+      "all_identical": true,
+      "names": [
+        "WORKFLOW_RUN_STATUSES", "WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE", "attachWorkflowCommunication", "attachWorkflowScan", "attachWorkflowScanRun", "claimWorkflowJobTaskRow", "completeWorkflowJobTaskRow", "countWorkflowJobTaskStatuses", "countWorkflowJobTasks", "createWorkflowRun", "failWorkflowJobTaskRow", "finishJobAnalysisAttemptRow", "getActiveWorkflowRun", "getRunningJobAnalysisAttemptRow", "getWorkflowJobTaskRow", "getWorkflowObservationJob", "getWorkflowRun", "getWorkflowRunByCommunicationBatch", "incrementWorkflowRunActivity", "incrementWorkflowTimeoutCounters", "insertJobAnalysisAttemptRow", "insertWorkflowJobTaskRow", "isWorkflowJobTaskObservationReady", "jobAnalysisAttemptRow", "listJobAnalysisAttemptRows", "listWorkflowJobTaskRows", "listWorkflowRuns", "markWorkflowJobTasksStopped", "reactivateWorkflowDetailRequiredTaskRow", "recordWorkflowPlatformAccess", "recordWorkflowScanWait", "requestWorkflowRunConfigurationPause", "selectClaimableWorkflowJobTaskRow", "selectEarliestRetryAvailableAt", "selectExpiredLeaseWorkflowJobTaskRows", "selectReadyWorkflowJobEntries", "settleIncompleteWorkflowJobTaskRows", "transitionWorkflowRun", "workflowJobTaskRow"
+      ]
+    }
+  },
+  "owners": {
+    "export_counts": {
+      "storage": 136,
+      "workflow": 39,
+      "candidate": 29,
+      "job": 26,
+      "scan": 35,
+      "communication": 14,
+      "shared": 9
+    },
+    "transaction": {
+      "immediate_transaction_function_definitions": [
+        { "file": "src/storage/storage_shared.js", "count": 1 }
+      ],
+      "owner": "src/storage/storage_shared.js"
+    },
+    "database": {
+      "database_sync_reference_owner_files": ["src/core/storage.js"],
+      "owner_count": 1
+    },
+    "schema_migrations_backfills": {
+      "owner": "src/core/storage.js",
+      "owner_count": 1
+    }
+  },
+  "blob_metrics": {
+    "baseline": "e36bee8",
+    "final": "25d5c26",
+    "src": {
+      "baseline": { "files": 74, "physical_lines": 34149, "nonblank_lines": 32196 },
+      "final": { "files": 92, "physical_lines": 34346, "nonblank_lines": 32325 },
+      "physical_line_delta": 197,
+      "nonblank_line_delta": 129
+    },
+    "files": {
+      "src/core/storage.js": {
+        "baseline": { "physical_lines": 5030, "nonblank_lines": 4770 },
+        "final": { "physical_lines": 1438, "nonblank_lines": 1369 },
+        "physical_line_delta": -3592
+      },
+      "src/dashboard/server.js": {
+        "baseline": { "physical_lines": 5023, "nonblank_lines": 4793 },
+        "final": { "physical_lines": 4001, "nonblank_lines": 3801 },
+        "physical_line_delta": -1022
+      },
+      "src/cli.js": {
+        "baseline": { "physical_lines": 2471, "nonblank_lines": 2391 },
+        "final": { "physical_lines": 2471, "nonblank_lines": 2391 },
+        "physical_line_delta": 0,
+        "status": "unchanged; not application-extracted"
+      }
+    }
+  }
+}
