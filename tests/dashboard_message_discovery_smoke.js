@@ -141,6 +141,7 @@ async function main() {
   assert(!page.body.includes('name="hrMessage"'));
   assertMessageDiscoveryProductFrame(page.body, fixture);
   await messageDiscoveryClientResponseSmoke(page.body);
+  await messageDiscoveryFormActionSmoke(page.body);
   await messageDiscoveryDuplicateSubmitSmoke(page.body);
   await messageDiscoveryPollingSmoke(page.body);
   await messageDiscoveryMalformedResponseSmoke(page.body);
@@ -1072,6 +1073,19 @@ async function messageDiscoveryClientResponseSmoke(markup) {
   }
 }
 
+async function messageDiscoveryFormActionSmoke(markup) {
+  let destination;
+  const client = runMessageDiscoveryClient(markup, {
+    fetch(url) {
+      destination = url;
+      return jsonResponse(202, { status: "running" });
+    }
+  });
+  await client.submit();
+  assert.strictEqual(destination, "/api/message-discovery", "discovery submits to the form action attribute");
+  assert.notStrictEqual(String(destination), "[object HTMLInputElement]", "discovery must not submit to the named action control");
+}
+
 async function messageDiscoveryPollingSmoke(markup) {
   const failedPoll = runMessageDiscoveryClient(markup, { response: textResponse(502, "bad gateway") }, { status: "running" });
   assert.strictEqual(failedPoll.timerCount(), 1, "a running page must schedule one poll");
@@ -1173,8 +1187,9 @@ function runMessageDiscoveryClient(markup, scenario, options = {}) {
   const handlers = new Map();
   const button = { disabled: false, dataset: {} };
   const form = {
-    action: "http://127.0.0.1/api/message-discovery",
+    action: { nodeName: "INPUT", name: "action", toString() { return "[object HTMLInputElement]"; } },
     formData: [["action", "start"], ["profileId", "1"]],
+    getAttribute(name) { return name === "action" ? "/api/message-discovery" : null; },
     querySelectorAll(selector) { return selector === "button" ? [button] : []; },
     addEventListener(type, handler) { handlers.set(type, handler); }
   };
