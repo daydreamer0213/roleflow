@@ -51,8 +51,9 @@ process.removeListener("warning", onWarning);
 contract01ExportsAndFacadeIdentity();
 contract02LoadGraphAndBodyInventory();
 contract03RuntimeOwnershipAndRollback();
-contract04RegressionChildren();
-console.log("workflow_store_contract_smoke ok (4 owner contracts)");
+contract04DirectHealthSnapshot();
+contract05RegressionChildren();
+console.log("workflow_store_contract_smoke ok (5 owner contracts)");
 
 function contract01ExportsAndFacadeIdentity() {
   assert.deepEqual(Object.keys(workflowStore).sort(), WORKFLOW_EXPORTS);
@@ -121,6 +122,35 @@ function contract03RuntimeOwnershipAndRollback() {
   const db = storage.openDb(":memory:");
   try {
     const { profileId, planId } = seedPlan(db);
+    const other = seedPlan(db);
+    assertWorkflowFailure(
+      () => workflowStore.createWorkflowRun(db, {
+        id: "missing-owner", localDay: "2030-01-02", sequence: 1
+      }),
+      "WORKFLOW_OWNER_REQUIRED",
+      "workflow run profile and plan are required"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.createWorkflowRun(db, {
+        id: "bad-day", profileId, planId, localDay: "20300102", sequence: 1
+      }),
+      "WORKFLOW_LOCAL_DAY_INVALID",
+      "workflow local day must use YYYY-MM-DD"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.createWorkflowRun(db, {
+        id: "bad-sequence", profileId, planId, localDay: "2030-01-02", sequence: 4
+      }),
+      "WORKFLOW_SEQUENCE_INVALID",
+      "workflow run sequence must be 1, 2, or 3"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.createWorkflowRun(db, {
+        id: "bad-plan-owner", profileId, planId: other.planId, localDay: "2030-01-02", sequence: 1
+      }),
+      "WORKFLOW_PLAN_PROFILE_MISMATCH",
+      "workflow plan does not belong to the selected profile"
+    );
     const run = workflowStore.createWorkflowRun(db, {
       id: "workflow-store-contract", profileId, planId, localDay: "2030-01-02", sequence: 1,
       targetSuccessCount: 2, inventoryCount: 0, candidateGap: 2
@@ -136,10 +166,52 @@ function contract03RuntimeOwnershipAndRollback() {
     assert.equal(run.id, "workflow-store-contract");
     assert.equal(run.localDay, "2030-01-02");
     assert.equal(run.sequence, 1);
+    assertWorkflowFailure(
+      () => workflowStore.createWorkflowRun(db, {
+        id: "duplicate-slot", profileId, planId, localDay: "2030-01-02", sequence: 1
+      }),
+      "WORKFLOW_RUN_SLOT_EXISTS",
+      "workflow run slot already exists for this local day"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.transitionWorkflowRun(db, { id: "missing-run", status: "scanning" }),
+      "WORKFLOW_RUN_NOT_FOUND",
+      "workflow run was not found"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.transitionWorkflowRun(db, { id: run.id, status: "not-a-status" }),
+      "WORKFLOW_STATUS_INVALID",
+      "workflow run status is invalid"
+    );
     assert.equal(workflowStore.transitionWorkflowRun(db, { id: run.id, status: "scanning" }).status, "scanning");
-    assert.throws(
+    assertWorkflowFailure(
       () => workflowStore.transitionWorkflowRun(db, { id: run.id, status: "communicating" }),
-      (error) => error.code === "WORKFLOW_TRANSITION_INVALID" && error.message === "workflow run cannot transition from scanning to communicating"
+      "WORKFLOW_TRANSITION_INVALID",
+      "workflow run cannot transition from scanning to communicating"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.transitionWorkflowRun(db, {
+        id: run.id, status: "scanning", controlState: "invalid-control"
+      }),
+      "WORKFLOW_CONTROL_INVALID",
+      "workflow run control state is invalid"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.transitionWorkflowRun(db, {
+        id: run.id, status: "scanning", resumePhase: "review_required"
+      }),
+      "WORKFLOW_RESUME_PHASE_INVALID",
+      "workflow run resume phase is invalid"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScan(db, { id: run.id }),
+      "WORKFLOW_SCAN_LINK_REQUIRED",
+      "scan run and batch are required"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScanRun(db, { id: run.id }),
+      "WORKFLOW_SCAN_RUN_REQUIRED",
+      "scan run is required"
     );
     const batchId = storage.createBatch(db, "boss", "owner", "workflow store contract", { profileId, searchPlanId: planId });
     const scanRun = storage.createScanRun(db, { runId: "workflow-store-contract-scan", planId, batchId });
@@ -163,12 +235,43 @@ function contract03RuntimeOwnershipAndRollback() {
     }
     assert.deepEqual(tableRows(db, "workflow_runs"), before, "late scan-link failure must roll back the complete workflow row");
     assert.equal(workflowStore.attachWorkflowScan(db, { id: run.id, scanRunId: scanRun.id, scanBatchId: batchId }).scanRunId, scanRun.id);
+    const alternateBatchId = storage.createBatch(db, "boss", "alternate", "workflow store alternate", {
+      profileId, searchPlanId: planId
+    });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScan(db, {
+        id: run.id, scanRunId: scanRun.id, scanBatchId: alternateBatchId
+      }),
+      "WORKFLOW_SCAN_LINK_MISMATCH",
+      "workflow run is already attached to another scan"
+    );
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScan(db, {
+        id: run.id, scanRunId: "different-active-scan", scanBatchId: batchId
+      }),
+      "WORKFLOW_SCAN_LINK_MISMATCH",
+      "workflow run is already attached to another active scan"
+    );
 
     const runOnly = workflowStore.createWorkflowRun(db, {
       id: "workflow-store-contract-run-only", profileId, planId, localDay: "2030-01-02", sequence: 2,
       targetSuccessCount: 2, inventoryCount: 0, candidateGap: 2
     });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScanRun(db, {
+        id: runOnly.id, scanRunId: "not-eligible-yet"
+      }),
+      "WORKFLOW_SCAN_LINK_INVALID",
+      "workflow execution can only be attached during scanning, analyzing, or interruption"
+    );
     workflowStore.transitionWorkflowRun(db, { id: runOnly.id, status: "scanning" });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowScanRun(db, {
+        id: runOnly.id, scanRunId: scanRun.id
+      }),
+      "WORKFLOW_SCAN_EXECUTION_OWNED",
+      "scan execution is already attached to another workflow run"
+    );
     const runOnlyScan = storage.createScanRun(db, { runId: "workflow-store-contract-run-only-scan", planId, batchId });
     const runOnlyBefore = tableRows(db, "workflow_runs");
     let runOnlyCommitFailure = false;
@@ -189,12 +292,153 @@ function contract03RuntimeOwnershipAndRollback() {
     }
     assert.deepEqual(tableRows(db, "workflow_runs"), runOnlyBefore, "late scan-run-link failure must roll back the complete workflow row");
     assert.equal(workflowStore.attachWorkflowScanRun(db, { id: runOnly.id, scanRunId: runOnlyScan.id }).scanRunId, runOnlyScan.id);
+
+    const communicationRun = workflowStore.createWorkflowRun(db, {
+      id: "workflow-store-contract-communication", profileId, planId, localDay: "2030-01-03", sequence: 1,
+      targetSuccessCount: 1, inventoryCount: 1, candidateGap: 0
+    });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowCommunication(db, {
+        id: communicationRun.id, communicationBatchId: 1
+      }),
+      "WORKFLOW_COMMUNICATION_LINK_INVALID",
+      "communication can only be attached after review"
+    );
+    workflowStore.transitionWorkflowRun(db, { id: communicationRun.id, status: "review_required" });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowCommunication(db, { id: communicationRun.id }),
+      "WORKFLOW_COMMUNICATION_LINK_REQUIRED",
+      "communication batch is required"
+    );
+    const otherCommunicationBatchId = seedCommunicationBatch(db, other);
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowCommunication(db, {
+        id: communicationRun.id, communicationBatchId: otherCommunicationBatchId
+      }),
+      "WORKFLOW_COMMUNICATION_LINK_MISMATCH",
+      "communication batch does not belong to this workflow run"
+    );
+    const communicationBatchId = seedCommunicationBatch(db, { profileId, planId });
+    workflowStore.attachWorkflowCommunication(db, {
+      id: communicationRun.id, communicationBatchId
+    });
+    assertWorkflowFailure(
+      () => workflowStore.attachWorkflowCommunication(db, {
+        id: communicationRun.id,
+        communicationBatchId: seedCommunicationBatch(db, { profileId, planId })
+      }),
+      "WORKFLOW_COMMUNICATION_LINK_MISMATCH",
+      "workflow run is already attached to another communication batch"
+    );
+    assert.throws(
+      () => workflowStore.listJobAnalysisAttemptRows(db, {
+        workflowRunId: run.id, taskId: 0
+      }),
+      (error) => error instanceof Error
+        && error.code === undefined
+        && error.message === "listJobAnalysisAttemptRows requires a positive integer taskId, got 0"
+    );
   } finally {
     db.close();
   }
 }
 
-function contract04RegressionChildren() {
+function contract04DirectHealthSnapshot() {
+  const db = storage.openDb(":memory:");
+  try {
+    const owner = seedPlan(db);
+    const other = seedPlan(db);
+    const batchId = storage.createBatch(db, "boss", "health", "workflow health contract", {
+      profileId: owner.profileId, searchPlanId: owner.planId
+    });
+    const jobIds = ["health-a", "health-b"].map((sourceId) => storage.upsertJob(db, {
+      source: "boss", sourceId, keyword: "health", title: `Health ${sourceId}`,
+      company: "Health Company", location: "Guangzhou", salary: "10-15K",
+      experience: "1-3 years", education: "Bachelor", bossActiveText: "Active today",
+      bossActiveDays: 0, url: `https://www.zhipin.com/job_detail/${sourceId}.html`,
+      tags: ["Node.js"], description: "Complete health contract job description. ".repeat(4),
+      score: 20, level: "recommended", matches: ["Node.js"], risks: [], qualityTags: [],
+      greeting: "", analysis: { semanticStatus: "complete", recommendation: "apply" }
+    }, batchId));
+    for (const jobId of jobIds) {
+      storage.recordCandidateJobEvent(db, {
+        profileId: owner.profileId, planId: owner.planId, jobId, eventType: "review", payload: { source: "health-contract" }
+      });
+    }
+    workflowStore.createWorkflowRun(db, {
+      id: "health-contract-older", profileId: owner.profileId, planId: owner.planId,
+      localDay: "2030-01-01", sequence: 1, targetSuccessCount: 2, inventoryCount: 2, candidateGap: 0
+    });
+    workflowStore.createWorkflowRun(db, {
+      id: "health-contract-linked", profileId: owner.profileId, planId: owner.planId,
+      localDay: "2030-01-02", sequence: 1, targetSuccessCount: 2, inventoryCount: 2, candidateGap: 0
+    });
+    const otherBatchId = storage.createBatch(db, "boss", "other", "workflow health mismatch", {
+      profileId: other.profileId, searchPlanId: other.planId
+    });
+    const otherScan = storage.createScanRun(db, {
+      runId: "health-contract-other-scan", planId: other.planId, batchId: otherBatchId
+    });
+    const otherCommunicationBatchId = seedCommunicationBatch(db, other);
+    db.prepare(`UPDATE workflow_runs
+      SET scan_run_id = ?, scan_batch_id = ?, communication_batch_id = ?
+      WHERE id = ?`).run(otherScan.id, otherBatchId, otherCommunicationBatchId, "health-contract-linked");
+
+    const rowsBefore = databaseRows(db);
+    const changesBefore = db.prepare("SELECT total_changes() AS count").get().count;
+    const snapshot = storage.getWorkflowHealthSnapshot(db, {
+      profileId: owner.profileId, planId: owner.planId, now: "2030-01-02T12:00:00.000Z",
+      jobLimit: 1, workflowLimit: 1, eventLimit: 1
+    });
+
+    assert.deepEqual(Object.keys(snapshot).sort(), [
+      "candidateEvents", "generatedAt", "jobs", "linkIssues", "planId", "profileId",
+      "truncated", "workflowRuns"
+    ]);
+    assert.equal(snapshot.generatedAt.toISOString(), "2030-01-02T12:00:00.000Z");
+    assert.equal(snapshot.profileId, owner.profileId);
+    assert.equal(snapshot.planId, owner.planId);
+    assert.equal(snapshot.jobs.length, 1);
+    assert.equal(snapshot.workflowRuns.length, 1);
+    assert.equal(snapshot.candidateEvents.length, 1);
+    assert.deepEqual(snapshot.truncated, { jobs: true, workflowRuns: true, candidateEvents: true });
+    assert.deepEqual(snapshot.linkIssues, [
+      { workflowId: "health-contract-linked", reason: "scan_plan_mismatch" },
+      { workflowId: "health-contract-linked", reason: "scan_batch_owner_mismatch" },
+      { workflowId: "health-contract-linked", reason: "communication_batch_owner_mismatch" }
+    ]);
+    assert.deepEqual(Object.keys(snapshot.jobs[0]).sort(), [
+      "activityObservedAt", "analysis", "applicationNote", "applicationReasonCode", "applicationStatus",
+      "applicationUpdatedAt", "batchId", "bossActiveDays", "bossActiveText", "company",
+      "daysSinceLastSeen", "decisionBucket", "description", "detailChanged", "education",
+      "effectiveBossActiveDays", "experience", "feedback", "feedbackRank", "firstBatchId",
+      "firstSeenAt", "followUpNote", "followUpUpdatedAt", "greeting", "id", "keyword",
+      "lastSeenAt", "latestScanBatchId", "level", "location", "matches", "observationId",
+      "previousContentHash", "profileId", "qualityTags", "refreshAttemptNumber",
+      "refreshAttemptedAt", "refreshErrorCode", "refreshNextRetryAt", "refreshResult", "reviewAt",
+      "risks", "salary", "score", "searchPlanId", "source", "sourceId", "tags", "title", "url",
+      "weakDuplicateCount"
+    ].sort());
+    assert.deepEqual(Object.keys(snapshot.workflowRuns[0]).sort(), [
+      "budget", "candidateGap", "circuitTimeoutJobCount", "communicationBatchId", "controlState", "createdAt",
+      "errorCode", "errorMessage", "finishedAt", "id", "inventoryCount", "keywords", "lastActivityAt",
+      "lifetimeTimeoutJobCount", "localDay", "metrics", "modelConfigRevision", "planId", "planner",
+      "platformAccessStartedAt", "profileId", "progressRevision", "recoveryGeneration", "resumePhase",
+      "reviewReadyAt", "scanBatchId", "scanNeeded", "scanRunId", "sequence", "shortfallCode", "startedAt",
+      "status", "successfulCount", "targetSuccessCount", "updatedAt"
+    ]);
+    assert.deepEqual(Object.keys(snapshot.candidateEvents[0]).sort(), [
+      "createdAt", "eventType", "id", "jobId", "payload", "planId", "profileId"
+    ]);
+    assert.deepEqual(Object.keys(snapshot.linkIssues[0]).sort(), ["reason", "workflowId"]);
+    assert.equal(db.prepare("SELECT total_changes() AS count").get().count, changesBefore);
+    assert.deepEqual(databaseRows(db), rowsBefore, "health snapshot must preserve every database row");
+  } finally {
+    db.close();
+  }
+}
+
+function contract05RegressionChildren() {
   for (const file of CHILD_TESTS) {
     const result = spawnSync(process.execPath, [path.join(__dirname, file)], {
       cwd: ROOT, encoding: "utf8", timeout: 120000, windowsHide: true
@@ -212,6 +456,34 @@ function seedPlan(db) {
     profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
   ) VALUES (?, 'Workflow Store Contract', '{}', NULL, 1, ?, ?)`).run(profileId, now, now).lastInsertRowid);
   return { profileId, planId };
+}
+
+function seedCommunicationBatch(db, { profileId, planId }) {
+  const now = "2030-01-02T00:00:00.000Z";
+  return Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'edge', 'confirmed', '{}', ?, ?, ?)`)
+    .run(profileId, planId, now, now, now).lastInsertRowid);
+}
+
+function databaseRows(db) {
+  return Object.fromEntries(db.prepare(`
+    SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    ORDER BY name
+  `).all().map(({ name }) => [
+    name,
+    db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).all()
+  ]));
+}
+
+function assertWorkflowFailure(action, code, message) {
+  assert.throws(
+    action,
+    (error) => error.code === code && error.message === message,
+    `${code} must retain its exact message`
+  );
 }
 
 function tableRows(db, table) {
