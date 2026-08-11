@@ -8,7 +8,7 @@ const {
   decisionPolicyHash
 } = require("../src/core/decision_policy");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
-const { main: compareShadowScorecard } = require("../scripts/compare-shadow-scorecard");
+const { buildShadowReport, main: compareShadowScorecard } = require("../scripts/compare-shadow-scorecard");
 const { buildShadowScorecard } = require("../scripts/lib/shadow_scorecard");
 
 function baseInput() {
@@ -146,6 +146,12 @@ try {
   const evaluationFixture = {
     cases: [
       {
+        id: "technical-contract-failure",
+        technicalBucket: "contract_failure",
+        humanLabel: { status: "confirmed", expectedTier: "primary" },
+        fixedSalaryBoundary: true
+      },
+      {
         id: "confirmed-primary",
         input: fullyBoundInput({ sameEvidence: true, explanation: true }),
         humanLabel: { status: "confirmed", expectedTier: "primary" }
@@ -273,6 +279,18 @@ try {
   assert.strictEqual(evaluationReport.evaluation, "matrix-vs-guarded-scorecard");
   assert.strictEqual(evaluationReport.sharedDecisionEngine, "deriveMatrixDecision");
   assert.strictEqual(evaluationReport.comparisonInterpretation, "matrix-vs-matrix-plus-guardrails residual");
+  assert.strictEqual(evaluationReport.total, 6, "top-level total must count only quality-eligible rows");
+  assert.strictEqual(evaluationReport.rawTotal, 7);
+  assert.strictEqual(evaluationReport.qualityEligibleCaseCount, 6);
+  assert.deepStrictEqual(evaluationReport.technicalBucketCounts, { contract_failure: 1 });
+  assert.strictEqual(evaluationReport.matrixVsGuardedScorecard.total, 6);
+  const technicalRow = evaluationReport.rows.find((row) => row.id === "technical-contract-failure");
+  assert.strictEqual(technicalRow.technicalBucket, "contract_failure");
+  assert.strictEqual(technicalRow.productionMatrixTier, null);
+  assert.strictEqual(technicalRow.candidateTier, null);
+  assert.strictEqual(technicalRow.scorecard, null);
+  assert(!evaluationReport.fixedSalaryBoundaryEscapes.matrixPreGuardRisk.some((row) => row.id === technicalRow.id));
+  assert(!evaluationReport.baselineSafetyCeilings.some((row) => row.id === technicalRow.id));
   assert.strictEqual(evaluationReport.matrixVsGuardedScorecard.confusion.primary.not_recommended, 2);
   assert.strictEqual(evaluationReport.verifiedHardBoundaryViolations.matrixPreGuardRisk[0].id, "fixed-salary-boundary");
   assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.guardedScorecard, []);
@@ -295,6 +313,17 @@ try {
   assert(responsibilityCeiling.codes.includes("alignment_consistency_cap"));
   assert.strictEqual(evaluationReport.rankingUsefulness.status, "available");
 
+  const denominatorCounterexample = buildShadowReport({
+    cases: [
+      evaluationFixture.cases.find((item) => item.id === "technical-contract-failure"),
+      evaluationFixture.cases.find((item) => item.id === "fixed-salary-boundary")
+    ]
+  });
+  assert.strictEqual(denominatorCounterexample.rawTotal, 2);
+  assert.strictEqual(denominatorCounterexample.total, 1);
+  assert.strictEqual(denominatorCounterexample.qualityEligibleCaseCount, 1);
+  assert.deepStrictEqual(denominatorCounterexample.technicalBucketCounts, { contract_failure: 1 });
+
   const samePathResult = spawnSync(process.execPath, [
     "scripts/compare-shadow-scorecard.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
   ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
@@ -310,7 +339,13 @@ try {
   assert.strictEqual(repeatedVariantReports[0], repeatedVariantReports[1]);
   assert.strictEqual(repeatedVariantReports[1], repeatedVariantReports[2]);
   const variantsReport = JSON.parse(repeatedVariantReports[0]);
+  assert.strictEqual(variantsReport.rawTotal, 7);
+  assert.strictEqual(variantsReport.qualityEligibleCaseCount, 6);
+  assert.deepStrictEqual(variantsReport.technicalBucketCounts, { contract_failure: 1 });
   assert.strictEqual(variantsReport.variants.length, 4);
+  assert(variantsReport.variants.every((variant) => variant.rawTotal === 7
+    && variant.qualityEligibleCaseCount === 6
+    && variant.technicalBucketCounts.contract_failure === 1));
   assert(variantsReport.variants.every((variant) => /^[a-f0-9]{64}$/.test(variant.policyHash)));
   assert.strictEqual(variantsReport.variants[0].id, "default");
   assert.strictEqual(variantsReport.variants[0].policyHash, decisionPolicyHash(DECISION_POLICY));

@@ -52,15 +52,16 @@ function buildShadowReport(fixture, metadata = {}) {
   const policy = fixture.policy || DECISION_POLICY;
   assertDecisionPolicy(policy);
   const rows = buildRows(fixture.cases, policy);
+  const qualityRows = rows.filter((row) => !row.technicalBucket);
   const matrixTierCounts = tierCounts(rows, "productionMatrixTier");
   const candidateTierCounts = tierCounts(rows, "candidateTier");
-  const comparableRows = rows.filter((row) => typeof row.finalRecommendation === "string" && row.finalRecommendation.trim());
-  const confirmedRows = rows.filter((row) => isConfirmedLabel(row.humanLabel));
-  const pendingRows = rows.filter((row) => row.humanLabel && !isConfirmedLabel(row.humanLabel));
-  const matrixVsGuardedScorecard = comparisonSummary(rows);
-  const hardBoundaryViolations = tierViolations(rows, "verifiedHardBoundary", nonRejectedTiers());
-  const severeRiskViolations = tierViolations(rows, "verifiedSevereRisk", nonRejectedTiers());
-  const guardedEvidenceSafetyViolations = rows.filter((row) => (
+  const comparableRows = qualityRows.filter((row) => typeof row.finalRecommendation === "string" && row.finalRecommendation.trim());
+  const confirmedRows = qualityRows.filter((row) => isConfirmedLabel(row.humanLabel));
+  const pendingRows = qualityRows.filter((row) => row.humanLabel && !isConfirmedLabel(row.humanLabel));
+  const matrixVsGuardedScorecard = comparisonSummary(qualityRows);
+  const hardBoundaryViolations = tierViolations(qualityRows, "verifiedHardBoundary", nonRejectedTiers());
+  const severeRiskViolations = tierViolations(qualityRows, "verifiedSevereRisk", nonRejectedTiers());
+  const guardedEvidenceSafetyViolations = qualityRows.filter((row) => (
     ["primary", "apply"].includes(row.candidateTier)
       && row.scorecard.evidenceCoverage.overall < DECISION_POLICY.minEvidenceCoverageForAutoSelect
   )).map((row) => ({
@@ -70,7 +71,7 @@ function buildShadowReport(fixture, metadata = {}) {
     minimumCoverage: DECISION_POLICY.minEvidenceCoverageForAutoSelect,
     finalReasons: row.scorecard.reasons.map((reason) => reason.code)
   }));
-  const guardedProductionSafetyCeilingViolations = rows.filter((row) => (
+  const guardedProductionSafetyCeilingViolations = qualityRows.filter((row) => (
     row.baselineSafetyCeiling.codes.length > 0
       && higherRecommendationTier(row.candidateTier, row.baselineSafetyCeiling.candidateTier)
   )).map((row) => ({
@@ -79,7 +80,7 @@ function buildShadowReport(fixture, metadata = {}) {
     baselineCandidateTier: row.baselineSafetyCeiling.candidateTier,
     baselineSafetyCodes: row.baselineSafetyCeiling.codes
   }));
-  const fixedSalaryBoundaryEscapes = tierViolations(rows, "fixedSalaryBoundary", nonRejectedTiers());
+  const fixedSalaryBoundaryEscapes = tierViolations(qualityRows, "fixedSalaryBoundary", nonRejectedTiers());
   return {
     version: REPORT_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -91,7 +92,10 @@ function buildShadowReport(fixture, metadata = {}) {
     evaluatedGitCommit: String(metadata.evaluatedGitCommit || ""),
     policyVersion: String(policy.version),
     policyHash: decisionPolicyHash(policy),
-    total: rows.length,
+    total: qualityRows.length,
+    rawTotal: rows.length,
+    qualityEligibleCaseCount: qualityRows.length,
+    technicalBucketCounts: bucketCounts(rows),
     matrixTierCounts,
     candidateTierCounts,
     comparedFinalRecommendations: comparableRows.length,
@@ -102,18 +106,18 @@ function buildShadowReport(fixture, metadata = {}) {
     verifiedSevereRiskViolations: severeRiskViolations,
     guardedEvidenceSafetyViolations,
     guardedProductionSafetyCeilingViolations,
-    baselineSafetyCeilings: rows.map((row) => ({ id: row.id, ...row.baselineSafetyCeiling })),
+    baselineSafetyCeilings: qualityRows.map((row) => ({ id: row.id, ...row.baselineSafetyCeiling })),
     fixedSalaryBoundaryEscapes,
     matrixPreGuardRisk: {
       verifiedHardBoundaryViolations: hardBoundaryViolations.matrixPreGuardRisk,
       verifiedSevereRiskViolations: severeRiskViolations.matrixPreGuardRisk,
       fixedSalaryBoundaryEscapes: fixedSalaryBoundaryEscapes.matrixPreGuardRisk
     },
-    explanationCoverage: explanationCoverage(rows),
-    evidenceCoverage: evidenceCoverage(rows),
+    explanationCoverage: explanationCoverage(qualityRows),
+    evidenceCoverage: evidenceCoverage(qualityRows),
     confirmedLabelCount: confirmedRows.length,
     pendingLabelCount: pendingRows.length,
-    unlabeledCount: rows.length - confirmedRows.length - pendingRows.length,
+    unlabeledCount: qualityRows.length - confirmedRows.length - pendingRows.length,
     rankingUsefulness: rankingMetrics(confirmedRows),
     rows
   };
@@ -132,6 +136,26 @@ function buildRows(cases, policy) {
     if (!id) throw new Error("every fixture case must have a non-empty id");
     if (seen.has(id)) throw new Error(`duplicate fixture case id: ${id}`);
     seen.add(id);
+    const technicalBucket = String(item?.technicalBucket || "").trim();
+    if (technicalBucket) {
+      return {
+        id,
+        technicalBucket,
+        finalRecommendation: item.finalRecommendation ?? null,
+        decisionBucket: item.decisionBucket ?? technicalBucket,
+        defaultSelectedForBatch: item.defaultSelectedForBatch ?? null,
+        humanLabel: normalizedHumanLabel(item.humanLabel),
+        fixedSalaryBoundary: hasFixedSalaryBoundary(item),
+        productionMatrixTier: null,
+        candidateTier: null,
+        baselineSafetyCeiling: null,
+        verifiedHardBoundary: false,
+        verifiedSevereRisk: false,
+        evidenceBinding: null,
+        explanationBinding: null,
+        scorecard: null
+      };
+    }
     if (!item.input || typeof item.input !== "object" || Array.isArray(item.input)) {
       throw new Error(`case ${id} input must be a non-array object`);
     }
@@ -141,6 +165,7 @@ function buildRows(cases, policy) {
     const productionMatrixTier = scorecard.score.productionMatrixTier;
     return {
       id,
+      technicalBucket: null,
       finalRecommendation: item.finalRecommendation ?? null,
       decisionBucket: item.decisionBucket ?? null,
       defaultSelectedForBatch: item.defaultSelectedForBatch ?? null,
@@ -161,6 +186,14 @@ function buildRows(cases, policy) {
       scorecard
     };
   }).sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+}
+
+function bucketCounts(rows) {
+  const buckets = [...new Set(rows.map((row) => row.technicalBucket).filter(Boolean))].sort();
+  return Object.fromEntries(buckets.map((bucket) => [
+    bucket,
+    rows.filter((row) => row.technicalBucket === bucket).length
+  ]));
 }
 
 function normalizedHumanLabel(label) {

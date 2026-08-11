@@ -22,13 +22,17 @@ function main(argv = process.argv.slice(2)) {
   const { fixture, inputFixtureSha256 } = readFixture(resolvedInput);
   const metadata = { inputFixtureSha256, evaluatedGitCommit: evaluatedGitCommit() };
   const variants = variantPolicies(fixture);
+  const evaluatedVariants = variants.map((variant) => evaluateVariant(fixture, variant, metadata));
   const report = {
     version: "shadow-scorecard-variants-report-v1",
     evaluation: "matrix-vs-guarded-scorecard-variants",
     inputFixtureSha256,
     evaluatedGitCommit: metadata.evaluatedGitCommit,
     variantCount: variants.length,
-    variants: variants.map((variant) => evaluateVariant(fixture, variant, metadata))
+    rawTotal: evaluatedVariants[0]?.rawTotal || 0,
+    qualityEligibleCaseCount: evaluatedVariants[0]?.qualityEligibleCaseCount || 0,
+    technicalBucketCounts: evaluatedVariants[0]?.technicalBucketCounts || {},
+    variants: evaluatedVariants
   };
   fs.writeFileSync(resolvedOutput, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return report;
@@ -66,6 +70,9 @@ function evaluateVariant(fixture, variant, metadata) {
   addViolationReason(rejectionReasons, "fixed_salary_boundary_escape", fixedSalaryEscapes);
   return {
     id: variant.id,
+    rawTotal: comparison.rawTotal,
+    qualityEligibleCaseCount: comparison.qualityEligibleCaseCount,
+    technicalBucketCounts: comparison.technicalBucketCounts,
     policyVersion: String(variant.policy.version),
     policyHash: decisionPolicyHash(variant.policy),
     tierDistribution: {

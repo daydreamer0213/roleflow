@@ -25,6 +25,7 @@ const tests = [
   "scan_end_to_end_recovery_smoke.js",
   "storage_migration_smoke.js",
   "gate_d_baseline_smoke.js",
+  "gate_d_evaluation_export_smoke.js",
   "communication_store_contract_smoke.js",
   "candidate_store_contract_smoke.js",
   "job_store_contract_smoke.js",
