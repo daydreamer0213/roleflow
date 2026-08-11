@@ -9,6 +9,8 @@ const { openDb } = require("../src/core/storage");
 const ROOT = path.resolve(__dirname, "..");
 const SCRIPT = path.join(ROOT, "scripts", "prepare-gate-d-baseline.js");
 const TEST_ROOT = fs.mkdtempSync(path.join("D:\\DevData", "RoleFlow-gate-d-baseline-test-"));
+const SOURCE_COMMIT = "a".repeat(40);
+const WORKTREE_PROTECTED_DB = path.join(ROOT, "data", "jobs.sqlite");
 
 const PRESERVED_TABLES = [
   "schema_migrations",
@@ -137,8 +139,27 @@ function run(...args) {
   return spawnSync(process.execPath, [SCRIPT, ...args], { cwd: ROOT, encoding: "utf8" });
 }
 
+function runPrepared(...args) {
+  return run("--source-commit", SOURCE_COMMIT, "--protected-db", WORKTREE_PROTECTED_DB, ...args);
+}
+
 function expectRejected(result, message) {
   assert.notStrictEqual(result.status, 0, `${message}: ${result.stdout}\n${result.stderr}`);
+}
+
+function bundleFile(bundle, name) {
+  return bundle.files.find((file) => file.name === name);
+}
+
+function assertNoArtifacts(archive, baseline) {
+  for (const file of [archive, `${archive}.manifest.json`, baseline, `${baseline}.report.json`, `${baseline}.receipt.json`]) {
+    assert.strictEqual(fs.existsSync(file), false, `failed preparation must not publish ${file}`);
+  }
+  for (const directory of new Set([path.dirname(archive), path.dirname(baseline)])) {
+    if (fs.existsSync(directory)) {
+      assert.strictEqual(fs.readdirSync(directory).some((name) => name.includes(".partial-")), false, `failed preparation must clean partial files in ${directory}`);
+    }
+  }
 }
 
 try {
@@ -148,25 +169,40 @@ try {
   const before = createFixture(source);
   const sourceHash = hash(source);
 
-  const prepared = run("--source", source, "--archive", archive, "--baseline", baseline);
+  const prepared = runPrepared("--source", source, "--archive", archive, "--baseline", baseline);
   assert.strictEqual(prepared.status, 0, prepared.stderr || prepared.stdout);
   assert.strictEqual(hash(source), sourceHash, "baseline preparation must never modify the source database");
   assert(fs.existsSync(archive), "a complete archive must be created before the baseline clone");
   assert(fs.existsSync(baseline), "a separate baseline clone must be created");
   const archiveManifest = JSON.parse(fs.readFileSync(`${archive}.manifest.json`, "utf8"));
   const report = JSON.parse(fs.readFileSync(`${baseline}.report.json`, "utf8"));
+  const receipt = JSON.parse(fs.readFileSync(`${baseline}.receipt.json`, "utf8"));
   assert.strictEqual(archiveManifest.sourcePath, source);
-  assert.strictEqual(archiveManifest.sourceSha256, sourceHash);
+  assert.strictEqual(bundleFile(archiveManifest.sourceBundle.before, "database").sha256, sourceHash);
+  assert.deepStrictEqual(archiveManifest.sourceBundle.before, archiveManifest.sourceBundle.after, "source SQLite bundle must stay stable across VACUUM INTO");
   assert.strictEqual(archiveManifest.schemaVersion, 11);
-  assert.strictEqual(archiveManifest.sourceSize, fs.statSync(source).size);
   assert.match(archiveManifest.createdAtUtc, /^\d{4}-\d{2}-\d{2}T/);
-  assert.match(archiveManifest.sourceCommit, /^[0-9a-f]{40}$/);
+  assert.strictEqual(archiveManifest.sourceCommit, SOURCE_COMMIT);
+  assert.match(archiveManifest.toolCommit, /^[0-9a-f]{40}$/);
+  assert.notStrictEqual(archiveManifest.toolCommit, SOURCE_COMMIT, "source commit must not be inferred from the tool worktree HEAD");
+  assert.strictEqual(archiveManifest.archiveSnapshot.size, fs.statSync(archive).size);
+  assert.strictEqual(archiveManifest.archiveSnapshot.sha256, hash(archive));
+  assert.match(archiveManifest.archiveSnapshot.note, /not a byte-for-byte source bundle copy/);
+  assert.strictEqual(receipt.complete, true);
+  assert.strictEqual(receipt.archiveSha256, hash(archive));
   assert.deepStrictEqual(report.preserved.before, before.preserved);
   assert.deepStrictEqual(report.preserved.after, before.preserved);
   assert.deepStrictEqual(report.operational.before, before.operational);
   assert.deepStrictEqual(report.operational.after, Object.fromEntries(OPERATIONAL_TABLES.map((table) => [table, 0])));
   assert.strictEqual(report.checks.foreignKeyCheck, "ok");
   assert.strictEqual(report.checks.quickCheck, "ok");
+
+  const archiveDb = new DatabaseSync(archive, { readOnly: true });
+  assert.deepStrictEqual(tableCounts(archiveDb, PRESERVED_TABLES), before.preserved);
+  assert.deepStrictEqual(tableCounts(archiveDb, OPERATIONAL_TABLES), before.operational);
+  assert.strictEqual(archiveDb.prepare("PRAGMA foreign_key_check").all().length, 0);
+  assert.strictEqual(archiveDb.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  archiveDb.close();
 
   const clone = new DatabaseSync(baseline, { readOnly: true });
   assert.deepStrictEqual(tableCounts(clone, PRESERVED_TABLES), before.preserved);
@@ -175,24 +211,71 @@ try {
   assert.strictEqual(clone.prepare("PRAGMA quick_check").get().quick_check, "ok");
   clone.close();
 
-  expectRejected(run("--source", source, "--archive", source, "--baseline", path.join(TEST_ROOT, "baseline", "same-source.sqlite")), "archive destination equal to source must be rejected");
-  expectRejected(run("--source", source, "--archive", path.join(TEST_ROOT, "archive", "same-source.sqlite"), "--baseline", source), "baseline destination equal to source must be rejected");
-  expectRejected(run("--source", source, "--archive", path.join(TEST_ROOT, "archive", "protected.sqlite"), "--baseline", path.join(ROOT, "data", "jobs.sqlite")), "production data/jobs.sqlite must be rejected as a target");
-  expectRejected(run("--source", source, "--archive", archive, "--baseline", baseline), "existing artifacts must not be overwritten by default");
+  expectRejected(run("--source", source, "--archive", path.join(TEST_ROOT, "archive", "missing-commit.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "missing-commit.sqlite")), "source commit must be explicit");
+  expectRejected(runPrepared("--source", source, "--archive", source.toUpperCase(), "--baseline", path.join(TEST_ROOT, "baseline", "same-source.sqlite")), "case-insensitive archive alias equal to source must be rejected");
+  expectRejected(runPrepared("--source", source, "--archive", path.join(TEST_ROOT, "archive", "same-source.sqlite"), "--baseline", source), "baseline destination equal to source must be rejected");
+  expectRejected(runPrepared("--source", source, "--archive", path.join(TEST_ROOT, "archive", "protected.sqlite"), "--baseline", WORKTREE_PROTECTED_DB), "worktree production data/jobs.sqlite must be rejected as a target");
+  const explicitProtected = path.join(TEST_ROOT, "protected-main.sqlite");
+  expectRejected(run("--source-commit", SOURCE_COMMIT, "--protected-db", explicitProtected, "--source", source, "--archive", path.join(TEST_ROOT, "archive", "explicit-protected.sqlite"), "--baseline", explicitProtected), "explicit protected database must be rejected as a target");
+  expectRejected(runPrepared("--source", source, "--archive", archive, "--baseline", baseline), "existing artifacts must not be overwritten by default");
 
   const unknownTable = path.join(TEST_ROOT, "unknown-table.sqlite");
   createFixture(unknownTable);
   const unknownDb = new DatabaseSync(unknownTable);
   unknownDb.exec("CREATE TABLE unexpected_operational_history (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO unexpected_operational_history(value) VALUES ('must fail closed');");
   unknownDb.close();
-  expectRejected(run("--source", unknownTable, "--archive", path.join(TEST_ROOT, "archive", "unknown-table.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "unknown-table.sqlite")), "unknown populated tables must fail closed");
+  expectRejected(runPrepared("--source", unknownTable, "--archive", path.join(TEST_ROOT, "archive", "unknown-table.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "unknown-table.sqlite")), "unknown populated tables must fail closed");
 
   const futureSchema = path.join(TEST_ROOT, "future-schema.sqlite");
   createFixture(futureSchema);
   const futureDb = new DatabaseSync(futureSchema);
   futureDb.exec("PRAGMA user_version = 12");
   futureDb.close();
-  expectRejected(run("--source", futureSchema, "--archive", path.join(TEST_ROOT, "archive", "future-schema.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "future-schema.sqlite")), "unknown schema versions must fail closed");
+  expectRejected(runPrepared("--source", futureSchema, "--archive", path.join(TEST_ROOT, "archive", "future-schema.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "future-schema.sqlite")), "unknown schema versions must fail closed");
+
+  const emptyPreserved = path.join(TEST_ROOT, "empty-preserved.sqlite");
+  openDb(emptyPreserved).close();
+  const emptyArchive = path.join(TEST_ROOT, "archive", "empty-preserved.sqlite");
+  const emptyBaseline = path.join(TEST_ROOT, "baseline", "empty-preserved.sqlite");
+  expectRejected(runPrepared("--source", emptyPreserved, "--archive", emptyArchive, "--baseline", emptyBaseline), "empty candidate/profile preservation set must fail closed");
+  assertNoArtifacts(emptyArchive, emptyBaseline);
+
+  const junction = path.join(TEST_ROOT, "junction-alias");
+  try {
+    fs.symlinkSync(TEST_ROOT, junction, "junction");
+    const aliasProtected = path.join(junction, "junction-protected.sqlite");
+    expectRejected(run("--source-commit", SOURCE_COMMIT, "--protected-db", aliasProtected, "--source", source, "--archive", path.join(TEST_ROOT, "archive", "junction.sqlite"), "--baseline", path.join(TEST_ROOT, "junction-protected.sqlite")), "junction aliases must protect the same target");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "UNKNOWN"].includes(error.code)) throw error;
+    console.log(`gate_d_baseline_smoke junction check skipped: ${error.code}`);
+  }
+
+  const { prepare } = require(SCRIPT);
+  const faultSource = path.join(TEST_ROOT, "fault.sqlite");
+  createFixture(faultSource);
+  const faultArchive = path.join(TEST_ROOT, "archive", "fault.sqlite");
+  const faultBaseline = path.join(TEST_ROOT, "baseline", "fault.sqlite");
+  assert.throws(
+    () => prepare({ source: faultSource, sourceCommit: SOURCE_COMMIT, archive: faultArchive, baseline: faultBaseline, protectedDbs: [WORKTREE_PROTECTED_DB] }, { afterArchiveSnapshot() { throw new Error("injected failure"); } }),
+    /injected failure/
+  );
+  assertNoArtifacts(faultArchive, faultBaseline);
+
+  const changingSource = path.join(TEST_ROOT, "changing.sqlite");
+  createFixture(changingSource);
+  const changingArchive = path.join(TEST_ROOT, "archive", "changing.sqlite");
+  const changingBaseline = path.join(TEST_ROOT, "baseline", "changing.sqlite");
+  assert.throws(
+    () => prepare({ source: changingSource, sourceCommit: SOURCE_COMMIT, archive: changingArchive, baseline: changingBaseline, protectedDbs: [WORKTREE_PROTECTED_DB] }, {
+      beforeSourceAfterFingerprint() {
+        const db = new DatabaseSync(changingSource);
+        db.prepare("INSERT INTO candidate_facts(profile_id, fact_key, fact_value, created_at, updated_at) VALUES (1, 'changed', 'yes', '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z')").run();
+        db.close();
+      }
+    }),
+    /source SQLite bundle changed/
+  );
+  assertNoArtifacts(changingArchive, changingBaseline);
 
   console.log("gate_d_baseline_smoke ok");
 } finally {
