@@ -8,6 +8,13 @@ const { PRODUCT_POLICY } = require("../../core/product_policy");
 const SEARCH_PLAN_POLICY = PRODUCT_POLICY.searchPlan;
 const REFRESH_LIMIT = PRODUCT_POLICY.operations.refreshLimit;
 const BOSS_PACING_POLICY = PRODUCT_POLICY.operations.bossPacing;
+const PACING_STATE_FIELDS = Object.freeze([
+  "pacedActions",
+  "nextPacingCooldownAt",
+  "detailActions",
+  "nextDetailMicroCooldownAt",
+  "nextDetailMacroCooldownAt"
+]);
 
 const DEFAULT_CITY_CODE = "101280100";
 const BOSS_FILTER_FIELDS = {
@@ -851,12 +858,11 @@ class BossSiteAdapter {
   }
 
   restorePacing(state) {
-    const fields = ["pacedActions", "nextPacingCooldownAt", "detailActions", "nextDetailMicroCooldownAt", "nextDetailMacroCooldownAt"];
-    if (!state || fields.some((field) => !Number.isInteger(state[field]) || state[field] < 0)) {
+    if (!isSafePacingState(state)) {
       this.resetPacing();
       return;
     }
-    for (const field of fields) this[field] = state[field];
+    for (const field of PACING_STATE_FIELDS) this[field] = state[field];
   }
 
   async waitAfterDetailAction({ signal = null, assertTabBindings = null, onPacingCheckpoint = null } = {}) {
@@ -1901,6 +1907,14 @@ class BossSiteAdapter {
       this.finishCommunicationOperation("verification");
     }
   }
+}
+
+function isSafePacingState(state) {
+  if (!state || Object.keys(state).some((field) => !PACING_STATE_FIELDS.includes(field))) return false;
+  if (PACING_STATE_FIELDS.some((field) => !Number.isSafeInteger(state[field]) || state[field] < 0)) return false;
+  return state.nextPacingCooldownAt <= state.pacedActions + Math.max(...BOSS_PACING_POLICY.periodicEvery)
+    && state.nextDetailMicroCooldownAt <= state.detailActions + Math.max(...BOSS_PACING_POLICY.detail.microEvery)
+    && state.nextDetailMacroCooldownAt <= state.detailActions + Math.max(...BOSS_PACING_POLICY.detail.macroEvery);
 }
 
 function normalizeBossJob(job) {

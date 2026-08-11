@@ -750,53 +750,29 @@ async function scan(
   let browserState = null;
   const usesFixedBossSearchTab = site === "boss" && String(args.browser || "").trim().toLowerCase() === "edge";
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
-    try {
-      if (!usesFixedBossSearchTab) return await adapter.preflight();
-      return await preflightBossScanBrowser({
-        browserMode: "edge",
-        browser,
-        adapter,
-        expectedSearchTabId,
-        expectedCommunicationTabId
-      });
-    } catch (error) {
-      if (error?.code === "BOSS_RISK_CONTROL") {
-        setSiteRuntimeState(db, site, {
-          status: "blocked",
-          reasonCode: error.code,
-          message: error.message,
-          details: { phase: "preflight" }
-        });
-      }
-      throw error;
-    }
+    if (!usesFixedBossSearchTab) return adapter.preflight();
+    return preflightBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId,
+      expectedCommunicationTabId
+    });
   };
   const runWithBoundFixedBossSearchAction = async (action) => {
     if (!usesFixedBossSearchTab) return action(browserState);
-    try {
-      return await runWithBoundBossScanBrowser({
-        browserMode: "edge",
-        browser,
-        adapter,
-        expectedSearchTabId: browserState.tabId,
-        expectedCommunicationTabId: browserState.communicationTabId,
-        action: async (nextBrowserState) => {
-          browserState = nextBrowserState;
-          assertScanActive(signal);
-          return action(nextBrowserState);
-        }
-      });
-    } catch (error) {
-      if (error?.code === "BOSS_RISK_CONTROL") {
-        setSiteRuntimeState(db, site, {
-          status: "blocked",
-          reasonCode: error.code,
-          message: error.message,
-          details: { phase: "preflight" }
-        });
+    return runWithBoundBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: browserState.tabId,
+      expectedCommunicationTabId: browserState.communicationTabId,
+      action: async (nextBrowserState) => {
+        browserState = nextBrowserState;
+        assertScanActive(signal);
+        return action(nextBrowserState);
       }
-      throw error;
-    }
+    });
   };
   let plannedCityScopes = acquisitionMode === "generated"
     ? resolveCityScopes(args, planRecord, configs)
@@ -1120,20 +1096,6 @@ async function scan(
     scoreQuick: (job) => scoreJob(job, configs).score,
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
     getReusableDetail: (job) => reusableDetails.get(job.sourceId),
-    onRiskControl: async (risk) => {
-      setSiteRuntimeState(db, site, {
-        status: "blocked",
-        reasonCode: risk.errorCode || "BOSS_RISK_CONTROL",
-        message: risk.errorMessage || "BOSS 要求安全验证，扫描已暂停。",
-        details: { batchId, detailsRead: risk.detailsRead, candidates: risk.candidates }
-      });
-      recordSiteAccessEvent(db, {
-        site,
-        action: "risk_control",
-        runId: execution?.runId || "",
-        details: { batchId, errorCode: risk.errorCode || "BOSS_RISK_CONTROL", errorMessage: risk.errorMessage || "" }
-      });
-    },
     onTargetComplete,
     onDetailCheckpoint: args.input ? null : async (result) => {
       assertScanActive(signal);
@@ -1516,53 +1478,29 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
   const usesFixedBossSearchTab = String(args.browser || "").trim().toLowerCase() === "edge";
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
-    try {
-      return await preflightBossScanBrowser({
-        browserMode: usesFixedBossSearchTab ? "edge" : args.browser,
-        browser,
-        adapter,
-        expectedSearchTabId,
-        expectedCommunicationTabId
-      });
-    } catch (error) {
-      if (error?.code === "BOSS_RISK_CONTROL") {
-        setSiteRuntimeState(db, "boss", {
-          status: "blocked",
-          reasonCode: error.code,
-          message: error.message,
-          details: { phase: "preflight" }
-        });
-      }
-      throw error;
-    }
+    return preflightBossScanBrowser({
+      browserMode: usesFixedBossSearchTab ? "edge" : args.browser,
+      browser,
+      adapter,
+      expectedSearchTabId,
+      expectedCommunicationTabId
+    });
   };
   let browserState = await preflightBrowser();
   const runWithBoundFixedBossRefreshAction = async (action) => {
     if (!usesFixedBossSearchTab) return action(browserState);
-    try {
-      return await runWithBoundBossScanBrowser({
-        browserMode: "edge",
-        browser,
-        adapter,
-        expectedSearchTabId: browserState.tabId,
-        expectedCommunicationTabId: browserState.communicationTabId,
-        action: async (nextBrowserState) => {
-          browserState = nextBrowserState;
-          assertScanActive(signal);
-          return action(nextBrowserState);
-        }
-      });
-    } catch (error) {
-      if (error?.code === "BOSS_RISK_CONTROL") {
-        setSiteRuntimeState(db, "boss", {
-          status: "blocked",
-          reasonCode: error.code,
-          message: error.message,
-          details: { phase: "preflight" }
-        });
+    return runWithBoundBossScanBrowser({
+      browserMode: "edge",
+      browser,
+      adapter,
+      expectedSearchTabId: browserState.tabId,
+      expectedCommunicationTabId: browserState.communicationTabId,
+      action: async (nextBrowserState) => {
+        browserState = nextBrowserState;
+        assertScanActive(signal);
+        return action(nextBrowserState);
       }
-      throw error;
-    }
+    });
   };
   assertScanActive(signal);
 
@@ -1785,7 +1723,9 @@ function scanFailureStatus(error) {
 
 function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs = Date.now() } = {}) {
   if (!isBossRiskControl(error)) return false;
-  const blockedUntil = new Date(Number(nowMs) + PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000).toISOString();
+  const defaultBlockedUntil = Number(nowMs) + PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000;
+  const requestedBlockedUntil = Date.parse(error?.blockedUntil || "");
+  const blockedUntil = new Date(Math.max(defaultBlockedUntil, Number.isFinite(requestedBlockedUntil) ? requestedBlockedUntil : 0)).toISOString();
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
   const details = {
     phase: String(phase || ""),
@@ -2496,5 +2436,6 @@ module.exports = {
   assertWorkflowScanControl,
   preflightBossScanBrowser,
   runWithBoundBossScanBrowser,
-  persistBossRiskControl
+  persistBossRiskControl,
+  executeTrackedScanRun
 };

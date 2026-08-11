@@ -14,11 +14,11 @@ const {
 } = require("../src/core/storage");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { BossSiteAdapter } = require("../src/adapters/sites/boss");
-const { createSiteAccessController, formatAccessWaitDuration } = require("../src/core/site_access_budget");
+const { createSiteAccessController, formatAccessWaitDuration, resolveAccessMode } = require("../src/core/site_access_budget");
 const { assertBossRuntimeTabBindings } = require("../src/core/workspace_tabs");
 const { validateResumeBatch } = require("../src/core/scan_resume");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
-const { persistBossRiskControl } = require("../src/cli");
+const { persistBossRiskControl, executeTrackedScanRun } = require("../src/cli");
 
 main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
   console.error(error.stack || error.message);
@@ -27,11 +27,112 @@ main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
 
 async function main() {
   await paneDetailDelaySmoke();
+  await pacingRestoreFailClosedSmoke();
+  await productionScanPacingCompositionSmoke();
   await threeMinuteBudgetSmoke();
+  recoveryExpirySmoke();
   checkpointResumeSmoke();
   riskControlClassificationSmoke();
+  await trackedRiskPersistsOnceSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+async function pacingRestoreFailClosedSmoke() {
+  const adapter = new BossSiteAdapter({ sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.restorePacing({
+    pacedActions: 1,
+    nextPacingCooldownAt: Number.MAX_SAFE_INTEGER,
+    detailActions: 1,
+    nextDetailMicroCooldownAt: 7,
+    nextDetailMacroCooldownAt: 17
+  });
+  assert.deepStrictEqual(adapter.pacingState(), {
+    pacedActions: 0,
+    nextPacingCooldownAt: 18,
+    detailActions: 0,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  });
+  adapter.restorePacing({
+    pacedActions: 1,
+    nextPacingCooldownAt: 19,
+    detailActions: 1,
+    nextDetailMicroCooldownAt: 7,
+    nextDetailMacroCooldownAt: 17,
+    sleep: "unsafe"
+  });
+  assert.strictEqual(typeof adapter.sleep, "function");
+  assert.strictEqual(adapter.pacedActions, 0);
+  for (const invalidState of [
+    { pacedActions: 1.5, nextPacingCooldownAt: 19, detailActions: 1, nextDetailMicroCooldownAt: 7, nextDetailMacroCooldownAt: 17 },
+    { pacedActions: 1, nextPacingCooldownAt: 19, detailActions: 1, nextDetailMicroCooldownAt: -1, nextDetailMacroCooldownAt: 17 },
+    { pacedActions: 1, nextPacingCooldownAt: 19, detailActions: 1, nextDetailMicroCooldownAt: 15, nextDetailMacroCooldownAt: 17 }
+  ]) {
+    adapter.restorePacing(invalidState);
+    assert.strictEqual(adapter.pacedActions, 0);
+    assert.strictEqual(adapter.nextPacingCooldownAt, 18);
+  }
+  adapter.restorePacing({
+    pacedActions: 18,
+    nextPacingCooldownAt: 18,
+    detailActions: 6,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  });
+  const sleeps = [];
+  adapter.sleep = async (ms) => sleeps.push(ms);
+  await adapter.waitWithPacing("pane_detail_read");
+  assert.deepStrictEqual(sleeps, [8000, 4000], "a saved overdue threshold must conservatively cool down first");
+}
+
+async function productionScanPacingCompositionSmoke() {
+  const order = [];
+  let reads = 0;
+  const adapter = new BossSiteAdapter({
+    browser: { async navigate() {} },
+    sleepFn: async () => {},
+    randomFn: () => 0
+  });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [testCard("success"), testCard("failure"), testCard("cached")];
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
+    reads += 1;
+    if (job.sourceId === "failure") throw Object.assign(new Error("pane timed out"), { code: "BOSS_PANE_SWITCH_TIMEOUT" });
+    return { description: "complete pane detail ".repeat(20), bossActiveText: "today" };
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: "search",
+    keywords: ["pacing"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 3,
+    getReusableDetail: (job) => job.sourceId === "cached"
+      ? { description: "cached complete detail ".repeat(20), bossActiveText: "today" }
+      : null,
+    onDetailCheckpoint: async () => order.push("detail-checkpoint"),
+    onPacingCheckpoint: async (state) => order.push(`pacing-${state.detailActions}`),
+    onDetailResult: async (result) => order.push(`detail-${result.outcome}`)
+  });
+  assert.strictEqual(reads, 2);
+  assert.deepStrictEqual(order, [
+    "detail-checkpoint", "pacing-1", "detail-succeeded", "pacing-2", "detail-failed"
+  ]);
+  assert.deepStrictEqual(jobs.map((job) => [job.sourceId, job.detailRead, Boolean(job.detailReused)]), [
+    ["success", true, false], ["failure", false, false], ["cached", true, true]
+  ]);
+  const resumed = new BossSiteAdapter({ sleepFn: async () => {}, randomFn: () => 0 });
+  resumed.restorePacing({
+    pacedActions: 18,
+    nextPacingCooldownAt: 18,
+    detailActions: 2,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  });
+  const resumedSleeps = [];
+  resumed.sleep = async (ms) => resumedSleeps.push(ms);
+  await resumed.waitWithPacing("pane_detail_read");
+  assert.deepStrictEqual(resumedSleeps, [8000, 4000], "the resumed first detail cannot burst past an overdue cooldown");
 }
 
 async function paneDetailDelaySmoke() {
@@ -109,6 +210,30 @@ async function threeMinuteBudgetSmoke() {
   }
 }
 
+function recoveryExpirySmoke() {
+  const db = openDb(":memory:");
+  const riskAt = Date.parse("2026-08-12T00:00:00.000Z");
+  const hour = 60 * 60_000;
+  recordSiteAccessEvent(db, { site: "boss", action: "risk_control", createdAt: new Date(riskAt).toISOString() });
+  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 47 * hour }), "recovery");
+  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
+  db.close();
+
+  const extended = openDb(":memory:");
+  recordSiteAccessEvent(extended, {
+    site: "boss",
+    action: "risk_control",
+    createdAt: new Date(riskAt).toISOString(),
+    details: { blockedUntil: new Date(riskAt + 72 * hour).toISOString() }
+  });
+  assert.strictEqual(resolveAccessMode(extended, { site: "boss", nowMs: riskAt + 71 * hour }), "recovery");
+  assert.strictEqual(resolveAccessMode(extended, { site: "boss", nowMs: riskAt + 73 * hour }), "normal");
+  const error = Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL", blockedUntil: new Date(riskAt + 72 * hour).toISOString() });
+  persistBossRiskControl(extended, { site: "boss", runId: "extended", error, nowMs: riskAt });
+  assert.strictEqual(Date.parse(getSiteRuntimeState(extended, "boss").details.blockedUntil), riskAt + 72 * hour);
+  extended.close();
+}
+
 function checkpointResumeSmoke() {
   const db = openDb(":memory:");
   const snapshot = executionSnapshot();
@@ -166,6 +291,38 @@ function riskControlClassificationSmoke() {
   db.close();
 }
 
+async function trackedRiskPersistsOnceSmoke() {
+  for (const error of [
+    Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL" }),
+    captureSearchTabChange("https://www.zhipin.com/web/passport/zp/verify.html?token=private")
+  ]) {
+    const db = openDb(":memory:");
+    db.exec(`CREATE TABLE runtime_writes(kind TEXT NOT NULL);
+      CREATE TEMP TRIGGER runtime_state_insert AFTER INSERT ON site_runtime_states
+      BEGIN INSERT INTO runtime_writes(kind) VALUES ('insert'); END;
+      CREATE TEMP TRIGGER runtime_state_update AFTER UPDATE ON site_runtime_states
+      BEGIN INSERT INTO runtime_writes(kind) VALUES ('update'); END;`);
+    const batchId = createBatch(db, "boss", "risk", "risk", { status: "running", profileId: 1, searchPlanId: 2 });
+    const run = createScanRun(db, { runId: `risk-${error.code}`, site: "boss", command: "scan", planId: 2 });
+    acquireSiteScanLease(db, { site: "boss", owner: "risk-owner", planId: 2 });
+    beginScanRun(db, { runId: run.id, batchId, leaseOwner: "risk-owner" });
+    await assert.rejects(
+      () => executeTrackedScanRun(db, {
+        runId: run.id,
+        leaseOwner: "risk-owner",
+        runLogger: { info() {}, warn() {}, error() {} },
+        run: async () => { throw error; },
+        execution: { site: "boss" }
+      }),
+      (received) => received === error
+    );
+    assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).length, 1);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS n FROM site_runtime_states WHERE site = 'boss'").get().n), 1);
+    assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS n FROM runtime_writes").get().n), 1);
+    db.close();
+  }
+}
+
 function captureSearchTabChange(url) {
   assert.throws(() => assertBossRuntimeTabBindings([
     { id: "search", url, windowId: 1 },
@@ -196,4 +353,18 @@ function executionSnapshot() {
     nativeFilters: { lanes: [] },
     limits: { maxCards: 10, maxDetailTotal: 10, browserPageBudget: 20 }
   });
+}
+
+function testCard(sourceId) {
+  return {
+    source: "boss",
+    sourceId,
+    title: sourceId,
+    company: "Test Co",
+    location: "Guangzhou",
+    salary: "10-20K",
+    experience: "1-3 years",
+    education: "Bachelor",
+    url: `https://www.zhipin.com/job_detail/${sourceId}.html`
+  };
 }

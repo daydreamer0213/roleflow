@@ -172,19 +172,20 @@ function existingCommunicationReservation(db, { site, details, nowMs, policy }) 
 }
 
 function resolveAccessMode(db, { site, nowMs, policy = DEFAULT_POLICY }) {
-  const lookbackMs = (policy.recoveryHours + 24) * 60 * 60_000;
   const risks = listSiteAccessEvents(db, {
     site,
-    action: "risk_control",
-    since: new Date(nowMs - lookbackMs).toISOString(),
-    limit: 100
+    action: "risk_control"
   });
   const latest = risks.at(-1);
   if (!latest) return "normal";
   const riskAt = Date.parse(latest.createdAt);
+  const recoveryUntil = Number.isFinite(riskAt)
+    ? riskAt + policy.recoveryHours * 60 * 60_000
+    : 0;
   const blockedUntil = Date.parse(latest.details.blockedUntil || "");
-  const anchor = Math.max(Number.isFinite(riskAt) ? riskAt : 0, Number.isFinite(blockedUntil) ? blockedUntil : 0);
-  return nowMs < anchor + policy.recoveryHours * 60 * 60_000 ? "recovery" : "normal";
+  return nowMs < Math.max(recoveryUntil, Number.isFinite(blockedUntil) ? blockedUntil : 0)
+    ? "recovery"
+    : "normal";
 }
 
 function readUsage(db, { site, action, nowMs, policy = DEFAULT_POLICY }) {
