@@ -17,6 +17,9 @@ const PAGE_SPECS = Object.freeze([
   { id: "communication-review", family: "communication", state: "confirmed-offline", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}` },
   { id: "settings", family: "settings", state: "default", primaryPolicy: "none-expected", primaryRationale: "Saving settings can test a model connection and is deliberately not promoted or executed by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/settings" },
   { id: "onboarding-existing", family: "onboarding", state: "existing-profile", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/onboarding" },
+  { id: "match-card", family: "matchCard", state: "confirmed-profile", primaryPolicy: "none-expected", primaryRationale: "Matching-card edits are persisted only after explicit review and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/match-card?profileId=${profileId}` },
+  { id: "profile", family: "profile", state: "existing-profile", primaryPolicy: "none-expected", primaryRationale: "Profile edits are persisted only after explicit review and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/profile?profileId=${profileId}` },
+  { id: "resumes", family: "resumes", state: "existing-profile", primaryPolicy: "none-expected", primaryRationale: "Resume version changes can parse local files and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/resumes?profileId=${profileId}` },
   { id: "diagnostics", family: "diagnostics", state: "empty-log", primaryPolicy: "none-expected", primaryRationale: "Diagnostics is a read-only log surface with no page-level primary.", interaction: "none", interactionPolicy: "read-only-none", path: () => "/diagnostics" }
 ]);
 
@@ -81,7 +84,7 @@ function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatc
   storage.attachWorkflowScan(db, { id: workflow.id, scanRunId: scan.id, scanBatchId: batchId });
   storage.recordWorkflowScanWait(db, { workflowRunId: workflow.id, runId: scan.id, action: "detail_open", delayMs: 600000, retryAt: "2099-01-01T00:10:00.000Z", now: "2099-01-01T00:00:00.000Z" });
   const communication = createCommunicationBatch(db, { planId: saved.planId, jobIds: [jobId], browserMode: "edge", now: "2099-01-01T00:00:00.000Z" });
-  return { planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id };
+  return { profileId: saved.profileId, planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id };
 }
 
 async function auditPage({ browser, baseUrl, spec, fixture, viewport, outputDir, label, revision }) {
@@ -222,7 +225,7 @@ function validateOptions(options) {
   if (!fs.existsSync(path.join(options.targetRoot, "src", "dashboard", "server.js"))) throw new Error(`Target root does not contain src/dashboard/server.js: ${options.targetRoot}`);
 }
 function clearLabelArtifacts(outputDir, label) { fs.mkdirSync(outputDir, { recursive: true }); for (const name of fs.readdirSync(outputDir)) if (name === `${label}.json` || name === `.${label}.sqlite` || name.startsWith(`.${label}.sqlite-`) || (name.startsWith(`${label}-`) && name.endsWith(".png"))) fs.rmSync(path.join(outputDir, name), { force: true }); }
-function assertCanonicalArtifacts(outputDir, label, pageCount) { const names = fs.readdirSync(outputDir).sort(); const expected = new Set([`${label}.json`, ...PAGE_SPECS.flatMap((spec) => VIEWPORTS.map((viewport) => `${label}-${spec.id}-${viewport.width}x${viewport.height}.png`))]); if (pageCount !== 32 || names.length !== expected.size || names.some((name) => !expected.has(name))) throw new Error(`Canonical evidence must contain exactly ${expected.size - 1} PNGs and one UTF-8 JSON manifest; found: ${names.join(", ")}`); JSON.parse(fs.readFileSync(path.join(outputDir, `${label}.json`), "utf8")); }
+function assertCanonicalArtifacts(outputDir, label, pageCount) { const names = fs.readdirSync(outputDir).sort(); const expected = new Set([`${label}.json`, ...PAGE_SPECS.flatMap((spec) => VIEWPORTS.map((viewport) => `${label}-${spec.id}-${viewport.width}x${viewport.height}.png`))]); if (pageCount !== 44 || names.length !== expected.size || names.some((name) => !expected.has(name))) throw new Error(`Canonical evidence must contain exactly ${expected.size - 1} PNGs and one UTF-8 JSON manifest; found: ${names.join(", ")}`); JSON.parse(fs.readFileSync(path.join(outputDir, `${label}.json`), "utf8")); }
 function gitRevision(targetRoot) { return execFileSync("git", ["-C", targetRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
 function gitStatus(targetRoot) { return execFileSync("git", ["-C", targetRoot, "status", "--porcelain"], { encoding: "utf8" }).trim(); }
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
