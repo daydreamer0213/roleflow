@@ -14,7 +14,8 @@ const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { factStatus } = require("../src/core/candidate_fact_policy");
 const {
   listPreviewStates,
-  commitProcessedPreview
+  commitProcessedPreview,
+  listUnresolvedMessageDiscoveryItems
 } = require("../src/core/message_preview_state");
 
 const PRIVATE_BODY = "PRIVATE_HR_BODY";
@@ -39,6 +40,7 @@ async function main() {
   await uniqueCandidateAndPrivacySmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
+  await unmatchedRetentionSmoke();
   await messageSelectionSmoke();
   await messageGroupBoundarySmoke();
   await previewChannelSmoke();
@@ -253,6 +255,109 @@ async function identityStopsSmoke() {
   });
   assertStopped(summary, "BOSS_MESSAGE_THREAD_MISMATCH");
   assert.strictEqual(modelCalls, 0, "identity failures must not call the model");
+}
+
+async function unmatchedRetentionSmoke() {
+  const fixture = createFixture({ suffix: "unmatched-retention", title: "Retained Valid Engineer" });
+  const unmatchedTitle = "Retained Missing Engineer";
+  const unmatchedKey = safeDigest(["conversation", "retained-unmatched"]);
+  const unmatchedPreview = safeDigest(["preview", "retained-unmatched"]);
+  const validKey = safeDigest(["conversation", "retained-valid"]);
+  const validPreview = safeDigest(["preview", "retained-valid"]);
+  const opens = [];
+  const logs = [];
+  let modelCalls = 0;
+  const firstReader = {
+    async scanConversationRows() {
+      return {
+        tabId: "fake-tab",
+        path: "/web/geek/chat",
+        rows: Object.freeze([
+          Object.freeze(messageRow(0, true, unmatchedKey, unmatchedPreview)),
+          Object.freeze(messageRow(1, true, validKey, validPreview))
+        ])
+      };
+    },
+    async openQueuedConversation(target) {
+      opens.push(target.rowIndex);
+      return target.rowIndex === 0
+        ? selectedConversation({ title: unmatchedTitle, messageId: "123456789012410" })
+        : selectedConversation({ title: fixture.title, messageId: "123456789012411" });
+    }
+  };
+  const first = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader: firstReader,
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    logger: { info: (...args) => logs.push(args) },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.deepStrictEqual(opens, [0, 1], "an unmatched item must not block the next immutable queue item");
+  assert.strictEqual(modelCalls, 1, "the unmatched item must not call the model");
+  assert.strictEqual(first.status, "needs_user_action");
+  assert.strictEqual(first.processed, 1);
+  assert.strictEqual(first.unresolved, 1);
+  assert.strictEqual(first.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_events WHERE card_id = ?").get(fixture.card.id).n,
+    2,
+    "only the valid item may create message-discovery progress events"
+  );
+  assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId }).some((item) => item.conversationKey === unmatchedKey), false);
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId }).length, 1);
+  const retainedText = [
+    allText(db, "message_discovery_unresolved_items"),
+    JSON.stringify(logs)
+  ].join("\n");
+  for (const forbidden of [PRIVATE_BODY, PRIVATE_PREVIEW, PRIVATE_RECRUITER]) {
+    assert(!retainedText.includes(forbidden), `${forbidden} must not enter unresolved storage or logs`);
+  }
+
+  const resolved = createFixture({
+    suffix: "unmatched-retention-resolved",
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    title: unmatchedTitle
+  });
+  const second = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader: {
+      async scanConversationRows() {
+        return {
+          tabId: "fake-tab",
+          path: "/web/geek/chat",
+          rows: Object.freeze([Object.freeze(messageRow(0, false, unmatchedKey, unmatchedPreview))])
+        };
+      },
+      async openQueuedConversation(target) {
+        assert.strictEqual(target.operation, "durable_unresolved", "a read conversation with a durable marker must be retried");
+        return selectedConversation({ title: unmatchedTitle, messageId: "123456789012412" });
+      }
+    },
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(second.status, "completed");
+  assert.strictEqual(second.processed, 1);
+  assert.strictEqual(second.unresolved, 0);
+  assert.strictEqual(modelCalls, 2);
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId }).length, 0);
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: fixture.profileId }).find((item) => item.conversationKey === unmatchedKey).previewDigest,
+    unmatchedPreview,
+    "successful resolution must commit the preview only after removing the durable marker"
+  );
+  assert.strictEqual(resolved.card.profileId, fixture.profileId);
 }
 
 async function messageSelectionSmoke() {
@@ -945,6 +1050,18 @@ function fakeReader(conversations) {
       active -= 1;
       return selected;
     }
+  };
+}
+
+function messageRow(rowIndex, unread, conversationKey, previewDigest) {
+  return {
+    rowIndex,
+    unread,
+    selected: false,
+    conversationKey,
+    previewDigest,
+    previewKind: "possible_hr_reply",
+    transientSignature: safeDigest(["row", String(rowIndex)])
   };
 }
 

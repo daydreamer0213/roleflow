@@ -677,6 +677,21 @@ CREATE TABLE IF NOT EXISTS message_preview_states (
 );
 `;
 
+const MESSAGE_DISCOVERY_UNRESOLVED_ITEMS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
+  profile_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  preview_digest TEXT NOT NULL,
+  preview_kind TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  first_observed_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  PRIMARY KEY(profile_id, platform, conversation_key),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -767,6 +782,13 @@ const MIGRATIONS = [
     name: "communication_outcome_statuses_v1",
     apply(db) {
       migrateCommunicationOutcomeStatuses(db);
+    }
+  },
+  {
+    version: 11,
+    name: "message_discovery_unresolved_items_v1",
+    apply(db) {
+      db.exec(MESSAGE_DISCOVERY_UNRESOLVED_ITEMS_SCHEMA);
     }
   }
 ];

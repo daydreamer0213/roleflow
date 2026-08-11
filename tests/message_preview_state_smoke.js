@@ -8,7 +8,10 @@ const {
   listPreviewStates,
   recordPreviewState,
   planMessageDiscoveryQueue,
-  commitProcessedPreview
+  commitProcessedPreview,
+  listUnresolvedMessageDiscoveryItems,
+  recordUnresolvedMessageDiscoveryItem,
+  clearUnresolvedMessageDiscoveryItem
 } = require("../src/core/message_preview_state");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-preview-state-"));
@@ -82,6 +85,51 @@ try {
   });
   assert.strictEqual(planned.queue[0].operation, "unread");
   assert.strictEqual(planned.queue[0].conversationKey, digest("conversation-b"));
+
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId,
+    platform,
+    conversationKey: digest("conversation-c"),
+    previewDigest: digest("unmatched"),
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: now
+  });
+  const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
+  assert.deepStrictEqual(unresolved, [{
+    profileId,
+    platform,
+    conversationKey: digest("conversation-c"),
+    previewDigest: digest("unmatched"),
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    firstObservedAt: now,
+    lastObservedAt: now
+  }]);
+  planned = planMessageDiscoveryQueue({
+    rows: [
+      readRow(digest("conversation-a"), digest("changed-again")),
+      readRow(digest("conversation-c"), digest("still-unmatched")),
+      unreadRow(digest("conversation-b"), digest("newer"))
+    ],
+    baselines: new Map([[digest("conversation-a"), {
+      previewDigest: digest("changed"),
+      previewKind: "possible_hr_reply"
+    }]]),
+    unresolved: new Map(unresolved.map((item) => [item.conversationKey, item]))
+  });
+  assert.deepStrictEqual(
+    planned.queue.map((item) => item.operation),
+    ["unread", "durable_unresolved", "preview_changed"],
+    "unread rows must outrank retained unresolved rows, which outrank preview changes"
+  );
+  assert.strictEqual(planned.baselineWrites.length, 0, "a retained unresolved row must never become a read-history baseline");
+  clearUnresolvedMessageDiscoveryItem(db, {
+    profileId,
+    platform,
+    conversationKey: digest("conversation-c")
+  });
+  assert.deepStrictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId }), []);
 
   planned = planMessageDiscoveryQueue({
     rows: [readRow(digest("conversation-a"), digest("voice"), "unsupported")],

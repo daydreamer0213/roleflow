@@ -92,6 +92,7 @@ function createMessageDiscoveryController(deps = {}) {
       status: "running",
       queued: 0,
       processed: 0,
+      unresolved: 0,
       reasonCode: "",
       results: [],
       startedAt: startedAt.toISOString(),
@@ -152,6 +153,7 @@ function createMessageDiscoveryController(deps = {}) {
           : "stopped",
         queued: run.queued,
         processed: run.processed,
+        unresolved: run.unresolved,
         reasonCode: code,
         results: run.results
       });
@@ -206,8 +208,8 @@ function createMessageDiscoveryController(deps = {}) {
     }
     clearRunTimer(run);
     run.results = [];
-    run.status = "dismissed";
-    run.reasonCode = "";
+    run.status = run.unresolved > 0 ? "needs_user_action" : "dismissed";
+    if (run.unresolved === 0) run.reasonCode = "";
     run.expiresAt = "";
     run.updatedAt = nowDate().toISOString();
     run.closed = true;
@@ -281,6 +283,7 @@ function createMessageDiscoveryController(deps = {}) {
     run.status = ALLOWED_RUN_STATUSES.has(statusValue.status) ? statusValue.status : "needs_user_action";
     run.queued = Math.max(0, Number(statusValue.queued) || 0);
     run.processed = Math.max(0, Number(statusValue.processed) || 0);
+    run.unresolved = Math.max(0, Number(statusValue.unresolved) || 0);
     run.reasonCode = safeCode(statusValue.reasonCode);
     run.results = sanitizeResults(Array.isArray(statusValue.results)
       ? statusValue.results.filter((item) => !run.clearedCardIds.has(Number(item?.cardId)))
@@ -320,6 +323,7 @@ function createMessageDiscoveryController(deps = {}) {
       status: run.status,
       queued: run.queued,
       processed: run.processed,
+      unresolved: run.unresolved,
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results).map((item) => ({
         cardId: item.cardId,
@@ -340,6 +344,7 @@ function createMessageDiscoveryController(deps = {}) {
       status: run.status,
       queued: run.queued,
       processed: run.processed,
+      unresolved: run.unresolved,
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results),
       startedAt: run.startedAt,
@@ -354,6 +359,7 @@ function createMessageDiscoveryController(deps = {}) {
       status: "idle",
       queued: 0,
       processed: 0,
+      unresolved: 0,
       reasonCode: "",
       results: [],
       startedAt: "",

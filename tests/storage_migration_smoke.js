@@ -10,6 +10,7 @@ const CANDIDATE_PROGRESS_VERSION = 7;
 const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
 const MESSAGE_PREVIEW_VERSION = 9;
 const COMMUNICATION_OUTCOME_STATUS_VERSION = 10;
+const MESSAGE_DISCOVERY_UNRESOLVED_VERSION = 11;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -31,10 +32,11 @@ try {
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1", backup_path: null },
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null },
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null },
-      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null }
+      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null },
+      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "communication_outcome_statuses_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_discovery_unresolved_items_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -76,8 +78,26 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_preview_states'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_discovery_unresolved_items'").get().n,
+    1
+  );
+  assert.deepStrictEqual(
+    db.prepare("PRAGMA table_info(message_discovery_unresolved_items)").all().map((column) => column.name),
+    [
+      "profile_id",
+      "platform",
+      "conversation_key",
+      "preview_digest",
+      "preview_kind",
+      "reason_code",
+      "first_observed_at",
+      "last_observed_at"
+    ],
+    "unresolved storage must remain digest-only operational state"
+  );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, COMMUNICATION_OUTCOME_STATUS_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_UNRESOLVED_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -155,7 +175,51 @@ try {
   db.prepare("UPDATE communication_batch_items SET status = 'platform_rejected' WHERE id = ?").run(outcomeItemId);
   db.prepare("UPDATE communication_batch_items SET status = 'transport_failed' WHERE id = ?").run(outcomeItemId);
   assert.strictEqual(db.prepare("SELECT status FROM communication_batch_items WHERE id = ?").get(outcomeItemId).status, "transport_failed");
+  const previewBeforeV11 = {
+    profile_id: outcomeProfileId,
+    platform: "boss",
+    conversation_key: `sha256:${"a".repeat(64)}`,
+    preview_digest: `sha256:${"b".repeat(64)}`,
+    preview_kind: "possible_hr_reply",
+    observed_at: outcomeNow,
+    updated_at: outcomeNow
+  };
+  db.prepare(`INSERT INTO message_preview_states(
+    profile_id, platform, conversation_key, preview_digest, preview_kind, observed_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+    previewBeforeV11.profile_id,
+    previewBeforeV11.platform,
+    previewBeforeV11.conversation_key,
+    previewBeforeV11.preview_digest,
+    previewBeforeV11.preview_kind,
+    previewBeforeV11.observed_at,
+    previewBeforeV11.updated_at
+  );
+  const communicationBeforeV11 = { ...db.prepare("SELECT * FROM communication_batch_items WHERE id = ?").get(outcomeItemId) };
+  db.exec(`
+    DROP TABLE message_discovery_unresolved_items;
+    DELETE FROM schema_migrations WHERE version = 11;
+    PRAGMA user_version = 10;
+  `);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+  db = openDb(communicationOutcomeLegacyPath);
+  assert.deepStrictEqual(
+    { ...db.prepare("SELECT * FROM communication_batch_items WHERE id = ?").get(outcomeItemId) },
+    communicationBeforeV11,
+    "the v11 unresolved migration must preserve existing v10 communication rows"
+  );
+  assert.deepStrictEqual(
+    { ...db.prepare("SELECT * FROM message_preview_states WHERE profile_id = ?").get(outcomeProfileId) },
+    previewBeforeV11,
+    "the v11 unresolved migration must preserve existing preview rows"
+  );
+  assert.deepStrictEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.deepStrictEqual(
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_communication_items_batch', 'idx_communication_items_job') ORDER BY name")
+      .all().map((row) => row.name),
+    ["idx_communication_items_batch", "idx_communication_items_job"]
+  );
   db.close();
 
   const productionV1Path = path.join(root, "production-v1.sqlite");
@@ -185,7 +249,8 @@ try {
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1" },
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" },
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" },
-      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" }
+      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" },
+      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

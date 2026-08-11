@@ -246,6 +246,16 @@ async function main() {
   );
   clearSiteRuntimeState(db, "boss");
 
+  scenarios.push(unmatchedRun());
+  let status = await startAndWait(base, fixture.profileId, "needs_user_action");
+  assert.strictEqual(status.unresolved, 1);
+  assert.strictEqual(status.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
+  assertNoPrivateData(status);
+  const unresolvedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(unresolvedPage.body.includes("\u672a\u89e3\u51b3 1"), "the page must show the truthful unresolved count");
+  assertNoPrivateData(unresolvedPage.body);
+  await waitForLeaseRelease();
+
   scenarios.push(completedRun({
     fixture,
     drafts: [PRIVATE_DRAFT],
@@ -256,7 +266,7 @@ async function main() {
     profileId: fixture.profileId
   });
   assert.strictEqual(response.status, 202);
-  let status = await waitForStatus(base, fixture.profileId, "completed");
+  status = await waitForStatus(base, fixture.profileId, "completed");
   assert.strictEqual(cleanupTimers.activeCount(), 1);
   assert.strictEqual(cleanupTimers.latest().delay, 30 * 60 * 1000);
   assert.deepStrictEqual(Object.keys(status).sort(), [
@@ -268,6 +278,7 @@ async function main() {
     "results",
     "startedAt",
     "status",
+    "unresolved",
     "updatedAt"
   ]);
   assert.deepStrictEqual(Object.keys(status.results[0]).sort(), [
@@ -692,6 +703,24 @@ function riskControlRun() {
       queued: 1,
       processed: 0,
       reasonCode: "BOSS_RISK_CONTROL",
+      results: []
+    };
+    onStatus(summary);
+    return summary;
+  };
+}
+
+function unmatchedRun() {
+  return async ({ onStatus }) => {
+    const summary = {
+      status: "needs_user_action",
+      queued: 2,
+      processed: 1,
+      unresolved: 1,
+      reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+      recruiterLabel: PRIVATE_RECRUITER,
+      previewText: PRIVATE_PREVIEW,
+      message: PRIVATE_BODY,
       results: []
     };
     onStatus(summary);
