@@ -9,6 +9,7 @@ const DURABLE_WORKFLOW_VERSION = 6;
 const CANDIDATE_PROGRESS_VERSION = 7;
 const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
 const MESSAGE_PREVIEW_VERSION = 9;
+const COMMUNICATION_OUTCOME_STATUS_VERSION = 10;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -29,10 +30,11 @@ try {
       { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1", backup_path: null },
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1", backup_path: null },
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null },
-      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null }
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null },
+      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_preview_states_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "communication_outcome_statuses_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
@@ -75,10 +77,86 @@ try {
     1
   );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, MESSAGE_PREVIEW_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, COMMUNICATION_OUTCOME_STATUS_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
+
+  const communicationOutcomeLegacyPath = path.join(root, "communication-outcome", "v9.sqlite");
+  db = openDb(communicationOutcomeLegacyPath);
+  const outcomeNow = "2026-08-11T08:00:00.000Z";
+  const outcomeProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Outcome migration', '{}', 'outcome-migration', ?, ?)`).run(outcomeNow, outcomeNow).lastInsertRowid);
+  const outcomePlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Outcome migration', '{}', NULL, 1, ?, ?)`).run(outcomeProfileId, outcomeNow, outcomeNow).lastInsertRowid);
+  const outcomeJobId = Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', 'outcome-migration', 'Outcome migration role', ?, ?)`).run(outcomeNow, outcomeNow).lastInsertRowid);
+  const outcomeBatchId = Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, created_at, updated_at
+  ) VALUES ('boss', ?, ?, 'edge', 'interrupted', '{}', ?, ?, ?)`)
+    .run(outcomeProfileId, outcomePlanId, outcomeNow, outcomeNow, outcomeNow).lastInsertRowid);
+  const outcomeItemId = Number(db.prepare(`INSERT INTO communication_batch_items(
+    batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+    status, click_count, evidence_json, error_code, error_message,
+    started_at, clicked_at, finished_at, updated_at
+  ) VALUES (?, ?, 1, 'https://www.zhipin.com/job_detail/outcome-migration.html',
+    'Outcome migration role', 'Outcome migration company', 'click_dispatched', 1,
+    '{"endpointKind":"friend_add"}', 'OLD_CODE', 'old message', ?, ?, ?, ?)`)
+    .run(outcomeBatchId, outcomeJobId, outcomeNow, outcomeNow, outcomeNow, outcomeNow).lastInsertRowid);
+  const outcomeBefore = { ...db.prepare("SELECT * FROM communication_batch_items WHERE id = ?").get(outcomeItemId) };
+  db.exec(`
+    DROP INDEX idx_communication_items_batch;
+    DROP INDEX idx_communication_items_job;
+    ALTER TABLE communication_batch_items RENAME TO communication_batch_items_v9;
+    CREATE TABLE communication_batch_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      job_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      job_url TEXT NOT NULL,
+      title_snapshot TEXT NOT NULL,
+      company_snapshot TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK(status IN ('pending','opening','verified','click_dispatched','succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable','ambiguous','stopped')),
+      click_count INTEGER NOT NULL DEFAULT 0 CHECK(click_count BETWEEN 0 AND 1),
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      error_code TEXT,
+      error_message TEXT,
+      started_at TEXT,
+      clicked_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(batch_id, job_id),
+      FOREIGN KEY(batch_id) REFERENCES communication_batches(id),
+      FOREIGN KEY(job_id) REFERENCES jobs(id)
+    );
+    INSERT INTO communication_batch_items SELECT * FROM communication_batch_items_v9;
+    DROP TABLE communication_batch_items_v9;
+    CREATE INDEX idx_communication_items_batch ON communication_batch_items(batch_id, position);
+    CREATE INDEX idx_communication_items_job ON communication_batch_items(job_id, status);
+    PRAGMA user_version = 9;
+  `);
+  db.close();
+  db = openDb(communicationOutcomeLegacyPath);
+  assert.deepStrictEqual(
+    { ...db.prepare("SELECT * FROM communication_batch_items WHERE id = ?").get(outcomeItemId) },
+    outcomeBefore,
+    "communication status migration must preserve every existing item field"
+  );
+  assert.deepStrictEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.deepStrictEqual(
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_communication_items_batch', 'idx_communication_items_job') ORDER BY name")
+      .all().map((row) => row.name),
+    ["idx_communication_items_batch", "idx_communication_items_job"]
+  );
+  db.prepare("UPDATE communication_batch_items SET status = 'platform_rejected' WHERE id = ?").run(outcomeItemId);
+  db.prepare("UPDATE communication_batch_items SET status = 'transport_failed' WHERE id = ?").run(outcomeItemId);
+  assert.strictEqual(db.prepare("SELECT status FROM communication_batch_items WHERE id = ?").get(outcomeItemId).status, "transport_failed");
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
 
   const productionV1Path = path.join(root, "production-v1.sqlite");
   db = openDb(productionV1Path);
@@ -106,7 +184,8 @@ try {
       { version: DURABLE_WORKFLOW_VERSION, name: "durable_workflow_progress_v1" },
       { version: CANDIDATE_PROGRESS_VERSION, name: "candidate_progress_v1" },
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" },
-      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" }
+      { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" },
+      { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
