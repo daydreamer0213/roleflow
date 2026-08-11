@@ -20,6 +20,7 @@ const {
   transitionProgressCard
 } = require("../src/core/candidate_progress");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 const { installDashboardSignalHandlers } = require("../src/cli");
 
 const PRIVATE_BODY = "脱敏测试问题";
@@ -49,6 +50,7 @@ main().catch((error) => {
 });
 
 async function main() {
+  await controllerBrowserAuthoritySmoke();
   await dashboardSignalShutdownSmoke();
   const fixture = createFixture();
   await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
@@ -56,6 +58,7 @@ async function main() {
   const cleanupTimers = controllableTimers();
   const browsers = [];
   let discoveryBrowserAuthority = null;
+  let discoveryReaderBrowser = null;
   const readerCalls = [];
   const reader = {
     async scanConversationRows() {
@@ -106,7 +109,7 @@ async function main() {
         }
       },
       createReader(input) {
-        assert(browsers.includes(input.browser));
+        discoveryReaderBrowser = input.browser;
         return reader;
       },
       async runDiscovery(context) {
@@ -189,6 +192,11 @@ async function main() {
     discoveryBrowserAuthority,
     { browserMode: "edge", cdpPort: null },
     "message discovery must use the dashboard's default Edge browser authority"
+  );
+  assert.strictEqual(
+    discoveryReaderBrowser,
+    browsers[0],
+    "message discovery controller must pass the supplied browser-factory sentinel to the reader"
   );
   assert.strictEqual(
     db.prepare("SELECT command FROM site_scan_leases WHERE site = 'boss'").get().command,
@@ -403,6 +411,50 @@ async function main() {
   await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function controllerBrowserAuthoritySmoke() {
+  const browserSentinel = { kind: "controller-browser-sentinel" };
+  let factoryCalls = 0;
+  let readerBrowser = null;
+  let cleanupBrowser = null;
+  const controllerDb = {
+    prepare() {
+      return { get: () => ({ id: 1 }) };
+    }
+  };
+  const controller = createMessageDiscoveryController({
+    db: controllerDb,
+    browserFactory: () => {
+      factoryCalls += 1;
+      return browserSentinel;
+    },
+    createReader: ({ browser }) => {
+      readerBrowser = browser;
+      return {};
+    },
+    createAnalyzer: () => ({}),
+    runDiscovery: async () => ({
+      status: "completed",
+      queued: 0,
+      processed: 0,
+      reasonCode: "",
+      results: []
+    }),
+    modelReady: () => true,
+    assertRuntimeAvailable: () => {},
+    acquireLease: () => {},
+    renewLease: () => {},
+    releaseLease: () => {},
+    cleanupBrowser: async (browser) => { cleanupBrowser = browser; },
+    setInterval: () => 0,
+    clearInterval: () => {}
+  });
+  controller.start(1);
+  await controller.close();
+  assert.strictEqual(factoryCalls, 1, "controller must call the supplied browser factory exactly once");
+  assert.strictEqual(readerBrowser, browserSentinel, "controller must pass the factory sentinel to the reader");
+  assert.strictEqual(cleanupBrowser, browserSentinel, "controller cleanup must receive the owned adapter");
 }
 
 async function dashboardSignalShutdownSmoke() {

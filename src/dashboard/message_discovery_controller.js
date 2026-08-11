@@ -22,7 +22,8 @@ function createMessageDiscoveryController(deps = {}) {
     acquireLease,
     renewLease,
     releaseLease,
-    createBrowser = null,
+    browserFactory = null,
+    createBrowser = browserFactory,
     cleanupBrowser = async (browser) => {
       if (browser && typeof browser.disconnect === "function") await browser.disconnect();
       else if (browser && typeof browser.cleanup === "function") await browser.cleanup();

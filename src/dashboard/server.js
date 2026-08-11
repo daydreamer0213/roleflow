@@ -466,7 +466,7 @@ function createDashboardServer({
     acquireLease: acquireSiteScanLease,
     renewLease: renewSiteScanLease,
     releaseLease: releaseSiteScanLease,
-    createBrowser: () => browserFactory({ browserMode: "edge", cdpPort: null }),
+    browserFactory: () => browserFactory({ browserMode: "edge", cdpPort: null }),
     ...messageDiscoveryDependencies
   });
   const dashboardServer = http.createServer(async (req, res) => {
