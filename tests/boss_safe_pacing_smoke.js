@@ -29,6 +29,7 @@ async function main() {
   await paneDetailDelaySmoke();
   await pacingRestoreFailClosedSmoke();
   await productionScanPacingCompositionSmoke();
+  await sqliteCheckpointResumeChainSmoke();
   await threeMinuteBudgetSmoke();
   recoveryExpirySmoke();
   checkpointResumeSmoke();
@@ -211,27 +212,78 @@ async function threeMinuteBudgetSmoke() {
 }
 
 function recoveryExpirySmoke() {
-  const db = openDb(":memory:");
   const riskAt = Date.parse("2026-08-12T00:00:00.000Z");
   const hour = 60 * 60_000;
-  recordSiteAccessEvent(db, { site: "boss", action: "risk_control", createdAt: new Date(riskAt).toISOString() });
-  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 47 * hour }), "recovery");
-  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
-  db.close();
+  for (const [label, sourceBlockedUntil, expectedBlockedUntil] of [
+    ["early", "2026-08-13T08:00:00+08:00", "2026-08-13T08:00:00+08:00"],
+    ["late", "2026-08-15T08:00:00+08:00", "2026-08-15T08:00:00+08:00"],
+    ["missing", null, riskAt + 48 * hour],
+    ["invalid", "not-a-date", riskAt + 48 * hour]
+  ]) {
+    const db = openDb(":memory:");
+    const error = Object.assign(new Error(label), { code: "BOSS_RISK_CONTROL" });
+    if (sourceBlockedUntil !== null) error.blockedUntil = sourceBlockedUntil;
+    persistBossRiskControl(db, { site: "boss", runId: label, error, nowMs: riskAt });
+    const expectedValue = typeof expectedBlockedUntil === "number"
+      ? new Date(expectedBlockedUntil).toISOString()
+      : expectedBlockedUntil;
+    assert.strictEqual(getSiteRuntimeState(db, "boss").details.blockedUntil, expectedValue);
+    assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "risk_control" })[0].details.blockedUntil, expectedValue);
+    if (label === "early") assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
+    if (label === "late") {
+      assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 71 * hour }), "recovery");
+      assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 73 * hour }), "normal");
+    }
+    db.close();
+  }
+}
 
-  const extended = openDb(":memory:");
-  recordSiteAccessEvent(extended, {
-    site: "boss",
-    action: "risk_control",
-    createdAt: new Date(riskAt).toISOString(),
-    details: { blockedUntil: new Date(riskAt + 72 * hour).toISOString() }
+async function sqliteCheckpointResumeChainSmoke() {
+  const db = openDb(":memory:");
+  const snapshot = executionSnapshot();
+  const batchId = createBatch(db, "boss", "chain", "chain", {
+    status: "running", profileId: 1, searchPlanId: 2, filterSnapshot: { execution: snapshot }
   });
-  assert.strictEqual(resolveAccessMode(extended, { site: "boss", nowMs: riskAt + 71 * hour }), "recovery");
-  assert.strictEqual(resolveAccessMode(extended, { site: "boss", nowMs: riskAt + 73 * hour }), "normal");
-  const error = Object.assign(new Error("risk"), { code: "BOSS_RISK_CONTROL", blockedUntil: new Date(riskAt + 72 * hour).toISOString() });
-  persistBossRiskControl(extended, { site: "boss", runId: "extended", error, nowMs: riskAt });
-  assert.strictEqual(Date.parse(getSiteRuntimeState(extended, "boss").details.blockedUntil), riskAt + 72 * hour);
-  extended.close();
+  const run = createScanRun(db, { runId: "chain-run", site: "boss", command: "scan", planId: 2 });
+  acquireSiteScanLease(db, { site: "boss", owner: "chain-owner", planId: 2 });
+  beginScanRun(db, { runId: run.id, batchId, leaseOwner: "chain-owner" });
+  const accessController = createSiteAccessController({ db, site: "boss", runId: run.id, nowFn: () => 0, sleepFn: async () => {} });
+  const firstSleeps = [];
+  const first = checkpointAdapter({ accessController, sleeps: firstSleeps, cards: [testCard("one"), testCard("two")] });
+  await assert.rejects(() => first.scanBrowser({
+    tabId: "search", keywords: ["chain"], cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }], maxCards: 20, maxDetailTotal: 2,
+    onDetailCheckpoint: async ({ job }) => {
+      checkpointScanProgress(db, { runId: run.id, batchId, leaseOwner: "chain-owner", jobs: [checkpointJob(job)] });
+      if (job.sourceId === "two") throw Object.assign(new Error("simulated interruption"), { code: "SCAN_ABORTED" });
+    },
+    onPacingCheckpoint: async (pacingState) => checkpointScanProgress(db, {
+      runId: run.id, batchId, leaseOwner: "chain-owner", jobs: [], runtime: { bossPacing: pacingState }
+    })
+  }), (error) => error.code === "SCAN_ABORTED");
+  assert.deepStrictEqual(firstSleeps.filter((ms) => ms === 8000), [8000, 8000]);
+  const savedRuntime = getBatch(db, batchId).filterSnapshot.runtime.bossPacing;
+  assert.strictEqual(savedRuntime.detailActions, 1, "the interrupted job is absent from the latest pacing checkpoint");
+  const overdueRuntime = { ...savedRuntime, nextPacingCooldownAt: savedRuntime.pacedActions };
+  checkpointScanProgress(db, {
+    runId: run.id, batchId, leaseOwner: "chain-owner", jobs: [], runtime: { bossPacing: overdueRuntime }
+  });
+  finishScanRun(db, { runId: run.id, leaseOwner: "chain-owner", status: "interrupted" });
+  const resumed = validateResumeBatch({ resumeBatchId: batchId, resumedBatch: getBatch(db, batchId), site: "boss", planId: 2 });
+  assert.strictEqual(resumed.runtime.bossPacing.detailActions, 1, "pacing may lag the interrupted job by only one detail");
+  assert.strictEqual(resumed.runtime.bossPacing.nextPacingCooldownAt, overdueRuntime.nextPacingCooldownAt);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM job_observations WHERE batch_id = ?").get(batchId).n, 2);
+  assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "pane_detail_read" }).length, 2);
+
+  const resumedSleeps = [];
+  const resumedAdapter = checkpointAdapter({ accessController, sleeps: resumedSleeps, cards: [testCard("three")] });
+  const jobs = await resumedAdapter.scanBrowser({
+    tabId: "search", keywords: ["chain"], cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }], maxCards: 20, maxDetailTotal: 1,
+    pacingState: resumed.runtime.bossPacing
+  });
+  assert.deepStrictEqual(resumedSleeps.filter((ms) => ms === 4000 || ms === 8000), [4000, 8000]);
+  assert.deepStrictEqual(jobs.map((job) => [job.sourceId, job.detailRead]), [["three", true]]);
+  assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "pane_detail_read" }).length, 3);
+  db.close();
 }
 
 function checkpointResumeSmoke() {
@@ -366,5 +418,34 @@ function testCard(sourceId) {
     experience: "1-3 years",
     education: "Bachelor",
     url: `https://www.zhipin.com/job_detail/${sourceId}.html`
+  };
+}
+
+function checkpointAdapter({ accessController, sleeps, cards }) {
+  const adapter = new BossSiteAdapter({
+    browser: { async navigate() {} },
+    accessController,
+    sleepFn: async (ms) => sleeps.push(ms),
+    randomFn: () => 0
+  });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => cards;
+  adapter.readVisiblePaneDetail = async (_tabId, job) => {
+    await adapter.waitWithPacing("pane_detail_read");
+    await adapter.reserveAccess("pane_detail_read", { jobId: job.sourceId });
+    return { description: "checkpoint detail ".repeat(20), bossActiveText: "today" };
+  };
+  return adapter;
+}
+
+function checkpointJob(job) {
+  return {
+    ...job,
+    score: 80,
+    level: "A",
+    matches: [],
+    risks: [],
+    qualityTags: [],
+    analysis: { provider: "test", semanticStatus: "complete" }
   };
 }

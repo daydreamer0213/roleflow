@@ -1724,8 +1724,10 @@ function scanFailureStatus(error) {
 function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs = Date.now() } = {}) {
   if (!isBossRiskControl(error)) return false;
   const defaultBlockedUntil = Number(nowMs) + PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000;
-  const requestedBlockedUntil = Date.parse(error?.blockedUntil || "");
-  const blockedUntil = new Date(Math.max(defaultBlockedUntil, Number.isFinite(requestedBlockedUntil) ? requestedBlockedUntil : 0)).toISOString();
+  const requestedBlockedUntil = String(error?.blockedUntil || "");
+  const blockedUntil = Number.isFinite(Date.parse(requestedBlockedUntil))
+    ? requestedBlockedUntil
+    : new Date(defaultBlockedUntil).toISOString();
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
   const details = {
     phase: String(phase || ""),
