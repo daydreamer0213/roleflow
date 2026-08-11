@@ -5,18 +5,20 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, assertStrictPage, pageAudit, parseArgs } = require("../scripts/evaluate-dashboard-wave2");
 
-assert.deepEqual(PAGE_SPECS.map((page) => page.id), ["today-ready", "workflow-scanning", "queue-primary", "jobs-latest", "communication-review", "settings", "onboarding-existing", "diagnostics"]);
+assert.deepEqual(PAGE_SPECS.map((page) => page.id), ["today-ready", "workflow-scanning", "queue-primary", "jobs-latest", "communication-review", "settings", "onboarding-existing", "match-card", "profile", "resumes", "diagnostics"]);
 assert.deepEqual(parseArgs(["--help"]), { help: true }, "the evaluator must expose a dependency-free help path");
 assert.throws(() => parseArgs(["--no-strict"]), /Unknown argument: --no-strict/, "the canonical evaluator must never offer a non-strict path");
 assert.equal(parseArgs([]).strict, true, "the evaluator must always report strict mode");
+const matchCardSpec = PAGE_SPECS.find((page) => page.id === "match-card");
+assert.equal(matchCardSpec.path({ profileId: 17, matchCardId: 23 }), "/match-card?profileId=17&cardId=23", "the match-card audit must open the confirmed card detail from its fixture");
 assert.match(RELEVANT_CONTROL_SELECTOR, /:not\(\[type=checkbox\]\).*:not\(\[type=radio\]\)/, "touch gates must exclude compact choice controls from standalone action targets");
 assert.deepEqual(Object.fromEntries(PAGE_SPECS.map((page) => [page.family, page.primaryPolicy])), {
   today: "required", workflow: "required", queue: "none-expected", jobs: "none-expected",
-  communication: "required", settings: "none-expected", onboarding: "required", diagnostics: "none-expected"
+  communication: "required", settings: "none-expected", onboarding: "required", matchCard: "none-expected", profile: "none-expected", resumes: "none-expected", diagnostics: "none-expected"
 }, "every audited route family must declare a primary-action policy");
 assert.deepEqual(Object.fromEntries(PAGE_SPECS.map((page) => [page.family, page.interactionPolicy])), {
   today: "read-only-none", workflow: "exercised", queue: "exercised", jobs: "exercised",
-  communication: "safety-not-executed", settings: "safety-not-executed", onboarding: "safety-not-executed", diagnostics: "read-only-none"
+  communication: "safety-not-executed", settings: "safety-not-executed", onboarding: "safety-not-executed", matchCard: "safety-not-executed", profile: "safety-not-executed", resumes: "safety-not-executed", diagnostics: "read-only-none"
 }, "every audited route family must declare an interaction policy");
 
 const passingPage = {

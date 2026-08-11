@@ -10,7 +10,8 @@ const { renderNavigation } = require("../src/dashboard/ui/navigation");
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `dashboard-shell-${Date.now()}.sqlite`);
-const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboard-shell-smoke"; }, listRecent() { return []; } };
+let diagnosticEntries = [];
+const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboard-shell-smoke"; }, listRecent() { return diagnosticEntries; } };
 
 (async () => {
   assert.strictEqual(typeof response.escapeHtml, "function", "the response utility must expose HTML escaping");
@@ -116,6 +117,47 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assertSharedFrame(diagnostics.body, "/diagnostics", "diagnostics");
     assert.doesNotMatch(diagnostics.body, /data-page-primary=/, "diagnostics must explicitly have no page-level primary marker");
     assertCurrentLink(jobs.body, `/jobs?planId=${queueFixture.planId}&amp;batch=latest`, "岗位列表");
+    for (const [pathname, name] of [
+      [`/match-card?profileId=${queueFixture.profileId}`, "match card"],
+      [`/profile?profileId=${queueFixture.profileId}`, "profile"],
+      [`/resumes?profileId=${queueFixture.profileId}`, "resume versions"]
+    ]) {
+      const migratedPage = await getText(baseUrl, pathname);
+      assert.strictEqual(migratedPage.status, 200, `${name} must keep its HTML response`);
+      assertSharedFrame(migratedPage.body, `/plan?profileId=${queueFixture.profileId}&amp;planId=${queueFixture.planId}`, name);
+      assert.strictEqual((migratedPage.body.match(/<main(?:\s|>)/g) || []).length, 1, `${name} must use exactly one main region`);
+      assert.match(migratedPage.body, /<main id="main-content">/, `${name} must preserve the shared main-content target`);
+      const primaryNavigation = migratedPage.body.match(/<nav class="primary-nav"[^>]*>([\s\S]*?)<\/nav>/);
+      assert.ok(primaryNavigation, `${name} must expose primary navigation`);
+      assert.strictEqual((primaryNavigation[1].match(/href="\/plan\?profileId=/g) || []).length, 1, `${name} must keep exactly one plan destination in primary navigation`);
+      const mainContent = migratedPage.body.match(/<main id="main-content">([\s\S]*?)<\/main>/);
+      assert.ok(mainContent, `${name} must expose main content`);
+      assert.doesNotMatch(mainContent[1], /href="\/plan\?profileId=/, `${name} must not duplicate the plan destination in page content`);
+    }
+
+    const resumes = await getText(baseUrl, `/resumes?profileId=${queueFixture.profileId}`);
+    const createResumeForm = resumes.body.match(/<form class="panel form-stack" method="post" action="\/api\/resume-version" enctype="multipart\/form-data">([\s\S]*?)<\/form>/);
+    assert.ok(createResumeForm, "resume create form must remain present");
+    assert.strictEqual((createResumeForm[1].match(/<input[^>]*name="name"/g) || []).length, 1, "resume create form must have one version-name input");
+    assert.strictEqual((createResumeForm[1].match(/<label>\u7248\u672c\u540d\u79f0<input name="name"/g) || []).length, 1, "resume create form must have one visible version-name label");
+
+    diagnosticEntries = [
+      { time: "2099-01-01T00:00:00.000Z", level: "warn", component: "scan", event: "scan_waiting", requestId: "warn-request" },
+      { time: "2099-01-01T00:01:00.000Z", level: "error", component: "scan", event: "scan_failed", requestId: "error-request", errorCode: "SCAN_FAILED", error: { message: "safe failure" } },
+      { time: "2099-01-01T00:02:00.000Z", level: "info", component: "http", event: "http_request_completed", requestId: "routine-request" }
+    ];
+    const defaultDiagnostics = await getText(baseUrl, "/diagnostics");
+    assert.match(defaultDiagnostics.body, /scan_waiting/);
+    assert.match(defaultDiagnostics.body, /scan_failed/);
+    assert.doesNotMatch(defaultDiagnostics.body, /http_request_completed/);
+    assert.match(defaultDiagnostics.body, /\u95ee\u9898\u548c\u5efa\u8bae\u884c\u52a8\u4f18\u5148/);
+    assert.match(defaultDiagnostics.body, /href="\/diagnostics\?events=all"/);
+    assert.match(defaultDiagnostics.body, /SCAN_FAILED/);
+    assert.match(defaultDiagnostics.body, /error-request/);
+    const allDiagnostics = await getText(baseUrl, "/diagnostics?events=all");
+    assert.match(allDiagnostics.body, /http_request_completed/);
+    const unknownDiagnostics = await getText(baseUrl, "/diagnostics?events=unknown");
+    assert.doesNotMatch(unknownDiagnostics.body, /http_request_completed/);
   } finally {
     await close(server);
     db.close();

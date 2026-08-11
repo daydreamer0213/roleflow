@@ -506,7 +506,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
-      if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
+      if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent(), url.searchParams.get("events")));
       if (req.method === "GET" && url.pathname === "/health") {
         return sendJson(res, 200, {
           ok: true,
@@ -795,6 +795,8 @@ function renderMatchCardPage({ db, searchParams }) {
   const profile = getCandidateProfile(db, profileId);
   if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
   const activeCard = getActiveMatchingCard(db, profileId);
+  const activePlan = getActiveSearchPlan(db, profile.id);
+  const planPath = `/plan?profileId=${profile.id}${activePlan ? `&planId=${activePlan.id}` : ""}`;
   const requested = getMatchingCard(db, searchParams.get("cardId"));
   const card = requested?.profileId === profile.id ? requested : null;
   const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
@@ -835,13 +837,12 @@ function renderMatchCardPage({ db, searchParams }) {
       : card.status === "confirmed"
         ? `<section class="panel"><h2>匹配偏好卡 #${card.id}（已确认）</h2><p class="hint">这张卡是当前扫描与岗位匹配的根据；如需调整，请编辑后另存或重新上传新简历生成草稿。</p>${renderMatchingCardSummary(card.card)}</section>`
         : `<section class="panel"><h2>匹配偏好卡 #${card.id}（历史版本 · 已被替换）</h2><p class="hint">这张卡已被更新的确认卡替换，仅作历史留档，不能重新确认；当前扫描与岗位匹配不使用它。</p>${renderMatchingCardSummary(card.card)}</section>`;
-  return renderPage("匹配偏好卡", `<main>
-  <nav>${navLinks({ currentPath: `/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}`, todayPath: `/match-card?profileId=${profile.id}${card ? `&cardId=${card.id}` : ""}` })}<a href="/plan?profileId=${profile.id}">筛选方案</a><a href="/resumes?profileId=${profile.id}">简历版本</a></nav>
+  return renderLegacyDashboardPage({ title: "匹配偏好卡", currentPath: planPath, todayPath: planPath, planId: activePlan?.id || "", stage: "匹配", body: `<main id="main-content">
   <h1>匹配偏好卡</h1>
   <p class="hint">当前扫描使用：${escapeHtml(activeLabel)}</p>
   ${notices.join("\n")}
   ${body}
-</main>`);
+</main>` });
 }
 
 function renderMatchingCardSummary(card = {}) {
@@ -2857,13 +2858,13 @@ function renderProfilePage({ db, searchParams }) {
   const candidate = profile.profile.candidate || {};
   const attempts = listResumeParseAttempts(db, profile.id);
   const activePlan = getActiveSearchPlan(db, profile.id);
+  const planPath = `/plan?profileId=${profile.id}${activePlan ? `&planId=${activePlan.id}` : ""}`;
   const dependency = activePlan ? getSearchPlanDependency(db, activePlan.id) : null;
   const saved = searchParams.get("saved") ? `<p class="notice">画像已保存。搜索方案不会被静默改写，请在方案页按需确认。</p>` : "";
   const planNotice = !activePlan
     ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成搜索建议</button></form>`
-    : dependency?.stale ? `<p class="setup-warning">当前筛选方案基于旧画像。请到<a href="/plan?profileId=${profile.id}&planId=${activePlan.id}">筛选方案</a>检查并保存后再扫描；系统不会自动覆盖你的人工条件。</p>` : "";
-  return renderPage("画像摘要", `<main>
-  <nav>${navLinks({ currentPath: `/profile?profileId=${profile.id}`, todayPath: `/profile?profileId=${profile.id}` })}<a href="/resumes?profileId=${profile.id}">简历版本</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
+    : dependency?.stale ? `<p class="setup-warning">当前筛选方案基于旧画像。请在筛选方案页检查并保存后再扫描；系统不会自动覆盖你的人工条件。</p>` : "";
+  return renderLegacyDashboardPage({ title: "画像摘要", currentPath: planPath, todayPath: planPath, planId: activePlan?.id || "", stage: "画像", body: `<main id="main-content">
   <h1>画像摘要</h1>
   ${saved}
   ${planNotice}
@@ -2884,7 +2885,7 @@ function renderProfilePage({ db, searchParams }) {
     <button>保存画像</button>
   </form>
   <section class="panel"><h2>解析诊断</h2><p class="hint">只展示本地解析元数据和前 360 字预览，不会上传简历文件。</p>${renderParseAttempts(attempts)}</section>
-</main>`);
+</main>` });
 }
 
 function renderResumeVersionsPage({ db, searchParams }) {
@@ -2892,17 +2893,17 @@ function renderResumeVersionsPage({ db, searchParams }) {
   const fallback = listCandidateProfiles(db)[0];
   const profile = getCandidateProfile(db, requestedId || fallback?.id);
   if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
+  const activePlan = getActiveSearchPlan(db, profile.id);
+  const planPath = `/plan?profileId=${profile.id}${activePlan ? `&planId=${activePlan.id}` : ""}`;
   const versions = listCandidateResumeVersions(db, profile.id);
   const saved = searchParams.get("saved") ? `<p class="notice">简历版本已保存，下一次扫描会优先用启用版本做匹配和推荐。</p>` : "";
-  return renderPage("简历版本", `<main>
-  <nav>${navLinks({ currentPath: `/resumes?profileId=${profile.id}`, todayPath: `/resumes?profileId=${profile.id}` })}<a href="/profile?profileId=${profile.id}">画像确认</a><a href="/plan?profileId=${profile.id}">筛选方案</a></nav>
+  return renderLegacyDashboardPage({ title: "简历版本", currentPath: planPath, todayPath: planPath, planId: activePlan?.id || "", stage: "简历", body: `<main id="main-content">
   <h1>简历版本</h1>
   ${saved}
   <p class="hint">每个版本都可以限定适用方向、关键词和主推项目；停用版本不会参与下次匹配。投递版简历只用于岗位沟通与版本管理：新增、编辑或停用版本不会改变基础候选人画像，也不会替换当前匹配偏好卡。</p>
   <form class="panel form-stack" method="post" action="/api/resume-version" enctype="multipart/form-data">
     <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
     <h2>新增版本</h2>
-    <label>版本名称<input name="name" placeholder="例如：AI 应用开发版"></label>
     <label>简历文件<input name="resumeVersion" type="file" accept=".txt,.md,.docx,.pdf"></label>
     <label>或粘贴简历文本<textarea name="resumeText" placeholder="文件无法解析时可用"></textarea></label>
     ${renderResumeVersionFields({ isActive: true })}
@@ -2911,7 +2912,7 @@ function renderResumeVersionsPage({ db, searchParams }) {
     <button>解析并新增版本</button>
   </form>
   ${versions.length ? versions.map((version) => renderResumeVersion(version, profile.id)).join("") : `<section class="panel">暂无可用版本。</section>`}
-</main>${resumePreviewScript()}`);
+</main>${resumePreviewScript()}` });
 }
 
 function renderResumeVersion(version, profileId) {
@@ -3452,8 +3453,9 @@ function modelSettingsBack(error, fallback) {
     : fallback;
 }
 
-function renderDiagnosticsPage(entries = []) {
-  const rows = entries.map((entry) => {
+function renderDiagnosticsPage(entries = [], events = "") {
+  const showAll = events === "all";
+  const rows = entries.filter((entry) => showAll || ["warn", "error"].includes(entry.level)).map((entry) => {
     const error = entry.error || {};
     const code = error.code || entry.errorCode || "";
     const usage = entry.usage || {};
@@ -3469,7 +3471,10 @@ function renderDiagnosticsPage(entries = []) {
     const message = String(modelSummary || error.message || entry.message || "").slice(0, 240);
     return `<tr><td>${escapeHtml(String(entry.time || "").replace("T", " ").slice(0, 19))}</td><td>${escapeHtml(entry.level || "")}</td><td>${escapeHtml(entry.component || "")}</td><td>${escapeHtml(entry.event || "")}</td><td>${escapeHtml(entry.requestId || "")}</td><td>${escapeHtml(code)}</td><td>${escapeHtml(message)}</td></tr>`;
   }).join("");
-  return renderLegacyDashboardPage({ title: "诊断日志", currentPath: "/diagnostics", stage: "诊断", body: `<main id="main-content"><h1>诊断日志</h1><p class="hint">仅展示最近 120 条脱敏日志。完整 JSONL 位于项目的 .runtime/logs。</p><section class="panel"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main>` });
+  const filterNotice = showAll
+    ? `<p class="hint">正在显示最近 120 条脱敏日志（含常规事件）。<a href="/diagnostics">只看问题和建议行动</a></p>`
+    : `<p class="hint">问题和建议行动优先：默认只显示 warn 和 error。<a href="/diagnostics?events=all">显示所有常规事件</a></p>`;
+  return renderLegacyDashboardPage({ title: "诊断日志", currentPath: "/diagnostics", stage: "诊断", body: `<main id="main-content"><h1>诊断日志</h1>${filterNotice}<p class="hint">仅展示最近 120 条脱敏日志。完整 JSONL 位于项目的 .runtime/logs。</p><section class="panel"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main>` });
 }
 
 function respondUiError(res, error, back, { logger, requestId, event, fallbackCode }) {
