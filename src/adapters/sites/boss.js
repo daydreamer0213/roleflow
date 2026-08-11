@@ -342,11 +342,16 @@ const PAGE_HELPERS = String.raw`
 
   window.__bossRegisterCommunicationOutcomeObserver = function() {
     const existing = window.__bossCommunicationOutcomeObserver;
-    if (existing && typeof existing.result === "function") return existing;
+    if (existing && existing.closed !== true && typeof existing.result === "function") return existing;
+    if (existing && typeof existing.close === "function") existing.close();
     const startedAt = Date.now();
     const events = [];
     let matchedRequests = 0;
+    let inFlightRequests = 0;
+    let settled = true;
     let closed = false;
+    let sealed = false;
+    let terminalResult = null;
     const endpointKind = (value) => {
       try {
         const path = new URL(String(value || ""), location.origin).pathname;
@@ -368,7 +373,7 @@ const PAGE_HELPERS = String.raw`
       }
     };
     const record = ({ kind, status = null, code = "", category = "", elapsedMs = 0 }) => {
-      if (closed || !kind) return;
+      if (closed || sealed || !kind) return;
       events.push({
         endpointKind: kind,
         ...(Number.isInteger(Number(status)) && Number(status) >= 100 && Number(status) <= 599 ? { httpStatus: Number(status) } : {}),
@@ -377,7 +382,22 @@ const PAGE_HELPERS = String.raw`
         elapsedMs: Math.max(0, Math.min(60_000, Math.floor(Number(elapsedMs) || 0)))
       });
     };
+    const requestStarted = () => {
+      matchedRequests += 1;
+      inFlightRequests += 1;
+      settled = false;
+    };
+    const requestFinished = () => {
+      inFlightRequests = Math.max(0, inFlightRequests - 1);
+      Promise.resolve().then(() => {
+        if (!closed && !sealed && inFlightRequests === 0) settled = true;
+      });
+    };
     const classifyResponse = (kind, status, text, elapsedMs) => {
+      if (Number(status) === 0) {
+        record({ kind, category: "network_rejected", elapsedMs });
+        return;
+      }
       if (Number(status) < 200 || Number(status) >= 300) {
         record({ kind, status, category: "http_failure", elapsedMs });
         return;
@@ -392,91 +412,136 @@ const PAGE_HELPERS = String.raw`
       });
     };
     const originalFetch = window.fetch;
+    let wrappedFetch = null;
     if (typeof originalFetch === "function") {
-      window.fetch = function(input) {
+      wrappedFetch = function(input) {
         const kind = endpointKind(typeof input === "string" ? input : input?.url);
         if (!kind || closed) return originalFetch.apply(this, arguments);
         const requestStartedAt = Date.now();
-        matchedRequests += 1;
-        return Promise.resolve(originalFetch.apply(this, arguments)).then((response) => {
+        requestStarted();
+        let request;
+        try {
+          request = originalFetch.apply(this, arguments);
+        } catch (error) {
+          record({ kind, category: "network_rejected", elapsedMs: Date.now() - requestStartedAt });
+          requestFinished();
+          throw error;
+        }
+        return Promise.resolve(request).then((response) => {
           const copy = typeof response?.clone === "function" ? response.clone() : null;
-          return Promise.resolve(copy?.text?.() || "").then((text) => {
+          Promise.resolve(copy?.text?.() || "").then((text) => {
             classifyResponse(kind, response?.status, text, Date.now() - requestStartedAt);
-            return response;
           }, () => {
             record({ kind, status: response?.status, category: "response_unparsed", elapsedMs: Date.now() - requestStartedAt });
-            return response;
-          });
+          }).finally(requestFinished);
+          return response;
         }, (error) => {
           record({ kind, category: "network_rejected", elapsedMs: Date.now() - requestStartedAt });
+          requestFinished();
           throw error;
         });
       };
+      window.fetch = wrappedFetch;
     }
     const OriginalXhr = window.XMLHttpRequest;
     let originalOpen = null;
     let originalSend = null;
+    let wrappedOpen = null;
+    let wrappedSend = null;
     if (typeof OriginalXhr === "function") {
       originalOpen = OriginalXhr.prototype.open;
       originalSend = OriginalXhr.prototype.send;
-      OriginalXhr.prototype.open = function(method, url) {
+      wrappedOpen = function(method, url) {
         this.__bossCommunicationEndpointKind = endpointKind(url);
         return originalOpen.apply(this, arguments);
       };
-      OriginalXhr.prototype.send = function() {
+      wrappedSend = function() {
         const kind = this.__bossCommunicationEndpointKind;
         if (!kind || closed) return originalSend.apply(this, arguments);
         const requestStartedAt = Date.now();
-        matchedRequests += 1;
+        requestStarted();
         let handled = false;
         const once = (category) => {
           if (handled) return;
           handled = true;
           if (category) record({ kind, category, elapsedMs: Date.now() - requestStartedAt });
           else classifyResponse(kind, this.status, this.responseText, Date.now() - requestStartedAt);
+          requestFinished();
         };
         this.addEventListener("loadend", () => once(""), { once: true });
         this.addEventListener("error", () => once("network_rejected"), { once: true });
         this.addEventListener("timeout", () => once("network_timeout"), { once: true });
+        this.addEventListener("abort", () => once("network_aborted"), { once: true });
         return originalSend.apply(this, arguments);
       };
+      OriginalXhr.prototype.open = wrappedOpen;
+      OriginalXhr.prototype.send = wrappedSend;
     }
-    const restore = () => {
-      if (closed) return;
-      closed = true;
-      if (typeof originalFetch === "function") window.fetch = originalFetch;
+    let observer;
+    let resultFn;
+    let closeFn;
+    const restoreInterception = () => {
+      if (window.fetch === wrappedFetch) window.fetch = originalFetch;
       if (typeof OriginalXhr === "function") {
-        OriginalXhr.prototype.open = originalOpen;
-        OriginalXhr.prototype.send = originalSend;
+        if (OriginalXhr.prototype.open === wrappedOpen) OriginalXhr.prototype.open = originalOpen;
+        if (OriginalXhr.prototype.send === wrappedSend) OriginalXhr.prototype.send = originalSend;
       }
     };
-    const observer = {
+    const seal = (result) => {
+      if (terminalResult) return terminalResult;
+      sealed = true;
+      terminalResult = result;
+      restoreInterception();
+      return terminalResult;
+    };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      sealed = true;
+      restoreInterception();
+      if (window.__bossCommunicationOutcomeObserver === observer) delete window.__bossCommunicationOutcomeObserver;
+      if (window.__bossCommunicationOutcomeResult === resultFn) delete window.__bossCommunicationOutcomeResult;
+      if (window.__bossCloseCommunicationOutcomeObserver === closeFn) delete window.__bossCloseCommunicationOutcomeObserver;
+    };
+    observer = {
+      get closed() { return closed; },
+      close,
       result(finalize = false) {
-        const rejected = events.find((event) => event.businessCategory === "network_rejected" || event.businessCategory === "network_timeout");
-        if (rejected) {
-          restore();
-          return { state: "transport_failed", evidence: { endpoints: events, pageState: "request_failed" } };
-        }
-        const platformRejected = events.find((event) => event.businessCategory === "http_failure" || event.businessCategory === "business_rejected");
-        if (platformRejected) {
-          restore();
-          return { state: "platform_rejected", evidence: { endpoints: events, pageState: "request_rejected" } };
-        }
-        const accepted = events.find((event) => event.endpointKind === "friend_add" && event.businessCategory === "success");
-        if (accepted) {
-          restore();
-          return { state: "accepted", evidence: { endpoints: events, pageState: "request_accepted" } };
-        }
+        if (terminalResult) return terminalResult;
         if (matchedRequests && Date.now() - startedAt >= 15_000) {
-          restore();
-          return { state: "timeout", evidence: { endpoints: events, pageState: "observer_timeout" } };
+          return seal({ state: "timeout", evidence: { endpoints: events, pageState: "observer_timeout" } });
         }
-        if (finalize) restore();
+        if (inFlightRequests > 0 || !settled) {
+          return { state: "pending", evidence: { endpoints: events, pageState: "request_pending" } };
+        }
+        const transportFailed = events.some((event) => ["network_rejected", "network_timeout", "network_aborted"].includes(event.businessCategory));
+        const platformRejected = events.some((event) => ["http_failure", "business_rejected"].includes(event.businessCategory));
+        const accepted = events.some((event) => event.endpointKind === "friend_add" && event.businessCategory === "success");
+        const unparsed = events.some((event) => event.businessCategory === "response_unparsed");
+        if ([transportFailed, platformRejected, accepted].filter(Boolean).length > 1) {
+          return seal({ state: "ambiguous", evidence: { endpoints: events, pageState: "request_conflict" } });
+        }
+        if (transportFailed) {
+          return seal({ state: "transport_failed", evidence: { endpoints: events, pageState: "request_failed" } });
+        }
+        if (platformRejected) {
+          return seal({ state: "platform_rejected", evidence: { endpoints: events, pageState: "request_rejected" } });
+        }
+        if (accepted) {
+          return seal({ state: "accepted", evidence: { endpoints: events, pageState: "request_accepted" } });
+        }
+        if (unparsed) {
+          return seal({ state: "ambiguous", evidence: { endpoints: events, pageState: "request_unparsed" } });
+        }
+        if (finalize) close();
         return { state: "pending", evidence: { endpoints: events, pageState: matchedRequests ? "request_pending" : "no_matching_request" } };
       }
     };
     window.__bossCommunicationOutcomeObserver = observer;
-    window.__bossCommunicationOutcomeResult = (finalize = false) => observer.result(finalize);
+    resultFn = (finalize = false) => observer.result(finalize);
+    closeFn = () => observer.close();
+    window.__bossCommunicationOutcomeResult = resultFn;
+    window.__bossCloseCommunicationOutcomeObserver = closeFn;
     return observer;
   };
   return true;
@@ -1639,6 +1704,8 @@ class BossSiteAdapter {
   async dispatchCommunication(inspection, signal = null) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication dispatch requires a browser connection.");
     this.beginCommunicationOperation("dispatch");
+    let tabId = null;
+    let dispatched = false;
     try {
       const expectedJob = communicationJobFromInspection(inspection);
       if (!expectedJob) {
@@ -1648,7 +1715,7 @@ class BossSiteAdapter {
         throw bossError("BOSS_COMMUNICATION_ALREADY_DISPATCHED", "This BOSS job already entered communication dispatch and cannot be clicked again.");
       }
       throwIfAborted(signal);
-      const tabId = await this.prepareCommunicationTab();
+      tabId = await this.prepareCommunicationTab();
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
@@ -1664,10 +1731,18 @@ class BossSiteAdapter {
         throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The guarded BOSS communication target changed before click dispatch.");
       }
       this.lastCommunicationDispatch = { jobId: expectedJob.jobId, tabId, expectedJob };
+      dispatched = true;
       return { state: "dispatched", jobId: expectedJob.jobId };
     } finally {
+      if (!dispatched && tabId !== null) await this.closeCommunicationOutcomeObserver(tabId);
       this.finishCommunicationOperation("dispatch");
     }
+  }
+
+  async closeCommunicationOutcomeObserver(tabId) {
+    try {
+      await this.browser.evalValue(tabId, "(() => window.__bossCloseCommunicationOutcomeObserver?.())()");
+    } catch {}
   }
 
   async waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal) {
@@ -1693,6 +1768,7 @@ class BossSiteAdapter {
   async verifyCommunicationResult(job, signal = null) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication verification requires a browser connection.");
     this.beginCommunicationOperation("verification");
+    let tabId = null;
     try {
       const dispatch = this.lastCommunicationDispatch;
       const expectedJobId = communicationJobId(job?.url);
@@ -1706,7 +1782,7 @@ class BossSiteAdapter {
         throw bossError("BOSS_COMMUNICATION_VERIFICATION_TARGET_MISMATCH", "The BOSS job being verified does not match the dispatched job.");
       }
       throwIfAborted(signal);
-      const tabId = await this.prepareCommunicationTab();
+      tabId = await this.prepareCommunicationTab();
       if (String(tabId) !== String(dispatch.tabId)) {
         throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The fixed BOSS communication tab changed before result verification.");
       }
@@ -1719,13 +1795,19 @@ class BossSiteAdapter {
           tabId,
           "(() => window.__bossCommunicationOutcomeResult?.())()"
         ));
-        if (["platform_rejected", "transport_failed"].includes(observation.state)) return observation;
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         const result = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
-        if (["target_mismatch", "job_unavailable"].includes(result.state)) return result;
         if (result.state === "succeeded" && observation.state === "accepted") {
           return { ...result, evidence: communicationOutcomeEvidence(observation, "succeeded") };
         }
+        if (result.state === "succeeded" && ["platform_rejected", "transport_failed", "ambiguous"].includes(observation.state)) {
+          return { state: "ambiguous", evidence: communicationOutcomeEvidence(observation, "request_conflict") };
+        }
+        if (observation.state === "timeout") {
+          return { state: "ambiguous", evidence: communicationOutcomeEvidence(observation, "observer_timeout") };
+        }
+        if (["platform_rejected", "transport_failed", "ambiguous"].includes(observation.state)) return observation;
+        if (["target_mismatch", "job_unavailable"].includes(result.state)) return result;
         if (attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS - 1) await this.waitWithPacing("retry");
       }
       if (["pending", "no_matching_request"].includes(observation.state)) {
@@ -1739,6 +1821,7 @@ class BossSiteAdapter {
         : "page_unverified";
       return { state: "ambiguous", evidence: communicationOutcomeEvidence(observation, pageState) };
     } finally {
+      if (tabId !== null) await this.closeCommunicationOutcomeObserver(tabId);
       this.finishCommunicationOperation("verification");
     }
   }
@@ -2273,9 +2356,9 @@ const COMMUNICATION_SNAPSHOT_ATTEMPTS = 40;
 const COMMUNICATION_READY_SNAPSHOTS = 2;
 const COMMUNICATION_SETTLED_UNAVAILABLE_SNAPSHOTS = 4;
 const COMMUNICATION_DISPATCH_READINESS_ATTEMPTS = 4;
-const COMMUNICATION_OUTCOME_STATES = new Set(["accepted", "pending", "platform_rejected", "transport_failed", "timeout", "no_matching_request"]);
-const COMMUNICATION_OUTCOME_PAGE_STATES = new Set(["request_accepted", "request_rejected", "request_failed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
-const COMMUNICATION_OUTCOME_CATEGORIES = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "response_unparsed"]);
+const COMMUNICATION_OUTCOME_STATES = new Set(["accepted", "pending", "platform_rejected", "transport_failed", "ambiguous", "timeout", "no_matching_request"]);
+const COMMUNICATION_OUTCOME_PAGE_STATES = new Set(["request_accepted", "request_rejected", "request_failed", "request_conflict", "request_unparsed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
+const COMMUNICATION_OUTCOME_CATEGORIES = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "network_aborted", "response_unparsed"]);
 
 function isExplicitlyUnavailableBossJobStatus(value) {
   return NORMALIZED_UNAVAILABLE_BOSS_JOB_STATUSES.has(normalizeCommunicationText(value));

@@ -484,8 +484,8 @@ function communicationState(value) {
 function communicationOutcomeEvidence(value = {}) {
   const evidence = value?.evidence || {};
   const endpoints = Array.isArray(evidence.endpoints) ? evidence.endpoints : [];
-  const categories = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "response_unparsed"]);
-  const pageStates = new Set(["request_accepted", "request_rejected", "request_failed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
+  const categories = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "network_aborted", "response_unparsed"]);
+  const pageStates = new Set(["request_accepted", "request_rejected", "request_failed", "request_conflict", "request_unparsed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified"]);
   return {
     endpoints: endpoints.map((endpoint) => {
       const endpointKind = String(endpoint?.endpointKind || "").trim();

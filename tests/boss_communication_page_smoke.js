@@ -166,9 +166,10 @@ function fixtureForUrl(url, fixtures) {
   };
 }
 
-function snapshotContext(url, fixtures, onActionClick = () => {}) {
+function snapshotContext(url, fixtures, onActionClick = () => {}, transport = null) {
   const fixture = fixtureForUrl(url, fixtures);
-  for (const action of fixture.actions || []) action.click = onActionClick;
+  let context;
+  for (const action of fixture.actions || []) action.click = () => onActionClick(context);
   const actionRoot = testNode({ actions: fixture.actions });
   const header = testNode({ children: { ".job-op": actionRoot } });
   const nodes = {
@@ -212,7 +213,7 @@ function snapshotContext(url, fixtures, onActionClick = () => {}) {
       return collections[selector] || [];
     }
   };
-  const context = vm.createContext({
+  context = vm.createContext({
     document,
     location: new URL(url),
     URL,
@@ -222,6 +223,7 @@ function snapshotContext(url, fixtures, onActionClick = () => {}) {
     }
   });
   context.window = context;
+  transport?.install(context);
   return context;
 }
 
@@ -256,6 +258,8 @@ function fakeBrowser({
   fixtures = new Map(),
   afterClickFixtures = new Map(),
   observerOutcomes = [],
+  realObserver = false,
+  transport = null,
   snapshotSequence = [],
   guardedClickGate = null,
   guardedClickStarted = null,
@@ -311,7 +315,7 @@ function fakeBrowser({
         snapshots.push(snapshot);
         return snapshot;
       }
-      if (expression.includes("window.__bossCommunicationOutcomeResult?.(")) {
+      if (!realObserver && expression.includes("window.__bossCommunicationOutcomeResult?.(")) {
         const outcome = queuedObserverOutcomes.shift() || observerOutcomes.at(-1);
         return outcome || {
           state: "accepted",
@@ -324,11 +328,14 @@ function fakeBrowser({
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       if (!contexts.has(tabId)) {
         const contextUrl = tab?.url || "about:blank";
-        contexts.set(tabId, snapshotContext(contextUrl, fixtures, () => {
+        contexts.set(tabId, snapshotContext(contextUrl, fixtures, (context) => {
+          transport?.onAction?.(context);
           const nextFixture = afterClickFixtures.get(contextUrl);
-          if (nextFixture) fixtures.set(contextUrl, nextFixture);
-          contexts.delete(tabId);
-        }));
+          if (!realObserver) {
+            if (nextFixture) fixtures.set(contextUrl, nextFixture);
+            contexts.delete(tabId);
+          }
+        }, realObserver ? transport : null));
         const helperExpression = helperExpressions.get(tabId);
         if (helperExpression && helperExpression !== expression) {
           vm.runInContext(helperExpression, contexts.get(tabId));
@@ -352,8 +359,221 @@ function fakeBrowser({
     removeTab(tabId) {
       currentTabs = currentTabs.filter((tab) => tab.id !== tabId);
       contexts.delete(tabId);
+    },
+    context(tabId) {
+      return contexts.get(tabId) || null;
     }
   };
+}
+
+function responseFixture({ status = 200, body = '{"code":0}', cloneText = null } = {}) {
+  return {
+    status,
+    clone() {
+      return { text: () => cloneText || Promise.resolve(body) };
+    }
+  };
+}
+
+function observerTransport({ now = 0 } = {}) {
+  const transport = {
+    now,
+    fetchPlans: [],
+    xhrPlans: [],
+    fetchCalls: [],
+    originalFetch: null,
+    originalXhr: null,
+    onAction: null,
+    install(context) {
+      context.Date = { now: () => transport.now };
+      context.fetch = (url) => {
+        transport.fetchCalls.push(String(url));
+        const plan = transport.fetchPlans.shift() || {};
+        if (plan.reject) return Promise.reject(plan.reject);
+        if (plan.pending) return plan.pending;
+        return Promise.resolve(plan.response || responseFixture());
+      };
+      transport.originalFetch = context.fetch;
+      class FakeXhr {
+        constructor() {
+          this.listeners = new Map();
+          this.status = 0;
+          this.responseText = "";
+        }
+        addEventListener(type, listener, options = {}) {
+          const entries = this.listeners.get(type) || [];
+          entries.push({ listener, once: options.once === true });
+          this.listeners.set(type, entries);
+        }
+        emit(type) {
+          const entries = this.listeners.get(type) || [];
+          this.listeners.set(type, entries.filter((entry) => !entry.once));
+          for (const entry of entries) entry.listener();
+        }
+        open(method, url) {
+          this.method = method;
+          this.url = url;
+        }
+        send() {
+          const plan = transport.xhrPlans.shift() || {};
+          if (plan.pending || plan.abort) return;
+          queueMicrotask(() => {
+            if (plan.reject) this.emit("error");
+            else {
+              this.status = plan.status ?? 200;
+              this.responseText = plan.body || '{"code":0}';
+            }
+            this.emit("loadend");
+          });
+        }
+        abort() {
+          this.emit("abort");
+          this.emit("loadend");
+        }
+      }
+      context.XMLHttpRequest = FakeXhr;
+      transport.originalXhr = FakeXhr;
+    },
+    fetch(context, url, plan = {}) {
+      transport.fetchPlans.push(plan);
+      return context.fetch(url);
+    },
+    xhr(context, url, plan = {}) {
+      transport.xhrPlans.push(plan);
+      const request = new context.XMLHttpRequest();
+      request.open("POST", url);
+      request.send();
+      return request;
+    }
+  };
+  return transport;
+}
+
+const trustedSuccessSnapshot = {
+  ...readySnapshot,
+  actions: [{ ...readySnapshot.actions[0], label: continuingCommunicationLabel, isFriend: "true" }],
+  successDialog: { visible: true, title: communicationSentTitle, footer: stayOnPageLabel }
+};
+
+async function realObserverBehaviorSmoke() {
+  const dispatchAndVerify = async ({ transport, snapshots = [trustedSuccessSnapshot] }) => {
+    const browser = fakeBrowser({
+      tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+      realObserver: true,
+      transport,
+      snapshotSequence: [readySnapshot, readySnapshot, readySnapshot, readySnapshot, ...snapshots]
+    });
+    const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+    const inspection = await adapter.inspectCommunicationJob(expectedJob);
+    await adapter.dispatchCommunication(inspection);
+    return { browser, adapter, result: await adapter.verifyCommunicationResult(expectedJob) };
+  };
+
+  const successTransport = observerTransport();
+  successTransport.onAction = (context) => {
+    successTransport.fetch(context, "https://www.zhipin.com/wapi/ignored?securityId=ignored", {
+      response: responseFixture({ body: '{"code":"ignored","message":"private"}' })
+    });
+    successTransport.fetch(context, "https://www.zhipin.com/wapi/zpchat/config/get?chatId=private", {
+      response: responseFixture({ body: '{"code":0,"message":"secret config"}' })
+    });
+    successTransport.fetch(context, "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=secret", {
+      response: responseFixture({ body: '{"code":0,"message":"secret message"}' })
+    });
+  };
+  const success = await dispatchAndVerify({ transport: successTransport });
+  assert.strictEqual(success.result.state, "succeeded");
+  assert.deepStrictEqual(Array.from(success.result.evidence.endpoints, (event) => event.endpointKind), ["chat_config", "friend_add"]);
+  assert(!JSON.stringify(success.result).includes("securityId"));
+  assert(!JSON.stringify(success.result).includes("secret message"));
+
+  const delayedPageTransport = observerTransport();
+  delayedPageTransport.onAction = (context) => delayedPageTransport.fetch(
+    context,
+    "https://www.zhipin.com/wapi/zpgeek/friend/add.json",
+    { response: responseFixture({ body: '{"code":0}' }) }
+  );
+  assert.strictEqual(
+    (await dispatchAndVerify({ transport: delayedPageTransport, snapshots: [readySnapshot, trustedSuccessSnapshot] })).result.state,
+    "succeeded",
+    "a settled friend-add result must remain available until delayed page success is observed"
+  );
+
+  const mixedTransport = observerTransport();
+  mixedTransport.onAction = (context) => {
+    mixedTransport.fetch(context, "https://www.zhipin.com/wapi/zpgeek/friend/add.json", {
+      response: responseFixture({ body: '{"code":0}' })
+    });
+    mixedTransport.fetch(context, "https://www.zhipin.com/wapi/zpchat/config/get", {
+      response: responseFixture({ status: 503, body: '{"code":"retry"}' })
+    });
+  };
+  assert.strictEqual((await dispatchAndVerify({ transport: mixedTransport })).result.state, "ambiguous");
+
+  const cloneGate = deferred();
+  const timingTransport = observerTransport();
+  let appReceivedResponse = false;
+  timingTransport.onAction = (context) => {
+    timingTransport.fetch(context, "https://www.zhipin.com/wapi/zpgeek/friend/add.json", {
+      response: responseFixture({ cloneText: cloneGate.promise })
+    }).then(() => { appReceivedResponse = true; });
+  };
+  const timingBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    realObserver: true,
+    transport: timingTransport,
+    snapshotSequence: [readySnapshot, readySnapshot, readySnapshot, readySnapshot, trustedSuccessSnapshot]
+  });
+  const timingAdapter = new BossSiteAdapter({ browser: timingBrowser, sleepFn: async () => {} });
+  const timingInspection = await timingAdapter.inspectCommunicationJob(expectedJob);
+  await timingAdapter.dispatchCommunication(timingInspection);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(appReceivedResponse, true, "observer must not delay the page fetch response while clone text is pending");
+  cloneGate.resolve('{"code":0}');
+  assert.strictEqual((await timingAdapter.verifyCommunicationResult(expectedJob)).state, "succeeded");
+
+  const abortTransport = observerTransport();
+  abortTransport.onAction = (context) => abortTransport.xhr(
+    context,
+    "https://www.zhipin.com/wapi/zpgeek/friend/add.json",
+    { abort: true }
+  ).abort();
+  assert.strictEqual((await dispatchAndVerify({ transport: abortTransport, snapshots: [readySnapshot] })).result.state, "transport_failed");
+
+  const timeoutTransport = observerTransport({ now: 0 });
+  timeoutTransport.onAction = (context) => {
+    timeoutTransport.fetch(context, "https://www.zhipin.com/wapi/zpgeek/friend/add.json", { pending: new Promise(() => {}) });
+    timeoutTransport.now = 15_001;
+  };
+  assert.strictEqual((await dispatchAndVerify({ transport: timeoutTransport, snapshots: [readySnapshot] })).result.evidence.pageState, "observer_timeout");
+
+  const noMatchTransport = observerTransport();
+  assert.strictEqual((await dispatchAndVerify({ transport: noMatchTransport, snapshots: [readySnapshot] })).result.evidence.pageState, "no_matching_request");
+
+  const cleanupTransport = observerTransport();
+  cleanupTransport.onAction = (context) => cleanupTransport.fetch(
+    context,
+    "https://www.zhipin.com/wapi/zpgeek/friend/add.json",
+    { pending: new Promise(() => {}) }
+  );
+  const cleanupBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    realObserver: true,
+    transport: cleanupTransport,
+    snapshotSequence: [readySnapshot, readySnapshot, readySnapshot, readySnapshot, { ...readySnapshot, risk: true }]
+  });
+  const cleanupAdapter = new BossSiteAdapter({ browser: cleanupBrowser, sleepFn: async () => {} });
+  const cleanupInspection = await cleanupAdapter.inspectCommunicationJob(expectedJob);
+  await cleanupAdapter.dispatchCommunication(cleanupInspection);
+  await assert.rejects(() => cleanupAdapter.verifyCommunicationResult(expectedJob), (error) => error.code === "BOSS_RISK_CONTROL");
+  const cleanupContext = cleanupBrowser.context("communication-created");
+  assert.strictEqual(cleanupContext.fetch, cleanupTransport.originalFetch, "exceptional verification exit must restore fetch");
+  assert.strictEqual(cleanupContext.__bossCommunicationOutcomeObserver, undefined, "closed observer must clear its own global");
+  const rearmed = vm.runInContext("window.__bossRegisterCommunicationOutcomeObserver()", cleanupContext);
+  assert.strictEqual(rearmed.closed, false, "a closed observer must be replaceable");
+  assert.notStrictEqual(cleanupContext.fetch, cleanupTransport.originalFetch, "replacement observer must re-arm interception");
+  vm.runInContext("window.__bossCloseCommunicationOutcomeObserver()", cleanupContext);
 }
 
 function assertNoPageAction(browser, before) {
@@ -955,6 +1175,7 @@ function assertNoPreparationAction(browser, before) {
     () => executionAdapter.dispatchCommunication({}),
     (error) => error.code === "BOSS_COMMUNICATION_INSPECTION_INVALID"
   );
+  await realObserverBehaviorSmoke();
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
   assert.deepStrictEqual(communicationCalibrationStatus(), {
     implementation: "implemented",
