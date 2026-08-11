@@ -107,7 +107,7 @@ function createSiteAccessController({
           limits,
           windows: blockers.map((item) => item.window)
         });
-        console.error(`[${site}] 访问额度进入冷却，约 ${Math.ceil(delayMs / 60_000)} 分钟后自动继续；当前进度已保留。`);
+        console.error(`[${site}] 访问额度进入冷却，${formatAccessWaitDuration(delayMs)}后自动继续；当前进度已保留。`);
         const wait = {
           site,
           action: normalizedAction,
@@ -172,19 +172,20 @@ function existingCommunicationReservation(db, { site, details, nowMs, policy }) 
 }
 
 function resolveAccessMode(db, { site, nowMs, policy = DEFAULT_POLICY }) {
-  const lookbackMs = (policy.recoveryHours + 24) * 60 * 60_000;
   const risks = listSiteAccessEvents(db, {
     site,
-    action: "risk_control",
-    since: new Date(nowMs - lookbackMs).toISOString(),
-    limit: 100
+    action: "risk_control"
   });
   const latest = risks.at(-1);
   if (!latest) return "normal";
   const riskAt = Date.parse(latest.createdAt);
+  const recoveryUntil = Number.isFinite(riskAt)
+    ? riskAt + policy.recoveryHours * 60 * 60_000
+    : 0;
   const blockedUntil = Date.parse(latest.details.blockedUntil || "");
-  const anchor = Math.max(Number.isFinite(riskAt) ? riskAt : 0, Number.isFinite(blockedUntil) ? blockedUntil : 0);
-  return nowMs < anchor + policy.recoveryHours * 60 * 60_000 ? "recovery" : "normal";
+  return nowMs < Math.max(recoveryUntil, Number.isFinite(blockedUntil) ? blockedUntil : 0)
+    ? "recovery"
+    : "normal";
 }
 
 function readUsage(db, { site, action, nowMs, policy = DEFAULT_POLICY }) {
@@ -259,6 +260,13 @@ function randomBetween(min, max, randomFn) {
   return Math.round(low + (high - low) * Math.max(0, Math.min(1, Number(randomFn()) || 0)));
 }
 
+function formatAccessWaitDuration(delayMs) {
+  const value = Math.max(0, Number(delayMs) || 0);
+  return value < 60_000
+    ? `约 ${Math.ceil(value / 1000)} 秒`
+    : `约 ${Math.ceil(value / 60_000)} 分钟`;
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(done, ms);
@@ -309,5 +317,6 @@ module.exports = {
   createSiteAccessController,
   resolveAccessMode,
   readUsage,
-  chinaDayStartMs
+  chinaDayStartMs,
+  formatAccessWaitDuration
 };

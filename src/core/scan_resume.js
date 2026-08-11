@@ -67,12 +67,17 @@ function validateResumeBatch({
       resumeBatchId: normalizedBatchId,
       resumedBatch,
       storedSnapshot,
-      acquisitionMode
+      acquisitionMode,
+      runtime: optionalRuntimeSnapshot(resumedBatch.filterSnapshot?.runtime)
     };
   } catch (error) {
     if (!error.statusCode) error.statusCode = 409;
     throw error;
   }
+}
+
+function optionalRuntimeSnapshot(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function resumeError(code, message) {

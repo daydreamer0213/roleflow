@@ -8,6 +8,13 @@ const { PRODUCT_POLICY } = require("../../core/product_policy");
 const SEARCH_PLAN_POLICY = PRODUCT_POLICY.searchPlan;
 const REFRESH_LIMIT = PRODUCT_POLICY.operations.refreshLimit;
 const BOSS_PACING_POLICY = PRODUCT_POLICY.operations.bossPacing;
+const PACING_STATE_FIELDS = Object.freeze([
+  "pacedActions",
+  "nextPacingCooldownAt",
+  "detailActions",
+  "nextDetailMicroCooldownAt",
+  "nextDetailMacroCooldownAt"
+]);
 
 const DEFAULT_CITY_CODE = "101280100";
 const BOSS_FILTER_FIELDS = {
@@ -818,7 +825,7 @@ class BossSiteAdapter {
     await waitForAbortableSleep(this.sleep(randomBetween(min, max, this.random)), signal);
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
-    if (!["catalog", "list", "detail", "scroll", "card", "refresh", "target"].includes(kind)) return;
+    if (!["catalog", "list", "detail", "scroll", "card", "refresh", "target", "pane_detail_read"].includes(kind)) return;
     this.pacedActions += 1;
     if (this.pacedActions < this.nextPacingCooldownAt) return;
     const cooldownMs = randomBetween(...BOSS_PACING_POLICY.periodicDelayMs, this.random);
@@ -840,10 +847,29 @@ class BossSiteAdapter {
     this.nextDetailMacroCooldownAt = randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
   }
 
-  async waitAfterDetailAction({ signal = null, assertTabBindings = null } = {}) {
+  pacingState() {
+    return {
+      pacedActions: this.pacedActions,
+      nextPacingCooldownAt: this.nextPacingCooldownAt,
+      detailActions: this.detailActions,
+      nextDetailMicroCooldownAt: this.nextDetailMicroCooldownAt,
+      nextDetailMacroCooldownAt: this.nextDetailMacroCooldownAt
+    };
+  }
+
+  restorePacing(state) {
+    if (!isSafePacingState(state)) {
+      this.resetPacing();
+      return;
+    }
+    for (const field of PACING_STATE_FIELDS) this[field] = state[field];
+  }
+
+  async waitAfterDetailAction({ signal = null, assertTabBindings = null, onPacingCheckpoint = null } = {}) {
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
     this.detailActions += 1;
+    if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
     if (this.detailActions >= this.nextDetailMacroCooldownAt) {
       const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.macroDelayMs, this.random);
       console.error(`[boss] 已读取 ${this.detailActions} 个右栏详情，阶段冷却 ${Math.ceil(cooldownMs / 1000)} 秒后继续`);
@@ -853,6 +879,7 @@ class BossSiteAdapter {
       while (this.nextDetailMicroCooldownAt <= this.detailActions) {
         this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
       }
+      if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
       return;
     }
     if (this.detailActions >= this.nextDetailMicroCooldownAt) {
@@ -860,6 +887,7 @@ class BossSiteAdapter {
       this.logger?.info("boss_detail_micro_cooldown", { detailActions: this.detailActions, cooldownMs });
       await waitForAbortableSleep(this.sleep(cooldownMs), signal);
       this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
+      if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
     }
   }
 
@@ -892,7 +920,7 @@ class BossSiteAdapter {
     this.pageNavigations = 0;
     this.listNavigations = 0;
     this.pageBudget = normalizePageBudget(options.browserPageBudget);
-    this.resetPacing();
+    this.restorePacing(options.pacingState);
     const candidates = new Map();
     const detailAttempts = new Set();
     let detailsRead = 0;
@@ -1080,7 +1108,7 @@ class BossSiteAdapter {
                     job: detailedJob
                   });
                 }
-                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings });
+                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings, onPacingCheckpoint: options.onPacingCheckpoint });
               } catch (error) {
                 if (error?.code === "SCAN_ABORTED") throw error;
                 if (isWorkflowControlError(error)) throw error;
@@ -1106,7 +1134,7 @@ class BossSiteAdapter {
                   }
                   throw error;
                 }
-                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings });
+                await this.waitAfterDetailAction({ signal: options.signal, assertTabBindings: options.assertTabBindings, onPacingCheckpoint: options.onPacingCheckpoint });
                 detailOutcome = failedOutcome;
               }
               await emitDetailResult(options.onDetailResult, detailOutcome);
@@ -1408,6 +1436,7 @@ class BossSiteAdapter {
       .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
     const expectedTitle = normalizedComparableText(job?.title);
     if (!expectedJobId || !expectedTitle) return null;
+    await this.waitWithPacing("pane_detail_read", { signal, assertTabBindings });
     await this.reserveAccess("pane_detail_read", {
       jobId: expectedJobId
     });
@@ -1878,6 +1907,14 @@ class BossSiteAdapter {
       this.finishCommunicationOperation("verification");
     }
   }
+}
+
+function isSafePacingState(state) {
+  if (!state || Object.keys(state).some((field) => !PACING_STATE_FIELDS.includes(field))) return false;
+  if (PACING_STATE_FIELDS.some((field) => !Number.isSafeInteger(state[field]) || state[field] < 0)) return false;
+  return state.nextPacingCooldownAt <= state.pacedActions + Math.max(...BOSS_PACING_POLICY.periodicEvery)
+    && state.nextDetailMicroCooldownAt <= state.detailActions + Math.max(...BOSS_PACING_POLICY.detail.microEvery)
+    && state.nextDetailMacroCooldownAt <= state.detailActions + Math.max(...BOSS_PACING_POLICY.detail.macroEvery);
 }
 
 function normalizeBossJob(job) {

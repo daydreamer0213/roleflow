@@ -217,11 +217,13 @@ async function naturalDayRetryAtSmoke() {
 
 function configuredDetailBudgetsSmoke() {
   assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.pane_detail_read, {
+    "3m": 12,
     "10m": 45,
     "1h": 240,
     "24h": 360
   });
   assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.pane_detail_read, {
+    "3m": 5,
     "10m": 20,
     "1h": 80,
     "24h": 120

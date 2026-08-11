@@ -78,6 +78,7 @@ const PRODUCT_POLICY = Object.freeze({
         retry: Object.freeze([400, 800]),
         scroll: Object.freeze([2500, 4000]),
         card: Object.freeze([3000, 5000]),
+        pane_detail_read: Object.freeze([8000, 14000]),
         card_retry: Object.freeze([300, 700]),
         list_ready: Object.freeze([450, 750]),
         refresh: Object.freeze([3000, 5000]),
@@ -96,6 +97,7 @@ const PRODUCT_POLICY = Object.freeze({
       recoveryHours: 48,
       waitJitterMs: Object.freeze([1000, 3000]),
       windowsMs: Object.freeze({
+        "3m": 3 * 60_000,
         "10m": 10 * 60_000,
         "30m": 30 * 60_000,
         "1h": 60 * 60_000,
@@ -103,14 +105,14 @@ const PRODUCT_POLICY = Object.freeze({
       }),
       modes: Object.freeze({
         recovery: Object.freeze({
-          pane_detail_read: Object.freeze({ "10m": 20, "1h": 80, "24h": 120 }),
+          pane_detail_read: Object.freeze({ "3m": 5, "10m": 20, "1h": 80, "24h": 120 }),
           detail_open: Object.freeze({ "10m": 5, "1h": 15, "24h": 30 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 8 }),
           list_scroll: Object.freeze({ "24h": 60 })
         }),
         normal: Object.freeze({
-          pane_detail_read: Object.freeze({ "10m": 45, "1h": 240, "24h": 360 }),
+          pane_detail_read: Object.freeze({ "3m": 12, "10m": 45, "1h": 240, "24h": 360 }),
           detail_open: Object.freeze({ "10m": 8, "1h": 25, "24h": 60 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 16 }),
