@@ -8,7 +8,10 @@ const {
   upsertJob,
   markCandidateJob,
   recordSiteAccessEvent,
-  setSiteRuntimeState
+  setSiteRuntimeState,
+  createWorkflowRun,
+  transitionWorkflowRun,
+  attachWorkflowCommunication
 } = require("../src/core/storage");
 const {
   getCommunicationBatch,
@@ -20,6 +23,7 @@ const {
   communicationAmbiguityState,
   communicationAmbiguityStateForBatch
 } = require("../src/core/communication_ambiguity");
+const { buildCommunicationViewModel } = require("../src/dashboard/view_models/communication");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
@@ -28,6 +32,70 @@ const dbPath = path.join(smokeDir, `dashboard-communication-batch-${Date.now()}.
 const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboard-communication-batch-smoke"; }, listRecent() { return []; } };
 let db;
 let server;
+
+function communicationStatus(batch = {}, summary = {}, items = []) {
+  return {
+    batch: { id: 41, profileId: 7, planId: 11, status: "confirmed", ...batch },
+    summary: { batchId: 41, batchStatus: "confirmed", total: 1, terminal: 0, remaining: 1, statusCounts: { pending: 1 }, ...summary },
+    items,
+    quota: { limit: 150, used: 4, reserved: 1, remaining: 145 },
+    calibration: { implementation: "implemented", calibration: "calibrated", acceptance: "e2e_pending", executionEnabled: true },
+    runtimeBlock: null
+  };
+}
+
+function assertCommunicationViewModel() {
+  const pending = buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11, name: "Scoped plan" } },
+    current: communicationStatus({}, {}, [{ id: 1, batchId: 41, status: "pending", titleSnapshot: "Pending role", companySnapshot: "Example", salarySnapshot: "15-20K", locationSnapshot: "Guangzhou", tierSnapshot: "primary", evidenceSnapshot: ["Python"], riskSnapshot: ["weekend unknown"], proposalReasonSnapshot: "skill match" }])
+  });
+  assert.equal(pending.state, "pending_review");
+  assert.equal(pending.controls.action, "start");
+  assert.equal(pending.controls.visible, true);
+  assert.equal(pending.quota.used, 4);
+  assert.equal(pending.outcomes.succeeded, 0);
+
+  const running = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "running" }, { batchStatus: "running" }) });
+  assert.equal(running.state, "running");
+  assert.equal(running.controls.visible, false);
+
+  const needsResolution = buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11 } },
+    current: communicationStatus({ status: "interrupted" }, { batchStatus: "interrupted", statusCounts: { ambiguous: 1, pending: 1 }, total: 2, remaining: 2 }, [
+      { id: 2, batchId: 41, status: "pending", titleSnapshot: "Later role" },
+      { id: 1, batchId: 41, status: "ambiguous", titleSnapshot: "Ambiguous role" }
+    ])
+  });
+  assert.equal(needsResolution.state, "needs_resolution");
+  assert.equal(needsResolution.items[0].status, "ambiguous");
+  assert.equal(needsResolution.controls.visible, false);
+  assert.equal(needsResolution.items[0].resolution.evidenceRequired, true);
+
+  const completed = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "completed" }, { batchStatus: "completed", total: 2, terminal: 2, remaining: 0, statusCounts: { succeeded: 1, stopped: 1 } }, [{ id: 1, status: "succeeded" }, { id: 2, status: "stopped" }]) });
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.outcomes.succeeded, 1);
+
+  const history = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus(), history: [communicationStatus({ id: 40, status: "stopped" }, { batchId: 40, batchStatus: "stopped", total: 1, terminal: 1, remaining: 0, statusCounts: { stopped: 1 } })] });
+  assert.equal(history.history.length, 1);
+  assert.equal(history.history[0].batchId, 40);
+
+  const noBatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } } });
+  assert.equal(noBatch.state, "no_batch");
+  assert.equal(noBatch.controls.visible, false);
+
+  const planIsolation = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus(), discoveredWorkflowRuns: [{ planId: 11, communicationBatchId: 41 }, { planId: 12, communicationBatchId: 99 }] });
+  assert.deepEqual(planIsolation.discoveredBatchIds, [41]);
+
+  const directOrphan = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus(), directBatch: true });
+  assert.equal(directOrphan.source, "direct_orphan");
+  assert.equal(directOrphan.history.length, 0);
+
+  const mismatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ planId: 12 }), integrityIssue: "batch_plan_mismatch" });
+  assert.equal(mismatch.state, "integrity_blocked");
+  assert.equal(mismatch.controls.visible, false);
+}
+
+assertCommunicationViewModel();
 
 (async () => {
   fs.mkdirSync(smokeDir, { recursive: true });
@@ -91,6 +159,25 @@ let server;
     [fixture.primaryId, "Primary role", "Company primary"],
     [fixture.backupId, "Backup role", "Company backup"]
   ]);
+
+  const historyWorkflow = reviewWorkflow(db, { id: "communication-history", planId: fixture.planId, localDay: "2098-01-02" });
+  const historyBatch = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });
+  attachWorkflowCommunication(db, { workflowRunId: historyWorkflow.id, communicationBatchId: historyBatch.body.batch.id });
+  setCommunicationBatchStatus(db, { batchId: historyBatch.body.batch.id, status: "stopped" });
+  const currentWorkflow = reviewWorkflow(db, { id: "communication-current", planId: fixture.planId, localDay: "2098-01-03" });
+  const currentBatch = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.safeId, browserMode: "edge" });
+  attachWorkflowCommunication(db, { workflowRunId: currentWorkflow.id, communicationBatchId: currentBatch.body.batch.id });
+  const automaticCenter = await getText(baseUrl, `/communication?planId=${fixture.planId}`);
+  assert.match(automaticCenter.body, new RegExp(`当前批次</p><h2>批次 #${currentBatch.body.batch.id}</h2>`));
+  assert.match(automaticCenter.body, new RegExp(`href="/communication\\?batchId=${historyBatch.body.batch.id}"`));
+  assert.match(automaticCenter.body, /<dt>薪资<\/dt><dd>10-15K<\/dd>/);
+  assert.match(automaticCenter.body, /<dt>地点<\/dt><dd>Guangzhou<\/dd>/);
+  assert.doesNotMatch(automaticCenter.body, new RegExp(`批次 #${batchId}</h2>`), "unlinked legacy batches must not enter automatic history");
+  const directOrphan = await getText(baseUrl, `/communication?batchId=${batchId}`);
+  assert.match(directOrphan.body, new RegExp(`批次 #${batchId}</h2>`), "a direct legacy batch URL must remain readable");
+  const mismatchedBatch = await getText(baseUrl, `/communication?batchId=${batchId}&planId=${fixture.smallPlanId}`);
+  assert.match(mismatchedBatch.body, /批次范围无法安全确认/);
+  assert.doesNotMatch(mismatchedBatch.body, /name="action" value="(?:start|resume)"/);
 
   const tamperedPortable = await postJson(baseUrl, "/api/communication-batch", {
     planId: fixture.planId,
@@ -304,6 +391,20 @@ function seed(database) {
     upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: completeAnalysis("apply") }), smallBatchId);
   }
   return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+}
+
+function reviewWorkflow(database, { id, planId, localDay }) {
+  const run = createWorkflowRun(database, {
+    id,
+    profileId: 1,
+    planId,
+    localDay,
+    sequence: 1,
+    targetSuccessCount: 2,
+    inventoryCount: 2,
+    scanNeeded: false
+  });
+  return transitionWorkflowRun(database, { id: run.id, status: "review_required" });
 }
 
 function job(sourceId, overrides = {}) {

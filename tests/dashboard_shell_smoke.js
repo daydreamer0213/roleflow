@@ -25,7 +25,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     { currentPath: "/queue?planId=17&pool=primary", href: "/queue?planId=17", todayPath: "/plan?planId=17", label: "当前岗位" },
     { currentPath: "/jobs?planId=17&batch=latest", href: "/jobs?planId=17&amp;batch=latest", todayPath: "/plan?planId=17", label: "岗位列表" },
     { currentPath: "/communication/new?planId=17", todayPath: "/plan?planId=17", label: "批量沟通清单" },
-    { currentPath: "/communication?batchId=17", todayPath: "/plan?planId=17", label: "批量沟通审阅" },
+    { currentPath: "/communication?planId=17", href: "/communication?planId=17", todayPath: "/plan?planId=17", label: "自动沟通" },
     { currentPath: "/settings", label: "模型设置" },
     { currentPath: "/diagnostics", label: "诊断" },
     { currentPath: "/onboarding", label: "简历" }
@@ -68,7 +68,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.match(health.contentType, /^application\/json(?:;|$)/);
     assert.strictEqual(health.body.ok, true);
 
-    for (const pathname of ["/onboarding", "/settings", "/plan", "/workflow", "/queue", "/communication/new", "/jobs", "/diagnostics"]) {
+    for (const pathname of ["/onboarding", "/settings", "/plan", "/workflow", "/queue", "/communication/new", "/communication", "/jobs", "/diagnostics"]) {
       const page = await getText(baseUrl, pathname);
       assert.strictEqual(page.status, 200, `${pathname} must keep its HTML response`);
       assert.match(page.contentType, /^text\/html(?:;|$)/);
@@ -95,6 +95,12 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assertSharedFrame(builder.body, `/communication\/new\?planId=${queueFixture.planId}`, "communication builder");
     assert.match(builder.body, /<form id="communication-batch-form" method="post" action="\/api\/communication-batch">/);
     assert.match(builder.body, /name="browserMode"/);
+
+    const communication = await getText(baseUrl, `/communication?planId=${queueFixture.planId}`);
+    assertSharedFrame(communication.body, `/communication\?planId=${queueFixture.planId}`, "communication center");
+    assert.match(communication.body, /<h1>自动沟通<\/h1>/);
+    assert.match(communication.body, /进入清单页不会创建、确认或启动任何沟通/);
+    assert.strictEqual((communication.body.match(/data-page-primary="true"/g) || []).length, 1, "communication center must have one primary action");
 
     const onboarding = await getText(baseUrl, "/onboarding");
     assertSharedFrame(onboarding.body, "/onboarding", "onboarding");

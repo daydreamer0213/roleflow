@@ -78,7 +78,6 @@ const {
   setCommunicationBatchStatus,
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
-const { communicationAmbiguityState } = require("../core/communication_ambiguity");
 const {
   PROGRESS_STAGES,
   ensureProgressCard,
@@ -168,6 +167,8 @@ const { buildTodayViewModel } = require("./view_models/today");
 const { renderTodayPage } = require("./pages/today");
 const { buildWorkflowViewModel } = require("./view_models/workflow");
 const { renderWorkflowPage: renderWorkflowDocument } = require("./pages/workflow");
+const { buildCommunicationViewModel } = require("./view_models/communication");
+const { renderCommunicationPage: renderCommunicationDocument } = require("./pages/communication");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
@@ -502,7 +503,7 @@ function createDashboardServer({
         helpers: messageDiscoveryViewHelpers()
       }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
-      if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationReviewPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent()));
       if (req.method === "GET" && url.pathname === "/health") {
@@ -3721,34 +3722,54 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
   return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
 }
 
-function renderCommunicationReviewPage({ db, searchParams }) {
-  const result = communicationApiResult(() => communicationStatus(db, searchParams.get("batchId")));
-  if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
-  return renderCommunicationReviewResult(result.body);
+function renderCommunicationCenterPage({ db, searchParams }) {
+  const directBatchId = searchParams.get("batchId");
+  const requestedPlanId = Number(searchParams.get("planId") || 0);
+  const requestedProfileId = Number(searchParams.get("profileId") || 0);
+  if (directBatchId) {
+    const result = communicationApiResult(() => communicationStatus(db, directBatchId));
+    if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
+    const batch = result.body.batch;
+    const plan = getSearchPlan(db, batch.planId);
+    const profile = plan ? getCandidateProfile(db, plan.profileId) : null;
+    const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
+    const integrityIssue = requestedPlanId && requestedPlanId !== batch.planId ? "batch_plan_mismatch"
+      : requestedProfileId && requestedProfileId !== batch.profileId ? "batch_profile_mismatch"
+        : workflow && (workflow.planId !== batch.planId || workflow.profileId !== batch.profileId) ? "workflow_batch_owner_mismatch" : "";
+    const detailsByJobId = workflow && !integrityIssue ? communicationDetailsByJobId(db, workflow) : new Map();
+    return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({
+      scope: { profile, plan }, current: result.body, directBatch: !workflow, integrityIssue, detailsByJobId
+    })));
+  }
+  const requestedPlan = requestedPlanId ? getSearchPlan(db, requestedPlanId) : null;
+  const profileId = requestedProfileId || requestedPlan?.profileId || listCandidateProfiles(db)[0]?.id || 0;
+  const profile = profileId ? getCandidateProfile(db, profileId) : null;
+  const plan = requestedPlan && (!profile || requestedPlan.profileId === profile.id)
+    ? requestedPlan : profile ? getActiveSearchPlan(db, profile.id) : null;
+  if (!plan || !profile) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan } })));
+  const runs = listWorkflowRuns(db, { profileId: profile.id, planId: plan.id, limit: 20 });
+  const linked = [];
+  for (const run of runs) {
+    if (!run.communicationBatchId) continue;
+    const result = communicationApiResult(() => communicationStatus(db, run.communicationBatchId));
+    if (!result.ok) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan }, integrityIssue: "workflow_batch_unreadable", discoveredWorkflowRuns: runs })));
+    if (result.body.batch.planId !== plan.id || result.body.batch.profileId !== profile.id) {
+      return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan }, integrityIssue: "workflow_batch_owner_mismatch", discoveredWorkflowRuns: runs })));
+    }
+    linked.push({ run, status: result.body });
+  }
+  const selected = linked.find(({ status }) => !["completed", "stopped", "failed"].includes(status.batch.status)) || linked[0] || null;
+  const history = linked.filter((entry) => entry !== selected).slice(0, 5).map((entry) => entry.status);
+  return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({
+    scope: { profile, plan }, current: selected?.status || null, history, discoveredWorkflowRuns: runs,
+    detailsByJobId: selected ? communicationDetailsByJobId(db, selected.run) : new Map()
+  })));
 }
 
-function renderCommunicationReviewResult({ batch, summary, items, quota, calibration, runtimeBlock }) {
-  const counts = Object.entries(summary.statusCounts).map(([status, count]) => `${escapeHtml(status)}: ${count}`).join(" · ") || "pending: 0";
-  const rows = items.map((item) => {
-    const resolution = item.status === "ambiguous" ? `<form class="communication-resolution" method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${item.batchId}"><input type="hidden" name="itemId" value="${item.id}"><label>处理依据<input name="evidenceNote" maxlength="1000" placeholder="例如：聊天页已显示对应岗位和招聘方" required></label><div><button name="status" value="succeeded">确认已沟通</button><button name="status" value="stopped">标记停止</button></div></form>` : "";
-    return `<tr id="communication-item-${item.id}"><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
-  }).join("");
-  const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  const ambiguity = communicationAmbiguityState(summary, items);
-  const ambiguousItem = ambiguity.firstItemId == null ? null : items.find((item) => item.id === ambiguity.firstItemId);
-  const action = ambiguity.blocked ? "" : batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
-  const executeControl = ambiguousItem
-    ? `<a class="button-link communication-primary" data-page-primary="true" href="/communication?batchId=${batch.id}#communication-item-${ambiguousItem.id}">处理不明确结果</a>`
-    : ambiguity.blocked
-    ? `<p class="communication-warning">沟通记录不一致，请刷新页面；若仍无法定位不明确项，请停止操作并检查诊断。</p>`
-    : action && calibration.executionEnabled && !runtimeBlock
-    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button class="communication-primary" data-page-primary="true" name="action" value="${action}">${action === "start" ? "开始沟通" : "继续沟通"}</button></form>`
-    : batch.status === "running" ? "<strong>沟通执行中</strong>" : "";
-  const discardControl = ["confirmed", "paused"].includes(batch.status)
-    ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button class="communication-discard" name="action" value="discard">安全撤回</button></form>` : "";
-  const calibrationFacts = `<section class="communication-calibration" aria-label="沟通验收状态"><p>实施：${escapeHtml(calibration.implementation === "implemented" ? "已实现" : calibration.implementation || "未知")}</p><p>校准：${escapeHtml(calibration.calibration === "calibrated" ? "已完成" : calibration.calibration || "未知")}</p><p>端到端验收：${escapeHtml(calibration.acceptance === "e2e_pending" ? "待人工 E2E 验收（e2e_pending）" : calibration.acceptance || "未知")}</p><p>技术执行门：${calibration.executionEnabled ? "已启用" : "未启用"}</p></section>`;
-  const calibrationNotice = `${calibrationFacts}${calibration.executionEnabled ? "" : `<p class="communication-warning">校准状态：${escapeHtml(calibration.status)}，执行保持禁用。</p>`}`;
-  return renderLegacyDashboardPage({ title: "批量沟通审阅", currentPath: `/communication?batchId=${batch.id}`, todayPath: `/plan?planId=${batch.planId}`, planId: batch.planId, stage: "沟通", body: `<style>.communication-layout{max-width:960px}.communication-warning{color:#9a4b42;font-weight:700}.communication-table{width:100%;border-collapse:collapse}.communication-table th,.communication-table td{padding:8px;border-bottom:1px solid #d8e0e6;text-align:left;vertical-align:top}.communication-controls{display:flex;gap:8px;align-items:center;margin:14px 0}.communication-resolution{display:grid;gap:7px;min-width:260px}.communication-resolution label{display:grid;gap:4px}.communication-resolution div{display:flex;gap:6px}@media(max-width:760px){.communication-table,.communication-table tbody,.communication-table tr,.communication-table td{display:block;width:100%;box-sizing:border-box}.communication-table thead{display:none}.communication-table tr{padding:10px 0;border-bottom:1px solid #d8e0e6}.communication-table td{padding:4px 0;border:0}.communication-resolution{min-width:0}.communication-resolution div{flex-wrap:wrap}}</style><main id="main-content" class="communication-layout"><h1>批量沟通审阅 #${batch.id}</h1><p>校准状态：${escapeHtml(calibration.status)}</p>${calibrationNotice}${blockNotice}<p>批次：${escapeHtml(batch.status)} · 已选：${summary.total} · ${counts}</p><p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><div class="communication-controls">${executeControl}${discardControl}</div><table class="communication-table"><thead><tr><th>#</th><th>岗位</th><th>状态</th><th>人工处理</th></tr></thead><tbody>${rows}</tbody></table></main>` });
+function communicationDetailsByJobId(db, workflow) {
+  const details = listWorkflowReviewCandidates(db, workflow.id);
+  const fallback = listDecisionPool(db, { planId: workflow.planId });
+  return new Map([...fallback, ...details].map((job) => [Number(job.id), job]));
 }
 
 function compactAwaitingAction(job) {
