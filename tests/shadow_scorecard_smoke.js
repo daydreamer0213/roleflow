@@ -204,6 +204,25 @@ try {
           risks: []
         },
         humanLabel: { status: "pending-human" }
+      },
+      {
+        id: "responsibility-ceiling-escape",
+        input: {
+          roleAlignment: "aligned",
+          responsibilityMatches: [
+            { state: "matched", jdEvidence: "JD duty 1", resumeEvidence: "resume duty 1" },
+            { state: "matched", jdEvidence: "JD duty 2", resumeEvidence: "resume duty 2" },
+            { state: "unknown" },
+            { state: "unknown" },
+            { state: "unknown" }
+          ],
+          requirementMatches: [
+            { state: "matched", foundation: true, requirement: "covered core", jdEvidence: "JD core", resumeEvidence: "resume core" }
+          ],
+          boundaries: [],
+          risks: []
+        },
+        humanLabel: { status: "pending-human" }
       }
     ],
     variants: [
@@ -217,6 +236,21 @@ try {
       {
         id: "unsafe-evidence-coverage",
         policy: { ...DECISION_POLICY, minEvidenceCoverageForAutoSelect: 0.5 }
+      },
+      {
+        id: "unsafe-responsibility-coverage",
+        policy: {
+          ...DECISION_POLICY,
+          minEvidenceCoverageForAutoSelect: 0,
+          responsibilityAlignment: {
+            ...DECISION_POLICY.responsibilityAlignment,
+            minimumKnownCoverage: 0.4,
+            jointFit: {
+              ...DECISION_POLICY.responsibilityAlignment.jointFit,
+              zeroDutyGapMinimumKnownCoverage: 0.4
+            }
+          }
+        }
       }
     ]
   };
@@ -244,18 +278,21 @@ try {
   assert.deepStrictEqual(evaluationReport.verifiedHardBoundaryViolations.guardedScorecard, []);
   assert.strictEqual(evaluationReport.verifiedSevereRiskViolations.matrixPreGuardRisk[0].id, "verified-severe-risk");
   assert.deepStrictEqual(evaluationReport.verifiedSevereRiskViolations.guardedScorecard, []);
-  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.pairedEvidenceBound, 15,
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.pairedEvidenceBound, 16,
     "identical JD and resume text still counts as two bound evidence fields");
-  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.coverageRate, 15 / 17);
+  assert.strictEqual(evaluationReport.evidenceCoverage.requirements.coverageRate, 16 / 18);
   const fiveBoundOneUnknown = evaluationReport.rows.find((row) => row.id === "five-bound-one-unknown");
   assert.strictEqual(fiveBoundOneUnknown.candidateTier, "primary");
   assert.strictEqual(fiveBoundOneUnknown.scorecard.evidenceCoverage.overall, 0.85);
   assert(!evaluationReport.guardedEvidenceSafetyViolations.some((violation) => violation.id === "five-bound-one-unknown"));
   assert.strictEqual(evaluationReport.explanationCoverage.status, "available");
   assert.strictEqual(evaluationReport.explanationCoverage.requirements.explained, 9);
-  assert.strictEqual(evaluationReport.explanationCoverage.requirements.coverageRate, 9 / 17);
+  assert.strictEqual(evaluationReport.explanationCoverage.requirements.coverageRate, 9 / 18);
   assert.strictEqual(evaluationReport.confirmedLabelCount, 2);
-  assert.strictEqual(evaluationReport.pendingLabelCount, 3);
+  assert.strictEqual(evaluationReport.pendingLabelCount, 4);
+  const responsibilityCeiling = evaluationReport.rows.find((row) => row.id === "responsibility-ceiling-escape").baselineSafetyCeiling;
+  assert.strictEqual(responsibilityCeiling.candidateTier, "caution");
+  assert(responsibilityCeiling.codes.includes("alignment_consistency_cap"));
   assert.strictEqual(evaluationReport.rankingUsefulness.status, "available");
 
   const samePathResult = spawnSync(process.execPath, [
@@ -273,7 +310,7 @@ try {
   assert.strictEqual(repeatedVariantReports[0], repeatedVariantReports[1]);
   assert.strictEqual(repeatedVariantReports[1], repeatedVariantReports[2]);
   const variantsReport = JSON.parse(repeatedVariantReports[0]);
-  assert.strictEqual(variantsReport.variants.length, 3);
+  assert.strictEqual(variantsReport.variants.length, 4);
   assert(variantsReport.variants.every((variant) => /^[a-f0-9]{64}$/.test(variant.policyHash)));
   assert.strictEqual(variantsReport.variants[0].id, "default");
   assert.strictEqual(variantsReport.variants[0].policyHash, decisionPolicyHash(DECISION_POLICY));
@@ -282,6 +319,10 @@ try {
   assert.strictEqual(variantsReport.variants[1].rejected, false);
   assert.strictEqual(variantsReport.variants[2].rejected, true);
   assert(variantsReport.variants[2].rejectionReasons.some((reason) => reason.code === "below_production_evidence_floor_guarded_scorecard"));
+  assert.strictEqual(variantsReport.variants[3].rejected, true);
+  assert(variantsReport.variants[3].rejectionReasons.some((reason) => reason.code === "guarded_production_safety_ceiling"));
+  assert(!variantsReport.variants[0].rejectionReasons.some((reason) => reason.code === "guarded_production_safety_ceiling"),
+    "the default variant must not reject when it matches the baseline safety ceiling");
 
   const variantsSamePathResult = spawnSync(process.execPath, [
     "scripts/evaluate-shadow-variants.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath

@@ -13,6 +13,13 @@ const { buildShadowScorecard, SHADOW_SCORECARD_VERSION } = require("./lib/shadow
 const REPORT_VERSION = "shadow-scorecard-report-v1";
 const REPORT_SCHEMA_VERSION = "shadow-scorecard-report-v2";
 const EVALUATION_NAME = "matrix-vs-guarded-scorecard";
+const BASELINE_SAFETY_CODES = new Set([
+  "unknown_core_requirements",
+  "insufficient_role_alignment_evidence",
+  "alignment_consistency_cap",
+  "responsibility_safety_cap",
+  "low_evidence_coverage"
+]);
 
 function main(argv = process.argv.slice(2)) {
   const { inputPath, outputPath } = parseArgs(argv);
@@ -63,6 +70,15 @@ function buildShadowReport(fixture, metadata = {}) {
     minimumCoverage: DECISION_POLICY.minEvidenceCoverageForAutoSelect,
     finalReasons: row.scorecard.reasons.map((reason) => reason.code)
   }));
+  const guardedProductionSafetyCeilingViolations = rows.filter((row) => (
+    row.baselineSafetyCeiling.codes.length > 0
+      && higherRecommendationTier(row.candidateTier, row.baselineSafetyCeiling.candidateTier)
+  )).map((row) => ({
+    id: row.id,
+    tier: row.candidateTier,
+    baselineCandidateTier: row.baselineSafetyCeiling.candidateTier,
+    baselineSafetyCodes: row.baselineSafetyCeiling.codes
+  }));
   const fixedSalaryBoundaryEscapes = tierViolations(rows, "fixedSalaryBoundary", nonRejectedTiers());
   return {
     version: REPORT_VERSION,
@@ -85,6 +101,8 @@ function buildShadowReport(fixture, metadata = {}) {
     verifiedHardBoundaryViolations: hardBoundaryViolations,
     verifiedSevereRiskViolations: severeRiskViolations,
     guardedEvidenceSafetyViolations,
+    guardedProductionSafetyCeilingViolations,
+    baselineSafetyCeilings: rows.map((row) => ({ id: row.id, ...row.baselineSafetyCeiling })),
     fixedSalaryBoundaryEscapes,
     matrixPreGuardRisk: {
       verifiedHardBoundaryViolations: hardBoundaryViolations.matrixPreGuardRisk,
@@ -119,6 +137,7 @@ function buildRows(cases, policy) {
     }
     const humanLabel = normalizedHumanLabel(item.humanLabel);
     const scorecard = buildShadowScorecard(item.input, policy);
+    const baselineScorecard = buildShadowScorecard(item.input, DECISION_POLICY);
     const productionMatrixTier = scorecard.score.productionMatrixTier;
     return {
       id,
@@ -129,6 +148,12 @@ function buildRows(cases, policy) {
       fixedSalaryBoundary: hasFixedSalaryBoundary(item),
       productionMatrixTier,
       candidateTier: scorecard.candidateTier,
+      baselineSafetyCeiling: {
+        candidateTier: baselineScorecard.candidateTier,
+        codes: baselineScorecard.reasons
+          .map((reason) => reason.code)
+          .filter((code) => BASELINE_SAFETY_CODES.has(code))
+      },
       verifiedHardBoundary: scorecard.hardBoundary.blocked,
       verifiedSevereRisk: scorecard.hardBoundary.severeRisk,
       evidenceBinding: evidenceBinding(item.input),
@@ -306,6 +331,10 @@ function hasText(value) {
 
 function nonRejectedTiers() {
   return new Set(RECOMMENDATION_TIERS.filter((tier) => tier !== "not_recommended"));
+}
+
+function higherRecommendationTier(candidateTier, baselineTier) {
+  return RECOMMENDATION_TIERS.indexOf(candidateTier) < RECOMMENDATION_TIERS.indexOf(baselineTier);
 }
 
 function rankingMetrics(rows) {
