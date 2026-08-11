@@ -81,7 +81,7 @@ function seedDb() {
         title: "Platform Engineer",
         company: "Boundary Company",
         description: "Boundary Company requires platform engineering, Node.js and a carefully bounded salary range. This detailed job description is intentionally longer than one hundred and twenty characters for the production readiness predicate.",
-        contentHash: "c".repeat(64),
+        contentHash: "a".repeat(64),
         analysis: analysis({ recommendation: "apply", fixedSalaryBoundary: true }),
         qualityTags: ["salary_out_of_range"]
       },
@@ -181,6 +181,7 @@ try {
   assert.strictEqual(fixture.cases.length, 3, "every fresh job must enter the denominator");
   assert.deepStrictEqual(fixture.cases.map((item) => item.id), [...fixture.cases.map((item) => item.id)].sort());
   assert(fixture.cases.every((item) => /^[a-f0-9]{64}$/.test(item.id)), "evaluation IDs must be non-reversible hashes");
+  assert.strictEqual(new Set(fixture.cases.map((item) => item.id)).size, fixture.cases.length, "same-content jobs need distinct artifact-local evaluation IDs");
   assert.strictEqual(fixture.cases.find((item) => item.technicalBucket === "semantic_failed").productionMatrixTier, null);
   assert.strictEqual(manifest.technicalBucketCounts.semantic_failed, 1, "technical buckets must not be forced into tiers");
   assert.deepStrictEqual(labels.rows.map((row) => row.status), ["pending-human", "pending-human", "pending-human"]);

@@ -177,7 +177,7 @@ function identityKey(hooks) {
   }
   return text(process.env.ROLEFLOW_GATE_D_EVALUATION_IDENTITY_KEY);
 }
-function evaluationId(key, hash) { if (key.length < 24) throw new Error("an external evaluation identity key is required"); return crypto.createHmac("sha256", key).update(`gate-d-evaluation-v2\0${hash}`).digest("hex"); }
+function evaluationId(key, hash, jobId) { if (key.length < 24) throw new Error("an external evaluation identity key is required"); return crypto.createHmac("sha256", key).update(`gate-d-evaluation-v2\0${hash}\0${jobId}`).digest("hex"); }
 function counts(items, field) { return Object.fromEntries([...new Set(items.map((item) => item[field]).filter(Boolean))].sort().map((value) => [value, items.filter((item) => item[field] === value).length])); }
 function toolCommit() { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(); }
 
@@ -239,7 +239,7 @@ function exportEvaluation(options, hooks = {}) {
     const guardedTier = technical ? null : safeTier(buildShadowScorecard(input, DECISION_POLICY).candidateTier);
     const sourceContentHash = text(row.content_hash);
     return {
-      id: evaluationId(key, sourceContentHash), evaluationId: evaluationId(key, sourceContentHash), sourceContentHash,
+      id: evaluationId(key, sourceContentHash, row.job_id), evaluationId: evaluationId(key, sourceContentHash, row.job_id), sourceContentHash,
       selectedObservationId: Number(row.id), observationSelectionRule: "latest-fresh-observation-by-seen_at,id",
       scanEvidence: { completeJd, detailRead: !list(parseJson(row.quality_tags_json, [])).includes("detail_unverified") },
       modelContract: { semanticStatus: text(analysis.semanticStatus) || "unknown", invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null, repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null, finalFailure: text(analysis.errorCode || attempt.final_error_code) || null, attemptCount: Number(attempt.attempt_count || 0) },
