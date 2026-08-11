@@ -119,7 +119,9 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
     analysisContext: runtimeAnalysisContext(
       projected.candidateProfile,
       sourcePlan,
-      projected.matchingCard
+      projected.matchingCard,
+      projected.targetPolicy,
+      projected.scoring
     )
   };
 }
