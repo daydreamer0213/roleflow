@@ -144,6 +144,11 @@ try {
   });
   const privateDocument = storage.getResumeDocument(db, privateSave.resumeDocumentId);
   assert.strictEqual(privateDocument.originalFileName, privateFileName, "explicit source-file metadata must preserve the original filename");
+  const privateProfileVersion = storage.listProfileVersions(db, privateSave.profileId)[0];
+  assert.strictEqual(privateProfileVersion.fileName, "简历文件.txt");
+  for (const secret of privateFileSecrets) {
+    assert(!JSON.stringify(privateProfileVersion).includes(secret), `profile-version DTO must mask filename contact: ${secret}`);
+  }
   const privateVersion = storage.listCandidateResumeVersions(db, privateSave.profileId)[0];
   assert.strictEqual(privateVersion.name, "基础简历");
   assert.strictEqual(privateVersion.fileName, "简历文件.txt");

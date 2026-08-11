@@ -299,7 +299,7 @@ function listProfileVersions(db, profileId, limit = 12) {
     profileId: Number(row.profile_id),
     resumeDocumentId: row.resume_document_id || null,
     profile: parseJson(row.profile_json, {}),
-    fileName: row.original_file_name || "",
+    fileName: row.original_file_name ? maskResumeFileName(row.original_file_name) : "",
     format: row.format || "",
     createdAt: row.created_at
   }));

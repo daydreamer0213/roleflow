@@ -86,7 +86,7 @@ const {
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
-const { maskResumeContacts, maskResumeDiagnostics } = require("../core/resume_privacy");
+const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
@@ -792,7 +792,7 @@ function renderMatchCardPage({ db, searchParams }) {
   const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
   const activeDocument = activeCard?.resumeDocumentId ? getResumeDocument(db, activeCard.resumeDocumentId) : null;
   const activeLabel = activeCard
-    ? `${activeDocument?.originalFileName || "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
+    ? `${activeDocument?.originalFileName ? maskResumeFileName(activeDocument.originalFileName) : "已保存简历版本"} · 确认于 ${activeCard.confirmedAt || "未知时间"}`
     : "尚无已确认的匹配偏好卡";
   const draftLinks = drafts
     .filter((item) => item.id !== card?.id)

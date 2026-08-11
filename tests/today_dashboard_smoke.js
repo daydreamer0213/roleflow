@@ -25,7 +25,12 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   assertRendererIsPureAndEscapesHtml();
   fs.mkdirSync(smokeDir, { recursive: true });
   const db = openDb(dbPath);
-  const ready = seedProfile(db, { name: "Ready Candidate", confirmCard: true });
+  const privateFileNameContacts = ["13876543210", "上海市浦东新区今日页路66号"];
+  const ready = seedProfile(db, {
+    name: "Ready Candidate",
+    confirmCard: true,
+    fileName: `Ready-${privateFileNameContacts[0]}-联系地址${privateFileNameContacts[1]}.txt`
+  });
   const blocked = seedProfile(db, { name: "Blocked Candidate", confirmCard: false });
   const server = createDashboardServer({
     db,
@@ -37,7 +42,8 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   });
   const baseUrl = await listen(server);
   try {
-    await assertReadyTodayPage(baseUrl, ready);
+    await assertConfirmedMatchCardPage(baseUrl, ready, privateFileNameContacts);
+    await assertReadyTodayPage(baseUrl, ready, privateFileNameContacts);
     await assertBlockedTodayPage(baseUrl, blocked);
     createActiveWorkflow(db, ready);
     await assertActiveTodayPage(baseUrl, ready);
@@ -99,11 +105,15 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.strictEqual((html.match(/data-today-primary="true"/g) || []).length, 1, "a standalone renderer must emit one primary CTA without a DB or browser");
 }
 
-async function assertReadyTodayPage(baseUrl, saved) {
+async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   const favicon = await getText(baseUrl, "/favicon.ico");
   assert.strictEqual(favicon.status, 204, "dashboard pages must not emit a favicon 404 console error");
   const page = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.strictEqual(page.status, 200);
+  for (const secret of privateFileNameContacts) {
+    assert(!page.body.includes(secret), `today plan page must not expose filename contact: ${secret}`);
+  }
+  assert.match(page.body, /简历文件\.txt/);
   assert.match(page.body, /<h1[^>]*>今天先把高质量机会推进到人工确认。<\/h1>/);
   assert.match(page.body, /aria-current="page">今日任务<\/a>/);
   assert.match(page.body, /data-today-primary="true"[^>]*name="action"[^>]*value="start"/);
@@ -115,6 +125,16 @@ async function assertReadyTodayPage(baseUrl, saved) {
   assert.match(page.body, /<details[^>]*>\s*<summary[^>]*><strong>调整筛选条件<\/strong>/);
   assertPlanAndAdvancedContracts(page.body);
   assertSingleDocument(page.body);
+}
+
+async function assertConfirmedMatchCardPage(baseUrl, saved, privateFileNameContacts) {
+  const page = await getText(baseUrl, `/match-card?profileId=${saved.profileId}&cardId=${saved.cardId}`);
+  assert.strictEqual(page.status, 200);
+  for (const secret of privateFileNameContacts) {
+    assert(!page.body.includes(secret), `confirmed matching-card page must not expose filename contact: ${secret}`);
+  }
+  assert.match(page.body, /当前扫描使用：简历文件\.txt/);
+  assert.match(page.body, /匹配偏好卡 #\d+（已确认）/);
 }
 
 async function assertBlockedTodayPage(baseUrl, saved) {
@@ -177,19 +197,19 @@ function chinaLocalDay() {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
-function seedProfile(db, { name, confirmCard }) {
+function seedProfile(db, { name, confirmCard, fileName = `${name}.txt` }) {
   const profile = {
     candidate: { name, city: "上海", targetTitles: ["AI 应用开发工程师"], expectedSalary: "15-25K" },
     education: [], experiences: [], skills: [{ name: "Python", evidence: ["Today fixture"] }], projects: [{ name: "Today fixture", canSay: ["RAG"] }], credentials: [], strengths: []
   };
   const saved = saveProfileAnalysis(db, {
     profile,
-    document: { originalFileName: `${name}.txt`, format: "text", contentHash: `today-${name}`, text: "Python RAG experience ".repeat(10), diagnostics: {} },
+    document: { originalFileName: fileName, format: "text", contentHash: `today-${name}`, text: "Python RAG experience ".repeat(10), diagnostics: {} },
     searchPlan: { name: `${name} plan`, cities: ["上海"], directions: ["AI 应用开发"], keywords: [{ word: "RAG", priority: "A", reason: "fixture" }, { word: "Python 后端", priority: "B", reason: "fixture" }], experience: ["1-3年"], jobTypes: ["全职"], degrees: [], salary: { minK: 15, maxK: 25 }, bossActiveDays: 3, platform: { site: "boss" } }
   });
   const draft = createMatchingCardDraft(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, resumeDocumentId: saved.resumeDocumentId, resumeContentHash: `today-${name}`, card: matchingCardFromProfile(profile), source: "migration" });
   if (confirmCard) confirmMatchingCard(db, { profileId: saved.profileId, cardId: draft.id });
-  return saved;
+  return { ...saved, cardId: draft.id };
 }
 
 async function listen(server) {

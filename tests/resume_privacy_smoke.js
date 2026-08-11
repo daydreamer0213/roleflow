@@ -54,6 +54,25 @@ assert(continuedAddressDiagnostics.preview.includes("项目经历:KnowledgeFlow"
 assert.deepStrictEqual(maskResumeDiagnostics(continuedAddressDiagnostics), continuedAddressDiagnostics);
 assert.deepStrictEqual(continuedAddressDiagnostics.quality, { status: "good", detectedSections: ["project"] });
 
+const immutableDiagnosticsInput = {
+  extractionMethod: "pasted_text",
+  preview: "手机：13512345678\n项目经历：KnowledgeFlow",
+  quality: { status: "good", detectedSections: ["project"] },
+  modelInput: {
+    preview: "邮箱：immutable@example.com\n项目经历：KnowledgeFlow",
+    redactions: { phone: 1, email: 1 }
+  }
+};
+const immutableDiagnosticsSnapshot = JSON.parse(JSON.stringify(immutableDiagnosticsInput));
+const immutableDiagnosticsResult = maskResumeDiagnostics(immutableDiagnosticsInput);
+assert.deepStrictEqual(immutableDiagnosticsInput, immutableDiagnosticsSnapshot);
+assert.notStrictEqual(immutableDiagnosticsResult, immutableDiagnosticsInput);
+assert.notStrictEqual(immutableDiagnosticsResult.modelInput, immutableDiagnosticsInput.modelInput);
+assert(!immutableDiagnosticsResult.preview.includes("13512345678"));
+assert(!immutableDiagnosticsResult.modelInput.preview.includes("immutable@example.com"));
+assert.deepStrictEqual(immutableDiagnosticsResult.quality, immutableDiagnosticsInput.quality);
+assert.deepStrictEqual(immutableDiagnosticsResult.modelInput.redactions, immutableDiagnosticsInput.modelInput.redactions);
+
 const prepared = prepareResumeTextForModel(input, {
   originalFileName: "测试候选人-AI应用开发.pdf",
   identity,
