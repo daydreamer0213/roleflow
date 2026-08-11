@@ -52,6 +52,11 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.strictEqual(stylesheet.status, 200, "the fixed dashboard stylesheet must be served");
     assert.match(stylesheet.contentType, /^text\/css(?:;|$)/);
     assert.match(stylesheet.body, /:root/);
+    assert.match(
+      stylesheet.body,
+      /\.rail-label\{[^}]*writing-mode:vertical-rl;(?![^}]*rotate\(180deg\))[^}]*\}/,
+      "the emitted signal rail label must remain naturally readable"
+    );
 
     const unknownAsset = await getText(baseUrl, "/assets/%2e%2e%2fpackage.json");
     assert.strictEqual(unknownAsset.status, 404, "unknown asset paths must not reach the filesystem");

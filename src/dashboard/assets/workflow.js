@@ -11,6 +11,7 @@
   let pollInFlight = false;
   let timer = null;
   let lastKey = page.dataset.pollingKey || "";
+  let nextPollAt = 0;
 
   const node = (selector) => page.querySelector(selector);
   const nodes = (selector) => [...page.querySelectorAll(selector)];
@@ -25,6 +26,16 @@
   const clearError = () => { const error = node("[data-workflow-error]"); if (error) error.hidden = true; };
   const scanWaitText = (scanWait) => { const retryAt = Date.parse(scanWait?.retryAt || ""); if (!Number.isFinite(retryAt) || retryAt <= Date.now()) return ""; return "安全冷却中，预计 " + Math.max(1, Math.ceil((retryAt - Date.now()) / 60000)) + " 分钟后继续（" + new Date(retryAt).toLocaleTimeString("zh-CN", { hour12: false }) + "）"; };
   const renderScanWait = (scanWait) => { const wait = node("[data-scan-wait]"); if (!wait) return; const label = scanWaitText(scanWait); wait.hidden = !label; if (label) wait.textContent = label; };
+  const renderCooldown = (scanWait) => {
+    const countdown = node("[data-cooldown-countdown]");
+    const container = node("[data-cooldown]");
+    const retryAt = Date.parse(scanWait?.retryAt || countdown?.dataset.retryAt || "");
+    if (!countdown) return;
+    if (!Number.isFinite(retryAt)) { countdown.textContent = ""; if (container) container.hidden = true; return; }
+    const seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+    countdown.textContent = String(seconds) + " 秒";
+    if (container) container.hidden = false;
+  };
   const renderStale = (workflow) => { const warning = node("[data-workflow-stale]"); if (!warning) return; const at = Date.parse(workflow.lastActivityAt || ""); const active = ["created", "scanning", "analyzing"].includes(workflow.status); warning.hidden = !(active && Number.isFinite(at) && Date.now() - at > 30000); };
   const renderProgress = (snapshot) => {
     const analysis = snapshot.progress.analysis || {};
@@ -66,7 +77,7 @@
       if (!response.ok) throw new Error("status response");
       const snapshot = await response.json();
       if (!validSnapshot(snapshot)) throw new Error("status payload");
-      clearError(); renderControls(snapshot); renderScanWait(snapshot.progress.scanWait); renderStale(snapshot.workflow);
+      clearError(); renderControls(snapshot); renderScanWait(snapshot.progress.scanWait); renderCooldown(snapshot.progress.scanWait); renderStale(snapshot.workflow);
       const nextKey = [number(snapshot.workflow.progressRevision), snapshot.workflow.status || "", snapshot.workflow.controlState || ""].join("|");
       if (nextKey !== lastKey) { lastKey = nextKey; renderProgress(snapshot); }
     } catch { showError(); } finally { pollInFlight = false; }
@@ -96,6 +107,15 @@
     const update = () => { const count = review.querySelectorAll('input[name="jobIds"]:checked').length; if (output) output.value = String(count); if (confirm) confirm.disabled = blocked || count === 0 || count > limit; };
     review.addEventListener("change", update); update();
   }
-  if (pollKind === "progress" && panel) timer = setInterval(pollProgress, interval);
-  if (pollKind === "communication") timer = setInterval(pollCommunication, interval);
+  const tick = () => {
+    renderCooldown();
+    if (Date.now() < nextPollAt) return;
+    nextPollAt = Date.now() + interval;
+    if (pollKind === "progress" && panel) return pollProgress();
+    if (pollKind === "communication") return pollCommunication();
+  };
+  if ((pollKind === "progress" && panel) || pollKind === "communication") {
+    timer = setInterval(tick, 1000);
+    tick();
+  }
 })();
