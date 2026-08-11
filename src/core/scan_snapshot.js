@@ -109,7 +109,14 @@ function assertScanSnapshotCompatible(stored, current) {
       if (field === "recommendationPolicyHash" && (!stored[field] || !current[field])) continue;
       if (comparableHash(stored[field]) !== comparableHash(current[field])) differences.push(`${field} differs`);
     }
-    if (stored.snapshotHash !== current.snapshotHash && stored.recommendationPolicyHash && current.recommendationPolicyHash) {
+    const legacyRecommendationField = !stored.recommendationPolicyHash || !current.recommendationPolicyHash;
+    const legacyPayloadMatches = legacyRecommendationField
+      && stableHash(snapshotPayloadWithoutRecommendation(stored))
+        === stableHash(snapshotPayloadWithoutRecommendation(current));
+    const storedHashValid = snapshotHashMatchesPayload(stored);
+    const currentHashValid = snapshotHashMatchesPayload(current);
+    if (stored.snapshotHash !== current.snapshotHash
+      && !(legacyRecommendationField && legacyPayloadMatches && storedHashValid && currentHashValid)) {
       differences.push(`snapshotHash differs: stored=${stored.snapshotHash || "(missing)"}, current=${current.snapshotHash || "(missing)"}`);
     }
   }
@@ -155,6 +162,19 @@ function deterministicPayload(snapshot) {
     ["schemaVersion", snapshot.schemaVersion],
     ...PAYLOAD_FIELDS.map((field) => [field, snapshot[field]])
   ]);
+}
+
+function snapshotPayloadWithoutRecommendation(snapshot) {
+  const payload = deterministicPayload(snapshot);
+  delete payload.recommendationPolicyHash;
+  return payload;
+}
+
+function snapshotHashMatchesPayload(snapshot) {
+  const payload = snapshot.recommendationPolicyHash
+    ? deterministicPayload(snapshot)
+    : snapshotPayloadWithoutRecommendation(snapshot);
+  return stableHash(payload) === snapshot.snapshotHash;
 }
 
 function indexLatestResults(snapshot, latestResults) {

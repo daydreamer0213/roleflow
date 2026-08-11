@@ -57,7 +57,6 @@ function modelInferenceConfig(modelConfig = {}) {
 function modelSearchPlanContext(searchPlan = {}) {
   return {
     cities: searchPlan.cities || [],
-    salary: searchPlan.salary || {},
     experience: searchPlan.experience || [],
     jobTypes: searchPlan.jobTypes || [],
     directions: searchPlan.directions || []
@@ -66,28 +65,33 @@ function modelSearchPlanContext(searchPlan = {}) {
 
 function recommendationPolicyContext(searchPlan = {}, targetPolicy = {}, scoring = {}) {
   return {
-    searchPlan: modelSearchPlanContext(searchPlan),
+    searchPlan: {
+      ...modelSearchPlanContext(searchPlan),
+      salary: searchPlan.salary || {}
+    },
     targetPolicy: targetPolicy || {},
     scoring: scoring || {}
   };
 }
 
-function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = null, targetPolicy = {}, scoring = {}) {
+function runtimeAnalysisContext(candidateProfile, searchPlan, matchingCard = null, targetPolicy, scoring) {
+  const searchPlanVersion = targetPolicy === undefined && scoring === undefined
+    ? stableHash(modelSearchPlanContext(searchPlan))
+    : stableHash(recommendationPolicyContext(searchPlan, targetPolicy, scoring));
   return {
     profileVersion: stableHash(candidateProfile || {}),
-    searchPlanVersion: stableHash(recommendationPolicyContext(searchPlan, targetPolicy, scoring)),
+    searchPlanVersion,
     matchingCardVersion: matchingCard ? matchingCardRevision(matchingCard) : null
   };
 }
 
 function buildAnalysisRevision(configs, sourceContentHash) {
+  const searchPlanVersion = configs.recommendationPolicyHash
+    ? stableHash(recommendationPolicyContext(configs.searchPlan, configs.targetPolicy, configs.scoring))
+    : configs.analysisContext?.searchPlanVersion || stableHash(modelSearchPlanContext(configs.searchPlan));
   return {
     profileVersion: configs.analysisContext?.profileVersion || stableHash(configs.candidateProfile || {}),
-    searchPlanVersion: stableHash(recommendationPolicyContext(
-      configs.searchPlan,
-      configs.targetPolicy,
-      configs.scoring
-    )),
+    searchPlanVersion,
     matchingCardVersion: configs.analysisContext?.matchingCardVersion ?? null,
     sourceContentHash: String(sourceContentHash || ""),
     semanticMatchingMode: configs.semanticMatchingMode

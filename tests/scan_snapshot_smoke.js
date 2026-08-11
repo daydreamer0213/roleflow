@@ -128,7 +128,18 @@ assertScanSnapshotCompatible(snapshot, { ...reordered, createdAt: "2099-01-01T00
 assert.strictEqual(snapshot.recommendationPolicyHash, "recommendation-policy-v1");
 const legacyInput = { ...input };
 delete legacyInput.recommendationPolicyHash;
-assertScanSnapshotCompatible(buildScanExecutionSnapshot(legacyInput), snapshot);
+const legacySnapshot = buildScanExecutionSnapshot(legacyInput);
+assertScanSnapshotCompatible(legacySnapshot, snapshot);
+assert.throws(
+  () => assertScanSnapshotCompatible({
+    ...legacySnapshot,
+    runtimePolicyHash: "tampered-without-rehash"
+  }, buildScanExecutionSnapshot({
+    ...legacySnapshot,
+    runtimePolicyHash: "tampered-without-rehash"
+  })),
+  (error) => error.code === "SCAN_SNAPSHOT_MISMATCH"
+);
 
 const volatileMetadata = buildScanExecutionSnapshot({
   ...input,
