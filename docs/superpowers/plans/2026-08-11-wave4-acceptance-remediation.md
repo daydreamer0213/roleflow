@@ -224,6 +224,35 @@ node tests/boss_message_reader_smoke.js
 
 Acceptance: the Dashboard product route reaches the same Edge-backed reader that already passed real read-only verification.
 
+### Task 4A: Retain unmatched message-discovery items without blocking later work
+
+**Lane:** C2, after Task 4
+**Issues:** RF-A06
+**Design:** `docs/superpowers/specs/2026-08-11-message-discovery-unmatched-retention-design.md`
+
+**Files:**
+
+- Modify: `src/core/storage.js`
+- Modify: `src/core/message_preview_state.js`
+- Modify: `src/core/message_discovery.js`
+- Modify: `src/dashboard/message_discovery_controller.js`
+- Modify: `src/dashboard/message_discovery_view.js` only for truthful unresolved count/reason
+- Test: `tests/storage_migration_smoke.js`
+- Test: `tests/message_preview_state_smoke.js`
+- Test: `tests/message_discovery_smoke.js`
+- Test: `tests/dashboard_message_discovery_smoke.js`
+
+- [ ] Add a transactional forward migration for sanitized unresolved message-discovery items.
+- [ ] Add a two-item regression where an unmatched first item does not block a valid second item.
+- [ ] Persist only digests, reason code and timestamps; never persist message text or recruiter identity.
+- [ ] Requeue a durable unresolved row even when it is no longer unread.
+- [ ] Clear the unresolved marker only after successful processing.
+- [ ] Keep risk control, page loss, target drift, lease loss and stop as whole-run terminal conditions.
+- [ ] Return truthful `processed` and `unresolved` counts.
+- [ ] Run focused tests and `npm.cmd test`.
+
+Acceptance: strict identity validation remains unchanged, later valid items continue, and an opened unmatched message cannot be silently absorbed into the next baseline.
+
 ### Task 5: Integrate and verify Gate A
 
 **Owner:** controller
@@ -237,7 +266,7 @@ Acceptance: the Dashboard product route reaches the same Edge-backed reader that
 - [ ] Do not perform a real communication click. Validate communication failure states using offline injection.
 - [ ] Update the remediation status report with evidence and remaining Gate B blockers.
 
-Gate A passes only when Tasks 1–4 and the real read-only message product path pass.
+Gate A passes only when Tasks 1–4A and the real read-only message product path pass.
 
 ---
 
