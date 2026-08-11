@@ -1,10 +1,10 @@
 # RoleFlow Wave 0–4 consolidated evaluation
 
-Evaluation head: `483a40cd5bdc6508c2ff88564280f8f13ac26a70`.
+Evaluation evidence head: `e2be8685c5d25169b224a105d5188ba2cdf74abd`.
 
-Architecture final-main measurement: `25d5c26`. Baseline: `e36bee8`.
+Architecture audit source: `483a40cd5bdc6508c2ff88564280f8f13ac26a70`. Architecture final-main measurement: `25d5c26`. Baseline: `e36bee8`.
 
-Final verification source head: `da8ae3289d7be7c012e931c92e75de002e55ecf1`. The command-level record is [2026-08-11-wave0-4-final-verification.json](evidence/2026-08-11-wave0-4-final-verification.json). This fix changes only this report and that verification evidence file.
+Final verification source head: `e2be8685c5d25169b224a105d5188ba2cdf74abd`. The command-level record is [2026-08-11-wave0-4-final-verification.json](evidence/2026-08-11-wave0-4-final-verification.json). This refresh changes only this report and that verification evidence file.
 
 ## Disposition
 
@@ -29,11 +29,11 @@ Status terms are used precisely:
 | Public compatibility | Legacy storage facade | 136 exports; workflow 39 direct facade identities | regression-safe, technical accepted | [architecture audit](evidence/2026-08-11-wave0-4-architecture-audit.json); final store contracts | Direct identities are technical compatibility evidence, not a live-product result. |
 | Ownership / coupling | `storage.js` 5,030 lines | 1,438 lines; 92 source JS files; no cycles | implemented, evaluated, technical accepted | Fresh CommonJS graph audit: 255 resolved internal edges, 0 unresolved relative imports, 0 forbidden-edge findings | CLI stayed unchanged and was not application-extracted. |
 | Dashboard clarity / accessibility | Earlier dashboard evidence was pre-Wave-3 historical evidence | 56 PNG / 3 JSON: Today 8, Workflow 16, Wave 2 32; 0 unlabeled controls, errors, or overflow | evaluated, technical accepted | Final manifests under `evidence/2026-08-11-wave0-4-final-dashboard/`; strict Playwright evidence | Mobile horizontal navigation remains a Minor. No logged-in BOSS browser/session was used. |
-| JD / recovery safety | Wave 0 detail/recovery contracts | 16/16 focused; exact-head 89/89 offline | regression-safe, technical accepted | Complete JD threshold >=120; identity, checkpoint, lease, recovery, pacing, and risk-stop contracts; [final verification](evidence/2026-08-11-wave0-4-final-verification.json) | Read-only BOSS inspection/continuation is already authorized; the unavailable Edge bridge and mandatory safety gates are the remaining blockers. |
+| JD / recovery safety | Wave 0 detail/recovery contracts | 16/16 focused; exact-`e2be868` 89/89 offline | regression-safe, technical accepted | Complete JD threshold >=120; identity, checkpoint, lease, recovery, pacing, and risk-stop contracts; [final verification](evidence/2026-08-11-wave0-4-final-verification.json) | Read-only BOSS inspection/continuation is already authorized; the unavailable Edge bridge and mandatory safety gates are the remaining blockers. |
 | Recommendation quality | Existing four-tier policy | Scorecard remains diagnostic-only; named 9, generic 6, benchmark 31 checks pass | implemented, regression-safe, shadow-only | Shadow-scorecard, four-tier, generic-evidence, and benchmark evidence | No complete paired human-labeled fixture, precision/recall result, threshold-near study, or model-repeat variance. No production switch. |
-| Communication technical readiness | Offline batch/recovery contracts | Exact-head 19/19 pass; immutable calibration snapshot and settlement/recovery paths covered | implemented, regression-safe, technical accepted; human pending | Communication store/application/executor/dashboard evidence; [per-command results](evidence/2026-08-11-wave0-4-final-verification.json) | `executionEnabled=true`; `acceptance="e2e_pending"`. No human E2E or true concurrency stress. |
+| Communication technical readiness | Offline batch/recovery contracts | Exact-`e2be868` 19/19 pass; immutable calibration snapshot and settlement/recovery paths covered | implemented, regression-safe, technical accepted; human pending | Communication store/application/executor/dashboard evidence; [per-command results](evidence/2026-08-11-wave0-4-final-verification.json) | `executionEnabled=true`; `acceptance="e2e_pending"`. No human E2E or true concurrency stress. |
 | Data / transaction safety | Single SQLite owner | One `immediateTransaction` definition; one `DatabaseSync` owner; schema/migrations/backfills remain in `storage.js` | evaluated, technical accepted | Fresh audit plus store contracts with late-failure rollback assertions | Partial-state operations intentionally remain non-transactional where their contracts require it. |
-| Test / evaluation coverage | Pre-refactor task evidence | Exact-head 89/89 in 210.998 s; communication 19/19 in 17.644 s; strict workflow Playwright pass in 38.992 s | regression-safe, evaluated | [Final verification JSON](evidence/2026-08-11-wave0-4-final-verification.json) plus tracked Wave 0–4 effect reports | The full suite requires the bundled Playwright `NODE_PATH`; the first unqualified attempt failed at module resolution and is retained in the machine record. Historical reports with stale line references or export counts are superseded by final measurements. |
+| Test / evaluation coverage | Pre-refactor task evidence | Exact-`e2be868` default 89/89 in 192.342 s; communication 19/19 in 18.475 s; strict workflow Playwright pass in 43.873 s | regression-safe, evaluated | [Final verification JSON](evidence/2026-08-11-wave0-4-final-verification.json) plus tracked Wave 0–4 effect reports | Default `npm.cmd test` is browser-independent and passes with `NODE_PATH` absent; runtime browser fixtures are separate strict checks. Historical reports with stale line references or export counts are superseded by final measurements. |
 
 ## Architecture and data ownership
 
@@ -45,13 +45,13 @@ Blob measurements establish a move in ownership rather than a claim based on a w
 
 ## Dashboard evaluation and remediation
 
-The final dashboard package contains exactly 56 PNG screenshots and 3 valid JSON manifests: 8 Today samples, 16 Workflow samples, and 32 strict Wave 2 samples. The manifests target sibling evidence revision `a027cc4` and are valid for `483a40c`: Git object IDs prove the `src`, `scripts`, and `tests` trees are identical at both revisions, and every `a027cc4..483a40c` changed path is final-dashboard evidence only. Across the recorded samples, visible controls have labels, console/page/request/external error arrays are empty, and `horizontalOverflow` is false.
+The final dashboard package contains exactly 56 PNG screenshots and 3 valid JSON manifests: 8 Today samples, 16 Workflow samples, and 32 strict Wave 2 samples. The manifests target sibling evidence revision `a027cc4` and remain valid through `e2be868`: Git object IDs prove the `src` and `scripts` trees are identical, including a byte-identical strict dashboard evaluator. The `tests` tree differs only in `tests/dashboard_wave2_acceptance_smoke.js`, where the later portability wrapper adds a pure unlabeled-control gate and makes the local runtime fixture optional by default; production runtime and strict evaluator source are unchanged. Across the recorded samples, visible controls have labels, console/page/request/external error arrays are empty, and `horizontalOverflow` is false.
 
-The project-local `webapp-testing` skill materially exposed the prior 60-unlabeled-control blind spot. Keep it project-local for now. Do not promote it globally until the Python helper and Node evaluator mismatch is resolved; the actual strict evidence and this fix-round verification used local headless Edge through the compatible Node/Playwright route. Mobile horizontal navigation remains a Minor. This is not a logged-in real BOSS browser/session acceptance result.
+The project-local `webapp-testing` skill materially exposed the prior 60-unlabeled-control blind spot. Keep it project-local for now. Do not promote it globally until the Python helper and Node evaluator mismatch is resolved. At `e2be868`, default `dashboard_wave2_acceptance_smoke.js` passes without Playwright while explicitly reporting the runtime fixture skipped and pure strict gate executed; the bundled strict mode executes the local headless-Edge runtime fixture. Mobile horizontal navigation remains a Minor. This is not a logged-in real BOSS browser/session acceptance result.
 
 ## BOSS detail, recovery, and safety boundary
 
-The offline BOSS detail/recovery stream is technically accepted: all 16 focused contracts and the exact-head 89/89 offline suite are green. Coverage retains complete JD >=120, right-pane identity checks, detail and target checkpoints, reuse/refresh, lease/orphan/rebound recovery, serial pacing/cooldowns, access budget, and immediate risk-stop. These safeguards preserve logical target/detail coverage rather than lowering it for speed.
+The offline BOSS detail/recovery stream is technically accepted: all 16 focused contracts and the exact-`e2be868` default 89/89 offline suite are green. Coverage retains complete JD >=120, right-pane identity checks, detail and target checkpoints, reuse/refresh, lease/orphan/rebound recovery, serial pacing/cooldowns, access budget, and immediate risk-stop. These safeguards preserve logical target/detail coverage rather than lowering it for speed.
 
 Minimal live BOSS read-only inspection and read-only continuation are already authorized. They remain pending only because the Edge bridge is unavailable and the fixed-tab, serial, identity, checkpoint, pacing, cooldown, and risk-stop gates must still be satisfied. No live claim is made and no current BOSS page conclusion is inferred. Communication, sending, or application actions remain outside that read-only authorization and require separate explicit approval.
 
@@ -63,7 +63,7 @@ This does not establish recommendation quality. There is no complete paired huma
 
 ## Communication boundary
 
-The communication path is implemented, regression-safe, and technically accepted offline: the exact 19-command evaluation stream passed 19/19 at `da8ae32`, covering immutable calibration/batch snapshots, eligibility and quota reservation, atomic click count/audit behavior, late-resolution rollback, interrupted recovery, application/launcher settlement, and workflow reconciliation. The exact technical status remains:
+The communication path is implemented, regression-safe, and technically accepted offline: the exact 19-command evaluation stream passed 19/19 at `e2be868`, covering immutable calibration/batch snapshots, eligibility and quota reservation, atomic click count/audit behavior, late-resolution rollback, interrupted recovery, application/launcher settlement, and workflow reconciliation. The exact technical status remains:
 
 ```text
 executionEnabled = true

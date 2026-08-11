@@ -1,84 +1,85 @@
 {
-  "schema_version": 1,
-  "verification_kind": "wave0-4-final-exact-head-offline-verification",
-  "audited_commit": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+  "schema_version": 2,
+  "verification_kind": "wave0-4-final-exact-head-portable-offline-verification",
+  "audited_commit": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
   "starting_state": {
-    "head": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+    "head": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+    "exact_head": true,
     "clean": true
   },
-  "subsequent_fix_scope": {
+  "subsequent_refresh_scope": {
     "allowed_paths": [
       "docs/superpowers/reports/2026-08-11-wave-0-4-consolidated-evaluation.md",
       "docs/superpowers/reports/evidence/2026-08-11-wave0-4-final-verification.json"
     ],
     "note": "Changes after exact-head verification are documentation/evidence only; production, tests, scripts, and existing dashboard evidence remain unchanged."
   },
-  "runtime": {
+  "runtime_boundary": {
     "bundled_node_path": "C:\\Users\\Administrator\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node_modules",
     "external_network_used": false,
     "logged_in_real_boss_browser_or_session_used": false,
-    "local_headless_edge_used": true
+    "local_headless_edge_used_for_strict_checks": true,
+    "communication_sending_or_application_action_used": false
   },
-  "commands": [
+  "primary_commands": [
     {
-      "id": "full_suite_unqualified_attempt",
-      "command": "npm.cmd test",
-      "head_before": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
-      "head_after": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
-      "exact_head": true,
-      "exit_code": 1,
-      "duration_ms": 84487,
-      "duration_seconds": 84.488,
-      "result": "Stopped at dashboard_wave2_acceptance_smoke.js because playwright was not resolvable without the bundled NODE_PATH; no 89-check completion result."
-    },
-    {
-      "id": "full_suite",
+      "id": "default_full_suite",
       "command": "npm.cmd test",
       "environment": {
-        "NODE_PATH": "C:\\Users\\Administrator\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node_modules"
+        "NODE_PATH": null,
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": null
       },
-      "head_before": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
-      "head_after": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+      "head_before": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "head_after": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
       "exact_head": true,
       "exit_code": 0,
-      "duration_ms": 210997,
-      "duration_seconds": 210.998,
+      "duration_ms": 192341,
+      "duration_seconds": 192.342,
       "result": "All 89 offline checks passed.",
       "counts": {
         "total": 89,
         "passed": 89,
         "failed": 0
+      },
+      "browser_independent_behavior": {
+        "dashboard_wave2_runtime_fixture": "skipped: Playwright unavailable; pure strict-gate coverage still ran",
+        "workflow_page_browser_checks": "skipped: Playwright unavailable in NODE_PATH",
+        "workflow_page_evaluator_checks": "skipped: Playwright unavailable in NODE_PATH"
       }
     },
     {
       "id": "communication_stream",
-      "head": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+      "head": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "environment": {
+        "NODE_PATH": null,
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": null
+      },
       "count": 19,
       "passed": 19,
       "failed": 0,
       "exit_code": 0,
-      "total_duration_ms": 17644,
-      "total_duration_seconds": 17.644,
+      "total_duration_ms": 18474,
+      "total_duration_seconds": 18.475,
       "commands": [
-        { "command": "node tests/communication_cli_authority_smoke.js", "exit_code": 0, "duration_ms": 514, "duration_seconds": 0.515 },
-        { "command": "node tests/workflow_communication_smoke.js", "exit_code": 0, "duration_ms": 249, "duration_seconds": 0.250 },
-        { "command": "node tests/communication_batch_storage_smoke.js", "exit_code": 0, "duration_ms": 725, "duration_seconds": 0.725 },
-        { "command": "node tests/communication_executor_smoke.js", "exit_code": 0, "duration_ms": 438, "duration_seconds": 0.438 },
-        { "command": "node tests/dashboard_communication_batch_smoke.js", "exit_code": 0, "duration_ms": 1373, "duration_seconds": 1.374 },
-        { "command": "node tests/communication_calibration_gate_smoke.js", "exit_code": 0, "duration_ms": 262, "duration_seconds": 0.262 },
-        { "command": "node tests/boss_communication_page_smoke.js", "exit_code": 0, "duration_ms": 194, "duration_seconds": 0.195 },
-        { "command": "node tests/message_preview_state_smoke.js", "exit_code": 0, "duration_ms": 145, "duration_seconds": 0.146 },
-        { "command": "node tests/message_discovery_smoke.js", "exit_code": 0, "duration_ms": 610, "duration_seconds": 0.610 },
-        { "command": "node tests/message_reply_contract_smoke.js", "exit_code": 0, "duration_ms": 83, "duration_seconds": 0.084 },
-        { "command": "node tests/boss_message_dom_smoke.js", "exit_code": 0, "duration_ms": 85, "duration_seconds": 0.085 },
-        { "command": "node tests/boss_message_reader_smoke.js", "exit_code": 0, "duration_ms": 87, "duration_seconds": 0.087 },
-        { "command": "node tests/dashboard_message_discovery_smoke.js", "exit_code": 0, "duration_ms": 801, "duration_seconds": 0.802 },
-        { "command": "node tests/communication_store_contract_smoke.js", "exit_code": 0, "duration_ms": 8006, "duration_seconds": 8.006 },
-        { "command": "node tests/communication_application_smoke.js", "exit_code": 0, "duration_ms": 602, "duration_seconds": 0.603 },
-        { "command": "node tests/workflow_end_to_end_smoke.js", "exit_code": 0, "duration_ms": 1868, "duration_seconds": 1.869 },
-        { "command": "node tests/workflow_recovery_smoke.js", "exit_code": 0, "duration_ms": 386, "duration_seconds": 0.386 },
-        { "command": "node tests/storage_migration_smoke.js", "exit_code": 0, "duration_ms": 1017, "duration_seconds": 1.018 },
-        { "command": "node tests/workspace_tabs_smoke.js", "exit_code": 0, "duration_ms": 177, "duration_seconds": 0.177 }
+        { "command": "node tests/communication_cli_authority_smoke.js", "exit_code": 0, "duration_ms": 515, "duration_seconds": 0.515 },
+        { "command": "node tests/workflow_communication_smoke.js", "exit_code": 0, "duration_ms": 255, "duration_seconds": 0.255 },
+        { "command": "node tests/communication_batch_storage_smoke.js", "exit_code": 0, "duration_ms": 759, "duration_seconds": 0.759 },
+        { "command": "node tests/communication_executor_smoke.js", "exit_code": 0, "duration_ms": 388, "duration_seconds": 0.389 },
+        { "command": "node tests/dashboard_communication_batch_smoke.js", "exit_code": 0, "duration_ms": 1344, "duration_seconds": 1.345 },
+        { "command": "node tests/communication_calibration_gate_smoke.js", "exit_code": 0, "duration_ms": 298, "duration_seconds": 0.298 },
+        { "command": "node tests/boss_communication_page_smoke.js", "exit_code": 0, "duration_ms": 209, "duration_seconds": 0.210 },
+        { "command": "node tests/message_preview_state_smoke.js", "exit_code": 0, "duration_ms": 156, "duration_seconds": 0.156 },
+        { "command": "node tests/message_discovery_smoke.js", "exit_code": 0, "duration_ms": 630, "duration_seconds": 0.630 },
+        { "command": "node tests/message_reply_contract_smoke.js", "exit_code": 0, "duration_ms": 79, "duration_seconds": 0.079 },
+        { "command": "node tests/boss_message_dom_smoke.js", "exit_code": 0, "duration_ms": 86, "duration_seconds": 0.086 },
+        { "command": "node tests/boss_message_reader_smoke.js", "exit_code": 0, "duration_ms": 92, "duration_seconds": 0.092 },
+        { "command": "node tests/dashboard_message_discovery_smoke.js", "exit_code": 0, "duration_ms": 805, "duration_seconds": 0.805 },
+        { "command": "node tests/communication_store_contract_smoke.js", "exit_code": 0, "duration_ms": 8386, "duration_seconds": 8.386 },
+        { "command": "node tests/communication_application_smoke.js", "exit_code": 0, "duration_ms": 675, "duration_seconds": 0.675 },
+        { "command": "node tests/workflow_end_to_end_smoke.js", "exit_code": 0, "duration_ms": 1895, "duration_seconds": 1.895 },
+        { "command": "node tests/workflow_recovery_smoke.js", "exit_code": 0, "duration_ms": 405, "duration_seconds": 0.406 },
+        { "command": "node tests/storage_migration_smoke.js", "exit_code": 0, "duration_ms": 1290, "duration_seconds": 1.290 },
+        { "command": "node tests/workspace_tabs_smoke.js", "exit_code": 0, "duration_ms": 186, "duration_seconds": 0.187 }
       ]
     },
     {
@@ -88,44 +89,119 @@
         "NODE_PATH": "C:\\Users\\Administrator\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node_modules",
         "ROLEFLOW_REQUIRE_PLAYWRIGHT": "1"
       },
-      "head_before": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
-      "head_after": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+      "head_before": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "head_after": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
       "exact_head": true,
       "exit_code": 0,
-      "duration_ms": 38991,
-      "duration_seconds": 38.992,
+      "duration_ms": 43872,
+      "duration_seconds": 43.873,
       "result": "workflow_page_migration_smoke ok"
+    },
+    {
+      "id": "dashboard_wave2_default",
+      "command": "node tests/dashboard_wave2_acceptance_smoke.js",
+      "mode": "default-browser-independent",
+      "environment": {
+        "NODE_PATH": null,
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": null
+      },
+      "head_before": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "head_after": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "exact_head": true,
+      "exit_code": 0,
+      "duration_ms": 142,
+      "duration_seconds": 0.142,
+      "result": "dashboard_wave2_acceptance_smoke ok",
+      "runtime_fixture": "skipped: Playwright unavailable",
+      "pure_strict_gate": "passed"
+    },
+    {
+      "id": "dashboard_wave2_bundled_playwright",
+      "command": "node tests/dashboard_wave2_acceptance_smoke.js",
+      "mode": "bundled-playwright-runtime-fixture",
+      "environment": {
+        "NODE_PATH": "C:\\Users\\Administrator\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node_modules",
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": "1"
+      },
+      "head_before": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "head_after": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "exact_head": true,
+      "exit_code": 0,
+      "duration_ms": 1503,
+      "duration_seconds": 1.504,
+      "result": "dashboard_wave2_acceptance_smoke runtime-fixture ok; dashboard_wave2_acceptance_smoke ok",
+      "runtime_fixture": "executed",
+      "pure_strict_gate": "passed"
     },
     {
       "id": "clean_head_diff_check",
       "command": "git diff --check",
-      "head": "da8ae3289d7be7c012e931c92e75de002e55ecf1",
+      "head": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
       "exit_code": 0,
-      "duration_ms": 42,
-      "duration_seconds": 0.043,
+      "duration_ms": 48,
+      "duration_seconds": 0.049,
       "result": "no output"
     }
   ],
+  "diagnostic_context": {
+    "initial_default_suite_attempt": {
+      "command": "npm.cmd test",
+      "environment": {
+        "NODE_PATH": null,
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": null
+      },
+      "head": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "exit_code": 1,
+      "duration_ms": 41644,
+      "duration_seconds": 41.645,
+      "result": "startup_scripts_smoke.js received spawnSync PowerShell ETIMEDOUT during a 10-second temporary foreign-dashboard identity check."
+    },
+    "focused_recheck": {
+      "command": "node tests/startup_scripts_smoke.js",
+      "environment": {
+        "NODE_PATH": null,
+        "ROLEFLOW_REQUIRE_PLAYWRIGHT": null
+      },
+      "head": "e2be8685c5d25169b224a105d5188ba2cdf74abd",
+      "exit_code": 0,
+      "duration_ms": 51638,
+      "duration_seconds": 51.638,
+      "result": "startup_scripts_smoke ok"
+    },
+    "conclusion": "The same focused test passed without a source or environment change, and the subsequent full default suite passed 89/89. The first timeout is retained as transient diagnostic history, not primary acceptance evidence.",
+    "prior_da8_context": "The earlier da8ae32 missing-Playwright default failure is historical and superseded by e2be868 portability evidence."
+  },
   "dashboard_evidence_provenance": {
     "evidence_revision": "a027cc4",
-    "evaluation_revision": "483a40c",
+    "current_verification_revision": "e2be868",
     "trees": {
       "src": {
         "a027cc4": "118e5e3cf4c63f11fb4f717e24e69dd948bf1767",
-        "483a40c": "118e5e3cf4c63f11fb4f717e24e69dd948bf1767",
+        "e2be868": "118e5e3cf4c63f11fb4f717e24e69dd948bf1767",
         "identical": true
       },
       "scripts": {
         "a027cc4": "5eb5fefcd3673e0d10df922f73a8d7ebf0c5591d",
-        "483a40c": "5eb5fefcd3673e0d10df922f73a8d7ebf0c5591d",
+        "e2be868": "5eb5fefcd3673e0d10df922f73a8d7ebf0c5591d",
         "identical": true
       },
       "tests": {
         "a027cc4": "462542d51b5dbee49aa5923b02522359710dcff3",
-        "483a40c": "462542d51b5dbee49aa5923b02522359710dcff3",
-        "identical": true
+        "e2be868": "76d4252920ea8ab5cd03b8d0f39e3c4acfeb33a4",
+        "identical": false,
+        "changed_paths": [
+          "tests/dashboard_wave2_acceptance_smoke.js"
+        ],
+        "change": "Portability wrapper only: 19 insertions and 1 deletion add pure unlabeled-control assertions, optional default runtime-fixture skipping, strict ROLEFLOW_REQUIRE_PLAYWRIGHT fail-closed behavior, and explicit runtime-fixture output."
       }
     },
-    "diff_scope": "Every changed path in a027cc4..483a40c is under docs/superpowers/reports/evidence/2026-08-11-wave0-4-final-dashboard/."
+    "strict_evaluator": {
+      "path": "scripts/evaluate-dashboard-wave2.js",
+      "a027cc4_blob": "ab7e38bda45cba344a170b4831c8dde2d52f988d",
+      "e2be868_blob": "ab7e38bda45cba344a170b4831c8dde2d52f988d",
+      "identical": true
+    },
+    "runtime_source_unchanged": true,
+    "conclusion": "The a027 sibling dashboard screenshots/manifests remain valid: src and scripts are identical through e2be868; tests differ only by the later portability wrapper, while production runtime and strict evaluator source are unchanged."
   }
 }
