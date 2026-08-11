@@ -73,7 +73,12 @@ const {
   OUTCOME_STATUSES,
   getOutcomeAnalyticsSnapshot
 } = require("../core/storage");
-const { getCommunicationBatch, setCommunicationBatchStatus, communicationQuotaSnapshot } = require("../core/communication_batches");
+const {
+  getCommunicationBatch,
+  setCommunicationBatchStatus,
+  communicationQuotaSnapshot,
+  communicationAmbiguityState
+} = require("../core/communication_batches");
 const {
   PROGRESS_STAGES,
   ensureProgressCard,
@@ -349,6 +354,7 @@ function createDashboardServer({
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
   analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
+  communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   assetReader = fs.readFileSync
 }) {
@@ -535,7 +541,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
@@ -2614,14 +2620,14 @@ async function handleCommunicationBatch(req, res, db) {
   redirectCommunicationResult(res, result.body.batch);
 }
 
-async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn }) {
+async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn, communicationAmbiguityReader = null }) {
   const rawBody = await readBody(req);
   const result = communicationApiResult(() => {
     const params = parseBody(rawBody, req.headers["content-type"] || "");
     return controlCommunicationBatch({
       db,
       input: params,
-      deps: communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess })
+      deps: communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader })
     });
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
@@ -2686,9 +2692,10 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
   return child;
 }
 
-function communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess }) {
+function communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader }) {
   return {
-    spawnCommunication: ({ batch }) => startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess })
+    spawnCommunication: ({ batch }) => startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess }),
+    ...(communicationAmbiguityReader ? { communicationAmbiguityReader } : {})
   };
 }
 
@@ -3710,12 +3717,12 @@ function renderCommunicationReviewResult({ batch, summary, items, quota, calibra
     return `<tr id="communication-item-${item.id}"><td>${item.position}</td><td><a href="${escapeAttr(item.jobUrl)}" target="_blank">${escapeHtml(item.titleSnapshot)}</a><br><small>${escapeHtml(item.companySnapshot)}</small></td><td>${escapeHtml(item.status)}</td><td>${resolution}</td></tr>`;
   }).join("");
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  const ambiguousItem = items.find((item) => item.status === "ambiguous");
-  const hasAmbiguity = Number(summary.statusCounts?.ambiguous || 0) > 0 || Boolean(ambiguousItem);
-  const action = hasAmbiguity ? "" : batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
+  const ambiguity = communicationAmbiguityState(summary, items);
+  const ambiguousItem = ambiguity.firstItemId == null ? null : items.find((item) => item.id === ambiguity.firstItemId);
+  const action = ambiguity.blocked ? "" : batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
   const executeControl = ambiguousItem
     ? `<a class="button-link communication-primary" data-page-primary="true" href="/communication?batchId=${batch.id}#communication-item-${ambiguousItem.id}">处理不明确结果</a>`
-    : hasAmbiguity
+    : ambiguity.blocked
     ? `<p class="communication-warning">沟通记录不一致，请刷新页面；若仍无法定位不明确项，请停止操作并检查诊断。</p>`
     : action && calibration.executionEnabled && !runtimeBlock
     ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${batch.id}"><button class="communication-primary" data-page-primary="true" name="action" value="${action}">${action === "start" ? "开始沟通" : "继续沟通"}</button></form>`
@@ -4009,6 +4016,5 @@ module.exports = {
   filterJobs,
   renderDashboard,
   renderQueuePage,
-  renderPlanPage,
-  renderCommunicationReviewResult
+  renderPlanPage
 };

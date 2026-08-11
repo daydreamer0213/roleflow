@@ -129,6 +129,33 @@ async function workflowCommunicationSmoke() {
     assert.strictEqual(interruptedWorkflowPhase.kind, "interrupted");
     assert.strictEqual(interruptedWorkflowPhase.communication.detailsLabel, "处理不明确结果");
     assert.strictEqual(interruptedWorkflowPhase.communication.detailsHref, "/communication?batchId=91#communication-item-41");
+    for (const [drift, batchStatus] of [
+      ["summary-only", "confirmed"],
+      ["summary-only", "paused"],
+      ["item-only", "confirmed"],
+      ["item-only", "paused"]
+    ]) {
+      const item = { id: 51, status: drift === "item-only" ? "ambiguous" : "pending" };
+      const communication = buildWorkflowViewModel({
+        workflow: { id: workflow.id, planId, status: "review_required" },
+        plan: { id: planId },
+        communication: {
+          batch: { id: 101, status: batchStatus },
+          calibration: { executionEnabled: true },
+          summary: {
+            total: 1,
+            terminal: drift === "summary-only" ? 1 : 0,
+            statusCounts: drift === "summary-only" ? { ambiguous: 1 } : { pending: 1 }
+          },
+          items: [item]
+        }
+      }).phase.communication;
+      assert.strictEqual(communication.action, "", `${batchStatus} must block ${drift} drift`);
+      assert.strictEqual(communication.executionEnabled, false);
+      if (drift === "item-only") {
+        assert.strictEqual(communication.detailsHref, "/communication?batchId=101#communication-item-51");
+      }
+    }
 
     assert.throws(
       () => createCommunicationBatch(db, {

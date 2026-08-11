@@ -16,7 +16,11 @@ const {
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
-const { createDashboardServer, renderCommunicationReviewResult } = require("../src/dashboard/server");
+const {
+  communicationAmbiguityState,
+  communicationAmbiguityStateForBatch
+} = require("../src/core/communication_batches");
+const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -30,7 +34,12 @@ let server;
   db = openDb(dbPath);
   const fixture = seed(db);
   const spawns = [];
-  server = createDashboardServer({ db, root, dbPath, logger, spawnProcess(file, args, options) {
+  let ambiguityOverride = null;
+  server = createDashboardServer({ db, root, dbPath, logger,
+    communicationAmbiguityReader(database, requestedBatchId) {
+      return ambiguityOverride || communicationAmbiguityStateForBatch(database, requestedBatchId);
+    },
+    spawnProcess(file, args, options) {
     spawns.push({ file, args, options });
     const child = new EventEmitter();
     child.pid = 5252;
@@ -126,29 +135,47 @@ let server;
   assert.strictEqual(Object.prototype.hasOwnProperty.call(status.body.calibration, "status"), false);
   assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
-  assert.strictEqual(typeof renderCommunicationReviewResult, "function");
+  assert.strictEqual(typeof communicationAmbiguityState, "function");
   const reviewItem = listCommunicationBatchItems(db, batchId)[0];
-  const summaryDriftReview = renderCommunicationReviewResult({
-    batch: { ...getCommunicationBatch(db, batchId), status: "interrupted" },
-    summary: { total: 2, terminal: 1, statusCounts: { ambiguous: 1, pending: 1 } },
-    items: [{ ...reviewItem, status: "pending" }],
-    quota: status.body.quota,
-    calibration: status.body.calibration,
-    runtimeBlock: null
-  });
-  assert.doesNotMatch(summaryDriftReview, /name="action" value="(?:start|resume)"/);
-  assert.match(summaryDriftReview, /沟通记录不一致[^<]*刷新/);
-  const itemDriftReview = renderCommunicationReviewResult({
-    batch: { ...getCommunicationBatch(db, batchId), status: "interrupted" },
-    summary: { total: 2, terminal: 0, statusCounts: { pending: 2 } },
-    items: [{ ...reviewItem, status: "ambiguous" }],
-    quota: status.body.quota,
-    calibration: status.body.calibration,
-    runtimeBlock: null
-  });
-  assert.doesNotMatch(itemDriftReview, /name="action" value="(?:start|resume)"/);
-  assert.match(itemDriftReview, /处理不明确结果/);
-  assert.match(itemDriftReview, new RegExp(`#communication-item-${reviewItem.id}`));
+  assert.strictEqual(communicationAmbiguityState(
+    { statusCounts: { ambiguous: 1, pending: 1 } },
+    [{ ...reviewItem, status: "pending" }]
+  ).blocked, true);
+  assert.strictEqual(communicationAmbiguityState(
+    { statusCounts: { pending: 2 } },
+    [{ ...reviewItem, status: "ambiguous" }]
+  ).firstItemId, reviewItem.id);
+  for (const [drift, action, jobId] of [
+    ["summary-only", "start", fixture.summaryDriftStartId],
+    ["summary-only", "resume", fixture.summaryDriftResumeId],
+    ["item-only", "start", fixture.itemDriftStartId],
+    ["item-only", "resume", fixture.itemDriftResumeId]
+  ]) {
+    const driftBatch = await postJson(baseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: jobId,
+      browserMode: "edge"
+    });
+    if (action === "resume") {
+      setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "running" });
+      setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "paused" });
+    }
+    const driftItem = listCommunicationBatchItems(db, driftBatch.body.batch.id)[0];
+    ambiguityOverride = drift === "summary-only"
+      ? communicationAmbiguityState({ statusCounts: { ambiguous: 1 } }, [{ ...driftItem, status: "pending" }])
+      : communicationAmbiguityState({ statusCounts: {} }, [{ ...driftItem, status: "ambiguous" }]);
+    const batchBefore = getCommunicationBatch(db, driftBatch.body.batch.id);
+    const itemsBefore = listCommunicationBatchItems(db, driftBatch.body.batch.id);
+    const spawnsBefore = spawns.length;
+    await expectApiError(baseUrl, "/api/communication-control", {
+      batchId: driftBatch.body.batch.id,
+      action
+    }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
+    assert.deepStrictEqual(getCommunicationBatch(db, driftBatch.body.batch.id), batchBefore);
+    assert.deepStrictEqual(listCommunicationBatchItems(db, driftBatch.body.batch.id), itemsBefore);
+    assert.strictEqual(spawns.length, spawnsBefore);
+    ambiguityOverride = null;
+  }
 
   const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
   assert.strictEqual(started.status, 200);
@@ -261,6 +288,10 @@ function seed(database) {
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
+  const summaryDriftStartId = upsertJob(database, job("summary-drift-start"), scanBatchId);
+  const summaryDriftResumeId = upsertJob(database, job("summary-drift-resume"), scanBatchId);
+  const itemDriftStartId = upsertJob(database, job("item-drift-start"), scanBatchId);
+  const itemDriftResumeId = upsertJob(database, job("item-drift-resume"), scanBatchId);
   for (let index = 0; index < 35; index += 1) {
     upsertJob(database, job(`extra-${index}`, { title: `Extra role ${index}`, analysis: completeAnalysis("apply") }), scanBatchId);
   }
@@ -272,7 +303,7 @@ function seed(database) {
   for (let index = 0; index < 21; index += 1) {
     upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: completeAnalysis("apply") }), smallBatchId);
   }
-  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
+  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function job(sourceId, overrides = {}) {

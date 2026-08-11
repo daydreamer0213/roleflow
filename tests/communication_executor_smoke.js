@@ -296,6 +296,50 @@ async function pausedAmbiguityEntryGuardSmoke() {
   cli.close();
 }
 
+async function ambiguityDriftEntryGuardSmoke() {
+  for (const [drift, action] of [
+    ["summary-only", "start"],
+    ["summary-only", "resume"],
+    ["item-only", "start"],
+    ["item-only", "resume"]
+  ]) {
+    const fixture = createFixture(2);
+    if (action === "resume") {
+      setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+      setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+    }
+    const beforeBatch = getCommunicationBatch(fixture.db, fixture.batch.id);
+    const beforeItems = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+    let reserves = 0;
+    let dispatches = 0;
+    let caught;
+    try {
+      await runPermittedBatch({
+        db: fixture.db,
+        batchId: fixture.batch.id,
+        ambiguityReader: () => drift === "summary-only"
+          ? { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null }
+          : { blocked: true, summaryCount: 0, itemsCount: 1, countsMismatch: true, firstItemId: beforeItems[0].id },
+        accessController: { async reserve() { reserves += 1; } },
+        adapter: {
+          async inspectCommunicationJob() { return { state: "ready" }; },
+          async dispatchCommunication() { dispatches += 1; },
+          async verifyCommunicationResult() { return { state: "succeeded" }; }
+        },
+        sleepFn: async () => {}
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW", `${action} must block ${drift} drift`);
+    assert.deepStrictEqual(getCommunicationBatch(fixture.db, fixture.batch.id), beforeBatch);
+    assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id), beforeItems);
+    assert.strictEqual(reserves, 0);
+    assert.strictEqual(dispatches, 0);
+    fixture.close();
+  }
+}
+
 async function stopDuringSlicedPacingSmoke() {
   const fixture = createFixture(2);
   let inspected = 0;
@@ -807,6 +851,7 @@ Promise.resolve()
   .then(ambiguousAndFatalStopSmoke)
   .then(pauseResumeSmoke)
   .then(pausedAmbiguityEntryGuardSmoke)
+  .then(ambiguityDriftEntryGuardSmoke)
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
   .then(observedOutcomeFailureSmoke)

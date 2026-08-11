@@ -12,7 +12,8 @@ const {
   pauseCommunicationBatchAfterReservationFailure,
   setCommunicationBatchStatus,
   transitionCommunicationItem,
-  communicationBatchSummary
+  communicationBatchSummary,
+  communicationAmbiguityStateForBatch
 } = require("./communication_batches");
 
 const FATAL_CODES = new Set([
@@ -33,13 +34,14 @@ async function runCommunicationBatch({
   sleepFn = sleep,
   randomFn = Math.random,
   signal = null,
-  executionGate = assertCommunicationExecutionEnabled
+  executionGate = assertCommunicationExecutionEnabled,
+  ambiguityReader = communicationAmbiguityStateForBatch
 }) {
-  validateDependencies({ db, batchId, adapter, accessController, executionGate });
+  validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader });
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId);
+  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
@@ -66,7 +68,7 @@ async function runCommunicationBatch({
 
     const afterClaim = observeControl(db, batchId, signal, logger);
     if (afterClaim) return afterClaim;
-    assertNoUnresolvedAmbiguity(db, batchId);
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
     try {
       await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
     } catch (error) {
@@ -110,7 +112,8 @@ async function runCommunicationBatch({
         adapter,
         logger,
         signal,
-        executionGate
+        executionGate,
+        ambiguityReader
       });
     } else if (state === "already_communicated") {
       commitVerifiedCommunication(db, {
@@ -144,8 +147,8 @@ async function runCommunicationBatch({
   }
 }
 
-function assertNoUnresolvedAmbiguity(db, batchId) {
-  if (Number(communicationBatchSummary(db, batchId).statusCounts.ambiguous || 0) > 0) {
+function assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader) {
+  if (ambiguityReader(db, batchId).blocked) {
     throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "communication batch contains an unresolved ambiguous item");
   }
 }
@@ -160,10 +163,10 @@ function communicationInspectionEvidence(inspection = {}, state = "") {
   };
 }
 
-async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate }) {
+async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate, ambiguityReader }) {
   const beforeDispatch = observeControl(db, batchId, signal, logger);
   if (beforeDispatch) return beforeDispatch;
-  assertNoUnresolvedAmbiguity(db, batchId);
+  assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   try {
     assertExecutionEnabled(executionGate);
   } catch (error) {
@@ -534,7 +537,7 @@ function errorCode(error) {
   return String(error?.code || "COMMUNICATION_EXECUTION_FAILED");
 }
 
-function validateDependencies({ db, batchId, adapter, accessController, executionGate }) {
+function validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader }) {
   if (!db) throw new Error("db is required");
   if (!Number.isInteger(Number(batchId)) || Number(batchId) <= 0) throw codedError("COMMUNICATION_BATCH_INVALID", "batchId is required");
   for (const method of ["inspectCommunicationJob", "dispatchCommunication", "verifyCommunicationResult"]) {
@@ -542,6 +545,7 @@ function validateDependencies({ db, batchId, adapter, accessController, executio
   }
   if (typeof accessController?.reserve !== "function") throw new Error("accessController.reserve is required");
   if (typeof executionGate !== "function") throw new Error("executionGate is required");
+  if (typeof ambiguityReader !== "function") throw new Error("ambiguityReader is required");
 }
 
 function assertExecutionEnabled(executionGate) {

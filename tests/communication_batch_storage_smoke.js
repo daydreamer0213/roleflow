@@ -19,7 +19,9 @@ const {
   transitionCommunicationItem,
   resolveAmbiguousCommunicationItem,
   communicationBatchSummary,
-  communicationQuotaSnapshot
+  communicationQuotaSnapshot,
+  communicationAmbiguityState,
+  communicationAmbiguityStateForBatch
 } = require("../src/core/communication_batches");
 const {
   getProgressCardForJob,
@@ -69,6 +71,31 @@ try {
     jobIds: [primaryId, talkId, backupId],
     browserMode: "edge",
     policySnapshot: { delayMs: [15000, 20000] }
+  });
+  assert.strictEqual(typeof communicationAmbiguityState, "function");
+  assert.strictEqual(typeof communicationAmbiguityStateForBatch, "function");
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { pending: 1 } }, [{ id: 1, status: "pending" }]),
+    { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { ambiguous: 1 } }, [{ id: 1, status: "pending" }]),
+    { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: {} }, [{ id: 9, status: "ambiguous" }]),
+    { blocked: true, summaryCount: 0, itemsCount: 1, countsMismatch: true, firstItemId: 9 }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { ambiguous: 2 } }, [{ id: 9, status: "ambiguous" }]),
+    { blocked: true, summaryCount: 2, itemsCount: 1, countsMismatch: true, firstItemId: 9 }
+  );
+  assert.deepStrictEqual(communicationAmbiguityStateForBatch(db, selected.id), {
+    blocked: false,
+    summaryCount: 0,
+    itemsCount: 0,
+    countsMismatch: false,
+    firstItemId: null
   });
   assert.strictEqual(selected.status, "confirmed");
   assert.deepStrictEqual(
