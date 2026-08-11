@@ -11,23 +11,38 @@ const {
   readFixture,
   sameFileIdentity
 } = require("./compare-shadow-scorecard");
+const { fixtureLabelSource, loadLabelsFile, mergeLabels } = require("./lib/gate_d_labels");
 
 function main(argv = process.argv.slice(2)) {
-  const { inputPath, outputPath } = parseArgs(argv);
+  const { inputPath, outputPath, labelsPath } = parseArgs(argv);
   const resolvedInput = path.resolve(inputPath);
   const resolvedOutput = path.resolve(outputPath);
   if (sameFileIdentity(resolvedInput, resolvedOutput)) {
     throw new Error("input and output must refer to different files");
   }
   const { fixture, inputFixtureSha256 } = readFixture(resolvedInput);
-  const metadata = { inputFixtureSha256, evaluatedGitCommit: evaluatedGitCommit() };
-  const variants = variantPolicies(fixture);
-  const evaluatedVariants = variants.map((variant) => evaluateVariant(fixture, variant, metadata));
+  let labels = null;
+  if (labelsPath) {
+    const resolvedLabels = path.resolve(labelsPath);
+    if (sameFileIdentity(resolvedLabels, resolvedInput) || sameFileIdentity(resolvedLabels, resolvedOutput)) {
+      throw new Error("input, labels and output must refer to different files");
+    }
+    labels = mergeLabels(fixture, loadLabelsFile(resolvedLabels));
+  }
+  const baseFixture = labels ? labels.fixture : fixture;
+  const metadata = {
+    inputFixtureSha256,
+    evaluatedGitCommit: evaluatedGitCommit(),
+    labelSource: labels ? labels.labelSource : null
+  };
+  const variants = variantPolicies(baseFixture);
+  const evaluatedVariants = variants.map((variant) => evaluateVariant(baseFixture, variant, metadata));
   const report = {
     version: "shadow-scorecard-variants-report-v1",
     evaluation: "matrix-vs-guarded-scorecard-variants",
     inputFixtureSha256,
     evaluatedGitCommit: metadata.evaluatedGitCommit,
+    labelSource: metadata.labelSource || fixtureLabelSource(baseFixture),
     variantCount: variants.length,
     rawTotal: evaluatedVariants[0]?.rawTotal || 0,
     qualityEligibleCaseCount: evaluatedVariants[0]?.qualityEligibleCaseCount || 0,
@@ -83,6 +98,9 @@ function evaluateVariant(fixture, variant, metadata) {
     agreementRate: comparison.agreementRate,
     explanationCoverage: comparison.explanationCoverage,
     evidenceCoverage: comparison.evidenceCoverage,
+    confirmedLabelCount: comparison.confirmedLabelCount,
+    pendingLabelCount: comparison.pendingLabelCount,
+    rankingUsefulness: comparison.rankingUsefulness,
     matrixPreGuardRisk: comparison.matrixPreGuardRisk,
     rejected: rejectionReasons.length > 0,
     rejectionReasons
@@ -97,8 +115,8 @@ function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag !== "--input" && flag !== "--output") {
-      throw new Error("usage: node scripts/evaluate-shadow-variants.js --input <fixture.json> --output <report.json>");
+    if (!["--input", "--output", "--labels"].includes(flag)) {
+      throw new Error("usage: node scripts/evaluate-shadow-variants.js --input <fixture.json> --output <report.json> [--labels <labels.json>]");
     }
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
@@ -107,9 +125,9 @@ function parseArgs(argv) {
     index += 1;
   }
   if (!values.input || !values.output) {
-    throw new Error("usage: node scripts/evaluate-shadow-variants.js --input <fixture.json> --output <report.json>");
+    throw new Error("usage: node scripts/evaluate-shadow-variants.js --input <fixture.json> --output <report.json> [--labels <labels.json>]");
   }
-  return { inputPath: values.input, outputPath: values.output };
+  return { inputPath: values.input, outputPath: values.output, labelsPath: values.labels || null };
 }
 
 if (require.main === module) {

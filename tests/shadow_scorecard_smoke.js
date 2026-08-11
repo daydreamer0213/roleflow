@@ -1,4 +1,5 @@
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -9,6 +10,7 @@ const {
 } = require("../src/core/decision_policy");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
 const { buildShadowReport, main: compareShadowScorecard } = require("../scripts/compare-shadow-scorecard");
+const { loadLabelsFile } = require("../scripts/lib/gate_d_labels");
 const { buildShadowScorecard } = require("../scripts/lib/shadow_scorecard");
 
 function baseInput() {
@@ -498,6 +500,208 @@ try {
   assert.notStrictEqual(splitRanking.guardedScorecard.pairwiseConcordance, null);
   assert.strictEqual(splitRanking.ndcgAtK, splitRanking.guardedScorecard.ndcgAtK);
   assert.strictEqual(splitRanking.pairwiseConcordance, splitRanking.guardedScorecard.pairwiseConcordance);
+
+  const labelFixture = {
+    cases: [
+      {
+        id: "label-a",
+        evaluationId: "label-a-evaluation-id",
+        input: fullyBoundInput({ sameEvidence: true, explanation: true }),
+        humanLabel: { status: "pending-human" }
+      },
+      {
+        id: "label-b",
+        evaluationId: "label-b-evaluation-id",
+        input: fullyBoundInput({ sameEvidence: true, explanation: true }),
+        humanLabel: { status: "pending-human" }
+      },
+      {
+        id: "label-c",
+        evaluationId: "label-c-evaluation-id",
+        input: applyTierInput(),
+        humanLabel: { status: "pending-human" }
+      }
+    ]
+  };
+  const labelRows = [
+    {
+      evaluationId: "label-a-evaluation-id",
+      status: "confirmed",
+      expectedTier: "primary",
+      labeler: "human-reviewer",
+      rationale: "audit-secret-rationale-marker",
+      aiProvisional: { productionMatrixTier: "primary", guardedTier: "primary" }
+    },
+    { evaluationId: "label-b-evaluation-id", status: "confirmed", expectedTier: "caution" },
+    { evaluationId: "label-c-evaluation-id", status: "confirmed", expectedTier: "not_recommended" }
+  ];
+  const labelFixturePath = path.join(tempDir, "label-fixture.json");
+  const labelsPath = path.join(tempDir, "gate-d-evaluation-labels.json");
+  fs.writeFileSync(labelFixturePath, `${JSON.stringify(labelFixture, null, 2)}\n`, "utf8");
+  fs.writeFileSync(labelsPath, `${JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    confirmedMetrics: "deferred",
+    rows: labelRows
+  }, null, 2)}\n`, "utf8");
+  const labelFixtureBytes = fs.readFileSync(labelFixturePath);
+  const labelsFileBytes = fs.readFileSync(labelsPath);
+  const labelsSha256 = crypto.createHash("sha256").update(labelsFileBytes).digest("hex");
+
+  const labelNoLabelsReportPath = path.join(tempDir, "label-no-labels-report.json");
+  const labelNoLabelsResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", labelFixturePath, "--output", labelNoLabelsReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(labelNoLabelsResult.status, 0, labelNoLabelsResult.stderr || labelNoLabelsResult.stdout);
+  const labelNoLabelsReport = JSON.parse(fs.readFileSync(labelNoLabelsReportPath, "utf8"));
+  assert.strictEqual(labelNoLabelsReport.confirmedLabelCount, 0,
+    "fixture pending labels must not count as confirmed without --labels");
+  assert.strictEqual(labelNoLabelsReport.rankingUsefulness.status, "insufficient_sample");
+  assert.deepStrictEqual(labelNoLabelsReport.labelSource, {
+    source: "fixture",
+    sha256: null,
+    schemaVersion: null,
+    rowCount: null,
+    confirmedCount: 0,
+    pendingCount: 3
+  }, "without --labels the report must expose an explicit fixture-source audit block");
+
+  const labelReportPath = path.join(tempDir, "label-report.json");
+  const labelResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", labelFixturePath, "--labels", labelsPath, "--output", labelReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(labelResult.status, 0, labelResult.stderr || labelResult.stdout);
+  const labelReport = JSON.parse(fs.readFileSync(labelReportPath, "utf8"));
+  assert.strictEqual(labelReport.confirmedLabelCount, 3,
+    "labels file confirmations must enter confirmedLabelCount");
+  assert.strictEqual(labelReport.pendingLabelCount, 0);
+  assert.strictEqual(labelReport.rankingUsefulness.status, "available",
+    "merged labels must activate ranking metrics that were unavailable without them");
+  assert.notStrictEqual(labelReport.rankingUsefulness.ndcgAtK, null);
+  assert.deepStrictEqual(labelReport.labelSource, {
+    source: "labels",
+    sha256: labelsSha256,
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rowCount: 3,
+    confirmedCount: 3,
+    pendingCount: 0
+  });
+  assert.strictEqual(labelReport.labelSource.sha256, loadLabelsFile(labelsPath).sha256);
+  assert(labelReport.rows.every((row) => Object.keys(row.humanLabel).every((key) => ["status", "expectedTier"].includes(key))),
+    "report rows must not leak extra label fields");
+  assert.strictEqual(JSON.stringify(labelReport).includes("audit-secret-rationale-marker"), false,
+    "report must not leak label rationale text");
+  assert.strictEqual(JSON.stringify(labelReport).includes("human-reviewer"), false,
+    "report must not leak labeler identity");
+  assert.deepStrictEqual(fs.readFileSync(labelFixturePath), labelFixtureBytes,
+    "canonical fixture bytes must not change");
+  assert.deepStrictEqual(fs.readFileSync(labelsPath), labelsFileBytes,
+    "canonical labels bytes must not change");
+
+  const missingLabelsPath = path.join(tempDir, "labels-missing.json");
+  fs.writeFileSync(missingLabelsPath, JSON.stringify({ schemaVersion: "gate-d-evaluation-labels-v2", rows: labelRows.slice(0, 2) }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", missingLabelsPath, "--output", path.join(tempDir, "missing-report.json")]),
+    /must cover every fixture case/i,
+    "labels rows missing a fixture evaluationId must fail closed"
+  );
+  const extraLabelsPath = path.join(tempDir, "labels-extra.json");
+  fs.writeFileSync(extraLabelsPath, JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rows: [...labelRows, { evaluationId: "label-unknown-evaluation-id", status: "pending-human" }]
+  }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", extraLabelsPath, "--output", path.join(tempDir, "extra-report.json")]),
+    /unknown evaluationId/i,
+    "labels rows without a fixture case must fail closed"
+  );
+  const duplicateLabelsPath = path.join(tempDir, "labels-duplicate.json");
+  fs.writeFileSync(duplicateLabelsPath, JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rows: [...labelRows, { ...labelRows[0] }]
+  }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", duplicateLabelsPath, "--output", path.join(tempDir, "duplicate-report.json")]),
+    /duplicate labels evaluationId/i,
+    "duplicate labels evaluationIds must fail closed"
+  );
+  const invalidTierLabelsPath = path.join(tempDir, "labels-invalid-tier.json");
+  fs.writeFileSync(invalidTierLabelsPath, JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rows: labelRows.map((row, index) => index === 0 ? { ...row, expectedTier: "invalid-tier" } : row)
+  }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", invalidTierLabelsPath, "--output", path.join(tempDir, "invalid-tier-report.json")]),
+    /canonical expectedTier/i,
+    "confirmed labels with an invalid expectedTier must fail closed"
+  );
+  const wrongSchemaLabelsPath = path.join(tempDir, "labels-wrong-schema.json");
+  fs.writeFileSync(wrongSchemaLabelsPath, JSON.stringify({ schemaVersion: "gate-d-evaluation-labels-v1", rows: labelRows }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", wrongSchemaLabelsPath, "--output", path.join(tempDir, "wrong-schema-report.json")]),
+    /schemaVersion/i,
+    "labels with a mismatched schemaVersion must fail closed"
+  );
+  const aiStatusLabelsPath = path.join(tempDir, "labels-ai-status.json");
+  fs.writeFileSync(aiStatusLabelsPath, JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rows: [{ evaluationId: "label-a-evaluation-id", status: "ai-provisional", expectedTier: "primary" }, ...labelRows.slice(1)]
+  }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", aiStatusLabelsPath, "--output", path.join(tempDir, "ai-status-report.json")]),
+    /status must be pending-human or confirmed/i,
+    "AI-provisional status must never be accepted as a human label"
+  );
+  const missingEvaluationIdPath = path.join(tempDir, "fixture-missing-evaluation-id.json");
+  fs.writeFileSync(missingEvaluationIdPath, JSON.stringify({
+    cases: [{ id: "no-eval-id", input: fullyBoundInput(), humanLabel: { status: "pending-human" } }]
+  }), "utf8");
+  const singleRowLabelsPath = path.join(tempDir, "labels-single.json");
+  fs.writeFileSync(singleRowLabelsPath, JSON.stringify({
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    rows: [{ evaluationId: "no-eval-id", status: "pending-human" }]
+  }), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", missingEvaluationIdPath, "--labels", singleRowLabelsPath, "--output", path.join(tempDir, "missing-eval-report.json")]),
+    /missing evaluationId/i,
+    "fixture cases must expose evaluationId when labels are provided"
+  );
+
+  const labelVariantsReportPath = path.join(tempDir, "label-variants-report.json");
+  const labelVariantsResult = spawnSync(process.execPath, [
+    "scripts/evaluate-shadow-variants.js", "--input", labelFixturePath, "--labels", labelsPath, "--output", labelVariantsReportPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(labelVariantsResult.status, 0, labelVariantsResult.stderr || labelVariantsResult.stdout);
+  const labelVariantsReport = JSON.parse(fs.readFileSync(labelVariantsReportPath, "utf8"));
+  assert.deepStrictEqual(labelVariantsReport.labelSource, labelReport.labelSource,
+    "variants must preserve the same labels audit block");
+  assert(labelVariantsReport.variants.every((variant) => variant.confirmedLabelCount === 3
+    && variant.rankingUsefulness.status === "available"
+    && variant.rankingUsefulness.confirmedLabelCount === 3),
+  "every variant must consume the same merged labels");
+  const labelVariantsNoLabelsPath = path.join(tempDir, "label-variants-no-labels-report.json");
+  const labelVariantsNoLabelsResult = spawnSync(process.execPath, [
+    "scripts/evaluate-shadow-variants.js", "--input", labelFixturePath, "--output", labelVariantsNoLabelsPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.strictEqual(labelVariantsNoLabelsResult.status, 0, labelVariantsNoLabelsResult.stderr || labelVariantsNoLabelsResult.stdout);
+  const labelVariantsNoLabels = JSON.parse(fs.readFileSync(labelVariantsNoLabelsPath, "utf8"));
+  assert.strictEqual(labelVariantsNoLabels.labelSource.source, "fixture");
+  assert(labelVariantsNoLabels.variants.every((variant) => variant.confirmedLabelCount === 0),
+    "variants without --labels must keep fixture labels");
+  assert.deepStrictEqual(fs.readFileSync(labelFixturePath), labelFixtureBytes,
+    "variants must not modify the canonical fixture");
+  assert.deepStrictEqual(fs.readFileSync(labelsPath), labelsFileBytes,
+    "variants must not modify the canonical labels file");
+
+  const labelsSamePathResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", labelFixturePath, "--labels", labelsPath, "--output", labelsPath
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(labelsSamePathResult.status, 0,
+    "labels must not be overwritten by the output report");
+  const labelsSameInputResult = spawnSync(process.execPath, [
+    "scripts/compare-shadow-scorecard.js", "--input", labelFixturePath, "--labels", labelFixturePath, "--output", path.join(tempDir, "labels-same-input-report.json")
+  ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+  assert.notStrictEqual(labelsSameInputResult.status, 0,
+    "labels and input must refer to different files");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
