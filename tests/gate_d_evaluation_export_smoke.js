@@ -292,6 +292,75 @@ try {
   assert.strictEqual(fs.readFileSync(second.fixture, "utf8"), fixtureBytes, "fixture must be byte-deterministic across output roots");
   assert.strictEqual(fs.readFileSync(second.labels, "utf8"), labelsBytes, "labels must be byte-deterministic across output roots");
 
+  const telemetryDb = new DatabaseSync(DB_PATH);
+  telemetryDb.exec("PRAGMA foreign_keys = OFF");
+  const telemetryDescription = "This complete local evaluation job description is deliberately longer than one hundred and twenty characters so contract telemetry fallback behavior is tested without entering the incomplete JD technical bucket.";
+  const analysisOnlyFailure = analysis({
+    semanticStatus: "failed",
+    recommendation: null,
+    errorCode: "MODEL_CONTRACT_INVALID",
+    errorStage: "matchRequirements"
+  });
+  const analysisOnlyFailureJobId = Number(telemetryDb.prepare(`INSERT INTO jobs(
+      source, source_id, title, description, analysis_json, first_seen_at, last_seen_at, batch_id
+    ) VALUES ('boss', 'analysis-only-contract-source', 'Analysis-only contract failure', ?, ?,
+      '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z', 1)`)
+    .run(telemetryDescription, JSON.stringify(analysisOnlyFailure)).lastInsertRowid);
+  const analysisOnlyFailureObservationId = Number(telemetryDb.prepare(`INSERT INTO job_observations(
+      job_id, batch_id, title, description, analysis_json, quality_tags_json, content_hash, seen_at
+    ) VALUES (?, 1, 'Analysis-only contract failure', ?, ?, '[]', ?, '2026-08-12T00:00:00.000Z')`)
+    .run(analysisOnlyFailureJobId, telemetryDescription, JSON.stringify(analysisOnlyFailure), "1".repeat(64)).lastInsertRowid);
+  const succeededJobId = Number(telemetryDb.prepare(`INSERT INTO jobs(
+      source, source_id, title, description, analysis_json, first_seen_at, last_seen_at, batch_id
+    ) VALUES ('boss', 'succeeded-contract-coverage-source', 'Succeeded analysis coverage', ?, ?,
+      '2026-08-12T00:00:00.000Z', '2026-08-12T00:00:00.000Z', 1)`)
+    .run(telemetryDescription, JSON.stringify(analysis())).lastInsertRowid);
+  const succeededObservationId = Number(telemetryDb.prepare(`INSERT INTO job_observations(
+      job_id, batch_id, title, description, analysis_json, quality_tags_json, content_hash, seen_at
+    ) VALUES (?, 1, 'Succeeded analysis coverage', ?, ?, '[]', ?, '2026-08-12T00:00:00.000Z')`)
+    .run(succeededJobId, telemetryDescription, JSON.stringify(analysis()), "2".repeat(64)).lastInsertRowid);
+  telemetryDb.prepare(`INSERT INTO job_analysis_attempts(
+      workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation, total_attempt_number,
+      profile_kind, model_config_revision, provider, model, thinking_mode, reasoning_effort,
+      status, started_at, finished_at, created_at, updated_at
+    ) VALUES ('fixture-workflow', 104, ?, 0, 1, 1, 'batch_screening', 'fixture-revision',
+      'fixture-provider', 'fixture-model', 'off', 'low', 'succeeded',
+      '2026-08-12T00:01:00.000Z', '2026-08-12T00:02:00.000Z',
+      '2026-08-12T00:00:00.000Z', '2026-08-12T00:02:00.000Z')`).run(succeededJobId);
+  telemetryDb.close();
+
+  const telemetryExport = exportEvaluation(options(path.join(TEST_ROOT, "contract-telemetry"), artifacts), testSeam());
+  const telemetryFixture = json(telemetryExport.fixture);
+  const telemetryManifest = json(telemetryExport.manifest);
+  const telemetryReceipt = json(telemetryExport.receipt);
+  const analysisOnlyFailureCase = telemetryFixture.cases.find((item) => item.selectedObservationId === analysisOnlyFailureObservationId);
+  assert.strictEqual(analysisOnlyFailureCase.modelContract.hadContractFailure, true);
+  assert.strictEqual(analysisOnlyFailureCase.modelContract.contractFailureCount, 1);
+  assert.deepStrictEqual(analysisOnlyFailureCase.modelContract.contractFailureStages, ["match_requirements"]);
+  assert.strictEqual(analysisOnlyFailureCase.modelContract.contractRecoveryOutcome, "unrecovered");
+  assert.strictEqual(analysisOnlyFailureCase.modelContract.finalFailure, "MODEL_CONTRACT_INVALID");
+  assert.strictEqual(analysisOnlyFailureCase.modelContract.attemptCount, 0);
+  const succeededCoverageCase = telemetryFixture.cases.find((item) => item.selectedObservationId === succeededObservationId);
+  assert.strictEqual(succeededCoverageCase.modelContract.finalAttemptStatus, "succeeded");
+  assert.strictEqual(succeededCoverageCase.modelContract.hadContractFailure, false,
+    "a succeeded attempt may report no observed failure without claiming same-call repair visibility");
+  assert.strictEqual(succeededCoverageCase.modelContract.contractFailureCount, 0);
+  assert.strictEqual(succeededCoverageCase.modelContract.contractRecoveryOutcome, "not_applicable");
+  const expectedContractTelemetryCoverage = {
+    finalFailures: "analysis_json",
+    workflowAttempts: "job_analysis_attempts",
+    sameCallInternalRepairs: "not_persisted_by_schema_v11",
+    fieldLevel: "not_persisted_by_schema_v11"
+  };
+  assert.deepStrictEqual(telemetryManifest.contractTelemetryCoverage, expectedContractTelemetryCoverage);
+  assert.deepStrictEqual(telemetryReceipt.contractTelemetryCoverage, expectedContractTelemetryCoverage);
+
+  const telemetryCleanupDb = new DatabaseSync(DB_PATH);
+  telemetryCleanupDb.prepare("DELETE FROM job_analysis_attempts WHERE job_id = ?").run(succeededJobId);
+  telemetryCleanupDb.prepare("DELETE FROM job_observations WHERE job_id IN (?, ?)").run(analysisOnlyFailureJobId, succeededJobId);
+  telemetryCleanupDb.prepare("DELETE FROM jobs WHERE id IN (?, ?)").run(analysisOnlyFailureJobId, succeededJobId);
+  telemetryCleanupDb.close();
+
   const technicalDb = new DatabaseSync(DB_PATH);
   const originalQualityTags = technicalDb.prepare("SELECT id, quality_tags_json FROM job_observations ORDER BY id").all();
   technicalDb.prepare(`UPDATE job_observations SET quality_tags_json = '["detail_unverified"]'`).run();

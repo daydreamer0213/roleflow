@@ -273,6 +273,12 @@ const CONTRACT_FAILURE_STAGES = new Map([
   ["input", "input"],
   ["execution", "execution"]
 ]);
+const CONTRACT_TELEMETRY_COVERAGE = Object.freeze({
+  finalFailures: "analysis_json",
+  workflowAttempts: "job_analysis_attempts",
+  sameCallInternalRepairs: "not_persisted_by_schema_v11",
+  fieldLevel: "not_persisted_by_schema_v11"
+});
 
 function contractFailureStage(value) {
   return CONTRACT_FAILURE_STAGES.get(text(value).toLowerCase().replace(/[^a-z]/g, "")) || null;
@@ -374,6 +380,8 @@ function exportEvaluation(options, hooks = {}) {
       contractFailureStages: [],
       contractRecoveryOutcome: "not_applicable"
     };
+    const analysisContractFailure = attempt.attemptCount === 0 && text(analysis.errorCode) === "MODEL_CONTRACT_INVALID";
+    const analysisContractStage = analysisContractFailure ? contractFailureStage(analysis.errorStage) : null;
     const secrets = [text(row.company), text(analysis.recruiter), text(analysis.recruiterName), text(analysis.contactName)];
     const input = frozenInput(analysis, secrets);
     const completeJd = hasCompleteJobDescription({ description: row.description, quality_tags_json: row.quality_tags_json });
@@ -387,10 +395,10 @@ function exportEvaluation(options, hooks = {}) {
       scanEvidence: { completeJd, detailRead: !list(parseJson(row.quality_tags_json, [])).includes("detail_unverified") },
       modelContract: {
         semanticStatus: text(analysis.semanticStatus) || "unknown",
-        hadContractFailure: attempt.hadContractFailure,
-        contractFailureCount: attempt.contractFailureCount,
-        contractFailureStages: attempt.contractFailureStages,
-        contractRecoveryOutcome: attempt.contractRecoveryOutcome,
+        hadContractFailure: attempt.hadContractFailure || analysisContractFailure,
+        contractFailureCount: attempt.contractFailureCount + Number(analysisContractFailure),
+        contractFailureStages: analysisContractStage ? [analysisContractStage] : attempt.contractFailureStages,
+        contractRecoveryOutcome: analysisContractFailure ? "unrecovered" : attempt.contractRecoveryOutcome,
         invalidFieldCategory: "not_persisted_by_schema_v11",
         repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null,
         finalFailure: attempt.latestStatus ? (attempt.latestErrorCode || null) : (text(analysis.errorCode) || null),
@@ -452,6 +460,7 @@ function exportEvaluation(options, hooks = {}) {
     guardedTierCounts: counts(cases, "guardedTier"),
     technicalBucketCounts: counts(cases, "technicalBucket"),
     mandatoryReviewIds: cases.filter((item) => item.fixedSalaryBoundary || item.crossStackPromotion).map((item) => item.evaluationId).sort(),
+    contractTelemetryCoverage: CONTRACT_TELEMETRY_COVERAGE,
     confirmedMetrics: "deferred until confirmed worksheet labels are merged; labels are the sole editable human source"
   };
   const receipt = {
@@ -463,6 +472,7 @@ function exportEvaluation(options, hooks = {}) {
     cohortComplete: true,
     qualityEligible: qualityEligibleCaseCount > 0,
     qualityEligibleCaseCount,
+    contractTelemetryCoverage: CONTRACT_TELEMETRY_COVERAGE,
     runStatusDistribution
   };
   const finals = [path.join(outputRoot, "fixtures", "gate-d-evaluation-fixture.json"), path.join(outputRoot, "labels", "gate-d-evaluation-labels.json"), path.join(outputRoot, "reports", "gate-d-evaluation-manifest.json"), path.join(outputRoot, "reports", "gate-d-evaluation-receipt.json")];
