@@ -64,6 +64,34 @@ function applyTierInput() {
   };
 }
 
+function gateDLabelRow(evaluationId, overrides = {}) {
+  return {
+    evaluationId,
+    status: "pending-human",
+    directionFit: null,
+    hardBoundaryPass: null,
+    expectedTier: null,
+    evidenceSufficiency: null,
+    rationale: "",
+    labeler: "",
+    labeledAt: null,
+    aiProvisional: {
+      productionMatrixTier: null,
+      guardedTier: null
+    },
+    ...overrides
+  };
+}
+
+function gateDLabels(rows, overrides = {}) {
+  return {
+    schemaVersion: "gate-d-evaluation-labels-v2",
+    confirmedMetrics: "deferred: merge confirmed worksheet labels before confirmed metrics",
+    rows,
+    ...overrides
+  };
+}
+
 const stableInput = baseInput();
 const before = JSON.parse(JSON.stringify(stableInput));
 const first = buildShadowScorecard(stableInput, DECISION_POLICY);
@@ -524,25 +552,44 @@ try {
     ]
   };
   const labelRows = [
-    {
-      evaluationId: "label-a-evaluation-id",
+    gateDLabelRow("label-a-evaluation-id", {
       status: "confirmed",
+      directionFit: true,
+      hardBoundaryPass: true,
       expectedTier: "primary",
+      evidenceSufficiency: true,
       labeler: "human-reviewer",
       rationale: "audit-secret-rationale-marker",
+      labeledAt: "2026-08-12T01:00:00.000Z",
       aiProvisional: { productionMatrixTier: "primary", guardedTier: "primary" }
-    },
-    { evaluationId: "label-b-evaluation-id", status: "confirmed", expectedTier: "caution" },
-    { evaluationId: "label-c-evaluation-id", status: "confirmed", expectedTier: "not_recommended" }
+    }),
+    gateDLabelRow("label-b-evaluation-id", {
+      status: "confirmed",
+      directionFit: true,
+      hardBoundaryPass: true,
+      expectedTier: "caution",
+      evidenceSufficiency: true,
+      labeler: "human-reviewer",
+      rationale: "confirmed caution",
+      labeledAt: "2026-08-12T01:01:00.000Z",
+      aiProvisional: { productionMatrixTier: "primary", guardedTier: "primary" }
+    }),
+    gateDLabelRow("label-c-evaluation-id", {
+      status: "confirmed",
+      directionFit: false,
+      hardBoundaryPass: true,
+      expectedTier: "not_recommended",
+      evidenceSufficiency: true,
+      labeler: "human-reviewer",
+      rationale: "confirmed rejection",
+      labeledAt: "2026-08-12T01:02:00.000Z",
+      aiProvisional: { productionMatrixTier: "caution", guardedTier: "caution" }
+    })
   ];
   const labelFixturePath = path.join(tempDir, "label-fixture.json");
   const labelsPath = path.join(tempDir, "gate-d-evaluation-labels.json");
   fs.writeFileSync(labelFixturePath, `${JSON.stringify(labelFixture, null, 2)}\n`, "utf8");
-  fs.writeFileSync(labelsPath, `${JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    confirmedMetrics: "deferred",
-    rows: labelRows
-  }, null, 2)}\n`, "utf8");
+  fs.writeFileSync(labelsPath, `${JSON.stringify(gateDLabels(labelRows), null, 2)}\n`, "utf8");
   const labelFixtureBytes = fs.readFileSync(labelFixturePath);
   const labelsFileBytes = fs.readFileSync(labelsPath);
   const labelsSha256 = crypto.createHash("sha256").update(labelsFileBytes).digest("hex");
@@ -597,74 +644,146 @@ try {
   assert.deepStrictEqual(fs.readFileSync(labelsPath), labelsFileBytes,
     "canonical labels bytes must not change");
 
+  const exporterInitialLabelsPath = path.join(tempDir, "labels-exporter-initial.json");
+  fs.writeFileSync(exporterInitialLabelsPath, JSON.stringify(gateDLabels([
+    gateDLabelRow("exporter-initial-evaluation-id")
+  ])), "utf8");
+  assert.doesNotThrow(() => loadLabelsFile(exporterInitialLabelsPath),
+    "the strict consumer must accept the exporter's unchanged v2 initial labels shape");
+
   const missingLabelsPath = path.join(tempDir, "labels-missing.json");
-  fs.writeFileSync(missingLabelsPath, JSON.stringify({ schemaVersion: "gate-d-evaluation-labels-v2", rows: labelRows.slice(0, 2) }), "utf8");
+  fs.writeFileSync(missingLabelsPath, JSON.stringify(gateDLabels(labelRows.slice(0, 2))), "utf8");
   assert.throws(
     () => compareShadowScorecard(["--input", labelFixturePath, "--labels", missingLabelsPath, "--output", path.join(tempDir, "missing-report.json")]),
-    /must cover every fixture case/i,
+    /fixture cases count .* labels rows count/i,
     "labels rows missing a fixture evaluationId must fail closed"
   );
   const extraLabelsPath = path.join(tempDir, "labels-extra.json");
-  fs.writeFileSync(extraLabelsPath, JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    rows: [...labelRows, { evaluationId: "label-unknown-evaluation-id", status: "pending-human" }]
-  }), "utf8");
+  fs.writeFileSync(extraLabelsPath, JSON.stringify(gateDLabels([
+    ...labelRows,
+    gateDLabelRow("label-unknown-evaluation-id")
+  ])), "utf8");
   assert.throws(
     () => compareShadowScorecard(["--input", labelFixturePath, "--labels", extraLabelsPath, "--output", path.join(tempDir, "extra-report.json")]),
-    /unknown evaluationId/i,
+    /fixture cases count .* labels rows count/i,
     "labels rows without a fixture case must fail closed"
   );
+  const unknownLabelsPath = path.join(tempDir, "labels-unknown-id.json");
+  fs.writeFileSync(unknownLabelsPath, JSON.stringify(gateDLabels([
+    labelRows[0],
+    labelRows[1],
+    gateDLabelRow("label-unknown-evaluation-id")
+  ])), "utf8");
+  assert.throws(
+    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", unknownLabelsPath, "--output", path.join(tempDir, "unknown-report.json")]),
+    /unknown evaluationId/i,
+    "equal-sized labels with a foreign evaluationId must fail closed"
+  );
   const duplicateLabelsPath = path.join(tempDir, "labels-duplicate.json");
-  fs.writeFileSync(duplicateLabelsPath, JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    rows: [...labelRows, { ...labelRows[0] }]
-  }), "utf8");
+  fs.writeFileSync(duplicateLabelsPath, JSON.stringify(gateDLabels([
+    labelRows[0],
+    labelRows[1],
+    { ...labelRows[0] }
+  ])), "utf8");
   assert.throws(
     () => compareShadowScorecard(["--input", labelFixturePath, "--labels", duplicateLabelsPath, "--output", path.join(tempDir, "duplicate-report.json")]),
     /duplicate labels evaluationId/i,
     "duplicate labels evaluationIds must fail closed"
   );
   const invalidTierLabelsPath = path.join(tempDir, "labels-invalid-tier.json");
-  fs.writeFileSync(invalidTierLabelsPath, JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    rows: labelRows.map((row, index) => index === 0 ? { ...row, expectedTier: "invalid-tier" } : row)
-  }), "utf8");
+  fs.writeFileSync(invalidTierLabelsPath, JSON.stringify(gateDLabels(
+    labelRows.map((row, index) => index === 0 ? { ...row, expectedTier: "invalid-tier" } : row)
+  )), "utf8");
   assert.throws(
     () => compareShadowScorecard(["--input", labelFixturePath, "--labels", invalidTierLabelsPath, "--output", path.join(tempDir, "invalid-tier-report.json")]),
     /canonical expectedTier/i,
     "confirmed labels with an invalid expectedTier must fail closed"
   );
-  const wrongSchemaLabelsPath = path.join(tempDir, "labels-wrong-schema.json");
-  fs.writeFileSync(wrongSchemaLabelsPath, JSON.stringify({ schemaVersion: "gate-d-evaluation-labels-v1", rows: labelRows }), "utf8");
-  assert.throws(
-    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", wrongSchemaLabelsPath, "--output", path.join(tempDir, "wrong-schema-report.json")]),
-    /schemaVersion/i,
-    "labels with a mismatched schemaVersion must fail closed"
-  );
-  const aiStatusLabelsPath = path.join(tempDir, "labels-ai-status.json");
-  fs.writeFileSync(aiStatusLabelsPath, JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    rows: [{ evaluationId: "label-a-evaluation-id", status: "ai-provisional", expectedTier: "primary" }, ...labelRows.slice(1)]
-  }), "utf8");
-  assert.throws(
-    () => compareShadowScorecard(["--input", labelFixturePath, "--labels", aiStatusLabelsPath, "--output", path.join(tempDir, "ai-status-report.json")]),
-    /status must be pending-human or confirmed/i,
-    "AI-provisional status must never be accepted as a human label"
-  );
+
+  const validLabelDocument = gateDLabels(labelRows);
+  const { confirmedMetrics: _omittedConfirmedMetrics, ...labelsWithoutConfirmedMetrics } = validLabelDocument;
+  const { labeler: _omittedLabeler, ...rowWithoutLabeler } = labelRows[0];
+  const {
+    guardedTier: _omittedGuardedTier,
+    ...aiProvisionalWithoutGuardedTier
+  } = labelRows[0].aiProvisional;
+  const invalidLabelDocuments = [
+    ["wrong-schema", { ...validLabelDocument, schemaVersion: "gate-d-evaluation-labels-v1" }, /schemaVersion/i],
+    ["numeric-schema", { ...validLabelDocument, schemaVersion: 2 }, /schemaVersion/i],
+    ["numeric-confirmed-metrics", { ...validLabelDocument, confirmedMetrics: 1 }, /confirmedMetrics must be a string/i],
+    ["missing-top-field", labelsWithoutConfirmedMetrics, /labels fields/i],
+    ["non-array-rows", { ...validLabelDocument, rows: {} }, /rows array/i],
+    ["unknown-top-field", { ...validLabelDocument, unknownTop: true }, /unknown labels field/i],
+    ["unknown-row-field", gateDLabels([{ ...labelRows[0], unknownRow: true }, ...labelRows.slice(1)]), /unknown labels row field/i],
+    ["missing-row-field", gateDLabels([rowWithoutLabeler, ...labelRows.slice(1)]), /labels row fields/i],
+    ["numeric-evaluation-id", gateDLabels([{ ...labelRows[0], evaluationId: 1 }, ...labelRows.slice(1)]), /evaluationId must be a non-empty string/i],
+    ["numeric-status", gateDLabels([{ ...labelRows[0], status: 1 }, ...labelRows.slice(1)]), /status must be a string/i],
+    ["ai-status", gateDLabels([{ ...labelRows[0], status: "ai-provisional" }, ...labelRows.slice(1)]), /status must be pending-human or confirmed/i],
+    ["string-direction-fit", gateDLabels([{ ...labelRows[0], directionFit: "yes" }, ...labelRows.slice(1)]), /directionFit must be boolean or null/i],
+    ["string-boundary-pass", gateDLabels([{ ...labelRows[0], hardBoundaryPass: "yes" }, ...labelRows.slice(1)]), /hardBoundaryPass must be boolean or null/i],
+    ["string-evidence-sufficiency", gateDLabels([{ ...labelRows[0], evidenceSufficiency: "yes" }, ...labelRows.slice(1)]), /evidenceSufficiency must be boolean or null/i],
+    ["pending-tier", gateDLabels([gateDLabelRow("label-a-evaluation-id", { expectedTier: "primary" }), ...labelRows.slice(1)]), /pending-human expectedTier must be null/i],
+    ["null-confirmed-tier", gateDLabels([{ ...labelRows[0], expectedTier: null }, ...labelRows.slice(1)]), /confirmed labels must define a canonical expectedTier/i],
+    ["null-rationale", gateDLabels([{ ...labelRows[0], rationale: null }, ...labelRows.slice(1)]), /rationale must be a string/i],
+    ["null-labeler", gateDLabels([{ ...labelRows[0], labeler: null }, ...labelRows.slice(1)]), /labeler must be a string/i],
+    ["numeric-labeled-at", gateDLabels([{ ...labelRows[0], labeledAt: 1 }, ...labelRows.slice(1)]), /labeledAt must be a string or null/i],
+    ["null-ai-provisional", gateDLabels([{ ...labelRows[0], aiProvisional: null }, ...labelRows.slice(1)]), /aiProvisional must be a non-array object/i],
+    ["unknown-ai-field", gateDLabels([{
+      ...labelRows[0],
+      aiProvisional: { ...labelRows[0].aiProvisional, unknownAi: "primary" }
+    }, ...labelRows.slice(1)]), /unknown aiProvisional field/i],
+    ["missing-ai-field", gateDLabels([{
+      ...labelRows[0],
+      aiProvisional: aiProvisionalWithoutGuardedTier
+    }, ...labelRows.slice(1)]), /aiProvisional fields/i],
+    ["numeric-ai-tier", gateDLabels([{
+      ...labelRows[0],
+      aiProvisional: { ...labelRows[0].aiProvisional, guardedTier: 1 }
+    }, ...labelRows.slice(1)]), /aiProvisional guardedTier must be a canonical tier or null/i],
+    ["invalid-ai-tier", gateDLabels([{
+      ...labelRows[0],
+      aiProvisional: { ...labelRows[0].aiProvisional, productionMatrixTier: "invalid-tier" }
+    }, ...labelRows.slice(1)]), /aiProvisional productionMatrixTier must be a canonical tier or null/i]
+  ];
+  invalidLabelDocuments.forEach(([name, document, expected]) => {
+    const invalidPath = path.join(tempDir, `labels-${name}.json`);
+    fs.writeFileSync(invalidPath, JSON.stringify(document), "utf8");
+    assert.throws(() => loadLabelsFile(invalidPath), expected, `${name} labels must fail closed`);
+  });
+
   const missingEvaluationIdPath = path.join(tempDir, "fixture-missing-evaluation-id.json");
   fs.writeFileSync(missingEvaluationIdPath, JSON.stringify({
     cases: [{ id: "no-eval-id", input: fullyBoundInput(), humanLabel: { status: "pending-human" } }]
   }), "utf8");
   const singleRowLabelsPath = path.join(tempDir, "labels-single.json");
-  fs.writeFileSync(singleRowLabelsPath, JSON.stringify({
-    schemaVersion: "gate-d-evaluation-labels-v2",
-    rows: [{ evaluationId: "no-eval-id", status: "pending-human" }]
-  }), "utf8");
+  fs.writeFileSync(singleRowLabelsPath, JSON.stringify(gateDLabels([
+    gateDLabelRow("no-eval-id")
+  ])), "utf8");
   assert.throws(
     () => compareShadowScorecard(["--input", missingEvaluationIdPath, "--labels", singleRowLabelsPath, "--output", path.join(tempDir, "missing-eval-report.json")]),
     /missing evaluationId/i,
     "fixture cases must expose evaluationId when labels are provided"
   );
+
+  const duplicateFixturePath = path.join(tempDir, "fixture-duplicate-evaluation-id.json");
+  fs.writeFileSync(duplicateFixturePath, JSON.stringify({
+    ...labelFixture,
+    cases: labelFixture.cases.map((item, index) => (
+      index === 1 ? { ...item, evaluationId: labelFixture.cases[0].evaluationId } : item
+    ))
+  }), "utf8");
+  for (const [script, outputName] of [
+    ["scripts/compare-shadow-scorecard.js", "duplicate-fixture-compare-report.json"],
+    ["scripts/evaluate-shadow-variants.js", "duplicate-fixture-variants-report.json"]
+  ]) {
+    const duplicateFixtureResult = spawnSync(process.execPath, [
+      script, "--input", duplicateFixturePath, "--labels", labelsPath, "--output", path.join(tempDir, outputName)
+    ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+    assert.notStrictEqual(duplicateFixtureResult.status, 0,
+      `${script} must reject duplicate fixture evaluationIds`);
+    assert.match(duplicateFixtureResult.stderr, /duplicate fixture evaluationId/i,
+      `${script} must identify the duplicate fixture evaluationId`);
+  }
 
   const labelVariantsReportPath = path.join(tempDir, "label-variants-report.json");
   const labelVariantsResult = spawnSync(process.execPath, [
@@ -691,6 +810,54 @@ try {
     "variants must not modify the canonical fixture");
   assert.deepStrictEqual(fs.readFileSync(labelsPath), labelsFileBytes,
     "variants must not modify the canonical labels file");
+
+  const hardLinkCases = [
+    {
+      script: "scripts/compare-shadow-scorecard.js",
+      source: labelFixturePath,
+      output: path.join(tempDir, "compare-input-output-hard-link.json"),
+      args: (output) => ["--input", labelFixturePath, "--output", output],
+      message: "compare must reject hard-linked input/output files"
+    },
+    {
+      script: "scripts/compare-shadow-scorecard.js",
+      source: labelsPath,
+      output: path.join(tempDir, "compare-labels-output-hard-link.json"),
+      args: (output) => ["--input", labelFixturePath, "--labels", labelsPath, "--output", output],
+      message: "compare must reject hard-linked labels/output files"
+    },
+    {
+      script: "scripts/evaluate-shadow-variants.js",
+      source: labelFixturePath,
+      output: path.join(tempDir, "variants-input-output-hard-link.json"),
+      args: (output) => ["--input", labelFixturePath, "--output", output],
+      message: "variants must reject hard-linked input/output files"
+    },
+    {
+      script: "scripts/evaluate-shadow-variants.js",
+      source: labelsPath,
+      output: path.join(tempDir, "variants-labels-output-hard-link.json"),
+      args: (output) => ["--input", labelFixturePath, "--labels", labelsPath, "--output", output],
+      message: "variants must reject hard-linked labels/output files"
+    }
+  ];
+  let hardLinksSupported = true;
+  try {
+    for (const item of hardLinkCases) fs.linkSync(item.source, item.output);
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOTSUP", "EOPNOTSUPP", "EXDEV"].includes(error.code)) throw error;
+    hardLinksSupported = false;
+    console.warn(`SKIP hard-link same-file tests: ${error.code}`);
+  }
+  if (hardLinksSupported) {
+    for (const item of hardLinkCases) {
+      const result = spawnSync(process.execPath, [
+        item.script, ...item.args(item.output)
+      ], { cwd: path.join(__dirname, ".."), encoding: "utf8" });
+      assert.notStrictEqual(result.status, 0, item.message);
+      assert.match(result.stderr, /different files/i, item.message);
+    }
+  }
 
   const labelsSamePathResult = spawnSync(process.execPath, [
     "scripts/compare-shadow-scorecard.js", "--input", labelFixturePath, "--labels", labelsPath, "--output", labelsPath
