@@ -1,8 +1,8 @@
 # Message Discovery Unmatched Retention Design
 
-**Date:** 2026-08-11  
-**Wave:** Wave 4 acceptance remediation  
-**Issue:** RF-A06  
+**Date:** 2026-08-11
+**Wave:** Wave 4 acceptance remediation
+**Issue:** RF-A06
 **Status:** approved by the controller under the user's standing instruction to use the recommended option and continue without blocking on non-user decisions
 
 ## Evidence
