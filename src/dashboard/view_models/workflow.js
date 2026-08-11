@@ -1,6 +1,7 @@
 "use strict";
 
 const { scopeShortId } = require("../../core/inherited_search_scope");
+const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 
 function buildWorkflowViewModel({
   workflow = {}, plan = {}, daily = {}, communication = null, runtimeBlock = null,
@@ -88,7 +89,10 @@ function phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewC
   }
   if (status === "communicating") return { ...common, kind: "communicating", communication: communicationView(communication, runtimeBlock) };
   if (status === "completed") return { ...common, kind: "completed", successfulCount: number(workflow.successfulCount), todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), shortfall: shortfallText(workflow.shortfallCode) };
-  if (status === "interrupted") return { ...common, kind: "interrupted", errorCode: String(workflow.errorCode || "WORKFLOW_INTERRUPTED"), errorMessage: String(workflow.errorMessage || "请检查诊断后继续。"), communicationHref: workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : "", resume: workflow.communicationBatchId ? null : resumeView(workflow) };
+  if (status === "interrupted") {
+    const communicationDetails = communication ? communicationView(communication, runtimeBlock) : null;
+    return { ...common, kind: "interrupted", errorCode: String(workflow.errorCode || "WORKFLOW_INTERRUPTED"), errorMessage: String(workflow.errorMessage || "请检查诊断后继续。"), communication: communicationDetails, communicationHref: communicationDetails?.detailsHref || (workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : ""), resume: workflow.communicationBatchId ? null : resumeView(workflow) };
+  }
   return { ...common, kind: ["created", "scanning", "analyzing", "paused"].includes(status) ? "active" : "fallback", errorCode: String(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。") };
 }
 
@@ -105,8 +109,12 @@ function reviewRow(job = {}) {
 function communicationView(communication, runtimeBlock) {
   const batch = communication?.batch || {};
   const status = String(batch.status || "");
-  const action = status === "confirmed" ? "start" : ["paused", "interrupted"].includes(status) ? "resume" : "";
-  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : "开始沟通", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary: { total: number(communication?.summary?.total), terminal: number(communication?.summary?.terminal), statusCounts: Object.fromEntries(Object.entries(communication?.summary?.statusCounts || {}).map(([key, value]) => [String(key), number(value)])) }, runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref: batch.id ? `/communication?batchId=${encodeURIComponent(batch.id)}` : "" };
+  const summary = { total: number(communication?.summary?.total), terminal: number(communication?.summary?.terminal), statusCounts: Object.fromEntries(Object.entries(communication?.summary?.statusCounts || {}).map(([key, value]) => [String(key), number(value)])) };
+  const ambiguity = communicationAmbiguityState(summary, communication?.items || []);
+  const ambiguousItem = ambiguity.firstItemId == null ? null : (communication?.items || []).find((item) => item?.id === ambiguity.firstItemId);
+  const action = ambiguity.blocked ? "" : status === "confirmed" ? "start" : ["paused", "interrupted"].includes(status) ? "resume" : "";
+  const detailsHref = batch.id ? `/communication?batchId=${encodeURIComponent(batch.id)}${ambiguousItem ? `#communication-item-${encodeURIComponent(ambiguousItem.id)}` : ""}` : "";
+  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : action === "start" ? "开始沟通" : "", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary, runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref, detailsLabel: ambiguity.blocked ? (ambiguousItem ? "处理不明确结果" : "沟通记录不一致，请刷新") : "检查清单详情" };
 }
 
 function resumeView(workflow) {

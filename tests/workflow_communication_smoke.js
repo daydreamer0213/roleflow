@@ -15,6 +15,7 @@ const {
 const { runCommunicationBatch } = require("../src/core/communication_executor");
 const { listWorkflowInventory, listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { getProgressCardForJob } = require("../src/core/candidate_progress");
+const { buildWorkflowViewModel } = require("../src/dashboard/view_models/workflow");
 const {
   communicate,
   resolveCommunicationBrowserAuthority
@@ -87,6 +88,74 @@ async function workflowCommunicationSmoke() {
     assert.strictEqual(review.find((candidate) => candidate.id === highSalaryId)?.workflowTier, "caution");
     assert.strictEqual(review.find((candidate) => candidate.id === roleCoreBackupId)?.defaultChecked, false);
     assert.strictEqual(typeof review.find((candidate) => candidate.id === roleCoreBackupId)?.workflowTier, "string");
+
+    const interruptedCommunication = buildWorkflowViewModel({
+      workflow: { id: workflow.id, planId, status: "review_required" },
+      plan: { id: planId },
+      communication: {
+        batch: { id: 91, status: "interrupted" },
+        calibration: { executionEnabled: true },
+        summary: { total: 2, terminal: 0, statusCounts: { ambiguous: 1, pending: 1 } },
+        items: [{ id: 41, status: "ambiguous" }, { id: 42, status: "pending" }]
+      }
+    }).phase.communication;
+    assert.deepStrictEqual(interruptedCommunication, {
+      batchId: "91",
+      status: "interrupted",
+      action: "",
+      actionLabel: "",
+      executionEnabled: false,
+      summary: { total: 2, terminal: 0, statusCounts: { ambiguous: 1, pending: 1 } },
+      runtimeBlock: "",
+      detailsHref: "/communication?batchId=91#communication-item-41",
+      detailsLabel: "处理不明确结果"
+    });
+    const interruptedWorkflowPhase = buildWorkflowViewModel({
+      workflow: {
+        id: workflow.id,
+        planId,
+        status: "interrupted",
+        communicationBatchId: 91,
+        errorCode: "COMMUNICATION_RESULT_AMBIGUOUS"
+      },
+      plan: { id: planId },
+      communication: {
+        batch: { id: 91, status: "interrupted" },
+        calibration: { executionEnabled: true },
+        summary: { total: 2, terminal: 1, statusCounts: { ambiguous: 1, pending: 1 } },
+        items: [{ id: 41, status: "ambiguous" }, { id: 42, status: "pending" }]
+      }
+    }).phase;
+    assert.strictEqual(interruptedWorkflowPhase.kind, "interrupted");
+    assert.strictEqual(interruptedWorkflowPhase.communication.detailsLabel, "处理不明确结果");
+    assert.strictEqual(interruptedWorkflowPhase.communication.detailsHref, "/communication?batchId=91#communication-item-41");
+    for (const [drift, batchStatus] of [
+      ["summary-only", "confirmed"],
+      ["summary-only", "paused"],
+      ["item-only", "confirmed"],
+      ["item-only", "paused"]
+    ]) {
+      const item = { id: 51, status: drift === "item-only" ? "ambiguous" : "pending" };
+      const communication = buildWorkflowViewModel({
+        workflow: { id: workflow.id, planId, status: "review_required" },
+        plan: { id: planId },
+        communication: {
+          batch: { id: 101, status: batchStatus },
+          calibration: { executionEnabled: true },
+          summary: {
+            total: 1,
+            terminal: drift === "summary-only" ? 1 : 0,
+            statusCounts: drift === "summary-only" ? { ambiguous: 1 } : { pending: 1 }
+          },
+          items: [item]
+        }
+      }).phase.communication;
+      assert.strictEqual(communication.action, "", `${batchStatus} must block ${drift} drift`);
+      assert.strictEqual(communication.executionEnabled, false);
+      if (drift === "item-only") {
+        assert.strictEqual(communication.detailsHref, "/communication?batchId=101#communication-item-51");
+      }
+    }
 
     assert.throws(
       () => createCommunicationBatch(db, {

@@ -14,6 +14,7 @@ const {
   transitionCommunicationItem,
   communicationBatchSummary
 } = require("./communication_batches");
+const { communicationAmbiguityStateForBatch } = require("./communication_ambiguity");
 
 const FATAL_CODES = new Set([
   "BOSS_RISK_CONTROL",
@@ -33,12 +34,14 @@ async function runCommunicationBatch({
   sleepFn = sleep,
   randomFn = Math.random,
   signal = null,
-  executionGate = assertCommunicationExecutionEnabled
+  executionGate = assertCommunicationExecutionEnabled,
+  ambiguityReader = communicationAmbiguityStateForBatch
 }) {
-  validateDependencies({ db, batchId, adapter, accessController, executionGate });
+  validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader });
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
+  if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
   if (isTerminalBatch(batch.status)) return communicationBatchSummary(db, batchId);
@@ -49,15 +52,22 @@ async function runCommunicationBatch({
     const control = observeControl(db, batchId, signal, logger);
     if (control) return control;
     if (workflowTargetReached(db, batchId)) {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
       stopPendingReplacements(db, batchId, logger);
       return finalizeBatch(db, batchId, logger);
     }
     const item = listCommunicationBatchItems(db, batchId).find((candidate) => !TERMINAL_ITEM_STATUSES.has(candidate.status));
-    if (!item) return finalizeBatch(db, batchId, logger);
-    if (item.status !== "pending") return recoverIncompleteItem(db, batchId, item, logger);
+    if (!item) {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+      return finalizeBatch(db, batchId, logger);
+    }
+    if (item.status !== "pending") {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+      return recoverIncompleteItem(db, batchId, item, logger);
+    }
 
     try {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "opening" });
+      claimPendingCommunicationItem(db, batchId, item, ambiguityReader);
     } catch (error) {
       if (error.code === "COMMUNICATION_ITEM_TRANSITION_CONFLICT") continue;
       throw error;
@@ -65,6 +75,7 @@ async function runCommunicationBatch({
 
     const afterClaim = observeControl(db, batchId, signal, logger);
     if (afterClaim) return afterClaim;
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
     try {
       await accessController.reserve("communication_visit", { batchId: item.batchId, itemId: item.id, jobId: item.jobId });
     } catch (error) {
@@ -81,6 +92,20 @@ async function runCommunicationBatch({
     }
     const afterReserve = observeControl(db, batchId, signal, logger);
     if (afterReserve) return afterReserve;
+    try {
+      assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    } catch (error) {
+      try {
+        pauseCommunicationBatchAfterReservationFailure(db, { batchId, itemId: item.id });
+      } catch (rollbackError) {
+        logger?.error("communication_reservation_rollback_failed", {
+          batchId,
+          itemId: item.id,
+          code: errorCode(rollbackError)
+        });
+      }
+      return interruptAndThrow(db, batchId, error, logger);
+    }
 
     let inspection;
     try {
@@ -108,7 +133,8 @@ async function runCommunicationBatch({
         adapter,
         logger,
         signal,
-        executionGate
+        executionGate,
+        ambiguityReader
       });
     } else if (state === "already_communicated") {
       commitVerifiedCommunication(db, {
@@ -142,6 +168,26 @@ async function runCommunicationBatch({
   }
 }
 
+function claimPendingCommunicationItem(db, batchId, item, ambiguityReader) {
+  db.exec("SAVEPOINT communication_item_claim");
+  try {
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "pending", status: "opening" });
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    db.exec("RELEASE SAVEPOINT communication_item_claim");
+  } catch (error) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_item_claim"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_item_claim"); } catch {}
+    throw error;
+  }
+}
+
+function assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader) {
+  if (ambiguityReader(db, batchId).blocked) {
+    throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "communication batch contains an unresolved ambiguous item");
+  }
+}
+
 function communicationInspectionEvidence(inspection = {}, state = "") {
   const statusLabel = String(inspection?.statusLabel || "").trim().slice(0, 100);
   return {
@@ -152,9 +198,10 @@ function communicationInspectionEvidence(inspection = {}, state = "") {
   };
 }
 
-async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate }) {
+async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate, ambiguityReader }) {
   const beforeDispatch = observeControl(db, batchId, signal, logger);
   if (beforeDispatch) return beforeDispatch;
+  assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   try {
     assertExecutionEnabled(executionGate);
   } catch (error) {
@@ -525,7 +572,7 @@ function errorCode(error) {
   return String(error?.code || "COMMUNICATION_EXECUTION_FAILED");
 }
 
-function validateDependencies({ db, batchId, adapter, accessController, executionGate }) {
+function validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader }) {
   if (!db) throw new Error("db is required");
   if (!Number.isInteger(Number(batchId)) || Number(batchId) <= 0) throw codedError("COMMUNICATION_BATCH_INVALID", "batchId is required");
   for (const method of ["inspectCommunicationJob", "dispatchCommunication", "verifyCommunicationResult"]) {
@@ -533,6 +580,7 @@ function validateDependencies({ db, batchId, adapter, accessController, executio
   }
   if (typeof accessController?.reserve !== "function") throw new Error("accessController.reserve is required");
   if (typeof executionGate !== "function") throw new Error("executionGate is required");
+  if (typeof ambiguityReader !== "function") throw new Error("ambiguityReader is required");
 }
 
 function assertExecutionEnabled(executionGate) {

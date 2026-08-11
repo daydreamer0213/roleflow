@@ -3,16 +3,23 @@ const {
   openDb,
   createBatch,
   upsertJob,
-  markCandidateJob
+  markCandidateJob,
+  createWorkflowRun,
+  getWorkflowRun,
+  transitionWorkflowRun,
+  attachWorkflowCommunication
 } = require("../src/core/storage");
 const {
   createCommunicationBatch,
   getCommunicationBatch,
   listCommunicationBatchItems,
+  resumeInterruptedCommunicationBatch,
+  resolveAmbiguousCommunicationItem,
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
+const { communicate } = require("../src/cli");
 const {
   getProgressCardForJob,
   listProgressEvents
@@ -224,6 +231,279 @@ async function pauseResumeSmoke() {
   await runPermittedBatch({ db: fixture.db, batchId: fixture.batch.id, adapter, accessController: { async reserve() {} }, sleepFn: async () => {} });
   assert.strictEqual(inspected, 2);
   assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "completed");
+  fixture.close();
+}
+
+async function pausedAmbiguityEntryGuardSmoke() {
+  const direct = createFixture(2);
+  pauseWithAmbiguousFirstItem(direct);
+  const directBefore = getCommunicationBatch(direct.db, direct.batch.id);
+  let directReserves = 0;
+  let directDispatches = 0;
+  let directError;
+  try {
+    await runPermittedBatch({
+      db: direct.db,
+      batchId: direct.batch.id,
+      accessController: { async reserve() { directReserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { directDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    directError = error;
+  }
+
+  const cli = createFixture(2);
+  pauseWithAmbiguousFirstItem(cli);
+  const cliBefore = getCommunicationBatch(cli.db, cli.batch.id);
+  let cliDispatches = 0;
+  let cliError;
+  try {
+    await communicate(cli.db, { batch: cli.batch.id, browser: "edge" }, {
+      createBrowserFn: () => ({
+        async listTabs() {
+          return [
+            { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+            { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" }
+          ];
+        }
+      }),
+      createSiteAdapterFn: () => ({
+        async preflight({ tabId }) {
+          return tabId === 31
+            ? { tabId, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+            : { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+        },
+        bindCommunicationTabs() {},
+        async prepareCommunicationTab() { return 32; },
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { cliDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      })
+    });
+  } catch (error) {
+    cliError = error;
+  }
+
+  assert.strictEqual(directError?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.strictEqual(cliError?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.deepStrictEqual(getCommunicationBatch(direct.db, direct.batch.id), directBefore);
+  assert.deepStrictEqual(getCommunicationBatch(cli.db, cli.batch.id), cliBefore);
+  assert.strictEqual(directReserves, 0);
+  assert.strictEqual(directDispatches, 0);
+  assert.strictEqual(cliDispatches, 0);
+  assert.deepStrictEqual(listCommunicationBatchItems(direct.db, direct.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
+  assert.deepStrictEqual(listCommunicationBatchItems(cli.db, cli.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
+  direct.close();
+  cli.close();
+}
+
+async function ambiguityDriftEntryGuardSmoke() {
+  for (const [drift, action] of [
+    ["summary-only", "start"],
+    ["summary-only", "resume"],
+    ["item-only", "start"],
+    ["item-only", "resume"]
+  ]) {
+    const fixture = createFixture(2);
+    if (action === "resume") {
+      setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+      setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+    }
+    const beforeBatch = getCommunicationBatch(fixture.db, fixture.batch.id);
+    const beforeItems = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+    let reserves = 0;
+    let dispatches = 0;
+    let caught;
+    try {
+      await runPermittedBatch({
+        db: fixture.db,
+        batchId: fixture.batch.id,
+        ambiguityReader: () => drift === "summary-only"
+          ? { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null }
+          : { blocked: true, summaryCount: 0, itemsCount: 1, countsMismatch: true, firstItemId: beforeItems[0].id },
+        accessController: { async reserve() { reserves += 1; } },
+        adapter: {
+          async inspectCommunicationJob() { return { state: "ready" }; },
+          async dispatchCommunication() { dispatches += 1; },
+          async verifyCommunicationResult() { return { state: "succeeded" }; }
+        },
+        sleepFn: async () => {}
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW", `${action} must block ${drift} drift`);
+    assert.deepStrictEqual(getCommunicationBatch(fixture.db, fixture.batch.id), beforeBatch);
+    assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id), beforeItems);
+    assert.strictEqual(reserves, 0);
+    assert.strictEqual(dispatches, 0);
+    fixture.close();
+  }
+}
+
+async function runningAmbiguityEntryGuardSmoke() {
+  const fixture = createFixture(2);
+  const workflow = attachReviewWorkflow(fixture);
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, {
+    itemId: first.id,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: clickAudit(first)
+  });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  const workflowBefore = getWorkflowRun(fixture.db, workflow.id);
+  const batchBefore = getCommunicationBatch(fixture.db, fixture.batch.id);
+  const itemsBefore = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  let reserves = 0;
+  let inspections = 0;
+  let dispatches = 0;
+  let caught;
+  try {
+    await runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() { reserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.deepStrictEqual(getWorkflowRun(fixture.db, workflow.id), workflowBefore);
+  assert.deepStrictEqual(getCommunicationBatch(fixture.db, fixture.batch.id), batchBefore);
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id), itemsBefore);
+  assert.strictEqual(reserves, 0);
+  assert.strictEqual(inspections, 0);
+  assert.strictEqual(dispatches, 0);
+  fixture.close();
+}
+
+async function postClaimAmbiguityRollbackSmoke() {
+  const fixture = createFixture(2);
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  const batchBefore = getCommunicationBatch(fixture.db, fixture.batch.id);
+  const itemsBefore = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  let ambiguityReads = 0;
+  let reserves = 0;
+  let dispatches = 0;
+  let caught;
+  try {
+    await runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      ambiguityReader() {
+        ambiguityReads += 1;
+        return ambiguityReads < 3
+          ? { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null }
+          : { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null };
+      },
+      accessController: { async reserve() { reserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.strictEqual(ambiguityReads, 3);
+  assert.deepStrictEqual(getCommunicationBatch(fixture.db, fixture.batch.id), batchBefore);
+  assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id), itemsBefore);
+  assert.strictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].status, "pending");
+  assert.strictEqual(reserves, 0);
+  assert.strictEqual(dispatches, 0);
+  fixture.close();
+}
+
+async function ambiguityAfterReserveGuardSmoke() {
+  const fixture = createFixture(2);
+  const workflow = attachReviewWorkflow(fixture);
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  const [ambiguousItem, reservedItem] = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  transitionCommunicationItem(fixture.db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: clickAudit(ambiguousItem)
+  });
+  transitionCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    expectedStatus: "click_dispatched",
+    status: "ambiguous"
+  });
+  const clickCountsBefore = listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.clickCount);
+  let blocked = false;
+  let reserves = 0;
+  let inspections = 0;
+  let dispatches = 0;
+  let caught;
+  try {
+    await runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      ambiguityReader() {
+        return blocked
+          ? { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null }
+          : { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null };
+      },
+      accessController: {
+        async reserve() {
+          reserves += 1;
+          blocked = true;
+        }
+      },
+      adapter: {
+        async inspectCommunicationJob() { inspections += 1; return { state: "ready" }; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+  } catch (error) {
+    caught = error;
+  }
+  const interruptedItems = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  assert.strictEqual(caught?.code, "COMMUNICATION_RESUME_REQUIRES_REVIEW");
+  assert.strictEqual(reserves, 1);
+  assert.strictEqual(inspections, 0);
+  assert.strictEqual(dispatches, 0);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "interrupted");
+  assert.strictEqual(getWorkflowRun(fixture.db, workflow.id).status, "interrupted");
+  assert.deepStrictEqual(interruptedItems.map((item) => item.status), ["ambiguous", "pending"]);
+  assert.deepStrictEqual(interruptedItems.map((item) => item.clickCount), clickCountsBefore);
+  assert.strictEqual(interruptedItems.find((item) => item.id === reservedItem.id).clickCount, 0);
+
+  resolveAmbiguousCommunicationItem(fixture.db, {
+    itemId: ambiguousItem.id,
+    status: "stopped",
+    evidenceNote: "Manual review confirmed no additional communication was sent."
+  });
+  const resumed = resumeInterruptedCommunicationBatch(fixture.db, { batchId: fixture.batch.id });
+  assert.strictEqual(resumed.requiresReview, false);
+  assert.strictEqual(resumed.batch.status, "running");
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(fixture.db, fixture.batch.id).map((item) => item.status),
+    ["stopped", "pending"]
+  );
   fixture.close();
 }
 
@@ -671,6 +951,35 @@ function clickAudit(item) {
   };
 }
 
+function pauseWithAmbiguousFirstItem(fixture) {
+  const first = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "running" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(first) });
+  transitionCommunicationItem(fixture.db, { itemId: first.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
+}
+
+function attachReviewWorkflow(fixture) {
+  const workflow = createWorkflowRun(fixture.db, {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    localDay: "2026-08-11",
+    sequence: 1,
+    targetSuccessCount: 2,
+    inventoryCount: 2,
+    candidateGap: 0,
+    scanNeeded: false,
+    planner: { browserMode: "edge" }
+  });
+  transitionWorkflowRun(fixture.db, { id: workflow.id, status: "review_required" });
+  return attachWorkflowCommunication(fixture.db, {
+    id: workflow.id,
+    communicationBatchId: fixture.batch.id
+  });
+}
+
 function createFixture(count) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
@@ -727,6 +1036,11 @@ Promise.resolve()
   .then(unavailableAndMismatchContinueSmoke)
   .then(ambiguousAndFatalStopSmoke)
   .then(pauseResumeSmoke)
+  .then(pausedAmbiguityEntryGuardSmoke)
+  .then(ambiguityDriftEntryGuardSmoke)
+  .then(ambiguityAfterReserveGuardSmoke)
+  .then(runningAmbiguityEntryGuardSmoke)
+  .then(postClaimAmbiguityRollbackSmoke)
   .then(stopDuringSlicedPacingSmoke)
   .then(dispatchFailureSmoke)
   .then(observedOutcomeFailureSmoke)

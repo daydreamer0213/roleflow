@@ -16,6 +16,10 @@ const {
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
+const {
+  communicationAmbiguityState,
+  communicationAmbiguityStateForBatch
+} = require("../src/core/communication_ambiguity");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
@@ -30,7 +34,12 @@ let server;
   db = openDb(dbPath);
   const fixture = seed(db);
   const spawns = [];
-  server = createDashboardServer({ db, root, dbPath, logger, spawnProcess(file, args, options) {
+  let ambiguityOverride = null;
+  server = createDashboardServer({ db, root, dbPath, logger,
+    communicationAmbiguityReader(database, requestedBatchId) {
+      return ambiguityOverride || communicationAmbiguityStateForBatch(database, requestedBatchId);
+    },
+    spawnProcess(file, args, options) {
     spawns.push({ file, args, options });
     const child = new EventEmitter();
     child.pid = 5252;
@@ -126,6 +135,47 @@ let server;
   assert.strictEqual(Object.prototype.hasOwnProperty.call(status.body.calibration, "status"), false);
   assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
+  assert.strictEqual(typeof communicationAmbiguityState, "function");
+  const reviewItem = listCommunicationBatchItems(db, batchId)[0];
+  assert.strictEqual(communicationAmbiguityState(
+    { statusCounts: { ambiguous: 1, pending: 1 } },
+    [{ ...reviewItem, status: "pending" }]
+  ).blocked, true);
+  assert.strictEqual(communicationAmbiguityState(
+    { statusCounts: { pending: 2 } },
+    [{ ...reviewItem, status: "ambiguous" }]
+  ).firstItemId, reviewItem.id);
+  for (const [drift, action, jobId] of [
+    ["summary-only", "start", fixture.summaryDriftStartId],
+    ["summary-only", "resume", fixture.summaryDriftResumeId],
+    ["item-only", "start", fixture.itemDriftStartId],
+    ["item-only", "resume", fixture.itemDriftResumeId]
+  ]) {
+    const driftBatch = await postJson(baseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: jobId,
+      browserMode: "edge"
+    });
+    if (action === "resume") {
+      setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "running" });
+      setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "paused" });
+    }
+    const driftItem = listCommunicationBatchItems(db, driftBatch.body.batch.id)[0];
+    ambiguityOverride = drift === "summary-only"
+      ? communicationAmbiguityState({ statusCounts: { ambiguous: 1 } }, [{ ...driftItem, status: "pending" }])
+      : communicationAmbiguityState({ statusCounts: {} }, [{ ...driftItem, status: "ambiguous" }]);
+    const batchBefore = getCommunicationBatch(db, driftBatch.body.batch.id);
+    const itemsBefore = listCommunicationBatchItems(db, driftBatch.body.batch.id);
+    const spawnsBefore = spawns.length;
+    await expectApiError(baseUrl, "/api/communication-control", {
+      batchId: driftBatch.body.batch.id,
+      action
+    }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
+    assert.deepStrictEqual(getCommunicationBatch(db, driftBatch.body.batch.id), batchBefore);
+    assert.deepStrictEqual(listCommunicationBatchItems(db, driftBatch.body.batch.id), itemsBefore);
+    assert.strictEqual(spawns.length, spawnsBefore);
+    ambiguityOverride = null;
+  }
 
   const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
   assert.strictEqual(started.status, 200);
@@ -152,11 +202,13 @@ let server;
   assert(spawns[0].args.includes(String(batchId)));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
-  const ambiguousItem = listCommunicationBatchItems(db, batchId)[0];
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(ambiguousItem) });
-  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  const [ambiguousItem, secondAmbiguousItem] = listCommunicationBatchItems(db, batchId);
+  for (const item of [ambiguousItem, secondAmbiguousItem]) {
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "pending", status: "opening" });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "opening", status: "verified" });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  }
   setCommunicationBatchStatus(db, {
     batchId,
     status: "interrupted",
@@ -165,6 +217,10 @@ let server;
   });
   const ambiguousReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
+  assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
+  assert.match(ambiguousReview.body, /处理不明确结果/);
+  assert.match(ambiguousReview.body, new RegExp(`href="/communication\\?batchId=${batchId}#communication-item-${ambiguousItem.id}"`));
+  assert.match(ambiguousReview.body, new RegExp(`id="communication-item-${ambiguousItem.id}"`));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "pending", evidenceNote: "invalid status" }, "COMMUNICATION_AMBIGUOUS_RESOLUTION_INVALID");
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId, itemId: ambiguousItem.id, status: "stopped" }, "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED");
@@ -175,6 +231,10 @@ let server;
   const resolutionAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(fixture.primaryId);
   assert.strictEqual(JSON.parse(resolutionAudit.payload_json).note, evidenceNote);
   assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
+  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
+  const secondResolved = await postJson(baseUrl, "/api/communication-resolve", { batchId, itemId: secondAmbiguousItem.id, status: "stopped", evidenceNote: "第二个岗位已人工核对并停止" });
+  assert.strictEqual(secondResolved.status, 200);
+  assert.strictEqual(secondResolved.body.item.status, "stopped");
   const resumedAfterReview = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
   assert.strictEqual(resumedAfterReview.status, 200);
   assert.strictEqual(resumedAfterReview.body.batch.status, "running");
@@ -228,6 +288,10 @@ function seed(database) {
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
+  const summaryDriftStartId = upsertJob(database, job("summary-drift-start"), scanBatchId);
+  const summaryDriftResumeId = upsertJob(database, job("summary-drift-resume"), scanBatchId);
+  const itemDriftStartId = upsertJob(database, job("item-drift-start"), scanBatchId);
+  const itemDriftResumeId = upsertJob(database, job("item-drift-resume"), scanBatchId);
   for (let index = 0; index < 35; index += 1) {
     upsertJob(database, job(`extra-${index}`, { title: `Extra role ${index}`, analysis: completeAnalysis("apply") }), scanBatchId);
   }
@@ -239,7 +303,7 @@ function seed(database) {
   for (let index = 0; index < 21; index += 1) {
     upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: completeAnalysis("apply") }), smallBatchId);
   }
-  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId };
+  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function job(sourceId, overrides = {}) {

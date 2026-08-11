@@ -22,6 +22,10 @@ const {
   communicationQuotaSnapshot
 } = require("../src/core/communication_batches");
 const {
+  communicationAmbiguityState,
+  communicationAmbiguityStateForBatch
+} = require("../src/core/communication_ambiguity");
+const {
   getProgressCardForJob,
   listProgressEvents
 } = require("../src/core/candidate_progress");
@@ -70,6 +74,42 @@ try {
     browserMode: "edge",
     policySnapshot: { delayMs: [15000, 20000] }
   });
+  assert.strictEqual(typeof communicationAmbiguityState, "function");
+  assert.strictEqual(typeof communicationAmbiguityStateForBatch, "function");
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { pending: 1 } }, [{ id: 1, status: "pending" }]),
+    { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { ambiguous: 1 } }, [{ id: 1, status: "pending" }]),
+    { blocked: true, summaryCount: 1, itemsCount: 0, countsMismatch: true, firstItemId: null }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: {} }, [{ id: 9, status: "ambiguous" }]),
+    { blocked: true, summaryCount: 0, itemsCount: 1, countsMismatch: true, firstItemId: 9 }
+  );
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: { ambiguous: 2 } }, [{ id: 9, status: "ambiguous" }]),
+    { blocked: true, summaryCount: 2, itemsCount: 1, countsMismatch: true, firstItemId: 9 }
+  );
+  assert.deepStrictEqual(communicationAmbiguityStateForBatch(db, selected.id), {
+    blocked: false,
+    summaryCount: 0,
+    itemsCount: 0,
+    countsMismatch: false,
+    firstItemId: null
+  });
+  for (const rawCount of ["0", false, Number.NaN, -1, 0.5]) {
+    assert.deepStrictEqual(
+      communicationAmbiguityState({ statusCounts: { ambiguous: rawCount } }, []),
+      { blocked: true, summaryCount: 0, itemsCount: 0, countsMismatch: true, firstItemId: null }
+    );
+  }
+  assert.deepStrictEqual(
+    communicationAmbiguityState({ statusCounts: {} }, []),
+    { blocked: false, summaryCount: 0, itemsCount: 0, countsMismatch: false, firstItemId: null }
+  );
+  ambiguityOuterTransactionSmoke(db, selected.id, primaryId, now);
   assert.strictEqual(selected.status, "confirmed");
   assert.deepStrictEqual(
     listCommunicationBatchItems(db, selected.id).map((item) => item.status),
@@ -273,6 +313,28 @@ function clickAudit(item) {
     eventType: "communication_click",
     payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
   };
+}
+
+function ambiguityOuterTransactionSmoke(database, batchId, jobId, now) {
+  database.exec("BEGIN");
+  database.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, 'ambiguity_outer_commit', '{}', ?)")
+    .run(jobId, now);
+  assert.strictEqual(communicationAmbiguityStateForBatch(database, batchId).blocked, false);
+  database.exec("COMMIT");
+  assert.strictEqual(
+    database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'ambiguity_outer_commit'").get().count,
+    1
+  );
+
+  database.exec("BEGIN");
+  assert.strictEqual(communicationAmbiguityStateForBatch(database, batchId).blocked, false);
+  database.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (?, 'ambiguity_outer_rollback', '{}', ?)")
+    .run(jobId, now);
+  database.exec("ROLLBACK");
+  assert.strictEqual(
+    database.prepare("SELECT COUNT(*) AS count FROM events WHERE event_type = 'ambiguity_outer_rollback'").get().count,
+    0
+  );
 }
 
 function atomicClickAuditSmoke(db, batchId) {

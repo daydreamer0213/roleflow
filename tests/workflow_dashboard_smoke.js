@@ -31,6 +31,10 @@ const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
 const {
+  setCommunicationBatchStatus,
+  transitionCommunicationItem
+} = require("../src/core/communication_batches");
+const {
   createDashboardServer,
   inspectDashboardBossBrowserReadiness,
   resolveLiveInheritedContext
@@ -1058,6 +1062,46 @@ let server;
   const confirmedPage = await getText(baseUrl, confirmed.location);
   assert.match(confirmedPage.body, /清单已确认/);
   assert.match(confirmedPage.body, /name="action" value="start"/);
+  const communicationBatchId = getWorkflowRun(db, workflow.id).communicationBatchId;
+  const ambiguousCommunicationItem = db.prepare(`
+    SELECT id, batch_id, job_id FROM communication_batch_items WHERE batch_id = ? ORDER BY position LIMIT 1
+  `).get(communicationBatchId);
+  setCommunicationBatchStatus(db, { batchId: communicationBatchId, status: "running" });
+  transitionCommunicationItem(db, { itemId: ambiguousCommunicationItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: ambiguousCommunicationItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, {
+    itemId: ambiguousCommunicationItem.id,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: {
+      eventType: "communication_click",
+      payload: {
+        batchId: communicationBatchId,
+        itemId: ambiguousCommunicationItem.id,
+        jobId: ambiguousCommunicationItem.job_id,
+        state: "click_dispatched"
+      }
+    }
+  });
+  transitionCommunicationItem(db, { itemId: ambiguousCommunicationItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
+  setCommunicationBatchStatus(db, {
+    batchId: communicationBatchId,
+    status: "interrupted",
+    stopCode: "COMMUNICATION_RESULT_AMBIGUOUS",
+    stopMessage: "manual review required"
+  });
+  transitionWorkflowRun(db, {
+    id: workflow.id,
+    status: "interrupted",
+    errorCode: "COMMUNICATION_RESULT_AMBIGUOUS",
+    errorMessage: "manual review required"
+  });
+  const ambiguityWorkflowPage = await getText(baseUrl, confirmed.location);
+  assert.doesNotMatch(ambiguityWorkflowPage.body, /name="action" value="resume"/);
+  assert.doesNotMatch(ambiguityWorkflowPage.body, /action="\/api\/communication-control"/);
+  assert.match(ambiguityWorkflowPage.body, /处理不明确结果/);
+  assert.match(ambiguityWorkflowPage.body, new RegExp(`/communication\\?batchId=${communicationBatchId}#communication-item-${ambiguousCommunicationItem.id}`));
   assert.match(confirmedPage.body, /开始沟通/);
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
