@@ -7,6 +7,7 @@ const {
   buildAnalysisRevision,
   analysisStaleReasons
 } = require("../src/core/analysis_revision");
+const { scoreJob, decisionState } = require("../src/core/scoring");
 
 const recommendation = {
   candidateProfile: { candidate: { targetTitles: ["AI应用开发工程师"] } },
@@ -29,7 +30,7 @@ const recommendation = {
     exclude_words: ["外包"],
     boss_activity: { max_active_days: 1, unknown_penalty: 3, inactive_penalty: 10 },
     work_schedule: { preference: "prefer_double_weekend" },
-    salary: { expected_min_k: 9, expected_max_k: 14, hard_max_k: 35 }
+    salary: { mode: "strict", expected_min_k: 9, expected_max_k: 14, hard_max_k: 35 }
   }
 };
 
@@ -68,5 +69,25 @@ assert.deepStrictEqual(
   analysisStaleReasons({ revision }, buildAnalysisRevision(changedAcquisition, "job-source-1")),
   []
 );
+
+const knownSalaryBoundaryCases = ["5-6K", "5-7K", "6-7K", "6-8K", "7-8K", "8-8K"];
+const replay104 = {
+  batchId: "gate-a-task-1-deterministic-104",
+  source: "offline-fixture",
+  jobs: Array.from({ length: 104 }, (_, index) => ({
+    sourceId: `replay-${String(index + 1).padStart(3, "0")}`,
+    salary: knownSalaryBoundaryCases[index] || "9-14K",
+    title: "AI应用开发工程师",
+    location: "广州"
+  }))
+};
+assert.strictEqual(replay104.jobs.length, 104);
+const boundaryResults = replay104.jobs
+  .filter((job) => knownSalaryBoundaryCases.includes(job.salary))
+  .map((job) => scoreJob(job, inherited));
+assert.strictEqual(boundaryResults.length, 6);
+assert(boundaryResults.every((result) => result.qualityTags.includes("salary_out_of_range")));
+assert(boundaryResults.every((result) => decisionState(result) === "blocked"));
+console.log(JSON.stringify({ replay: replay104.batchId, jobs: replay104.jobs.length, boundaryCases: boundaryResults.length }));
 
 console.log("analysis_revision_smoke ok");
