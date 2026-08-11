@@ -1,6 +1,7 @@
 "use strict";
 
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
+const { isBossJobUrl } = require("../../core/scoring");
 
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "failed"]);
 const VERIFIED_OUTCOMES = new Set(["succeeded", "already_communicated"]);
@@ -74,7 +75,7 @@ function itemView(item = {}, detailsByJobId) {
   const analysis = detail.analysis || {};
   return {
     id: number(item.id), batchId: number(item.batchId), jobId: number(item.jobId), position: number(item.position), status: text(item.status), clickCount: number(item.clickCount),
-    title: text(item.titleSnapshot || detail.title), company: text(item.companySnapshot || detail.company), jobUrl: text(item.jobUrl || detail.url),
+    title: text(item.titleSnapshot || detail.title), company: text(item.companySnapshot || detail.company), jobUrl: safeBossJobUrl(item.jobUrl || detail.url),
     salary: text(detail.salary || item.salarySnapshot || "未保存"), location: text(detail.location || item.locationSnapshot || "未保存"),
     tier: text(detail.decisionBucket || item.tierSnapshot || "未保存"), evidence: stringList(analysis.fitReasons || detail.matches || item.evidenceSnapshot || item.evidence?.resume || []),
     risks: stringList(analysis.riskQuestions || detail.risks || item.riskSnapshot || []), proposalReason: text((analysis.fitReasons || [])[0] || item.proposalReasonSnapshot || "依据已确认的岗位清单"),
@@ -94,6 +95,7 @@ function outcomeView(summary = {}) { const counts = countMap(summary.statusCount
 function calibrationView(calibration = {}) { return { status: text(calibration.status), implementation: text(calibration.implementation), calibration: text(calibration.calibration), acceptance: text(calibration.acceptance), executionEnabled: Boolean(calibration.executionEnabled) }; }
 function countMap(value) { return Object.fromEntries(Object.entries(value || {}).filter(([key, count]) => /^[a-z_]+$/.test(key) && Number.isFinite(Number(count))).map(([key, count]) => [key, number(count)])); }
 function stringList(value) { return (Array.isArray(value) ? value : []).map(text).filter(Boolean); }
+function safeBossJobUrl(value) { const url = text(value); return isBossJobUrl(url) ? url : ""; }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; }
 function text(value) { return String(value || "").trim(); }
 

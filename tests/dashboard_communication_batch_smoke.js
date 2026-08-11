@@ -93,6 +93,16 @@ function assertCommunicationViewModel() {
   const mismatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ planId: 12 }), integrityIssue: "batch_plan_mismatch" });
   assert.equal(mismatch.state, "integrity_blocked");
   assert.equal(mismatch.controls.visible, false);
+
+  const links = buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11 } },
+    current: communicationStatus({}, {}, [
+      { id: 1, batchId: 41, status: "pending", jobUrl: "javascript:alert(1)" },
+      { id: 2, batchId: 41, status: "pending", jobUrl: "https://example.com/job_detail/role.html" },
+      { id: 3, batchId: 41, status: "pending", jobUrl: "https://www.zhipin.com/job_detail/approved-role.html" }
+    ])
+  });
+  assert.deepEqual(links.items.map((item) => item.jobUrl), ["", "", "https://www.zhipin.com/job_detail/approved-role.html"]);
 }
 
 assertCommunicationViewModel();
@@ -173,6 +183,25 @@ assertCommunicationViewModel();
   assert.match(automaticCenter.body, /<dt>薪资<\/dt><dd>10-15K<\/dd>/);
   assert.match(automaticCenter.body, /<dt>地点<\/dt><dd>Guangzhou<\/dd>/);
   assert.doesNotMatch(automaticCenter.body, new RegExp(`批次 #${batchId}</h2>`), "unlinked legacy batches must not enter automatic history");
+  for (const pathname of [
+    "/communication?planId=999999",
+    `/communication?planId=${fixture.planId}&profileId=${fixture.otherProfileId}`,
+    "/communication?profileId=999999"
+  ]) {
+    const spawnsBeforeInvalidScope = spawns.length;
+    const invalidScope = await getText(baseUrl, pathname);
+    assert.match(invalidScope.body, /批次范围无法安全确认/, `${pathname} must fail closed`);
+    assert.doesNotMatch(invalidScope.body, /name="action" value="(?:start|resume)"/, `${pathname} must not expose execution controls`);
+    assert.strictEqual(spawns.length, spawnsBeforeInvalidScope, `${pathname} must not spawn communication`);
+  }
+  const [unsafeSchemeItem, unsafeOriginItem] = listCommunicationBatchItems(db, batchId);
+  db.prepare("UPDATE communication_batch_items SET job_url = ? WHERE id = ?").run("javascript:alert(1)", unsafeSchemeItem.id);
+  db.prepare("UPDATE communication_batch_items SET job_url = ? WHERE id = ?").run("https://example.com/job_detail/role.html", unsafeOriginItem.id);
+  const unsafeLinks = await getText(baseUrl, `/communication?batchId=${batchId}`);
+  assert.doesNotMatch(unsafeLinks.body, /href="javascript:alert\(1\)"/);
+  assert.doesNotMatch(unsafeLinks.body, /href="https:\/\/example\.com\/job_detail\/role\.html"/);
+  const validLinks = await getText(baseUrl, `/communication?batchId=${currentBatch.body.batch.id}`);
+  assert.match(validLinks.body, /href="https:\/\/www\.zhipin\.com\/job_detail\/safe\.html"/);
   const directOrphan = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(directOrphan.body, new RegExp(`批次 #${batchId}</h2>`), "a direct legacy batch URL must remain readable");
   const mismatchedBatch = await getText(baseUrl, `/communication?batchId=${batchId}&planId=${fixture.smallPlanId}`);
@@ -390,7 +419,9 @@ function seed(database) {
   for (let index = 0; index < 21; index += 1) {
     upsertJob(database, job(`small-${index}`, { title: `Small role ${index}`, analysis: completeAnalysis("apply") }), smallBatchId);
   }
-  return { planId, smallPlanId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+  const otherProfileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Other dashboard smoke", "{}", now, now).lastInsertRowid);
+  Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(otherProfileId, "Other dashboard plan", "{}", now, now).lastInsertRowid);
+  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function reviewWorkflow(database, { id, planId, localDay }) {

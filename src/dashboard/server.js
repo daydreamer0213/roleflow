@@ -3741,11 +3741,18 @@ function renderCommunicationCenterPage({ db, searchParams }) {
       scope: { profile, plan }, current: result.body, directBatch: !workflow, integrityIssue, detailsByJobId
     })));
   }
-  const requestedPlan = requestedPlanId ? getSearchPlan(db, requestedPlanId) : null;
-  const profileId = requestedProfileId || requestedPlan?.profileId || listCandidateProfiles(db)[0]?.id || 0;
-  const profile = profileId ? getCandidateProfile(db, profileId) : null;
-  const plan = requestedPlan && (!profile || requestedPlan.profileId === profile.id)
-    ? requestedPlan : profile ? getActiveSearchPlan(db, profile.id) : null;
+  const requestedPlanPresent = searchParams.has("planId");
+  const requestedProfilePresent = searchParams.has("profileId");
+  const requestedPlan = requestedPlanPresent ? getSearchPlan(db, requestedPlanId) : null;
+  const requestedProfile = requestedProfilePresent ? getCandidateProfile(db, requestedProfileId) : null;
+  const integrityIssue = requestedPlanPresent && !requestedPlan ? "requested_plan_not_found"
+    : requestedProfilePresent && !requestedProfile ? "requested_profile_not_found"
+      : requestedPlan && requestedProfile && requestedPlan.profileId !== requestedProfile.id ? "requested_scope_mismatch" : "";
+  if (integrityIssue) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({
+    scope: { profile: requestedProfile, plan: requestedPlan }, integrityIssue
+  })));
+  const profile = requestedProfile || (requestedPlan ? getCandidateProfile(db, requestedPlan.profileId) : listCandidateProfiles(db)[0]) || null;
+  const plan = requestedPlan || (profile ? getActiveSearchPlan(db, profile.id) : null);
   if (!plan || !profile) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan } })));
   const runs = listWorkflowRuns(db, { profileId: profile.id, planId: plan.id, limit: 20 });
   const linked = [];
