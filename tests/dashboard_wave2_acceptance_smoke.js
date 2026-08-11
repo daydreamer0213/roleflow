@@ -1,7 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, assertStrictPage, parseArgs } = require("../scripts/evaluate-dashboard-wave2");
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
+const { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, assertStrictPage, pageAudit, parseArgs } = require("../scripts/evaluate-dashboard-wave2");
 
 assert.deepEqual(PAGE_SPECS.map((page) => page.id), ["today-ready", "workflow-scanning", "queue-primary", "jobs-latest", "communication-review", "settings", "onboarding-existing", "diagnostics"]);
 assert.deepEqual(parseArgs(["--help"]), { help: true }, "the evaluator must expose a dependency-free help path");
@@ -56,4 +58,35 @@ const noPrimaryMarker = structuredClone(passingPage);
 noPrimaryMarker.audit.primary = { policy: "none-expected", defined: false, markerCount: 1, count: 0, visibleCount: 0, fullyWithinViewport: false, control: null };
 assert.throws(() => assertStrictPage(noPrimaryMarker), /unexpected page-level primary marker/, "none-expected pages must fail if a page-level primary marker is present");
 
-console.log("dashboard_wave2_acceptance_smoke ok");
+async function assertAccessibleNameRegression() {
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  try {
+    for (const [html, expectedUnlabeled] of [
+      ['<input name="hrMessage" placeholder="Paste message" title="Paste message">', [{ tag: "input", name: "hrMessage" }]],
+      ['<label for="hr-message">HR original message</label><textarea id="hr-message" name="hrMessage"></textarea>', []]
+    ]) {
+      const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+      await page.setContent(html);
+      const audit = await page.evaluate(pageAudit);
+      assert.deepEqual(audit.accessibility.unlabeledVisibleControls, expectedUnlabeled, "the runtime evaluator must ignore placeholder/title and accept an associated label");
+      const candidate = structuredClone(passingPage);
+      candidate.audit.accessibility = { ...candidate.audit.accessibility, labelledInputs: audit.accessibility.labelledInputs, unlabeledVisibleControlCount: audit.accessibility.unlabeledVisibleControlCount, unlabeledVisibleControls: audit.accessibility.unlabeledVisibleControls };
+      if (expectedUnlabeled.length) assert.throws(() => assertStrictPage(candidate), /unlabeled visible controls.*input\[name=hrMessage\]/, "an unnamed visible fixture must fail the strict page gate");
+      else assert.doesNotThrow(() => assertStrictPage(candidate), "a named visible fixture must pass the strict page gate");
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+const workflowHelp = spawnSync(process.execPath, [path.join(__dirname, "..", "scripts", "evaluate-workflow-dashboard.js"), "--help"], { encoding: "utf8" });
+assert.equal(workflowHelp.status, 0, `workflow evaluator help must exit cleanly: ${workflowHelp.stderr}`);
+assert.match(workflowHelp.stdout, /Usage: node scripts\/evaluate-workflow-dashboard\.js/, "workflow evaluator help must be useful");
+assert.doesNotMatch(workflowHelp.stdout, /\\n/, "workflow evaluator help must use real line breaks");
+
+assertAccessibleNameRegression().then(() => console.log("dashboard_wave2_acceptance_smoke ok")).catch((error) => {
+  process.stderr.write(`${error.stack || error}\n`);
+  process.exitCode = 1;
+});

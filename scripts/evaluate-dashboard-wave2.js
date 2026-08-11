@@ -157,6 +157,7 @@ function pageAudit({ pageId = "", primarySelector = "", primaryPolicy = "", rele
   const headings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter(visible).map((heading) => ({ level: Number(heading.tagName.slice(1)), text: text(heading) }));
   const headingOrderValid = headings.every((heading, index) => index === 0 || heading.level <= headings[index - 1].level + 1);
   const labelledInputs = [...document.querySelectorAll("input:not([type=hidden]), select, textarea")].filter(visible).map((element) => ({ tag: element.tagName.toLowerCase(), name: element.getAttribute("name") || "", labelled: Boolean(element.labels?.length || element.getAttribute("aria-label") || element.getAttribute("aria-labelledby")) }));
+  const unlabeledVisibleControls = labelledInputs.filter((control) => !control.labelled).map(({ tag, name }) => ({ tag, name }));
   const overflowElements = [...document.body.querySelectorAll("*")].filter(visible).filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < -0.5 || rect.right > innerWidth + 0.5; }).slice(0, 20).map((element) => ({ tag: element.tagName.toLowerCase(), id: element.id || "", classes: typeof element.className === "string" ? element.className : "" }));
   const relevantControls = relevantControlSelector ? [...document.querySelectorAll(relevantControlSelector)].filter(visible).map(describe) : [];
   const undersizedInlineLinks = [...document.querySelectorAll("main a[href]")].filter(visible).map(describe).filter((link) => link.height < 44 || link.width < 44);
@@ -168,7 +169,7 @@ function pageAudit({ pageId = "", primarySelector = "", primaryPolicy = "", rele
     communicationHierarchy: pageId === "communication-review" ? { primarySolid: primaryStyle?.backgroundColor === "rgb(0, 107, 91)" && primaryStyle?.color === "rgb(255, 255, 255)", destructiveOutline: destructiveStyle?.backgroundColor === "rgb(255, 255, 255)" && destructiveStyle?.color === "rgb(178, 58, 50)" && destructiveStyle?.borderColor === "rgb(178, 58, 50)" } : null,
     focus: { focused: Boolean(focused && (actions.includes(focused) || primaryVisible.includes(focused) || navigationTargets.includes(focused))), activeTag: focused?.tagName?.toLowerCase() || null, activeText: text(focused), outlineStyle: focusStyle?.outlineStyle || null, outlineWidth: Number.parseFloat(focusStyle?.outlineWidth || "0"), outlineOffset: focusStyle?.outlineOffset || null },
     reducedMotion: { mediaMatches: matchMedia("(prefers-reduced-motion: reduce)").matches, transitionDuration: getComputedStyle(motionTarget).transitionDuration, animationDuration: getComputedStyle(motionTarget).animationDuration, runningAnimations: document.getAnimations().filter((animation) => animation.playState === "running").length, longRunningAnimations: document.getAnimations().filter((animation) => animation.playState === "running" && Number(animation.effect?.getComputedTiming().duration || 0) > 50).length },
-    accessibility: { viewportMeta: document.querySelector('meta[name="viewport"]')?.getAttribute("content") || "", bodyFontSize: Number.parseFloat(getComputedStyle(document.body).fontSize || "0"), headings, headingOrderValid, labelledInputs, alerts: document.querySelectorAll('[role="alert"], [role="status"]').length, structuralEmoji: [...document.querySelectorAll("nav a, button")].filter((element) => /[\u{1F300}-\u{1FAFF}]/u.test(text(element))).map((element) => text(element)) }
+    accessibility: { viewportMeta: document.querySelector('meta[name="viewport"]')?.getAttribute("content") || "", bodyFontSize: Number.parseFloat(getComputedStyle(document.body).fontSize || "0"), headings, headingOrderValid, labelledInputs, unlabeledVisibleControlCount: unlabeledVisibleControls.length, unlabeledVisibleControls, alerts: document.querySelectorAll('[role="alert"], [role="status"]').length, structuralEmoji: [...document.querySelectorAll("nav a, button")].filter((element) => /[\u{1F300}-\u{1FAFF}]/u.test(text(element))).map((element) => text(element)) }
   };
 }
 
@@ -195,6 +196,7 @@ function assertStrictPage(page) {
   if (!focus.focused || focus.outlineStyle !== "solid" || focus.outlineWidth < 2) failures.push("weak keyboard focus");
   if (!audit.reducedMotion?.mediaMatches || audit.reducedMotion?.longRunningAnimations) failures.push("ignored reduced motion");
   if (!audit.accessibility?.viewportMeta.includes("width=device-width") || !audit.accessibility?.headingOrderValid) failures.push("accessibility structure");
+  if (audit.accessibility?.unlabeledVisibleControls?.length) failures.push(`unlabeled visible controls=${audit.accessibility.unlabeledVisibleControls.map((control) => `${control.tag}[name=${control.name || "<none>"}]`).join(", ")}`);
   if (page.viewport?.width <= 768 && audit.accessibility?.bodyFontSize < 16) failures.push("mobile body text");
   if (audit.accessibility?.structuralEmoji?.length) failures.push("structural emoji");
   for (const [kind, entries] of Object.entries(page.errors || {})) if (entries.length) failures.push(`${kind} request`);
@@ -232,4 +234,4 @@ function quietLogger() { return { info() {}, warn() {}, error() {}, requestId() 
 function usage() { return ["Usage: node scripts/evaluate-dashboard-wave2.js [options]", "", "Strict prerequisites: ROLEFLOW_REQUIRE_PLAYWRIGHT=1 and NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --browser-channel <name>   Playwright Chromium channel (default: msedge)", "  -h, --help                 Show this help", ""].join("\n"); }
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
-module.exports = { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, VIEWPORTS, assertStrictPage, parseArgs };
+module.exports = { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, VIEWPORTS, assertStrictPage, pageAudit, parseArgs };
