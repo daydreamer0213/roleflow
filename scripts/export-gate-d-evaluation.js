@@ -97,7 +97,7 @@ function sourceSnapshot(source, tempRoot, hooks) {
 function cleanupSnapshot({ snapshot, directory }, hooks) {
   return [
     ...removeAll([snapshot], hooks.snapshotUnlink || fs.unlinkSync),
-    ...removeDirs([directory], hooks.snapshotRmdir || fs.rmdirSync)
+    ...removeSnapshotDirs([directory], hooks.snapshotRmdir || fs.rmdirSync)
   ];
 }
 
@@ -126,17 +126,17 @@ function assertTask13({ dbPath, reportPath, receiptPath, root }) {
 
 function assertCompletedCohort(db) {
   const batches = db.prepare("SELECT id, keyword, status FROM batches ORDER BY id").all();
-  const runs = db.prepare("SELECT id, batch_id, status FROM scan_runs ORDER BY id").all();
+  const runs = db.prepare("SELECT id, command, batch_id, status FROM scan_runs ORDER BY id").all();
   const targets = db.prepare("SELECT batch_id, status FROM scan_target_results ORDER BY id").all();
   if (!batches.length) throw new Error("fresh baseline has no batches");
   if (batches.some((row) => row.status !== "completed")) throw new Error("formal evaluation requires every batch to be completed");
+  if (runs.some((row) => !["daily", "broad"].includes(text(row.command).toLowerCase()))) {
+    throw new Error("formal full-scan cohort requires scan_runs.command daily|broad; maintenance commands are unsupported");
+  }
   if (!runs.length || runs.some((row) => row.status !== "completed" || !Number.isInteger(Number(row.batch_id)))) throw new Error("formal evaluation requires every scan_run to be completed");
   for (const batch of batches) {
     if (!runs.some((run) => Number(run.batch_id) === Number(batch.id))) throw new Error("every fresh batch requires a completed scan_run");
     const batchTargets = targets.filter((row) => Number(row.batch_id) === Number(batch.id));
-    if (!batchTargets.length && ["detail-refresh", "activity-probe", "analysis-retry"].includes(text(batch.keyword))) {
-      throw new Error("formal full-scan cohort does not support maintenance batches without scan targets");
-    }
     if (!batchTargets.length || batchTargets.some((row) => row.status !== "completed")) throw new Error("every fresh batch requires completed scan targets");
   }
   const distribution = (rows) => Object.fromEntries([...new Set(rows.map((row) => row.status))].sort().map((status) => [status, rows.filter((row) => row.status === status).length]));
@@ -245,11 +245,41 @@ function removeDirs(directories, rmdir = fs.rmdirSync) {
   }
   return errors;
 }
+function removeSnapshotDirs(directories, rmdir = fs.rmdirSync) {
+  const errors = [];
+  for (const directory of [...directories].reverse()) {
+    try {
+      rmdir(directory);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      errors.push(error);
+      if (rmdir !== fs.rmdirSync) {
+        try { fs.rmdirSync(directory); } catch (fallbackError) { if (fallbackError.code !== "ENOENT") errors.push(fallbackError); }
+      }
+    }
+  }
+  return errors;
+}
 function partial(file) { return path.join(path.dirname(file), `.partial-${randomUUID()}-${path.basename(file)}`); }
 function publish(partialFile, finalFile, published, hooks) { (hooks.link || fs.linkSync)(partialFile, finalFile); published.push(finalFile); (hooks.unlinkPartial || fs.unlinkSync)(partialFile); }
 
+const CONTRACT_FAILURE_STAGES = new Map([
+  ["understandjob", "understand_job"],
+  ["matchjob", "match_job"],
+  ["matchresponsibilities", "match_responsibilities"],
+  ["matchrequirements", "match_requirements"],
+  ["analyze", "analysis"],
+  ["analysis", "analysis"],
+  ["input", "input"],
+  ["execution", "execution"]
+]);
+
+function contractFailureStage(value) {
+  return CONTRACT_FAILURE_STAGES.get(text(value).toLowerCase().replace(/[^a-z]/g, "")) || null;
+}
+
 function attemptSummaries(db) {
-  const rows = db.prepare(`SELECT id, job_id, status, error_code, finished_at, updated_at, created_at
+  const rows = db.prepare(`SELECT id, job_id, status, error_code, error_stage, finished_at, updated_at, created_at
     FROM job_analysis_attempts
     ORDER BY job_id ASC,
       (COALESCE(finished_at, updated_at, created_at) IS NULL) ASC,
@@ -269,11 +299,22 @@ function attemptSummaries(db) {
     const recoveryOutcome = latest.status === "succeeded"
       ? (priorFailure ? "recovered" : "succeeded")
       : latest.status === "running" ? "in_progress" : "unrecovered_failure";
+    const contractFailures = items.filter((item) => text(item.error_code) === "MODEL_CONTRACT_INVALID");
+    const contractFailureStages = [...new Set(contractFailures.map((item) => contractFailureStage(item.error_stage)).filter(Boolean))].sort();
+    const contractRecoveryOutcome = contractFailures.length === 0
+      ? "not_applicable"
+      : latest.status === "running"
+        ? "in_progress"
+        : latest.status === "succeeded" ? "recovered" : "unrecovered";
     return [jobId, {
       attemptCount: items.length,
       latestStatus: text(latest.status),
       latestErrorCode: latest.status === "failed" ? text(latest.error_code) : "",
-      recoveryOutcome
+      recoveryOutcome,
+      hadContractFailure: contractFailures.length > 0,
+      contractFailureCount: contractFailures.length,
+      contractFailureStages,
+      contractRecoveryOutcome
     }];
   }));
 }
@@ -327,7 +368,11 @@ function exportEvaluation(options, hooks = {}) {
       attemptCount: 0,
       latestStatus: "",
       latestErrorCode: "",
-      recoveryOutcome: "not_recorded"
+      recoveryOutcome: "not_recorded",
+      hadContractFailure: false,
+      contractFailureCount: 0,
+      contractFailureStages: [],
+      contractRecoveryOutcome: "not_applicable"
     };
     const secrets = [text(row.company), text(analysis.recruiter), text(analysis.recruiterName), text(analysis.contactName)];
     const input = frozenInput(analysis, secrets);
@@ -342,7 +387,11 @@ function exportEvaluation(options, hooks = {}) {
       scanEvidence: { completeJd, detailRead: !list(parseJson(row.quality_tags_json, [])).includes("detail_unverified") },
       modelContract: {
         semanticStatus: text(analysis.semanticStatus) || "unknown",
-        invalidField: text(analysis.invalidField || analysis.contractInvalidField) || null,
+        hadContractFailure: attempt.hadContractFailure,
+        contractFailureCount: attempt.contractFailureCount,
+        contractFailureStages: attempt.contractFailureStages,
+        contractRecoveryOutcome: attempt.contractRecoveryOutcome,
+        invalidFieldCategory: "not_persisted_by_schema_v11",
         repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null,
         finalFailure: attempt.latestStatus ? (attempt.latestErrorCode || null) : (text(analysis.errorCode) || null),
         attemptCount: attempt.attemptCount,
@@ -385,7 +434,8 @@ function exportEvaluation(options, hooks = {}) {
       collapsedObservations: rawObservations.length - cases.length,
       technicalCases: cases.length - qualityEligibleCaseCount
     },
-    qualityEligible: true,
+    cohortComplete: true,
+    qualityEligible: qualityEligibleCaseCount > 0,
     qualityEligibleCaseCount,
     runStatusDistribution,
     fixtureSha256,
@@ -410,7 +460,8 @@ function exportEvaluation(options, hooks = {}) {
     createdAtUtc: new Date().toISOString(),
     fixtureSha256,
     labelsSha256,
-    qualityEligible: true,
+    cohortComplete: true,
+    qualityEligible: qualityEligibleCaseCount > 0,
     qualityEligibleCaseCount,
     runStatusDistribution
   };

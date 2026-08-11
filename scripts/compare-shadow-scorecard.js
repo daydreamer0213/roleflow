@@ -92,7 +92,7 @@ function buildShadowReport(fixture, metadata = {}) {
     evaluatedGitCommit: String(metadata.evaluatedGitCommit || ""),
     policyVersion: String(policy.version),
     policyHash: decisionPolicyHash(policy),
-    total: rows.length,
+    total: qualityRows.length,
     rawTotal: rows.length,
     qualityEligibleCaseCount: qualityRows.length,
     technicalBucketCounts: bucketCounts(rows),

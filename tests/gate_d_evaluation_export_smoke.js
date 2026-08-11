@@ -65,8 +65,8 @@ function seedDb() {
     db.exec("PRAGMA foreign_keys = OFF");
     const batchId = Number(insert(db, `INSERT INTO batches(site, keyword, started_at, status, finished_at)
       VALUES ('boss', 'node', ?, 'completed', ?)`, now, now).lastInsertRowid);
-    insert(db, `INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
-      VALUES ('fresh-scan', 'boss', ?, 'completed', ?, ?, ?)`, batchId, now, now, now);
+    insert(db, `INSERT INTO scan_runs(id, site, command, batch_id, status, created_at, started_at, finished_at)
+      VALUES ('fresh-scan', 'boss', 'daily', ?, 'completed', ?, ?, ?)`, batchId, now, now, now);
     const rows = [
       {
         sourceId: "platform-source-id-must-not-leak",
@@ -113,8 +113,8 @@ function seedDb() {
       VALUES (?, 'fresh-target', 'completed', ?, ?)`, batchId, now, now);
     const secondBatchId = Number(insert(db, `INSERT INTO batches(site, keyword, started_at, status, finished_at)
       VALUES ('boss', 'node-tie', ?, 'completed', ?)`, now, now).lastInsertRowid);
-    insert(db, `INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
-      VALUES ('fresh-scan-tie', 'boss', ?, 'completed', ?, ?, ?)`, secondBatchId, now, now, now);
+    insert(db, `INSERT INTO scan_runs(id, site, command, batch_id, status, created_at, started_at, finished_at)
+      VALUES ('fresh-scan-tie', 'boss', 'broad', ?, 'completed', ?, ?, ?)`, secondBatchId, now, now, now);
     insert(db, `INSERT INTO scan_target_results(batch_id, target_key, status, started_at, finished_at)
       VALUES (?, 'fresh-target-tie', 'completed', ?, ?)`, secondBatchId, now, now);
     const selectedObservationId = Number(insert(db, `INSERT INTO job_observations(
@@ -123,19 +123,19 @@ function seedDb() {
     jobIds[0], secondBatchId, rows[0].company, rows[0].location, rows[0].description,
     JSON.stringify(rows[0].analysis), "f".repeat(64), now).lastInsertRowid);
 
-    const addAttempt = ({ taskId, jobId, attempt, status, errorCode = null, finishedAt, updatedAt }) => insert(db, `INSERT INTO job_analysis_attempts(
+    const addAttempt = ({ taskId, jobId, attempt, status, errorCode = null, errorStage = null, finishedAt, updatedAt }) => insert(db, `INSERT INTO job_analysis_attempts(
       workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation, total_attempt_number,
       profile_kind, model_config_revision, provider, model, thinking_mode, reasoning_effort,
-      status, error_code, started_at, finished_at, created_at, updated_at
+      status, error_code, error_stage, started_at, finished_at, created_at, updated_at
     ) VALUES ('fixture-workflow', ?, ?, 0, ?, ?, 'batch_screening', 'fixture-revision',
-      'fixture-provider', 'fixture-model', 'off', 'low', ?, ?, ?, ?, ?, ?)`,
-    taskId, jobId, attempt, attempt, status, errorCode,
+      'fixture-provider', 'fixture-model', 'off', 'low', ?, ?, ?, ?, ?, ?, ?)`,
+    taskId, jobId, attempt, attempt, status, errorCode, errorStage,
     `2026-08-12T00:0${attempt}:00.000Z`, finishedAt, now, updatedAt);
     addAttempt({ taskId: 101, jobId: jobIds[0], attempt: 2, status: "succeeded", finishedAt: "2026-08-12T00:02:00.000Z", updatedAt: "2026-08-12T00:02:00.000Z" });
-    addAttempt({ taskId: 101, jobId: jobIds[0], attempt: 1, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", finishedAt: "2026-08-12T00:01:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z" });
+    addAttempt({ taskId: 101, jobId: jobIds[0], attempt: 1, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", errorStage: "matchJob", finishedAt: "2026-08-12T00:01:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z" });
     addAttempt({ taskId: 102, jobId: jobIds[1], attempt: 1, status: "succeeded", finishedAt: "2026-08-12T00:01:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z" });
-    addAttempt({ taskId: 102, jobId: jobIds[1], attempt: 2, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
-    addAttempt({ taskId: 103, jobId: jobIds[2], attempt: 1, status: "succeeded", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
+    addAttempt({ taskId: 102, jobId: jobIds[1], attempt: 2, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", errorStage: "matchResponsibilities", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
+    addAttempt({ taskId: 103, jobId: jobIds[2], attempt: 1, status: "failed", errorCode: "MODEL_CONTRACT_INVALID", errorStage: "understandJob", finishedAt: "2026-08-12T00:03:00.000Z", updatedAt: "2026-08-12T00:03:00.000Z" });
     addAttempt({ taskId: 103, jobId: jobIds[2], attempt: 2, status: "running", finishedAt: null, updatedAt: "2026-08-12T00:04:00.000Z" });
     return { batchId, selectedObservationId };
   } finally {
@@ -222,13 +222,28 @@ try {
   assert.strictEqual(recoveredCase.modelContract.attemptCount, 2);
   assert.strictEqual(recoveredCase.modelContract.finalAttemptStatus, "succeeded");
   assert.strictEqual(recoveredCase.modelContract.recoveryOutcome, "recovered");
+  assert.strictEqual(recoveredCase.modelContract.hadContractFailure, true);
+  assert.strictEqual(recoveredCase.modelContract.contractFailureCount, 1);
+  assert.deepStrictEqual(recoveredCase.modelContract.contractFailureStages, ["match_job"]);
+  assert.strictEqual(recoveredCase.modelContract.contractRecoveryOutcome, "recovered");
+  assert.strictEqual(recoveredCase.modelContract.invalidFieldCategory, "not_persisted_by_schema_v11");
   assert.strictEqual(recoveredCase.technicalBucket, null);
   const contractFailureCase = fixture.cases.find((item) => item.technicalBucket === "contract_failure");
   assert.strictEqual(contractFailureCase.modelContract.finalAttemptStatus, "failed");
   assert.strictEqual(contractFailureCase.modelContract.finalFailure, "MODEL_CONTRACT_INVALID");
+  assert.strictEqual(contractFailureCase.modelContract.hadContractFailure, true);
+  assert.strictEqual(contractFailureCase.modelContract.contractFailureCount, 1);
+  assert.deepStrictEqual(contractFailureCase.modelContract.contractFailureStages, ["match_responsibilities"]);
+  assert.strictEqual(contractFailureCase.modelContract.contractRecoveryOutcome, "unrecovered");
   const runningCase = fixture.cases.find((item) => item.technicalBucket === "analysis_running");
   assert.strictEqual(runningCase.modelContract.finalAttemptStatus, "running");
   assert.strictEqual(runningCase.modelContract.attemptCount, 2);
+  assert.strictEqual(runningCase.modelContract.hadContractFailure, true);
+  assert.strictEqual(runningCase.modelContract.contractFailureCount, 1);
+  assert.deepStrictEqual(runningCase.modelContract.contractFailureStages, ["understand_job"]);
+  assert.strictEqual(runningCase.modelContract.contractRecoveryOutcome, "in_progress");
+  assert.strictEqual(Object.hasOwn(runningCase.modelContract, "invalidField"), false,
+    "schema v11 does not persist a trustworthy concrete invalid field");
   assert.strictEqual(runningCase.productionMatrixTier, null);
   assert.deepStrictEqual(labels.rows.map((row) => row.status), ["pending-human", "pending-human", "pending-human"]);
   assert(labels.rows.every((row) => row.directionFit === null && row.expectedTier === null && row.labeledAt === null));
@@ -261,8 +276,10 @@ try {
   assert.deepStrictEqual(manifest.counts, { rawObservations: 4, uniqueJobs: 3, collapsedObservations: 1, technicalCases: 2 });
   assert.strictEqual(manifest.qualityEligible, true);
   assert.strictEqual(manifest.qualityEligibleCaseCount, 1);
+  assert.strictEqual(manifest.cohortComplete, true);
   assert.strictEqual(receipt.qualityEligible, true);
   assert.strictEqual(receipt.qualityEligibleCaseCount, 1);
+  assert.strictEqual(receipt.cohortComplete, true);
   assert.strictEqual(manifest.cohortContract, "formal-full-scan-only-v1");
   assert.deepStrictEqual(manifest.privacy, {
     artifactClass: "private-local",
@@ -274,6 +291,26 @@ try {
   const second = exportEvaluation(options(path.join(TEST_ROOT, "second"), artifacts), testSeam());
   assert.strictEqual(fs.readFileSync(second.fixture, "utf8"), fixtureBytes, "fixture must be byte-deterministic across output roots");
   assert.strictEqual(fs.readFileSync(second.labels, "utf8"), labelsBytes, "labels must be byte-deterministic across output roots");
+
+  const technicalDb = new DatabaseSync(DB_PATH);
+  const originalQualityTags = technicalDb.prepare("SELECT id, quality_tags_json FROM job_observations ORDER BY id").all();
+  technicalDb.prepare(`UPDATE job_observations SET quality_tags_json = '["detail_unverified"]'`).run();
+  technicalDb.close();
+  const allTechnical = exportEvaluation(options(path.join(TEST_ROOT, "all-technical"), artifacts), testSeam());
+  const allTechnicalManifest = json(allTechnical.manifest);
+  const allTechnicalReceipt = json(allTechnical.receipt);
+  assert.strictEqual(allTechnicalManifest.qualityEligibleCaseCount, 0);
+  assert.strictEqual(allTechnicalManifest.qualityEligible, false,
+    "qualityEligible must mean at least one non-technical evaluation case");
+  assert.strictEqual(allTechnicalManifest.cohortComplete, true,
+    "cohort completeness is independent from evaluation eligibility");
+  assert.strictEqual(allTechnicalReceipt.qualityEligibleCaseCount, 0);
+  assert.strictEqual(allTechnicalReceipt.qualityEligible, false);
+  assert.strictEqual(allTechnicalReceipt.cohortComplete, true);
+  const restoreQualityDb = new DatabaseSync(DB_PATH);
+  const restoreQuality = restoreQualityDb.prepare("UPDATE job_observations SET quality_tags_json = ? WHERE id = ?");
+  for (const row of originalQualityTags) restoreQuality.run(row.quality_tags_json, row.id);
+  restoreQualityDb.close();
 
   const walWriter = new DatabaseSync(DB_PATH);
   walWriter.exec("PRAGMA journal_mode = WAL");
@@ -317,6 +354,16 @@ try {
     }), /snapshot cleanup failed/i);
     assertNoOutput(snapshotRoot);
   }
+  const snapshotNotEmptyRoot = path.join(TEST_ROOT, "fault-snapshot-rmdir-enotempty");
+  assert.throws(() => exportEvaluation(options(snapshotNotEmptyRoot, artifacts), {
+    ...testSeam(),
+    snapshotRmdir() {
+      const error = new Error("injected snapshot directory ENOTEMPTY");
+      error.code = "ENOTEMPTY";
+      throw error;
+    }
+  }), /snapshot cleanup failed/i, "ENOTEMPTY in the dedicated snapshot directory must fail closed");
+  assertNoOutput(snapshotNotEmptyRoot);
 
   for (const [label, hooks] of [
     ["link", { link() { throw new Error("injected link failure"); } }],
@@ -430,20 +477,27 @@ try {
   }), /injected partial publish failure/);
   assertNoOutput(partialRoot);
 
-  const maintenanceDb = new DatabaseSync(DB_PATH);
-  const maintenanceBatchId = Number(maintenanceDb.prepare(`INSERT INTO batches(site, keyword, started_at, status, finished_at)
-    VALUES ('boss', 'detail-refresh', '2026-08-12T01:00:00.000Z', 'completed', '2026-08-12T01:01:00.000Z')`).run().lastInsertRowid);
-  maintenanceDb.prepare(`INSERT INTO scan_runs(id, site, batch_id, status, created_at, started_at, finished_at)
-    VALUES ('maintenance-refresh', 'boss', ?, 'completed', '2026-08-12T01:00:00.000Z', '2026-08-12T01:00:00.000Z', '2026-08-12T01:01:00.000Z')`).run(maintenanceBatchId);
-  maintenanceDb.close();
-  const maintenanceRoot = path.join(TEST_ROOT, "maintenance");
-  assert.throws(() => exportEvaluation(options(maintenanceRoot, artifacts), testSeam()),
-    /formal full-scan cohort does not support maintenance batches without scan targets/i);
-  assertNoOutput(maintenanceRoot);
-  const maintenanceCleanupDb = new DatabaseSync(DB_PATH);
-  maintenanceCleanupDb.prepare("DELETE FROM scan_runs WHERE id = 'maintenance-refresh'").run();
-  maintenanceCleanupDb.prepare("DELETE FROM batches WHERE id = ?").run(maintenanceBatchId);
-  maintenanceCleanupDb.close();
+  for (const command of ["refresh", "activity"]) {
+    const maintenanceDb = new DatabaseSync(DB_PATH);
+    const maintenanceBatchId = Number(maintenanceDb.prepare(`INSERT INTO batches(site, keyword, started_at, status, finished_at)
+      VALUES ('boss', 'forged-full-scan', '2026-08-12T01:00:00.000Z', 'completed', '2026-08-12T01:01:00.000Z')`).run().lastInsertRowid);
+    maintenanceDb.prepare(`INSERT INTO scan_runs(id, site, command, batch_id, status, created_at, started_at, finished_at)
+      VALUES (?, 'boss', ?, ?, 'completed', '2026-08-12T01:00:00.000Z', '2026-08-12T01:00:00.000Z', '2026-08-12T01:01:00.000Z')`)
+      .run(`maintenance-${command}`, command, maintenanceBatchId);
+    maintenanceDb.prepare(`INSERT INTO scan_target_results(batch_id, target_key, status, started_at, finished_at)
+      VALUES (?, ?, 'completed', '2026-08-12T01:00:00.000Z', '2026-08-12T01:01:00.000Z')`)
+      .run(maintenanceBatchId, `forged-${command}-target`);
+    maintenanceDb.close();
+    const maintenanceRoot = path.join(TEST_ROOT, `maintenance-${command}`);
+    assert.throws(() => exportEvaluation(options(maintenanceRoot, artifacts), testSeam()),
+      /formal full-scan cohort requires scan_runs\.command daily\|broad; maintenance commands are unsupported/i);
+    assertNoOutput(maintenanceRoot);
+    const maintenanceCleanupDb = new DatabaseSync(DB_PATH);
+    maintenanceCleanupDb.prepare("DELETE FROM scan_target_results WHERE batch_id = ?").run(maintenanceBatchId);
+    maintenanceCleanupDb.prepare("DELETE FROM scan_runs WHERE id = ?").run(`maintenance-${command}`);
+    maintenanceCleanupDb.prepare("DELETE FROM batches WHERE id = ?").run(maintenanceBatchId);
+    maintenanceCleanupDb.close();
+  }
 
   let historyDb = new DatabaseSync(DB_PATH);
   historyDb.prepare("INSERT INTO batches(site, keyword, started_at, status, finished_at) VALUES ('boss', 'old', '2026-01-01T00:00:00.000Z', 'completed', '2026-01-01T00:00:00.000Z')").run();

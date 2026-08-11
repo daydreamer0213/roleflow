@@ -8,7 +8,7 @@ const {
   decisionPolicyHash
 } = require("../src/core/decision_policy");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
-const { main: compareShadowScorecard } = require("../scripts/compare-shadow-scorecard");
+const { buildShadowReport, main: compareShadowScorecard } = require("../scripts/compare-shadow-scorecard");
 const { buildShadowScorecard } = require("../scripts/lib/shadow_scorecard");
 
 function baseInput() {
@@ -279,6 +279,7 @@ try {
   assert.strictEqual(evaluationReport.evaluation, "matrix-vs-guarded-scorecard");
   assert.strictEqual(evaluationReport.sharedDecisionEngine, "deriveMatrixDecision");
   assert.strictEqual(evaluationReport.comparisonInterpretation, "matrix-vs-matrix-plus-guardrails residual");
+  assert.strictEqual(evaluationReport.total, 6, "top-level total must count only quality-eligible rows");
   assert.strictEqual(evaluationReport.rawTotal, 7);
   assert.strictEqual(evaluationReport.qualityEligibleCaseCount, 6);
   assert.deepStrictEqual(evaluationReport.technicalBucketCounts, { contract_failure: 1 });
@@ -311,6 +312,17 @@ try {
   assert.strictEqual(responsibilityCeiling.candidateTier, "caution");
   assert(responsibilityCeiling.codes.includes("alignment_consistency_cap"));
   assert.strictEqual(evaluationReport.rankingUsefulness.status, "available");
+
+  const denominatorCounterexample = buildShadowReport({
+    cases: [
+      evaluationFixture.cases.find((item) => item.id === "technical-contract-failure"),
+      evaluationFixture.cases.find((item) => item.id === "fixed-salary-boundary")
+    ]
+  });
+  assert.strictEqual(denominatorCounterexample.rawTotal, 2);
+  assert.strictEqual(denominatorCounterexample.total, 1);
+  assert.strictEqual(denominatorCounterexample.qualityEligibleCaseCount, 1);
+  assert.deepStrictEqual(denominatorCounterexample.technicalBucketCounts, { contract_failure: 1 });
 
   const samePathResult = spawnSync(process.execPath, [
     "scripts/compare-shadow-scorecard.js", "--input", evaluationFixturePath, "--output", evaluationFixturePath
