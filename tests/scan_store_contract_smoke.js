@@ -169,6 +169,57 @@ function contract05Lifecycle() {
   assert.equal(storage.getBatch(db, batchId).status, "completed");
   assert.equal(storage.finishScanRun(db, { runId: created.id, status: "completed" }).status, "completed");
   assertThrowsCode(() => storage.finishScanRun(db, { runId: created.id, status: "failed" }), "SCAN_RUN_ALREADY_FINISHED");
+
+  withDb((claimDb) => {
+    const planId = seedPlan(claimDb, "claim-success");
+    const batchId = storage.createBatch(claimDb, "claim-site", "claim", "", { status: "completed", searchPlanId: planId });
+    const run = storage.createScanRun(claimDb, { runId: "claim-success-run", site: "claim-site", planId });
+    storage.acquireSiteScanLease(claimDb, { site: "claim-site", owner: "claim-owner", planId, ttlMs: 60_000 });
+    const observed = observeTransactions(claimDb);
+    const claimed = storage.claimScanRun(observed.db, {
+      runId: run.id, batchId, leaseOwner: "claim-owner", processId: 41,
+      startedAt: "2030-01-01T00:00:00.000Z", heartbeatAt: "2030-01-01T00:00:01.000Z"
+    });
+    assert.deepEqual(observed.transactions, ["BEGIN IMMEDIATE", "COMMIT"]);
+    assert.deepEqual(pick(claimed, ["runId", "site", "planId", "batchId", "status", "leaseOwner", "processId", "startedAt", "heartbeatAt"]), {
+      runId: "claim-success-run", site: "claim-site", planId, batchId, status: "running", leaseOwner: "claim-owner", processId: 41,
+      startedAt: "2030-01-01T00:00:00.000Z", heartbeatAt: "2030-01-01T00:00:01.000Z"
+    });
+    assert.equal(storage.getBatch(claimDb, batchId).status, "running");
+    assert.deepEqual(pick(storage.getSiteScanLease(claimDb, "claim-site"), ["site", "owner", "planId"]), { site: "claim-site", owner: "claim-owner", planId });
+  });
+
+  const claimFailures = [
+    { name: "wrong owner", setup: ({ db, planId }) => storage.acquireSiteScanLease(db, { site: "claim-failure", owner: "real-owner", planId }), input: { leaseOwner: "wrong-owner" }, code: "SCAN_RUN_LEASE_MISMATCH" },
+    { name: "already claimed", setup: ({ db, planId }) => {
+      storage.acquireSiteScanLease(db, { site: "claim-failure", owner: "real-owner", planId });
+      db.prepare("UPDATE scan_runs SET lease_owner = 'real-owner' WHERE id = 'claim-failure-run'").run();
+    }, input: { leaseOwner: "other-owner" }, code: "SCAN_RUN_CLAIMED" },
+    { name: "expired lease", setup: ({ db, planId }) => {
+      storage.acquireSiteScanLease(db, { site: "claim-failure", owner: "claim-owner", planId });
+      db.prepare("UPDATE site_scan_leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE site = 'claim-failure'").run();
+    }, input: { leaseOwner: "claim-owner" }, code: "SCAN_RUN_LEASE_MISMATCH" },
+    { name: "missing lease", setup: () => {}, input: { leaseOwner: "claim-owner" }, code: "SCAN_RUN_LEASE_MISMATCH" },
+    { name: "batch site mismatch", setup: ({ db, planId }) => {
+      storage.acquireSiteScanLease(db, { site: "claim-failure", owner: "claim-owner", planId });
+      return { batchId: storage.createBatch(db, "other-site", "claim", "", { status: "completed", searchPlanId: planId }) };
+    }, input: { leaseOwner: "claim-owner" }, code: "SCAN_RUN_BATCH_MISMATCH" },
+    { name: "batch plan mismatch", setup: ({ db }) => {
+      storage.acquireSiteScanLease(db, { site: "claim-failure", owner: "claim-owner", planId: 999 });
+      return { batchId: storage.createBatch(db, "claim-failure", "claim", "", { status: "completed", searchPlanId: 999 }) };
+    }, input: { leaseOwner: "claim-owner" }, code: "SCAN_RUN_PLAN_MISMATCH" }
+  ];
+  for (const failure of claimFailures) withDb((claimDb) => {
+    const planId = seedPlan(claimDb, `claim-${failure.name}`);
+    storage.createScanRun(claimDb, { runId: "claim-failure-run", site: "claim-failure", planId });
+    const setupResult = failure.setup({ db: claimDb, planId });
+    const batchId = setupResult?.batchId || storage.createBatch(claimDb, "claim-failure", "claim", "", { status: "completed", searchPlanId: planId });
+    const before = snapshotTables(claimDb, ["scan_runs", "batches", "site_scan_leases"]);
+    const observed = observeTransactions(claimDb);
+    assertThrowsCode(() => storage.claimScanRun(observed.db, { runId: "claim-failure-run", batchId, ...failure.input }), failure.code, failure.name);
+    assert.deepEqual(observed.transactions, ["BEGIN IMMEDIATE", "ROLLBACK"], failure.name);
+    assert.deepEqual(snapshotTables(claimDb, ["scan_runs", "batches", "site_scan_leases"]), before, failure.name);
+  });
 }
 
 function contract06ProcessExit() {
@@ -178,6 +229,13 @@ function contract06ProcessExit() {
     const result = storage.recordScanRunProcessExit(observed.db, { runId: nonzero.id, exitCode: 7, exitedAt: "2030-01-01T00:00:00.000Z" });
     assert.deepEqual(observed.transactions, ["BEGIN IMMEDIATE", "COMMIT"]);
     assert.deepEqual(pick(result, ["status", "processExitCode", "processSignal", "stopCode"]), { status: "failed", processExitCode: 7, processSignal: "", stopCode: "SCAN_PROCESS_EXIT" });
+  });
+  withDb((exitDb) => {
+    const batchId = storage.createBatch(exitDb, "exit-signal", "sigterm", "", { status: "running" });
+    const run = storage.createScanRun(exitDb, { runId: "exit-sigterm", site: "exit-signal", batchId });
+    const result = storage.recordScanRunProcessExit(exitDb, { runId: run.id, signal: "SIGTERM", exitCode: null, exitedAt: "2030-01-01T00:00:00.000Z" });
+    assert.deepEqual(pick(result, ["status", "processExitCode", "processSignal", "stopCode"]), { status: "interrupted", processExitCode: null, processSignal: "SIGTERM", stopCode: "SCAN_PROCESS_SIGNAL" });
+    assert.equal(storage.getBatch(exitDb, batchId).status, "interrupted");
   });
   for (const expected of ["completed", "partial", "failed"]) withDb((exitDb) => {
     const batchId = storage.createBatch(exitDb, "summary", expected, "", { status: "running" });
@@ -237,6 +295,22 @@ function contract07Orphans() {
     storage.createScanRun(orphanDb, { runId: "orphan-rebound", site: "rebound", batchId, heartbeatAt: "2030-01-01T00:00:10.000Z" });
     assert.deepEqual(storage.interruptOrphanedScanRuns(orphanDb, { site: "rebound", now: "2030-01-01T00:00:10.000Z", heartbeatTimeoutMs: 1_000 }), { interrupted: 1, runIds: [oldRun.id] });
     assert.equal(storage.getBatch(orphanDb, batchId).status, "running");
+  });
+  withDb((orphanDb) => {
+    const batchId = storage.createBatch(orphanDb, "orphan-single", "stale", "", { status: "running" });
+    const run = storage.createScanRun(orphanDb, { runId: "orphan-single-run", site: "orphan-single", batchId, heartbeatAt: "2000-01-01T00:00:00.000Z" });
+    assert.deepEqual(storage.interruptOrphanedScanRuns(orphanDb, { site: "orphan-single", now: "2030-01-01", heartbeatTimeoutMs: 1 }), { interrupted: 1, runIds: [run.id] });
+    assert.equal(storage.getScanRun(orphanDb, run.id).status, "interrupted");
+    assert.equal(storage.getBatch(orphanDb, batchId).status, "interrupted");
+  });
+  withDb((orphanDb) => {
+    const batchId = storage.createBatch(orphanDb, "orphan-mismatch", "stale", "", { status: "running" });
+    const run = storage.createScanRun(orphanDb, { runId: "orphan-mismatch-run", site: "orphan-mismatch", batchId, leaseOwner: "run-owner", heartbeatAt: "2000-01-01T00:00:00.000Z" });
+    storage.acquireSiteScanLease(orphanDb, { site: "orphan-mismatch", owner: "other-owner" });
+    const beforeLease = snapshotTables(orphanDb, ["site_scan_leases"]);
+    assert.deepEqual(storage.interruptOrphanedScanRuns(orphanDb, { site: "orphan-mismatch", now: "2030-01-01", heartbeatTimeoutMs: 1 }), { interrupted: 1, runIds: [run.id] });
+    assert.equal(storage.getScanRun(orphanDb, run.id).status, "interrupted");
+    assert.deepEqual(snapshotTables(orphanDb, ["site_scan_leases"]), beforeLease);
   });
 }
 
@@ -327,9 +401,12 @@ function contract09TargetHistoryAndSummary() {
   assertKeys(history[0], ["id", "batchId", "targetKey", "city", "keyword", "laneId", "status", "jobCount", "errorCode", "errorMessage", "details", "attemptNumber", "startedAt", "finishedAt"]);
   assert.deepEqual(storage.listLatestScanTargetResults(db, batchId).map((row) => [row.targetKey, row.attemptNumber]), [["same", 2], ["failed", 1]]);
   assert.deepEqual(storage.summarizeScanTargets(db, batchId), { batchId, status: "partial", total: 2, completed: 1, partial: 0, failed: 1, jobCount: 4 });
+  assert.throws(() => storage.recordScanTargetResult(db, { targetKey: "missing-batch" }), (error) => error.message === "scan target batchId is required");
+  assert.throws(() => storage.recordScanTargetResult(db, { batchId, targetKey: "" }), (error) => error.message === "scan target key is required");
 }
 
 function contract10RuntimeAndAccess() {
+  assert.throws(() => storage.setSiteRuntimeState(db, "", { status: "ready" }), (error) => error.message === "site runtime state requires a site");
   const runtime = storage.setSiteRuntimeState(db, "Runtime", { status: "blocked", reasonCode: "x", message: "blocked", details: { n: 1 } });
   assertKeys(runtime, ["site", "status", "reasonCode", "message", "details", "updatedAt"]);
   assert.deepEqual(storage.getSiteRuntimeState(db, "runtime").details, { n: 1 });
@@ -344,6 +421,8 @@ function contract10RuntimeAndAccess() {
   assert.deepEqual(storage.listSiteAccessEvents(db, { site: "access", since: "2029-01-01", limit: 1 }).map((row) => row.action), ["open"]);
   assert.deepEqual(storage.listSiteAccessEvents(db, { site: "access", action: "read", since: "2029-01-01" }).map((row) => row.details.city), ["SZ"]);
   assert.equal(storage.listSiteAccessEvents(db, { site: "access", since: "2030-01-01" }).length, 0);
+  assert.throws(() => storage.recordSiteAccessEvent(db, { action: "open" }), (error) => error.message === "站点访问事件必须包含 site 和 action。");
+  assert.throws(() => storage.recordSiteAccessEvent(db, { site: "access" }), (error) => error.message === "站点访问事件必须包含 site 和 action。");
   withDb((capDb) => {
     const insert = capDb.prepare("INSERT INTO events(job_id, event_type, payload_json, created_at) VALUES (NULL, 'site_access', ?, ?)");
     capDb.exec("BEGIN IMMEDIATE");
@@ -429,6 +508,7 @@ function contract12ReuseRefreshAndCatalog() {
   const catalog = storage.savePlatformFilterCatalog(db, { site: "boss", catalog: { city: ["SZ"] }, source: "second", discoveredAt: "2029-01-02" });
   assertKeys(catalog, ["site", "catalog", "source", "discoveredAt", "updatedAt"]);
   assert.deepEqual(pick(catalog, ["site", "catalog", "source", "discoveredAt"]), { site: "boss", catalog: { city: ["SZ"] }, source: "second", discoveredAt: "2029-01-02" });
+  assert.throws(() => storage.savePlatformFilterCatalog(db, { catalog: {} }), (error) => error.message === "platform filter catalog site is required");
   db.prepare("UPDATE platform_filter_catalogs SET catalog_json = 'bad json' WHERE site = 'boss'").run();
   assert.deepEqual(storage.getPlatformFilterCatalog(db, "boss").catalog, {});
 }
@@ -439,7 +519,8 @@ function contract13FacadeConsumers() {
     "site_access_budget_smoke.js",
     "workflow_scan_smoke.js",
     "workflow_health_smoke.js",
-    "dashboard_scan_lifecycle_smoke.js"
+    "dashboard_scan_lifecycle_smoke.js",
+    "storage_migration_smoke.js"
   ];
   for (const file of consumers) {
     const child = spawnSync(process.execPath, [path.join(__dirname, file)], { cwd: ROOT, encoding: "utf8", windowsHide: true, timeout: 120_000 });
