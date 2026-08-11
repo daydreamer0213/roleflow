@@ -472,7 +472,12 @@ const PAGE_HELPERS = String.raw`
         this.addEventListener("error", () => once("network_rejected"), { once: true });
         this.addEventListener("timeout", () => once("network_timeout"), { once: true });
         this.addEventListener("abort", () => once("network_aborted"), { once: true });
-        return originalSend.apply(this, arguments);
+        try {
+          return originalSend.apply(this, arguments);
+        } catch (error) {
+          once("network_rejected");
+          throw error;
+        }
       };
       OriginalXhr.prototype.open = wrappedOpen;
       OriginalXhr.prototype.send = wrappedSend;

@@ -416,6 +416,7 @@ function observerTransport({ now = 0 } = {}) {
         }
         send() {
           const plan = transport.xhrPlans.shift() || {};
+          if (plan.throw) throw plan.throw;
           if (plan.pending || plan.abort) return;
           queueMicrotask(() => {
             if (plan.reject) this.emit("error");
@@ -540,6 +541,27 @@ async function realObserverBehaviorSmoke() {
     { abort: true }
   ).abort();
   assert.strictEqual((await dispatchAndVerify({ transport: abortTransport, snapshots: [readySnapshot] })).result.state, "transport_failed");
+
+  const nativeSendError = new Error("native xhr send failed");
+  const throwingTransport = observerTransport();
+  let pageCaughtNativeSend = null;
+  throwingTransport.onAction = (context) => {
+    try {
+      throwingTransport.xhr(context, "https://www.zhipin.com/wapi/zpgeek/friend/add.json", { throw: nativeSendError });
+    } catch (error) {
+      pageCaughtNativeSend = error;
+    }
+  };
+  const throwing = await dispatchAndVerify({ transport: throwingTransport, snapshots: [readySnapshot] });
+  assert.strictEqual(pageCaughtNativeSend, nativeSendError, "observer must preserve the page native send throw");
+  assert.strictEqual(throwing.result.state, "transport_failed");
+  assert.strictEqual(throwing.result.evidence.endpoints[0].businessCategory, "network_rejected");
+  const throwingContext = throwing.browser.context("communication-created");
+  assert.strictEqual(throwingContext.fetch, throwingTransport.originalFetch, "terminal transport failure must clean up interception");
+  assert.strictEqual(throwingContext.__bossCommunicationOutcomeObserver, undefined, "terminal transport failure must clear observer global");
+  const throwingRearmed = vm.runInContext("window.__bossRegisterCommunicationOutcomeObserver()", throwingContext);
+  assert.strictEqual(throwingRearmed.closed, false, "observer must re-arm after synchronous native send failure");
+  vm.runInContext("window.__bossCloseCommunicationOutcomeObserver()", throwingContext);
 
   const timeoutTransport = observerTransport({ now: 0 });
   timeoutTransport.onAction = (context) => {
