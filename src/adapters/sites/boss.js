@@ -93,8 +93,22 @@ const PAGE_HELPERS = String.raw`
     if (!(rect.width > 0 && rect.height > 0)) {
       return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "card_not_visible" };
     }
-    if (!(x >= 0 && y >= 0 && x <= viewportWidth && y <= viewportHeight)) {
+    if (!(x >= 0 && y >= 0 && x < viewportWidth && y < viewportHeight)) {
       return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "point_out_of_viewport" };
+    }
+    if (typeof document.elementFromPoint !== "function") {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "point_unavailable" };
+    }
+    const hit = document.elementFromPoint(x, y);
+    if (!hit) {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "point_unavailable" };
+    }
+    if (!wrap.contains(hit)) {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "point_obscured" };
+    }
+    const interactive = hit.closest?.("a,button,[role=button],input,select,textarea,label");
+    if (interactive && (interactive === wrap || wrap.contains(interactive))) {
+      return { ready: false, jobId: componentJobId, x: 0, y: 0, reason: "interactive_hit" };
     }
     return { ready: true, jobId: componentJobId, x, y, reason: "" };
   };
@@ -1405,21 +1419,30 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const detail = await this.browser.evalValue(tabId, "(() => window.__bossPaneState())()");
-      const paneJobId = detail?.paneJobId || detail?.currentJobId || "";
-      const activeIds = [detail?.activeJobId, detail?.componentCurrentJobId]
-        .map((value) => String(value || ""))
-        .filter(Boolean);
-      const selectionHasTarget = activeIds.includes(expectedJobId);
-      const hasSelectionMismatch = activeIds.some((value) => value !== expectedJobId);
-      const selectionMatches = activeIds.length > 0 && !hasSelectionMismatch;
-      if (hasSelectionMismatch
-        && (paneJobId === expectedJobId || activationAttempted || selectionHasTarget)) {
+      const activeJobId = String(detail?.activeJobId || "");
+      const componentCurrentJobId = String(detail?.componentCurrentJobId || "");
+      const paneJobId = String(detail?.paneJobId || "");
+      const observedIds = [activeJobId, componentCurrentJobId, paneJobId].filter(Boolean);
+      const selectionHasTarget = observedIds.includes(expectedJobId);
+      const hasIdentityMismatch = observedIds.some((value) => value !== expectedJobId);
+      const hasSelectionMismatch = [activeJobId, componentCurrentJobId]
+        .filter(Boolean)
+        .some((value) => value !== expectedJobId);
+      const selectionMatches = activeJobId === expectedJobId && componentCurrentJobId === expectedJobId;
+      const stableOtherSelection = Boolean(activeJobId && componentCurrentJobId)
+        && activeJobId === componentCurrentJobId
+        && activeJobId !== expectedJobId;
+      const paneIdentityMatches = selectionMatches && paneJobId === expectedJobId;
+      if ((activationAttempted && hasSelectionMismatch)
+        || (!activationAttempted && hasIdentityMismatch && selectionHasTarget)) {
         return null;
       }
-      if (paneJobId === expectedJobId) {
+      if (paneIdentityMatches) {
         const actualTitle = normalizedComparableText(detail?.title);
         if (!actualTitle || !actualTitle.includes(expectedTitle)) return null;
-        if (detail?.description?.length >= 120) {
+        const loadingSettled = detail?.jobDetailLoading === false
+          || (!activationAttempted && detail?.jobDetailLoading === null);
+        if (loadingSettled && detail?.description?.length >= 120) {
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(true))()");
           return {
             description: cleanDetailText(detail.description),
@@ -1433,7 +1456,11 @@ class BossSiteAdapter {
           scrolled = true;
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
         }
-      } else if (!selectionMatches && !activationAttempted) {
+      } else if (stableOtherSelection && !activationAttempted) {
+        if (typeof this.browser.bringToFront !== "function" || typeof this.browser.clickAt !== "function") {
+          return null;
+        }
+        await this.browser.bringToFront(tabId);
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
         const activation = await this.browser.evalValue(
@@ -1442,19 +1469,14 @@ class BossSiteAdapter {
         );
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
-        const pointX = Number(activation?.x);
-        const pointY = Number(activation?.y);
+        const pointX = activation?.x;
+        const pointY = activation?.y;
         if (!activation || activation.ready !== true || activation.jobId !== expectedJobId
+          || typeof pointX !== "number" || typeof pointY !== "number"
           || !Number.isFinite(pointX) || !Number.isFinite(pointY)
           || pointX < 0 || pointY < 0) {
           return null;
         }
-        if (typeof this.browser.bringToFront !== "function" || typeof this.browser.clickAt !== "function") {
-          return null;
-        }
-        await this.browser.bringToFront(tabId);
-        await assertRuntimeTabBindings(assertTabBindings);
-        await this.assertSearchPage(tabId);
         await this.browser.clickAt(tabId, { x: pointX, y: pointY });
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
@@ -2693,6 +2715,7 @@ function hasKnownBossWindow(tab) {
 }
 
 module.exports = {
+  PAGE_HELPERS,
   BossSiteAdapter,
   classifyBossCommunicationSnapshot,
   normalizeBossJob,
