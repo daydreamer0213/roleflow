@@ -354,7 +354,7 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
 }
 
 function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
-  const { recover, progressSnapshot, getWorkflowRun, getSearchPlan, buildDashboardState, communicationStatus, publicCommunicationStatus, publicWorkflow, logger } = deps;
+  const { recover, progressSnapshot, getWorkflowRun, communicationBatchSummary, publicCommunicationStatus, publicWorkflow, logger } = deps;
   const recovery = recover(db, { workflowRunId, orphanTimeoutMs: deps.orphanTimeoutMs });
   if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
     logger.warn("workflow_status_reconciled", { workflowRunId, ...recovery });
@@ -362,19 +362,19 @@ function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
   const snapshot = progressSnapshot(db, { workflowRunId });
   if (!snapshot) return { statusCode: 404, body: { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
   const workflow = getWorkflowRun(db, workflowRunId);
-  const plan = getSearchPlan(db, workflow.planId);
-  const daily = plan ? buildDashboardState(db, plan) : null;
-  const communication = workflow.communicationBatchId ? publicCommunicationStatus(communicationStatus(db, workflow.communicationBatchId)) : null;
+  const summary = workflow.communicationBatchId ? communicationBatchSummary(db, workflow.communicationBatchId) : null;
+  const communication = summary ? publicCommunicationStatus({
+    batch: { id: summary.batchId, status: summary.batchStatus },
+    summary
+  }) : null;
   return {
     statusCode: 200,
     body: {
       workflow: publicWorkflow({ ...snapshot.workflow, errorCode: workflow.errorCode }),
       progress: snapshot.progress,
-      model: snapshot.model,
       controls: snapshot.controls,
       recentActivity: snapshot.recentActivity,
-      communication,
-      today: daily ? { successful: daily.successfulToday, target: daily.dailyTarget, slotsUsed: daily.slotsUsed } : null
+      communication
     }
   };
 }
