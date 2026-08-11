@@ -134,6 +134,24 @@ try {
   const firstVersion = storage.listCandidateResumeVersions(db, saved.profileId)[0];
   assert.strictEqual(firstVersion.versionKey, `resume_${saved.resumeDocumentId}`);
   assert.strictEqual(firstVersion.resumeTextExcerpt.length, 6000);
+
+  const privateFileName = "13912345678-contact_example.com-联系地址上海市浦东新区隐私路88号.txt";
+  const privateFileSecrets = ["13912345678", "上海市浦东新区隐私路88号"];
+  const privateSave = storage.saveProfileAnalysis(db, {
+    profile: profile("Private Candidate"),
+    document: { ...document("private-resume"), originalFileName: privateFileName },
+    searchPlan: null
+  });
+  const privateDocument = storage.getResumeDocument(db, privateSave.resumeDocumentId);
+  assert.strictEqual(privateDocument.originalFileName, privateFileName, "explicit source-file metadata must preserve the original filename");
+  const privateVersion = storage.listCandidateResumeVersions(db, privateSave.profileId)[0];
+  assert.strictEqual(privateVersion.name, "基础简历");
+  assert.strictEqual(privateVersion.fileName, "简历文件.txt");
+  for (const secret of privateFileSecrets) {
+    assert(!JSON.stringify(privateVersion).includes(secret), `candidate version DTO must mask filename contact: ${secret}`);
+    assert(!String(db.prepare("SELECT name FROM candidate_resume_versions WHERE id = ?").get(privateVersion.id).name).includes(secret), `persisted default version name must mask filename contact: ${secret}`);
+  }
+
   db.prepare("UPDATE candidate_resume_versions SET target_roles_json = 'not json', analysis_json = 'not json' WHERE id = ?").run(firstVersion.id);
   const fallbackVersion = storage.listCandidateResumeVersions(db, saved.profileId)[0];
   assert.deepStrictEqual(fallbackVersion.targetRoles, []);
@@ -158,6 +176,69 @@ try {
   storage.recordResumeParseAttempt(db, { profileId: saved.profileId, document: document("attempt", "parsed") });
   storage.recordResumeParseAttempt(db, { profileId: saved.profileId, error: Object.assign(new Error("parse failed"), { code: "PARSE_FAILED" }) });
   assert.deepStrictEqual(storage.listResumeParseAttempts(db, saved.profileId, 50).map((item) => item.status).sort(), ["failed", "succeeded"]);
+
+  const attemptPhone = "13712345678";
+  const attemptEmail = "parse-attempt@example.com";
+  const attemptAddress = "上海市浦东新区解析路 99 号";
+  const attemptError = Object.assign(new Error([
+    "简历解析失败",
+    `联系地址：\n${attemptAddress}`,
+    `邮箱：${attemptEmail}`
+  ].join("\n")), {
+    code: "PRIVATE_PARSE_FAILED",
+    details: {
+      diagnostics: {
+        extractionMethod: "text_utf8",
+        inputBytes: 321,
+        charCount: 120,
+        preview: `手机：${attemptPhone}\n联系地址：\n${attemptAddress}\n项目经历：KnowledgeFlow`,
+        quality: { status: "warning", detectedSections: ["project"] }
+      }
+    }
+  });
+  storage.recordResumeParseAttempt(db, {
+    profileId: privateSave.profileId,
+    fileName: privateFileName,
+    format: "txt",
+    inputBytes: 321,
+    error: attemptError
+  });
+  const writtenAttempt = db.prepare("SELECT * FROM resume_parse_attempts WHERE profile_id = ? ORDER BY id DESC LIMIT 1").get(privateSave.profileId);
+  for (const secret of [...privateFileSecrets, attemptPhone, attemptEmail, attemptAddress]) {
+    assert(!JSON.stringify(writtenAttempt).includes(secret), `parse-attempt write must mask contact: ${secret}`);
+  }
+
+  const historicalPhone = "13612345678";
+  const historicalEmail = "historical-attempt@example.com";
+  const historicalAddress = "上海市浦东新区历史路 77 号";
+  const historicalPreview = `手机：${historicalPhone}\n联系地址：\n${historicalAddress}\n项目经历：KnowledgeFlow`;
+  const historicalAttemptId = Number(db.prepare(`INSERT INTO resume_parse_attempts(
+    profile_id, original_file_name, format, input_bytes, extraction_method, char_count, preview,
+    diagnostics_json, status, error_code, error_message, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    privateSave.profileId,
+    `历史-${historicalPhone}-${historicalAddress}.txt`,
+    "txt",
+    456,
+    "text_utf8",
+    historicalPreview.length,
+    historicalPreview,
+    JSON.stringify({
+      extractionMethod: "text_utf8",
+      preview: historicalPreview,
+      quality: { status: "warning", detectedSections: ["project"] }
+    }),
+    "failed",
+    "HISTORICAL_PARSE_FAILED",
+    `邮箱：${historicalEmail}\n联系地址：\n${historicalAddress}`,
+    new Date().toISOString()
+  ).lastInsertRowid);
+  const historicalAttempt = storage.listResumeParseAttempts(db, privateSave.profileId, 50)
+    .find((item) => item.id === historicalAttemptId);
+  for (const secret of [historicalPhone, historicalEmail, historicalAddress]) {
+    assert(!JSON.stringify(historicalAttempt).includes(secret), `historical parse-attempt DTO must mask contact: ${secret}`);
+  }
+  assert.deepStrictEqual(historicalAttempt.diagnostics.quality, { status: "warning", detectedSections: ["project"] });
 
   const draft = storage.createMatchingCardDraft(db, {
     profileId: saved.profileId,

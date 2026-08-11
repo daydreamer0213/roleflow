@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { nowIso, parseJson } = require("./storage_shared");
 const { normalizeMatchingCard, matchingCardRevision } = require("../core/matching_card");
+const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 
 function saveProfileAnalysis(db, { profileId = null, profile, document, searchPlan }) {
   const now = nowIso();
@@ -21,7 +22,7 @@ function saveProfileAnalysis(db, { profileId = null, profile, document, searchPl
     const resumeVersionId = createCandidateResumeVersion(db, {
       profileId: id,
       resumeDocumentId: documentId,
-      version: { ...resumeVersionDefaults(profile, document), analysis: profile },
+      version: { ...resumeVersionDefaults(profile), analysis: profile },
       now
     });
     const planId = searchPlan ? saveSearchPlan(db, { profileId: id, profileVersionId, plan: searchPlan, now }) : null;
@@ -69,10 +70,10 @@ function getResumeDocument(db, documentId) {
   };
 }
 
-function resumeVersionDefaults(profile = {}, document = {}) {
+function resumeVersionDefaults(profile = {}) {
   const candidate = profile.candidate || {};
   return {
-    name: document.originalFileName || "基础简历",
+    name: "基础简历",
     targetRoles: candidate.targetTitles || [],
     keywords: (profile.skills || []).map((item) => item.name || item).filter(Boolean).slice(0, 12),
     primaryProjects: (profile.projects || []).map((item) => item.name || item).filter(Boolean).slice(0, 4),
@@ -90,7 +91,7 @@ function createCandidateResumeVersion(db, { profileId, resumeDocumentId = null, 
       primary_projects_json, summary, analysis_json, is_active, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    Number(profileId), documentId, versionKey, String(version.name || "简历版本"),
+    Number(profileId), documentId, versionKey, maskResumeContacts(version.name || "简历版本"),
     JSON.stringify(stringList(version.targetRoles, 8)),
     JSON.stringify(stringList(version.keywords, 16)),
     JSON.stringify(stringList(version.primaryProjects, 6)),
@@ -147,7 +148,7 @@ function saveCandidateResumeVersion(db, { profileId, versionId = null, document 
       db.prepare(`UPDATE candidate_resume_versions SET
         resume_document_id = ?, name = ?, target_roles_json = ?, keywords_json = ?, primary_projects_json = ?,
         summary = ?, analysis_json = ?, is_active = ?, updated_at = ? WHERE id = ?`).run(
-        documentId || existing.resume_document_id || null, String(version.name || "简历版本"),
+        documentId || existing.resume_document_id || null, maskResumeContacts(version.name || "简历版本"),
         JSON.stringify(stringList(version.targetRoles, 8)), JSON.stringify(stringList(version.keywords, 16)),
         JSON.stringify(stringList(version.primaryProjects, 6)), String(version.summary || ""),
         JSON.stringify(version.analysis || parseJson(existing.analysis_json, {})),
@@ -172,26 +173,29 @@ function listCandidateResumeVersions(db, profileId) {
     LEFT JOIN resume_documents rd ON rd.id = rv.resume_document_id
     WHERE rv.profile_id = ?
     ORDER BY rv.is_active DESC, rv.updated_at DESC, rv.id DESC
-  `).all(Number(profileId)).map((row) => ({
-    id: Number(row.id),
-    versionKey: row.version_key,
-    name: row.name,
-    targetRoles: parseJson(row.target_roles_json, []),
-    keywords: parseJson(row.keywords_json, []),
-    primaryProjects: parseJson(row.primary_projects_json, []),
-    summary: row.summary || "",
-    analysis: parseJson(row.analysis_json, {}),
-    isActive: Boolean(row.is_active),
-    resumeDocumentId: row.resume_document_id || null,
-    fileName: row.original_file_name || "",
-    format: row.format || "",
-    contentHash: row.content_hash || "",
-    storedFilePath: row.stored_file_path || "",
-    resumeTextExcerpt: String(row.resume_text || "").slice(0, 6000),
-    diagnostics: parseJson(row.diagnostics_json, {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  }));
+  `).all(Number(profileId)).map((row) => {
+    const automaticName = row.resume_document_id && row.name === row.original_file_name;
+    return {
+      id: Number(row.id),
+      versionKey: row.version_key,
+      name: automaticName ? "基础简历" : maskResumeContacts(row.name),
+      targetRoles: parseJson(row.target_roles_json, []),
+      keywords: parseJson(row.keywords_json, []),
+      primaryProjects: parseJson(row.primary_projects_json, []),
+      summary: row.summary || "",
+      analysis: parseJson(row.analysis_json, {}),
+      isActive: Boolean(row.is_active),
+      resumeDocumentId: row.resume_document_id || null,
+      fileName: row.original_file_name ? maskResumeFileName(row.original_file_name) : "",
+      format: row.format || "",
+      contentHash: row.content_hash || "",
+      storedFilePath: row.stored_file_path || "",
+      resumeTextExcerpt: String(row.resume_text || "").slice(0, 6000),
+      diagnostics: maskResumeDiagnostics(parseJson(row.diagnostics_json, {})),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  });
 }
 
 function listMatchingResumeVersions(db, profileId) {
@@ -215,22 +219,22 @@ function listMatchingResumeVersions(db, profileId) {
 }
 
 function recordResumeParseAttempt(db, { profileId = null, document = null, fileName = "resume", format = "", inputBytes = 0, error = null }) {
-  const diagnostics = document?.diagnostics || error?.details?.diagnostics || {};
+  const diagnostics = maskResumeDiagnostics(document?.diagnostics || error?.details?.diagnostics || {});
   db.prepare(`INSERT INTO resume_parse_attempts(
     profile_id, original_file_name, format, input_bytes, extraction_method, char_count, preview,
     diagnostics_json, status, error_code, error_message, created_at
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     Number(profileId || 0) || null,
-    String(document?.originalFileName || fileName || "resume"),
+    maskResumeFileName(document?.originalFileName || fileName || "resume"),
     String(document?.format || format || ""),
     Number(document?.diagnostics?.inputBytes || inputBytes || 0),
     String(document?.diagnostics?.extractionMethod || diagnostics.extractionMethod || ""),
     Number(document?.charCount || diagnostics.charCount || 0),
-    String(document?.diagnostics?.preview || diagnostics.preview || "").slice(0, 600),
+    String(diagnostics.preview || "").slice(0, 600),
     JSON.stringify(diagnostics),
     error ? "failed" : "succeeded",
     error?.code || null,
-    error ? String(error.message || "parse failed").slice(0, 500) : null,
+    error ? maskResumeContacts(error.message || "parse failed").slice(0, 500) : null,
     nowIso()
   );
 }
@@ -241,10 +245,10 @@ function listResumeParseAttempts(db, profileId, limit = 12) {
     ORDER BY created_at DESC, id DESC LIMIT ?`).all(
     Number(profileId), Math.max(1, Math.min(50, Number(limit) || 12))
   ).map((row) => ({
-    id: Number(row.id), fileName: row.original_file_name, format: row.format || "", inputBytes: Number(row.input_bytes || 0),
-    extractionMethod: row.extraction_method || "", charCount: Number(row.char_count || 0), preview: row.preview || "",
-    diagnostics: parseJson(row.diagnostics_json, {}), status: row.status, errorCode: row.error_code || "",
-    errorMessage: row.error_message || "", createdAt: row.created_at
+    id: Number(row.id), fileName: maskResumeFileName(row.original_file_name), format: row.format || "", inputBytes: Number(row.input_bytes || 0),
+    extractionMethod: row.extraction_method || "", charCount: Number(row.char_count || 0), preview: maskResumeContacts(row.preview || ""),
+    diagnostics: maskResumeDiagnostics(parseJson(row.diagnostics_json, {})), status: row.status, errorCode: row.error_code || "",
+    errorMessage: maskResumeContacts(row.error_message || ""), createdAt: row.created_at
   }));
 }
 

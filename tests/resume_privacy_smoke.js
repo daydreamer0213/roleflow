@@ -41,6 +41,18 @@ assert(maskedDiagnostics.preview.includes("手机:[已隐藏]"));
 assert(maskedDiagnostics.preview.includes("邮箱:[邮箱已隐藏]"));
 assert(maskedDiagnostics.preview.includes("联系地址:[已隐藏]"));
 assert(maskedDiagnostics.preview.includes("KnowledgeFlow"));
+assert.deepStrictEqual(maskResumeDiagnostics(maskedDiagnostics), maskedDiagnostics);
+
+const continuedAddressDiagnostics = maskResumeDiagnostics({
+  extractionMethod: "pasted_text",
+  quality: { status: "good", detectedSections: ["project"] },
+  preview: "联系地址：\n上海市浦东新区续行路 66 号\n项目经历：KnowledgeFlow"
+});
+assert(!continuedAddressDiagnostics.preview.includes("上海市浦东新区续行路 66 号"));
+assert(continuedAddressDiagnostics.preview.includes("联系地址:\n[已隐藏]"));
+assert(continuedAddressDiagnostics.preview.includes("项目经历:KnowledgeFlow"));
+assert.deepStrictEqual(maskResumeDiagnostics(continuedAddressDiagnostics), continuedAddressDiagnostics);
+assert.deepStrictEqual(continuedAddressDiagnostics.quality, { status: "good", detectedSections: ["project"] });
 
 const prepared = prepareResumeTextForModel(input, {
   originalFileName: "测试候选人-AI应用开发.pdf",

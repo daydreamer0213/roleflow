@@ -123,7 +123,8 @@ const generatedReports = [];
   );
 
   const sampleResumeText = fs.readFileSync(path.join(root, "data", "sample_resume.txt"), "utf8");
-  const identityFileName = "测试候选人-AI应用开发.txt";
+  const privateFileNameContacts = ["13987654321", "上海市浦东新区默认文件名路88号"];
+  const identityFileName = `测试候选人-${privateFileNameContacts[0]}-联系地址${privateFileNameContacts[1]}.txt`;
   const upload = await uploadResume(baseUrl, identityFileName, fs.readFileSync(path.join(root, "data", "sample_resume.txt")), "text/plain");
   assert.strictEqual(upload.status, 303);
   const parsedLog = latestLogEvent(root, "resume_parsed");
@@ -238,6 +239,18 @@ const generatedReports = [];
   }
 
   const db = openDb(dbPath);
+  const automaticVersion = listCandidateResumeVersions(db, profileId)
+    .find((version) => Number(version.resumeDocumentId) > 0);
+  assert(automaticVersion, "automatic resume version must be stored");
+  assert.strictEqual(automaticVersion.name, "基础简历");
+  assert.strictEqual(automaticVersion.fileName, "简历文件.txt");
+  for (const secret of privateFileNameContacts) {
+    assert(!JSON.stringify(automaticVersion).includes(secret), `candidate storage DTO must not expose filename contact: ${secret}`);
+  }
+  const originalResumeFile = await fetch(`${baseUrl}/resume-file?id=${automaticVersion.resumeDocumentId}`);
+  assert.strictEqual(originalResumeFile.status, 200);
+  assert(originalResumeFile.headers.get("content-disposition").includes(encodeURIComponent(identityFileName)), "explicit source-file action must keep the original filename");
+
   const planId = getActiveSearchPlan(db, profileId)?.id;
   assert(planId, "upload must still recommend a search plan, but it is not user confirmation");
   db.prepare("UPDATE search_plans SET is_active = 0 WHERE id = ?").run(planId);
@@ -257,6 +270,9 @@ const generatedReports = [];
   const matchCardPage = await fetch(`${baseUrl}/match-card?profileId=${profileId}&cardId=${cardId}`);
   const matchCardHtml = await matchCardPage.text();
   assert.strictEqual(matchCardPage.status, 200);
+  for (const secret of privateFileNameContacts) {
+    assert(!matchCardHtml.includes(secret), `matching-card page must not expose filename contact: ${secret}`);
+  }
   assert(matchCardHtml.includes("目标方向"));
   assert(matchCardHtml.includes("强证据"));
   assert(matchCardHtml.includes("可迁移能力"));
@@ -345,6 +361,9 @@ const generatedReports = [];
   assert(versionsHtml.includes("打开原文件"));
   assert(versionsHtml.includes("不会改变基础候选人画像"), "resume versions page must state it never rewrites the base profile");
   assert(versionsHtml.includes("不会替换当前匹配偏好卡"), "resume versions page must state it never replaces the active matching card");
+  for (const secret of privateFileNameContacts) {
+    assert(!versionsHtml.includes(secret), `resume versions page must not expose filename contact: ${secret}`);
+  }
   const savedVersion = listCandidateResumeVersions(db, profileId).find((version) => version.name === "AI Resume Variant");
   assert(savedVersion?.resumeTextExcerpt.includes("测试候选人"));
   assert(savedVersion?.storedFilePath.includes(path.join(".runtime", "resumes")));

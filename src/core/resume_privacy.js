@@ -100,6 +100,11 @@ function maskResumeContacts(value) {
   return redactStandardFields(normalizeUnicode(value)).text;
 }
 
+function maskResumeFileName(value) {
+  const extension = path.extname(normalizeUnicode(value)).toLowerCase();
+  return `简历文件${/^\.[a-z0-9]{1,10}$/.test(extension) ? extension : ""}`;
+}
+
 function maskResumeDiagnostics(diagnostics = {}) {
   const value = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
   const modelInput = value.modelInput && typeof value.modelInput === "object"
@@ -144,4 +149,4 @@ function prepareResumeTextForModel(
   return { text, preview: text.slice(0, 1200), redactions };
 }
 
-module.exports = { prepareResumeTextForModel, assertResumeIdentityRedacted, maskResumeContacts, maskResumeDiagnostics };
+module.exports = { prepareResumeTextForModel, assertResumeIdentityRedacted, maskResumeContacts, maskResumeFileName, maskResumeDiagnostics };
