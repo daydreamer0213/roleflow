@@ -18,6 +18,7 @@ const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
+const FIXED_CANDIDATE_WORKTREE = "D:\\DevData\\RoleFlow-worktrees\\claude-generic-evidence-matching-live-fix";
 const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-${process.pid}`);
 const siblingBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-baseline-${process.pid}`);
 const formalBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-formal-baseline-${process.pid}`);
@@ -72,7 +73,17 @@ function expectGateOk(options, env = authorizedEnv()) {
 
 function candidateWorktreeIsClean() {
   const { execFileSync } = require("node:child_process");
-  return !execFileSync("git", ["status", "--porcelain"], { cwd: path.resolve(__dirname, ".."), encoding: "utf8", windowsHide: true }).trim();
+  try {
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: FIXED_CANDIDATE_WORKTREE, encoding: "utf8", windowsHide: true
+    }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain"], {
+      cwd: FIXED_CANDIDATE_WORKTREE, encoding: "utf8", windowsHide: true
+    }).trim();
+    return /^[0-9a-f]{40}$/i.test(commit) && !dirty;
+  } catch {
+    return false;
+  }
 }
 
 async function withoutRepositoryModelSettings(flow) {
@@ -4256,7 +4267,7 @@ async function main() {
     formalSharedBaselinePreflightSmoke();
 
     if (!candidateWorktreeIsClean()) {
-      console.log("private_full_chain_runner_smoke offline gates ok (public prepare deferred until clean worktree)");
+      console.log("private_full_chain_runner_smoke offline gates ok (private prepare deferred until fixed candidate worktree is available and clean)");
       return;
     }
     await runner.preparePrivateResume(gateOptions({
