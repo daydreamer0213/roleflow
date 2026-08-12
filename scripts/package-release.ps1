@@ -45,7 +45,28 @@ foreach ($name in @("sample_jobs.json", "sample_resume.txt")) {
 foreach ($name in @("README.md", "LICENSE", "NOTICE", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "package.json", "package-lock.json", "run.ps1", "Install.bat", "Start.bat", "BuildRelease.bat", "ScanPortable.bat", "StartPortableEdge.bat", ".gitignore")) {
   Copy-Item -LiteralPath (Join-Path $ProjectRoot $name) -Destination (Join-Path $StageDir $name) -Force
 }
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs") -Destination (Join-Path $StageDir "docs") -Recurse -Force
+$StageDocsDir = Join-Path $StageDir "docs"
+New-Item -ItemType Directory -Force -Path $StageDocsDir | Out-Null
+foreach ($name in @(
+  "README.md",
+  "boss-communication-calibration.md",
+  "daily_workflow.md",
+  "llm_contracts.md",
+  "onboarding_workflow.md",
+  "operations.md",
+  "outcome_analytics.md",
+  "product_spec.md",
+  "release_boundary.md",
+  "remediation_plan.md",
+  "resume_and_feedback_workflow.md",
+  "roleflow-decision-matrix.md",
+  "roleflow-terminology.md",
+  "runtime_flow_review.md",
+  "workflow_health.md"
+)) {
+  Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\$name") -Destination (Join-Path $StageDocsDir $name) -Force
+}
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\releases") -Destination (Join-Path $StageDocsDir "releases") -Recurse -Force
 
 if ($IncludePortableNode) {
   $portableNode = Join-Path $RuntimeDir "node"

@@ -60,6 +60,7 @@ assert(!readme.includes("不依赖 Codex 或浏览器插件"));
 assert(!readme.includes("Edge Control 插件模式仅作为兼容入口"));
 assert(releasePackager.includes('"LICENSE"'), "release package must include the AGPL license");
 assert(releasePackager.includes('"NOTICE"'), "release package must include copyright and third-party notices");
+assert(!releasePackager.includes('Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs")'), "release package must not recursively include internal development evidence");
 const selfCheckDir = path.join(root, ".runtime", "self-check");
 fs.mkdirSync(selfCheckDir, { recursive: true });
 const help = spawnSync(process.execPath, [path.join(root, "src", "cli.js"), "--help"], { encoding: "utf8" });
