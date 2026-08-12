@@ -1099,6 +1099,7 @@ async function scan(
     maxCards: scanLimits.maxCards,
     maxDetailTotal: scanLimits.maxDetailTotal,
     detailMode,
+    detailSessionId: execution?.runId || `batch-${batchId}`,
     detailLimits: scanLimits.detailLimits,
     supplementalSalaryLaneKeywordLimit: scanLimits.supplementalSalaryLaneKeywordLimit,
     supplementalSalaryLaneCardLimit: scanLimits.supplementalSalaryLaneCardLimit,

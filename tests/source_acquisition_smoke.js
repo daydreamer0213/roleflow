@@ -999,7 +999,7 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert(sent[0].url.includes("securityId=fixture-security"));
   assert.strictEqual(sent[0].withCredentials, true, "XHR must carry same-origin cookies");
   assert.strictEqual(sent[0].headers.Accept, "application/json, text/plain, */*");
-  assert.strictEqual(sent[0].timeout, 12000, "page XHR timeout must be stable and below the 15s Node polling window");
+  assert.strictEqual(sent[0].timeout, 20000, "page XHR timeout must allow for previously observed slow BOSS responses");
   assert(!JSON.stringify(first).includes(privateSentinel));
 
   sent[0].respond(200, {
@@ -1030,15 +1030,28 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert.strictEqual(repeatAfterHelperReinject.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
   assert.strictEqual(sent.length, 1, "helper reinjection must retain the page-lifetime repeat guard");
 
+  const nextScanSession = window.__bossStartDetailFetch("scan-session-2", "api-job");
+  assert.strictEqual(nextScanSession.state, "running", "a new scan session may read the same job once");
+  assert.strictEqual(sent.length, 2, "the repeat guard must be scoped to one scan session");
+  sent[1].respond(200, {
+    code: 0,
+    zpData: { jobInfo: {
+      encryptId: "api-job",
+      postDescription: "Complete second-session job description Python RAG ".repeat(12)
+    } }
+  });
+  assert.strictEqual((await waitForDetailFetchState(window, "scan-session-2", "api-job")).state, "succeeded");
+  window.__bossConsumeDetailFetch("scan-session-2", "api-job");
+
   const second = window.__bossStartDetailFetch("abort-job");
   assert.strictEqual(second.state, "running");
-  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent.length, 3);
   assert.strictEqual(window.__bossCancelDetailFetch("abort-job").state, "idle");
-  assert.strictEqual(sent[1].aborted, true, "cancelling must abort and clear the running XHR");
+  assert.strictEqual(sent[2].aborted, true, "cancelling must abort and clear the running XHR");
   assert.strictEqual(window.__bossDetailFetchState("abort-job").state, "idle");
   const repeatAfterCancel = window.__bossStartDetailFetch("abort-job");
   assert.strictEqual(repeatAfterCancel.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
-  assert.strictEqual(sent.length, 2, "cancelled jobs must never issue a second GET");
+  assert.strictEqual(sent.length, 3, "cancelled jobs must never issue a second GET");
 
   for (const { name, response, status, errorCode, event } of [
     { name: "unauthorized", response: {}, status: 401, errorCode: "BOSS_LOGIN_REQUIRED" },
@@ -2639,11 +2652,15 @@ function apiDetailPageFixture({ onXhrSend }) {
   return { window, reinject: () => vm.runInNewContext(PAGE_HELPERS, context) };
 }
 
-async function waitForDetailFetchState(window, jobId) {
-  let state = window.__bossDetailFetchState(jobId);
+async function waitForDetailFetchState(window, sessionId, jobId = undefined) {
+  let state = jobId === undefined
+    ? window.__bossDetailFetchState(sessionId)
+    : window.__bossDetailFetchState(sessionId, jobId);
   for (let attempt = 0; attempt < 10 && state.state === "running"; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
-    state = window.__bossDetailFetchState(jobId);
+    state = jobId === undefined
+      ? window.__bossDetailFetchState(sessionId)
+      : window.__bossDetailFetchState(sessionId, jobId);
   }
   return state;
 }

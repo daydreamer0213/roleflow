@@ -195,13 +195,28 @@ const PAGE_HELPERS = String.raw`
     };
   };
 
-  const detailFetchStore = window.__bossDetailFetchStore || {
-    fetches: new Map(),
-    attemptedJobIds: new Set(),
-    runningJobId: ""
-  };
+  const detailFetchStore = window.__bossDetailFetchStore?.version === 2
+    ? window.__bossDetailFetchStore
+    : { version: 2, sessions: new Map(), runningKey: "" };
   window.__bossDetailFetchStore = detailFetchStore;
-  const detailFetchTimeoutMs = Math.min(12000, Math.max(1000, Number(window.__bossDetailFetchTimeoutMs) || 12000));
+  const detailFetchTimeoutMs = Math.min(20000, Math.max(1000, Number(window.__bossDetailFetchTimeoutMs) || 20000));
+
+  function detailFetchIdentity(sessionOrJobId, optionalJobId) {
+    const legacy = optionalJobId === undefined;
+    return {
+      sessionId: String(legacy ? "legacy" : sessionOrJobId || "").trim(),
+      jobId: String(legacy ? sessionOrJobId : optionalJobId || "").trim()
+    };
+  }
+
+  function detailFetchSession(sessionId) {
+    let session = detailFetchStore.sessions.get(sessionId);
+    if (!session) {
+      session = { fetches: new Map(), attemptedJobIds: new Set() };
+      detailFetchStore.sessions.set(sessionId, session);
+    }
+    return session;
+  }
 
   function detailFetchStatus(record) {
     if (!record) return { state: "idle", jobId: "" };
@@ -230,14 +245,15 @@ const PAGE_HELPERS = String.raw`
     return String(value || "").replace(/\s+/g, " ").trim();
   }
 
-  function detailFetchStartStatus(jobId) {
-    const expectedJobId = String(jobId || "").trim();
-    const existing = detailFetchStore.fetches.get(expectedJobId);
+  function detailFetchStartStatus(sessionId, expectedJobId) {
+    const session = detailFetchSession(sessionId);
+    const existing = session.fetches.get(expectedJobId);
     if (existing) return detailFetchStatus(existing);
-    if (detailFetchStore.attemptedJobIds.has(expectedJobId)) {
+    if (session.attemptedJobIds.has(expectedJobId)) {
       return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_REPEAT_REQUEST" };
     }
-    if (detailFetchStore.runningJobId && detailFetchStore.runningJobId !== expectedJobId) {
+    const requestKey = sessionId + "\u0000" + expectedJobId;
+    if (detailFetchStore.runningKey && detailFetchStore.runningKey !== requestKey) {
       return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_BUSY" };
     }
     const params = detailFetchCard(expectedJobId);
@@ -245,25 +261,28 @@ const PAGE_HELPERS = String.raw`
     return { state: "idle", jobId: expectedJobId };
   }
 
-  window.__bossCanStartDetailFetch = function(jobId) {
-    return detailFetchStartStatus(jobId);
+  window.__bossCanStartDetailFetch = function(sessionOrJobId, optionalJobId) {
+    const identity = detailFetchIdentity(sessionOrJobId, optionalJobId);
+    return detailFetchStartStatus(identity.sessionId, identity.jobId);
   };
 
-  window.__bossStartDetailFetch = function(jobId) {
-    const expectedJobId = String(jobId || "").trim();
-    const startStatus = detailFetchStartStatus(expectedJobId);
+  window.__bossStartDetailFetch = function(sessionOrJobId, optionalJobId) {
+    const { sessionId, jobId: expectedJobId } = detailFetchIdentity(sessionOrJobId, optionalJobId);
+    const startStatus = detailFetchStartStatus(sessionId, expectedJobId);
     if (startStatus.state !== "idle") return startStatus;
+    const session = detailFetchSession(sessionId);
     const params = detailFetchCard(expectedJobId);
     const record = { jobId: expectedJobId, state: "running", cancel: null, result: null, errorCode: "" };
-    detailFetchStore.attemptedJobIds.add(expectedJobId);
-    detailFetchStore.fetches.set(expectedJobId, record);
-    detailFetchStore.runningJobId = expectedJobId;
+    session.attemptedJobIds.add(expectedJobId);
+    session.fetches.set(expectedJobId, record);
+    const requestKey = sessionId + "\u0000" + expectedJobId;
+    detailFetchStore.runningKey = requestKey;
     const finish = (state, errorCode = "") => {
       if (record.state !== "running") return;
       record.state = state;
       record.errorCode = errorCode;
       record.cancel = null;
-      if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
+      if (detailFetchStore.runningKey === requestKey) detailFetchStore.runningKey = "";
     };
     try {
       const query = new URLSearchParams({ securityId: params.securityId, lid: params.lid, _: String(Date.now()) });
@@ -307,24 +326,28 @@ const PAGE_HELPERS = String.raw`
     return detailFetchStatus(record);
   };
 
-  window.__bossDetailFetchState = function(jobId) {
-    return detailFetchStatus(detailFetchStore.fetches.get(String(jobId || "").trim()));
+  window.__bossDetailFetchState = function(sessionOrJobId, optionalJobId) {
+    const { sessionId, jobId } = detailFetchIdentity(sessionOrJobId, optionalJobId);
+    return detailFetchStatus(detailFetchStore.sessions.get(sessionId)?.fetches.get(jobId));
   };
 
-  window.__bossConsumeDetailFetch = function(jobId) {
-    const expectedJobId = String(jobId || "").trim();
-    const record = detailFetchStore.fetches.get(expectedJobId);
+  window.__bossConsumeDetailFetch = function(sessionOrJobId, optionalJobId) {
+    const { sessionId, jobId: expectedJobId } = detailFetchIdentity(sessionOrJobId, optionalJobId);
+    const session = detailFetchStore.sessions.get(sessionId);
+    const record = session?.fetches.get(expectedJobId);
     const status = detailFetchStatus(record);
-    if (record && record.state !== "running") detailFetchStore.fetches.delete(expectedJobId);
+    if (record && record.state !== "running") session.fetches.delete(expectedJobId);
     return status;
   };
 
-  window.__bossCancelDetailFetch = function(jobId) {
-    const expectedJobId = String(jobId || "").trim();
-    const record = detailFetchStore.fetches.get(expectedJobId);
+  window.__bossCancelDetailFetch = function(sessionOrJobId, optionalJobId) {
+    const { sessionId, jobId: expectedJobId } = detailFetchIdentity(sessionOrJobId, optionalJobId);
+    const session = detailFetchStore.sessions.get(sessionId);
+    const record = session?.fetches.get(expectedJobId);
     if (record?.state === "running") record.cancel?.();
-    if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
-    detailFetchStore.fetches.delete(expectedJobId);
+    const requestKey = sessionId + "\u0000" + expectedJobId;
+    if (detailFetchStore.runningKey === requestKey) detailFetchStore.runningKey = "";
+    session?.fetches.delete(expectedJobId);
     return { state: "idle", jobId: "" };
   };
 
@@ -1031,6 +1054,7 @@ class BossSiteAdapter {
     if (!["trusted_pane", "search_page_api"].includes(detailMode)) {
       throw bossError("BOSS_DETAIL_MODE_INVALID", "BOSS detail mode must be trusted_pane or search_page_api.");
     }
+    const detailSessionId = String(options.detailSessionId || "legacy").trim() || "legacy";
     const tabId = options.tabId || await this.browser.activeTabId();
     throwIfAborted(options.signal);
     const maxCards = normalizeCardLimit(options.maxCards);
@@ -1210,7 +1234,7 @@ class BossSiteAdapter {
               };
               try {
                 const detail = useSearchPageApi
-                  ? await this.readSearchPageApiDetail(tabId, entry.job, options.signal, options.assertTabBindings)
+                  ? await this.readSearchPageApiDetail(tabId, entry.job, options.signal, options.assertTabBindings, detailSessionId)
                   : await this.readVisiblePaneDetail(tabId, entry.job, options.signal, options.assertTabBindings);
                 if (!detail) {
                   throw bossError(
@@ -1565,7 +1589,7 @@ class BossSiteAdapter {
     return result || { moved: false, atBottom: false };
   }
 
-  async readSearchPageApiDetail(tabId, job, signal = null, assertTabBindings = null) {
+  async readSearchPageApiDetail(tabId, job, signal = null, assertTabBindings = null, detailSessionId = "legacy") {
     const expectedJobId = (normalizeBossUrl(job?.url || "")
       .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
     if (!expectedJobId) {
@@ -1580,7 +1604,7 @@ class BossSiteAdapter {
       await this.waitWithPacing("pane_detail_read", { signal, assertTabBindings });
       const eligibility = await this.browser.evalValue(
         tabId,
-        `(() => window.__bossCanStartDetailFetch(${JSON.stringify(expectedJobId)}))()`
+        `(() => window.__bossCanStartDetailFetch(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`
       );
       if (eligibility?.state === "failed") throw bossError(eligibility.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
       await this.reserveAccess("job_detail_fetch", { jobId: expectedJobId });
@@ -1589,17 +1613,17 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       const start = await this.browser.evalValue(
         tabId,
-        `(() => window.__bossStartDetailFetch(${JSON.stringify(expectedJobId)}))()`
+        `(() => window.__bossStartDetailFetch(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`
       );
       started = start?.state === "running";
       if (start?.state === "failed") throw bossError(start.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
         throwIfAborted(signal);
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
         const state = await this.browser.evalValue(
           tabId,
-          `(() => window.__bossDetailFetchState(${JSON.stringify(expectedJobId)}))()`
+          `(() => window.__bossDetailFetchState(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`
         );
         if (state?.state === "failed") {
           throw bossError(state.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
@@ -1607,7 +1631,7 @@ class BossSiteAdapter {
         if (state?.state === "succeeded") {
           const consumed = await this.browser.evalValue(
             tabId,
-            `(() => window.__bossConsumeDetailFetch(${JSON.stringify(expectedJobId)}))()`
+            `(() => window.__bossConsumeDetailFetch(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`
           );
           const result = consumed?.result;
           if (!result || result.jobId !== expectedJobId || cleanDetailText(result.description).length < 120) {
@@ -1627,7 +1651,7 @@ class BossSiteAdapter {
     } finally {
       if (started) {
         try {
-          await this.browser.evalValue(tabId, `(() => window.__bossCancelDetailFetch(${JSON.stringify(expectedJobId)}))()`);
+          await this.browser.evalValue(tabId, `(() => window.__bossCancelDetailFetch(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`);
         } catch {
           // Preserve the original stop, page, or API error.
         }
