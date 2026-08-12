@@ -90,6 +90,7 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await searchPageApiDetailStateMachineSmoke();
   await searchPageApiDetailRoutingSmoke();
   await searchPageApiDetailAbortCleanupSmoke();
+  await searchPageApiDetailFatalAndCleanupSmoke();
   await visiblePaneIdentitySmoke();
   await visiblePaneActivationWaitSmoke();
   await visiblePaneTrustedClickOrderSmoke();
@@ -1024,6 +1025,13 @@ async function searchPageApiDetailStateMachineSmoke() {
   const consumed = window.__bossConsumeDetailFetch("api-job");
   assert.strictEqual(consumed.state, "succeeded");
   assert.strictEqual(window.__bossDetailFetchState("api-job").state, "idle");
+  const repeatAfterConsume = window.__bossStartDetailFetch("api-job");
+  assert.strictEqual(repeatAfterConsume.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
+  assert.strictEqual(pending.length, 1, "consumed jobs must never issue a second GET");
+  fixture.reinject();
+  const repeatAfterHelperReinject = window.__bossStartDetailFetch("api-job");
+  assert.strictEqual(repeatAfterHelperReinject.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
+  assert.strictEqual(pending.length, 1, "helper reinjection must retain the page-lifetime repeat guard");
 
   const second = window.__bossStartDetailFetch("abort-job");
   assert.strictEqual(second.state, "running");
@@ -1031,6 +1039,23 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert.strictEqual(window.__bossCancelDetailFetch("abort-job").state, "idle");
   assert.strictEqual(pending[1].options.signal.aborted, true, "cancelling must abort and clear the running request");
   assert.strictEqual(window.__bossDetailFetchState("abort-job").state, "idle");
+  const repeatAfterCancel = window.__bossStartDetailFetch("abort-job");
+  assert.strictEqual(repeatAfterCancel.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
+  assert.strictEqual(pending.length, 2, "cancelled jobs must never issue a second GET");
+
+  for (const { name, response, errorCode } of [
+    { name: "http", response: { status: 500, json: async () => ({}) }, errorCode: "BOSS_DETAIL_API_HTTP_FAILED" },
+    { name: "business", response: { status: 200, json: async () => ({ code: 1, zpData: { jobInfo: {} } }) }, errorCode: "BOSS_DETAIL_API_RESPONSE_INVALID" },
+    { name: "id", response: { status: 200, json: async () => ({ code: 0, zpData: { jobInfo: { encryptId: "wrong", postDescription: "Complete detail ".repeat(12) } } }) }, errorCode: "BOSS_DETAIL_API_ID_MISMATCH" },
+    { name: "description", response: { status: 200, json: async () => ({ code: 0, zpData: { jobInfo: { encryptId: "api-job", postDescription: "short" } } }) }, errorCode: "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE" }
+  ]) {
+    const errorFixture = apiDetailPageFixture({ fetch: async () => response });
+    const start = errorFixture.window.__bossStartDetailFetch("api-job");
+    assert.strictEqual(start.state, "running", `${name} fixture must start one request`);
+    const failed = await waitForDetailFetchState(errorFixture.window, "api-job");
+    assert.deepStrictEqual({ ...failed }, { state: "failed", jobId: "api-job", errorCode });
+    assert(!JSON.stringify(failed).includes(privateSentinel), `${name} error must be sanitized`);
+  }
 }
 
 async function searchPageApiDetailRoutingSmoke() {
@@ -1098,6 +1123,54 @@ async function searchPageApiDetailRoutingSmoke() {
   });
   assert.strictEqual(failedJobs[0].detailErrorCode, "BOSS_DETAIL_API_RESPONSE_INVALID");
   assert.strictEqual(visibleFallbacks, 0, "a failed API detail read must never fall back to the visible pane");
+
+  let repeatReservations = 0;
+  const repeatAdapter = new BossSiteAdapter({
+    browser: {
+      async evalValue(_tabId, expression) {
+        if (expression.includes("__bossCanStartDetailFetch")) {
+          return { state: "failed", jobId: "repeat-route", errorCode: "BOSS_DETAIL_API_REPEAT_REQUEST" };
+        }
+        if (expression.includes("__bossStartDetailFetch")) {
+          return { state: "failed", jobId: "repeat-route", errorCode: "BOSS_DETAIL_API_REPEAT_REQUEST" };
+        }
+        return true;
+      }
+    },
+    sleepFn: async () => {},
+    accessController: { reserve: async () => { repeatReservations += 1; } }
+  });
+  repeatAdapter.assertSearchPage = async () => ({ isSearchPage: true });
+  await assert.rejects(
+    () => repeatAdapter.readSearchPageApiDetail("repeat-tab", card("repeat-route")),
+    (error) => error.code === "BOSS_DETAIL_API_REPEAT_REQUEST"
+  );
+  assert.strictEqual(repeatReservations, 0, "a repeated API detail request must not consume another access reservation");
+
+  const order = [];
+  let startIssued = false;
+  const reservationFirst = new BossSiteAdapter({
+    browser: {
+      async evalValue(_tabId, expression) {
+        if (expression.includes("__bossCanStartDetailFetch")) return { state: "idle", jobId: "order-route" };
+        if (expression.includes("__bossDetailFetchState")) return startIssued ? { state: "succeeded" } : { state: "idle" };
+        if (expression.includes("__bossStartDetailFetch")) {
+          startIssued = true;
+          order.push("start");
+          return { state: "running", jobId: "order-route" };
+        }
+        if (expression.includes("__bossConsumeDetailFetch")) {
+          return { state: "succeeded", result: { jobId: "order-route", description: "Complete ordered API detail ".repeat(12) } };
+        }
+        return true;
+      }
+    },
+    sleepFn: async () => {},
+    accessController: { reserve: async () => order.push("reserve") }
+  });
+  reservationFirst.assertSearchPage = async () => ({ isSearchPage: true });
+  await reservationFirst.readSearchPageApiDetail("order-tab", card("order-route"));
+  assert.deepStrictEqual(order, ["reserve", "start"], "the access reservation must complete before a first API GET can start");
 }
 
 async function searchPageApiDetailAbortCleanupSmoke() {
@@ -1124,6 +1197,73 @@ async function searchPageApiDetailAbortCleanupSmoke() {
     (error) => error.code === "SCAN_ABORTED"
   );
   assert.strictEqual(cancelled, 1, "aborting the scan must cancel the page-local fetch exactly once");
+}
+
+async function searchPageApiDetailFatalAndCleanupSmoke() {
+  for (const code of ["BOSS_LOGIN_REQUIRED", "BOSS_RISK_CONTROL"]) {
+    let reads = 0;
+    const outcomes = [];
+    const audits = [];
+    const privateSentinel = `private-${code}`;
+    const adapter = new BossSiteAdapter({
+      browser: { async navigate() {} },
+      sleepFn: async () => {},
+      randomFn: () => 0,
+      logger: { info: () => {}, warn: (event, details) => audits.push({ event, details }) }
+    });
+    adapter.assertSearchPage = async () => ({ isSearchPage: true });
+    adapter.collectCards = async () => [card(`fatal-${code}-1`), card(`fatal-${code}-2`)];
+    adapter.readSearchPageApiDetail = async () => {
+      reads += 1;
+      throw Object.assign(new Error(privateSentinel), { code });
+    };
+    await assert.rejects(() => adapter.scanBrowser({
+      tabId: "fatal-api-tab",
+      keywords: ["fatal-api"],
+      cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+      maxCards: 20,
+      maxDetailTotal: 2,
+      detailMode: "search_page_api",
+      onDetailResult: async (outcome) => outcomes.push(outcome)
+    }), (error) => error.code === code);
+    assert.strictEqual(reads, 1, `${code} must stop the scan after the first detail`);
+    assert.deepStrictEqual(outcomes, [{ outcome: "failed", errorCode: code, accessMode: "search_page_api" }]);
+    assert(!JSON.stringify(outcomes).includes(privateSentinel), `${code} callback must not receive sensitive error text`);
+    assert(!JSON.stringify(audits).includes(privateSentinel), `${code} audit input must not receive sensitive error text`);
+  }
+
+  for (const boundary of ["timeout", "page_loss", "tab_drift"]) {
+    let cancellations = 0;
+    let searchChecks = 0;
+    let bindingChecks = 0;
+    const browser = {
+      async evalValue(_tabId, expression) {
+        if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "cleanup-route" };
+        if (expression.includes("__bossDetailFetchState")) return { state: "running", jobId: "cleanup-route" };
+        if (expression.includes("__bossCancelDetailFetch")) {
+          cancellations += 1;
+          return { state: "idle", jobId: "" };
+        }
+        return true;
+      }
+    };
+    const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+    adapter.assertSearchPage = async () => {
+      searchChecks += 1;
+      if (boundary === "page_loss" && searchChecks > 1) throw Object.assign(new Error("page lost"), { code: "BOSS_SEARCH_PAGE_LOST" });
+      return { isSearchPage: true };
+    };
+    const assertTabBindings = async () => {
+      bindingChecks += 1;
+      if (boundary === "tab_drift" && bindingChecks > 3) throw Object.assign(new Error("tabs changed"), { code: "BOSS_OPERATOR_TABS_CHANGED" });
+    };
+    const expectedCode = boundary === "timeout" ? "BOSS_DETAIL_API_TIMEOUT" : boundary === "page_loss" ? "BOSS_SEARCH_PAGE_LOST" : "BOSS_OPERATOR_TABS_CHANGED";
+    await assert.rejects(
+      () => adapter.readSearchPageApiDetail("cleanup-tab", card("cleanup-route"), null, assertTabBindings),
+      (error) => error.code === expectedCode
+    );
+    assert.strictEqual(cancellations, 1, `${boundary} must cancel the page-local request`);
+  }
 }
 
 async function cardActivationPointUnavailableSmoke() {
@@ -2420,6 +2560,16 @@ function apiDetailPageFixture({ fetch }) {
     querySelectorAll(selector) { return selector.includes(".job-card-box") ? cards : []; }
   };
   const window = { fetch, location: { origin: "https://www.zhipin.com" } };
-  vm.runInNewContext(PAGE_HELPERS, { window, document, URL, URLSearchParams, AbortController, Date, setTimeout, clearTimeout });
-  return { window };
+  const context = { window, document, URL, URLSearchParams, AbortController, Date, setTimeout, clearTimeout };
+  vm.runInNewContext(PAGE_HELPERS, context);
+  return { window, reinject: () => vm.runInNewContext(PAGE_HELPERS, context) };
+}
+
+async function waitForDetailFetchState(window, jobId) {
+  let state = window.__bossDetailFetchState(jobId);
+  for (let attempt = 0; attempt < 10 && state.state === "running"; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    state = window.__bossDetailFetchState(jobId);
+  }
+  return state;
 }

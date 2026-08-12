@@ -195,8 +195,12 @@ const PAGE_HELPERS = String.raw`
     };
   };
 
-  const detailFetches = new Map();
-  let detailFetchRunningJobId = "";
+  const detailFetchStore = window.__bossDetailFetchStore || {
+    fetches: new Map(),
+    attemptedJobIds: new Set(),
+    runningJobId: ""
+  };
+  window.__bossDetailFetchStore = detailFetchStore;
 
   function detailFetchStatus(record) {
     if (!record) return { state: "idle", jobId: "" };
@@ -225,19 +229,35 @@ const PAGE_HELPERS = String.raw`
     return String(value || "").replace(/\s+/g, " ").trim();
   }
 
-  window.__bossStartDetailFetch = function(jobId) {
+  function detailFetchStartStatus(jobId) {
     const expectedJobId = String(jobId || "").trim();
-    const existing = detailFetches.get(expectedJobId);
+    const existing = detailFetchStore.fetches.get(expectedJobId);
     if (existing) return detailFetchStatus(existing);
-    if (detailFetchRunningJobId && detailFetchRunningJobId !== expectedJobId) {
+    if (detailFetchStore.attemptedJobIds.has(expectedJobId)) {
+      return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_REPEAT_REQUEST" };
+    }
+    if (detailFetchStore.runningJobId && detailFetchStore.runningJobId !== expectedJobId) {
       return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_BUSY" };
     }
     const params = detailFetchCard(expectedJobId);
     if (!params) return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_PARAMS_INVALID" };
+    return { state: "idle", jobId: expectedJobId };
+  }
+
+  window.__bossCanStartDetailFetch = function(jobId) {
+    return detailFetchStartStatus(jobId);
+  };
+
+  window.__bossStartDetailFetch = function(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    const startStatus = detailFetchStartStatus(expectedJobId);
+    if (startStatus.state !== "idle") return startStatus;
+    const params = detailFetchCard(expectedJobId);
     const controller = new AbortController();
     const record = { jobId: expectedJobId, state: "running", controller, result: null, errorCode: "" };
-    detailFetches.set(expectedJobId, record);
-    detailFetchRunningJobId = expectedJobId;
+    detailFetchStore.attemptedJobIds.add(expectedJobId);
+    detailFetchStore.fetches.set(expectedJobId, record);
+    detailFetchStore.runningJobId = expectedJobId;
     (async () => {
       try {
         const query = new URLSearchParams({ securityId: params.securityId, lid: params.lid, _: String(Date.now()) });
@@ -268,30 +288,30 @@ const PAGE_HELPERS = String.raw`
         record.state = "failed";
         record.errorCode = String(error?.code || "BOSS_DETAIL_API_RESPONSE_INVALID");
       } finally {
-        if (detailFetchRunningJobId === expectedJobId) detailFetchRunningJobId = "";
+        if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
       }
     })();
     return detailFetchStatus(record);
   };
 
   window.__bossDetailFetchState = function(jobId) {
-    return detailFetchStatus(detailFetches.get(String(jobId || "").trim()));
+    return detailFetchStatus(detailFetchStore.fetches.get(String(jobId || "").trim()));
   };
 
   window.__bossConsumeDetailFetch = function(jobId) {
     const expectedJobId = String(jobId || "").trim();
-    const record = detailFetches.get(expectedJobId);
+    const record = detailFetchStore.fetches.get(expectedJobId);
     const status = detailFetchStatus(record);
-    if (record && record.state !== "running") detailFetches.delete(expectedJobId);
+    if (record && record.state !== "running") detailFetchStore.fetches.delete(expectedJobId);
     return status;
   };
 
   window.__bossCancelDetailFetch = function(jobId) {
     const expectedJobId = String(jobId || "").trim();
-    const record = detailFetches.get(expectedJobId);
+    const record = detailFetchStore.fetches.get(expectedJobId);
     if (record?.state === "running") record.controller.abort();
-    if (detailFetchRunningJobId === expectedJobId) detailFetchRunningJobId = "";
-    detailFetches.delete(expectedJobId);
+    if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
+    detailFetchStore.fetches.delete(expectedJobId);
     return { state: "idle", jobId: "" };
   };
 
@@ -1220,7 +1240,7 @@ class BossSiteAdapter {
                   keyword,
                   jobId: entry.job.sourceId || entry.job.url || "",
                   errorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT",
-                  errorMessage: error?.message || String(error)
+                  errorMessage: useSearchPageApi ? "" : error?.message || String(error)
                 });
                 if (!accessPending) {
                   const failedJob = { ...entry.job, detailRequired: true, detailRead: false, detailErrorCode: error?.code || "BOSS_DETAIL_LOAD_TIMEOUT" };
@@ -1270,6 +1290,7 @@ class BossSiteAdapter {
           } catch (error) {
             if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST"].includes(error?.code)) throw error;
             if (isWorkflowControlError(error)) throw error;
+            const safeErrorMessage = options.detailMode === "search_page_api" ? "" : error?.message || String(error);
             this.logger?.warn("boss_scan_target_failed", {
               targetKey,
               keyword,
@@ -1277,7 +1298,7 @@ class BossSiteAdapter {
               cityCode: city.cityCode,
               laneId,
               errorCode: error?.code || "BOSS_SCAN_TARGET_FAILED",
-              errorMessage: error?.message || String(error)
+              errorMessage: safeErrorMessage
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
             if (typeof options.onTargetComplete === "function") {
@@ -1291,7 +1312,7 @@ class BossSiteAdapter {
                 jobs: targetJobs,
                 jobCount: targetJobs.length,
                 errorCode: error?.code || "BOSS_SCAN_TARGET_FAILED",
-                errorMessage: error?.message || String(error),
+                errorMessage: safeErrorMessage,
                 startedAt,
                 finishedAt: new Date().toISOString()
               });
@@ -1323,7 +1344,7 @@ class BossSiteAdapter {
     if (fatalError?.code === "BOSS_RISK_CONTROL" && typeof options.onRiskControl === "function") {
       await options.onRiskControl({
         errorCode: fatalError.code,
-        errorMessage: fatalError.message,
+        errorMessage: options.detailMode === "search_page_api" ? "" : fatalError.message,
         detailsRead,
         detailsReused,
         candidates: resultJobs.length
@@ -1541,6 +1562,11 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitWithPacing("pane_detail_read", { signal, assertTabBindings });
+      const eligibility = await this.browser.evalValue(
+        tabId,
+        `(() => window.__bossCanStartDetailFetch(${JSON.stringify(expectedJobId)}))()`
+      );
+      if (eligibility?.state === "failed") throw bossError(eligibility.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
       await this.reserveAccess("job_detail_fetch", { jobId: expectedJobId });
       const start = await this.browser.evalValue(
         tabId,
@@ -2547,6 +2573,7 @@ function isFatalBrowserError(error) {
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
     "BOSS_DETAIL_API_BUSY",
+    "BOSS_DETAIL_API_REPEAT_REQUEST",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BOSS_TAB_REQUIRED",
     "BOSS_SEARCH_TAB_CHANGED",
