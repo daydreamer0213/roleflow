@@ -2,7 +2,12 @@ const assert = require("node:assert/strict");
 const { openDb, setSiteRuntimeState } = require("../src/core/storage");
 const { persistBossRiskControl } = require("../src/cli");
 const { resolveAccessMode } = require("../src/core/site_access_budget");
-const { communicationRuntimeBlock } = require("../src/core/communication_runtime");
+const {
+  scanRuntimeBlock,
+  communicationRuntimeBlock,
+  assertBossRuntimeAvailable,
+  assertCommunicationRuntimeAvailable
+} = require("../src/core/communication_runtime");
 
 const HOUR_MS = 60 * 60_000;
 const RISK_AT_MS = Date.UTC(2026, 7, 12, 0, 0, 0);
@@ -29,15 +34,6 @@ function persistRisk(db, platformBlockedUntilMs) {
   });
 }
 
-function expectRuntimeBlock(db, nowMs, blockedUntil) {
-  return withFrozenNow(nowMs, () => {
-    assert.deepStrictEqual(communicationRuntimeBlock(db), {
-      reasonCode: "BOSS_RISK_CONTROL",
-      blockedUntil
-    });
-  });
-}
-
 function riskRecoveryFloorSmoke() {
   const db = openDb(":memory:");
   try {
@@ -45,11 +41,25 @@ function riskRecoveryFloorSmoke() {
     persistRisk(db, RISK_AT_MS + HOUR_MS);
 
     assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: RISK_AT_MS + 47 * HOUR_MS }), "recovery");
-    expectRuntimeBlock(db, RISK_AT_MS + 47 * HOUR_MS, blockedUntil);
+    assert.strictEqual(scanRuntimeBlock(db, { nowMs: RISK_AT_MS + 47 * HOUR_MS }), null);
+    withFrozenNow(RISK_AT_MS + 47 * HOUR_MS, () => {
+      assert.doesNotThrow(() => assertBossRuntimeAvailable(db));
+      assert.deepStrictEqual(communicationRuntimeBlock(db), {
+        reasonCode: "BOSS_RISK_CONTROL",
+        blockedUntil
+      });
+      assert.throws(
+        () => assertCommunicationRuntimeAvailable(db),
+        (error) => error.code === "BOSS_RISK_CONTROL" && error.statusCode === 409
+      );
+    });
 
     assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: RISK_AT_MS + 49 * HOUR_MS }), "normal");
     withFrozenNow(RISK_AT_MS + 49 * HOUR_MS, () => {
+      assert.strictEqual(scanRuntimeBlock(db), null);
       assert.strictEqual(communicationRuntimeBlock(db), null);
+      assert.doesNotThrow(() => assertBossRuntimeAvailable(db));
+      assert.doesNotThrow(() => assertCommunicationRuntimeAvailable(db));
     });
   } finally {
     db.close();
@@ -63,7 +73,14 @@ function laterPlatformDeadlineSmoke() {
     persistRisk(db, RISK_AT_MS + 72 * HOUR_MS);
 
     assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: RISK_AT_MS + 71 * HOUR_MS }), "recovery");
-    expectRuntimeBlock(db, RISK_AT_MS + 71 * HOUR_MS, blockedUntil);
+    assert.deepStrictEqual(scanRuntimeBlock(db, { nowMs: RISK_AT_MS + 71 * HOUR_MS }), {
+      reasonCode: "BOSS_RISK_CONTROL",
+      blockedUntil
+    });
+    assert.deepStrictEqual(communicationRuntimeBlock(db, { nowMs: RISK_AT_MS + 71 * HOUR_MS }), {
+      reasonCode: "BOSS_RISK_CONTROL",
+      blockedUntil
+    });
 
     assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: RISK_AT_MS + 73 * HOUR_MS }), "normal");
     withFrozenNow(RISK_AT_MS + 73 * HOUR_MS, () => {
@@ -84,12 +101,17 @@ function genericBlockedStateSmoke() {
       details: { blockedUntil: futureDeadline }
     });
     withFrozenNow(RISK_AT_MS, () => {
+      assert.deepStrictEqual(scanRuntimeBlock(db), {
+        reasonCode: "BOSS_RUNTIME_BLOCKED",
+        blockedUntil: futureDeadline
+      });
       assert.deepStrictEqual(communicationRuntimeBlock(db), {
         reasonCode: "BOSS_RUNTIME_BLOCKED",
         blockedUntil: futureDeadline
       });
     });
     withFrozenNow(RISK_AT_MS + 2 * HOUR_MS, () => {
+      assert.strictEqual(scanRuntimeBlock(db), null);
       assert.strictEqual(communicationRuntimeBlock(db), null);
     });
   } finally {

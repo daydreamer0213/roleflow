@@ -3,8 +3,8 @@ const { createBossMessageReader } = require("../adapters/sites/boss_message_read
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
 const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
+const { communicationRuntimeBlock } = require("../core/communication_runtime");
 const {
-  getSiteRuntimeState,
   setSiteRuntimeState,
   recordSiteAccessEvent
 } = require("../core/storage");
@@ -445,15 +445,12 @@ function messageDiscoveryError(code, message, statusCode = 500) {
 }
 
 function assertMessageDiscoveryRuntimeAvailable(db, now) {
-  const state = getSiteRuntimeState(db, "boss");
-  if (!state || state.status !== "blocked") return;
-  const blockedUntil = state.details?.blockedUntil || "";
-  const blockedUntilMs = Date.parse(blockedUntil);
   const nowValue = typeof now === "function" ? now() : new Date();
   const nowMs = nowValue instanceof Date ? nowValue.getTime() : Date.parse(nowValue);
-  if (Number.isFinite(blockedUntilMs) && Number.isFinite(nowMs) && blockedUntilMs <= nowMs) return;
+  const block = communicationRuntimeBlock(db, { nowMs });
+  if (!block) return;
   throw messageDiscoveryError(
-    state.reasonCode || "BOSS_RUNTIME_BLOCKED",
+    block.reasonCode,
     "BOSS access is paused by the central runtime safety guard",
     409
   );

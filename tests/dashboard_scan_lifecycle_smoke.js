@@ -36,6 +36,7 @@ try {
   failedAndInterruptedExitSmoke(db);
   orphanRecheckSmoke(db);
   restartRecoveryAndOrphanCleanupSmoke(db);
+  recoveryFloorScanSmoke(db);
   blockedRuntimeGuardSmoke(db);
   console.log("dashboard_scan_lifecycle_smoke ok");
 } finally {
@@ -247,6 +248,48 @@ function blockedRuntimeGuardSmoke(database) {
   assert.strictEqual(spawnCalls, 0);
   assert.strictEqual(getLatestScanRun(database, { planId: 401, site: "boss" }), null);
   clearSiteRuntimeState(database, "boss");
+}
+
+function recoveryFloorScanSmoke(database) {
+  const riskAtMs = Date.UTC(2026, 7, 12, 0, 0, 0);
+  const { persistBossRiskControl } = require("../src/cli");
+  persistBossRiskControl(database, {
+    site: "boss",
+    runId: "dashboard-scan-recovery-floor",
+    error: Object.assign(new Error("BOSS risk control"), {
+      code: "BOSS_RISK_CONTROL",
+      blockedUntil: new Date(riskAtMs + 60 * 60_000).toISOString()
+    }),
+    nowMs: riskAtMs
+  });
+  const calls = [];
+  withFrozenNow(riskAtMs + 47 * 60 * 60_000, () => {
+    startPlanScan(new Map(), {
+      db: database,
+      root,
+      dbPath,
+      planId: 400,
+      cdpPort: 9222,
+      browserMode: "edge",
+      scanKind: "daily",
+      logger,
+      requestId: "request-recovery-floor",
+      spawnProcess: spawnHarness(database, 400, calls)
+    });
+  });
+  assert.strictEqual(calls.length, 1, "expired short platform deadline must not disable recovery scanning");
+  calls[0].child.emit("close", 0, null);
+  clearSiteRuntimeState(database, "boss");
+}
+
+function withFrozenNow(nowMs, fn) {
+  const originalNow = Date.now;
+  Date.now = () => nowMs;
+  try {
+    return fn();
+  } finally {
+    Date.now = originalNow;
+  }
 }
 
 function launch(database, planId) {

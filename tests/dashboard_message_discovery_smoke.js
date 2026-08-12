@@ -23,7 +23,7 @@ const {
 const { recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
-const { installDashboardSignalHandlers } = require("../src/cli");
+const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
 
 const PRIVATE_BODY = "脱敏测试问题";
 const PRIVATE_PREVIEW = "脱敏会话预览";
@@ -148,11 +148,15 @@ async function main() {
   await messageDiscoveryActionPollRaceSmoke(page.body);
   await messageDiscoveryAcceptedActionStopsPollSmoke(page.body);
 
-  setSiteRuntimeState(db, "boss", {
-    status: "blocked",
-    reasonCode: "BOSS_RISK_CONTROL",
-    message: "blocked for safety verification",
-    details: { blockedUntil: "2099-01-01T00:00:00.000Z" }
+  const riskAtMs = nowMs - 47 * 60 * 60_000;
+  persistBossRiskControl(db, {
+    site: "boss",
+    runId: "message-discovery-recovery-floor",
+    error: Object.assign(new Error("BOSS risk control"), {
+      code: "BOSS_RISK_CONTROL",
+      blockedUntil: new Date(riskAtMs + 60 * 60_000).toISOString()
+    }),
+    nowMs: riskAtMs
   });
   let response = await postJson(base, "/api/message-discovery", {
     action: "start",
@@ -160,11 +164,11 @@ async function main() {
   });
   assert.strictEqual(response.status, 409);
   assert.strictEqual(response.body.errorCode, "BOSS_RISK_CONTROL");
-  assert.strictEqual(browserCreations, 0, "runtime block must stop before browser creation");
+  assert.strictEqual(browserCreations, 0, "recovery floor must stop before browser creation");
   assert.strictEqual(
     db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
     0,
-    "runtime block must stop before lease acquisition"
+    "recovery floor must stop before lease acquisition"
   );
   clearSiteRuntimeState(db, "boss");
 

@@ -128,7 +128,7 @@ const {
   retryOneJobAnalysis,
   retryPendingJobAnalyses
 } = require("../application/analysis");
-const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
+const { scanRuntimeBlock, communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
 const {
@@ -3346,7 +3346,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     versionDiff: compareProfileVersions(db, profile.id),
     feedback: buildFeedbackSummary(db, { profileId: profile.id }),
     bossCatalog,
-    bossRuntimeBlock: communicationRuntimeBlock(db),
+    bossRuntimeBlock: scanRuntimeBlock(db),
     workflowState: buildWorkflowDashboardState(db, planRecord),
     bossFilterPreview,
     bossSalaryOptions: bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [],

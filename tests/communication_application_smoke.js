@@ -22,6 +22,7 @@ const {
   resolveAmbiguousCommunication
 } = require("../src/application/communication");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { persistBossRiskControl } = require("../src/cli");
 
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
@@ -77,6 +78,7 @@ let noDbPathServer;
     (error) => error.code === "COMMUNICATION_PROCESS_LAUNCHER_REQUIRED"
   );
   assert.strictEqual(getCommunicationBatch(db, missingLauncher.batch.id).status, "confirmed");
+  recoveryFloorCommunicationGuardSmoke(db, fixture);
   const directResolution = createCommunicationBatch({
     db,
     input: { planId: fixture.planId, jobIds: [fixture.directResolveJobId], browserMode: "edge" }
@@ -251,6 +253,56 @@ function seed(database) {
     childErrorJobId: upsertJob(database, job("child-error", { title: "Child error role" }), scanBatchId),
     missingDbPathJobId: upsertJob(database, job("missing-db-path", { title: "Missing dbPath role" }), scanBatchId)
   };
+}
+
+function recoveryFloorCommunicationGuardSmoke(database, fixture) {
+  const riskAtMs = Date.UTC(2026, 7, 12, 0, 0, 0);
+  persistBossRiskControl(database, {
+    site: "boss",
+    runId: "communication-application-recovery-floor",
+    error: Object.assign(new Error("BOSS risk control"), {
+      code: "BOSS_RISK_CONTROL",
+      blockedUntil: new Date(riskAtMs + 60 * 60_000).toISOString()
+    }),
+    nowMs: riskAtMs
+  });
+  const startBatch = createCommunicationBatch({
+    db: database,
+    input: { planId: fixture.planId, jobIds: [fixture.directJobId], browserMode: "edge" }
+  }).batch;
+  const resumeBatch = createCommunicationBatch({
+    db: database,
+    input: { planId: fixture.planId, jobIds: [fixture.launcherJobId], browserMode: "edge" }
+  }).batch;
+  setCommunicationBatchStatus(database, { batchId: resumeBatch.id, status: "running" });
+  setCommunicationBatchStatus(database, { batchId: resumeBatch.id, status: "paused" });
+  let spawnCalls = 0;
+  withFrozenNow(riskAtMs + 47 * 60 * 60_000, () => {
+    for (const [batchId, action] of [[startBatch.id, "start"], [resumeBatch.id, "resume"]]) {
+      assert.throws(
+        () => controlCommunicationBatch({
+          db: database,
+          input: { batchId, action },
+          deps: { spawnCommunication() { spawnCalls += 1; } }
+        }),
+        (error) => error.code === "BOSS_RISK_CONTROL" && error.statusCode === 409
+      );
+    }
+  });
+  assert.strictEqual(spawnCalls, 0, "recovery floor must reject before spawnCommunication");
+  assert.strictEqual(getCommunicationBatch(database, startBatch.id).status, "confirmed");
+  assert.strictEqual(getCommunicationBatch(database, resumeBatch.id).status, "paused");
+  clearSiteRuntimeState(database, "boss");
+}
+
+function withFrozenNow(nowMs, fn) {
+  const originalNow = Date.now;
+  Date.now = () => nowMs;
+  try {
+    return fn();
+  } finally {
+    Date.now = originalNow;
+  }
 }
 
 function job(sourceId, overrides = {}) {

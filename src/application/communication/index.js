@@ -12,7 +12,7 @@ const {
 const { communicationAmbiguityStateForBatch } = require("../../core/communication_ambiguity");
 const { communicationCalibrationStatus, assertCommunicationExecutionEnabled } = require("../../core/communication_calibration");
 const { appError } = require("../../core/observability");
-const { communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../../core/communication_runtime");
+const { communicationRuntimeBlock, assertCommunicationRuntimeAvailable } = require("../../core/communication_runtime");
 
 function createCommunicationBatch({ db, input = {}, deps = {} }) {
   const quota = communicationQuotaSnapshot(db);
@@ -45,7 +45,7 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
       throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
     }
     assertCommunicationExecutionEnabled();
-    assertBossRuntimeAvailable(db);
+    assertCommunicationRuntimeAvailable(db);
     if (typeof deps.spawnCommunication !== "function") {
       throw appError("COMMUNICATION_PROCESS_LAUNCHER_REQUIRED", "communication process launcher is required", { statusCode: 500 });
     }
