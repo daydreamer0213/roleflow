@@ -2076,6 +2076,7 @@ function startPlanScan(scanRuns, {
   browserMode = "edge",
   scanKind = "daily",
   resumeBatchId = null,
+  detailMode = null,
   workflowRunId = "",
   logger,
   requestId,
@@ -2122,6 +2123,7 @@ function startPlanScan(scanRuns, {
     cdpPort,
     runId,
     resumeBatchId: analysisOnly ? null : effectiveResumeBatchId,
+    detailMode,
     ...(workflowRun ? {
       workflowRunId: workflowRun.id,
       analysisOnly,

@@ -61,6 +61,7 @@ function cliArgsMatrixSmoke() {
       assert(!actual.includes("--max-cards"));
       assert(!actual.includes("--max-details"));
       assert(!actual.includes("--limit"));
+      assert(!actual.includes("--detail-mode"));
     }
   }
 
@@ -71,6 +72,18 @@ function cliArgsMatrixSmoke() {
   assert.deepStrictEqual(
     buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", resumeBatchId: 73 }),
     [...expectedByKind.daily, "--resume-batch", "73", "--browser", "edge"]
+  );
+  assert.deepStrictEqual(
+    buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "search_page_api" }),
+    [...expectedByKind.daily, "--detail-mode", "search_page_api", "--browser", "edge"]
+  );
+  assert.deepStrictEqual(
+    buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "trusted_pane" }),
+    [...expectedByKind.daily, "--detail-mode", "trusted_pane", "--browser", "edge"]
+  );
+  assert.throws(
+    () => buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "unsafe_fallback" }),
+    (error) => error.code === "INVALID_DETAIL_MODE"
   );
   assert.deepStrictEqual(
     buildScanCliArgs({

@@ -52,6 +52,7 @@ let db;
   jobOnlyCheckpointPersistsDetailWithoutTargetResult(db, { profileId, planId, owner });
   lifecycleAndIdempotency(db, { profileId, planId, owner });
   processExitAndOrphanRecovery(db, { profileId, planId, owner });
+  detailModeSnapshotRecoverySmoke();
   await wrongPlanReassessmentIsRejected(db, { profileId, planId, otherPlanId });
 
   releaseSiteScanLease(db, { site: "boss", owner });
@@ -78,6 +79,35 @@ function seedPlans(database) {
   const planId = Number(insertPlan.run(profileId, "Recovery Plan", now, now).lastInsertRowid);
   const otherPlanId = Number(insertPlan.run(profileId, "Other Plan", now, now).lastInsertRowid);
   return { profileId, planId, otherPlanId };
+}
+
+function detailModeSnapshotRecoverySmoke() {
+  const { buildScanExecutionSnapshot, assertScanSnapshotCompatible } = require("../src/core/scan_snapshot");
+  const snapshot = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    detailMode: "search_page_api",
+    runtimePolicyHash: "recovery-policy",
+    searchTemplate: {},
+    cityScopes: [],
+    keywordPlan: [],
+    nativeFilters: {},
+    limits: {}
+  });
+  assert.throws(
+    () => assertScanSnapshotCompatible(snapshot, buildScanExecutionSnapshot({
+      site: "boss",
+      scanKind: "daily",
+      detailMode: "trusted_pane",
+      runtimePolicyHash: "recovery-policy",
+      searchTemplate: {},
+      cityScopes: [],
+      keywordPlan: [],
+      nativeFilters: {},
+      limits: {}
+    })),
+    (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /detailMode differs/.test(error.message)
+  );
 }
 
 function startRun(database, { label, profileId, planId, owner }) {

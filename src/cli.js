@@ -95,7 +95,7 @@ const {
   scopeShortId
 } = require("./core/inherited_search_scope");
 const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
-const { resolveScanKind, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
+const { resolveScanKind, resolveDetailMode, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
 const { runCommunicationBatch } = require("./core/communication_executor");
 const { finalizeWorkflowControl } = require("./core/workflow_control");
@@ -719,6 +719,15 @@ async function scan(
     })
     : null;
   const storedExecution = validatedResume?.storedSnapshot || null;
+  const requestedDetailMode = Object.hasOwn(args, "detail-mode")
+    ? resolveDetailMode(args["detail-mode"])
+    : null;
+  const detailMode = storedExecution
+    ? resolveDetailMode(storedExecution.detailMode)
+    : (requestedDetailMode || "trusted_pane");
+  if (requestedDetailMode && requestedDetailMode !== detailMode) {
+    throw codedError("SCAN_DETAIL_MODE_MISMATCH", "恢复扫描的详情模式必须与执行快照一致。");
+  }
   const browser = createBrowser(args);
   const accessController = !args.input && site === "boss"
     ? createSiteAccessController({
@@ -937,6 +946,7 @@ async function scan(
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
     site,
     scanKind: scanMode,
+    detailMode,
     runtimePolicyHash,
     recommendationPolicyHash: configs.recommendationPolicyHash || "",
     searchTemplate,
@@ -1088,6 +1098,7 @@ async function scan(
     browserPageBudget: scanLimits.browserPageBudget,
     maxCards: scanLimits.maxCards,
     maxDetailTotal: scanLimits.maxDetailTotal,
+    detailMode,
     detailLimits: scanLimits.detailLimits,
     supplementalSalaryLaneKeywordLimit: scanLimits.supplementalSalaryLaneKeywordLimit,
     supplementalSalaryLaneCardLimit: scanLimits.supplementalSalaryLaneCardLimit,
@@ -1891,7 +1902,7 @@ function workflowAccessUsage(db, scanRunId) {
 
 function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {}) {
   const succeeded = result?.outcome === "succeeded";
-  const accessMode = ["visible_pane", "standalone_detail"].includes(result?.accessMode)
+  const accessMode = ["visible_pane", "standalone_detail", "search_page_api"].includes(result?.accessMode)
     ? result.accessMode
     : "unknown";
   return recordSiteAccessEvent(db, {

@@ -1,10 +1,11 @@
 const { stableHash } = require("./analysis_revision");
 const { buildBossScanTargets } = require("../adapters/sites/boss");
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const PAYLOAD_FIELDS = [
   "site",
   "scanKind",
+  "detailMode",
   "runtimePolicyHash",
   "recommendationPolicyHash",
   "searchTemplate",
@@ -54,6 +55,7 @@ function buildScanExecutionSnapshot(input = {}) {
     createdAt: new Date().toISOString(),
     site: String(input.site || "boss").trim().toLowerCase(),
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
+    detailMode: normalizeDetailMode(input.detailMode),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
     ...(String(input.recommendationPolicyHash || "").trim()
       ? { recommendationPolicyHash: String(input.recommendationPolicyHash).trim() }
@@ -77,6 +79,12 @@ function normalizeSearchTemplate(value = {}) {
     url: String(value?.url || ""),
     cityCode: String(value?.cityCode || "")
   });
+}
+
+function normalizeDetailMode(value) {
+  const normalized = String(value ?? "trusted_pane").trim().toLowerCase();
+  if (["trusted_pane", "search_page_api"].includes(normalized)) return normalized;
+  throw snapshotMismatch(["detailMode must be trusted_pane or search_page_api"]);
 }
 
 function normalizeInheritedContext(input = {}) {

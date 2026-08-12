@@ -9,6 +9,7 @@ const {
 const input = {
   site: "boss",
   scanKind: "daily",
+  detailMode: "trusted_pane",
   runtimePolicyHash: "policy-v1",
   recommendationPolicyHash: "recommendation-policy-v1",
   searchTemplate: {
@@ -70,7 +71,8 @@ const input = {
 };
 
 const snapshot = buildScanExecutionSnapshot(input);
-assert.strictEqual(snapshot.schemaVersion, 3);
+assert.strictEqual(snapshot.schemaVersion, 4);
+assert.strictEqual(snapshot.detailMode, "trusted_pane");
 assert.match(snapshot.createdAt, /^\d{4}-\d{2}-\d{2}T/);
 assert.match(snapshot.snapshotHash, /^[a-f0-9]{64}$/);
 assert.deepStrictEqual(snapshot.targets[0], {
@@ -126,6 +128,19 @@ const reordered = buildScanExecutionSnapshot({
 assert.strictEqual(reordered.snapshotHash, snapshot.snapshotHash);
 assertScanSnapshotCompatible(snapshot, { ...reordered, createdAt: "2099-01-01T00:00:00.000Z" });
 assert.strictEqual(snapshot.recommendationPolicyHash, "recommendation-policy-v1");
+const apiDetailSnapshot = buildScanExecutionSnapshot({ ...input, detailMode: "search_page_api" });
+assert.strictEqual(apiDetailSnapshot.detailMode, "search_page_api");
+assert.notStrictEqual(apiDetailSnapshot.snapshotHash, snapshot.snapshotHash);
+assert.throws(
+  () => assertScanSnapshotCompatible(snapshot, apiDetailSnapshot),
+  (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /detailMode differs/.test(error.message)
+);
+const legacyDetailModeSnapshot = { ...snapshot };
+delete legacyDetailModeSnapshot.detailMode;
+assert.throws(
+  () => assertScanSnapshotCompatible(legacyDetailModeSnapshot, legacyDetailModeSnapshot),
+  (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /detailMode/.test(error.message)
+);
 const legacyInput = { ...input };
 delete legacyInput.recommendationPolicyHash;
 const legacySnapshot = buildScanExecutionSnapshot(legacyInput);

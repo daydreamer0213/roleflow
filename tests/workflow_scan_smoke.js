@@ -110,8 +110,17 @@ async function main() {
       arbitrary: "PRIVATE_ARBITRARY_SENTINEL"
     }
   });
+  persistDetailOutcome(db, {
+    site: "boss",
+    runId: "usage-probe",
+    batchId: 44,
+    result: {
+      outcome: "succeeded",
+      accessMode: "search_page_api"
+    }
+  });
   const detailOutcomeEvents = listSiteAccessEvents(db, { site: "boss", action: "pane_detail_result" });
-  assert.strictEqual(detailOutcomeEvents.length, 2);
+  assert.strictEqual(detailOutcomeEvents.length, 3);
   assert.deepStrictEqual(detailOutcomeEvents[0].details, {
     site: "boss",
     action: "pane_detail_result",
@@ -129,6 +138,15 @@ async function main() {
     outcome: "succeeded",
     errorCode: "",
     accessMode: "unknown"
+  });
+  assert.deepStrictEqual(detailOutcomeEvents[2].details, {
+    site: "boss",
+    action: "pane_detail_result",
+    runId: "usage-probe",
+    batchId: 44,
+    outcome: "succeeded",
+    errorCode: "",
+    accessMode: "search_page_api"
   });
   const serializedDetailOutcomeEvents = JSON.stringify(detailOutcomeEvents);
   for (const privateValue of [

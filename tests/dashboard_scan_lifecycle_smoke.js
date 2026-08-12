@@ -136,7 +136,27 @@ function commandAndSuccessfulExitSmoke(database) {
     ["--browser", "edge"]
   );
   assert(!defaultArgs.includes("--cdp-port"));
+  assert(!defaultArgs.includes("--detail-mode"));
   defaultCalls[0].child.emit("close", 0, null);
+
+  const controlledCalls = [];
+  startPlanScan(new Map(), {
+    db: database,
+    root,
+    dbPath,
+    planId: 152,
+    scanKind: "daily",
+    detailMode: "search_page_api",
+    logger,
+    requestId: "request-controlled-detail-mode",
+    spawnProcess: spawnHarness(database, 152, controlledCalls)
+  });
+  const controlledArgs = controlledCalls[0].args.slice(2);
+  assert.deepStrictEqual(
+    controlledArgs.slice(controlledArgs.indexOf("--detail-mode"), controlledArgs.indexOf("--detail-mode") + 2),
+    ["--detail-mode", "search_page_api"]
+  );
+  controlledCalls[0].child.emit("close", 0, null);
 }
 
 function failedAndInterruptedExitSmoke(database) {

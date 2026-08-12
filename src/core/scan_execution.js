@@ -6,6 +6,13 @@ const SCAN_COMMANDS = Object.freeze({
   refresh: "refresh-details",
   activity: "refresh-activity"
 });
+const DETAIL_MODES = new Set(["trusted_pane", "search_page_api"]);
+
+function resolveDetailMode(value) {
+  const normalized = String(value ?? "trusted_pane").trim().toLowerCase();
+  if (DETAIL_MODES.has(normalized)) return normalized;
+  throw scanExecutionError("INVALID_DETAIL_MODE", "detailMode must be trusted_pane or search_page_api");
+}
 
 function resolveScanKind(command, args = {}) {
   const normalizedCommand = String(command || "").trim().toLowerCase();
@@ -32,12 +39,14 @@ function buildScanCliArgs({
   keywords = null,
   maxCards = null,
   maxDetailTotal = null,
-  browserPageBudget = null
+  browserPageBudget = null,
+  detailMode = null
 } = {}) {
   const normalizedKind = normalizeScanKind(kind);
   const normalizedDbPath = requiredText(dbPath, "dbPath");
   const normalizedRunId = requiredText(runId, "runId");
   const normalizedPlanId = Number(planId);
+  const normalizedDetailMode = resolveDetailMode(detailMode);
   if (!Number.isInteger(normalizedPlanId) || normalizedPlanId <= 0) {
     throw scanExecutionError("INVALID_SCAN_INPUT", "planId must be a positive integer");
   }
@@ -72,6 +81,7 @@ function buildScanCliArgs({
 
   if (normalizedKind === "daily" || normalizedKind === "broad") {
     cliArgs.push("--site", "boss", "--scan-mode", normalizedKind);
+    if (detailMode !== null && detailMode !== undefined) cliArgs.push("--detail-mode", normalizedDetailMode);
     if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
       const normalizedResumeBatchId = Number(resumeBatchId);
       if (!Number.isInteger(normalizedResumeBatchId) || normalizedResumeBatchId <= 0) {
@@ -236,6 +246,7 @@ function scanExecutionError(code, message) {
 
 module.exports = {
   resolveScanKind,
+  resolveDetailMode,
   buildScanCliArgs,
   withSiteScanLease
 };
