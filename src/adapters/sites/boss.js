@@ -201,6 +201,7 @@ const PAGE_HELPERS = String.raw`
     runningJobId: ""
   };
   window.__bossDetailFetchStore = detailFetchStore;
+  const detailFetchTimeoutMs = Math.min(12000, Math.max(1000, Number(window.__bossDetailFetchTimeoutMs) || 12000));
 
   function detailFetchStatus(record) {
     if (!record) return { state: "idle", jobId: "" };
@@ -253,44 +254,56 @@ const PAGE_HELPERS = String.raw`
     const startStatus = detailFetchStartStatus(expectedJobId);
     if (startStatus.state !== "idle") return startStatus;
     const params = detailFetchCard(expectedJobId);
-    const controller = new AbortController();
-    const record = { jobId: expectedJobId, state: "running", controller, result: null, errorCode: "" };
+    const record = { jobId: expectedJobId, state: "running", cancel: null, result: null, errorCode: "" };
     detailFetchStore.attemptedJobIds.add(expectedJobId);
     detailFetchStore.fetches.set(expectedJobId, record);
     detailFetchStore.runningJobId = expectedJobId;
-    (async () => {
-      try {
-        const query = new URLSearchParams({ securityId: params.securityId, lid: params.lid, _: String(Date.now()) });
-        const response = await window.fetch("/wapi/zpgeek/job/detail.json?" + query.toString(), {
-          method: "GET",
-          credentials: "same-origin",
-          signal: controller.signal
-        });
-        if (response.status === 401) throw { code: "BOSS_LOGIN_REQUIRED" };
-        if (response.status === 403) throw { code: "BOSS_RISK_CONTROL" };
-        if (response.status !== 200) throw { code: "BOSS_DETAIL_API_HTTP_FAILED" };
-        const body = await response.json();
-        const info = body?.zpData?.jobInfo;
-        if (body?.code !== 0 || !info) throw { code: "BOSS_DETAIL_API_RESPONSE_INVALID" };
-        if (String(info.encryptId || "") !== expectedJobId) throw { code: "BOSS_DETAIL_API_ID_MISMATCH" };
-        const description = cleanApiDetailText(info.postDescription);
-        if (description.length < 120) throw { code: "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE" };
-        record.state = "succeeded";
-        record.result = {
-          jobId: expectedJobId,
-          description,
-          salary: cleanApiDetailText(info.salaryDesc || info.salary),
-          experience: cleanApiDetailText(info.experienceName || info.experience),
-          education: cleanApiDetailText(info.degreeName || info.degree),
-          bossActiveText: cleanApiDetailText(info.activeTimeDesc || info.bossActiveText)
-        };
-      } catch (error) {
-        record.state = "failed";
-        record.errorCode = String(error?.code || "BOSS_DETAIL_API_RESPONSE_INVALID");
-      } finally {
-        if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
-      }
-    })();
+    const finish = (state, errorCode = "") => {
+      if (record.state !== "running") return;
+      record.state = state;
+      record.errorCode = errorCode;
+      record.cancel = null;
+      if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
+    };
+    try {
+      const query = new URLSearchParams({ securityId: params.securityId, lid: params.lid, _: String(Date.now()) });
+      const xhr = new XMLHttpRequest();
+      record.cancel = () => xhr.abort();
+      xhr.open("GET", "/wapi/zpgeek/job/detail.json?" + query.toString(), true);
+      xhr.withCredentials = true;
+      xhr.timeout = detailFetchTimeoutMs;
+      xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
+      xhr.onload = () => {
+        if (xhr.status === 401) return finish("failed", "BOSS_LOGIN_REQUIRED");
+        if (xhr.status === 403) return finish("failed", "BOSS_RISK_CONTROL");
+        if (xhr.status !== 200) return finish("failed", "BOSS_DETAIL_API_HTTP_FAILED");
+        try {
+          const body = JSON.parse(xhr.responseText || "");
+          const info = body?.zpData?.jobInfo;
+          if (body?.code !== 0 || !info) return finish("failed", "BOSS_DETAIL_API_RESPONSE_INVALID");
+          if (String(info.encryptId || "") !== expectedJobId) return finish("failed", "BOSS_DETAIL_API_ID_MISMATCH");
+          const description = cleanApiDetailText(info.postDescription);
+          if (description.length < 120) return finish("failed", "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE");
+          record.result = {
+            jobId: expectedJobId,
+            description,
+            salary: cleanApiDetailText(info.salaryDesc || info.salary),
+            experience: cleanApiDetailText(info.experienceName || info.experience),
+            education: cleanApiDetailText(info.degreeName || info.degree),
+            bossActiveText: cleanApiDetailText(info.activeTimeDesc || info.bossActiveText)
+          };
+          finish("succeeded");
+        } catch {
+          finish("failed", "BOSS_DETAIL_API_RESPONSE_INVALID");
+        }
+      };
+      xhr.onerror = () => finish("failed", "BOSS_DETAIL_API_HTTP_FAILED");
+      xhr.ontimeout = () => finish("failed", "BOSS_DETAIL_API_TIMEOUT");
+      xhr.onabort = () => finish("failed", "BOSS_DETAIL_API_RESPONSE_INVALID");
+      xhr.send();
+    } catch {
+      finish("failed", "BOSS_DETAIL_API_RESPONSE_INVALID");
+    }
     return detailFetchStatus(record);
   };
 
@@ -309,7 +322,7 @@ const PAGE_HELPERS = String.raw`
   window.__bossCancelDetailFetch = function(jobId) {
     const expectedJobId = String(jobId || "").trim();
     const record = detailFetchStore.fetches.get(expectedJobId);
-    if (record?.state === "running") record.controller.abort();
+    if (record?.state === "running") record.cancel?.();
     if (detailFetchStore.runningJobId === expectedJobId) detailFetchStore.runningJobId = "";
     detailFetchStore.fetches.delete(expectedJobId);
     return { state: "idle", jobId: "" };

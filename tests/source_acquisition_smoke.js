@@ -981,9 +981,9 @@ async function searchPaneDetailRoutingSmoke() {
 
 async function searchPageApiDetailStateMachineSmoke() {
   const privateSentinel = "private-security-and-response";
-  const pending = [];
+  const sent = [];
   const fixture = apiDetailPageFixture({
-    fetch: (url, options) => new Promise((resolve, reject) => pending.push({ url, options, resolve, reject }))
+    onXhrSend: (xhr) => sent.push(xhr)
   });
   const { window } = fixture;
 
@@ -993,14 +993,16 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert.strictEqual(first.state, "running");
   assert.strictEqual(duplicate.state, "running", "same job must reuse its running state");
   assert.strictEqual(busy.errorCode, "BOSS_DETAIL_API_BUSY", "different jobs must fail closed while one fetch runs");
-  assert.strictEqual(pending.length, 1, "only one request may start for a job");
-  assert(pending[0].url.includes("detail.json"));
-  assert(pending[0].url.includes("securityId=fixture-security"));
+  assert.strictEqual(sent.length, 1, "only one XHR request may start for a job");
+  assert.strictEqual(sent[0].method, "GET");
+  assert(sent[0].url.includes("detail.json"));
+  assert(sent[0].url.includes("securityId=fixture-security"));
+  assert.strictEqual(sent[0].withCredentials, true, "XHR must carry same-origin cookies");
+  assert.strictEqual(sent[0].headers.Accept, "application/json, text/plain, */*");
+  assert.strictEqual(sent[0].timeout, 12000, "page XHR timeout must be stable and below the 15s Node polling window");
   assert(!JSON.stringify(first).includes(privateSentinel));
 
-  pending[0].resolve({
-    status: 200,
-    json: async () => ({
+  sent[0].respond(200, {
       code: 0,
       zpData: { jobInfo: {
         encryptId: "api-job",
@@ -1010,13 +1012,8 @@ async function searchPageApiDetailStateMachineSmoke() {
         degreeName: "bachelor",
         activeTimeDesc: "active"
       }, privateSentinel }
-    })
   });
-  let succeeded = window.__bossDetailFetchState("api-job");
-  for (let attempt = 0; attempt < 10 && succeeded.state === "running"; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-    succeeded = window.__bossDetailFetchState("api-job");
-  }
+  const succeeded = await waitForDetailFetchState(window, "api-job");
   assert.strictEqual(succeeded.state, "succeeded");
   assert.strictEqual(succeeded.result.jobId, "api-job");
   assert(succeeded.result.description.length >= 120);
@@ -1027,33 +1024,41 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert.strictEqual(window.__bossDetailFetchState("api-job").state, "idle");
   const repeatAfterConsume = window.__bossStartDetailFetch("api-job");
   assert.strictEqual(repeatAfterConsume.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
-  assert.strictEqual(pending.length, 1, "consumed jobs must never issue a second GET");
+  assert.strictEqual(sent.length, 1, "consumed jobs must never issue a second GET");
   fixture.reinject();
   const repeatAfterHelperReinject = window.__bossStartDetailFetch("api-job");
   assert.strictEqual(repeatAfterHelperReinject.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
-  assert.strictEqual(pending.length, 1, "helper reinjection must retain the page-lifetime repeat guard");
+  assert.strictEqual(sent.length, 1, "helper reinjection must retain the page-lifetime repeat guard");
 
   const second = window.__bossStartDetailFetch("abort-job");
   assert.strictEqual(second.state, "running");
-  assert.strictEqual(pending.length, 2);
+  assert.strictEqual(sent.length, 2);
   assert.strictEqual(window.__bossCancelDetailFetch("abort-job").state, "idle");
-  assert.strictEqual(pending[1].options.signal.aborted, true, "cancelling must abort and clear the running request");
+  assert.strictEqual(sent[1].aborted, true, "cancelling must abort and clear the running XHR");
   assert.strictEqual(window.__bossDetailFetchState("abort-job").state, "idle");
   const repeatAfterCancel = window.__bossStartDetailFetch("abort-job");
   assert.strictEqual(repeatAfterCancel.errorCode, "BOSS_DETAIL_API_REPEAT_REQUEST");
-  assert.strictEqual(pending.length, 2, "cancelled jobs must never issue a second GET");
+  assert.strictEqual(sent.length, 2, "cancelled jobs must never issue a second GET");
 
-  for (const { name, response, errorCode } of [
-    { name: "unauthorized", response: { status: 401, json: async () => ({}) }, errorCode: "BOSS_LOGIN_REQUIRED" },
-    { name: "forbidden", response: { status: 403, json: async () => ({}) }, errorCode: "BOSS_RISK_CONTROL" },
-    { name: "http", response: { status: 500, json: async () => ({}) }, errorCode: "BOSS_DETAIL_API_HTTP_FAILED" },
-    { name: "business", response: { status: 200, json: async () => ({ code: 1, zpData: { jobInfo: {} } }) }, errorCode: "BOSS_DETAIL_API_RESPONSE_INVALID" },
-    { name: "id", response: { status: 200, json: async () => ({ code: 0, zpData: { jobInfo: { encryptId: "wrong", postDescription: "Complete detail ".repeat(12) } } }) }, errorCode: "BOSS_DETAIL_API_ID_MISMATCH" },
-    { name: "description", response: { status: 200, json: async () => ({ code: 0, zpData: { jobInfo: { encryptId: "api-job", postDescription: "short" } } }) }, errorCode: "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE" }
+  for (const { name, response, status, errorCode, event } of [
+    { name: "unauthorized", response: {}, status: 401, errorCode: "BOSS_LOGIN_REQUIRED" },
+    { name: "forbidden", response: {}, status: 403, errorCode: "BOSS_RISK_CONTROL" },
+    { name: "http", response: {}, status: 500, errorCode: "BOSS_DETAIL_API_HTTP_FAILED" },
+    { name: "business", response: { code: 1, zpData: { jobInfo: {} } }, status: 200, errorCode: "BOSS_DETAIL_API_RESPONSE_INVALID" },
+    { name: "id", response: { code: 0, zpData: { jobInfo: { encryptId: "wrong", postDescription: "Complete detail ".repeat(12) } } }, status: 200, errorCode: "BOSS_DETAIL_API_ID_MISMATCH" },
+    { name: "description", response: { code: 0, zpData: { jobInfo: { encryptId: "api-job", postDescription: "short" } } }, status: 200, errorCode: "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE" },
+    { name: "timeout", event: "timeout", errorCode: "BOSS_DETAIL_API_TIMEOUT" },
+    { name: "network", event: "error", errorCode: "BOSS_DETAIL_API_HTTP_FAILED" },
+    { name: "aborted", event: "abort", errorCode: "BOSS_DETAIL_API_RESPONSE_INVALID" }
   ]) {
-    const errorFixture = apiDetailPageFixture({ fetch: async () => response });
+    let sentXhr = null;
+    const errorFixture = apiDetailPageFixture({
+      onXhrSend: (xhr) => { sentXhr = xhr; }
+    });
     const start = errorFixture.window.__bossStartDetailFetch("api-job");
     assert.strictEqual(start.state, "running", `${name} fixture must start one request`);
+    if (event) sentXhr.trigger(event);
+    else sentXhr.respond(status, response);
     const failed = await waitForDetailFetchState(errorFixture.window, "api-job");
     assert.deepStrictEqual({ ...failed }, { state: "failed", jobId: "api-job", errorCode });
     assert(!JSON.stringify(failed).includes(privateSentinel), `${name} error must be sanitized`);
@@ -2586,7 +2591,7 @@ function paneState(jobId, title = jobId, overrides = {}) {
   };
 }
 
-function apiDetailPageFixture({ fetch }) {
+function apiDetailPageFixture({ onXhrSend }) {
   const linkFor = (jobId) => ({ href: `https://www.zhipin.com/job_detail/${jobId}.html` });
   const makeCard = (jobId, data) => {
     const link = linkFor(jobId);
@@ -2605,8 +2610,31 @@ function apiDetailPageFixture({ fetch }) {
   const document = {
     querySelectorAll(selector) { return selector.includes(".job-card-box") ? cards : []; }
   };
-  const window = { fetch, location: { origin: "https://www.zhipin.com" } };
-  const context = { window, document, URL, URLSearchParams, AbortController, Date, setTimeout, clearTimeout };
+  class FixtureXMLHttpRequest {
+    constructor() {
+      this.headers = {};
+      this.timeout = 0;
+      this.withCredentials = false;
+      this.status = 0;
+      this.responseText = "";
+      this.aborted = false;
+    }
+    open(method, url) { this.method = method; this.url = url; }
+    setRequestHeader(name, value) { this.headers[name] = value; }
+    send() { onXhrSend?.(this); }
+    abort() { this.aborted = true; this.onabort?.(); }
+    respond(status, body) {
+      this.status = status;
+      this.responseText = JSON.stringify(body);
+      this.onload?.();
+    }
+    trigger(event) { this[`on${event}`]?.(); }
+  }
+  const window = {
+    fetch() { throw new Error("BOSS detail helper must use XMLHttpRequest, not fetch"); },
+    location: { origin: "https://www.zhipin.com" }
+  };
+  const context = { window, document, URL, URLSearchParams, XMLHttpRequest: FixtureXMLHttpRequest, Date, setTimeout, clearTimeout };
   vm.runInNewContext(PAGE_HELPERS, context);
   return { window, reinject: () => vm.runInNewContext(PAGE_HELPERS, context) };
 }
