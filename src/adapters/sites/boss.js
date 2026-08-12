@@ -1719,28 +1719,32 @@ class BossSiteAdapter {
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
         }
       } else if (stableOtherSelection && !activationAttempted) {
-        if (typeof this.browser.bringToFront !== "function"
+        if (typeof this.browser.cdp !== "function"
           || typeof this.browser.clickAt !== "function") {
           return null;
         }
-        await this.browser.bringToFront(tabId);
-        await assertRuntimeTabBindings(assertTabBindings);
-        await this.assertSearchPage(tabId);
-        const activation = await this.browser.evalValue(
-          tabId,
-          `(() => window.__bossCardActivationPoint(${JSON.stringify(expectedJobId)}))()`
-        );
-        await assertRuntimeTabBindings(assertTabBindings);
-        await this.assertSearchPage(tabId);
-        const pointX = activation?.x;
-        const pointY = activation?.y;
-        if (!activation || activation.ready !== true || activation.jobId !== expectedJobId
-          || typeof pointX !== "number" || typeof pointY !== "number"
-          || !Number.isFinite(pointX) || !Number.isFinite(pointY)
-          || pointX < 0 || pointY < 0) {
-          return null;
+        try {
+          await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+          await assertRuntimeTabBindings(assertTabBindings);
+          await this.assertSearchPage(tabId);
+          const activation = await this.browser.evalValue(
+            tabId,
+            `(() => window.__bossCardActivationPoint(${JSON.stringify(expectedJobId)}))()`
+          );
+          await assertRuntimeTabBindings(assertTabBindings);
+          await this.assertSearchPage(tabId);
+          const pointX = activation?.x;
+          const pointY = activation?.y;
+          if (!activation || activation.ready !== true || activation.jobId !== expectedJobId
+            || typeof pointX !== "number" || typeof pointY !== "number"
+            || !Number.isFinite(pointX) || !Number.isFinite(pointY)
+            || pointX < 0 || pointY < 0) {
+            return null;
+          }
+          await this.browser.clickAt(tabId, { x: pointX, y: pointY });
+        } finally {
+          await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: false });
         }
-        await this.browser.clickAt(tabId, { x: pointX, y: pointY });
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
         activationAttempted = true;

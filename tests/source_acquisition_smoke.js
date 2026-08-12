@@ -560,11 +560,16 @@ async function visiblePaneActivationWaitSmoke() {
   let locates = 0;
   let clicks = 0;
   let fronts = 0;
+  const focusStates = [];
   let navigations = 0;
   const accessActions = [];
   const browser = {
     async navigate() { navigations += 1; },
     async bringToFront() { fronts += 1; },
+    async cdp(_tabId, method, params) {
+      assert.strictEqual(method, "Emulation.setFocusEmulationEnabled");
+      focusStates.push(params.enabled);
+    },
     async clickAt() { clicks += 1; },
     async evalValue(_tabId, expression) {
       if (expression.includes("isRiskPage:")) {
@@ -618,7 +623,8 @@ async function visiblePaneActivationWaitSmoke() {
   assert(paneReads > 8, "must survive the old eight-poll timeout");
   assert.strictEqual(locates, 1);
   assert.strictEqual(clicks, 1);
-  assert.strictEqual(fronts, 1);
+  assert.strictEqual(fronts, 0);
+  assert.deepStrictEqual(focusStates, [true, false]);
   assert.strictEqual(navigations, 0);
   assert.deepStrictEqual(accessActions, [{
     action: "pane_detail_read",
@@ -634,6 +640,10 @@ async function visiblePaneTrustedClickOrderSmoke() {
     async navigate() { navigations += 1; },
     async bringToFront(tabId) {
       events.push({ type: "bring_to_front", tabId });
+    },
+    async cdp(tabId, method, params) {
+      assert.strictEqual(method, "Emulation.setFocusEmulationEnabled");
+      events.push({ type: params.enabled ? "focus_enabled" : "focus_disabled", tabId });
     },
     async clickAt(tabId, point) { events.push({ type: "click_at", tabId, point }); },
     async evalValue(_tabId, expression) {
@@ -682,11 +692,11 @@ async function visiblePaneTrustedClickOrderSmoke() {
     url: "https://www.zhipin.com/job_detail/click-job.html"
   }, null, async () => events.push({ type: "assert_bindings" }));
   assert(detail.description.length >= 120);
-  assert.strictEqual(events.filter((event) => event.type === "bring_to_front").length, 1);
-  const trustedClickStart = events.findIndex((event) => event.type === "bring_to_front");
+  assert.strictEqual(events.filter((event) => event.type === "bring_to_front").length, 0);
+  const trustedClickStart = events.findIndex((event) => event.type === "focus_enabled");
   assert.deepStrictEqual(
-    events.slice(trustedClickStart, trustedClickStart + 9).map((event) => event.type),
-    ["bring_to_front", "assert_bindings", "assert_search", "locate", "assert_bindings", "assert_search", "click_at", "assert_bindings", "assert_search"]
+    events.slice(trustedClickStart, trustedClickStart + 10).map((event) => event.type),
+    ["focus_enabled", "assert_bindings", "assert_search", "locate", "assert_bindings", "assert_search", "click_at", "focus_disabled", "assert_bindings", "assert_search"]
   );
   assert.deepStrictEqual(
     events.filter((event) => ["locate", "click_at"].includes(event.type)).map((event) => event.type),
@@ -712,7 +722,8 @@ async function visiblePaneLocateFailureNoClickSmoke() {
   assert.strictEqual(detail, null, "failed card location must fail closed");
   assert.strictEqual(fixture.count("locate"), 1);
   assert.strictEqual(fixture.count("click_at"), 0);
-  assert.strictEqual(fixture.count("bring_to_front"), 1);
+  assert.strictEqual(fixture.count("bring_to_front"), 0);
+  assert.deepStrictEqual(fixture.focusStates(), [true, false]);
 }
 
 async function visiblePaneClickIdentityDriftSmoke() {
@@ -728,22 +739,23 @@ async function visiblePaneClickIdentityDriftSmoke() {
   assert.strictEqual(detail, null, "identity drift after trusted click must not be adopted");
   assert.strictEqual(fixture.count("locate"), 1);
   assert.strictEqual(fixture.count("click_at"), 1);
-  assert.strictEqual(fixture.count("bring_to_front"), 1);
+  assert.strictEqual(fixture.count("bring_to_front"), 0);
+  assert.deepStrictEqual(fixture.focusStates(), [true, false]);
   assert(fixture.paneReads() >= 2, "pane identity must be rechecked after the trusted click");
 }
 
 async function visiblePaneClickCapabilityFailClosedSmoke() {
-  const noBringToFront = paneBrowserFixture({
+  const noFocusEmulation = paneBrowserFixture({
     trustedFocus: false,
     activation: () => assert.fail("locator must not run without pane focus capability")
   });
-  const adapterNoBring = new BossSiteAdapter({ browser: noBringToFront.browser, sleepFn: async () => {} });
-  assert.strictEqual(await adapterNoBring.readVisiblePaneDetail("pane-tab", {
+  const adapterNoFocus = new BossSiteAdapter({ browser: noFocusEmulation.browser, sleepFn: async () => {} });
+  assert.strictEqual(await adapterNoFocus.readVisiblePaneDetail("pane-tab", {
     title: "Cap job",
     url: "https://www.zhipin.com/job_detail/cap-job.html"
   }), null, "browser without pane focus support must fail closed");
-  assert.strictEqual(noBringToFront.count("locate"), 0);
-  assert.strictEqual(noBringToFront.count("click_at"), 0);
+  assert.strictEqual(noFocusEmulation.count("locate"), 0);
+  assert.strictEqual(noFocusEmulation.count("click_at"), 0);
 
   const noClickAt = paneBrowserFixture({
     trustedClick: false,
@@ -754,7 +766,7 @@ async function visiblePaneClickCapabilityFailClosedSmoke() {
     title: "Cap job",
     url: "https://www.zhipin.com/job_detail/cap-job.html"
   }), null, "browser without trusted click support must fail closed");
-  assert.strictEqual(noClickAt.count("bring_to_front"), 0);
+  assert.deepStrictEqual(noClickAt.focusStates(), []);
 
   for (const [label, x, y] of [
     ["null", null, 100],
@@ -772,6 +784,7 @@ async function visiblePaneClickCapabilityFailClosedSmoke() {
       url: "https://www.zhipin.com/job_detail/cap-job.html"
     }), null, `${label} click coordinate must fail closed`);
     assert.strictEqual(invalidPoint.count("click_at"), 0, `${label} click coordinate must not reach clickAt`);
+    assert.deepStrictEqual(invalidPoint.focusStates(), [true, false], `${label} click coordinate must restore focus emulation`);
   }
 }
 
@@ -2104,18 +2117,23 @@ async function detailFatalOutcomeAuditSmoke() {
 
 async function trustedClickTransportFatalSmoke() {
   for (const [stage, code] of [
-    ["bringToFront", "BROWSER_COMMAND_FAILED"],
+    ["focusEnable", "BROWSER_COMMAND_FAILED"],
     ["clickAt", "BROWSER_COMMAND_FAILED"],
     ["clickAt", "BROWSER_TIMEOUT"],
-    ["clickAt", "BROWSER_DISCONNECTED"]
+    ["clickAt", "BROWSER_DISCONNECTED"],
+    ["focusDisable", "BROWSER_COMMAND_FAILED"]
   ]) {
     const fatal = Object.assign(new Error(`${stage} fatal`), { code });
     const outcomes = [];
+    const focusStates = [];
     let navigations = 0;
     const browser = {
       async navigate() { navigations += 1; },
-      async bringToFront() {
-        if (stage === "bringToFront") throw fatal;
+      async cdp(_tabId, method, params) {
+        assert.strictEqual(method, "Emulation.setFocusEmulationEnabled");
+        focusStates.push(params.enabled);
+        if (stage === "focusEnable" && params.enabled) throw fatal;
+        if (stage === "focusDisable" && !params.enabled) throw fatal;
       },
       async clickAt() {
         if (stage === "clickAt") throw fatal;
@@ -2151,6 +2169,7 @@ async function trustedClickTransportFatalSmoke() {
     ]);
     assert.strictEqual(navigations, 1, `${stage} fatal must not navigate to a detail page`);
     assert(!JSON.stringify(outcomes).includes("BOSS_PANE_SWITCH_TIMEOUT"));
+    assert.deepStrictEqual(focusStates, [true, false], `${stage} fatal must attempt focus cleanup exactly once`);
   }
 }
 
@@ -2557,13 +2576,19 @@ function paneBrowserFixture({
 } = {}) {
   let paneReads = 0;
   let focused = false;
+  const focusStates = [];
   const browser = {
     async navigate(tabId, url) {
       events.push({ type: "navigate", tabId, url });
     },
     async bringToFront(tabId) {
-      focused = true;
       events.push({ type: "bring_to_front", tabId });
+    },
+    async cdp(tabId, method, params) {
+      assert.strictEqual(method, "Emulation.setFocusEmulationEnabled");
+      focused = params.enabled;
+      focusStates.push(params.enabled);
+      events.push({ type: params.enabled ? "focus_enabled" : "focus_disabled", tabId });
     },
     async clickAt(tabId, point) {
       events.push({ type: "click_at", tabId, point });
@@ -2588,11 +2613,12 @@ function paneBrowserFixture({
       return true;
     }
   };
-  if (!trustedFocus) delete browser.bringToFront;
+  if (!trustedFocus) delete browser.cdp;
   if (!trustedClick) delete browser.clickAt;
   return {
     browser,
     events,
+    focusStates: () => focusStates.slice(),
     paneReads: () => paneReads,
     count: (type) => events.filter((event) => event.type === type).length
   };
