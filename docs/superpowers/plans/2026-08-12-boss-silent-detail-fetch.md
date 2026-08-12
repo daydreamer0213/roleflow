@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** PAUSED / SUPERSEDED FOR IMPLEMENTATION. Do not execute this plan. The approved production plan is `docs/superpowers/plans/2026-08-12-boss-trusted-pane-restoration.md`; this file remains only as an experimental alternative for a future separately approved comparison.
+
 **Goal:** 用固定 BOSS 搜索页的同源只读详情请求替代不可靠的后台 UI 切岗，并保持身份、隐私、访问预算、恢复与检查点合同。
 
 **Architecture:** 页面 helper 在浏览器上下文内持有 `securityId/lid` 并执行一次 GET，Node 只轮询净化状态。扫描仍沿用现有详情公平分配、限速、结果审计和 checkpoint；不提供 UI 或独立详情页自动回退。
@@ -109,4 +111,3 @@ git commit -m "feat: route BOSS scans through silent detail fetch"
 - [ ] Require 3/3 exact API IDs, JD≥120, no UI mutation, no Edge foreground activation and no token persistence.
 - [ ] If calibration passes, create another fresh formal Gate D baseline and run the complete daily scan.
 - [ ] Export the fixed Gate D artifacts exactly once only after a terminal complete scan.
-
