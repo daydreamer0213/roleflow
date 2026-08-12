@@ -164,7 +164,7 @@ Confirm:
 
 Use the existing Gate D baseline tool to preserve profiles, resumes, search plans and model settings while emptying operational job history. The path must be new and calibration-only.
 
-- [ ] **Step 3: Start one-keyword, max-three-detail scan through project lifecycle**
+- [ ] **Step 3: Start the minimum two-keyword, max-three-detail scan through project lifecycle**
 
 Use the existing Dashboard/start-scan lifecycle so the Node child has:
 
