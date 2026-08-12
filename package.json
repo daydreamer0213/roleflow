@@ -1,8 +1,17 @@
 {
   "name": "roleflow",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "private": true,
   "description": "简历驱动的本地岗位筛选与投递工作流。",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/daydreamer0213/roleflow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daydreamer0213/roleflow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/daydreamer0213/roleflow/issues"
+  },
   "type": "commonjs",
   "scripts": {
     "cli": "node src/cli.js",

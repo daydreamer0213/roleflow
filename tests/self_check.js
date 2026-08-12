@@ -26,6 +26,7 @@ const root = path.resolve(__dirname, "..");
 const installer = fs.readFileSync(path.join(root, "scripts", "install.ps1"), "utf8");
 const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-workspace.ps1"), "utf8");
 const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
+const releasePackager = fs.readFileSync(path.join(root, "scripts", "package-release.ps1"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1 must use a UTF-8 BOM for Windows PowerShell 5.1");
 assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs',"), "installer must resolve the production PDF parser dependency");
@@ -57,6 +58,8 @@ assert(readme.includes("`Start.bat` 会 fail-closed（停止启动，不自动�
 assert(readme.includes("无需或不想安装 Edge Control 时，必须显式运行"));
 assert(!readme.includes("不依赖 Codex 或浏览器插件"));
 assert(!readme.includes("Edge Control 插件模式仅作为兼容入口"));
+assert(releasePackager.includes('"LICENSE"'), "release package must include the AGPL license");
+assert(releasePackager.includes('"NOTICE"'), "release package must include copyright and third-party notices");
 const selfCheckDir = path.join(root, ".runtime", "self-check");
 fs.mkdirSync(selfCheckDir, { recursive: true });
 const help = spawnSync(process.execPath, [path.join(root, "src", "cli.js"), "--help"], { encoding: "utf8" });

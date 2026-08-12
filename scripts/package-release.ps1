@@ -42,7 +42,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "data"), (Join-Pa
 foreach ($name in @("sample_jobs.json", "sample_resume.txt")) {
   Copy-Item -LiteralPath (Join-Path $ProjectRoot "data\$name") -Destination (Join-Path $StageDir "data\$name") -Force
 }
-foreach ($name in @("README.md", "package.json", "package-lock.json", "run.ps1", "Install.bat", "Start.bat", "BuildRelease.bat", "ScanPortable.bat", "StartPortableEdge.bat", ".gitignore")) {
+foreach ($name in @("README.md", "LICENSE", "NOTICE", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "package.json", "package-lock.json", "run.ps1", "Install.bat", "Start.bat", "BuildRelease.bat", "ScanPortable.bat", "StartPortableEdge.bat", ".gitignore")) {
   Copy-Item -LiteralPath (Join-Path $ProjectRoot $name) -Destination (Join-Path $StageDir $name) -Force
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs") -Destination (Join-Path $StageDir "docs") -Recurse -Force

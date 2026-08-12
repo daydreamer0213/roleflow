@@ -1,0 +1,19 @@
+RoleFlow
+Copyright (C) 2026 daydreamer0213 and RoleFlow contributors
+
+RoleFlow's original code and documentation are licensed under the GNU Affero
+General Public License, version 3 only (AGPL-3.0-only). See LICENSE.
+
+No trademark rights in the RoleFlow name, logo, or branding are granted by
+the AGPL.
+
+Third-party components retain their own licenses and copyright notices.
+The direct runtime dependency is:
+
+- pdfjs-dist, Copyright Mozilla and contributors, Apache License 2.0.
+
+Package metadata and installed dependency files contain additional applicable
+third-party license information.
+
+Real resumes, account credentials, API keys, job databases, browser profiles,
+and runtime logs are user data and are not part of this distribution.

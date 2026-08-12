@@ -1,10 +1,20 @@
 # RoleFlow
 
+[![Release: v0.1.0-beta.1](https://img.shields.io/badge/release-v0.1.0--beta.1-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.1)
+[![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
+
 RoleFlow 是一个本地运行的、简历驱动的岗位筛选与沟通工作台。它负责解析简历、生成候选人画像和搜索方案、只读采集 BOSS 岗位、用大模型理解完整 JD，并把结果整理为用户确认的沟通清单。
 
 RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱动，同一套采集、分析、去重和排序流程可以用于不同求职方向。
 
 [查看作品集中的流程与成果展示](https://daydreamer0213.github.io/ai-application-portfolio/#roleflow)
+
+## 发布状态
+
+`v0.1.0-beta.1` 是 RoleFlow 的首个公开 Beta。冻结发布版本已通过 93 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
+
+当前版本适合本地试用、代码审阅和离线流程验证。BOSS 页面结构可能变化，真实消息读取与沟通链路尚未完成人工端到端验收，因此不能把离线通过等同于真实页面已完全验收。任何真实沟通仍必须由用户明确确认，并遵守下文的安全边界。
 
 ## 核心能力
 
@@ -13,7 +23,7 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 - 结合岗位职责、技术要求、薪资、活跃度和风险信号给出分层建议。
 - 将主投、先聊确认、备选和待复核岗位整理为本地工作清单。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- 当前公开快照包含 74 组离线检查，覆盖扫描、存储、模型适配、工作流恢复、候选人进展和只读消息发现。
+- 当前公开快照包含 93 组离线检查，覆盖扫描、存储、模型适配、工作流恢复、候选人进展和只读消息发现。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
@@ -211,3 +221,13 @@ data/                   本地 SQLite（真实文件不进 Git）
 - 生成结果最多 2 条草稿，只保存在本机内存，30 分钟、新运行、放弃、已手动发送或关闭工作台后都会清空。
 - 面试邀约只标记“收到面试邀约”，不会替你确认时间或生成建议回复。
 - 复制草稿后在 BOSS 手动发送，然后回到页面点击“已手动发送”更新进展卡。
+
+## 开源许可
+
+RoleFlow 的自有代码与文档采用 [GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）。
+
+AGPL 不是“禁止商用”许可证。你可以学习、修改和商业使用，但分发修改版，或通过网络向用户提供修改后的程序服务时，需要按许可证向对应用户提供完整源代码，并保留相同许可证。第三方组件继续适用其各自许可证，详见 [NOTICE](NOTICE)。
+
+AGPL 不授予 RoleFlow 名称、标识或其他商标权。真实简历、账号凭据、岗位数据库、运行日志和模型密钥不属于本仓库发布内容。
+
+提交改动前请阅读 [贡献指南](CONTRIBUTING.md)。安全问题请按 [安全策略](SECURITY.md) 私下报告。
