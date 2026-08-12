@@ -1486,10 +1486,9 @@ class BossSiteAdapter {
           await this.browser.evalValue(tabId, "(() => window.__bossScrollPane(false))()");
         }
       } else if (stableOtherSelection && !activationAttempted) {
-        if (typeof this.browser.bringToFront !== "function" || typeof this.browser.clickAt !== "function") {
+        if (typeof this.browser.clickAt !== "function") {
           return null;
         }
-        await this.browser.bringToFront(tabId);
         await assertRuntimeTabBindings(assertTabBindings);
         await this.assertSearchPage(tabId);
         const activation = await this.browser.evalValue(
