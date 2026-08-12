@@ -1285,6 +1285,11 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
       );
     }
     const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
+    const detailMode = params.detailMode === "search_page_api"
+      ? "search_page_api"
+      : params.detailMode === "trusted_pane" || !params.detailMode
+        ? null
+        : (() => { throw appError("INVALID_DETAIL_MODE", "详情读取模式无效。", { statusCode: 409 }); })();
     let scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
     if (resumeBatchId) {
       if (!Number.isInteger(resumeBatchId) || resumeBatchId <= 0) throw appError("SCAN_RESUME_BATCH_INVALID", "恢复批次编号无效。");
@@ -1298,7 +1303,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
       scanKind = batch.filterSnapshot.execution.scanKind;
       if (!["daily", "broad"].includes(scanKind)) throw appError("SCAN_RESUME_KIND_INVALID", "只有日常或广泛扫描批次可以断点恢复。");
     }
-    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, logger, requestId, spawnProcess });
+    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, detailMode, logger, requestId, spawnProcess });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
     respondUiError(res, error, modelSettingsBack(error, "/plan"), { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });

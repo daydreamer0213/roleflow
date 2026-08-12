@@ -1275,6 +1275,23 @@ let server;
     workflowControlTimers,
     (value) => { batchModelReady = value; }
   );
+  const controlledApiScan = await postForm(baseUrl, "/api/scan", {
+    planId: portableScanSaved.planId,
+    browserMode: "edge",
+    scanKind: "broad",
+    detailMode: "search_page_api"
+  });
+  assert.strictEqual(controlledApiScan.status, 303);
+  const controlledApiSpawn = spawns.at(-1);
+  assert.deepStrictEqual(
+    controlledApiSpawn.args.slice(
+      controlledApiSpawn.args.indexOf("--detail-mode"),
+      controlledApiSpawn.args.indexOf("--detail-mode") + 2
+    ),
+    ["--detail-mode", "search_page_api"]
+  );
+  controlledApiSpawn.child.emit("error", new Error("controlled API scan fixture"));
+
   await testModelTaskRouting({
     baseUrl,
     modelAccesses,
