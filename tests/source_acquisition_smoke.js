@@ -1083,6 +1083,7 @@ async function searchPageApiDetailRoutingSmoke() {
   const outcomes = [];
   const browser = {
     async navigate(tabId, url) { events.push({ type: "list", tabId, url }); },
+    async cdp(tabId, method, params) { events.push({ type: "cdp", tabId, method, params }); },
     async evalValue(tabId, expression) {
       events.push({ type: "eval", tabId, expression });
       if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "api-route" };
@@ -1123,6 +1124,11 @@ async function searchPageApiDetailRoutingSmoke() {
   assert.strictEqual(jobs[0].detailRead, true);
   assert.deepStrictEqual(outcomes, [{ outcome: "succeeded", errorCode: "", accessMode: "search_page_api" }]);
   assert.strictEqual(events.filter((event) => event.type === "list").length, 1);
+  assert.deepStrictEqual(
+    events.filter((event) => event.type === "cdp"),
+    [{ type: "cdp", tabId: activeBoss.id, method: "Page.setWebLifecycleState", params: { state: "active" } }],
+    "API detail mode must wake the hidden search page without bringing it to the foreground"
+  );
   assert(!events.some((event) => /bringToFront|clickAt/.test(event.expression || "")));
 
   let visibleFallbacks = 0;
@@ -1189,6 +1195,11 @@ async function searchPageApiDetailRoutingSmoke() {
   let startIssued = false;
   const reservationFirst = new BossSiteAdapter({
     browser: {
+      async cdp(_tabId, method, params) {
+        assert.strictEqual(method, "Page.setWebLifecycleState");
+        assert.deepStrictEqual(params, { state: "active" });
+        order.push("wake");
+      },
       async evalValue(_tabId, expression) {
         if (expression.includes("__bossCanStartDetailFetch")) return { state: "idle", jobId: "order-route" };
         if (expression.includes("__bossDetailFetchState")) return startIssued ? { state: "succeeded" } : { state: "idle" };
@@ -1208,7 +1219,7 @@ async function searchPageApiDetailRoutingSmoke() {
   });
   reservationFirst.assertSearchPage = async () => ({ isSearchPage: true });
   await reservationFirst.readSearchPageApiDetail("order-tab", card("order-route"));
-  assert.deepStrictEqual(order, ["reserve", "start"], "the access reservation must complete before a first API GET can start");
+  assert.deepStrictEqual(order, ["reserve", "wake", "start"], "the access reservation and hidden-page wake must complete before a first API GET can start");
 
   let reservationCompleted = false;
   let startAfterReservationDrift = 0;
@@ -1241,6 +1252,7 @@ async function searchPageApiDetailAbortCleanupSmoke() {
   const controller = new AbortController();
   let cancelled = 0;
   const browser = {
+    async cdp() {},
     async evalValue(_tabId, expression) {
       if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "abort-route" };
       if (expression.includes("__bossDetailFetchState")) {
@@ -1301,6 +1313,7 @@ async function searchPageApiDetailFatalAndCleanupSmoke() {
     let searchChecks = 0;
     let bindingChecks = 0;
     const browser = {
+      async cdp() {},
       async evalValue(_tabId, expression) {
         if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "cleanup-route" };
         if (expression.includes("__bossDetailFetchState")) return { state: "running", jobId: "cleanup-route" };

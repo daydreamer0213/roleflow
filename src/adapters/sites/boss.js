@@ -1611,6 +1611,7 @@ class BossSiteAdapter {
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);
+      await this.browser.cdp(tabId, "Page.setWebLifecycleState", { state: "active" });
       const start = await this.browser.evalValue(
         tabId,
         `(() => window.__bossStartDetailFetch(${JSON.stringify(detailSessionId)}, ${JSON.stringify(expectedJobId)}))()`
