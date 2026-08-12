@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** SUPERSEDED / FAILED IN LIVE CALIBRATION. Do not execute this plan. Use `2026-08-12-boss-explicit-dual-detail-mode.md`.
+
 **Goal:** 让 BOSS 只读详情扫描在不激活 Edge、不中断用户前台工作的条件下安全运行。
 
 **Architecture:** 保留现有精确坐标 CDP 点击和全部身份校验，只从扫描详情路径删除 `Page.bringToFront`。复用 Dashboard 已有的隐藏子进程生命周期，不新增守护框架；正式运行仅通过 SQLite 监控。
@@ -210,4 +212,3 @@ If Edge or Codex is activated, stop and mark the calibration interrupted. If the
 - [ ] **Step 6: Proceed to the formal Gate D scan only after calibration passes**
 
 Create a new empty formal baseline. Do not reuse the calibration database or any interrupted database. Run the complete read-only scan, export once after terminal success, then continue the existing Gate D comparison and final Edge acceptance plan.
-

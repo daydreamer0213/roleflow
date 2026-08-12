@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 恢复已通过真实运行验证的 BOSS 可信右栏读取链路，并使用项目现有隐藏后台生命周期完成全新校准和全量验收。
+**Goal:** 恢复已通过真实运行验证的 BOSS 可信右栏读取链路。该恢复已完成；后台静默校准和全量验收转由 `2026-08-12-boss-explicit-dual-detail-mode.md` 继续。
 
 **Architecture:** 代码只恢复 `bringToFront + clickAt` 的既有可信点击顺序，不接入接口直读或新增回退。运行层继续使用 Dashboard 的 `windowsHide` 子进程和 SQLite 生命周期；Codex 只做只读监控，不再创建前台守护任务。
 

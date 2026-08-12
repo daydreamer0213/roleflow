@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** PAUSED / SUPERSEDED FOR IMPLEMENTATION. Do not execute this plan. The approved production plan is `docs/superpowers/plans/2026-08-12-boss-trusted-pane-restoration.md`; this file remains only as an experimental alternative for a future separately approved comparison.
+**Status:** SUPERSEDED. Do not execute this plan. Its accepted parts and corrected safety requirements are now implemented through `docs/superpowers/plans/2026-08-12-boss-explicit-dual-detail-mode.md`.
 
 **Goal:** 用固定 BOSS 搜索页的同源只读详情请求替代不可靠的后台 UI 切岗，并保持身份、隐私、访问预算、恢复与检查点合同。
 
