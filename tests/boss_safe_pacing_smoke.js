@@ -32,6 +32,7 @@ async function main() {
   await sqliteCheckpointResumeChainSmoke();
   await threeMinuteBudgetSmoke();
   recoveryExpirySmoke();
+  invalidRiskTimeSmoke();
   checkpointResumeSmoke();
   riskControlClassificationSmoke();
   await trackedRiskPersistsOnceSmoke();
@@ -244,6 +245,43 @@ function recoveryExpirySmoke() {
     }
     db.close();
   }
+}
+
+function invalidRiskTimeSmoke() {
+  const hour = 60 * 60_000;
+  const platformBlockedUntil = "2099-01-01T00:00:00.000Z";
+  const db = openDb(":memory:");
+  const error = Object.assign(new Error("invalid now"), {
+    code: "BOSS_RISK_CONTROL",
+    blockedUntil: platformBlockedUntil
+  });
+  assert.doesNotThrow(() => persistBossRiskControl(db, {
+    site: "boss",
+    runId: "invalid-now-platform",
+    error,
+    nowMs: NaN
+  }));
+  assert.strictEqual(getSiteRuntimeState(db, "boss").details.blockedUntil, platformBlockedUntil);
+  const [riskEvent] = listSiteAccessEvents(db, { site: "boss", action: "risk_control" });
+  assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).length, 1);
+  const createdAtMs = Date.parse(riskEvent.createdAt);
+  assert(Number.isFinite(createdAtMs));
+  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: createdAtMs + 47 * hour }), "recovery");
+  assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: Date.parse(platformBlockedUntil) + hour }), "normal");
+  db.close();
+
+  const fallbackDb = openDb(":memory:");
+  assert.doesNotThrow(() => persistBossRiskControl(fallbackDb, {
+    site: "boss",
+    runId: "invalid-now-fallback",
+    error: Object.assign(new Error("invalid now fallback"), { code: "BOSS_RISK_CONTROL" }),
+    nowMs: NaN
+  }));
+  const fallbackState = getSiteRuntimeState(fallbackDb, "boss");
+  const [fallbackEvent] = listSiteAccessEvents(fallbackDb, { site: "boss", action: "risk_control" });
+  assert(Number.isFinite(Date.parse(fallbackEvent.createdAt)));
+  assert.strictEqual(Date.parse(fallbackState.details.blockedUntil) - Date.parse(fallbackEvent.createdAt), 48 * hour);
+  fallbackDb.close();
 }
 
 async function sqliteCheckpointResumeChainSmoke() {
