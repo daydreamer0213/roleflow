@@ -87,6 +87,9 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await delayedListSmoke();
   await accessReservationSmoke();
   pageHelperCardActivationPointSmoke();
+  await searchPageApiDetailStateMachineSmoke();
+  await searchPageApiDetailRoutingSmoke();
+  await searchPageApiDetailAbortCleanupSmoke();
   await visiblePaneIdentitySmoke();
   await visiblePaneActivationWaitSmoke();
   await visiblePaneTrustedClickOrderSmoke();
@@ -973,6 +976,154 @@ async function searchPaneDetailRoutingSmoke() {
     { outcome: "succeeded", errorCode: "", accessMode: "visible_pane" },
     { outcome: "succeeded", errorCode: "", accessMode: "visible_pane" }
   ]);
+}
+
+async function searchPageApiDetailStateMachineSmoke() {
+  const privateSentinel = "private-security-and-response";
+  const pending = [];
+  const fixture = apiDetailPageFixture({
+    fetch: (url, options) => new Promise((resolve, reject) => pending.push({ url, options, resolve, reject }))
+  });
+  const { window } = fixture;
+
+  const first = window.__bossStartDetailFetch("api-job");
+  const duplicate = window.__bossStartDetailFetch("api-job");
+  const busy = window.__bossStartDetailFetch("other-job");
+  assert.strictEqual(first.state, "running");
+  assert.strictEqual(duplicate.state, "running", "same job must reuse its running state");
+  assert.strictEqual(busy.errorCode, "BOSS_DETAIL_API_BUSY", "different jobs must fail closed while one fetch runs");
+  assert.strictEqual(pending.length, 1, "only one request may start for a job");
+  assert(pending[0].url.includes("detail.json"));
+  assert(pending[0].url.includes("securityId=fixture-security"));
+  assert(!JSON.stringify(first).includes(privateSentinel));
+
+  pending[0].resolve({
+    status: 200,
+    json: async () => ({
+      code: 0,
+      zpData: { jobInfo: {
+        encryptId: "api-job",
+        postDescription: "Complete API job description Python RAG ".repeat(12),
+        salaryDesc: "20-30K",
+        experienceName: "3-5 years",
+        degreeName: "bachelor",
+        activeTimeDesc: "active"
+      }, privateSentinel }
+    })
+  });
+  let succeeded = window.__bossDetailFetchState("api-job");
+  for (let attempt = 0; attempt < 10 && succeeded.state === "running"; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    succeeded = window.__bossDetailFetchState("api-job");
+  }
+  assert.strictEqual(succeeded.state, "succeeded");
+  assert.strictEqual(succeeded.result.jobId, "api-job");
+  assert(succeeded.result.description.length >= 120);
+  assert(!JSON.stringify(succeeded).includes("fixture-security"));
+  assert(!JSON.stringify(succeeded).includes(privateSentinel));
+  const consumed = window.__bossConsumeDetailFetch("api-job");
+  assert.strictEqual(consumed.state, "succeeded");
+  assert.strictEqual(window.__bossDetailFetchState("api-job").state, "idle");
+
+  const second = window.__bossStartDetailFetch("abort-job");
+  assert.strictEqual(second.state, "running");
+  assert.strictEqual(pending.length, 2);
+  assert.strictEqual(window.__bossCancelDetailFetch("abort-job").state, "idle");
+  assert.strictEqual(pending[1].options.signal.aborted, true, "cancelling must abort and clear the running request");
+  assert.strictEqual(window.__bossDetailFetchState("abort-job").state, "idle");
+}
+
+async function searchPageApiDetailRoutingSmoke() {
+  const events = [];
+  const outcomes = [];
+  const browser = {
+    async navigate(tabId, url) { events.push({ type: "list", tabId, url }); },
+    async evalValue(tabId, expression) {
+      events.push({ type: "eval", tabId, expression });
+      if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "api-route" };
+      if (expression.includes("__bossDetailFetchState")) return { state: "succeeded" };
+      if (expression.includes("__bossConsumeDetailFetch")) {
+        return {
+          state: "succeeded",
+          result: {
+            jobId: "api-route",
+            description: "Complete API routed description Python RAG ".repeat(12),
+            salary: "20-30K",
+            experience: "3-5 years",
+            education: "bachelor",
+            bossActiveText: "active"
+          }
+        };
+      }
+      return true;
+    },
+    async bringToFront() { throw new Error("API detail mode must not activate the pane"); },
+    async clickAt() { throw new Error("API detail mode must not click the pane"); }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.collectCards = async () => [card("api-route")];
+  adapter.readVisiblePaneDetail = async () => {
+    throw new Error("API detail mode must not fall back to readVisiblePaneDetail");
+  };
+  const jobs = await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["api-route"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    detailMode: "search_page_api",
+    onDetailResult: async (result) => outcomes.push(result)
+  });
+  assert.strictEqual(jobs[0].detailRead, true);
+  assert.deepStrictEqual(outcomes, [{ outcome: "succeeded", errorCode: "", accessMode: "search_page_api" }]);
+  assert.strictEqual(events.filter((event) => event.type === "list").length, 1);
+  assert(!events.some((event) => /bringToFront|clickAt/.test(event.expression || "")));
+
+  let visibleFallbacks = 0;
+  const failedApi = new BossSiteAdapter({ browser: { async navigate() {} }, sleepFn: async () => {}, randomFn: () => 0 });
+  failedApi.assertSearchPage = async () => ({ isSearchPage: true });
+  failedApi.collectCards = async () => [card("api-failure")];
+  failedApi.readSearchPageApiDetail = async () => {
+    throw Object.assign(new Error("API detail failed"), { code: "BOSS_DETAIL_API_RESPONSE_INVALID" });
+  };
+  failedApi.readVisiblePaneDetail = async () => { visibleFallbacks += 1; };
+  const failedJobs = await failedApi.scanBrowser({
+    tabId: "api-failure-tab",
+    keywords: ["api-failure"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    detailMode: "search_page_api"
+  });
+  assert.strictEqual(failedJobs[0].detailErrorCode, "BOSS_DETAIL_API_RESPONSE_INVALID");
+  assert.strictEqual(visibleFallbacks, 0, "a failed API detail read must never fall back to the visible pane");
+}
+
+async function searchPageApiDetailAbortCleanupSmoke() {
+  const controller = new AbortController();
+  let cancelled = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (expression.includes("__bossStartDetailFetch")) return { state: "running", jobId: "abort-route" };
+      if (expression.includes("__bossDetailFetchState")) {
+        controller.abort(Object.assign(new Error("stop scan"), { code: "SCAN_ABORTED" }));
+        return { state: "running", jobId: "abort-route" };
+      }
+      if (expression.includes("__bossCancelDetailFetch")) {
+        cancelled += 1;
+        return { state: "idle", jobId: "" };
+      }
+      return true;
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  await assert.rejects(
+    () => adapter.readSearchPageApiDetail("abort-tab", card("abort-route"), controller.signal),
+    (error) => error.code === "SCAN_ABORTED"
+  );
+  assert.strictEqual(cancelled, 1, "aborting the scan must cancel the page-local fetch exactly once");
 }
 
 async function cardActivationPointUnavailableSmoke() {
@@ -2247,4 +2398,28 @@ function paneState(jobId, title = jobId, overrides = {}) {
     canScroll: false,
     ...overrides
   };
+}
+
+function apiDetailPageFixture({ fetch }) {
+  const linkFor = (jobId) => ({ href: `https://www.zhipin.com/job_detail/${jobId}.html` });
+  const makeCard = (jobId, data) => {
+    const link = linkFor(jobId);
+    const wrap = { __vue__: { data } };
+    return {
+      innerText: `${jobId} unique card`,
+      querySelector(selector) { return selector.startsWith("a") ? link : null; },
+      closest(selector) { return selector === ".job-card-wrap" ? wrap : null; }
+    };
+  };
+  const cards = [
+    makeCard("api-job", { encryptJobId: "api-job", securityId: "fixture-security", lid: "fixture-lid" }),
+    makeCard("abort-job", { encryptJobId: "abort-job", securityId: "abort-security", lid: "abort-lid" }),
+    makeCard("other-job", { encryptJobId: "other-job", securityId: "other-security", lid: "other-lid" })
+  ];
+  const document = {
+    querySelectorAll(selector) { return selector.includes(".job-card-box") ? cards : []; }
+  };
+  const window = { fetch, location: { origin: "https://www.zhipin.com" } };
+  vm.runInNewContext(PAGE_HELPERS, { window, document, URL, URLSearchParams, AbortController, Date, setTimeout, clearTimeout });
+  return { window };
 }

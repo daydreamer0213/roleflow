@@ -195,6 +195,106 @@ const PAGE_HELPERS = String.raw`
     };
   };
 
+  const detailFetches = new Map();
+  let detailFetchRunningJobId = "";
+
+  function detailFetchStatus(record) {
+    if (!record) return { state: "idle", jobId: "" };
+    const status = { state: record.state, jobId: record.jobId };
+    if (record.state === "succeeded") status.result = record.result;
+    if (record.state === "failed") status.errorCode = record.errorCode;
+    return status;
+  }
+
+  function detailFetchCard(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    const card = window.__bossCards().find((item) => {
+      const href = (item.querySelector('a[href*="/job_detail/"]') || item.querySelector("a"))?.href || "";
+      const cardJobId = (href.match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+      return cardJobId === expectedJobId;
+    });
+    const wrap = card?.closest(".job-card-wrap") || card;
+    const data = wrap?.__vue__?.data || card?.__vue__?.data || null;
+    const securityId = String(data?.securityId || "").trim();
+    const lid = String(data?.lid || "").trim();
+    if (!card || String(data?.encryptJobId || "").trim() !== expectedJobId || !securityId || !lid) return null;
+    return { securityId, lid };
+  }
+
+  function cleanApiDetailText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  window.__bossStartDetailFetch = function(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    const existing = detailFetches.get(expectedJobId);
+    if (existing) return detailFetchStatus(existing);
+    if (detailFetchRunningJobId && detailFetchRunningJobId !== expectedJobId) {
+      return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_BUSY" };
+    }
+    const params = detailFetchCard(expectedJobId);
+    if (!params) return { state: "failed", jobId: expectedJobId, errorCode: "BOSS_DETAIL_API_PARAMS_INVALID" };
+    const controller = new AbortController();
+    const record = { jobId: expectedJobId, state: "running", controller, result: null, errorCode: "" };
+    detailFetches.set(expectedJobId, record);
+    detailFetchRunningJobId = expectedJobId;
+    (async () => {
+      try {
+        const query = new URLSearchParams({ securityId: params.securityId, lid: params.lid, _: String(Date.now()) });
+        const response = await window.fetch("/wapi/zpgeek/job/detail.json?" + query.toString(), {
+          method: "GET",
+          credentials: "same-origin",
+          signal: controller.signal
+        });
+        if (response.status === 401) throw { code: "BOSS_LOGIN_REQUIRED" };
+        if (response.status === 403) throw { code: "BOSS_RISK_CONTROL" };
+        if (response.status !== 200) throw { code: "BOSS_DETAIL_API_HTTP_FAILED" };
+        const body = await response.json();
+        const info = body?.zpData?.jobInfo;
+        if (body?.code !== 0 || !info) throw { code: "BOSS_DETAIL_API_RESPONSE_INVALID" };
+        if (String(info.encryptId || "") !== expectedJobId) throw { code: "BOSS_DETAIL_API_ID_MISMATCH" };
+        const description = cleanApiDetailText(info.postDescription);
+        if (description.length < 120) throw { code: "BOSS_DETAIL_API_DESCRIPTION_INCOMPLETE" };
+        record.state = "succeeded";
+        record.result = {
+          jobId: expectedJobId,
+          description,
+          salary: cleanApiDetailText(info.salaryDesc || info.salary),
+          experience: cleanApiDetailText(info.experienceName || info.experience),
+          education: cleanApiDetailText(info.degreeName || info.degree),
+          bossActiveText: cleanApiDetailText(info.activeTimeDesc || info.bossActiveText)
+        };
+      } catch (error) {
+        record.state = "failed";
+        record.errorCode = String(error?.code || "BOSS_DETAIL_API_RESPONSE_INVALID");
+      } finally {
+        if (detailFetchRunningJobId === expectedJobId) detailFetchRunningJobId = "";
+      }
+    })();
+    return detailFetchStatus(record);
+  };
+
+  window.__bossDetailFetchState = function(jobId) {
+    return detailFetchStatus(detailFetches.get(String(jobId || "").trim()));
+  };
+
+  window.__bossConsumeDetailFetch = function(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    const record = detailFetches.get(expectedJobId);
+    const status = detailFetchStatus(record);
+    if (record && record.state !== "running") detailFetches.delete(expectedJobId);
+    return status;
+  };
+
+  window.__bossCancelDetailFetch = function(jobId) {
+    const expectedJobId = String(jobId || "").trim();
+    const record = detailFetches.get(expectedJobId);
+    if (record?.state === "running") record.controller.abort();
+    if (detailFetchRunningJobId === expectedJobId) detailFetchRunningJobId = "";
+    detailFetches.delete(expectedJobId);
+    return { state: "idle", jobId: "" };
+  };
+
   window.__bossPaneState = function() {
     const decode = window.__bossDecode || ((value) => String(value || ""));
     const activeWrap = document.querySelector(".job-card-wrap.active");
@@ -1064,23 +1164,24 @@ class BossSiteAdapter {
               throwIfAborted(options.signal);
               await assertRuntimeTabBindings(options.assertTabBindings);
               console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
-              const accessMode = "visible_pane";
+              const detailMode = options.detailMode || "trusted_pane";
+              const useSearchPageApi = detailMode === "search_page_api";
+              const accessMode = useSearchPageApi ? "search_page_api" : "visible_pane";
               let detailOutcome = {
                 outcome: "succeeded",
                 errorCode: "",
                 accessMode
               };
               try {
-                const detail = await this.readVisiblePaneDetail(
-                  tabId,
-                  entry.job,
-                  options.signal,
-                  options.assertTabBindings
-                );
+                const detail = useSearchPageApi
+                  ? await this.readSearchPageApiDetail(tabId, entry.job, options.signal, options.assertTabBindings)
+                  : await this.readVisiblePaneDetail(tabId, entry.job, options.signal, options.assertTabBindings);
                 if (!detail) {
                   throw bossError(
-                    "BOSS_PANE_SWITCH_TIMEOUT",
-                    `BOSS search pane did not become complete for ${entry.job.sourceId || "unknown"}`
+                    useSearchPageApi ? "BOSS_DETAIL_API_TIMEOUT" : "BOSS_PANE_SWITCH_TIMEOUT",
+                    useSearchPageApi
+                      ? `BOSS search page API detail did not become complete for ${entry.job.sourceId || "unknown"}`
+                      : `BOSS search pane did not become complete for ${entry.job.sourceId || "unknown"}`
                   );
                 }
                 throwIfAborted(options.signal);
@@ -1425,6 +1526,68 @@ class BossSiteAdapter {
     const result = await this.browser.evalValue(tabId, "(() => window.__bossScrollList())()");
     this.logger?.info("boss_list_scrolled", result || {});
     return result || { moved: false, atBottom: false };
+  }
+
+  async readSearchPageApiDetail(tabId, job, signal = null, assertTabBindings = null) {
+    const expectedJobId = (normalizeBossUrl(job?.url || "")
+      .match(/\/job_detail\/([^/?#]+)\.html/i) || [])[1] || "";
+    if (!expectedJobId) {
+      throw bossError("BOSS_DETAIL_API_PARAMS_INVALID", "BOSS detail API requires a valid job URL.");
+    }
+    let started = false;
+    try {
+      throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
+      await this.assertSearchPage(tabId);
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      await this.waitWithPacing("pane_detail_read", { signal, assertTabBindings });
+      await this.reserveAccess("job_detail_fetch", { jobId: expectedJobId });
+      const start = await this.browser.evalValue(
+        tabId,
+        `(() => window.__bossStartDetailFetch(${JSON.stringify(expectedJobId)}))()`
+      );
+      started = start?.state === "running";
+      if (start?.state === "failed") throw bossError(start.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        throwIfAborted(signal);
+        await assertRuntimeTabBindings(assertTabBindings);
+        await this.assertSearchPage(tabId);
+        const state = await this.browser.evalValue(
+          tabId,
+          `(() => window.__bossDetailFetchState(${JSON.stringify(expectedJobId)}))()`
+        );
+        if (state?.state === "failed") {
+          throw bossError(state.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
+        }
+        if (state?.state === "succeeded") {
+          const consumed = await this.browser.evalValue(
+            tabId,
+            `(() => window.__bossConsumeDetailFetch(${JSON.stringify(expectedJobId)}))()`
+          );
+          const result = consumed?.result;
+          if (!result || result.jobId !== expectedJobId || cleanDetailText(result.description).length < 120) {
+            throw bossError("BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API returned an invalid sanitized result.");
+          }
+          return {
+            description: cleanDetailText(result.description),
+            bossActiveText: parseBossActivityText(result.bossActiveText),
+            salary: result.salary || "",
+            experience: result.experience || "",
+            education: result.education || ""
+          };
+        }
+        await waitForAbortableSleep(this.sleep(250), signal);
+      }
+      throw bossError("BOSS_DETAIL_API_TIMEOUT", "BOSS detail API request timed out.");
+    } finally {
+      if (started) {
+        try {
+          await this.browser.evalValue(tabId, `(() => window.__bossCancelDetailFetch(${JSON.stringify(expectedJobId)}))()`);
+        } catch {
+          // Preserve the original stop, page, or API error.
+        }
+      }
+    }
   }
 
   async readVisiblePaneDetail(tabId, job, signal = null, assertTabBindings = null) {
@@ -2383,6 +2546,7 @@ function isFatalBrowserError(error) {
     "BOSS_PAGE_BUDGET_REACHED",
     "BOSS_RISK_CONTROL",
     "BOSS_LOGIN_REQUIRED",
+    "BOSS_DETAIL_API_BUSY",
     "BOSS_ACCESS_BUDGET_EXHAUSTED",
     "BOSS_TAB_REQUIRED",
     "BOSS_SEARCH_TAB_CHANGED",
