@@ -4,6 +4,7 @@ const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
 const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
 const { communicationRuntimeBlock } = require("../core/communication_runtime");
+const { resolveBossRiskWindow } = require("../core/boss_risk_window");
 const {
   setSiteRuntimeState,
   recordSiteAccessEvent
@@ -462,11 +463,17 @@ function persistMessageDiscoveryRiskControl(db, {
   message = "",
   occurredAt = new Date().toISOString()
 } = {}) {
+  const riskWindow = resolveBossRiskWindow({ nowMs: Date.parse(occurredAt) });
   setSiteRuntimeState(db, "boss", {
     status: "blocked",
     reasonCode: errorCode,
     message,
-    details: { phase: "message_discovery", profileId: Number(profileId) || null }
+    details: {
+      phase: "message_discovery",
+      profileId: Number(profileId) || null,
+      blockedUntil: riskWindow.blockedUntil,
+      recovery: true
+    }
   });
   recordSiteAccessEvent(db, {
     site: "boss",
@@ -475,9 +482,11 @@ function persistMessageDiscoveryRiskControl(db, {
     details: {
       profileId: Number(profileId) || null,
       errorCode,
-      errorMessage: String(message || "").slice(0, 1000)
+      errorMessage: String(message || "").slice(0, 1000),
+      blockedUntil: riskWindow.blockedUntil,
+      recovery: true
     },
-    createdAt: occurredAt
+    createdAt: riskWindow.occurredAt
   });
 }
 

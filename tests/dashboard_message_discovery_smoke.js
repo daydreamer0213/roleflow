@@ -24,6 +24,7 @@ const { recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_pr
 const { createDashboardServer } = require("../src/dashboard/server");
 const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
+const { communicationRuntimeBlock } = require("../src/core/communication_runtime");
 
 const PRIVATE_BODY = "脱敏测试问题";
 const PRIVATE_PREVIEW = "脱敏会话预览";
@@ -253,11 +254,18 @@ async function main() {
   assert.strictEqual(response.status, 202);
   await waitForStatus(base, fixture.profileId, "needs_user_action");
   await waitForLeaseRelease();
-  assert.strictEqual(getSiteRuntimeState(db, "boss").reasonCode, "BOSS_RISK_CONTROL");
+  const riskRuntime = getSiteRuntimeState(db, "boss");
+  const riskEvent = listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).at(-1);
+  const riskOccurredAtMs = Date.parse(riskEvent.createdAt);
+  assert.strictEqual(riskRuntime.reasonCode, "BOSS_RISK_CONTROL");
   assert.strictEqual(
-    listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).at(-1).details.errorCode,
+    riskEvent.details.errorCode,
     "BOSS_RISK_CONTROL"
   );
+  assert.strictEqual(riskRuntime.details.blockedUntil, riskEvent.details.blockedUntil);
+  assert.strictEqual(Date.parse(riskEvent.details.blockedUntil) - riskOccurredAtMs, 48 * 60 * 60_000);
+  assert(communicationRuntimeBlock(db, { nowMs: riskOccurredAtMs + 47 * 60 * 60_000 }));
+  assert.strictEqual(communicationRuntimeBlock(db, { nowMs: riskOccurredAtMs + 49 * 60 * 60_000 }), null);
   clearSiteRuntimeState(db, "boss");
 
   scenarios.push(unmatchedRun());

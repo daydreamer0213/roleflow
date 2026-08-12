@@ -84,6 +84,7 @@ const { mapWithConcurrency } = require("./core/async_pool");
 const { storeResumeSourceFile } = require("./core/resume_files");
 const { assertSearchPlanReady } = require("./core/plan_validation");
 const { PRODUCT_POLICY } = require("./core/product_policy");
+const { resolveBossRiskWindow } = require("./core/boss_risk_window");
 const { stableHash } = require("./core/analysis_revision");
 const { matchingCardRevision } = require("./core/matching_card");
 const {
@@ -1721,24 +1722,14 @@ function scanFailureStatus(error) {
   ]).has(code) ? "interrupted" : "failed";
 }
 
-function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs = Date.now() } = {}) {
+function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs } = {}) {
   if (!isBossRiskControl(error)) return false;
-  const recoveryMs = PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000;
-  const candidate = Number(nowMs);
-  const validRawTime = typeof nowMs === "number" || (typeof nowMs === "string" && nowMs.trim() !== "");
-  const observedAtMs = validRawTime && candidate >= 0 && Number.isFinite(new Date(candidate + recoveryMs).getTime())
-    ? candidate
-    : Date.now();
-  const defaultBlockedUntil = observedAtMs + recoveryMs;
-  const requestedBlockedUntil = String(error?.blockedUntil || "");
-  const blockedUntil = Number.isFinite(Date.parse(requestedBlockedUntil))
-    ? requestedBlockedUntil
-    : new Date(defaultBlockedUntil).toISOString();
+  const riskWindow = resolveBossRiskWindow({ nowMs, requestedBlockedUntil: error?.blockedUntil });
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
   const details = {
     phase: String(phase || ""),
     errorCode: String(error?.code || "BOSS_RISK_CONTROL"),
-    blockedUntil,
+    blockedUntil: riskWindow.blockedUntil,
     recovery: true,
     ...(observedLocation ? { observedLocation } : {})
   };
@@ -1753,7 +1744,7 @@ function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", err
     action: "risk_control",
     runId,
     details,
-    createdAt: new Date(observedAtMs).toISOString()
+    createdAt: riskWindow.occurredAt
   });
   return true;
 }

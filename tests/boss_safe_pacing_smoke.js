@@ -18,6 +18,7 @@ const { createSiteAccessController, formatAccessWaitDuration, resolveAccessMode 
 const { assertBossRuntimeTabBindings } = require("../src/core/workspace_tabs");
 const { validateResumeBatch } = require("../src/core/scan_resume");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
+const { resolveBossRiskWindow } = require("../src/core/boss_risk_window");
 const { persistBossRiskControl, executeTrackedScanRun } = require("../src/cli");
 
 main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
@@ -31,6 +32,7 @@ async function main() {
   await productionScanPacingCompositionSmoke();
   await sqliteCheckpointResumeChainSmoke();
   await threeMinuteBudgetSmoke();
+  sharedBossRiskWindowSmoke();
   recoveryExpirySmoke();
   invalidRiskTimeSmoke();
   checkpointResumeSmoke();
@@ -244,6 +246,40 @@ function recoveryExpirySmoke() {
       assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 73 * hour }), "normal");
     }
     db.close();
+  }
+}
+
+function sharedBossRiskWindowSmoke() {
+  const hour = 60 * 60_000;
+  const recoveryMs = 48 * hour;
+  const fallbackNowMs = Date.parse("2026-08-12T00:00:00.000Z");
+  const originalNow = Date.now;
+  Date.now = () => fallbackNowMs;
+  try {
+    for (const [label, nowMs, expectedObservedAtMs] of [
+      ["numeric zero", 0, 0],
+      ["numeric string", "1723420800000", 1723420800000],
+      ["null", null, fallbackNowMs],
+      ["empty string", "", fallbackNowMs],
+      ["NaN", NaN, fallbackNowMs],
+      ["negative", -1, fallbackNowMs],
+      ["out of range", 1e20, fallbackNowMs],
+      ["maximum date overflow", 8.64e15 - recoveryMs + 1, fallbackNowMs]
+    ]) {
+      const window = resolveBossRiskWindow({ nowMs });
+      assert.strictEqual(window.observedAtMs, expectedObservedAtMs, `${label} must normalize the observed time`);
+      assert.strictEqual(window.occurredAt, new Date(expectedObservedAtMs).toISOString(), `${label} must expose the normalized ISO occurrence`);
+      assert.strictEqual(window.blockedUntil, new Date(expectedObservedAtMs + recoveryMs).toISOString(), `${label} must use the recovery deadline`);
+    }
+    for (const requestedBlockedUntil of [
+      "2026-08-11T00:00:00.000Z",
+      "2026-08-13T00:00:00.000Z"
+    ]) {
+      const window = resolveBossRiskWindow({ nowMs: fallbackNowMs, requestedBlockedUntil });
+      assert.strictEqual(window.blockedUntil, requestedBlockedUntil, "a valid platform deadline must be preserved exactly");
+    }
+  } finally {
+    Date.now = originalNow;
   }
 }
 
