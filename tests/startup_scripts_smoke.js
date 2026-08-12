@@ -13,7 +13,8 @@ const powershell = path.join(
   "v1.0",
   "powershell.exe"
 );
-const tempParent = "D:\\DevData";
+const tempParent = path.join(root, ".runtime", "startup-smoke");
+fs.mkdirSync(tempParent, { recursive: true });
 const tempRoot = fs.mkdtempSync(path.join(tempParent, "RoleFlow startup smoke "));
 const projectRoot = path.join(tempRoot, "project with spaces");
 const outsideCwd = path.join(tempRoot, "outside cwd");

@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v0.1.0-beta.1](https://img.shields.io/badge/release-v0.1.0--beta.1-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.1)
+[![Release: v0.1.0-beta.2](https://img.shields.io/badge/release-v0.1.0--beta.2-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.2)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,7 +12,7 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v0.1.0-beta.1` 是 RoleFlow 的首个公开 Beta。冻结发布版本已通过 93 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
+`v0.1.0-beta.2` 是 RoleFlow 的首个可下载公开 Beta。冻结发布版本已通过 93 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
 
 当前版本适合本地试用、代码审阅和离线流程验证。BOSS 页面结构可能变化，真实消息读取与沟通链路尚未完成人工端到端验收，因此不能把离线通过等同于真实页面已完全验收。任何真实沟通仍必须由用户明确确认，并遵守下文的安全边界。
 
