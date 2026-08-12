@@ -18,15 +18,11 @@ const { deriveBenchmarkMetrics } = require("../scripts/lib/benchmark_metrics");
 const genericFixtures = require("./fixtures/generic_evidence_matching.json");
 
 const PRIVATE_PARENT = "D:\\DevData\\RoleFlow-private-benchmark";
-const FORMAL_MODEL_SETTINGS_ROOT = "D:\\Guo\\ZhiPing";
-const TEST_MODEL_SETTINGS_ROOT = path.resolve(__dirname, "..").toLowerCase()
-  === path.resolve(FORMAL_MODEL_SETTINGS_ROOT).toLowerCase()
-  ? path.dirname(FORMAL_MODEL_SETTINGS_ROOT)
-  : FORMAL_MODEL_SETTINGS_ROOT;
 const testRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-runner-${process.pid}`);
 const siblingBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-baseline-${process.pid}`);
 const formalBaselineRoot = path.join(PRIVATE_PARENT, `synthetic-private-full-chain-formal-baseline-${process.pid}`);
 const externalRoot = path.join("D:\\DevData\\RoleFlow-private-runner-fixtures", `synthetic-private-full-chain-runner-${process.pid}`);
+const TEST_MODEL_SETTINGS_ROOT = externalRoot;
 const externalPdf = path.join(externalRoot, "synthetic-resume.pdf");
 const downloadsRoot = path.join(os.homedir(), "Downloads", `roleflow-private-runner-${process.pid}`);
 const V4_HMAC_KEY = "synthetic-v4-portability-hmac-key-0123456789abcdef";
