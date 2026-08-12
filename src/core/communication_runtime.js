@@ -1,12 +1,15 @@
 const { getSiteRuntimeState } = require("./storage");
 const { appError } = require("./observability");
+const { resolveAccessMode } = require("./site_access_budget");
 
 function communicationRuntimeBlock(db) {
   const state = getSiteRuntimeState(db, "boss");
   if (!state || state.status !== "blocked") return null;
   const blockedUntil = state.details?.blockedUntil || null;
   const blockedUntilMs = Date.parse(blockedUntil || "");
-  if (Number.isFinite(blockedUntilMs) && blockedUntilMs <= Date.now()) return null;
+  const nowMs = Date.now();
+  const accessMode = resolveAccessMode(db, { site: "boss", nowMs });
+  if (accessMode !== "recovery" && Number.isFinite(blockedUntilMs) && blockedUntilMs <= nowMs) return null;
   return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
 }
 
