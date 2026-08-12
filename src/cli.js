@@ -1723,7 +1723,8 @@ function scanFailureStatus(error) {
 
 function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs = Date.now() } = {}) {
   if (!isBossRiskControl(error)) return false;
-  const observedAtMs = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  const candidate = Number(nowMs);
+  const observedAtMs = Number.isFinite(new Date(candidate).getTime()) ? candidate : Date.now();
   const defaultBlockedUntil = observedAtMs + PRODUCT_POLICY.operations.bossAccessBudget.recoveryHours * 60 * 60_000;
   const requestedBlockedUntil = String(error?.blockedUntil || "");
   const blockedUntil = Number.isFinite(Date.parse(requestedBlockedUntil))

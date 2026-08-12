@@ -282,6 +282,27 @@ function invalidRiskTimeSmoke() {
   assert(Number.isFinite(Date.parse(fallbackEvent.createdAt)));
   assert.strictEqual(Date.parse(fallbackState.details.blockedUntil) - Date.parse(fallbackEvent.createdAt), 48 * hour);
   fallbackDb.close();
+
+  for (const [label, nowMs] of [
+    ["large-number", 1e20],
+    ["large-numeric-string", "1e20"],
+    ["negative-large-number", -1e20]
+  ]) {
+    const rangeDb = openDb(":memory:");
+    assert.doesNotThrow(() => persistBossRiskControl(rangeDb, {
+      site: "boss",
+      runId: label,
+      error: Object.assign(new Error(label), { code: "BOSS_RISK_CONTROL" }),
+      nowMs
+    }));
+    const rangeState = getSiteRuntimeState(rangeDb, "boss");
+    assert.strictEqual(rangeState.status, "blocked");
+    const rangeEvents = listSiteAccessEvents(rangeDb, { site: "boss", action: "risk_control" });
+    assert.strictEqual(rangeEvents.length, 1);
+    assert(Number.isFinite(Date.parse(rangeEvents[0].createdAt)));
+    assert.strictEqual(Date.parse(rangeState.details.blockedUntil) - Date.parse(rangeEvents[0].createdAt), 48 * hour);
+    rangeDb.close();
+  }
 }
 
 async function sqliteCheckpointResumeChainSmoke() {
