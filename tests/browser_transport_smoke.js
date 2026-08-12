@@ -127,8 +127,13 @@ async function main() {
 
   try {
     reset("edge-timeout");
+    edge.requestAttempts.length = 0;
     await rejectsWithCode(() => edge.navigate("edge-tab", "https://example.test/once"), "BROWSER_TIMEOUT");
-    assert.strictEqual(state.edgeRequests.length, 1, "timed-out navigation must not be retried");
+    assert.deepStrictEqual(
+      edge.requestAttempts.map((attempt) => attempt.command),
+      ["navigate"],
+      "timed-out navigation must not be retried"
+    );
 
     reset("edge-list-disconnect-once");
     const edgeTabs = await edge.listTabs();
@@ -379,6 +384,11 @@ function makeEdgeAdapter(port, timeoutMs) {
   adapter.port = port;
   adapter.token = "test-token";
   adapter.timeoutMs = timeoutMs;
+  adapter.requestAttempts = [];
+  adapter.requestCommand = async function requestCommand(command, args) {
+    this.requestAttempts.push({ command, args });
+    return EdgeControlAdapter.prototype.requestCommand.call(this, command, args);
+  };
   return adapter;
 }
 
