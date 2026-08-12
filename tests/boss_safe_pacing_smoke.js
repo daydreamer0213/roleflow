@@ -303,6 +303,32 @@ function invalidRiskTimeSmoke() {
     assert.strictEqual(Date.parse(rangeState.details.blockedUntil) - Date.parse(rangeEvents[0].createdAt), 48 * hour);
     rangeDb.close();
   }
+
+  for (const [label, nowMs] of [
+    ["date-upper-bound", 8.64e15],
+    ["date-upper-bound-string", "8640000000000000"],
+    ["null", null],
+    ["empty-string", ""]
+  ]) {
+    const boundaryDb = openDb(":memory:");
+    const beforeMs = Date.now();
+    assert.doesNotThrow(() => persistBossRiskControl(boundaryDb, {
+      site: "boss",
+      runId: label,
+      error: Object.assign(new Error(label), { code: "BOSS_RISK_CONTROL" }),
+      nowMs
+    }));
+    const afterMs = Date.now();
+    const boundaryState = getSiteRuntimeState(boundaryDb, "boss");
+    assert.strictEqual(boundaryState.status, "blocked");
+    const boundaryEvents = listSiteAccessEvents(boundaryDb, { site: "boss", action: "risk_control" });
+    assert.strictEqual(boundaryEvents.length, 1);
+    const boundaryCreatedAtMs = Date.parse(boundaryEvents[0].createdAt);
+    assert(Number.isFinite(boundaryCreatedAtMs));
+    assert(boundaryCreatedAtMs >= beforeMs && boundaryCreatedAtMs <= afterMs);
+    assert.strictEqual(Date.parse(boundaryState.details.blockedUntil) - boundaryCreatedAtMs, 48 * hour);
+    boundaryDb.close();
+  }
 }
 
 async function sqliteCheckpointResumeChainSmoke() {
