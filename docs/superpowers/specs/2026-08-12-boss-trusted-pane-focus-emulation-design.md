@@ -14,8 +14,8 @@ one job card to another, RoleFlow will:
 3. locate the exact card by job ID and validate its component identity,
    coordinates, viewport position, and hit target;
 4. dispatch the existing single trusted CDP mouse click;
-5. recheck the fixed tab binding and search-page identity;
-6. disable focus emulation immediately after the click attempt in `finally`;
+5. disable focus emulation immediately after the click attempt in `finally`;
+6. recheck the fixed tab binding and search-page identity;
 7. poll the right pane while the page is hidden and keep every existing job-ID,
    title, loading-state, and complete-JD check.
 
@@ -70,10 +70,11 @@ a one-use abstraction.
 The activation branch is fail-closed:
 
 - both `browser.cdp` and `browser.clickAt` must exist before card location;
-- enabling focus emulation, locating the card, clicking, and the post-click
-  identity checks execute inside one `try`;
+- enabling focus emulation, locating the card, and clicking execute inside one
+  `try`;
 - disabling focus emulation executes in `finally`, including when location,
   click, abort, tab binding, login, risk-control, or page identity checks fail;
+- post-click tab and page checks run only after focus emulation is disabled;
 - a failed disable is fatal and cannot be reported as a successful detail;
 - there is no fallback to `Page.bringToFront`, DOM/Vue synthetic clicks,
   `standalone_detail`, navigation, new tabs, or `search_page_api`.
@@ -87,8 +88,8 @@ The focused source-acquisition test must prove:
 
 - a non-current card uses exactly one focus-emulation enable, one trusted click,
   and one focus-emulation disable;
-- the disable occurs immediately after post-click tab/page checks and before
-  right-pane polling continues;
+- the disable occurs immediately after the click and before post-click tab/page
+  checks or right-pane polling continue;
 - `bringToFront` and `navigate` are not called;
 - an invalid activation point performs no click and still disables emulation;
 - a click or post-click identity failure still disables emulation and
