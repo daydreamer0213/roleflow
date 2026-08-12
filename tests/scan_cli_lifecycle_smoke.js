@@ -26,12 +26,16 @@ const {
   upsertJob,
   listReportJobs,
   transitionWorkflowRun,
-  getLatestJobRefreshAttempt
+  getLatestJobRefreshAttempt,
+  recordSiteAccessEvent,
+  listSiteAccessEvents
 } = require("../src/core/storage");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
+const { createSiteAccessController } = require("../src/core/site_access_budget");
 
 const smokeDir = path.join(__dirname, "..", ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `scan-cli-lifecycle-${Date.now()}.sqlite`);
+const accessLedgerPath = path.join(smokeDir, `scan-cli-access-ledger-${Date.now()}.sqlite`);
 let db;
 
 main()
@@ -42,8 +46,10 @@ main()
   })
   .finally(() => {
     db?.close();
-    for (const suffix of ["", "-shm", "-wal"]) {
-      try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch { /* no-op */ }
+    for (const targetPath of [dbPath, accessLedgerPath]) {
+      for (const suffix of ["", "-shm", "-wal"]) {
+        try { fs.rmSync(`${targetPath}${suffix}`, { force: true }); } catch { /* no-op */ }
+      }
     }
   });
 
@@ -56,6 +62,10 @@ async function main() {
   await interruptedRunSmoke();
   await failedRunSmoke();
   await localInputRunSmoke();
+  await missingSharedAccessLedgerValueFailsClosedSmoke();
+  await sameDatabasePathCaseSmoke();
+  await unavailableSharedAccessLedgerFailsBeforeRunSmoke();
+  await explicitSharedAccessLedgerSmoke();
   await workflowControlledOuterSmoke();
   resumeBatchSmoke();
   terminalAggregationSmoke();
@@ -274,6 +284,104 @@ async function localInputRunSmoke() {
   assert.strictEqual(result.status, "completed");
   assert.strictEqual(getScanRun(db, runId).status, "completed");
   assert.strictEqual(getSiteScanLease(db, "boss"), null);
+}
+
+async function explicitSharedAccessLedgerSmoke() {
+  const now = Date.now();
+  const ledgerDb = openDb(accessLedgerPath);
+  for (let index = 0; index < 16; index += 1) {
+    recordSiteAccessEvent(ledgerDb, {
+      site: "boss",
+      action: "list_navigation",
+      runId: "previous-baseline",
+      createdAt: new Date(now - 1000 + index).toISOString()
+    });
+  }
+  ledgerDb.close();
+
+  const runId = "cli-shared-access-ledger";
+  await assert.rejects(
+    () => executeWithSiteScanLease(db, {
+      db: dbPath,
+      "run-id": runId,
+      "access-ledger-db": accessLedgerPath
+    }, "scan", async (_signal, execution) => {
+      assert.notStrictEqual(execution.accessLedgerDb, db);
+      const controller = createSiteAccessController({
+        db: execution.accessLedgerDb,
+        auditDb: db,
+        site: "boss",
+        runId,
+        nowFn: () => now,
+        sleepFn: async () => {}
+      });
+      await controller.reserve("list_navigation", { kind: "new-baseline" });
+      return { status: "completed" };
+    }),
+    (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      && error.usage["24h"] === 16
+  );
+  assert.strictEqual(getScanRun(db, runId).status, "interrupted");
+
+  const reopenedLedgerDb = openDb(accessLedgerPath);
+  try {
+    assert.strictEqual(listSiteAccessEvents(reopenedLedgerDb, {
+      site: "boss",
+      action: "list_navigation"
+    }).length, 16);
+  } finally {
+    reopenedLedgerDb.close();
+  }
+}
+
+async function unavailableSharedAccessLedgerFailsBeforeRunSmoke() {
+  let runCalls = 0;
+  await assert.rejects(
+    () => executeWithSiteScanLease(db, {
+      db: dbPath,
+      "run-id": "cli-unavailable-access-ledger",
+      "access-ledger-db": smokeDir
+    }, "scan", async () => {
+      runCalls += 1;
+      return { status: "completed" };
+    }),
+    (error) => error.code === "BOSS_ACCESS_LEDGER_UNAVAILABLE"
+  );
+  assert.strictEqual(runCalls, 0, "the scan callback must not begin when the account ledger cannot open");
+  assert.strictEqual(getScanRun(db, "cli-unavailable-access-ledger"), null);
+  assert.strictEqual(getSiteScanLease(db, "boss"), null);
+}
+
+async function missingSharedAccessLedgerValueFailsClosedSmoke() {
+  let runCalls = 0;
+  await assert.rejects(
+    () => executeWithSiteScanLease(db, {
+      db: dbPath,
+      "run-id": "cli-missing-access-ledger-value",
+      "access-ledger-db": true
+    }, "scan", async () => {
+      runCalls += 1;
+      return { status: "completed" };
+    }),
+    (error) => error.code === "BOSS_ACCESS_LEDGER_PATH_REQUIRED"
+  );
+  assert.strictEqual(runCalls, 0);
+  assert.strictEqual(getScanRun(db, "cli-missing-access-ledger-value"), null);
+}
+
+async function sameDatabasePathCaseSmoke() {
+  const alternateCase = dbPath.replace(/^([A-Z]):/, (_, drive) => `${drive.toLowerCase()}:`);
+  const runId = "cli-same-ledger-case";
+  const result = await executeWithSiteScanLease(db, {
+    db: dbPath,
+    "run-id": runId,
+    "access-ledger-db": alternateCase
+  }, "scan", async (_signal, execution) => {
+    assert.strictEqual(execution.accessLedgerDb, db);
+    return { status: "completed" };
+  });
+  assert.strictEqual(result.status, "completed");
+  assert.strictEqual(getScanRun(db, runId).status, "completed");
 }
 
 function resumeBatchSmoke() {

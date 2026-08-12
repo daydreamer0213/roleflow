@@ -361,97 +361,169 @@ function startCommunicationHeartbeat(db, batchId, communicationLogger) {
 async function executeWithSiteScanLease(db, args, command, run) {
   const planRecord = args.plan ? getSearchPlan(db, args.plan) : null;
   const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
-  const scanKind = resolveScanKind(command, args);
-  const runId = String(args["run-id"] || crypto.randomUUID()).trim();
-  const planId = Number(args.plan || 0) || null;
-  const workflowRun = prepareWorkflowExecution(db, args, planId);
-  const workflowRunId = workflowRun?.id || "";
-  const runLogger = logger.child({
-    ...workflowLogContext({ ...(workflowRun || {}), scanRunId: runId }),
-    runId,
-    planId,
-    scanKind,
-    site
-  });
-  if (workflowRun?.status === "analyzing" && args["analysis-only"] === true) {
-    const scanRun = beginScanRun(db, {
-      runId,
-      site,
-      command: scanKind,
-      planId,
-      processId: process.pid
-    });
-    const execution = {
-      runId,
-      leaseOwner: "",
-      site,
-      scanKind,
-      planId,
-      workflowRunId,
-      logger: runLogger
-    };
-    runLogger.info("scan_run_started", { status: scanRun.status, analysisOnly: true });
-    return executeTrackedScanRun(db, {
-      runId,
-      leaseOwner: "",
-      runLogger,
-      run,
-      signal: null,
-      execution
-    });
-  }
-  interruptOrphanedScanRuns(db, { site });
-  if (command === "scan" && args.input) {
-    const scanRun = beginScanRun(db, {
-      runId,
-      site,
-      command: scanKind,
-      planId,
-      processId: process.pid
-    });
-    const execution = { runId, leaseOwner: "", site, scanKind, planId, workflowRunId, logger: runLogger };
-    runLogger.info("scan_run_started", { status: scanRun.status, localInput: true });
-    return executeTrackedScanRun(db, { runId, leaseOwner: "", runLogger, run, signal: null, execution });
-  }
-
-  const owner = `${runId}:${process.pid}`;
-  let runClaimed = false;
-  return runWithSiteScanLease({
-    acquire(input) {
-      const lease = acquireSiteScanLease(db, input);
-      runLogger.info("site_scan_lease_acquired", { planId: lease.planId, owner, expiresAt: lease.expiresAt });
-      return lease;
-    },
-    renew(input) {
-      const expiresAt = renewSiteScanLease(db, { site, owner });
-      if (runClaimed) heartbeatScanRun(db, { runId, leaseOwner: owner, processId: process.pid });
-      runLogger.info("site_scan_lease_renewed", { owner, expiresAt });
-      return { site, owner, expiresAt };
-    },
-    release(input) {
-      const released = releaseSiteScanLease(db, input);
-      runLogger.info("site_scan_lease_released", { owner, released });
-      return released;
-    }
-  }, {
+  const accessLedger = openSiteAccessLedger(db, args, {
     site,
-    owner,
-    command: scanKind,
-    planId
-  }, async (signal) => {
-    const scanRun = beginScanRun(db, {
-      runId,
-      site,
-      command: scanKind,
-      planId,
-      leaseOwner: owner,
-      processId: process.pid
-    });
-    runClaimed = true;
-    const execution = { runId, leaseOwner: owner, site, scanKind, planId, workflowRunId, logger: runLogger };
-    runLogger.info("scan_run_started", { status: scanRun.status });
-    return executeTrackedScanRun(db, { runId, leaseOwner: owner, runLogger, run, signal, execution });
+    enabled: !args.input && args["analysis-only"] !== true
   });
+  try {
+    const scanKind = resolveScanKind(command, args);
+    const runId = String(args["run-id"] || crypto.randomUUID()).trim();
+    const planId = Number(args.plan || 0) || null;
+    const workflowRun = prepareWorkflowExecution(db, args, planId);
+    const workflowRunId = workflowRun?.id || "";
+    const runLogger = logger.child({
+      ...workflowLogContext({ ...(workflowRun || {}), scanRunId: runId }),
+      runId,
+      planId,
+      scanKind,
+      site
+    });
+    if (workflowRun?.status === "analyzing" && args["analysis-only"] === true) {
+      const scanRun = beginScanRun(db, {
+        runId,
+        site,
+        command: scanKind,
+        planId,
+        processId: process.pid
+      });
+      const execution = {
+        runId,
+        leaseOwner: "",
+        site,
+        scanKind,
+        planId,
+        workflowRunId,
+        accessLedgerDb: accessLedger.db,
+        accessLedgerPath: accessLedger.path,
+        logger: runLogger
+      };
+      runLogger.info("scan_run_started", { status: scanRun.status, analysisOnly: true });
+      return await executeTrackedScanRun(db, {
+        runId,
+        leaseOwner: "",
+        runLogger,
+        run,
+        signal: null,
+        execution
+      });
+    }
+    interruptOrphanedScanRuns(db, { site });
+    if (command === "scan" && args.input) {
+      const scanRun = beginScanRun(db, {
+        runId,
+        site,
+        command: scanKind,
+        planId,
+        processId: process.pid
+      });
+      const execution = {
+        runId,
+        leaseOwner: "",
+        site,
+        scanKind,
+        planId,
+        workflowRunId,
+        accessLedgerDb: accessLedger.db,
+        accessLedgerPath: accessLedger.path,
+        logger: runLogger
+      };
+      runLogger.info("scan_run_started", { status: scanRun.status, localInput: true });
+      return await executeTrackedScanRun(db, { runId, leaseOwner: "", runLogger, run, signal: null, execution });
+    }
+
+    const owner = `${runId}:${process.pid}`;
+    let runClaimed = false;
+    return await runWithSiteScanLease({
+      acquire(input) {
+        const lease = acquireSiteScanLease(db, input);
+        runLogger.info("site_scan_lease_acquired", { planId: lease.planId, owner, expiresAt: lease.expiresAt });
+        return lease;
+      },
+      renew(input) {
+        const expiresAt = renewSiteScanLease(db, { site, owner });
+        if (runClaimed) heartbeatScanRun(db, { runId, leaseOwner: owner, processId: process.pid });
+        runLogger.info("site_scan_lease_renewed", { owner, expiresAt });
+        return { site, owner, expiresAt };
+      },
+      release(input) {
+        const released = releaseSiteScanLease(db, input);
+        runLogger.info("site_scan_lease_released", { owner, released });
+        return released;
+      }
+    }, {
+      site,
+      owner,
+      command: scanKind,
+      planId
+    }, async (signal) => {
+      const scanRun = beginScanRun(db, {
+        runId,
+        site,
+        command: scanKind,
+        planId,
+        leaseOwner: owner,
+        processId: process.pid
+      });
+      runClaimed = true;
+      const execution = {
+        runId,
+        leaseOwner: owner,
+        site,
+        scanKind,
+        planId,
+        workflowRunId,
+        accessLedgerDb: accessLedger.db,
+        accessLedgerPath: accessLedger.path,
+        logger: runLogger
+      };
+      runLogger.info("scan_run_started", { status: scanRun.status });
+      return executeTrackedScanRun(db, { runId, leaseOwner: owner, runLogger, run, signal, execution });
+    });
+  } finally {
+    accessLedger.close();
+  }
+}
+
+function openSiteAccessLedger(db, args, { site = "boss", enabled = true } = {}) {
+  const rawRequested = args?.["access-ledger-db"];
+  if (!enabled || site !== "boss" || rawRequested === undefined) {
+    return { db, path: "", close() {} };
+  }
+  if (typeof rawRequested !== "string" || !rawRequested.trim()) {
+    throw codedError(
+      "BOSS_ACCESS_LEDGER_PATH_REQUIRED",
+      "--access-ledger-db 必须指定当前 BOSS 账号的 SQLite 文件路径。"
+    );
+  }
+  const requested = rawRequested.trim();
+  const ledgerPath = path.resolve(requested);
+  const operationalPath = path.resolve(args?.db || DEFAULT_DB);
+  if (sameWindowsPath(ledgerPath, operationalPath)) {
+    return { db, path: ledgerPath, close() {} };
+  }
+  try {
+    const ledgerDb = openDb(ledgerPath);
+    return {
+      db: ledgerDb,
+      path: ledgerPath,
+      close() {
+        ledgerDb.close();
+      }
+    };
+  } catch (cause) {
+    const error = codedError(
+      "BOSS_ACCESS_LEDGER_UNAVAILABLE",
+      `账号安全账本无法打开，已在访问 BOSS 前停止：${ledgerPath}`
+    );
+    error.cause = cause;
+    throw error;
+  }
+}
+
+function sameWindowsPath(left, right) {
+  return process.platform === "win32"
+    ? String(left).toLowerCase() === String(right).toLowerCase()
+    : String(left) === String(right);
 }
 
 async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, signal, execution }) {
@@ -507,7 +579,20 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
     }
     const status = scanFailureStatus(error);
     transitionWorkflowScanFailure(db, execution?.workflowRunId, status, error);
-    persistBossRiskControl(db, { site: execution?.site || "boss", runId, phase: "tracked_run", error });
+    try {
+      persistBossRiskControl(db, {
+        site: execution?.site || "boss",
+        runId,
+        phase: "tracked_run",
+        error,
+        accessLedgerDb: execution?.accessLedgerDb || db
+      });
+    } catch (persistError) {
+      runLogger.error("boss_risk_persist_failed", {
+        originalError: errorMeta(error),
+        persistError: errorMeta(persistError)
+      });
+    }
     try {
       const finished = finishScanRun(db, {
         runId,
@@ -731,7 +816,8 @@ async function scan(
   const browser = createBrowser(args);
   const accessController = !args.input && site === "boss"
     ? createSiteAccessController({
-      db,
+      db: execution?.accessLedgerDb || db,
+      auditDb: db,
       site,
       runId: execution?.runId || "",
       logger: scanLogger,
@@ -1487,7 +1573,14 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   configs = profileToRuntimeConfigs(configs, matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const browser = createBrowser(args);
   if (!browser) throw new Error("补读岗位详情需要 --browser edge 或 --browser portable。");
-  const accessController = createSiteAccessController({ db, site: "boss", runId: execution?.runId || "", logger: scanLogger, signal });
+  const accessController = createSiteAccessController({
+    db: execution?.accessLedgerDb || db,
+    auditDb: db,
+    site: "boss",
+    runId: execution?.runId || "",
+    logger: scanLogger,
+    signal
+  });
   const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
   const usesFixedBossSearchTab = String(args.browser || "").trim().toLowerCase() === "edge";
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
@@ -1734,7 +1827,14 @@ function scanFailureStatus(error) {
   ]).has(code) ? "interrupted" : "failed";
 }
 
-function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", error, nowMs } = {}) {
+function persistBossRiskControl(db, {
+  site = "boss",
+  runId = "",
+  phase = "",
+  error,
+  nowMs,
+  accessLedgerDb = db
+} = {}) {
   if (!isBossRiskControl(error)) return false;
   const riskWindow = resolveBossRiskWindow({ nowMs, requestedBlockedUntil: error?.blockedUntil });
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
@@ -1745,19 +1845,30 @@ function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", err
     recovery: true,
     ...(observedLocation ? { observedLocation } : {})
   };
-  setSiteRuntimeState(db, site, {
-    status: "blocked",
-    reasonCode: details.errorCode,
-    message: "BOSS risk control detected; scanning safely stopped.",
-    details
-  });
-  recordSiteAccessEvent(db, {
-    site,
-    action: "risk_control",
-    runId,
-    details,
-    createdAt: riskWindow.occurredAt
-  });
+  const targets = accessLedgerDb && accessLedgerDb !== db
+    ? [accessLedgerDb, db]
+    : [db];
+  let firstError = null;
+  for (const targetDb of targets) {
+    try {
+      setSiteRuntimeState(targetDb, site, {
+        status: "blocked",
+        reasonCode: details.errorCode,
+        message: "BOSS risk control detected; scanning safely stopped.",
+        details
+      });
+      recordSiteAccessEvent(targetDb, {
+        site,
+        action: "risk_control",
+        runId,
+        details,
+        createdAt: riskWindow.occurredAt
+      });
+    } catch (persistError) {
+      firstError ||= persistError;
+    }
+  }
+  if (firstError) throw firstError;
   return true;
 }
 
@@ -2409,6 +2520,7 @@ function printHelp() {
   run.ps1 scan --site boss --input data\\sample_jobs.json
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID>
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode daily
+  run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --access-ledger-db <account-ledger.sqlite>
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --scan-mode broad
   run.ps1 scan --plan <Search Plan ID> --browser portable --cdp-port 9222 --model-settings-root <external-root>  # scan-only, read-only
   run.ps1 scan --site boss --browser edge --plan <Search Plan ID> --refresh-platform-filters
@@ -2425,7 +2537,8 @@ function printHelp() {
   run.ps1 mark-skipped --job-id <id> --reason "地点不合适"
   run.ps1 mark-no-reply --job-id <id> --note "已投递，暂未回复"
 
-安全边界：扫描只读岗位信息；批量沟通必须先在本地页面确认清单，再由 communicate 命令串行执行。`);
+安全边界：扫描只读岗位信息；批量沟通必须先在本地页面确认清单，再由 communicate 命令串行执行。
+Gate D 等跨 baseline 运行必须显式指定按 BOSS 账号隔离的 --access-ledger-db；更换账号时使用新的账本。`);
 }
 
 module.exports = {

@@ -10,6 +10,7 @@ const CHINA_OFFSET_MS = 8 * 60 * 60_000;
 
 function createSiteAccessController({
   db,
+  auditDb = db,
   site = "boss",
   runId = "",
   logger = null,
@@ -24,6 +25,7 @@ function createSiteAccessController({
   controlPollIntervalMs = 1000
 }) {
   if (!db) throw new Error("访问预算控制器需要数据库连接。");
+  if (!auditDb) throw new Error("访问预算控制器需要审计数据库连接。");
 
   return {
     async reserve(action, details = {}) {
@@ -50,6 +52,30 @@ function createSiteAccessController({
           if (existing) {
             db.exec("COMMIT");
             transactionOpen = false;
+            let auditEvent = null;
+            if (auditDb !== db && !existingCommunicationReservation(auditDb, {
+              site,
+              details: sanitizedDetails,
+              nowMs,
+              policy
+            })) {
+              auditEvent = recordSiteAccessEvent(auditDb, {
+                site,
+                action: normalizedAction,
+                runId,
+                details: sanitizedDetails,
+                createdAt: new Date(nowMs).toISOString()
+              });
+            }
+            if (auditEvent && typeof onReserved === "function") {
+              onReserved({
+                ...auditEvent,
+                site,
+                action: normalizedAction,
+                createdAt: auditEvent.createdAt || auditEvent.created_at,
+                runId: String(runId || "")
+              });
+            }
             logger?.info("site_access_reservation_reused", {
               site,
               action: normalizedAction,
@@ -74,12 +100,21 @@ function createSiteAccessController({
               details: sanitizedDetails,
               createdAt: new Date(nowMs).toISOString()
             });
-            if (typeof onReserved === "function") {
-              onReserved({ ...event, runId: String(runId || "") });
-            }
             const nextUsage = Object.fromEntries(Object.entries(usage).map(([window, count]) => [window, count + 1]));
             db.exec("COMMIT");
             transactionOpen = false;
+            const auditEvent = auditDb === db
+              ? event
+              : recordSiteAccessEvent(auditDb, {
+                site,
+                action: normalizedAction,
+                runId,
+                details: sanitizedDetails,
+                createdAt: event.createdAt
+              });
+            if (typeof onReserved === "function") {
+              onReserved({ ...auditEvent, runId: String(runId || "") });
+            }
             logger?.info("site_access_reserved", { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits });
             return { site, action: normalizedAction, mode, waitedMs, usage: nextUsage, limits, reused: false };
           }

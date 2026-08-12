@@ -87,6 +87,8 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.strictEqual((queue.body.match(/<body>/gi) || []).length, 1, "queue must not nest a second body");
     assertSharedFrame(queue.body, `/queue?planId=${queueFixture.planId}`, "queue");
     assert.match(queue.body, /<form class="quick-actions" method="post" action="\/api\/mark/);
+    assert.doesNotMatch(queue.body, /multiBusinessDistrict/, "internal unresolved parameter names must not leak into job cards");
+    assert.match(queue.body, /需确认轮班/, "other user-relevant risks must remain visible");
 
     const jobs = await getText(baseUrl, `/jobs?planId=${queueFixture.planId}&batch=latest`);
     assert.strictEqual(jobs.status, 200);
@@ -228,7 +230,7 @@ function seedQueueFixture(database) {
   const batchId = createBatch(database, "boss", "dashboard-shell", "queue fixture", { profileId: saved.profileId, searchPlanId: saved.planId, filterSnapshot: { execution: { scanKind: "daily" } } });
   upsertJob(database, {
     source: "boss", sourceId: "dashboard-shell-queue-job", keyword: "RAG", title: "Queue Fixture Engineer", company: "Fixture Co", location: "广州", salary: "15-20K", experience: "1-3年", education: "本科", bossActiveText: "今日活跃", bossActiveDays: 0,
-    url: "https://www.zhipin.com/job_detail/dashboard-shell-queue.html", tags: ["Python", "RAG"], description: "Build Python RAG applications and maintain production services. ".repeat(5), score: 20, level: "优先", matches: ["Python", "RAG"], risks: [], qualityTags: [],
+    url: "https://www.zhipin.com/job_detail/dashboard-shell-queue.html", tags: ["Python", "RAG"], description: "Build Python RAG applications and maintain production services. ".repeat(5), score: 20, level: "优先", matches: ["Python", "RAG"], risks: ["平台筛选参数未完全解析：multiBusinessDistrict", "需确认轮班"], qualityTags: [],
     analysis: { provider: "mock", model: "offline", semanticStatus: "complete", decisionSource: "model", recommendation: "primary", fitLevel: "A", confidence: 0.9, fitReasons: ["Python RAG matches"], evidence: { jd: ["Python RAG"], resume: ["Python RAG"] } }
   }, batchId);
   return saved;

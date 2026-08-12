@@ -39,6 +39,7 @@ async function main() {
   checkpointResumeSmoke();
   riskControlClassificationSmoke();
   await trackedRiskPersistsOnceSmoke();
+  await riskPersistenceFailurePreservesOriginalErrorSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
 }
@@ -471,17 +472,41 @@ function riskControlClassificationSmoke() {
   });
   assert(!JSON.stringify(verifyError).includes("private"));
   const db = openDb(":memory:");
-  assert.strictEqual(persistBossRiskControl(db, { site: "boss", runId: "risk-run", phase: "tracked_run", error: verifyError, nowMs: 0 }), true);
+  const accessLedgerDb = openDb(":memory:");
+  assert.strictEqual(persistBossRiskControl(db, {
+    site: "boss",
+    runId: "risk-run",
+    phase: "tracked_run",
+    error: verifyError,
+    nowMs: 0,
+    accessLedgerDb
+  }), true);
   const state = getSiteRuntimeState(db, "boss");
   assert.strictEqual(state.status, "blocked");
   assert.strictEqual(Date.parse(state.details.blockedUntil), 48 * 60 * 60_000);
   const risks = listSiteAccessEvents(db, { site: "boss", action: "risk_control" });
   assert.deepStrictEqual(risks[0].details.observedLocation, verifyError.observedLocation);
   assert(!JSON.stringify(risks[0]).includes("private"));
+  const ledgerState = getSiteRuntimeState(accessLedgerDb, "boss");
+  assert.strictEqual(ledgerState.status, "blocked");
+  assert.strictEqual(Date.parse(ledgerState.details.blockedUntil), 48 * 60 * 60_000);
+  assert.strictEqual(listSiteAccessEvents(accessLedgerDb, {
+    site: "boss",
+    action: "risk_control"
+  }).length, 1);
 
   const manualError = captureSearchTabChange("https://www.zhipin.com/web/geek/chat?company=private");
-  assert.strictEqual(persistBossRiskControl(db, { site: "boss", runId: "manual-run", phase: "tracked_run", error: manualError, nowMs: 0 }), false);
+  assert.strictEqual(persistBossRiskControl(db, {
+    site: "boss",
+    runId: "manual-run",
+    phase: "tracked_run",
+    error: manualError,
+    nowMs: 0,
+    accessLedgerDb
+  }), false);
   assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "risk_control" }).length, 1);
+  assert.strictEqual(listSiteAccessEvents(accessLedgerDb, { site: "boss", action: "risk_control" }).length, 1);
+  accessLedgerDb.close();
   db.close();
 }
 
@@ -515,6 +540,49 @@ async function trackedRiskPersistsOnceSmoke() {
     assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS n FROM runtime_writes").get().n), 1);
     db.close();
   }
+}
+
+async function riskPersistenceFailurePreservesOriginalErrorSmoke() {
+  const db = openDb(":memory:");
+  const accessLedgerDb = openDb(":memory:");
+  const batchId = createBatch(db, "boss", "risk-write-failure", "risk-write-failure", {
+    status: "running",
+    profileId: 1,
+    searchPlanId: 2
+  });
+  const run = createScanRun(db, {
+    runId: "risk-write-failure",
+    site: "boss",
+    command: "scan",
+    planId: 2
+  });
+  acquireSiteScanLease(db, { site: "boss", owner: "risk-write-owner", planId: 2 });
+  beginScanRun(db, { runId: run.id, batchId, leaseOwner: "risk-write-owner" });
+  accessLedgerDb.close();
+  const riskError = Object.assign(new Error("original risk"), { code: "BOSS_RISK_CONTROL" });
+  const logged = [];
+
+  await assert.rejects(
+    () => executeTrackedScanRun(db, {
+      runId: run.id,
+      leaseOwner: "risk-write-owner",
+      runLogger: {
+        info() {},
+        warn() {},
+        error(event, details) { logged.push({ event, details }); }
+      },
+      run: async () => { throw riskError; },
+      execution: { site: "boss", accessLedgerDb }
+    }),
+    (received) => received === riskError
+  );
+  assert.strictEqual(getBatch(db, batchId).status, "interrupted");
+  assert.strictEqual(listSiteAccessEvents(db, {
+    site: "boss",
+    action: "risk_control"
+  }).length, 1, "the operational baseline must still retain risk evidence when the shared ledger write fails");
+  assert(logged.some((entry) => entry.event === "boss_risk_persist_failed"));
+  db.close();
 }
 
 function captureSearchTabChange(url) {

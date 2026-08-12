@@ -116,6 +116,103 @@ async function persistedReservationCallbackSmoke() {
   db.close();
 }
 
+async function sharedLedgerAcrossOperationalBaselinesSmoke() {
+  const ledgerDb = openDb(":memory:");
+  const firstBaselineDb = openDb(":memory:");
+  const secondBaselineDb = openDb(":memory:");
+  const now = Date.parse("2026-08-13T01:00:00+08:00");
+  try {
+    const firstController = createSiteAccessController({
+      db: ledgerDb,
+      auditDb: firstBaselineDb,
+      site: "boss",
+      runId: "baseline-a",
+      nowFn: () => now,
+      sleepFn: async () => {}
+    });
+    for (let index = 0; index < 16; index += 1) {
+      await firstController.reserve("list_navigation", { kind: `keyword-${index}` });
+    }
+
+    const secondController = createSiteAccessController({
+      db: ledgerDb,
+      auditDb: secondBaselineDb,
+      site: "boss",
+      runId: "baseline-b",
+      nowFn: () => now,
+      sleepFn: async () => {}
+    });
+    await assert.rejects(
+      () => secondController.reserve("list_navigation", { kind: "next-baseline" }),
+      (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+        && error.window === "24h"
+        && error.usage["24h"] === 16
+    );
+
+    assert.strictEqual(listSiteAccessEvents(ledgerDb, {
+      site: "boss",
+      action: "list_navigation"
+    }).length, 16);
+    assert.strictEqual(listSiteAccessEvents(firstBaselineDb, {
+      site: "boss",
+      action: "list_navigation"
+    }).length, 16, "the active baseline must retain its own audit trail");
+    assert.strictEqual(listSiteAccessEvents(secondBaselineDb, {
+      site: "boss",
+      action: "list_navigation"
+    }).length, 0, "a rejected action must not enter the new baseline");
+  } finally {
+    ledgerDb.close();
+    firstBaselineDb.close();
+    secondBaselineDb.close();
+  }
+}
+
+async function sharedLedgerCommunicationReuseAuditsEachBaselineSmoke() {
+  const ledgerDb = openDb(":memory:");
+  const firstBaselineDb = openDb(":memory:");
+  const resumedBaselineDb = openDb(":memory:");
+  const now = Date.parse("2026-08-13T01:30:00+08:00");
+  try {
+    const details = { batchId: 9, itemId: 27, jobId: 81 };
+    const first = await createSiteAccessController({
+      db: ledgerDb,
+      auditDb: firstBaselineDb,
+      site: "boss",
+      runId: "communication-baseline-a",
+      nowFn: () => now,
+      sleepFn: async () => {}
+    }).reserve("communication_visit", details);
+    const reused = await createSiteAccessController({
+      db: ledgerDb,
+      auditDb: resumedBaselineDb,
+      site: "boss",
+      runId: "communication-baseline-b",
+      nowFn: () => now + 1000,
+      sleepFn: async () => {}
+    }).reserve("communication_visit", details);
+
+    assert.strictEqual(first.reused, false);
+    assert.strictEqual(reused.reused, true);
+    assert.strictEqual(listSiteAccessEvents(ledgerDb, {
+      site: "boss",
+      action: "communication_visit"
+    }).length, 1, "an idempotent communication reservation must count once in the account ledger");
+    assert.strictEqual(listSiteAccessEvents(firstBaselineDb, {
+      site: "boss",
+      action: "communication_visit"
+    }).length, 1);
+    assert.strictEqual(listSiteAccessEvents(resumedBaselineDb, {
+      site: "boss",
+      action: "communication_visit"
+    }).length, 1, "a resumed baseline must retain evidence that it reused the reservation");
+  } finally {
+    ledgerDb.close();
+    firstBaselineDb.close();
+    resumedBaselineDb.close();
+  }
+}
+
 async function reservationPrivacySanitizationSmoke() {
   const db = openDb(":memory:");
   const now = Date.parse("2026-07-21T12:30:00+08:00");
@@ -684,6 +781,8 @@ Promise.resolve()
   .then(rollingDayStopSmoke)
   .then(normalModeSmoke)
   .then(persistedReservationCallbackSmoke)
+  .then(sharedLedgerAcrossOperationalBaselinesSmoke)
+  .then(sharedLedgerCommunicationReuseAuditsEachBaselineSmoke)
   .then(reservationPrivacySanitizationSmoke)
   .then(naturalDayResetSmoke)
   .then(naturalDayRetryAtSmoke)
