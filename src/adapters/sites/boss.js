@@ -1014,6 +1014,10 @@ class BossSiteAdapter {
   async scanBrowser(options) {
     if (!this.browser) throw new Error("真实扫描需要 --browser edge。");
     throwIfAborted(options.signal);
+    const detailMode = String(options.detailMode || "trusted_pane").trim().toLowerCase();
+    if (!["trusted_pane", "search_page_api"].includes(detailMode)) {
+      throw bossError("BOSS_DETAIL_MODE_INVALID", "BOSS detail mode must be trusted_pane or search_page_api.");
+    }
     const tabId = options.tabId || await this.browser.activeTabId();
     throwIfAborted(options.signal);
     const maxCards = normalizeCardLimit(options.maxCards);
@@ -1184,7 +1188,6 @@ class BossSiteAdapter {
               throwIfAborted(options.signal);
               await assertRuntimeTabBindings(options.assertTabBindings);
               console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
-              const detailMode = options.detailMode || "trusted_pane";
               const useSearchPageApi = detailMode === "search_page_api";
               const accessMode = useSearchPageApi ? "search_page_api" : "visible_pane";
               let detailOutcome = {
@@ -1568,6 +1571,9 @@ class BossSiteAdapter {
       );
       if (eligibility?.state === "failed") throw bossError(eligibility.errorCode || "BOSS_DETAIL_API_RESPONSE_INVALID", "BOSS detail API request failed.");
       await this.reserveAccess("job_detail_fetch", { jobId: expectedJobId });
+      throwIfAborted(signal);
+      await assertRuntimeTabBindings(assertTabBindings);
+      await this.assertSearchPage(tabId);
       const start = await this.browser.evalValue(
         tabId,
         `(() => window.__bossStartDetailFetch(${JSON.stringify(expectedJobId)}))()`

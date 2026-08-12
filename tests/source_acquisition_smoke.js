@@ -1044,6 +1044,8 @@ async function searchPageApiDetailStateMachineSmoke() {
   assert.strictEqual(pending.length, 2, "cancelled jobs must never issue a second GET");
 
   for (const { name, response, errorCode } of [
+    { name: "unauthorized", response: { status: 401, json: async () => ({}) }, errorCode: "BOSS_LOGIN_REQUIRED" },
+    { name: "forbidden", response: { status: 403, json: async () => ({}) }, errorCode: "BOSS_RISK_CONTROL" },
     { name: "http", response: { status: 500, json: async () => ({}) }, errorCode: "BOSS_DETAIL_API_HTTP_FAILED" },
     { name: "business", response: { status: 200, json: async () => ({ code: 1, zpData: { jobInfo: {} } }) }, errorCode: "BOSS_DETAIL_API_RESPONSE_INVALID" },
     { name: "id", response: { status: 200, json: async () => ({ code: 0, zpData: { jobInfo: { encryptId: "wrong", postDescription: "Complete detail ".repeat(12) } } }) }, errorCode: "BOSS_DETAIL_API_ID_MISMATCH" },
@@ -1124,6 +1126,24 @@ async function searchPageApiDetailRoutingSmoke() {
   assert.strictEqual(failedJobs[0].detailErrorCode, "BOSS_DETAIL_API_RESPONSE_INVALID");
   assert.strictEqual(visibleFallbacks, 0, "a failed API detail read must never fall back to the visible pane");
 
+  let invalidModePaneReads = 0;
+  const invalidMode = new BossSiteAdapter({ browser: { async navigate() {} }, sleepFn: async () => {}, randomFn: () => 0 });
+  invalidMode.assertSearchPage = async () => ({ isSearchPage: true });
+  invalidMode.collectCards = async () => [card("invalid-mode")];
+  invalidMode.readVisiblePaneDetail = async () => {
+    invalidModePaneReads += 1;
+    return { description: "This must never be read through an implicit fallback. ".repeat(5) };
+  };
+  await assert.rejects(() => invalidMode.scanBrowser({
+    tabId: "invalid-mode-tab",
+    keywords: ["invalid-mode"],
+    cityScopes: [{ city: "Guangzhou", cityCode: "101280100" }],
+    maxCards: 20,
+    maxDetailTotal: 1,
+    detailMode: "search_page_ap1"
+  }), (error) => error.code === "BOSS_DETAIL_MODE_INVALID");
+  assert.strictEqual(invalidModePaneReads, 0, "an invalid detail mode must not fall back to the trusted pane");
+
   let repeatReservations = 0;
   const repeatAdapter = new BossSiteAdapter({
     browser: {
@@ -1171,6 +1191,32 @@ async function searchPageApiDetailRoutingSmoke() {
   reservationFirst.assertSearchPage = async () => ({ isSearchPage: true });
   await reservationFirst.readSearchPageApiDetail("order-tab", card("order-route"));
   assert.deepStrictEqual(order, ["reserve", "start"], "the access reservation must complete before a first API GET can start");
+
+  let reservationCompleted = false;
+  let startAfterReservationDrift = 0;
+  const postReservationDrift = new BossSiteAdapter({
+    browser: {
+      async evalValue(_tabId, expression) {
+        if (expression.includes("__bossCanStartDetailFetch")) return { state: "idle", jobId: "drift-route" };
+        if (expression.includes("__bossStartDetailFetch")) {
+          startAfterReservationDrift += 1;
+          return { state: "running", jobId: "drift-route" };
+        }
+        return true;
+      }
+    },
+    sleepFn: async () => {},
+    accessController: { reserve: async () => { reservationCompleted = true; } }
+  });
+  postReservationDrift.assertSearchPage = async () => {
+    if (reservationCompleted) throw Object.assign(new Error("page changed during budget wait"), { code: "BOSS_SEARCH_PAGE_LOST" });
+    return { isSearchPage: true };
+  };
+  await assert.rejects(
+    () => postReservationDrift.readSearchPageApiDetail("drift-tab", card("drift-route")),
+    (error) => error.code === "BOSS_SEARCH_PAGE_LOST"
+  );
+  assert.strictEqual(startAfterReservationDrift, 0, "page identity must be rechecked after budget reservation and before GET");
 }
 
 async function searchPageApiDetailAbortCleanupSmoke() {
@@ -1250,12 +1296,12 @@ async function searchPageApiDetailFatalAndCleanupSmoke() {
     const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
     adapter.assertSearchPage = async () => {
       searchChecks += 1;
-      if (boundary === "page_loss" && searchChecks > 1) throw Object.assign(new Error("page lost"), { code: "BOSS_SEARCH_PAGE_LOST" });
+      if (boundary === "page_loss" && searchChecks > 2) throw Object.assign(new Error("page lost"), { code: "BOSS_SEARCH_PAGE_LOST" });
       return { isSearchPage: true };
     };
     const assertTabBindings = async () => {
       bindingChecks += 1;
-      if (boundary === "tab_drift" && bindingChecks > 3) throw Object.assign(new Error("tabs changed"), { code: "BOSS_OPERATOR_TABS_CHANGED" });
+      if (boundary === "tab_drift" && bindingChecks > 4) throw Object.assign(new Error("tabs changed"), { code: "BOSS_OPERATOR_TABS_CHANGED" });
     };
     const expectedCode = boundary === "timeout" ? "BOSS_DETAIL_API_TIMEOUT" : boundary === "page_loss" ? "BOSS_SEARCH_PAGE_LOST" : "BOSS_OPERATOR_TABS_CHANGED";
     await assert.rejects(
