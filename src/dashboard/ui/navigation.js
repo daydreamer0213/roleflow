@@ -12,12 +12,12 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationLink(`/queue?planId=${encodedPlanId}`, "当前岗位", currentRoute === "/queue"),
       navigationLink(`/communication/new?planId=${encodedPlanId}`, "批量沟通清单", currentRoute === "/communication/new"),
       navigationLink(`/communication?planId=${encodedPlanId}`, "自动沟通", currentRoute === "/communication"),
+      navigationLink(currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`, "消息发现", currentRoute === "/messages"),
       navigationLink("/settings", "模型设置", currentRoute === "/settings"),
       navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
     ];
     if (currentRoute === "/workflow") links.push(navigationLink(current, "本轮", true));
     if (currentRoute === "/jobs") links.push(navigationLink(current, "岗位列表", true));
-    if (currentRoute === "/messages") links.push(navigationLink(current, "消息发现", true));
     return links.join("");
   }
   const links = [

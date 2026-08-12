@@ -27,6 +27,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     { currentPath: "/jobs?planId=17&batch=latest", href: "/jobs?planId=17&amp;batch=latest", todayPath: "/plan?planId=17", label: "岗位列表" },
     { currentPath: "/communication/new?planId=17", todayPath: "/plan?planId=17", label: "批量沟通清单" },
     { currentPath: "/communication?planId=17", href: "/communication?planId=17", todayPath: "/plan?planId=17", label: "自动沟通" },
+    { currentPath: "/messages?planId=17", href: "/messages?planId=17", todayPath: "/plan?planId=17", label: "消息发现" },
     { currentPath: "/settings", label: "模型设置" },
     { currentPath: "/diagnostics", label: "诊断" },
     { currentPath: "/onboarding", label: "简历" }
@@ -102,6 +103,12 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.match(communication.body, /<h1>自动沟通<\/h1>/);
     assert.match(communication.body, /进入清单页不会创建、确认或启动任何沟通/);
     assert.strictEqual((communication.body.match(/data-page-primary="true"/g) || []).length, 1, "communication center must have one primary action");
+
+    const messages = await getText(baseUrl, `/messages?planId=${queueFixture.planId}`);
+    assert.strictEqual(messages.status, 200);
+    assertSharedFrame(messages.body, `/messages\?planId=${queueFixture.planId}`, "message discovery");
+    assert.match(messages.body, /<h1>BOSS 消息只读发现<\/h1>/);
+    assert.strictEqual((messages.body.match(/>消息发现<\/a>/g) || []).length, 1, "message discovery must have one primary navigation entry");
 
     const onboarding = await getText(baseUrl, "/onboarding");
     assertSharedFrame(onboarding.body, "/onboarding", "onboarding");

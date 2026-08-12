@@ -11,7 +11,15 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
     newProgressRequestKey
   } = helpers;
   const profileIdValue = searchParams.get("profileId");
-  const profileId = Number(profileIdValue);
+  let profileId = Number(profileIdValue);
+  let plan = null;
+  if ((!Number.isSafeInteger(profileId) || profileId <= 0) && searchParams.has("planId")) {
+    const planId = Number(searchParams.get("planId"));
+    if (Number.isSafeInteger(planId) && planId > 0) {
+      plan = db.prepare("SELECT id, profile_id FROM search_plans WHERE id = ?").get(planId);
+      profileId = Number(plan?.profile_id);
+    }
+  }
   if (!Number.isSafeInteger(profileId) || profileId <= 0) {
     return renderErrorPage("profileId 无效。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_INVALID" });
   }
@@ -24,12 +32,14 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
   const status = durableUnresolved.length
     ? { ...pageState, unresolved: durableUnresolved.length, reasonCode: durableUnresolved[0].reasonCode }
     : pageState;
-  const plan = db.prepare(`SELECT id FROM search_plans
+  plan ||= db.prepare(`SELECT id FROM search_plans
     WHERE profile_id = ?
     ORDER BY is_active DESC, updated_at DESC, id DESC
     LIMIT 1`).get(profileId);
   const manualPath = plan?.id ? `/queue?planId=${plan.id}` : "/queue";
-  const currentPath = `/messages?profileId=${encodeURIComponent(profileId)}`;
+  const currentPath = profileIdValue
+    ? `/messages?profileId=${encodeURIComponent(profileId)}`
+    : `/messages?planId=${encodeURIComponent(plan?.id || "")}`;
   const statusLabel = {
     idle: "尚未开始",
     running: "正在只读发现",
