@@ -1742,7 +1742,13 @@ function persistBossRiskControl(db, { site = "boss", runId = "", phase = "", err
     message: "BOSS risk control detected; scanning safely stopped.",
     details
   });
-  recordSiteAccessEvent(db, { site, action: "risk_control", runId, details });
+  recordSiteAccessEvent(db, {
+    site,
+    action: "risk_control",
+    runId,
+    details,
+    createdAt: new Date(Number(nowMs)).toISOString()
+  });
   return true;
 }
 

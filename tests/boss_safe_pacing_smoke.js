@@ -228,8 +228,16 @@ function recoveryExpirySmoke() {
       ? new Date(expectedBlockedUntil).toISOString()
       : expectedBlockedUntil;
     assert.strictEqual(getSiteRuntimeState(db, "boss").details.blockedUntil, expectedValue);
-    assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "risk_control" })[0].details.blockedUntil, expectedValue);
-    if (label === "early") assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
+    const riskEvent = listSiteAccessEvents(db, { site: "boss", action: "risk_control" })[0];
+    assert.strictEqual(riskEvent.createdAt, new Date(riskAt).toISOString());
+    assert.strictEqual(riskEvent.details.blockedUntil, expectedValue);
+    if (label === "early") {
+      assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 47 * hour }), "recovery");
+      assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
+    }
+    if (["missing", "invalid"].includes(label)) {
+      assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 49 * hour }), "normal");
+    }
     if (label === "late") {
       assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 71 * hour }), "recovery");
       assert.strictEqual(resolveAccessMode(db, { site: "boss", nowMs: riskAt + 73 * hour }), "normal");
