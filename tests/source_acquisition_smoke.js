@@ -614,7 +614,7 @@ async function visiblePaneActivationWaitSmoke() {
   assert(paneReads > 8, "must survive the old eight-poll timeout");
   assert.strictEqual(locates, 1);
   assert.strictEqual(clicks, 1);
-  assert.strictEqual(fronts, 0);
+  assert.strictEqual(fronts, 1);
   assert.strictEqual(navigations, 0);
   assert.deepStrictEqual(accessActions, [{
     action: "pane_detail_read",
@@ -678,7 +678,12 @@ async function visiblePaneTrustedClickOrderSmoke() {
     url: "https://www.zhipin.com/job_detail/click-job.html"
   }, null, async () => events.push({ type: "assert_bindings" }));
   assert(detail.description.length >= 120);
-  assert.strictEqual(events.filter((event) => event.type === "bring_to_front").length, 0);
+  assert.strictEqual(events.filter((event) => event.type === "bring_to_front").length, 1);
+  const trustedClickStart = events.findIndex((event) => event.type === "bring_to_front");
+  assert.deepStrictEqual(
+    events.slice(trustedClickStart, trustedClickStart + 9).map((event) => event.type),
+    ["bring_to_front", "assert_bindings", "assert_search", "locate", "assert_bindings", "assert_search", "click_at", "assert_bindings", "assert_search"]
+  );
   assert.deepStrictEqual(
     events.filter((event) => ["locate", "click_at"].includes(event.type)).map((event) => event.type),
     ["locate", "click_at"]
@@ -703,7 +708,7 @@ async function visiblePaneLocateFailureNoClickSmoke() {
   assert.strictEqual(detail, null, "failed card location must fail closed");
   assert.strictEqual(fixture.count("locate"), 1);
   assert.strictEqual(fixture.count("click_at"), 0);
-  assert.strictEqual(fixture.count("bring_to_front"), 0);
+  assert.strictEqual(fixture.count("bring_to_front"), 1);
 }
 
 async function visiblePaneClickIdentityDriftSmoke() {
@@ -719,11 +724,23 @@ async function visiblePaneClickIdentityDriftSmoke() {
   assert.strictEqual(detail, null, "identity drift after trusted click must not be adopted");
   assert.strictEqual(fixture.count("locate"), 1);
   assert.strictEqual(fixture.count("click_at"), 1);
-  assert.strictEqual(fixture.count("bring_to_front"), 0);
+  assert.strictEqual(fixture.count("bring_to_front"), 1);
   assert(fixture.paneReads() >= 2, "pane identity must be rechecked after the trusted click");
 }
 
 async function visiblePaneClickCapabilityFailClosedSmoke() {
+  const noBringToFront = paneBrowserFixture({
+    trustedFocus: false,
+    activation: () => assert.fail("locator must not run without pane focus capability")
+  });
+  const adapterNoBring = new BossSiteAdapter({ browser: noBringToFront.browser, sleepFn: async () => {} });
+  assert.strictEqual(await adapterNoBring.readVisiblePaneDetail("pane-tab", {
+    title: "Cap job",
+    url: "https://www.zhipin.com/job_detail/cap-job.html"
+  }), null, "browser without pane focus support must fail closed");
+  assert.strictEqual(noBringToFront.count("locate"), 0);
+  assert.strictEqual(noBringToFront.count("click_at"), 0);
+
   const noClickAt = paneBrowserFixture({
     trustedClick: false,
     activation: () => assert.fail("locator must not run without trusted click capability")
@@ -1719,6 +1736,7 @@ async function detailFatalOutcomeAuditSmoke() {
 
 async function trustedClickTransportFatalSmoke() {
   for (const [stage, code] of [
+    ["bringToFront", "BROWSER_COMMAND_FAILED"],
     ["clickAt", "BROWSER_COMMAND_FAILED"],
     ["clickAt", "BROWSER_TIMEOUT"],
     ["clickAt", "BROWSER_DISCONNECTED"]
@@ -2166,6 +2184,7 @@ function paneBrowserFixture({
   states = [paneState("old-job", "Old job")],
   activation = null,
   trustedClick = true,
+  trustedFocus = true,
   events = []
 } = {}) {
   let paneReads = 0;
@@ -2201,6 +2220,7 @@ function paneBrowserFixture({
       return true;
     }
   };
+  if (!trustedFocus) delete browser.bringToFront;
   if (!trustedClick) delete browser.clickAt;
   return {
     browser,
