@@ -143,6 +143,7 @@ async function reservationPrivacySanitizationSmoke() {
     arbitrary: privateSentinel
   };
   await controller.reserve("pane_detail_read", { ...privateDetails, jobId: " pane-42 " });
+  await controller.reserve("job_detail_fetch", { ...privateDetails, jobId: " api-84 " });
   await controller.reserve("detail_open", { ...privateDetails, jobId: " detail-73 " });
   await controller.reserve("list_navigation", { ...privateDetails, kind: " LIST " });
   await controller.reserve("list_scroll", privateDetails);
@@ -163,8 +164,13 @@ async function reservationPrivacySanitizationSmoke() {
   const detailsByAction = new Map(events.map((event) => [event.action, event.details]));
   assert.strictEqual(firstCommunication.reused, false);
   assert.strictEqual(reusedCommunication.reused, true);
-  assert.strictEqual(events.length, 5);
+  assert.strictEqual(events.length, 6);
   assert.strictEqual(detailsByAction.get("pane_detail_read").jobId, "pane-42");
+  assert.deepStrictEqual(
+    Object.fromEntries(Object.entries(detailsByAction.get("job_detail_fetch"))
+      .filter(([field]) => !["site", "action", "runId"].includes(field))),
+    { jobId: "api-84" }
+  );
   assert.strictEqual(detailsByAction.get("detail_open").jobId, "detail-73");
   assert.strictEqual(detailsByAction.get("list_navigation").kind, "list");
   assert.strictEqual(Object.prototype.hasOwnProperty.call(detailsByAction.get("list_scroll"), "kind"), false);
@@ -173,7 +179,7 @@ async function reservationPrivacySanitizationSmoke() {
     itemId: detailsByAction.get("communication_visit").itemId,
     jobId: detailsByAction.get("communication_visit").jobId
   }, { batchId: 7, itemId: 9, jobId: 11 });
-  assert.strictEqual(observed.length, 5);
+  assert.strictEqual(observed.length, 6);
   assert.strictEqual(JSON.stringify({ events, observed, logs }).includes(privateSentinel), false);
   db.close();
 }
@@ -228,6 +234,10 @@ function configuredDetailBudgetsSmoke() {
     "1h": 80,
     "24h": 120
   });
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.job_detail_fetch,
+    PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.pane_detail_read);
+  assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.job_detail_fetch,
+    PRODUCT_POLICY.operations.bossAccessBudget.modes.recovery.pane_detail_read);
   assert.deepStrictEqual(PRODUCT_POLICY.operations.bossAccessBudget.modes.normal.detail_open, {
     "10m": 8,
     "1h": 25,
@@ -262,6 +272,39 @@ async function paneDetailDailyStopSmoke() {
       && error.limit === 360
       && error.message.includes("右栏详情")
   );
+  db.close();
+}
+
+async function jobDetailFetchDailyStopSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 360; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "job_detail_fetch",
+      createdAt: new Date(now - 2 * 60 * 60_000 + index).toISOString()
+    });
+  }
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  await assert.rejects(
+    () => controller.reserve("job_detail_fetch", { jobId: "api-detail-361" }),
+    (error) => error.code === "BOSS_ACCESS_BUDGET_EXHAUSTED"
+      && error.window === "24h"
+      && error.limit === 360
+  );
+  db.close();
+}
+
+async function unconfiguredActionFailsClosedSmoke() {
+  const db = openDb(":memory:");
+  const controller = createSiteAccessController({ db, site: "boss", sleepFn: async () => {} });
+  await assert.rejects(
+    () => controller.reserve("unexpected_detail_action", { jobId: "must-not-reserve" }),
+    (error) => error.code === "BOSS_ACCESS_ACTION_UNCONFIGURED"
+      && error.action === "unexpected_detail_action"
+      && error.mode === "normal"
+  );
+  assert.strictEqual(listSiteAccessEvents(db, { site: "boss" }).length, 0);
   db.close();
 }
 
@@ -646,6 +689,8 @@ Promise.resolve()
   .then(naturalDayRetryAtSmoke)
   .then(configuredDetailBudgetsSmoke)
   .then(paneDetailDailyStopSmoke)
+  .then(jobDetailFetchDailyStopSmoke)
+  .then(unconfiguredActionFailsClosedSmoke)
   .then(abortDuringWindowWaitSmoke)
   .then(workflowControlInterruptsSegmentedCooldownSmoke)
   .then(communicationTenMinuteBudgetSmoke)

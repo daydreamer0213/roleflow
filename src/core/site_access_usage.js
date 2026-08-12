@@ -1,5 +1,6 @@
 const BOSS_DETAIL_ACCESS_ACTIONS = new Set([
   "pane_detail_read",
+  "job_detail_fetch",
   "detail_open"
 ]);
 

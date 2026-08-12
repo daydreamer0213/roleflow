@@ -39,7 +39,10 @@ function createSiteAccessController({
           db.exec("BEGIN IMMEDIATE");
           transactionOpen = true;
           const mode = resolveAccessMode(db, { site, nowMs, policy });
-          const limits = policy.modes[mode]?.[normalizedAction] || {};
+          const limits = policy.modes[mode]?.[normalizedAction];
+          if (!limits || Object.keys(limits).length === 0) {
+            throw accessActionUnconfiguredError({ site, action: normalizedAction, mode });
+          }
           const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
           const existing = normalizedAction === "communication_visit"
             ? existingCommunicationReservation(db, { site, details: sanitizedDetails, nowMs, policy })
@@ -134,7 +137,7 @@ function createSiteAccessController({
 
 function sanitizeReservationDetails(action, details) {
   const normalizedAction = String(action || "").trim().toLowerCase();
-  if (["pane_detail_read", "detail_open"].includes(normalizedAction)) {
+  if (["pane_detail_read", "job_detail_fetch", "detail_open"].includes(normalizedAction)) {
     const jobId = String(details?.jobId || "").trim();
     return jobId ? { jobId } : {};
   }
@@ -239,7 +242,7 @@ function actionsForWindow(action, window, policy) {
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
   const label = action === "communication_visit"
     ? "岗位沟通"
-    : { pane_detail_read: "右栏详情", detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
+    : { pane_detail_read: "右栏详情", job_detail_fetch: "岗位详情", detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
   const retryAt = new Date(retryAtMs).toISOString();
   const period = window === "24h" ? "今日" : `过去 ${window}`;
   const error = new Error(`${site.toUpperCase()} ${period}的${label}访问已达到安全额度 ${limit} 次；未完成岗位已保留，请在 ${retryAt} 后恢复批次。`);
@@ -251,6 +254,15 @@ function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage
   error.limit = limit;
   error.usage = usage;
   error.retryAt = retryAt;
+  return error;
+}
+
+function accessActionUnconfiguredError({ site, action, mode }) {
+  const error = new Error(`${site.toUpperCase()} 访问动作 ${action} 未配置安全额度，已拒绝执行。`);
+  error.code = "BOSS_ACCESS_ACTION_UNCONFIGURED";
+  error.site = site;
+  error.action = action;
+  error.mode = mode;
   return error;
 }
 

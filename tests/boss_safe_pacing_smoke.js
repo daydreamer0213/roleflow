@@ -28,6 +28,7 @@ main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
 
 async function main() {
   await paneDetailDelaySmoke();
+  detailFetchPacingPolicySmoke();
   await pacingRestoreFailClosedSmoke();
   await productionScanPacingCompositionSmoke();
   await sqliteCheckpointResumeChainSmoke();
@@ -40,6 +41,18 @@ async function main() {
   await trackedRiskPersistsOnceSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+function detailFetchPacingPolicySmoke() {
+  const pacing = PRODUCT_POLICY.operations.bossPacing;
+  assert.strictEqual(pacing.delayMs.job_detail_fetch, pacing.delayMs.pane_detail_read);
+  assert.deepStrictEqual(pacing.delayMs.job_detail_fetch, [8000, 14000]);
+  assert.deepStrictEqual(pacing.detail, {
+    microEvery: [6, 8],
+    microDelayMs: [15000, 25000],
+    macroEvery: [16, 20],
+    macroDelayMs: [90000, 150000]
+  });
 }
 
 async function pacingRestoreFailClosedSmoke() {

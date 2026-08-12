@@ -1,5 +1,8 @@
 const PRODUCT_POLICY_VERSION = "2026-08-03.1";
 const MIN_CARDS_PER_TARGET = 10;
+const BOSS_PANE_DETAIL_DELAY_MS = Object.freeze([8000, 14000]);
+const BOSS_PANE_DETAIL_NORMAL_LIMITS = Object.freeze({ "3m": 12, "10m": 45, "1h": 240, "24h": 360 });
+const BOSS_PANE_DETAIL_RECOVERY_LIMITS = Object.freeze({ "3m": 5, "10m": 20, "1h": 80, "24h": 120 });
 
 const PRODUCT_POLICY = Object.freeze({
   searchPlan: Object.freeze({
@@ -78,7 +81,8 @@ const PRODUCT_POLICY = Object.freeze({
         retry: Object.freeze([400, 800]),
         scroll: Object.freeze([2500, 4000]),
         card: Object.freeze([3000, 5000]),
-        pane_detail_read: Object.freeze([8000, 14000]),
+        pane_detail_read: BOSS_PANE_DETAIL_DELAY_MS,
+        job_detail_fetch: BOSS_PANE_DETAIL_DELAY_MS,
         card_retry: Object.freeze([300, 700]),
         list_ready: Object.freeze([450, 750]),
         refresh: Object.freeze([3000, 5000]),
@@ -105,14 +109,16 @@ const PRODUCT_POLICY = Object.freeze({
       }),
       modes: Object.freeze({
         recovery: Object.freeze({
-          pane_detail_read: Object.freeze({ "3m": 5, "10m": 20, "1h": 80, "24h": 120 }),
+          pane_detail_read: BOSS_PANE_DETAIL_RECOVERY_LIMITS,
+          job_detail_fetch: BOSS_PANE_DETAIL_RECOVERY_LIMITS,
           detail_open: Object.freeze({ "10m": 5, "1h": 15, "24h": 30 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 8 }),
           list_scroll: Object.freeze({ "24h": 60 })
         }),
         normal: Object.freeze({
-          pane_detail_read: Object.freeze({ "3m": 12, "10m": 45, "1h": 240, "24h": 360 }),
+          pane_detail_read: BOSS_PANE_DETAIL_NORMAL_LIMITS,
+          job_detail_fetch: BOSS_PANE_DETAIL_NORMAL_LIMITS,
           detail_open: Object.freeze({ "10m": 8, "1h": 25, "24h": 60 }),
           communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
           list_navigation: Object.freeze({ "24h": 16 }),
