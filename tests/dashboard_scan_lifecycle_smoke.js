@@ -72,6 +72,9 @@ function commandAndSuccessfulExitSmoke(database) {
       spawnProcess
     });
     const call = calls.at(-1);
+    assert.strictEqual(call.options.cwd, root);
+    assert.strictEqual(call.options.windowsHide, true);
+    assert.deepStrictEqual(call.options.stdio, ["ignore", "pipe", "pipe"]);
     const cliArgs = call.args.slice(2);
     assert.strictEqual(cliArgs[0], expectedCommand[kind]);
     assert.strictEqual(cliArgs[cliArgs.indexOf("--run-id") + 1], run.runId);
