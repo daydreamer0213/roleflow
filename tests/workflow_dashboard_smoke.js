@@ -1121,7 +1121,7 @@ let server;
 
   transitionWorkflowRun(db, { id: workflow.id, status: "communicating" });
   transitionWorkflowRun(db, { id: workflow.id, status: "completed", successfulCount: 30, shortfallCode: "WORKFLOW_SUPPLY_EXHAUSTED" });
-  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "detail_open"]) {
+  for (const action of ["list_navigation", "list_navigation", "pane_detail_read", "pane_detail_read", "pane_detail_read", "job_detail_fetch", "detail_open"]) {
     recordSiteAccessEvent(db, { site: "boss", action, runId: resumedScan.id });
   }
   const completedPage = await getText(baseUrl, confirmed.location);
@@ -1132,7 +1132,7 @@ let server;
   const planAfter = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(planAfter.body, /今日进度\s*<strong>30\s*\/\s*70/);
   assert.match(planAfter.body, /下一轮目标 40/);
-  assert.match(planAfter.body, /剩余详情读取预算<\/span><strong class="metric-value">356/);
+  assert.match(planAfter.body, /剩余详情读取预算<\/span><strong class="metric-value">355/);
   assert.match(planAfter.body, /剩余搜索页 58/);
   assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
   assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
