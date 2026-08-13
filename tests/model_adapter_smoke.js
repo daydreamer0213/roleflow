@@ -417,6 +417,149 @@ server.listen(0, "127.0.0.1", async () => {
         "non-exact sparse repair reasons must preserve the existing repair input"
       );
     }
+    async function captureUnderstandRepairInput(reason) {
+      const adapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://example.invalid",
+        apiKey: "test-key",
+        model: "test"
+      });
+      let capturedInput;
+      let capturedPrompt;
+      adapter.chatJson = async (prompt, modelInput, { kind }) => {
+        assert.strictEqual(kind, "understandJob");
+        capturedPrompt = prompt;
+        capturedInput = modelInput;
+        return {};
+      };
+      const longDescription = "负责数据处理、接口开发与系统交付。".repeat(8);
+      const input = {
+        job: {
+          sourceId: "understand-evidence-repair",
+          description: longDescription
+        },
+        contractRepair: {
+          reason,
+          instruction: "只修正错误字段并返回完整 JSON。",
+          invalidOutput: {
+            requirements: [{
+              label: "数据处理",
+              evidence: `JD：${longDescription}`
+            }]
+          }
+        }
+      };
+      const originalInput = JSON.parse(JSON.stringify(input));
+      await adapter.understandJob(input);
+      assert.deepStrictEqual(input, originalInput, "understandJob repair preparation must not mutate caller input");
+      return { capturedInput, capturedPrompt, originalInput };
+    }
+    const understandEvidenceReason =
+      "understandJob 模型输出不符合契约：requirements.evidence evidence 必须以 JD：开头、包含原文且最多 120 个字符";
+    const understandEvidenceRepair = await captureUnderstandRepairInput(understandEvidenceReason);
+    assert(
+      understandEvidenceRepair.capturedInput.contractRepair.instruction.includes("连续")
+        && understandEvidenceRepair.capturedInput.contractRepair.instruction.includes("job.description")
+        && understandEvidenceRepair.capturedInput.contractRepair.instruction.includes("JD：")
+        && understandEvidenceRepair.capturedInput.contractRepair.instruction.includes("120"),
+      "understandJob evidence repair must request one continuous, prefixed, bounded JD excerpt"
+    );
+    assert.deepStrictEqual(
+      understandEvidenceRepair.capturedInput.contractRepair.invalidOutput,
+      understandEvidenceRepair.originalInput.contractRepair.invalidOutput,
+      "understandJob evidence repair must preserve the model output supplied for repair"
+    );
+    assert(
+      understandEvidenceRepair.capturedInput.contractRepair.instruction.includes("不得改变其他")
+        && understandEvidenceRepair.capturedPrompt.includes("contractRepair.instruction"),
+      "understandJob evidence repair must preserve valid facts and make the focused instruction authoritative"
+    );
+    for (const unrelatedReason of [
+      "understandJob 模型输出不符合契约：requirements 最多 16 项",
+      `prefix: ${understandEvidenceReason}`,
+      `${understandEvidenceReason}; another failure`
+    ]) {
+      const unrelatedUnderstandRepair = await captureUnderstandRepairInput(unrelatedReason);
+      assert.deepStrictEqual(
+        unrelatedUnderstandRepair.capturedInput,
+        unrelatedUnderstandRepair.originalInput,
+        "non-exact understandJob evidence repairs must preserve the existing repair input"
+      );
+    }
+    const stubbornEvidenceBody = "负责数据处理、接口开发与系统交付。".repeat(8);
+    const evidenceRepairScenarios = [{
+      name: "requirements",
+      reason: understandEvidenceReason,
+      output: (evidence) => ({
+        requirements: [{ label: "数据处理", evidence }]
+      }),
+      evidence: (output) => output.requirements[0].evidence
+    }, {
+      name: "nested responsibilityEvidence",
+      reason: "understandJob 模型输出不符合契约：responsibilityEvidence 必须以“JD：”开头且不超过 120 个字符",
+      output: (evidence) => ({
+        hiringTracks: [{
+          id: "T1",
+          label: "数据处理",
+          roleSummary: "处理并交付数据",
+          responsibilityEvidence: [evidence]
+        }]
+      }),
+      evidence: (output) => output.hiringTracks[0].responsibilityEvidence[0]
+    }, {
+      name: "riskSignals",
+      reason: "understandJob 模型输出不符合契约：riskSignals.evidence evidence 必须以 JD：开头、包含原文且最多 120 个字符",
+      output: (evidence) => ({
+        riskSignals: [{ type: "responsibility_sprawl", severity: "medium", evidence }]
+      }),
+      evidence: (output) => output.riskSignals[0].evidence
+    }];
+    for (const scenario of evidenceRepairScenarios) {
+      const stubbornEvidenceAdapter = new OpenAICompatibleAdapter({
+        baseUrl: "https://example.invalid",
+        apiKey: "test-key",
+        model: "test"
+      });
+      stubbornEvidenceAdapter.chatJson = async () =>
+        scenario.output(`JD：${stubbornEvidenceBody}`);
+      const stubbornEvidenceResult = await stubbornEvidenceAdapter.understandJob({
+        job: {
+          sourceId: `stubborn-${scenario.name}`,
+          description: stubbornEvidenceBody
+        },
+        contractRepair: {
+          reason: scenario.reason,
+          instruction: "只修正错误字段并返回完整 JSON。",
+          invalidOutput: scenario.output(`JD：${stubbornEvidenceBody}`)
+        }
+      });
+      const boundedEvidence = scenario.evidence(stubbornEvidenceResult);
+      assert.strictEqual(
+        boundedEvidence.length,
+        120,
+        `${scenario.name} overlong exact JD evidence must be deterministically bounded after repair`
+      );
+      assert(
+        stubbornEvidenceBody.includes(boundedEvidence.slice("JD：".length)),
+        `${scenario.name} bounding must preserve a continuous exact JD excerpt`
+      );
+      const untrustedEvidence = `JD：${"这不是原始 JD 中的内容。".repeat(12)}`;
+      stubbornEvidenceAdapter.chatJson = async () => scenario.output(untrustedEvidence);
+      const untrustedEvidenceResult = await stubbornEvidenceAdapter.understandJob({
+        job: {
+          sourceId: `untrusted-${scenario.name}`,
+          description: stubbornEvidenceBody
+        },
+        contractRepair: {
+          reason: scenario.reason,
+          invalidOutput: {}
+        }
+      });
+      assert.strictEqual(
+        scenario.evidence(untrustedEvidenceResult),
+        untrustedEvidence,
+        `${scenario.name} bounding must not legitimize text that is not a continuous JD excerpt`
+      );
+    }
     // 真实模型回归：简历未提供教育背景被当成学历资格不符；信息不足不等于明确冲突。
     assert(matchPrompt.includes("明确冲突"), "matchJob prompt 必须要求 eligibility conflict 具备明确冲突证据");
     assert(matchPrompt.includes("信息不足"), "matchJob prompt 必须区分信息不足与资格不符");

@@ -1,197 +1,217 @@
-# Wave 4 条件验收收口报告
+# Wave 4 正式验收与条件收口报告
 
 **日期：** 2026-08-13
-**结论：** 有条件通过
-**正式 Gate D：** 未通过，仍需冷却后或更换账号后重新全量执行
 
-## 1. 验收范围
+**总结论：** Wave 4 有条件通过，Wave 5 继续暂停
 
-本轮遵循用户确认的收口策略：
+**正式 Gate D：** 主线抓取与技术评测通过
 
-- 2026-08-13 不再抓取岗位；
-- 仅使用上一轮已保存的岗位继续模型分析和本地页面验收；
-- 不执行真实沟通、发送消息或申请；
-- 消息页只允许少量只读读取，但固定 BOSS 标签缺失时立即停止；
-- `trusted_pane` 仍是当前唯一主线；
-- `search_page_api` 继续冻结为后续拓展，本轮未修改、未启用、未进行真实验收；
-- Wave 5 未启动。
+**当前唯一详情主线：** `trusted_pane`
 
-## 2. 上一轮真实运行事实
+## 1. 本轮边界
 
-证据目录：
+- 使用更换后的已登录 BOSS 账号和独立账号安全账本。
+- 使用全新空 operational baseline，不混入任何历史、中断或失败数据库。
+- 完整执行 5 个正式关键词，保留 `maxDetailTotal=220` 和完整 JD 覆盖目标。
+- 未传入或启用 `search_page_api`，也未使用 `standalone_detail`。
+- BOSS 仅只读；未沟通、未发送消息、未申请，也未确认或执行沟通批次。
+- Dashboard 人工验收使用本地无登录态浏览器；真实 Edge 仅做固定双标签的只读检查。
 
-`D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-20260812-221310`
+正式证据目录：
 
-上一轮不是一小时的连续项目扫描：
+`D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114`
 
-- supervisor 从 22:38:29 运行到 22:50:02，约 11 分 33 秒；
-- 实际 scan run 从 22:38:31 到 22:49:50，约 11 分 20 秒；
-- 结束后数据库曾被后续分析和页面验收继续打开，因此文件时间不能作为抓取时长；
-- 只执行了第 1 个关键词目标，未完成全部 5 个关键词；
-- 列表收集 50 个岗位；
-- 发起右栏详情读取 33 次，32 次成功、1 次因风控页面失败；
-- 32 个岗位获得完整 JD；
-- 目标配置仍是 5 个关键词、`maxDetailTotal=220`、`browserPageBudget=40`、默认 `trusted_pane`。
+正式数据库：
 
-运行在固定 Edge 双标签、继承搜索范围、串行详情读取、随机间隔、微冷却和宏冷却下执行。浏览器审计显示：
+`D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114\jobs.sqlite`
 
-- `focusTab=0`
+账号安全账本：
+
+`D:\DevData\RoleFlow-gate-d\account-safety\boss-account-02.sqlite`
+
+## 2. 正式 Gate D 结果
+
+本轮 scan run 从北京时间 09:50:55 运行到 10:18:13，约 27 分 18 秒。
+
+| 项目 | 结果 |
+|---|---:|
+| 正式关键词 | 5/5 完成 |
+| 每个关键词发现的列表岗位 | 15 |
+| 去重后岗位 | 51 |
+| 要求读取详情 | 51 |
+| `trusted_pane` 详情尝试 | 51 |
+| 详情成功 | 51 |
+| 详情失败 | 0 |
+| 完整 JD | 51 |
+| 模型任务成功 | 48 |
+| 模型任务失败 | 3 |
+| 最终可进入主投/可投清单 | 13 |
+
+运行、批次和 5 个 target 均为 `completed`，进程退出码为 0，supervisor 标记
+`eligibleForEvaluation=true`。SQLite `quick_check=ok`、无外键错误、无残留扫描租约。
+
+### 风控与执行方式
+
+- 固定复用一个普通 Edge 窗口中的搜索页和消息页两个既有标签。
+- BOSS 操作串行；每个关键词完成后再进入下一个关键词。
+- 每个关键词通过 4 轮列表滚动和 2 个静默窗口确认列表到底，共记录 20 次滚动。
+- 共记录 5 次列表导航、51 次右栏详情读取；账号账本另含启动前的 1 次只读导航检查。
+- 每次详情通过左栏岗位卡片打开可信右栏，再读取右栏内容；详情访问模式只有
+  `visible_pane`。
+- 保留项目既有随机间隔、阶段冷却、账号预算、检查点和登录/风控立即停止策略。
+- 本轮没有登录丢失、风控、页面身份漂移或预算阻断。
+
+浏览器命令审计显示：
+
 - `Page.bringToFront=0`
-- Windows 前台没有进入 Edge
+- `focus_tab=0`
+- 未出现非数值 tab ID
+- 未访问固定双标签之外的标签
+- 所有焦点模拟窗口均正常关闭
 
-这支持用户已确认的结论：本轮项目运行没有抢占前台。运行最终因搜索标签进入 BOSS 验证路径而安全中断，数据库永久排除正式 Gate D 质量评测。
+因此，本轮项目没有抢占前台。此前混合环境中的前台跳转不登记为 RoleFlow 缺陷。
 
-## 3. 现有岗位的模型分析验收
+## 3. 岗位分析与 Gate D 评测
 
-为避免改写失败 baseline，先通过 SQLite `VACUUM INTO` 创建独立验收副本：
+正式运行中的分析状态：
 
-`D:\DevData\RoleFlow-gate-d\acceptance\post-capture-20260813-001\jobs-analysis-acceptance.sqlite`
-
-模型复评批次为 `#58`，共 50 个岗位：
-
-| 项目 | 数量 |
+| 状态 | 数量 |
 |---|---:|
-| 岗位总数 | 50 |
-| 完整 JD | 32 |
-| 语义分析完成 | 26 |
-| 待刷新 | 19 |
-| 被硬边界阻止 | 3 |
-| 模型合同失败 | 2 |
-| 完成且同时有 JD/简历证据 | 26 |
+| complete | 43 |
+| blocked | 4 |
+| pending | 3 |
+| refresh | 1 |
 
-推荐分布：
+正式数据库中的产品推荐分布：
 
-| 结果 | 数量 |
+| 推荐 | 数量 |
 |---|---:|
-| 主投 | 2 |
-| 可投 | 2 |
-| 慎投 | 20 |
-| 不推荐 | 5 |
-| 无推荐（刷新/阻止/失败） | 21 |
+| 主投 | 7 |
+| 可投 | 6 |
+| 慎投 | 26 |
+| 不推荐 | 7 |
+| 无推荐 | 5 |
 
-两条模型失败均为 `MODEL_CONTRACT_INVALID`，发生在 `understandJob`：
+决策来源分布：
 
-- AI大模型应用开发工程师 / 光禾AI，JD 1300 字符；
-- ai应用开发工程师 / 全星邦，JD 1321 字符。
+| 来源 | 数量 |
+|---|---:|
+| weighted_decision_matrix | 28 |
+| salary_stretch_guard | 12 |
+| hard_boundary | 4 |
+| analysis_pending | 3 |
+| experience_stretch_guard | 1 |
+| indispensable_transferable_guard | 1 |
+| model_evidence_gap | 1 |
+| source_refresh | 1 |
 
-这两条没有被伪装为推荐，而是进入 `needs_retry`。现有自动合同修复仍未成功，但不阻塞本轮条件收口；下一次完整验收再观察是否稳定复现，稳定复现后才立项修复。
+对这一个合格正式 baseline 只执行了一次有效评测导出：
 
-## 4. Dashboard 与沟通入口验收
+- fixture：`D:\DevData\RoleFlow-gate-d\baseline\fixtures\gate-d-evaluation-fixture.json`
+- labels：`D:\DevData\RoleFlow-gate-d\baseline\labels\gate-d-evaluation-labels.json`
+- manifest：`D:\DevData\RoleFlow-gate-d\baseline\reports\gate-d-evaluation-manifest.json`
+- receipt：`D:\DevData\RoleFlow-gate-d\baseline\reports\gate-d-evaluation-receipt.json`
 
-证据：
+导出收据为 `complete=true`、`cohortComplete=true`、`qualityEligible=true`：
 
-`D:\DevData\RoleFlow-gate-d\acceptance\post-capture-20260813-001\dashboard\acceptance.json`
+| 评测项目 | 数量 |
+|---|---:|
+| 原始观测 / 唯一岗位 | 51 / 51 |
+| 可做质量评测的岗位 | 43 |
+| 技术状态岗位 | 8 |
+| 正式二维表：主投 / 可投 / 慎投 / 不推荐 | 19 / 6 / 15 / 3 |
+| 影子积分卡：主投 / 可投 / 慎投 / 不推荐 | 19 / 6 / 15 / 3 |
+| contract_failure / blocked / refresh | 3 / 4 / 1 |
 
-对以下 5 个路由分别以 1440×900 和 375×812 验收，共 10 个页面：
+正式二维表和影子积分卡在 43 个合格岗位上的四档分布完全一致，但 51 条人工标签仍全部是
+`pending-human`，所以本轮不能宣称精确率、召回率已经得到人工确认，也不能据此切换产品决策机制。
 
-- 本轮工作流；
-- 当前岗位队列；
-- 批量沟通清单；
-- 自动沟通结果中心；
-- BOSS 消息只读发现。
+## 4. 正式运行暴露并修复的真实问题
 
-结果：
+3 个岗位在 `understandJob` 阶段以 `MODEL_CONTRACT_INVALID` 终止。结合上一轮相同现象，
+该问题已经稳定复现，确实会让岗位缺少分析结果。
 
-- 10/10 HTTP 200；
-- 10/10 无浏览器 console error；
-- 10/10 无 page error；
-- 桌面侧栏文字正常，无倒字；
-- 移动端显示“左右滑动查看更多”；
-- 自动沟通入口可见；
-- 自动沟通中心明确显示“不会自主发送”；
-- 既有批次显示 2 条已核验成功、1 条安全停止；
-- 人工端到端状态仍诚实显示 `e2e_pending`；
-- 消息页明确说明只读发现，不填写、不粘贴、不发送；
-- 本轮没有点击确认清单、开始发现、沟通或发送按钮。
-
-发现并修复一条真实 UI 缺陷：
-
-- 队列岗位卡片曾显示内部参数名 `multiBusinessDistrict`；
-- 修复后展示层隐藏该参数，但数据库原始诊断与其他真实岗位风险保留。
-
-修复后又单独复验了队列、自动沟通中心和消息页的桌面/手机视口，共 6 个页面，全部 HTTP 200、无 console error、无 page error，`multiBusinessDistrict` 均不可见：
-
-`D:\DevData\RoleFlow-gate-d\acceptance\post-capture-20260813-001\dashboard-post-fix\acceptance.json`
-
-## 5. 消息页真实只读检查
-
-Edge bridge 恢复后返回空标签列表，交接中的固定 BOSS 搜索和沟通标签已经不存在。
-
-按安全边界，本轮：
-
-- 未新建标签；
-- 未导航或恢复 BOSS 页面；
-- 未读取真实消息；
-- 未发送任何消息。
-
-因此，消息模块的本地页面与离线链路通过，但真实少量读取仍是下一次完整验收的待办条件。这是验收环境状态，不登记为 RoleFlow 产品缺陷。
-
-## 6. 账号安全账本修复
-
-真实缺陷：Gate D 每次创建全新 operational baseline 后，原数据库中的访问次数和风控状态不会自动进入新 baseline，导致同一 BOSS 账号的安全预算被低估。
+已确认的根因是模型输出的 `requirements.evidence` 或 `riskSignals.evidence` 超过 120 个字符，
+现有单次契约修复提示过于泛化，模型可能原样返回超长证据。
 
 最小修复：
 
-- 新增显式 `--access-ledger-db`；
-- 未传参数时，普通产品行为保持不变；
-- 传入参数时，预算判断读取账号级共享账本；
-- 每次允许动作同时进入共享账本与本轮 baseline 审计；
-- 风控事件和暂停状态双写；
-- 账本无法打开时，在创建浏览器和访问 BOSS 前停止；
-- 缺少账本路径时直接拒绝，Windows 路径大小写不同不会重复打开同一数据库；
-- 风控持久化失败不会掩盖原始风控错误或跳过运行收尾；
-- 不改变 `trusted_pane`、关键词、详情覆盖或节奏策略。
+- 不增加模型调用次数，仍只使用原有的一次契约修复。
+- 仅对三条当前 evidence 长度错误精确匹配，其他契约错误完全保持原行为。
+- 修复提示明确要求复制连续 JD 原文、以 `JD：` 开头并限制在 120 个字符内。
+- 修复结果仍超长时，只有整段内容能被逐字证明是 `job.description` 中的连续原文，才确定性缩短到
+  120 个字符。
+- 改写、拼接、来源不明或不带正确前缀的内容不会被截成“合法证据”，仍由原校验拒绝。
+- 未改变 validator、推荐规则、关键词、详情读取、风控节奏或 JD 覆盖。
 
-当前账号账本：
+回归测试覆盖 `responsibilityEvidence`、`requirements.evidence` 和 `riskSignals.evidence`，
+同时覆盖非原文拒绝、非精确错误原因不触发和调用方输入不被修改。
 
-`D:\DevData\RoleFlow-gate-d\account-safety\boss-access.sqlite`
+用正式数据库中两份稳定失败的已保存 JD 做模型复核，均在初次超长后通过原有单次修复：
 
-从 45 个历史 SQLite 中读取 19,398 条原始账号事件，按时间、动作和脱敏 payload 去重后保留 1,528 条。2026-08-12 的账号级记录为：
+- 样本 967：修复后最大 evidence 为 94 个字符；
+- 样本 990：修复后最大 evidence 为 120 个字符。
 
-| 动作 | 次数 |
-|---|---:|
-| 右栏详情读取 | 198 |
-| 接口详情读取 | 36 |
-| 列表滚动 | 183 |
-| 列表导航 | 30 |
-| 详情结果审计 | 232 |
-| 风控事件 | 2 |
+证据：
 
-SQLite `integrity_check=ok`。最新真实风控发生在北京时间 2026-08-12 22:49:50，恢复窗口截止北京时间 2026-08-14 22:49:50。
+`D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114\understand-contract-evidence-reproduction-v6.json`
 
-账本按账号隔离：
+这项修复发生在正式 Gate D 之后，不回写也不重算正式 baseline；下一次全量运行将验证其批量稳定性。
 
-- 下次仍使用当前账号：复用该账本；
-- 下次更换账号：新建独立账本，不能继承当前账号事件。
+## 5. Dashboard、自动沟通与消息页只读验收
 
-离线验证日志：
+本地 UI 对 6 个桌面路由和 1 个手机视口完成验收：
 
-`D:\DevData\RoleFlow-gate-d\verification\wave4-conditional-closeout-final-20260813.stdout.log`
+- 7/7 HTTP 200；
+- 无 console error、无 page error；
+- 岗位页桌面和手机均显示 51 个岗位；
+- 原始 `multiBusinessDistrict` 在所有页面均未展示；
+- 桌面侧栏文字无旋转倒字，手机端侧栏正常隐藏；
+- 工作流页显示 39 条可复核岗位，流程体检为紧凑折叠块；
+- 自动沟通入口可见；
+- 批量沟通清单默认选中 13 个主投/可投岗位供人工审核，这是本地表单状态，不会创建批次；
+- 浏览器权威默认复用当前 Edge；
+- 自动沟通中心无批次、无执行入口；
+- 消息页为空闲只读状态，无草稿，也未点击开始发现。
 
-## 7. 条件结论
+最初自动检查把“默认选中应为 0”当作预期，因此原报告记为失败；补充报告核对产品设计后修正为：
+默认选中 13 条供人工审核是预期行为。全过程提交表单 0 次，数据库中的沟通批次、沟通条目和申请均为 0。
 
-本轮记为“有条件通过”，含义是：
+UI 证据：
 
-- 已保存岗位可继续分析；
-- 模型失败没有污染推荐结果；
-- Dashboard、队列、自动沟通入口和消息本地页面满足只读验收要求；
-- 验收环境跨 baseline 安全计数已修复；
-- 本轮真实 UI 缺陷已修复；
-- 没有执行 BOSS 外部写动作；
-- 但正式 Gate D 仍未完成，消息真实读取也未完成。
+- `D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114\acceptance-ui-v3\dashboard-ui-acceptance.json`
+- `D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114\acceptance-ui-v3\dashboard-ui-acceptance-supplement.json`
 
-下一次完整 Gate D 前必须：
+真实 BOSS 消息固定标签保持登录且无风控，页面显示“30天内暂无联系人”“当前暂无消息”。
+因为新账号消息页为空，本轮只能验收真实空状态，无法抽样读取实际会话。未点击任何联系人、沟通或发送控件。
 
-1. 确认使用原账号还是新账号，并选择对应独立账本；
-2. 使用全新空 operational baseline；
-3. 只用默认 `trusted_pane`，不传 `search_page_api`；
-4. 保持 5 个正式关键词和 `maxDetailTotal=220`；
-5. 串行、静默、持续监控；
-6. 正式完成后只对合格 baseline 导出一次 Gate D 评测；
-7. 少量只读验收消息页，不执行沟通或发送。
+## 6. Fresh 验证
 
-## 8. 不阻塞但待用户最终决定
+- 定向模型适配器测试：`model_adapter_smoke ok`
+- 两份历史失败 JD 的当前模型复核：2/2 修复后契约有效
+- 独立只读代码复审：无未解决的 Critical 或 Important 问题
+- 完整离线套件：`All 93 offline checks passed`
 
-- AGPLv3 允许商业使用，不满足“禁止他人盈利使用”的硬要求；许可证取舍不阻塞 Wave 4 技术收口。
-- 两条 `MODEL_CONTRACT_INVALID` 是否立项，要等下一次全量验收确认稳定复现。
-- `search_page_api` 的失败证据和已有代码继续保留，等待后续单独立项。
+完整日志：
+
+`D:\DevData\RoleFlow-gate-d\verification\wave4-formal-closeout-20260813.stdout.log`
+
+## 7. 条件结论与后续边界
+
+Wave 4 记为“有条件通过”：
+
+- `trusted_pane` 正式抓取、5 个关键词、51/51 完整 JD 和 Gate D 技术导出通过；
+- Dashboard、自动沟通入口和空消息页只读验收通过；
+- 本轮无 BOSS 外部写动作；
+- 本轮真实复现的模型 evidence 修复缺陷已经最小整改并通过保存样本与离线验证。
+
+仍保留以下条件：
+
+1. 下一次全量运行确认模型 evidence 修复在批量流程中的稳定性。
+2. 完成 51 条人工标签后，才能计算并宣称正式精确率、召回率。
+3. 自动沟通真实人工端到端仍未完整验收；没有用户明确授权前，不执行真实沟通或发送。
+4. 新账号消息为空，因此有真实会话后的只读消息抽样仍待验收。
+5. AGPLv3 允许商业使用，不满足“禁止他人盈利使用”的硬要求，许可证仍需用户最终决定。
+6. `search_page_api` 保留为后续独立拓展任务，本轮不修、不验、不删，也不进入产品主线。
+
+Wave 5 继续暂停。
