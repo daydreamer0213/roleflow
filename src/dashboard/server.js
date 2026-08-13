@@ -1192,7 +1192,7 @@ function maskResumeParseErrorDiagnostics(error) {
 
 async function handlePlanRecommend(req, res, { db, modelConfig, modelReady, logger, requestId }) {
   try {
-    if (!modelReady) throw new Error("生成搜索建议需要可用模型，请先完成模型连接测试。");
+    if (!modelReady) throw new Error("生成本地筛选方案需要可用模型，请先完成模型连接测试。");
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const profile = getCandidateProfile(db, Number(params.profileId));
     if (!profile) throw new Error("候选人画像不存在，请重新上传简历。");
@@ -3208,7 +3208,7 @@ function renderProfilePage({ db, searchParams }) {
   const dependency = activePlan ? getSearchPlanDependency(db, activePlan.id) : null;
   const saved = searchParams.get("saved") ? `<p class="notice">画像已保存。搜索方案不会被静默改写，请在方案页按需确认。</p>` : "";
   const planNotice = !activePlan
-    ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成搜索建议</button></form>`
+    ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成本地筛选方案</button></form>`
     : dependency?.stale ? `<p class="setup-warning">当前筛选方案基于旧画像。请在筛选方案页检查并保存后再扫描；系统不会自动覆盖你的人工条件。</p>` : "";
   return renderLegacyDashboardPage({ title: "画像摘要", currentPath: planPath, todayPath: planPath, planId: activePlan?.id || "", stage: "画像", body: `<main id="main-content">
   <h1>画像摘要</h1>
@@ -3380,7 +3380,7 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
     <div class="inline-form"><button type="button" data-template="${escapeAttr(JSON.stringify(resumeTextTemplate()))}" onclick="const target=document.getElementById(&quot;resume-text&quot;);if(!target.value.trim())target.value=JSON.parse(this.dataset.template);target.focus()">使用模板</button></div>
     ${renderResumePreviewControls()}
-    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
+    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和本地筛选方案。API Key 与原始文件不会随请求发送。</p>
   </form>
   ${profiles.length ? `<section class="panel"><h2>已有候选人</h2>${profiles.map((profile) => `<p><a href="/plan?profileId=${profile.id}&planId=${profile.activePlanId || ""}">${escapeHtml(profile.displayName)}</a> · 最近更新 ${escapeHtml(profile.updatedAt.slice(0, 16).replace("T", " "))}</p>`).join("")}</section>` : ""}
 </main>${resumePreviewScript()}` });
@@ -3577,7 +3577,7 @@ function renderModelTaskProfileSection({ definition, settings, presets, modelSta
     || presets.find((item) => item.id === "custom")
     || presets[0];
   const purpose = definition.id === "deep_analysis"
-    ? "用于简历解析、候选人画像、搜索建议、匹配偏好卡和主动生成沟通内容。"
+    ? "用于简历解析、候选人画像、本地筛选方案、匹配偏好卡和主动生成沟通内容。"
     : "用于岗位理解、岗位匹配、单岗重试和批量重试。";
   const recommended = definition.recommended;
   const connection = profile.connection || {};
@@ -3774,7 +3774,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const profile = getCandidateProfile(db, profileId);
   if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
   const planRecord = requestedPlan?.profileId === profile.id ? requestedPlan : getActiveSearchPlan(db, profile.id);
-  if (!planRecord) return renderErrorPage("当前候选人没有可编辑的筛选计划。", "/onboarding");
+  if (!planRecord) return renderErrorPage("当前候选人没有可编辑的本地筛选方案。", "/onboarding");
   const plan = normalizeSearchPlan(planRecord.plan || {}, profile.profile);
   const dailyScan = resolveScanPolicy(plan, "daily");
   const broadScan = resolveScanPolicy(plan, "broad");
@@ -3785,7 +3785,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
-  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const confirmation = searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和本地筛选方案，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
   const viewModel = buildTodayViewModel({
     profile,
     planRecord,

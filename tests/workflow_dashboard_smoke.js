@@ -379,7 +379,7 @@ let server;
   assert.doesNotMatch(blockedPage.body, /data-browser-readiness-button/);
 
   const planBefore = await getText(baseUrl, `/plan?planId=${saved.planId}`);
-  assert.match(planBefore.body, /今日进度\s*<strong>0\s*\/\s*70/);
+  assert.match(planBefore.body, /今日成功沟通<\/span><strong class="metric-value">0\s*<small>\/\s*70/);
   assert.match(planBefore.body, /下一轮目标 35/);
   assert.match(planBefore.body, /<button[^>]*data-browser-readiness-button[^>]*disabled>/);
   assert.match(planBefore.body, /data-browser-readiness-button/);
@@ -388,9 +388,13 @@ let server;
   assert.match(planBefore.body, /<option value="edge" selected>/);
   assert.match(planBefore.body, /\u5f53\u524d\u5df2\u767b\u5f55 Edge\uff08\u63a8\u8350\uff09/);
   assert.match(planBefore.body, /\u9879\u76ee\u4e13\u7528 Edge\uff08\u624b\u52a8\u5907\u7528\uff0c\u9700\u8981\u72ec\u7acb\u767b\u5f55\uff09/);
-  assert.match(planBefore.body, /BOSS 暂不支持这些城市：测试未映射城市/);
+  assert.doesNotMatch(
+    planBefore.body,
+    /BOSS 暂不支持这些城市：测试未映射城市/,
+    "inherited mode must not show generated-search city validation as a blocker"
+  );
   assert.doesNotMatch(planBefore.body, /上午|下午/);
-  assert.match(planBefore.body, /高级扫描与维护/);
+  assert.match(planBefore.body, /高级信息与维护/);
 
   const portableScanSaved = seedProfile(db);
   const portableScanPlan = db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(portableScanSaved.planId);
@@ -1130,10 +1134,9 @@ let server;
   assert.match(completedPage.body, /本轮成功<\/dt><dd>30<\/dd>/);
 
   const planAfter = await getText(baseUrl, `/plan?planId=${saved.planId}`);
-  assert.match(planAfter.body, /今日进度\s*<strong>30\s*\/\s*70/);
+  assert.match(planAfter.body, /今日成功沟通<\/span><strong class="metric-value">30\s*<small>\/\s*70/);
   assert.match(planAfter.body, /下一轮目标 40/);
-  assert.match(planAfter.body, /剩余详情读取预算<\/span><strong class="metric-value">355/);
-  assert.match(planAfter.body, /剩余搜索页 58/);
+  assert.match(planAfter.body, /详情读取预算剩余 355，搜索页面预算剩余 58/);
   assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
   assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
 
