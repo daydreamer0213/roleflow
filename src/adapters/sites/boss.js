@@ -1921,6 +1921,34 @@ class BossSiteAdapter {
     return this.communicationBinding.searchTabId;
   }
 
+  async captureCommunicationSearchState(tabId) {
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A numeric fixed search tab ID is required.");
+    }
+    await this.assertSearchPage(tabId);
+    const state = await this.browser.evalValue(tabId, `(() => ({
+      url: location.href,
+      scrollTop: Math.max(0, Math.floor(window.scrollY || document.documentElement.scrollTop || 0))
+    }))()`);
+    let url;
+    try {
+      url = new URL(String(state?.url || ""));
+    } catch {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search page returned an invalid URL.");
+    }
+    const scrollTop = Number(state?.scrollTop);
+    if (url.origin !== "https://www.zhipin.com"
+      || url.pathname !== "/web/geek/jobs"
+      || url.username
+      || url.password
+      || url.hash
+      || !Number.isInteger(scrollTop)
+      || scrollTop < 0) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search page returned invalid restoration state.");
+    }
+    return { url: url.toString(), scrollTop };
+  }
+
   async assertBoundCommunicationTabs({ requireSearchPage = false } = {}) {
     const binding = this.communicationBinding;
     if (!this.communicationTabsBound || !binding) {

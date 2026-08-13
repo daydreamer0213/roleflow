@@ -15,6 +15,7 @@ const {
 } = require("../src/core/storage");
 const {
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
   transitionCommunicationItem
@@ -70,7 +71,19 @@ function assertCommunicationViewModel() {
   assert.equal(needsResolution.state, "needs_resolution");
   assert.equal(needsResolution.items[0].status, "ambiguous");
   assert.equal(needsResolution.controls.visible, false);
+  assert.equal(needsResolution.controls.rebindVisible, false);
   assert.equal(needsResolution.items[0].resolution.evidenceRequired, true);
+
+  const rebindable = buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11 } },
+    current: communicationStatus({
+      status: "interrupted",
+      browserMode: "edge",
+      runtime: { browser: browserBinding() }
+    }, { batchStatus: "interrupted" })
+  });
+  assert.equal(rebindable.controls.rebindVisible, true);
+  assert.match(renderCommunicationPage(rebindable), /重新检查浏览器页面/);
 
   const completed = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "completed" }, { batchStatus: "completed", total: 2, terminal: 2, remaining: 0, statusCounts: { succeeded: 1, stopped: 1 } }, [{ id: 1, status: "succeeded" }, { id: 2, status: "stopped" }]) });
   assert.equal(completed.state, "completed");
@@ -123,7 +136,44 @@ assertCommunicationViewModel();
   const fixture = seed(db);
   const spawns = [];
   let ambiguityOverride = null;
+  let liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=100010000&query=RAG&page=3";
+  const browserMutations = [];
+  const edgeBrowser = {
+    async listTabs() {
+      return [
+        { id: 1995685534, windowId: 1995685675, url: liveSearchUrl },
+        { id: 1995685619, windowId: 1995685675, url: "https://www.zhipin.com/web/geek/chat" }
+      ];
+    },
+    async evalValue(tabId) {
+      const search = tabId === 1995685534;
+      return {
+        url: search ? liveSearchUrl : "https://www.zhipin.com/web/geek/chat",
+        path: search ? "/web/geek/jobs" : "/web/geek/chat",
+        title: search ? "BOSS 搜索" : "BOSS 沟通",
+        isBoss: true,
+        isLoginPage: false,
+        isRiskPage: false,
+        loggedIn: true,
+        isSearchPage: search,
+        hasJobStructure: search,
+        scrollTop: search ? 360 : 0
+      };
+    },
+    async createTab() {
+      browserMutations.push("create");
+      throw new Error("communication rebind must not create a tab");
+    },
+    async navigate() {
+      browserMutations.push("navigate");
+      throw new Error("communication rebind must not navigate");
+    }
+  };
   server = createDashboardServer({ db, root, dbPath, logger,
+    browserFactory({ browserMode }) {
+      assert.strictEqual(browserMode, "edge");
+      return edgeBrowser;
+    },
     communicationAmbiguityReader(database, requestedBatchId) {
       return ambiguityOverride || communicationAmbiguityStateForBatch(database, requestedBatchId);
     },
@@ -212,6 +262,61 @@ assertCommunicationViewModel();
   assert.doesNotMatch(unsafeLinks.body, /href="https:\/\/example\.com\/job_detail\/role\.html"/);
   const validLinks = await getText(baseUrl, `/communication?batchId=${currentBatch.body.batch.id}`);
   assert.match(validLinks.body, /href="https:\/\/www\.zhipin\.com\/job_detail\/safe\.html"/);
+
+  const rebindBatch = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.rebindId,
+    browserMode: "edge"
+  });
+  const rebindWorkflow = reviewWorkflow(db, {
+    id: "communication-rebind",
+    planId: fixture.planId,
+    localDay: "2098-01-04",
+    planner: {
+      browserMode: "edge",
+      acquisitionMode: "inherited",
+      searchScope: {
+        templateUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000"
+      }
+    }
+  });
+  attachWorkflowCommunication(db, {
+    workflowRunId: rebindWorkflow.id,
+    communicationBatchId: rebindBatch.body.batch.id
+  });
+  bindCommunicationBatchRuntime(db, {
+    batchId: rebindBatch.body.batch.id,
+    browser: browserBinding()
+  });
+  setCommunicationBatchStatus(db, { batchId: rebindBatch.body.batch.id, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: rebindBatch.body.batch.id, status: "paused" });
+  const rebindReview = await getText(baseUrl, `/communication?batchId=${rebindBatch.body.batch.id}`);
+  assert.match(rebindReview.body, /重新检查浏览器页面/);
+  const rebound = await postForm(baseUrl, "/api/communication-rebind", { batchId: rebindBatch.body.batch.id });
+  assert.strictEqual(rebound.status, 303);
+  assert.strictEqual(rebound.location, `/communication?batchId=${rebindBatch.body.batch.id}`);
+  assert.deepStrictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser, {
+    mode: "edge",
+    windowId: 1995685675,
+    searchTabId: 1995685534,
+    messageTabId: 1995685619,
+    searchReturnUrl: liveSearchUrl,
+    searchScrollTop: 360,
+    bindingGeneration: 2
+  });
+  assert.deepStrictEqual(browserMutations, []);
+  liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=101010100";
+  await expectApiError(
+    baseUrl,
+    "/api/communication-rebind",
+    { batchId: rebindBatch.body.batch.id },
+    "BOSS_COMMUNICATION_SCOPE_MISMATCH",
+    409
+  );
+  assert.strictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, 2);
+  assert.deepStrictEqual(browserMutations, []);
+  liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=100010000&query=RAG&page=3";
+
   const directOrphan = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(directOrphan.body, new RegExp(`批次 #${batchId}</h2>`), "a direct legacy batch URL must remain readable");
   const mismatchedBatch = await getText(baseUrl, `/communication?batchId=${batchId}&planId=${fixture.smallPlanId}`);
@@ -344,7 +449,8 @@ assertCommunicationViewModel();
   const ambiguousReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
   assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
-  assert.match(ambiguousReview.body, /处理不明确结果/);
+  assert.match(ambiguousReview.body, /等待人工确认沟通结果/);
+  assert.doesNotMatch(ambiguousReview.body, /重新检查浏览器页面/);
   assert.match(ambiguousReview.body, new RegExp(`href="/communication\\?batchId=${batchId}#communication-item-${ambiguousItem.id}"`));
   assert.match(ambiguousReview.body, new RegExp(`id="communication-item-${ambiguousItem.id}"`));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
@@ -413,6 +519,7 @@ function seed(database) {
   const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", analysis: completeAnalysis("not_recommended"), qualityTags: ["hard_exclude"] }), scanBatchId);
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
+  const rebindId = upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
   const summaryDriftStartId = upsertJob(database, job("summary-drift-start"), scanBatchId);
   const summaryDriftResumeId = upsertJob(database, job("summary-drift-resume"), scanBatchId);
@@ -431,10 +538,10 @@ function seed(database) {
   }
   const otherProfileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Other dashboard smoke", "{}", now, now).lastInsertRowid);
   Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(otherProfileId, "Other dashboard plan", "{}", now, now).lastInsertRowid);
-  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
-function reviewWorkflow(database, { id, planId, localDay }) {
+function reviewWorkflow(database, { id, planId, localDay, planner = {} }) {
   const run = createWorkflowRun(database, {
     id,
     profileId: 1,
@@ -443,9 +550,23 @@ function reviewWorkflow(database, { id, planId, localDay }) {
     sequence: 1,
     targetSuccessCount: 2,
     inventoryCount: 2,
-    scanNeeded: false
+    scanNeeded: false,
+    planner
   });
   return transitionWorkflowRun(database, { id: run.id, status: "review_required" });
+}
+
+function browserBinding(overrides = {}) {
+  return {
+    mode: "edge",
+    windowId: 103,
+    searchTabId: 101,
+    messageTabId: 102,
+    searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000&query=old&page=1",
+    searchScrollTop: 120,
+    bindingGeneration: 1,
+    ...overrides
+  };
 }
 
 function job(sourceId, overrides = {}) {

@@ -183,7 +183,8 @@ function sanitizeReservationDetails(action, details) {
   if (normalizedAction === "communication_visit") {
     return Object.fromEntries(["batchId", "itemId", "jobId"]
       .map((field) => [field, positiveInteger(details?.[field])])
-      .filter(([, value]) => value !== null));
+      .filter(([, value]) => value !== null)
+      .concat([["recoveryAttempt", details?.recoveryAttempt === 1 ? 1 : 0]]));
   }
   return {};
 }
@@ -196,6 +197,7 @@ function positiveInteger(value) {
 function existingCommunicationReservation(db, { site, details, nowMs, policy }) {
   const batchId = Number(details?.batchId);
   const itemId = Number(details?.itemId);
+  const recoveryAttempt = details?.recoveryAttempt === 1 ? 1 : 0;
   if (!Number.isInteger(batchId) || batchId <= 0 || !Number.isInteger(itemId) || itemId <= 0) return null;
   const windowMs = Number(policy.windowsMs?.["24h"] || 24 * 60 * 60_000);
   return db.prepare(`SELECT id, created_at FROM events
@@ -205,8 +207,9 @@ function existingCommunicationReservation(db, { site, details, nowMs, policy }) 
       AND json_extract(payload_json, '$.action') = 'communication_visit'
       AND json_extract(payload_json, '$.batchId') = ?
       AND json_extract(payload_json, '$.itemId') = ?
+      AND COALESCE(json_extract(payload_json, '$.recoveryAttempt'), 0) = ?
     ORDER BY created_at DESC, id DESC LIMIT 1`)
-    .get(new Date(nowMs - windowMs).toISOString(), String(site), batchId, itemId) || null;
+    .get(new Date(nowMs - windowMs).toISOString(), String(site), batchId, itemId, recoveryAttempt) || null;
 }
 
 function resolveAccessMode(db, { site, nowMs, policy = DEFAULT_POLICY }) {

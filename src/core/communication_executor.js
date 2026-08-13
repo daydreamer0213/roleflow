@@ -22,7 +22,16 @@ const FATAL_CODES = new Set([
   "BROWSER_TIMEOUT",
   "BROWSER_DISCONNECTED",
   "BOSS_DETAIL_PAGE_LOST",
-  "BOSS_COMMUNICATION_STRUCTURE_CHANGED"
+  "BOSS_COMMUNICATION_STRUCTURE_CHANGED",
+  "BOSS_OPERATOR_TABS_CHANGED",
+  "BOSS_WINDOW_MISMATCH",
+  "BOSS_SEARCH_PAGE_LOST",
+  "BOSS_COMMUNICATION_PAGE_LOST"
+]);
+const READ_ONLY_RECOVERY_CODES = new Set([
+  "BROWSER_TIMEOUT",
+  "BOSS_COMMUNICATION_HELPER_MISSING",
+  "BOSS_COMMUNICATION_PAGE_NOT_READY"
 ]);
 
 async function runCommunicationBatch({
@@ -34,6 +43,7 @@ async function runCommunicationBatch({
   sleepFn = sleep,
   randomFn = Math.random,
   signal = null,
+  beforeReadOnlyRetry = null,
   executionGate = assertCommunicationExecutionEnabled,
   ambiguityReader = communicationAmbiguityStateForBatch
 }) {
@@ -109,7 +119,12 @@ async function runCommunicationBatch({
 
     let inspection;
     try {
-      inspection = await adapter.inspectCommunicationJob(immutableJob(item), signal);
+      inspection = await inspectWithOneRecovery({
+        adapter,
+        item,
+        signal,
+        beforeReadOnlyRetry
+      });
     } catch (error) {
       const afterInspectFailure = observeControl(db, batchId, signal, logger);
       if (afterInspectFailure) return afterInspectFailure;
@@ -165,6 +180,20 @@ async function runCommunicationBatch({
     if (workflowTargetReached(db, batchId)) continue;
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
     if (pacing) return pacing;
+  }
+}
+
+async function inspectWithOneRecovery({ adapter, item, signal, beforeReadOnlyRetry }) {
+  try {
+    return await adapter.inspectCommunicationJob(immutableJob(item), signal);
+  } catch (error) {
+    if (!READ_ONLY_RECOVERY_CODES.has(errorCode(error))
+      || Number(item.clickCount || 0) !== 0
+      || typeof beforeReadOnlyRetry !== "function") {
+      throw error;
+    }
+    await beforeReadOnlyRetry({ item, error, recoveryAttempt: 1 });
+    return adapter.inspectCommunicationJob(immutableJob(item), signal);
   }
 }
 

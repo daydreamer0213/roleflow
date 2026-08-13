@@ -75,6 +75,7 @@ const {
 } = require("../core/storage");
 const {
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   setCommunicationBatchStatus,
   communicationBatchSummary,
   communicationQuotaSnapshot
@@ -122,6 +123,7 @@ const {
   createCommunicationBatch,
   controlCommunicationBatch,
   getCommunicationStatus,
+  rebindCommunicationBrowser,
   resolveAmbiguousCommunication
 } = require("../application/communication");
 const {
@@ -234,6 +236,7 @@ const PROGRESS_ACTIONS = Object.freeze({
 });
 const {
   buildInheritedSearchScope,
+  canonicalizeBossSearchTemplate,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
   freezeKeywordSource,
@@ -359,6 +362,7 @@ function createDashboardServer({
   messageDiscoveryDependencies = {},
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   assetReader = fs.readFileSync
 }) {
   const scanRuns = new Map();
@@ -545,6 +549,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
+      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
@@ -2665,6 +2670,81 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
   redirectCommunicationResult(res, result.body.batch);
 }
 
+async function handleCommunicationRebind(req, res, {
+  db,
+  logger,
+  browserFactory = createDashboardBrowser,
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser
+}) {
+  const rawBody = await readBody(req);
+  const params = parseBody(rawBody, req.headers["content-type"] || "");
+  const result = await communicationApiResultAsync(() => rebindCommunicationBrowser({
+    db,
+    input: params,
+    deps: {
+      inspectAndBindCommunicationBrowser: ({ batch }) => communicationBrowserRebinder({
+        db,
+        batch,
+        logger,
+        browserFactory
+      })
+    }
+  }));
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) {
+    return sendJson(res, result.statusCode, result.body);
+  }
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function inspectAndBindCommunicationBrowser({
+  db,
+  batch,
+  logger,
+  browserFactory = createDashboardBrowser
+}) {
+  const browser = browserFactory({ browserMode: "edge", cdpPort: null });
+  const adapter = new boss.BossSiteAdapter({ browser, logger });
+  const inspected = await inspectBossOperatorTabs({
+    browser,
+    inspectTab: (tabId) => adapter.preflight({ tabId })
+  });
+  const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
+  assertCommunicationRebindScope(db, batch, captured.url);
+  return bindCommunicationBatchRuntime(db, {
+    batchId: batch.id,
+    browser: {
+      mode: "edge",
+      windowId: inspected.windowId,
+      searchTabId: inspected.searchTab.id,
+      messageTabId: inspected.communicationTab.id,
+      searchReturnUrl: captured.url,
+      searchScrollTop: captured.scrollTop,
+      bindingGeneration: batch.runtime.browser.bindingGeneration
+    },
+    rebind: true
+  });
+}
+
+function assertCommunicationRebindScope(db, batch, returnUrl) {
+  const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
+  const expectedUrl = String(
+    workflow?.planner?.searchScope?.templateUrl
+    || batch.runtime?.browser?.searchReturnUrl
+    || ""
+  );
+  let actual;
+  let expected;
+  try {
+    actual = canonicalizeBossSearchTemplate(returnUrl).url;
+    expected = canonicalizeBossSearchTemplate(expectedUrl).url;
+  } catch (cause) {
+    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "无法确认当前 BOSS 搜索页与原筛选范围一致。", { statusCode: 409, cause });
+  }
+  if (actual !== expected) {
+    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页筛选条件与原批次范围不一致。", { statusCode: 409 });
+  }
+}
+
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
@@ -2761,6 +2841,15 @@ function handleCommunicationStatus(res, db, batchId) {
 function communicationApiResult(action) {
   try {
     return { ok: true, statusCode: 200, body: action() };
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
+    return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };
+  }
+}
+
+async function communicationApiResultAsync(action) {
+  try {
+    return { ok: true, statusCode: 200, body: await action() };
   } catch (error) {
     const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
     return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };

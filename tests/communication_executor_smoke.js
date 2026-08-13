@@ -93,6 +93,70 @@ async function alreadyCommunicatedSmoke() {
   fixture.close();
 }
 
+async function oneReadOnlyRecoverySmoke() {
+  const fixture = createFixture(1);
+  let inspections = 0;
+  const recoveryCalls = [];
+  try {
+    await runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() {} },
+      beforeReadOnlyRetry: async ({ item, error, recoveryAttempt }) => {
+        recoveryCalls.push({ itemId: item.id, code: error.code, recoveryAttempt });
+      },
+      adapter: {
+        async inspectCommunicationJob() {
+          inspections += 1;
+          if (inspections === 1) {
+            throw Object.assign(new Error("temporary browser timeout"), { code: "BROWSER_TIMEOUT" });
+          }
+          return { state: "ready" };
+        },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    });
+    assert.strictEqual(inspections, 2);
+    assert.deepStrictEqual(recoveryCalls, [{
+      itemId: listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].id,
+      code: "BROWSER_TIMEOUT",
+      recoveryAttempt: 1
+    }]);
+  } finally {
+    fixture.close();
+  }
+
+  for (const code of ["BOSS_LOGIN_REQUIRED", "BOSS_RISK_CONTROL", "BOSS_OPERATOR_TABS_CHANGED"]) {
+    const blocked = createFixture(1);
+    let calls = 0;
+    let retries = 0;
+    const error = Object.assign(new Error(code), { code });
+    try {
+      await assert.rejects(
+        () => runPermittedBatch({
+          db: blocked.db,
+          batchId: blocked.batch.id,
+          accessController: { async reserve() {} },
+          beforeReadOnlyRetry: async () => { retries += 1; },
+          adapter: {
+            async inspectCommunicationJob() { calls += 1; throw error; },
+            async dispatchCommunication() {},
+            async verifyCommunicationResult() { return { state: "succeeded" }; }
+          },
+          sleepFn: async () => {}
+        }),
+        (actual) => actual === error
+      );
+      assert.strictEqual(calls, 1);
+      assert.strictEqual(retries, 0);
+    } finally {
+      blocked.close();
+    }
+  }
+}
+
 async function unavailableAndMismatchContinueSmoke() {
   const fixture = createFixture(3);
   const inspections = [
@@ -1033,6 +1097,7 @@ Promise.resolve()
   .then(successFlowSmoke)
   .then(atomicProgressFailureSmoke)
   .then(alreadyCommunicatedSmoke)
+  .then(oneReadOnlyRecoverySmoke)
   .then(unavailableAndMismatchContinueSmoke)
   .then(ambiguousAndFatalStopSmoke)
   .then(pauseResumeSmoke)

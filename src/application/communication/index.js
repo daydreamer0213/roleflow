@@ -94,6 +94,33 @@ function getCommunicationStatus({ db, batchId, deps = {} }) {
   };
 }
 
+async function rebindCommunicationBrowser({ db, input = {}, deps = {} }) {
+  const batchId = Number(input.batchId);
+  const batch = getCommunicationBatch(db, batchId);
+  if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
+  if (batch.browserMode !== "edge") {
+    throw appError("COMMUNICATION_BROWSER_REBIND_UNAVAILABLE", "只有当前 Edge 批次可以重新检查浏览器页面。", { statusCode: 409 });
+  }
+  if (!["paused", "interrupted"].includes(batch.status)) {
+    throw appError("COMMUNICATION_BATCH_STATUS_INVALID", "只有已暂停或已中断的批次可以重新检查浏览器页面。", { statusCode: 409 });
+  }
+  const items = listCommunicationBatchItems(db, batchId);
+  const readAmbiguity = deps.communicationAmbiguityReader || communicationAmbiguityStateForBatch;
+  if (items.some((item) => ["click_dispatched", "ambiguous"].includes(item.status))
+    || readAmbiguity(db, batchId).blocked) {
+    throw appError("COMMUNICATION_BROWSER_REBIND_BLOCKED", "请先人工确认已发出操作的沟通结果，再重新检查浏览器页面。", { statusCode: 409 });
+  }
+  if (!batch.runtime?.browser) {
+    throw appError("COMMUNICATION_BROWSER_BINDING_REQUIRED", "该批次还没有可更新的浏览器页面绑定。", { statusCode: 409 });
+  }
+  assertCommunicationRuntimeAvailable(db);
+  if (typeof deps.inspectAndBindCommunicationBrowser !== "function") {
+    throw appError("COMMUNICATION_BROWSER_REBINDER_REQUIRED", "communication browser rebinder is required", { statusCode: 500 });
+  }
+  const rebound = await deps.inspectAndBindCommunicationBrowser({ db, batch });
+  return communicationControlResult(db, rebound);
+}
+
 function resolveAmbiguousCommunication({ db, input = {}, deps = {} }) {
   const item = resolveAmbiguousCommunicationItem(db, {
     batchId: input.batchId,
@@ -125,5 +152,6 @@ module.exports = {
   createCommunicationBatch,
   controlCommunicationBatch,
   getCommunicationStatus,
+  rebindCommunicationBrowser,
   resolveAmbiguousCommunication
 };
