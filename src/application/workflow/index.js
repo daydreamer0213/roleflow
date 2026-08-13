@@ -359,9 +359,8 @@ function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
   if ((recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) && logger) {
     logger.warn("workflow_status_reconciled", { workflowRunId, ...recovery });
   }
-  const snapshot = progressSnapshot(db, { workflowRunId });
-  if (!snapshot) return { statusCode: 404, body: { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
   const workflow = getWorkflowRun(db, workflowRunId);
+  if (!workflow) return { statusCode: 404, body: { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
   let summary = null;
   if (workflow.communicationBatchId) {
     try {
@@ -376,6 +375,8 @@ function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
       throw error;
     }
   }
+  const snapshot = progressSnapshot(db, { workflowRunId, communicationSummary: summary });
+  if (!snapshot) return { statusCode: 404, body: { error: "本轮任务不存在。", errorCode: "WORKFLOW_RUN_NOT_FOUND" } };
   const communication = summary ? publicCommunicationStatus({
     batch: { id: summary.batchId, status: summary.batchStatus },
     summary

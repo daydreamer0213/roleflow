@@ -40,15 +40,13 @@
     if (container) container.hidden = false;
   };
   const renderOverview = (snapshot) => {
-    const analysis = snapshot.progress.analysis || {};
-    const remaining = number(analysis.pending) + number(analysis.running) + number(analysis.retryPending);
     const scanWait = snapshot.progress.scanWait;
     const retryAt = Date.parse(scanWait?.retryAt || "");
     const cooldown = node("[data-cooldown]");
     const stable = node("[data-overview-blocker-stable]");
     const countdown = node("[data-cooldown-countdown]");
     setText("[data-overview-progress]", "第 " + number(snapshot.progress.stageIndex) + " / " + number(snapshot.progress.stageCount) + " 阶段");
-    setText("[data-overview-remaining]", remaining);
+    setText("[data-overview-remaining]", snapshot.progress.remainingWorkLabel || "本轮状态正在更新");
     setText("[data-overview-eta]", Number.isFinite(retryAt) && retryAt > Date.now() ? "安全冷却至 " + new Date(retryAt).toLocaleString("zh-CN", { hour12: false }) : etaText(snapshot.progress.eta));
     if (Number.isFinite(retryAt) && retryAt > Date.now()) {
       if (stable) stable.hidden = true;
@@ -66,13 +64,19 @@
   const renderStale = (workflow) => { const warning = node("[data-workflow-stale]"); if (!warning) return; const at = Date.parse(workflow.lastActivityAt || ""); const active = ["created", "scanning", "analyzing"].includes(workflow.status); warning.hidden = !(active && Number.isFinite(at) && Date.now() - at > 30000); };
   const renderProgress = (snapshot) => {
     const analysis = snapshot.progress.analysis || {};
+    const scanTargets = snapshot.progress.scanTargets || {};
+    const details = snapshot.progress.details || {
+      collected: snapshot.progress.collected ?? analysis.total,
+      read: snapshot.progress.detailsRead,
+      pending: snapshot.progress.detailsPending
+    };
     const detailRequired = number(analysis.detailRequired);
     const analyzed = number(analysis.succeeded) + Math.max(0, number(analysis.skipped) - detailRequired);
     const completed = analyzed + detailRequired + number(analysis.failed) + number(analysis.stopped);
     const remaining = number(analysis.pending) + number(analysis.running) + number(analysis.retryPending);
     setText("[data-stage-label]", "第 " + number(snapshot.progress.stageIndex) + " 阶段 / 共 " + number(snapshot.progress.stageCount) + " 阶段");
     setText("[data-stage-name]", snapshot.progress.stage || "");
-    for (const [selector, value] of [["[data-analysis-total]", analysis.total], ["[data-analysis-succeeded]", analysis.succeeded], ["[data-analysis-running]", analysis.running], ["[data-analysis-retry-pending]", analysis.retryPending], ["[data-analysis-detail-required]", detailRequired], ["[data-detail-read]", snapshot.progress.detailsRead], ["[data-detail-pending]", snapshot.progress.detailsPending], ["[data-analysis-failed]", analysis.failed], ["[data-analysis-remaining]", remaining], ["[data-stop-collected]", snapshot.progress.collected ?? analysis.total], ["[data-stop-analyzed]", analyzed], ["[data-stop-failed]", analysis.failed], ["[data-stop-unfinished]", remaining]]) setText(selector, number(value));
+    for (const [selector, value] of [["[data-scan-target-total]", scanTargets.total], ["[data-scan-target-completed]", scanTargets.completed], ["[data-scan-target-pending]", scanTargets.pending], ["[data-detail-collected]", details.collected], ["[data-analysis-total]", analysis.total], ["[data-analysis-succeeded]", analysis.succeeded], ["[data-analysis-running]", analysis.running], ["[data-analysis-retry-pending]", analysis.retryPending], ["[data-analysis-detail-required]", detailRequired], ["[data-detail-read]", details.read], ["[data-detail-pending]", details.pending], ["[data-analysis-failed]", analysis.failed], ["[data-analysis-remaining]", remaining], ["[data-stop-collected]", details.collected], ["[data-stop-analyzed]", analyzed], ["[data-stop-failed]", analysis.failed], ["[data-stop-unfinished]", remaining]]) setText(selector, number(value));
     setText("[data-analysis-timeouts]", "当前恢复周期最终超时 " + number(analysis.circuitTimeoutJobs) + " / " + number(analysis.timeoutPauseThreshold || 10) + " · 本轮累计超时 " + number(analysis.lifetimeTimeoutJobs));
     setText("[data-eta]", etaText(snapshot.progress.eta));
     setText("[data-recent-activity]", snapshot.recentActivity.length ? snapshot.recentActivity.map(activityText).join("；") : "还没有新的分析活动。");
@@ -88,9 +92,9 @@
     const pausedGroup = node('[data-control-group="paused"]'); if (pausedGroup) pausedGroup.hidden = !paused;
     const pause = node('[data-action="pause"]'); if (pause) pause.disabled = !snapshot.controls.canPause;
     const resume = node('[data-action="resume"]'); if (resume) resume.disabled = !snapshot.controls.canResume;
-    const primary = running ? pause : paused ? resume : null;
+    const primary = paused ? resume : null;
     nodes('[data-workflow-primary="true"]').forEach((button) => button.removeAttribute("data-workflow-primary"));
-    if (primary) { primary.dataset.workflowPrimary = "true"; if (!primary.disabled) primary.focus(); }
+    if (primary) primary.dataset.workflowPrimary = "true";
     nodes('[data-action="stop-preview"]').forEach((button) => { button.disabled = !snapshot.controls.canStop; });
     const stopConfirm = node('[data-action="stop-confirm"]'); if (stopConfirm) stopConfirm.disabled = !snapshot.controls.canStop;
     if (paused) setText("[data-pause-reason]", snapshot.workflow.errorCode || "本轮已安全暂停");
@@ -128,7 +132,7 @@
   };
 
   nodes("[data-workflow-control-form]").forEach((form) => form.addEventListener("submit", () => controls(true)));
-  nodes('[data-action="stop-preview"]').forEach((button) => button.addEventListener("click", () => { const confirmation = node("[data-stop-confirmation]"); if (confirmation) { confirmation.hidden = false; node('[data-action="stop-confirm"]')?.focus(); } }));
+  nodes('[data-action="stop-preview"]').forEach((button) => button.addEventListener("click", () => { const confirmation = node("[data-stop-confirmation]"); if (confirmation) confirmation.hidden = false; }));
   node('[data-action="stop-cancel"]')?.addEventListener("click", () => { const confirmation = node("[data-stop-confirmation]"); if (confirmation) confirmation.hidden = true; });
   const review = document.getElementById("workflow-review-form");
   if (review) {

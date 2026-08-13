@@ -11,7 +11,7 @@ const RELEVANT_CONTROL_SELECTOR = "main form button, main form input:not([type=h
 
 const PAGE_SPECS = Object.freeze([
   { id: "today-ready", family: "today", state: "ready", primaryPolicy: "required", primarySelector: "[data-today-primary]", interaction: "none", interactionPolicy: "read-only-none", path: ({ planId }) => `/plan?planId=${planId}` },
-  { id: "workflow-scanning", family: "workflow", state: "scanning", primaryPolicy: "required", primarySelector: '[data-workflow-primary="true"]', interaction: "stop-preview-cancel", interactionPolicy: "exercised", path: ({ workflowId }) => `/workflow?runId=${encodeURIComponent(workflowId)}` },
+  { id: "workflow-scanning", family: "workflow", state: "scanning", primaryPolicy: "none-expected", primaryRationale: "An active run continues without user action; pause and stop remain secondary interruption controls.", interaction: "stop-preview-cancel", interactionPolicy: "exercised", path: ({ workflowId }) => `/workflow?runId=${encodeURIComponent(workflowId)}` },
   { id: "queue-primary", family: "queue", state: "primary", primaryPolicy: "none-expected", primaryRationale: "Queue presents several safe local status actions, not one page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/queue?planId=${planId}&pool=primary` },
   { id: "jobs-latest", family: "jobs", state: "latest-batch", primaryPolicy: "none-expected", primaryRationale: "Jobs filters and local record actions intentionally have no page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/jobs?planId=${planId}&batch=latest` },
   { id: "communication-review", family: "communication", state: "confirmed-offline", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}` },
@@ -149,7 +149,7 @@ function pageAudit({ pageId = "", primarySelector = "", primaryPolicy = "", rele
   const actions = [...document.querySelectorAll("main a[href], main button, main input:not([type=hidden]), main select, main summary")].filter(visible);
   const primaryAll = primarySelector ? [...document.querySelectorAll(primarySelector)] : [];
   const primaryVisible = primaryAll.filter(visible);
-  const primaryMarkerCount = primaryPolicy === "required" ? primaryAll.length : document.querySelectorAll("[data-page-primary]").length;
+  const primaryMarkerCount = primaryPolicy === "required" ? primaryAll.length : document.querySelectorAll('[data-page-primary], [data-workflow-primary="true"]').length;
   const communicationPrimary = pageId === "communication-review" ? primaryVisible[0] : null;
   const destructive = pageId === "communication-review" ? document.querySelector('button[name="action"][value="discard"]') : null;
   const primaryStyle = communicationPrimary ? getComputedStyle(communicationPrimary) : null;

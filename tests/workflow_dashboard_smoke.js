@@ -1597,7 +1597,7 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
 
 function testWorkflowStatusReadBudget() {
   const forbiddenTables = new Set([
-    "batches", "candidate_job_events", "candidate_job_states", "candidate_progress_cards",
+    "candidate_job_events", "candidate_job_states", "candidate_progress_cards",
     "events", "job_refresh_attempts", "jobs", "search_plans", "site_runtime_states"
   ]);
   for (const [label, options] of [["active", {}], ["communication", { communication: true }]]) {
@@ -1614,6 +1614,8 @@ function testWorkflowStatusReadBudget() {
       `${label} status read returned ${metrics.rows} rows; budget is ${workflowStatusReadBudget.rows}`);
     assert(!metrics.tables.some((table) => forbiddenTables.has(table)),
       `${label} status read touched plan-wide/history tables: ${metrics.tables.join(", ")}`);
+    assert(metrics.tables.includes("batches") && metrics.tables.includes("scan_target_results"),
+      `${label} status read must derive target progress from the current frozen batch`);
     if (label === "active") {
       assert(!metrics.tables.includes("communication_batch_items"), "non-communication status reads must not load communication items");
     }
@@ -1811,6 +1813,7 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
       stage: "分析岗位", stageIndex: 4, stageCount: 5,
       scanWait: { action: "detail_open", retryAt: "2099-02-01T00:10:00.000Z" },
       eta: { status: "available", minSeconds: 60, maxSeconds: 120, sampleSize: 3 },
+      remainingWorkLabel: "还需完成 4 个搜索目标；7 个岗位详情待读取",
       analysis: { pending: 2, running: 1, retryPending: 1 }
     },
     controls: { canPause: true, canResume: false, canStop: true },
@@ -1846,7 +1849,7 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
   await flushPromises();
 
   assert.strictEqual(overviewProgress.textContent, "第 4 / 5 阶段", "same-status polling must refresh overview progress");
-  assert.strictEqual(overviewRemaining.textContent, "4", "same-status polling must refresh overview remaining work");
+  assert.strictEqual(overviewRemaining.textContent, "还需完成 4 个搜索目标；7 个岗位详情待读取", "same-status polling must reuse the server's stage-specific remaining work");
   assert.match(overviewEta.textContent, /安全冷却至/, "same-status polling must refresh overview ETA from retryAt");
   assert.strictEqual(cooldownReason.textContent, "正在读取岗位详情");
   assert.strictEqual(cooldown.hidden, false);

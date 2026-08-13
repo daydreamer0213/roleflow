@@ -47,23 +47,43 @@ function scopeView(planner) {
 }
 
 function progressView(snapshot) {
-  const analysis = snapshot?.progress?.analysis || {};
+  const source = snapshot?.progress || {};
+  const analysis = source.analysis || {};
+  const scanTargets = source.scanTargets || {};
+  const details = source.details || {
+    collected: source.collected,
+    read: source.detailsRead,
+    pending: source.detailsPending
+  };
+  const communication = source.communication || {};
   const skipped = number(analysis.skipped);
   const detailRequired = number(analysis.detailRequired);
   const analyzed = number(analysis.succeeded) + Math.max(0, skipped - detailRequired);
   return {
     visible: true, revision: number(snapshot?.workflow?.progressRevision), status: String(snapshot?.workflow?.status || ""),
-    controlState: String(snapshot?.workflow?.controlState || ""), stage: String(snapshot?.progress?.stage || ""),
-    stageIndex: number(snapshot?.progress?.stageIndex), stageCount: number(snapshot?.progress?.stageCount),
+    controlState: String(snapshot?.workflow?.controlState || ""), stage: String(source.stage || ""),
+    stageIndex: number(source.stageIndex), stageCount: number(source.stageCount),
+    remainingWorkLabel: String(source.remainingWorkLabel || "本轮状态正在更新"),
     modelLabel: [snapshot?.model?.provider, snapshot?.model?.model].filter(Boolean).join(" · ") || "批量模型待记录",
     meter: { max: Math.max(1, number(analysis.total)), value: analyzed + detailRequired + number(analysis.failed) + number(analysis.stopped) },
+    scanTargets: {
+      total: number(scanTargets.total), completed: number(scanTargets.completed), pending: number(scanTargets.pending),
+      partial: number(scanTargets.partial), failed: number(scanTargets.failed)
+    },
+    details: {
+      collected: number(details.collected), read: number(details.read), pending: number(details.pending)
+    },
     analysis: {
       total: number(analysis.total), succeeded: number(analysis.succeeded), running: number(analysis.running), retryPending: number(analysis.retryPending),
       detailRequired, failed: number(analysis.failed), remaining: number(analysis.pending) + number(analysis.running) + number(analysis.retryPending),
-      collected: number(analysis.total), detailsRead: number(snapshot?.progress?.detailsRead), detailsPending: number(snapshot?.progress?.detailsPending),
+      stopped: number(analysis.stopped), collected: number(details.collected), detailsRead: number(details.read), detailsPending: number(details.pending),
       circuitTimeoutJobs: number(analysis.circuitTimeoutJobs), timeoutPauseThreshold: number(analysis.timeoutPauseThreshold || 10), lifetimeTimeoutJobs: number(analysis.lifetimeTimeoutJobs)
     },
-    cooldown: cooldownView(snapshot?.progress?.scanWait), scanWaitLabel: scanWaitLabel(snapshot?.progress?.scanWait), etaLabel: etaLabel(snapshot?.progress?.eta),
+    communication: {
+      total: number(communication.total), pending: number(communication.pending), ambiguous: number(communication.ambiguous),
+      succeeded: number(communication.succeeded), stopped: number(communication.stopped)
+    },
+    cooldown: cooldownView(source.scanWait), scanWaitLabel: scanWaitLabel(source.scanWait), etaLabel: etaLabel(source.eta),
     recentActivityLabel: (snapshot?.recentActivity || []).length ? snapshot.recentActivity.map(activityLabel).join("；") : "还没有新的分析活动。",
     staleEligible: ["created", "scanning", "analyzing"].includes(snapshot?.workflow?.status)
   };
@@ -79,7 +99,11 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
     usableRecommendations: number(workflow.inventoryCount),
-    remainingWork: progress?.visible ? number(progress.analysis?.remaining) : Math.max(0, target - successful),
+    remainingWork: progress?.visible
+      ? progress.remainingWorkLabel
+      : phase.kind === "review"
+        ? `已准备 ${phase.review.rows.length} 个候选岗位，等待你确认清单`
+        : "本轮没有未完成工作",
     estimatedContinuation: cooldown.active ? `安全冷却至 ${cooldown.retryAtLabel}` : progress?.etaLabel || "当前阶段不估算剩余时间",
     blocker: blockerView({ workflow, cooldown, runtimeBlock }),
     nextAction: nextActionLabel(phase, controls),
@@ -96,7 +120,7 @@ function blockerView({ workflow, cooldown, runtimeBlock }) {
 }
 
 function nextActionLabel(phase, controls) {
-  if (phase.kind === "active") return controls.pausedVisible ? "继续本轮" : "暂停本轮";
+  if (phase.kind === "active") return controls.pausedVisible ? "检查暂停原因后继续本轮" : "系统正在继续处理，无需操作";
   return {
     review: "确认清单", confirmed: phase.communication?.actionLabel || phase.communication?.detailsLabel,
     communicating: "查看执行明细", completed: "返回今日任务", interrupted: phase.communicationHref ? phase.communication?.detailsLabel : "继续本轮",

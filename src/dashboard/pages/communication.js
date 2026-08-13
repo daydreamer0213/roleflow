@@ -2,6 +2,7 @@
 
 const { escapeAttr, escapeHtml } = require("../http/response");
 const { renderDashboardFrame } = require("../ui/shell");
+const { communicationStatusLabel } = require("../status_labels");
 
 function renderCommunicationPage(vm = {}) {
   const page = vm.page || {};
@@ -52,7 +53,7 @@ function history(vm) {
 
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; }
 function stateLabel(state) { return { pending_review: "等待确认", running: "串行执行中", needs_resolution: "需要处理", completed: "已结束", no_batch: "尚无批次", integrity_blocked: "范围已阻止" }[state] || "处理中"; }
-function itemStatusLabel(status) { return { pending: "待执行", opening: "正在核对", verified: "身份已核验", click_dispatched: "已发出操作", succeeded: "已核验成功", already_communicated: "已确认已沟通", ambiguous: "结果不明确", stopped: "已停止", platform_rejected: "平台拒绝", transport_failed: "传输失败", job_unavailable: "岗位不可用", target_mismatch: "目标不匹配", action_unavailable: "操作不可用", completed: "已完成", running: "执行中", confirmed: "等待确认", interrupted: "已中断", failed: "失败" }[status] || status || "未知"; }
+function itemStatusLabel(status) { return communicationStatusLabel(status); }
 function tierLabel(tier) { return { primary: "主投", apply: "可投", caution: "慎投" }[tier] || tier || "未保存"; }
 function statusClass(value) { return ["needs_resolution", "integrity_blocked", "ambiguous", "failed", "platform_rejected", "transport_failed"].includes(value) ? "danger" : ["pending_review", "confirmed", "paused", "interrupted", "opening", "verified", "click_dispatched"].includes(value) ? "waiting" : "good"; }
 

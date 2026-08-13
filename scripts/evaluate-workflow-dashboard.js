@@ -61,7 +61,7 @@ async function audit({ browser, baseUrl, state, runId, viewport, outputDir, labe
   try {
     await page.goto(`${baseUrl}/workflow?runId=${encodeURIComponent(runId)}`, { waitUntil: "networkidle" });
     const action = page.locator('[data-workflow-primary="true"]');
-    await focusPrimaryWithKeyboard(page, action);
+    if (await action.count()) await focusPrimaryWithKeyboard(page, action);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
     const audit = await page.evaluate(() => {
@@ -125,11 +125,12 @@ async function focusPrimaryWithKeyboard(page, action) {
 function assertStrictPrimary(result) {
   const failures = [];
   const primary = result.audit.primary;
-  if (result.audit.primaryCount !== 1) failures.push(`primaryCount=${result.audit.primaryCount}`);
-  if (result.audit.visiblePrimaryCount !== 1) failures.push(`visiblePrimaryCount=${result.audit.visiblePrimaryCount}`);
-  if (!primary?.fullyWithinViewport) failures.push("primary outside viewport");
-  if (!primary?.focused) failures.push("primary not focused");
-  if (primary?.outline?.style !== "solid") failures.push(`primary outline=${primary?.outline?.style || "none"}`);
+  const expectedPrimaryCount = result.state === "scanning" ? 0 : 1;
+  if (result.audit.primaryCount !== expectedPrimaryCount) failures.push(`primaryCount=${result.audit.primaryCount}`);
+  if (result.audit.visiblePrimaryCount !== expectedPrimaryCount) failures.push(`visiblePrimaryCount=${result.audit.visiblePrimaryCount}`);
+  if (expectedPrimaryCount && !primary?.fullyWithinViewport) failures.push("primary outside viewport");
+  if (expectedPrimaryCount && !primary?.focused) failures.push("primary not focused");
+  if (expectedPrimaryCount && primary?.outline?.style !== "solid") failures.push(`primary outline=${primary?.outline?.style || "none"}`);
   if (result.audit.horizontalOverflow) failures.push("horizontal overflow");
   if (!result.interaction.passed) failures.push(`interaction=${result.interaction.kind}`);
   for (const [kind, entries] of Object.entries(result.errors)) if (entries.length) failures.push(`${kind} errors=${entries.length}`);

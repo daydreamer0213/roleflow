@@ -24,6 +24,7 @@ const {
   communicationAmbiguityStateForBatch
 } = require("../src/core/communication_ambiguity");
 const { buildCommunicationViewModel } = require("../src/dashboard/view_models/communication");
+const { renderCommunicationPage } = require("../src/dashboard/pages/communication");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.join(__dirname, "..");
@@ -93,6 +94,15 @@ function assertCommunicationViewModel() {
   const mismatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ planId: 12 }), integrityIssue: "batch_plan_mismatch" });
   assert.equal(mismatch.state, "integrity_blocked");
   assert.equal(mismatch.controls.visible, false);
+
+  const unknownStatusHtml = renderCommunicationPage(buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11 } },
+    current: communicationStatus({}, { statusCounts: { future_status: 1 } }, [
+      { id: 1, batchId: 41, status: "future_status", titleSnapshot: "Future role" }
+    ])
+  }));
+  assert.match(unknownStatusHtml, /状态待确认/);
+  assert.doesNotMatch(unknownStatusHtml, />future_status</);
 
   const links = buildCommunicationViewModel({
     scope: { profile: { id: 7 }, plan: { id: 11 } },

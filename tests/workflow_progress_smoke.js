@@ -10,6 +10,8 @@ const {
   transitionWorkflowRun,
   recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
+  recordScanTargetResult,
+  attachWorkflowCommunication,
   upsertJob
 } = require("../src/core/storage");
 const {
@@ -33,6 +35,8 @@ try {
   testScanWaitAndHeartbeatActivity();
   testAggregateCountsMatchSqlAndInvariant();
   testCollectedDetailCountsComeFromObservations();
+  testStageSpecificProgressBreakdown();
+  testCommunicationProgressSeparatesAmbiguity();
   testStageMapping();
   testModelIdentityFromPlannerSnapshot();
   testModelIdentityFallbackNeverReadsGlobalDefaults();
@@ -230,6 +234,118 @@ function testCollectedDetailCountsComeFromObservations() {
   assert.strictEqual(snapshot.progress.collected, 4);
   assert.strictEqual(snapshot.progress.detailsRead, 2);
   assert.strictEqual(snapshot.progress.detailsPending, 2);
+}
+
+function testStageSpecificProgressBreakdown() {
+  const scenario = seedWorkflow(db, {
+    analyses: Array.from({ length: 12 }, () => ({})),
+    localDay: "2026-08-16",
+    modelConfigRevision: "mrev-stage-breakdown",
+    descriptions: [
+      ..."ABCDE".split("").map((letter) => letter.repeat(200)),
+      ...Array.from({ length: 7 }, () => "")
+    ]
+  });
+  const targets = Array.from({ length: 5 }, (_, index) => ({
+    targetKey: `target-${index + 1}`
+  }));
+  db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?")
+    .run(JSON.stringify({ execution: { targets } }), scenario.batchId);
+  for (const [targetKey, status] of [
+    ["target-1", "completed"],
+    ["target-2", "completed"],
+    ["target-3", "partial"],
+    ["target-4", "failed"]
+  ]) {
+    recordScanTargetResult(db, {
+      batchId: scenario.batchId,
+      targetKey,
+      status,
+      finishedAt: "2026-08-16T00:00:00.000Z"
+    });
+  }
+  db.prepare("UPDATE workflow_runs SET status = 'scanning' WHERE id = ?")
+    .run(scenario.workflowId);
+
+  const snapshot = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-16T00:01:00.000Z"
+  });
+  assert.deepStrictEqual(snapshot.progress.scanTargets, {
+    total: 5,
+    completed: 2,
+    pending: 3,
+    partial: 1,
+    failed: 1
+  });
+  assert.deepStrictEqual(snapshot.progress.details, {
+    collected: 12,
+    read: 5,
+    pending: 7
+  });
+  assert.match(snapshot.progress.remainingWorkLabel, /3 个搜索目标/);
+  assert.match(snapshot.progress.remainingWorkLabel, /7 个岗位详情待读取/);
+}
+
+function testCommunicationProgressSeparatesAmbiguity() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}, {}],
+    localDay: "2026-08-17",
+    modelConfigRevision: "mrev-communication-breakdown"
+  });
+  transitionWorkflowRun(db, { id: scenario.workflowId, status: "review_required" });
+  const now = "2026-08-17T00:00:00.000Z";
+  const batchId = Number(db.prepare(`INSERT INTO communication_batches(
+      site, profile_id, plan_id, browser_mode, status, policy_json,
+      confirmed_at, created_at, updated_at
+    ) VALUES ('boss', ?, ?, 'edge', 'running', '{}', ?, ?, ?)`)
+    .run(scenario.profileId, scenario.planId, now, now, now).lastInsertRowid);
+  const jobs = observationEntries(db, scenario.batchId);
+  const insert = db.prepare(`INSERT INTO communication_batch_items(
+      batch_id, job_id, position, job_url, title_snapshot, company_snapshot,
+      status, finished_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  insert.run(
+    batchId,
+    jobs[0].jobId,
+    1,
+    "https://www.zhipin.com/job_detail/communication-progress-1.html",
+    "Ambiguous role",
+    "Example One",
+    "ambiguous",
+    now,
+    now
+  );
+  insert.run(
+    batchId,
+    jobs[1].jobId,
+    2,
+    "https://www.zhipin.com/job_detail/communication-progress-2.html",
+    "Pending role",
+    "Example Two",
+    "pending",
+    null,
+    now
+  );
+  attachWorkflowCommunication(db, {
+    id: scenario.workflowId,
+    communicationBatchId: batchId
+  });
+  transitionWorkflowRun(db, { id: scenario.workflowId, status: "communicating" });
+
+  const snapshot = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scenario.workflowId,
+    now
+  });
+  assert.deepStrictEqual(snapshot.progress.communication, {
+    total: 2,
+    pending: 1,
+    ambiguous: 1,
+    succeeded: 0,
+    stopped: 0
+  });
+  assert.match(snapshot.progress.remainingWorkLabel, /1 个岗位未执行/);
+  assert.match(snapshot.progress.remainingWorkLabel, /1 个结果待人工确认/);
 }
 
 function testStageMapping() {
