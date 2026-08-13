@@ -567,6 +567,23 @@ function getProgressCardById(db, cardId) {
   return getProgressCard(db, positiveInteger(cardId, "cardId"));
 }
 
+function bindProgressCardThread(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const threadKey = safeDigestKey(input.threadKey, "threadKey");
+  const now = isoText(input.now);
+  const result = db.prepare(`UPDATE candidate_progress_cards
+    SET thread_key = ?, updated_at = ?
+    WHERE id = ? AND thread_key = ''`)
+    .run(threadKey, now, cardId);
+  if (Number(result.changes) === 1) return getProgressCard(db, cardId);
+  const current = getProgressCard(db, cardId);
+  if (!current) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  if (current.threadKey !== threadKey) {
+    throw progressError("PROGRESS_THREAD_CONFLICT", "progress card is bound to a different thread");
+  }
+  return current;
+}
+
 function listProgressCards(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const stages = Array.isArray(input.stages) ? [...new Set(input.stages.map(legalStage))] : [];
@@ -605,6 +622,14 @@ function listProgressCardsWithEvents(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const rows = db.prepare(`SELECT
       cards.*,
+      jobs.source AS job_source,
+      jobs.source_id AS job_source_id,
+      jobs.title AS job_title,
+      jobs.company AS job_company,
+      jobs.salary AS job_salary,
+      jobs.location AS job_location,
+      jobs.url AS job_url,
+      jobs.batch_id AS job_batch_id,
       events.id AS event_id,
       events.type AS event_type,
       events.actor AS event_actor,
@@ -613,6 +638,7 @@ function listProgressCardsWithEvents(db, input = {}) {
       events.occurred_at AS event_occurred_at,
       events.created_at AS event_created_at
     FROM candidate_progress_cards cards
+    JOIN jobs ON jobs.id = cards.job_id
     LEFT JOIN candidate_progress_events events ON events.card_id = cards.id
     WHERE cards.profile_id = ?
     ORDER BY cards.updated_at DESC, cards.id DESC, events.occurred_at ASC, events.id ASC`)
@@ -621,7 +647,21 @@ function listProgressCardsWithEvents(db, input = {}) {
   for (const row of rows) {
     let card = cards.get(Number(row.id));
     if (!card) {
-      card = { ...mapCard(row), events: [] };
+      card = {
+        ...mapCard(row),
+        job: {
+          id: Number(row.job_id),
+          source: row.job_source,
+          sourceId: row.job_source_id,
+          title: row.job_title,
+          company: row.job_company || "",
+          salary: row.job_salary || "",
+          location: row.job_location || "",
+          url: row.job_url || "",
+          batchId: Number(row.job_batch_id || 0) || null
+        },
+        events: []
+      };
       cards.set(card.id, card);
     }
     if (row.event_id) {
@@ -868,6 +908,7 @@ module.exports = {
   sanitizedMessageSummary,
   getProgressCardForJob,
   getProgressCardById,
+  bindProgressCardThread,
   listMessageDiscoveryCandidates,
   listProgressCards,
   listProgressCardsWithEvents,

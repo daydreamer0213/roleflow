@@ -10,6 +10,8 @@ const {
   recordDiscoveredMessageGroupClassification,
   correctProgressStage,
   getProgressCardForJob,
+  bindProgressCardThread,
+  listProgressCardsWithEvents,
   listProgressEvents
 } = require("../src/core/candidate_progress");
 
@@ -37,6 +39,18 @@ try {
   });
   assert.strictEqual(first.id, second.id);
   assert.strictEqual(first.stage, "contact_started");
+  const withJob = listProgressCardsWithEvents(db, { profileId: fixture.profileId })[0];
+  assert.deepStrictEqual(withJob.job, {
+    id: fixture.jobId,
+    source: "boss",
+    sourceId: "job-progress",
+    title: "Job progress",
+    company: "",
+    salary: "",
+    location: "",
+    url: "",
+    batchId: null
+  });
 
   const recorded = recordDiscoveredMessageClassification(db, {
     cardId: first.id,
@@ -54,6 +68,20 @@ try {
   assert.strictEqual(recorded.stage, "reply_ready");
   assert.strictEqual(recorded.nextAction, "Review draft before manual send");
   assert.strictEqual(listProgressEvents(db, first.id).length, 1);
+  const bound = bindProgressCardThread(db, {
+    cardId: first.id,
+    threadKey: digest("thread"),
+    now
+  });
+  assert.strictEqual(bound.threadKey, digest("thread"));
+  assert.throws(
+    () => bindProgressCardThread(db, {
+      cardId: first.id,
+      threadKey: digest("different-thread"),
+      now
+    }),
+    (error) => error.code === "PROGRESS_THREAD_CONFLICT"
+  );
 
   const repeated = recordDiscoveredMessageClassification(db, {
     cardId: first.id,
