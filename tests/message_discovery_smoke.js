@@ -310,7 +310,20 @@ async function unmatchedRetentionSmoke() {
     "only the valid item may create message-discovery progress events"
   );
   assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId }).some((item) => item.conversationKey === unmatchedKey), false);
-  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId }).length, 1);
+  const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId });
+  assert.strictEqual(unresolved.length, 1);
+  assert.deepStrictEqual({
+    positionTitle: unresolved[0].positionTitle,
+    company: unresolved[0].company,
+    salary: unresolved[0].salary,
+    city: unresolved[0].city
+  }, {
+    positionTitle: unmatchedTitle,
+    company: "Fixture Company",
+    salary: "20-30K",
+    city: "Guangzhou"
+  });
+  assert.match(unresolved[0].identityDigest, /^sha256:[a-f0-9]{64}$/);
   const retainedText = [
     allText(db, "message_discovery_unresolved_items"),
     JSON.stringify(logs)

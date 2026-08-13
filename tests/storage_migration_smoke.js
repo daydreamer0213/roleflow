@@ -12,6 +12,7 @@ const MESSAGE_PREVIEW_VERSION = 9;
 const COMMUNICATION_OUTCOME_STATUS_VERSION = 10;
 const MESSAGE_DISCOVERY_UNRESOLVED_VERSION = 11;
 const COMMUNICATION_RUNTIME_BINDING_VERSION = 12;
+const MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION = 13;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -35,10 +36,11 @@ try {
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null },
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null },
       { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1", backup_path: null },
-      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1", backup_path: null }
+      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1", backup_path: null },
+      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "communication_runtime_binding_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_discovery_safe_identity_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -96,12 +98,17 @@ try {
       "preview_kind",
       "reason_code",
       "first_observed_at",
-      "last_observed_at"
+      "last_observed_at",
+      "position_title",
+      "company",
+      "salary",
+      "city",
+      "identity_digest"
     ],
-    "unresolved storage must remain digest-only operational state"
+    "unresolved storage must retain only approved job identity fields"
   );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, COMMUNICATION_RUNTIME_BINDING_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -255,7 +262,8 @@ try {
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" },
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" },
       { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1" },
-      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1" }
+      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1" },
+      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

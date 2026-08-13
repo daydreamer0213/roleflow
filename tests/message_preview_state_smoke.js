@@ -93,7 +93,15 @@ try {
     previewDigest: digest("unmatched"),
     previewKind: "possible_hr_reply",
     reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
-    observedAt: now
+    observedAt: now,
+    identity: {
+      positionTitle: "RAG 应用工程师",
+      company: "示例科技",
+      salary: "15-25K",
+      city: "广州",
+      recruiterLabel: "禁止保存的招聘方",
+      messageText: "禁止保存的消息正文"
+    }
   });
   const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
   assert.deepStrictEqual(unresolved, [{
@@ -103,9 +111,17 @@ try {
     previewDigest: digest("unmatched"),
     previewKind: "possible_hr_reply",
     reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    positionTitle: "RAG 应用工程师",
+    company: "示例科技",
+    salary: "15-25K",
+    city: "广州",
+    identityDigest: unresolved[0].identityDigest,
     firstObservedAt: now,
     lastObservedAt: now
   }]);
+  assert.match(unresolved[0].identityDigest, /^sha256:[a-f0-9]{64}$/);
+  const unresolvedText = JSON.stringify(db.prepare("SELECT * FROM message_discovery_unresolved_items").all());
+  assert.doesNotMatch(unresolvedText, /禁止保存的招聘方|禁止保存的消息正文/);
   planned = planMessageDiscoveryQueue({
     rows: [
       readRow(digest("conversation-a"), digest("changed-again")),

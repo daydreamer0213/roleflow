@@ -688,6 +688,11 @@ CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
   reason_code TEXT NOT NULL,
   first_observed_at TEXT NOT NULL,
   last_observed_at TEXT NOT NULL,
+  position_title TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  salary TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT '',
+  identity_digest TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(profile_id, platform, conversation_key),
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
 );
@@ -803,6 +808,26 @@ const MIGRATIONS = [
         db.exec(
           "ALTER TABLE communication_batches ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'"
         );
+      }
+    }
+  },
+  {
+    version: 13,
+    name: "message_discovery_safe_identity_v1",
+    apply(db) {
+      const columns = new Set(db.prepare(
+        "PRAGMA table_info(message_discovery_unresolved_items)"
+      ).all().map((column) => column.name));
+      for (const [name, sql] of [
+        ["position_title", "TEXT NOT NULL DEFAULT ''"],
+        ["company", "TEXT NOT NULL DEFAULT ''"],
+        ["salary", "TEXT NOT NULL DEFAULT ''"],
+        ["city", "TEXT NOT NULL DEFAULT ''"],
+        ["identity_digest", "TEXT NOT NULL DEFAULT ''"]
+      ]) {
+        if (!columns.has(name)) {
+          db.exec(`ALTER TABLE message_discovery_unresolved_items ADD COLUMN ${name} ${sql}`);
+        }
       }
     }
   }

@@ -97,6 +97,12 @@ async function runBossMessageDiscovery({
 
     const resolved = resolveUniqueCandidate(candidates, selected);
     if (!resolved.ok) {
+      const identity = {
+        positionTitle: selected?.positionName,
+        company: selected?.companyName,
+        salary: selected?.salary,
+        city: selected?.city
+      };
       clearSelectedSnapshot(selected);
       recordUnresolvedMessageDiscoveryItem(db, {
         profileId,
@@ -105,7 +111,8 @@ async function runBossMessageDiscovery({
         previewDigest: target.previewDigest,
         previewKind: target.previewKind,
         reasonCode: resolved.reasonCode,
-        observedAt: now()
+        observedAt: now(),
+        identity
       });
       retained = unresolvedSummary(db, profileId);
       emitStatus(safeStatus("running", {
