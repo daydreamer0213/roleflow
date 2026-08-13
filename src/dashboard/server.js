@@ -130,6 +130,7 @@ const {
   retryOneJobAnalysis,
   retryPendingJobAnalyses
 } = require("../application/analysis");
+const { resolveInboundOpportunity } = require("../application/message_discovery/inbound");
 const { scanRuntimeBlock, communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
@@ -557,6 +558,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
+      if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
@@ -2476,6 +2478,45 @@ async function handleMessageDiscovery(req, res, controller) {
   }
 }
 
+async function handleInboundOpportunityResolution(req, res, db) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const result = resolveInboundOpportunity({ db, input: params });
+    redirect(res, `/messages?profileId=${encodeURIComponent(result.profileId)}`);
+  } catch (error) {
+    const known = new Set([
+      "INBOUND_ACTION_INVALID",
+      "INBOUND_ITEM_NOT_FOUND",
+      "INBOUND_PREVIEW_CHANGED",
+      "INBOUND_IDENTITY_INCOMPLETE",
+      "INBOUND_PROFILE_NOT_FOUND",
+      "INBOUND_ACTIVE_PLAN_REQUIRED",
+      "INBOUND_JOB_NOT_LINKABLE",
+      "INBOUND_JOB_IDENTITY_MISMATCH",
+      "PROGRESS_THREAD_CONFLICT"
+    ]);
+    const code = String(error?.code || "INBOUND_RESOLUTION_FAILED");
+    sendJson(res, known.has(code) ? 409 : 400, {
+      error: inboundOpportunityPublicError(code),
+      errorCode: code
+    });
+  }
+}
+
+function inboundOpportunityPublicError(code) {
+  return {
+    INBOUND_ACTION_INVALID: "处理方式无效。",
+    INBOUND_ITEM_NOT_FOUND: "这条待处理记录已变化或已处理，请刷新页面。",
+    INBOUND_PREVIEW_CHANGED: "会话预览已变化，请刷新页面后重新核对。",
+    INBOUND_IDENTITY_INCOMPLETE: "岗位名称或公司仍不完整，请重新只读发现后再处理。",
+    INBOUND_PROFILE_NOT_FOUND: "候选人画像不存在。",
+    INBOUND_ACTIVE_PLAN_REQUIRED: "请先启用一个筛选方案，再保存或关联机会。",
+    INBOUND_JOB_NOT_LINKABLE: "所选岗位不属于当前候选人的可关联范围。",
+    INBOUND_JOB_IDENTITY_MISMATCH: "所选岗位的名称或公司与会话不一致。",
+    PROGRESS_THREAD_CONFLICT: "该岗位已经关联到另一条会话。"
+  }[code] || "本地处理未完成，数据没有改变。";
+}
+
 function handleMessageDiscoveryStatus(res, controller, profileIdValue) {
   try {
     sendJson(res, 200, controller.status(profileIdValue));
@@ -3657,8 +3698,25 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
   const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
-  const fullPool = listDecisionPool(db, { planId: plan.id })
+  const decisionJobs = listDecisionPool(db, { planId: plan.id })
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
+  const knownJobIds = new Set(decisionJobs.map((job) => Number(job.id)));
+  const directProgressJobs = progressCards
+    .filter((card) => card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId)))
+    .map((card) => ({
+      ...card.job,
+      profileId: card.profileId,
+      searchPlanId: card.planId,
+      progressCard: card,
+      decisionBucket: "",
+      applicationStatus: "",
+      qualityTags: [],
+      risks: [],
+      analysis: {},
+      keyword: "HR 主动联系",
+      inboundOpportunity: true
+    }));
+  const fullPool = [...decisionJobs, ...directProgressJobs];
   const allCandidates = fullPool.filter((job) => compactAwaitingAction(job) && !job.progressCard);
   const noReplyCandidates = fullPool.filter((job) => job.applicationStatus === "no_reply");
   const progressCandidates = fullPool.filter((job) => job.progressCard);
@@ -3890,6 +3948,7 @@ function compactAwaitingAction(job) {
 }
 
 function queueScopeForJob(job, latestMainBatchId) {
+  if (job.inboundOpportunity) return "backlog";
   if (!latestMainBatchId) return "backlog";
   if (Number(job.firstBatchId) === Number(latestMainBatchId)) return "new";
   if (Number(job.latestScanBatchId) === Number(latestMainBatchId)) return "repeated";
@@ -3943,6 +4002,7 @@ function renderCompactJob(job, filters) {
 }
 
 function renderCompactJobBase(job, filters) {
+  if (job.inboundOpportunity) return renderInboundProgressJob(job);
   const analysis = job.analysis || {};
   const query = compactQuery(filters);
   const context = `${job.profileId ? `<input type="hidden" name="profileId" value="${escapeAttr(job.profileId)}">` : ""}${job.searchPlanId ? `<input type="hidden" name="planId" value="${escapeAttr(job.searchPlanId)}">` : ""}`;
@@ -3961,6 +4021,11 @@ function renderCompactJobBase(job, filters) {
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+}
+
+function renderInboundProgressJob(job) {
+  const card = job.progressCard;
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title || "HR 主动岗位")}</div><div class="job-meta">${escapeHtml(job.company || "公司待确认")} · ${escapeHtml(job.location || "地点待确认")} · ${escapeHtml(job.salary || "薪资待确认")}</div><div class="job-meta">来源：HR 主动联系 · 未进入岗位推荐与效果统计</div></div><span class="decision analysis_pending">需要处理</span></div><div class="job-reason">这是从消息只读发现中由你确认保存的本地机会。</div><details class="details"><summary>查看进展与本地操作</summary>${renderProgressPanel(card)}</details></article>`;
 }
 
 function compactVisibleRisks(risks = []) {

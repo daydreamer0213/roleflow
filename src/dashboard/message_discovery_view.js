@@ -26,11 +26,14 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
   const profile = getCandidateProfile(db, profileId);
   if (!profile) return renderErrorPage("候选人画像不存在。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_NOT_FOUND" });
   const pageState = controller.pageState(profileId);
-  const durableUnresolved = pageState.status === "dismissed"
-    ? listUnresolvedMessageDiscoveryItems(db, { profileId })
-    : [];
+  const durableUnresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
   const status = durableUnresolved.length
-    ? { ...pageState, unresolved: durableUnresolved.length, reasonCode: durableUnresolved[0].reasonCode }
+    ? {
+        ...pageState,
+        status: pageState.status === "running" ? "running" : "needs_user_action",
+        unresolved: durableUnresolved.length,
+        reasonCode: durableUnresolved[0].reasonCode
+      }
     : pageState;
   plan ||= db.prepare(`SELECT id FROM search_plans
     WHERE profile_id = ?
@@ -63,6 +66,9 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status !== "running" && status.results.some((item) => item.messages.length) ? "" : " disabled"}>放弃本次草稿</button></form>
   </section>`;
+  const unresolvedSections = durableUnresolved.map((item) =>
+    renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })
+  ).join("");
   const scriptState = JSON.stringify({ profileId, status: status.status, recoveryMessages });
   return renderFramedPage({
     title: "BOSS 消息只读发现",
@@ -71,9 +77,45 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
     planId: plan?.id || "",
     stage: "消息",
     brandHref: plan?.id ? `/plan?planId=${plan.id}` : "/onboarding",
-    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">只读发现</p><h1>BOSS 消息只读发现</h1><p class="lede">只读取未读会话并在本机生成草稿。请复制草稿后到平台人工粘贴；本页不会填写、粘贴或发送平台消息。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${resultSections || '<section class="panel"><p class="line">当前没有可复制的草稿。</p></section>'}<p><a class="button-link secondary" href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
+    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">只读发现</p><h1>BOSS 消息只读发现</h1><p class="lede">只读取未读会话并在本机生成草稿。请复制草稿后到平台人工粘贴；本页不会填写、粘贴或发送平台消息。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${unresolvedSections}${resultSections || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有可复制的草稿。</p></section>' : "")}<p><a class="button-link secondary" href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
     scripts: [`<script>(function(){const initial=${scriptState};const feedback=document.querySelector("[data-discovery-feedback]");const forms=Array.from(document.querySelectorAll("[data-discovery-form]"));const postStatuses=["running","stopped","completed","needs_user_action","dismissed"];const pollStatuses=["idle","running","stopped","completed","needs_user_action","dismissed"];let actionPending=false;let actionVersion=0;let currentStatus=initial.status;let reloadPending=false;let pollPending=false;let pollTimer=null;const messageFor=(code)=>initial.recoveryMessages[String(code||"")]||initial.recoveryMessages.default;const show=(code)=>{if(reloadPending)return;feedback.textContent=messageFor(code);feedback.dataset.errorCode=String(code||"");};const requestReload=()=>{reloadPending=true;location.reload();};const setPending=(pending)=>{feedback.setAttribute("aria-busy",String(pending));if(pending)feedback.textContent="正在处理，请稍候。";for(const form of forms)for(const button of form.querySelectorAll("button")){if(!("discoveryBaseDisabled" in button.dataset))button.dataset.discoveryBaseDisabled=String(button.disabled);button.disabled=pending||button.dataset.discoveryBaseDisabled==="true";}};const read=async(response)=>{const text=await response.text();try{return {json:true,body:JSON.parse(text)}}catch{return {json:false,body:null}}};const accepted=(response,parsed,statuses)=>Boolean(response.ok&&parsed.json&&parsed.body&&typeof parsed.body==="object"&&!Array.isArray(parsed.body)&&!Object.prototype.hasOwnProperty.call(parsed.body,"errorCode")&&statuses.includes(parsed.body.status));const rejectedCode=(parsed)=>parsed.body?.errorCode||"MESSAGE_DISCOVERY_FAILED";const schedulePoll=()=>{if(!reloadPending&&!actionPending&&pollTimer===null)pollTimer=setTimeout(poll,2000);};for(const form of forms)form.addEventListener("submit",async(event)=>{event.preventDefault();if(actionPending||reloadPending)return;actionPending=true;actionVersion+=1;setPending(true);let succeeded=false;try{const response=await fetch(form.getAttribute("action"),{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(new FormData(form))});const parsed=await read(response);if(accepted(response,parsed,postStatuses)){succeeded=true;requestReload();return;}show(rejectedCode(parsed));}catch{show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{actionPending=false;setPending(false);if(!reloadPending&&!succeeded&&currentStatus==="running")schedulePoll();}});for(const button of document.querySelectorAll("[data-copy-draft]"))button.addEventListener("click",async()=>{const field=document.getElementById(button.dataset.copyDraft);if(field)await navigator.clipboard.writeText(field.value);});const poll=async()=>{pollTimer=null;if(reloadPending||pollPending||actionPending)return;pollPending=true;const version=actionVersion;try{const response=await fetch("/api/message-discovery-status?profileId="+encodeURIComponent(initial.profileId));const parsed=await read(response);if(reloadPending||actionPending||version!==actionVersion)return;if(!accepted(response,parsed,pollStatuses)){show(rejectedCode(parsed));return;}currentStatus=parsed.body.status;if(currentStatus==="running")schedulePoll();else requestReload();}catch{if(!reloadPending&&!actionPending&&version===actionVersion)show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{pollPending=false;if(!reloadPending&&!actionPending&&version!==actionVersion&&currentStatus==="running")schedulePoll();}};if(currentStatus==="running")schedulePoll();}());</script>`]
   });
+}
+
+function renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr }) {
+  const complete = Boolean(String(item.positionTitle || "").trim() && String(item.company || "").trim());
+  const matches = complete ? exactIdentityCandidates(db, profileId, item) : [];
+  const hidden = `<input type="hidden" name="profileId" value="${profileId}"><input type="hidden" name="conversationKey" value="${escapeAttr(item.conversationKey)}"><input type="hidden" name="previewDigest" value="${escapeAttr(item.previewDigest)}">`;
+  const candidateChoices = matches.map((job) =>
+    `<label><input type="radio" name="jobId" value="${job.id}"${matches.length === 1 ? " checked" : ""}>${escapeHtml(job.title)} · ${escapeHtml(job.company || "")}</label>`
+  ).join("");
+  const link = complete && matches.length
+    ? `<form method="post" action="/api/message-discovery-unresolved">${hidden}<input type="hidden" name="action" value="link"><fieldset><legend>关联现有岗位</legend>${candidateChoices}</fieldset><button class="secondary">关联现有岗位</button></form>`
+    : `<button class="secondary" disabled>关联现有岗位</button>`;
+  const create = `<form method="post" action="/api/message-discovery-unresolved">${hidden}<button name="action" value="create"${complete ? "" : " disabled"}>保存为 HR 主动机会</button></form>`;
+  const ignore = `<form method="post" action="/api/message-discovery-unresolved">${hidden}<button class="secondary" name="action" value="ignore">不纳入 RoleFlow</button></form>`;
+  const incomplete = complete ? "" : `<p class="risk-text">岗位身份仍不完整，请下次只读发现后再处理。</p>`;
+  return `<section class="panel message-unresolved"><h2>${escapeHtml(item.positionTitle || "岗位名称待确认")}</h2><p class="line">${escapeHtml(item.company || "公司待确认")} · ${escapeHtml(item.salary || "薪资待确认")} · ${escapeHtml(item.city || "地点待确认")}</p>${incomplete}<p class="line">以上仅为岗位身份字段；没有保存招聘方姓名或消息正文。</p><div class="message-controls">${link}${create}${ignore}</div></section>`;
+}
+
+function exactIdentityCandidates(db, profileId, item) {
+  return db.prepare(`SELECT DISTINCT jobs.id, jobs.title, jobs.company
+    FROM jobs
+    LEFT JOIN candidate_progress_cards cards
+      ON cards.job_id = jobs.id AND cards.profile_id = ?
+    LEFT JOIN job_observations observations ON observations.job_id = jobs.id
+    LEFT JOIN batches ON batches.id = observations.batch_id
+    WHERE lower(trim(jobs.title)) = lower(trim(?))
+      AND lower(trim(COALESCE(jobs.company, ''))) = lower(trim(?))
+      AND (
+        cards.id IS NOT NULL
+        OR batches.profile_id = ?
+      )
+      AND COALESCE(cards.stage, '') NOT IN ('rejected', 'closed')
+    ORDER BY jobs.last_seen_at DESC, jobs.id DESC
+    LIMIT 20`)
+    .all(profileId, item.positionTitle, item.company, profileId)
+    .map((row) => ({ id: Number(row.id), title: row.title, company: row.company || "" }));
 }
 
 function messageDiscoveryReasonText(code) {

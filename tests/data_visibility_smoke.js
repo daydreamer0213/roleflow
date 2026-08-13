@@ -90,6 +90,17 @@ function inboundVisibilitySmoke({ profileId, planId }) {
     .find((card) => card.id === created.card.id);
   assert.strictEqual(progress.job.title, "HR 主动岗位");
   assert.strictEqual(progress.job.batchId, null);
+  const progressHtml = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "needs_user_action" })
+  });
+  assert(progressHtml.includes("HR 主动岗位"));
+  assert(progressHtml.includes("HR 主动联系"));
+  const recommendationHtml = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "apply" })
+  });
+  assert(!recommendationHtml.includes("HR 主动岗位"));
 }
 
 function uniqueJobsBeforeLimitSmoke({ profileId, planId }) {
