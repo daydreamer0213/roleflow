@@ -39,6 +39,7 @@
 
 - 登录失效、风控、目标不一致、点击后结果不明等可能造成账号风险或重复沟通的情况，继续立即停止。
 - 进程中断、绑定可恢复、点击前短暂读取失败等不会造成外部写入的情况，允许从持久化检查点恢复或做一次受限重试。
+- 工作流轮询数据损坏时，错误会在折叠区外直接显示并暂时禁用控制；后续有效快照到达后自动恢复。暂停、待确认和中断状态把恢复操作放在手机首屏。
 
 这样可以容忍普通中断和安全范围内的页面波动，同时不把“更健壮”变成“风险信号也继续点”。
 
@@ -47,7 +48,8 @@
 - 正式 Gate D：5 个关键词、51 个唯一岗位、51/51 完整 JD、详情失败 0；主线为 `trusted_pane`。
 - Dashboard 严格矩阵：12 个页面 × 4 个视口，共 48 个页面状态；无横向溢出、控制台错误、页面错误、请求失败、外部请求或无标签可见控件。
 - 消息页矩阵包含一条离线 HR 主动机会，只渲染并核对界面，没有启动消息发现，也没有提交任何表单。
-- 完整离线套件和最终安装包验证以最终收口日志为准。
+- 完整离线套件强制启用 Playwright 浏览器夹具，最终 97 项全部通过。
+- 最终安装包验证以最终收口日志和安装包校验文件为准。
 
 ## 尚未完成或需用户决定
 
@@ -64,7 +66,7 @@
 
 - 正式 Gate D：`D:\DevData\RoleFlow-gate-d\baseline\formal-trusted-pane-account02-20260813-094114`
 - Gate D 报告：`docs/superpowers/reports/2026-08-13-wave4-conditional-acceptance.md`
-- 最终 UI 矩阵：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v2.json`
-- 消息页桌面图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v2-messages-unresolved-1440x900.png`
-- 消息页手机图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v2-messages-unresolved-375x812.png`
-
+- 最终 UI 矩阵：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v3.json`
+- 消息页桌面图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v3-messages-unresolved-1440x900.png`
+- 消息页手机图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v3-messages-unresolved-375x812.png`
+- 完整离线套件：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-final-v7.stdout.log`
