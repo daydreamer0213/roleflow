@@ -1,6 +1,14 @@
 # 交付与隐私边界
 
-## 绿色包
+## 标准安装器
+
+`BuildInstaller.bat` 生成 `dist\RoleFlow-Setup-<版本>.exe` 和 SHA-256 校验文件。安装器按当前用户安装，默认位置为 `%LOCALAPPDATA%\Programs\RoleFlow`，包含固定版 Node.js 与生产依赖，不在用户电脑运行 `npm ci` 或完整离线测试。
+
+安装器提供 Windows 安装进度、开始菜单与可选桌面快捷方式、隐藏终端启动和标准卸载入口。卸载默认保留下方列出的用户数据；明确二次确认后才删除当前安装目录内经过限定的数据子目录。
+
+Edge Control 目前不进入安装包，也不会由安装器自动下载。缺失或不健康时，普通 Edge 主路径停止并显示依赖说明，不会自动切换到 portable/CDP。这个外部依赖限制意味着当前安装器不能宣称在全新电脑上“一键完成浏览器连接”。
+
+## 便携绿色包
 
 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。默认包含代码、依赖、匿名样例和便携 Node.js；另一台 Windows 电脑解压后可运行。普通 Edge 默认复用当前已登录会话，但需要健康的 Edge Control 扩展和桥接；显式 portable/CDP 入口仍保留，不依赖 Edge Control 插件。
 
@@ -27,7 +35,7 @@
 ## 新电脑首次运行
 
 1. 解压到用户可写目录。
-2. 双击 `Install.bat` 做环境与完整离线回归检查。
+2. 双击 `Install.bat` 做 Node、生产依赖和 Edge 环境检查；完整离线回归只在发布构建前执行。
 3. 双击 `Start.bat`；启动前在同一普通 Edge 窗口保留一个 BOSS 搜索页和一个 BOSS 沟通页，并确认 Edge Control 扩展/桥接健康。若需要独立环境，才手动使用 `Start.bat -BrowserMode portable` 并在 `.runtime\edge-profile` 中重新登录。
 4. 重新填写模型 Key；DPAPI 密文不能跨 Windows 用户或电脑复用。
 5. 普通 Edge 模式使用当前已登录会话；portable 模式需在项目专用 Edge 中重新登录 BOSS，不复制旧电脑的浏览器 profile。

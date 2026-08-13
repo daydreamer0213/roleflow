@@ -31,8 +31,8 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-1. 双击 `Install.bat`。安装器会检测 Edge 和 Node.js 22；缺少 Node 时下载便携版本到项目的 `.runtime\node`，依赖安装到项目内 `node_modules`。
-2. 双击 `Start.bat` 启动 RoleFlow 工作台。
+1. 下载并运行 `RoleFlow-Setup-<版本>.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。
+2. 从桌面或开始菜单启动 RoleFlow。启动过程不会显示常驻黑色终端；失败时会显示原因和日志位置。
 3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。
 5. 检查模型生成的候选人画像和搜索方案，手工选择求职城市并保存方案。
@@ -48,6 +48,14 @@ Windows 普通用户：
 9. 登录成功不会自动扫描；扫描完成后仍需用户确认清单并再次明确点击“开始沟通”。本阶段不自动沟通、不发送或投递，也不放宽首次校准点击和批次确认门禁。
 
 模型不可用时，历史岗位和投递记录仍可查看；简历解析和语义匹配会明确显示为待处理，不会伪装成模型结论。
+
+### 浏览器连接
+
+标准安装器包含 RoleFlow、固定版 Node.js 和生产依赖，但当前不分发 Edge Control 扩展和桥接：该外部组件尚无可验证的再分发许可。启动前需要使用现有本地安装方式准备并连接 Edge Control；缺失时 RoleFlow 会停止并给出说明，不会自动下载未知版本，也不会静默切换到独立浏览器。
+
+卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。默认保留岗位数据库、简历、模型设置、日志和报告；只有在卸载确认框中明确选择删除，才会清理当前 RoleFlow 安装目录内的这些数据。
+
+仓库源码和便携 ZIP 仍保留 `Install.bat` / `Start.bat`，用于开发、便携使用和故障恢复。`Install.bat` 不是标准 Windows 安装器，也不再把完整开发回归测试作为用户安装步骤。
 
 ## 运行逻辑
 
@@ -134,6 +142,8 @@ Windows 普通用户：
 ## 便携交付
 
 双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；发布包不依赖 Codex，但默认普通 Edge 模式需要用户已安装并连接健康的 Edge Control 扩展和桥接。发布 zip 不内置或自动安装 Edge Control 桥接。
+
+维护者双击 `BuildInstaller.bat` 可生成标准安装器和同名 `.sha256` 校验文件。构建会先运行一次完整离线回归，再在 `D:\DevData\RoleFlow-installer` 创建不含数据库、简历、密钥、日志、报告、浏览器 profile、测试源码或 Edge Control 的干净暂存目录，然后调用固定的 Inno Setup 6 编译器。构建机需要把编译器放在 `D:\DevData\InnoSetup`，或设置 `ROLEFLOW_ISCC`。
 
 项目专用 Edge profile 位于 `.runtime\edge-profile`。不要复制旧电脑的登录 profile；在新电脑重新登录 BOSS。
 

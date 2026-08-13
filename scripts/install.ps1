@@ -36,6 +36,7 @@ function Resolve-Node {
   if ($env:ZHIPPING_NODE) {
     $Candidates += $env:ZHIPPING_NODE
   }
+  $Candidates += (Join-Path $ProjectRoot "runtime\node\node.exe")
   $Candidates += (Join-Path $ProjectRoot ".runtime\node\node.exe")
   $Candidates += "D:\hermes\node\node.exe"
 
@@ -210,12 +211,6 @@ if (-not $EdgePath) {
 Write-Host "Edge: $EdgePath"
 
 $env:ZHIPPING_NODE = $Node.Path
-if (-not $CheckOnly) {
-  & $Node.Path --disable-warning=ExperimentalWarning (Join-Path $ProjectRoot "tests\run_all.js")
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-  }
-}
 
 if ($StartBrowser) {
   & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "start-portable-edge.ps1") -Port $Port

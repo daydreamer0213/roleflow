@@ -14,9 +14,14 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
 function Resolve-Node {
-  $Bundled = "D:\hermes\node\node.exe"
-  if (Test-Path -LiteralPath $Bundled) {
-    return $Bundled
+  foreach ($Bundled in @(
+    (Join-Path $ProjectRoot "runtime\node\node.exe"),
+    (Join-Path $ProjectRoot ".runtime\node\node.exe"),
+    "D:\hermes\node\node.exe"
+  )) {
+    if (Test-Path -LiteralPath $Bundled) {
+      return $Bundled
+    }
   }
   $Cmd = Get-Command node -ErrorAction SilentlyContinue
   if ($null -eq $Cmd) {
@@ -30,7 +35,7 @@ function Read-JsonFile {
   if (-not (Test-Path -LiteralPath $Path)) {
     return $null
   }
-  return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+  return Get-Content -Raw -Encoding utf8 -LiteralPath $Path | ConvertFrom-Json
 }
 
 function Read-EdgeControlConfig {
@@ -107,10 +112,33 @@ function Resolve-EdgeControlRoot {
   return [pscustomobject]@{ Source = "bundled"; Root = $ResolvedBundledRoot }
 }
 
+$ExistingConfig = Read-EdgeControlConfig
+if ($null -ne $ExistingConfig) {
+  try {
+    $ExistingStatus = Get-BridgeStatus -Config $ExistingConfig
+  } catch {
+    $ExistingStatus = $null
+  }
+  if ($null -ne $ExistingStatus) {
+    $ExistingConnectionState = $ExistingStatus.bridge.connectionState
+    $ExistingExtensionReady = [bool]$ExistingStatus.bridge.readyExtension
+    $ExistingExtensionHealthy = [bool]$ExistingStatus.bridge.healthyExtension
+    Write-Host "Edge Control source: existing local installation"
+    Write-Host "Edge Control bridge: $ExistingConnectionState"
+    Write-Host "Bridge URL: http://$($ExistingConfig.host):$($ExistingConfig.port)"
+    Write-Host "Extension ready: $ExistingExtensionReady"
+    Write-Host "Extension healthy: $ExistingExtensionHealthy"
+    if (-not $ExistingExtensionHealthy) {
+      throw "Edge extension is not connected. Open Edge and ensure the existing Edge Control extension is loaded."
+    }
+    exit 0
+  }
+}
+
 $Resolved = Resolve-EdgeControlRoot
 $Root = Resolve-Path -LiteralPath $Resolved.Root -ErrorAction SilentlyContinue
 if ($null -eq $Root) {
-  throw "Edge Control root not found: $($Resolved.Root)"
+  throw "浏览器连接组件尚未安装或服务未启动。请按 README 的“浏览器连接”步骤准备 Edge Control 后重试。未自动切换到独立浏览器。"
 }
 $RootPath = $Root.Path
 $ScriptsDir = Join-Path $RootPath "scripts"
