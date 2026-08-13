@@ -15,6 +15,7 @@ const PAGE_SPECS = Object.freeze([
   { id: "queue-primary", family: "queue", state: "primary", primaryPolicy: "none-expected", primaryRationale: "Queue presents several safe local status actions, not one page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/queue?planId=${planId}&pool=primary` },
   { id: "jobs-latest", family: "jobs", state: "latest-batch", primaryPolicy: "none-expected", primaryRationale: "Jobs filters and local record actions intentionally have no page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/jobs?planId=${planId}&batch=latest` },
   { id: "communication-review", family: "communication", state: "confirmed-offline", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}` },
+  { id: "messages-unresolved", family: "messages", state: "inbound-opportunity", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/messages?profileId=${profileId}` },
   { id: "settings", family: "settings", state: "default", primaryPolicy: "none-expected", primaryRationale: "Saving settings can test a model connection and is deliberately not promoted or executed by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/settings" },
   { id: "onboarding-existing", family: "onboarding", state: "existing-profile", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/onboarding" },
   { id: "match-card", family: "matchCard", state: "confirmed-profile", primaryPolicy: "none-expected", primaryRationale: "Matching-card edits are persisted only after explicit review and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId, matchCardId }) => `/match-card?profileId=${profileId}&cardId=${matchCardId}` },
@@ -43,12 +44,13 @@ async function main() {
   const storage = require(path.join(options.targetRoot, "src", "core", "storage"));
   const { matchingCardFromProfile } = require(path.join(options.targetRoot, "src", "core", "matching_card"));
   const { createCommunicationBatch } = require(path.join(options.targetRoot, "src", "core", "communication_batches"));
+  const { recordUnresolvedMessageDiscoveryItem } = require(path.join(options.targetRoot, "src", "core", "message_preview_state"));
   const { createDashboardServer } = require(path.join(options.targetRoot, "src", "dashboard", "server"));
   const dbPath = path.join(options.outputDir, `.${options.label}.sqlite`);
   let db; let server; let browser;
   try {
     db = storage.openDb(dbPath);
-    const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, db });
+    const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db });
     server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(), browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -71,7 +73,7 @@ async function main() {
   assertCanonicalArtifacts(options.outputDir, options.label, result.pages.length);
 }
 
-function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, db }) {
+function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db }) {
   const profile = { candidate: { name: "Dashboard acceptance fixture", city: "Shanghai", targetTitles: ["AI application engineer"], expectedSalary: "15-25K" }, education: [], experiences: [], skills: [{ name: "Python", evidence: ["offline fixture"] }], projects: [{ name: "RAG fixture", canSay: ["RAG"] }], credentials: [], strengths: [] };
   const saved = storage.saveProfileAnalysis(db, { profile, document: { originalFileName: "dashboard-wave2-fixture.txt", format: "text", contentHash: "dashboard-wave2-offline-v1", text: "Python RAG offline dashboard acceptance fixture. ".repeat(16), diagnostics: {} }, searchPlan: { name: "Dashboard acceptance plan", cities: ["Shanghai"], directions: ["AI application"], keywords: [{ word: "RAG", priority: "A", reason: "fixture" }], experience: ["1-3 years"], jobTypes: ["full time"], degrees: [], salary: { minK: 15, maxK: 25 }, bossActiveDays: 3, platform: { site: "boss" } } });
   const card = storage.createMatchingCardDraft(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, resumeDocumentId: saved.resumeDocumentId, resumeContentHash: "dashboard-wave2-offline-v1", card: matchingCardFromProfile(profile), source: "migration" });
@@ -84,6 +86,16 @@ function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatc
   storage.attachWorkflowScan(db, { id: workflow.id, scanRunId: scan.id, scanBatchId: batchId });
   storage.recordWorkflowScanWait(db, { workflowRunId: workflow.id, runId: scan.id, action: "detail_open", delayMs: 600000, retryAt: "2099-01-01T00:10:00.000Z", now: "2099-01-01T00:00:00.000Z" });
   const communication = createCommunicationBatch(db, { planId: saved.planId, jobIds: [jobId], browserMode: "edge", now: "2099-01-01T00:00:00.000Z" });
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: saved.profileId,
+    platform: "boss",
+    conversationKey: `sha256:${"d".repeat(64)}`,
+    previewDigest: `sha256:${"e".repeat(64)}`,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2099-01-01T00:00:00.000Z",
+    identity: { positionTitle: "数据产品经理", company: "主动邀请示例公司", salary: "18-25K", city: "上海" }
+  });
   return { profileId: saved.profileId, matchCardId: card.id, planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id };
 }
 
