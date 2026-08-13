@@ -70,3 +70,7 @@
 - 消息页桌面图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v3-messages-unresolved-1440x900.png`
 - 消息页手机图：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-ui\wave2\beta4-final-v3-messages-unresolved-375x812.png`
 - 完整离线套件：`D:\DevData\RoleFlow-gate-d\verification\beta4-workflow-safety-recovery-final-v7.stdout.log`
+- 标准安装包：`dist\RoleFlow-Setup-0.1.0-beta.3.exe`
+- 安装包 SHA-256：`345f203f9e1befadc2fdce095a04813d9139c2864757a5f8b4cd33c6c0b42045`
+- 最终隔离安装日志：`D:\DevData\RoleFlow-installer\acceptance-final-20260813\install.log`
+- 最终隔离卸载日志：`D:\DevData\RoleFlow-installer\acceptance-final-20260813\uninstall.log`
