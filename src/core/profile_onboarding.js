@@ -14,9 +14,10 @@ async function analyzeResumeProfile({
   logger = null,
   identity = null,
   strictPrivacy = false,
+  preparedModelInput = null,
   analyzerFactory = createLlmAnalyzer
 }) {
-  const modelInput = prepareResumeTextForModel(resume.text, {
+  const modelInput = preparedModelInput || prepareResumeTextForModel(resume.text, {
     originalFileName: resume.originalFileName,
     identity,
     strict: strictPrivacy

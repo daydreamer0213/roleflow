@@ -13,6 +13,7 @@ const COMMUNICATION_OUTCOME_STATUS_VERSION = 10;
 const MESSAGE_DISCOVERY_UNRESOLVED_VERSION = 11;
 const COMMUNICATION_RUNTIME_BINDING_VERSION = 12;
 const MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION = 13;
+const ONBOARDING_RUN_VERSION = 14;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -37,10 +38,11 @@ try {
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null },
       { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1", backup_path: null },
       { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1", backup_path: null },
-      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1", backup_path: null }
+      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1", backup_path: null },
+      { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_discovery_safe_identity_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "onboarding_runs_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -88,6 +90,10 @@ try {
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='message_discovery_unresolved_items'").get().n,
     1
   );
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='onboarding_runs'").get().n,
+    1
+  );
   assert.deepStrictEqual(
     db.prepare("PRAGMA table_info(message_discovery_unresolved_items)").all().map((column) => column.name),
     [
@@ -108,7 +114,7 @@ try {
     "unresolved storage must retain only approved job identity fields"
   );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, ONBOARDING_RUN_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -263,7 +269,8 @@ try {
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" },
       { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1" },
       { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1" },
-      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1" }
+      { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1" },
+      { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

@@ -698,6 +698,38 @@ CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
 );
 `;
 
+const ONBOARDING_RUN_SCHEMA = `
+CREATE TABLE IF NOT EXISTS onboarding_runs (
+  id TEXT PRIMARY KEY,
+  profile_id INTEGER NOT NULL,
+  resume_document_id INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
+  stage TEXT NOT NULL CHECK(stage IN (
+    'parsed','analyzing_profile','building_match_card','building_plan','ready'
+  )),
+  progress_revision INTEGER NOT NULL DEFAULT 0 CHECK(progress_revision >= 0),
+  profile_version_id INTEGER,
+  matching_card_id INTEGER,
+  search_plan_id INTEGER,
+  error_code TEXT,
+  error_message TEXT,
+  heartbeat_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_at TEXT,
+  UNIQUE(profile_id, resume_document_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(resume_document_id) REFERENCES resume_documents(id),
+  FOREIGN KEY(profile_version_id) REFERENCES profile_versions(id) ON DELETE SET NULL,
+  FOREIGN KEY(matching_card_id) REFERENCES candidate_matching_cards(id) ON DELETE SET NULL,
+  FOREIGN KEY(search_plan_id) REFERENCES search_plans(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_runs_status
+  ON onboarding_runs(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_onboarding_runs_profile
+  ON onboarding_runs(profile_id, created_at);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -829,6 +861,21 @@ const MIGRATIONS = [
           db.exec(`ALTER TABLE message_discovery_unresolved_items ADD COLUMN ${name} ${sql}`);
         }
       }
+    }
+  },
+  {
+    version: 14,
+    name: "onboarding_runs_v1",
+    apply(db) {
+      const columns = new Set(db.prepare(
+        "PRAGMA table_info(candidate_profiles)"
+      ).all().map((column) => column.name));
+      if (!columns.has("is_ready")) {
+        db.exec(
+          "ALTER TABLE candidate_profiles ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 1 CHECK(is_ready IN (0, 1))"
+        );
+      }
+      db.exec(ONBOARDING_RUN_SCHEMA);
     }
   }
 ];

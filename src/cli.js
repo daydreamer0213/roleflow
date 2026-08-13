@@ -11,6 +11,7 @@ const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
 const { completedWorkflowAnalysisCount } = require("./core/workflow_analysis_tasks");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
+const { processOnboardingRun } = require("./core/onboarding_run");
 const {
   CITY_CODES,
   cityToBossCode,
@@ -160,6 +161,7 @@ async function main() {
   if (command === "refresh-details") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, args, { signal, execution }));
   if (command === "refresh-activity") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, { ...args, "activity-only": true }, { signal, execution }));
   if (command === "profile-create") return createProfile(db, args);
+  if (command === "onboarding-process") return processOnboardingCommand(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
   if (command === "rescore-plan") return rescorePlan(db, args);
@@ -2345,6 +2347,32 @@ async function createProfile(db, args) {
   console.log(`Profile: ${saved.profileId}`);
   console.log(`Search plan: ${saved.planId}`);
   console.log(`Keywords: ${planKeywords(plan).join("、")}`);
+}
+
+async function processOnboardingCommand(db, args) {
+  const runId = String(args.run || "").trim();
+  if (!runId) throw new Error("需要 --run <Onboarding Run ID>");
+  const fallbackModelConfig = loadConfigs(ROOT).model;
+  const modelConfig = args["force-mock"] === true
+    ? offlineMockModelConfig()
+    : resolveRuntimeModelConfig({
+        root: ROOT,
+        fallbackModelConfig,
+        taskProfile: "deep_analysis"
+      }).modelConfig;
+  const result = await processOnboardingRun({
+    db,
+    runId,
+    modelConfig,
+    logger: logger.child({ runId, operation: "onboarding" })
+  });
+  if (result.status === "failed") {
+    const error = new Error(result.errorMessage || "简历后台处理失败。");
+    error.code = result.errorCode || "ONBOARDING_RUN_FAILED";
+    throw error;
+  }
+  console.log(`Onboarding run ${result.id} completed`);
+  return result;
 }
 
 function bindBatch(db, args) {

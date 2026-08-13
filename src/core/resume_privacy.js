@@ -61,6 +61,12 @@ function inferCandidateNames(text, originalFileName) {
   return [...new Set(names)];
 }
 
+function inferCandidateDisplayName(text, originalFileName) {
+  return inferCandidateNames(text, originalFileName)
+    .find((name) => name
+      && !/姓名已隐藏|姓名已遮盖|已隐藏|候选人/i.test(name)) || "候选人";
+}
+
 function mergeRedactionCounts(target, source) {
   for (const [name, count] of Object.entries(source || {})) {
     target[name] = (target[name] || 0) + Number(count || 0);
@@ -149,4 +155,11 @@ function prepareResumeTextForModel(
   return { text, preview: text.slice(0, 1200), redactions };
 }
 
-module.exports = { prepareResumeTextForModel, assertResumeIdentityRedacted, maskResumeContacts, maskResumeFileName, maskResumeDiagnostics };
+module.exports = {
+  prepareResumeTextForModel,
+  assertResumeIdentityRedacted,
+  inferCandidateDisplayName,
+  maskResumeContacts,
+  maskResumeFileName,
+  maskResumeDiagnostics
+};

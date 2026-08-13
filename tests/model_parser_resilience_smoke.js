@@ -10,11 +10,30 @@ const root = path.resolve(__dirname, "..");
 async function main() {
   await testModelTimeouts();
   await testModelRetryPolicy();
+  await testLongStructuredTaskTokenLimits();
   await testResumeParserTimeouts();
   await testPdfExtractionLifecycle();
   await testPdfGetPageDeadline();
   await testPdfCumulativeDeadline();
   console.log("model_parser_resilience_smoke ok");
+}
+
+async function testLongStructuredTaskTokenLimits() {
+  const requested = [];
+  await withFetch(async (_url, options) => {
+    requested.push(JSON.parse(options.body));
+    return modelResponse({ ok: true });
+  }, async () => {
+    const adapter = makeAdapter({ maxTokens: 4096, maxRetries: 0 });
+    await adapter.chatJson("return json", { test: true }, { kind: "analyzeResume" });
+    await adapter.chatJson("return json", { test: true }, { kind: "recommendSearchPlan" });
+    await adapter.chatJson("return json", { test: true }, { kind: "understandJob" });
+  });
+  assert.deepStrictEqual(
+    requested.map((body) => body.max_tokens),
+    [8192, 8192, 4096],
+    "only the two observed long onboarding tasks should start at 8192 response tokens"
+  );
 }
 
 async function testModelTimeouts() {

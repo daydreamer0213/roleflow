@@ -3,20 +3,34 @@ const { nowIso, parseJson } = require("./storage_shared");
 const { normalizeMatchingCard, matchingCardRevision } = require("../core/matching_card");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 
-function saveProfileAnalysis(db, { profileId = null, profile, document, searchPlan }) {
+function saveProfileAnalysis(db, {
+  profileId = null,
+  profile,
+  document,
+  searchPlan,
+  resumeDocumentId = null,
+  displayName: requestedDisplayName = ""
+}) {
   const now = nowIso();
-  const displayName = profile?.candidate?.name || "候选人";
+  const displayName = safeDisplayName(requestedDisplayName || profile?.candidate?.name);
   db.exec("BEGIN");
   try {
     let id = Number(profileId || 0);
     if (id && db.prepare("SELECT id FROM candidate_profiles WHERE id = ?").get(id)) {
-      db.prepare("UPDATE candidate_profiles SET display_name = ?, profile_json = ?, source_hash = ?, updated_at = ? WHERE id = ?")
+      db.prepare("UPDATE candidate_profiles SET display_name = ?, profile_json = ?, source_hash = ?, is_ready = 1, updated_at = ? WHERE id = ?")
         .run(displayName, JSON.stringify(profile), document.contentHash, now, id);
     } else {
-      id = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      id = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, is_ready, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)")
         .run(displayName, JSON.stringify(profile), document.contentHash, now, now).lastInsertRowid);
     }
-    const documentId = insertResumeDocument(db, id, document, now);
+    const existingDocumentId = Number(resumeDocumentId || 0) || null;
+    if (existingDocumentId) {
+      const existingDocument = db.prepare(
+        "SELECT id FROM resume_documents WHERE id = ? AND profile_id = ?"
+      ).get(existingDocumentId, id);
+      if (!existingDocument) throw new Error("resume document does not belong to candidate profile");
+    }
+    const documentId = existingDocumentId || insertResumeDocument(db, id, document, now);
     const profileVersionId = Number(db.prepare("INSERT INTO profile_versions(profile_id, resume_document_id, profile_json, created_at) VALUES (?, ?, ?, ?)")
       .run(id, documentId, JSON.stringify(profile), now).lastInsertRowid);
     const resumeVersionId = createCandidateResumeVersion(db, {
@@ -130,7 +144,9 @@ function getCandidateProfile(db, profileId) {
 function listCandidateProfiles(db) {
   return db.prepare(`SELECT candidate_profiles.*, (
     SELECT id FROM search_plans WHERE profile_id = candidate_profiles.id AND is_active = 1 ORDER BY updated_at DESC, id DESC LIMIT 1
-  ) AS active_plan_id FROM candidate_profiles ORDER BY updated_at DESC, id DESC`).all().map((row) => ({ ...profileRow(row), activePlanId: row.active_plan_id || null }));
+  ) AS active_plan_id FROM candidate_profiles
+  WHERE candidate_profiles.is_ready = 1
+  ORDER BY updated_at DESC, id DESC`).all().map((row) => ({ ...profileRow(row), activePlanId: row.active_plan_id || null }));
 }
 
 function saveCandidateResumeVersion(db, { profileId, versionId = null, document = null, version = {} }) {
@@ -252,12 +268,12 @@ function listResumeParseAttempts(db, profileId, limit = 12) {
   }));
 }
 
-function updateCandidateProfile(db, { profileId, profile }) {
+function updateCandidateProfile(db, { profileId, profile, displayName: requestedDisplayName = "" }) {
   const id = Number(profileId);
   const existing = getCandidateProfile(db, id);
   if (!existing) throw new Error("candidate profile not found");
   const now = nowIso();
-  const displayName = profile?.candidate?.name || existing.displayName || "候选人";
+  const displayName = safeDisplayName(requestedDisplayName || profile?.candidate?.name || existing.displayName);
   db.exec("BEGIN");
   try {
     db.prepare("UPDATE candidate_profiles SET display_name = ?, profile_json = ?, updated_at = ? WHERE id = ?")
@@ -270,6 +286,11 @@ function updateCandidateProfile(db, { profileId, profile }) {
     throw error;
   }
   return getCandidateProfile(db, id);
+}
+
+function safeDisplayName(value) {
+  const name = String(value || "").trim();
+  return name && !/姓名已隐藏|姓名已遮盖|已隐藏/i.test(name) ? name : "候选人";
 }
 
 function getSearchPlan(db, planId) {
