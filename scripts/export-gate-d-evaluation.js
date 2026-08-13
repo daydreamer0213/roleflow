@@ -7,15 +7,15 @@ const { DatabaseSync } = require("node:sqlite");
 const { hasCompleteJobDescription } = require("../src/core/job_description_readiness");
 const { DECISION_POLICY, RECOMMENDATION_TIERS, decisionPolicyHash } = require("../src/core/decision_policy");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
+const { SCHEMA_VERSION } = require("../src/core/storage");
 const { buildShadowScorecard, SHADOW_SCORECARD_VERSION } = require("./lib/shadow_scorecard");
 
 const ROOT = path.resolve(__dirname, "..");
 const BASELINE_ROOT = "D:\\DevData\\RoleFlow-gate-d\\baseline";
 const ARCHIVE_ROOT = "D:\\DevData\\RoleFlow-gate-d\\archive";
 const PRODUCTION_DB = path.join(ROOT, "data", "jobs.sqlite");
-const SCHEMA_VERSION = 11;
 const OPERATIONAL_TABLES = [
-  "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
+  "onboarding_runs", "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
   "job_analysis_attempts", "workflow_job_tasks", "workflow_runs", "candidate_progress_events", "candidate_progress_cards",
   "message_preview_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
   "candidate_job_events", "candidate_job_states", "applications", "events", "job_refresh_attempts", "job_observations",
@@ -276,8 +276,8 @@ const CONTRACT_FAILURE_STAGES = new Map([
 const CONTRACT_TELEMETRY_COVERAGE = Object.freeze({
   finalFailures: "analysis_json",
   workflowAttempts: "job_analysis_attempts",
-  sameCallInternalRepairs: "not_persisted_by_schema_v11",
-  fieldLevel: "not_persisted_by_schema_v11"
+  sameCallInternalRepairs: `not_persisted_by_schema_v${SCHEMA_VERSION}`,
+  fieldLevel: `not_persisted_by_schema_v${SCHEMA_VERSION}`
 });
 
 function contractFailureStage(value) {
@@ -399,7 +399,7 @@ function exportEvaluation(options, hooks = {}) {
         contractFailureCount: attempt.contractFailureCount + Number(analysisContractFailure),
         contractFailureStages: analysisContractStage ? [analysisContractStage] : attempt.contractFailureStages,
         contractRecoveryOutcome: analysisContractFailure ? "unrecovered" : attempt.contractRecoveryOutcome,
-        invalidFieldCategory: "not_persisted_by_schema_v11",
+        invalidFieldCategory: `not_persisted_by_schema_v${SCHEMA_VERSION}`,
         repairResult: text(analysis.repairResult || analysis.contractRepairResult) || null,
         finalFailure: attempt.latestStatus ? (attempt.latestErrorCode || null) : (text(analysis.errorCode) || null),
         attemptCount: attempt.attemptCount,

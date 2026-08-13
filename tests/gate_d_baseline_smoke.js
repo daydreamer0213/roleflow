@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { openDb } = require("../src/core/storage");
+const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
 
 const ROOT = path.resolve(__dirname, "..");
 const SCRIPT = path.join(ROOT, "scripts", "prepare-gate-d-baseline.js");
@@ -24,6 +24,7 @@ const PRESERVED_TABLES = [
 ];
 
 const OPERATIONAL_TABLES = [
+  "onboarding_runs",
   "resume_parse_attempts",
   "keyword_sources",
   "platform_filter_catalogs",
@@ -180,7 +181,7 @@ try {
   assert.strictEqual(archiveManifest.sourcePath, source);
   assert.strictEqual(bundleFile(archiveManifest.sourceBundle.before, "database").sha256, sourceHash);
   assert.deepStrictEqual(archiveManifest.sourceBundle.before, archiveManifest.sourceBundle.after, "source SQLite bundle must stay stable across VACUUM INTO");
-  assert.strictEqual(archiveManifest.schemaVersion, 11);
+  assert.strictEqual(archiveManifest.schemaVersion, SCHEMA_VERSION);
   assert.match(archiveManifest.createdAtUtc, /^\d{4}-\d{2}-\d{2}T/);
   assert.strictEqual(archiveManifest.sourceCommit, SOURCE_COMMIT);
   assert.match(archiveManifest.toolCommit, /^[0-9a-f]{40}$/);
@@ -229,7 +230,7 @@ try {
   const futureSchema = path.join(TEST_ROOT, "future-schema.sqlite");
   createFixture(futureSchema);
   const futureDb = new DatabaseSync(futureSchema);
-  futureDb.exec("PRAGMA user_version = 12");
+  futureDb.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
   futureDb.close();
   expectRejected(runPrepared("--source", futureSchema, "--archive", path.join(TEST_ROOT, "archive", "future-schema.sqlite"), "--baseline", path.join(TEST_ROOT, "baseline", "future-schema.sqlite")), "unknown schema versions must fail closed");
 

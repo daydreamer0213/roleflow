@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { openDb } = require("../src/core/storage");
+const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
 const { buildShadowReport } = require("../scripts/compare-shadow-scorecard");
 const { exportEvaluation } = require("../scripts/export-gate-d-evaluation");
 
@@ -14,7 +14,7 @@ const DB_PATH = path.join(BASELINE_ROOT, "jobs.sqlite");
 const SOURCE_COMMIT = "b".repeat(40);
 process.env.NODE_ENV = "test";
 const OPERATIONAL_TABLES = [
-  "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
+  "onboarding_runs", "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
   "job_analysis_attempts", "workflow_job_tasks", "workflow_runs", "candidate_progress_events", "candidate_progress_cards",
   "message_preview_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
   "candidate_job_events", "candidate_job_states", "applications", "events", "job_refresh_attempts", "job_observations",
@@ -154,14 +154,14 @@ function task13Artifacts(batchId, { receiptPatch = {}, reportPatch = {} } = {}) 
     artifact: "gate-d-archive",
     sourcePath: path.join(TEST_ROOT, "production-source.sqlite"),
     sourceCommit: SOURCE_COMMIT,
-    schemaVersion: 11
+    schemaVersion: SCHEMA_VERSION
   });
   writeJson(reportPath, {
     artifact: "gate-d-baseline",
     sourcePath: path.join(TEST_ROOT, "production-source.sqlite"),
     archivePath,
     baselinePath: DB_PATH,
-    schemaVersion: 11,
+    schemaVersion: SCHEMA_VERSION,
     operational: { after: Object.fromEntries(OPERATIONAL_TABLES.map((name) => [name, 0])) },
     ...reportPatch
   });
@@ -226,7 +226,7 @@ try {
   assert.strictEqual(recoveredCase.modelContract.contractFailureCount, 1);
   assert.deepStrictEqual(recoveredCase.modelContract.contractFailureStages, ["match_job"]);
   assert.strictEqual(recoveredCase.modelContract.contractRecoveryOutcome, "recovered");
-  assert.strictEqual(recoveredCase.modelContract.invalidFieldCategory, "not_persisted_by_schema_v11");
+  assert.strictEqual(recoveredCase.modelContract.invalidFieldCategory, `not_persisted_by_schema_v${SCHEMA_VERSION}`);
   assert.strictEqual(recoveredCase.technicalBucket, null);
   const contractFailureCase = fixture.cases.find((item) => item.technicalBucket === "contract_failure");
   assert.strictEqual(contractFailureCase.modelContract.finalAttemptStatus, "failed");
@@ -243,7 +243,7 @@ try {
   assert.deepStrictEqual(runningCase.modelContract.contractFailureStages, ["understand_job"]);
   assert.strictEqual(runningCase.modelContract.contractRecoveryOutcome, "in_progress");
   assert.strictEqual(Object.hasOwn(runningCase.modelContract, "invalidField"), false,
-    "schema v11 does not persist a trustworthy concrete invalid field");
+    `schema v${SCHEMA_VERSION} does not persist a trustworthy concrete invalid field`);
   assert.strictEqual(runningCase.productionMatrixTier, null);
   assert.deepStrictEqual(labels.rows.map((row) => row.status), ["pending-human", "pending-human", "pending-human"]);
   assert(labels.rows.every((row) => row.directionFit === null && row.expectedTier === null && row.labeledAt === null));
@@ -349,8 +349,8 @@ try {
   const expectedContractTelemetryCoverage = {
     finalFailures: "analysis_json",
     workflowAttempts: "job_analysis_attempts",
-    sameCallInternalRepairs: "not_persisted_by_schema_v11",
-    fieldLevel: "not_persisted_by_schema_v11"
+    sameCallInternalRepairs: `not_persisted_by_schema_v${SCHEMA_VERSION}`,
+    fieldLevel: `not_persisted_by_schema_v${SCHEMA_VERSION}`
   };
   assert.deepStrictEqual(telemetryManifest.contractTelemetryCoverage, expectedContractTelemetryCoverage);
   assert.deepStrictEqual(telemetryReceipt.contractTelemetryCoverage, expectedContractTelemetryCoverage);
