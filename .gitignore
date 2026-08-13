@@ -1,4 +1,5 @@
 .runtime/
+.worktrees/
 node_modules/
 data/*.sqlite
 data/*.sqlite-*
