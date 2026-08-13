@@ -718,7 +718,7 @@ async function scan(
       planRecord,
       matchingContext?.candidateProfile || {},
       getSearchPlanDependency(db, planRecord.id),
-      { validatePlatformCities: acquisitionMode === "generated" }
+      { acquisitionMode: acquisitionMode || "inherited" }
     );
     if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
     configs = profileToRuntimeConfigs(
@@ -895,7 +895,8 @@ async function scan(
     assertSearchPlanReady(
       planRecord,
       matchingContext?.candidateProfile || {},
-      getSearchPlanDependency(db, planRecord.id)
+      getSearchPlanDependency(db, planRecord.id),
+      { acquisitionMode: "generated" }
     );
     plannedCityScopes = resolveCityScopes(args, planRecord, configs);
     if (directSearchContext) {
@@ -1555,7 +1556,12 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   let configs = loadConfigs(ROOT);
   const batchModelState = resolveRuntimeModelConfig({
@@ -2285,7 +2291,12 @@ async function reassessBatch(db, args) {
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
   // 重评与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重评结果。
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
 
   let configs = loadConfigs(ROOT);
@@ -2341,7 +2352,12 @@ function rescorePlan(db, args) {
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在`);
   // 重算与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重算结果。
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   const configs = profileToRuntimeConfigs(loadConfigs(ROOT), matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const result = rescorePlanObservations(db, { planId, configs });

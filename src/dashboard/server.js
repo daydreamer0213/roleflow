@@ -1226,7 +1226,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       },
       source: "user-confirmed"
     }, profile.profile);
-    const validation = validateSearchPlan(plan, profile.profile);
+    const validation = validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" });
     if (!validation.valid) throw new Error(validation.errors.join("；"));
     const matchingContext = getCandidateMatchingContext(db, profileId);
     const planId = saveSearchPlan(db, { id: params.planId, profileId, profileVersionId: matchingContext?.profileVersionId || null, plan });
@@ -1265,7 +1265,12 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
     const plan = getSearchPlan(db, params.planId);
     if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     const matchingContext = plan ? getCandidateMatchingContext(db, plan.profileId) : null;
-    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    assertSearchPlanReady(
+      plan,
+      matchingContext?.candidateProfile || {},
+      plan ? getSearchPlanDependency(db, plan.id) : {},
+      { acquisitionMode: "generated" }
+    );
     assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
@@ -3347,8 +3352,8 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     dailyBCardLimit: boss.weightedCardLimit("B", dailyScan.maxCards),
     run: scanStatus(scanRuns, planRecord.id, db),
     resumableBatch: getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" }),
-    validation: validateSearchPlan(plan, profile.profile),
-    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { validatePlatformCities: false }),
+    validation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" }),
+    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "inherited" }),
     planDependency: getSearchPlanDependency(db, planRecord.id),
     versionDiff: compareProfileVersions(db, profile.id),
     feedback: buildFeedbackSummary(db, { profileId: profile.id }),

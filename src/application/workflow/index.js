@@ -30,7 +30,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     plan,
     matchingContext?.candidateProfile || {},
     getSearchPlanDependency(db, plan.id),
-    { validatePlatformCities: false }
+    { acquisitionMode: "inherited" }
   );
   const preliminaryState = buildDashboardState(db, plan);
   if (preliminaryState.activeRun) return { workflow: preliminaryState.activeRun, alreadyActive: true };
