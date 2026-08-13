@@ -492,9 +492,15 @@ function createDashboardServer({
       url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname], assetReader);
       if (req.method === "GET" && url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
-      if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
+      if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db, {
+        deepModelReady: modelReady("deep_analysis")
+      });
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
-      if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({
+        modelState: getPublicModelSettings(),
+        searchParams: url.searchParams,
+        deepModelReady: modelReady("deep_analysis")
+      }));
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
@@ -673,7 +679,8 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
   }
 }
 
-function redirectHome(res, db) {
+function redirectHome(res, db, { deepModelReady = false } = {}) {
+  if (!deepModelReady) return redirect(res, "/settings?firstRun=1&next=%2Fonboarding");
   const profile = listCandidateProfiles(db)[0];
   if (!profile) return redirect(res, "/onboarding");
   const plan = getActiveSearchPlan(db, profile.id);
@@ -3170,7 +3177,7 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
   <p class="hint">当前模型：${escapeHtml(status)}</p>
   ${unavailable}
   <form class="panel form-stack" method="post" action="/api/resume" enctype="multipart/form-data">
-    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
+    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析简历并生成筛选方案</button>
     <label>候选人画像<select name="profileId"><option value="">新建候选人</option>${options}</select></label>
     <label>上传简历文件<input name="resume" type="file" accept=".txt,.md,.docx,.pdf" onchange="document.getElementById('resume-text').value=''"></label>
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
@@ -3190,7 +3197,7 @@ function resumePreviewScript() {
   return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
-function renderModelSettingsPage({ modelState, searchParams }) {
+function renderModelSettingsPage({ modelState, searchParams, deepModelReady = false }) {
   const settings = modelState.settings || {};
   const currentCredentials = [
     settings.sharedCredential,
@@ -3208,6 +3215,9 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     : "";
   const restored = searchParams.get("recommended")
     ? `<p class="setup-warning">已恢复推荐值；请重新测试连接后再使用该任务配置。</p>`
+    : "";
+  const nextStep = deepModelReady
+    ? `<a class="settings-next" href="/onboarding">下一步：填写简历</a>`
     : "";
   const keyStatus = modelState.keyErrorCode === "SECRET_UNREADABLE"
     ? "API Key 文件无法解密，请重新输入"
@@ -3229,7 +3239,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   });
   const presetJson = JSON.stringify(presets).replace(/</g, "\\u003c");
   const body = `<style>
-    .settings-page{max-width:980px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-profile{scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}
+    .settings-page{max-width:1160px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-provider-link{margin-bottom:0}.settings-next{display:inline-flex;align-items:center;min-height:42px;padding:0 16px;border-radius:6px;background:#176b5b;color:#fff;font-weight:700;text-decoration:none}.settings-next:hover{background:#115447;text-decoration:none}.settings-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.settings-profile{min-width:0;scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:900px){.settings-primary-grid{grid-template-columns:1fr}}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}.settings-next{box-sizing:border-box;justify-content:center;width:100%}}
   </style><main id="main-content" class="settings-page">
     <header class="settings-header">
       <p class="eyebrow">按任务选择模型</p>
@@ -3245,8 +3255,10 @@ function renderModelSettingsPage({ modelState, searchParams }) {
         <label class="settings-field">共享 API Key<input id="shared-model-api-key" type="password" autocomplete="new-password" placeholder="${modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key"}"><small>在下方任一共享任务点击“测试连接并保存”时写入。</small></label>
       </div>
       <p class="settings-current">当前共享厂商：${escapeHtml(settings.sharedCredential?.preset || "未设置")} · ${escapeHtml(keyStatus)}</p>
+      <p class="settings-provider-link">还没有 DeepSeek API Key？<a href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">打开 DeepSeek 开放平台</a></p>
+      ${nextStep}
     </section>
-    ${profileSections}
+    <div class="settings-primary-grid">${profileSections}</div>
     ${backupSection}
     <p class="hint">API Key 不进入设置 JSON、日志、数据库或页面响应。</p>
     <script id="model-preset-data" type="application/json">${presetJson}</script>
