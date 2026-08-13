@@ -211,7 +211,7 @@ async function assertClientContracts(vm) {
     assert.strictEqual(await page.locator("[data-workflow-error]").isVisible(), true, "malformed polling data must fail closed");
     assert.strictEqual(await page.locator('[data-action="pause"]').isDisabled(), true, "failed polling must disable control submission");
     assert.ok(maxInFlight <= 1, "polling requests must remain serialized");
-    await page.waitForTimeout(2700);
+    await waitFor(() => requests >= 3, 5000);
     assert.ok(requests >= 3, "polling must recover after a malformed response");
     await assertNoViewportPrimary(page);
     await page.close();
@@ -225,6 +225,7 @@ async function assertClientContracts(vm) {
     server.on("request", (req, res) => {
       if (req.url === "/assets/workflow.js") return serve(res, "application/javascript", fs.readFileSync(asset));
       if (req.url === "/assets/roleflow.css") return serve(res, "text/css", fs.readFileSync(stylesheet));
+      if (req.url?.startsWith("/api/workflow-status")) return json(res, validSnapshot("paused"));
       if (pages.has(req.url)) return serve(res, "text/html", workflowDocument(pages.get(req.url)));
       res.writeHead(404); res.end();
     });
@@ -315,6 +316,14 @@ function serve(res, type, body) { res.writeHead(200, { "content-type": `${type};
 function json(res, body) { serve(res, "application/json", JSON.stringify(body)); }
 function workflowDocument(vm) { return renderPage({ title: "Workflow fixture", body: renderWorkflowPage(vm) }); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function waitFor(predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await delay(50);
+  }
+  return true;
+}
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`))); }
 function close(server) { return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 function assertSinglePrimary(html, phase, label) {
