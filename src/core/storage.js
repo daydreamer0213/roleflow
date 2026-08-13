@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS communication_batches (
   browser_mode TEXT NOT NULL CHECK(browser_mode IN ('edge', 'portable')),
   status TEXT NOT NULL CHECK(status IN ('confirmed','running','paused','stopping','completed','stopped','interrupted','failed')),
   policy_json TEXT NOT NULL DEFAULT '{}',
+  runtime_json TEXT NOT NULL DEFAULT '{}',
   confirmed_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
@@ -789,6 +790,20 @@ const MIGRATIONS = [
     name: "message_discovery_unresolved_items_v1",
     apply(db) {
       db.exec(MESSAGE_DISCOVERY_UNRESOLVED_ITEMS_SCHEMA);
+    }
+  },
+  {
+    version: 12,
+    name: "communication_runtime_binding_v1",
+    apply(db) {
+      const columns = db.prepare(
+        "PRAGMA table_info(communication_batches)"
+      ).all();
+      if (!columns.some((column) => column.name === "runtime_json")) {
+        db.exec(
+          "ALTER TABLE communication_batches ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'"
+        );
+      }
     }
   }
 ];

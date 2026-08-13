@@ -11,6 +11,7 @@ const CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION = 8;
 const MESSAGE_PREVIEW_VERSION = 9;
 const COMMUNICATION_OUTCOME_STATUS_VERSION = 10;
 const MESSAGE_DISCOVERY_UNRESOLVED_VERSION = 11;
+const COMMUNICATION_RUNTIME_BINDING_VERSION = 12;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -33,11 +34,14 @@ try {
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency", backup_path: null },
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1", backup_path: null },
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1", backup_path: null },
-      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1", backup_path: null }
+      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1", backup_path: null },
+      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_discovery_unresolved_items_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "communication_runtime_binding_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
+  assert(db.prepare("PRAGMA table_info(communication_batches)").all()
+    .some((column) => column.name === "runtime_json"));
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='communication_batches'").get().n,
     1
@@ -97,7 +101,7 @@ try {
     "unresolved storage must remain digest-only operational state"
   );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_UNRESOLVED_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, COMMUNICATION_RUNTIME_BINDING_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
@@ -250,7 +254,8 @@ try {
       { version: CANDIDATE_PROGRESS_IDEMPOTENCY_VERSION, name: "candidate_progress_event_idempotency" },
       { version: MESSAGE_PREVIEW_VERSION, name: "message_preview_states_v1" },
       { version: COMMUNICATION_OUTCOME_STATUS_VERSION, name: "communication_outcome_statuses_v1" },
-      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1" }
+      { version: MESSAGE_DISCOVERY_UNRESOLVED_VERSION, name: "message_discovery_unresolved_items_v1" },
+      { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

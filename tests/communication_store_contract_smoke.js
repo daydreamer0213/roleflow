@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const COMMUNICATION_EXPORTS = [
   "BATCH_STATUSES", "ITEM_STATUSES", "TERMINAL_ITEM_STATUSES",
   "createCommunicationBatch", "getCommunicationBatch", "touchCommunicationBatch",
+  "bindCommunicationBatchRuntime",
   "listCommunicationBatchItems", "setCommunicationBatchStatus",
   "resumeInterruptedCommunicationBatch", "pauseCommunicationBatchAfterReservationFailure",
   "transitionCommunicationItem", "resolveAmbiguousCommunicationItem",
@@ -49,6 +50,7 @@ const {
   createCommunicationBatch,
   getCommunicationBatch,
   touchCommunicationBatch,
+  bindCommunicationBatchRuntime,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
   resumeInterruptedCommunicationBatch,
@@ -106,6 +108,99 @@ function runOwnerContract() {
     assert.strictEqual(batch.policySnapshot.calibration.acceptance, "e2e_pending");
     assert.strictEqual(batch.policySnapshot.calibration.executionEnabled, true);
     assert.strictEqual(batch.status, "confirmed");
+    const bindingBatch = createCommunicationBatch(db, {
+      planId: seeded.planId,
+      jobIds: [seeded.ids[10]],
+      browserMode: "edge",
+      now: "2030-01-02T08:00:01.000Z"
+    });
+    const firstBinding = observeTransactions(db, () => bindCommunicationBatchRuntime(db, {
+      batchId: bindingBatch.id,
+      browser: numericBinding(),
+      now: "2030-01-02T08:00:02.000Z"
+    }));
+    assert.deepStrictEqual(firstBinding.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+    assert.deepStrictEqual(firstBinding.value.runtime.browser, numericBinding());
+    assert.strictEqual(typeof firstBinding.value.runtime.browser.windowId, "number");
+    assert.strictEqual(typeof firstBinding.value.runtime.browser.searchTabId, "number");
+    assert.strictEqual(typeof firstBinding.value.runtime.browser.messageTabId, "number");
+    assert.deepStrictEqual(firstBinding.value.policySnapshot, { browser: { mode: "edge" } },
+      "runtime binding must not mutate the frozen policy snapshot");
+    assert.deepStrictEqual(
+      bindCommunicationBatchRuntime(db, { batchId: bindingBatch.id, browser: numericBinding() }).runtime.browser,
+      numericBinding(),
+      "an exact resume binding must be idempotent"
+    );
+    assert.throws(
+      () => bindCommunicationBatchRuntime(db, {
+        batchId: bindingBatch.id,
+        browser: numericBinding({ searchTabId: 1995685700 })
+      }),
+      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_MISMATCH"
+    );
+    assert.throws(
+      () => bindCommunicationBatchRuntime(db, {
+        batchId: bindingBatch.id,
+        browser: numericBinding({ searchTabId: "1995685534" })
+      }),
+      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_INVALID"
+    );
+    assert.throws(
+      () => bindCommunicationBatchRuntime(db, {
+        batchId: bindingBatch.id,
+        browser: numericBinding({ searchReturnUrl: "https://user:secret@www.zhipin.com/web/geek/jobs#private" })
+      }),
+      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_INVALID"
+    );
+    const rebound = bindCommunicationBatchRuntime(db, {
+      batchId: bindingBatch.id,
+      browser: numericBinding({ searchTabId: 1995685700, searchScrollTop: 640 }),
+      rebind: true,
+      now: "2030-01-02T08:00:03.000Z"
+    });
+    assert.deepStrictEqual(rebound.runtime.browser, numericBinding({
+      searchTabId: 1995685700,
+      searchScrollTop: 640,
+      bindingGeneration: 2
+    }));
+    const rebindAudit = JSON.parse(db.prepare(`
+      SELECT payload_json
+      FROM events
+      WHERE event_type = 'communication_browser_rebind'
+      ORDER BY id DESC
+      LIMIT 1
+    `).get().payload_json);
+    assert.deepStrictEqual(rebindAudit, {
+      batchId: bindingBatch.id,
+      fromGeneration: 1,
+      toGeneration: 2,
+      changed: {
+        windowId: false,
+        searchTabId: true,
+        messageTabId: false,
+        searchReturnUrl: false,
+        searchScrollTop: true
+      }
+    });
+    assert.doesNotMatch(JSON.stringify(rebindAudit), /zhipin|web\/geek|199568/i,
+      "binding audit must not persist URLs or browser identifiers");
+    const bindingItem = listCommunicationBatchItems(db, bindingBatch.id)[0];
+    db.prepare(`
+      UPDATE communication_batch_items
+      SET status = 'ambiguous', click_count = 1, updated_at = ?
+      WHERE id = ?
+    `).run("2030-01-02T08:00:04.000Z", bindingItem.id);
+    const runtimeBeforeBlockedRebind = getCommunicationBatch(db, bindingBatch.id).runtime;
+    const blockedRebind = observeTransactions(db, () => assert.throws(
+      () => bindCommunicationBatchRuntime(db, {
+        batchId: bindingBatch.id,
+        browser: numericBinding({ searchTabId: 1995685800, bindingGeneration: 2 }),
+        rebind: true
+      }),
+      (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED"
+    ));
+    assert.deepStrictEqual(blockedRebind.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
+    assert.deepStrictEqual(getCommunicationBatch(db, bindingBatch.id).runtime, runtimeBeforeBlockedRebind);
     const items = listCommunicationBatchItems(db, batch.id);
     assert.strictEqual(items.length, 8);
     assert.deepStrictEqual(Object.keys(items[0]).sort(), [
@@ -430,6 +525,19 @@ function clickAudit(item) {
   return {
     eventType: "communication_click",
     payload: { batchId: item.batchId, itemId: item.id, jobId: item.jobId, state: "click_dispatched" }
+  };
+}
+
+function numericBinding(overrides = {}) {
+  return {
+    mode: "edge",
+    windowId: 1995685675,
+    searchTabId: 1995685534,
+    messageTabId: 1995685619,
+    searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000",
+    searchScrollTop: 320,
+    bindingGeneration: 1,
+    ...overrides
   };
 }
 
