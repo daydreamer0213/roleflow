@@ -20,17 +20,32 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.23.1"
           cache: npm
       - name: Install dependencies
         run: npm ci
       - name: Prepare Windows test storage
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "D:\DevData" | Out-Null
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $package = Get-Content -LiteralPath "package.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -ne "v$($package.version)") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version $($package.version)."
+          }
       - name: Test and build release package
         shell: pwsh
-        run: ./scripts/package-release.ps1 -OutputName "RoleFlow-${{ github.ref_name }}.zip"
-      - name: Create prerelease and upload package
+        run: ./scripts/package-release.ps1 -OutputName "RoleFlow-${{ github.ref_name }}-portable.zip"
+      - name: Build standard installer
+        shell: pwsh
+        run: |
+          $nodeRoot = Split-Path -Parent (Get-Command node -ErrorAction Stop).Source
+          ./scripts/build-installer.ps1 `
+            -OutputDir (Join-Path $PWD "dist") `
+            -PortableNodeRoot $nodeRoot `
+            -SkipTests
+      - name: Create prerelease and upload packages
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,11 +69,29 @@ jobs:
             -Headers $headers `
             -ContentType "application/json" `
             -Body $payload
-          $assetName = "RoleFlow-$env:GITHUB_REF_NAME.zip"
-          $uploadUrl = $release.upload_url.Replace("{?name,label}", "?name=$([uri]::EscapeDataString($assetName))")
-          Invoke-RestMethod `
-            -Method Post `
-            -Uri $uploadUrl `
-            -Headers $headers `
-            -ContentType "application/zip" `
-            -InFile "dist/$assetName"
+          $package = Get-Content -LiteralPath "package.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          $assetPaths = @(
+            "dist/RoleFlow-$env:GITHUB_REF_NAME-portable.zip",
+            "dist/RoleFlow-Setup-$($package.version).exe",
+            "dist/RoleFlow-Setup-$($package.version).exe.sha256"
+          )
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [System.IO.Path]::GetFileName($assetPath)
+            $contentType = if ($assetName.EndsWith(".zip")) {
+              "application/zip"
+            } elseif ($assetName.EndsWith(".exe")) {
+              "application/vnd.microsoft.portable-executable"
+            } else {
+              "text/plain"
+            }
+            $uploadUrl = $release.upload_url.Replace(
+              "{?name,label}",
+              "?name=$([uri]::EscapeDataString($assetName))"
+            )
+            Invoke-RestMethod `
+              -Method Post `
+              -Uri $uploadUrl `
+              -Headers $headers `
+              -ContentType $contentType `
+              -InFile $assetPath
+          }
