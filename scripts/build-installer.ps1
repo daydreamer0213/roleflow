@@ -115,11 +115,7 @@ foreach ($RelativePath in @(
   "CODE_OF_CONDUCT.md",
   "package.json",
   "package-lock.json",
-  "run.ps1",
-  "Install.bat",
-  "Start.bat",
-  "ScanPortable.bat",
-  "StartPortableEdge.bat"
+  "run.ps1"
 )) {
   Copy-ProjectItem -RelativePath $RelativePath
 }

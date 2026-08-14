@@ -62,6 +62,7 @@ assert(
 assertUninstallPreservesUserDataByDefault();
 assertUninstallDeletesOnlyApprovedChildren();
 assertInstalledSelfCheckStartsOnAnIsolatedPort();
+assertStandardInstallerStageExcludesLegacyEntrypoints();
 
 console.log("windows_installer_smoke ok");
 
@@ -113,6 +114,37 @@ function assertInstalledSelfCheckStartsOnAnIsolatedPort() {
   ], 30_000);
   assert.strictEqual(result.status, 0, combined(result));
   assert.match(combined(result), /SELF_CHECK_OK/);
+}
+
+function assertStandardInstallerStageExcludesLegacyEntrypoints() {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-installer-stage-"));
+  try {
+    const result = runPowerShell([
+      "-File", path.join(root, "scripts", "build-installer.ps1"),
+      "-BuildRoot", path.join(fixtureRoot, "build"),
+      "-OutputDir", path.join(fixtureRoot, "dist"),
+      "-PortableNodeRoot", path.dirname(process.execPath),
+      "-SkipTests",
+      "-StageOnly"
+    ], 60_000);
+    assert.strictEqual(result.status, 0, combined(result));
+    const stageMatch = combined(result).match(/Installer stage:\s*(.+)\r?$/m);
+    assert(stageMatch, `missing installer stage path:\n${combined(result)}`);
+    const stageDir = stageMatch[1].trim();
+    for (const relativePath of [
+      "Install.bat",
+      "Start.bat",
+      "ScanPortable.bat",
+      "StartPortableEdge.bat"
+    ]) {
+      assert(
+        !fs.existsSync(path.join(stageDir, relativePath)),
+        `standard installer must exclude ${relativePath}`
+      );
+    }
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 function createUninstallFixture() {
