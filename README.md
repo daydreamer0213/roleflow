@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v0.1.0-beta.3](https://img.shields.io/badge/release-v0.1.0--beta.3-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.3)
+[![Release: v0.1.0-beta.4](https://img.shields.io/badge/release-v0.1.0--beta.4-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,7 +12,7 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v0.1.0-beta.3` 是 RoleFlow 第一阶段 Wave 4 条件收口后的公开 Beta。冻结发布版本已通过 93 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
+`v0.1.0-beta.4` 是 RoleFlow 第一阶段 Wave 4 条件收口后的公开 Beta。发布候选已通过 97 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
 
 当前版本适合本地试用、代码审阅和离线流程验证。BOSS 页面结构可能变化，真实消息读取与沟通链路尚未完成人工端到端验收，因此不能把离线通过等同于真实页面已完全验收。任何真实沟通仍必须由用户明确确认，并遵守下文的安全边界。
 
@@ -23,7 +23,7 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 - 结合岗位职责、技术要求、薪资、活跃度和风险信号给出分层建议。
 - 将主投、先聊确认、备选和待复核岗位整理为本地工作清单。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- 当前公开快照包含 93 组离线检查，覆盖扫描、存储、模型适配、工作流恢复、候选人进展和只读消息发现。
+- 当前公开快照包含 97 组离线检查，覆盖扫描、存储、模型适配、工作流恢复、候选人进展、Windows 安装和只读消息发现。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
@@ -31,14 +31,18 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-1. 下载并运行 `RoleFlow-Setup-<版本>.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。
+> **请前往 [v0.1.0-beta.4 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4)，下载 `RoleFlow-Setup-0.1.0-beta.4.exe`。**
+>
+> `RoleFlow-v0.1.0-beta.4-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
+
+1. 下载并运行 `RoleFlow-Setup-0.1.0-beta.4.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。
 2. 从桌面或开始菜单启动 RoleFlow。启动过程不会显示常驻黑色终端；失败时会显示原因和日志位置。
 3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。
 5. 检查模型生成的候选人画像和搜索方案，手工选择求职城市并保存方案。
-6. `Start.bat` 默认复用“当前已登录 Edge（推荐）”中的 BOSS 页面，不会另开项目专用 Edge。启动前请在同一个普通 Edge 窗口正好保留一个 `BOSS-SEARCH` 岗位搜索页和一个 `BOSS-COMMUNICATION` 沟通页，并确认 Edge Control 扩展和桥接服务健康。
+6. 开始岗位筛选前，请在同一个普通 Edge 窗口正好保留一个 `BOSS-SEARCH` 岗位搜索页和一个 `BOSS-COMMUNICATION` 沟通页，并确认 Edge Control 扩展和桥接服务健康。RoleFlow 默认使用“当前已登录 Edge（推荐）”并复用这两个标签页，不会另开项目专用 Edge。
 7. RoleFlow 只读检查登录、风控、窗口归属和页面身份；检查失败会停止并给出处理建议，不会自动回退，也不会静默切换浏览器 authority（浏览器控制权）。必须保持这两个固定标签页在同一窗口；RoleFlow 不会创建第二个 BOSS 窗口或标签页。
-8. 只有需要独立环境时才手动运行：
+8. 只有下载高级便携 ZIP 且需要独立环境时，才在解压目录手动运行：
 
    ```text
    Start.bat -BrowserMode portable
