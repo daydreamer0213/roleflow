@@ -80,6 +80,7 @@ const {
   communicationBatchSummary,
   communicationQuotaSnapshot
 } = require("../core/communication_batches");
+const { communicationAmbiguityStateForBatch } = require("../core/communication_ambiguity");
 const {
   PROGRESS_STAGES,
   ensureProgressCard,
@@ -583,7 +584,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder });
       if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
@@ -2940,10 +2941,42 @@ async function handleCommunicationBatch(req, res, db) {
   redirectCommunicationResult(res, result.body.batch);
 }
 
-async function handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess = spawn, communicationAmbiguityReader = null }) {
+async function handleCommunicationControl(req, res, {
+  db,
+  root,
+  dbPath,
+  logger,
+  requestId,
+  spawnProcess = spawn,
+  communicationAmbiguityReader = null,
+  browserFactory = createDashboardBrowser,
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser
+}) {
   const rawBody = await readBody(req);
-  const result = communicationApiResult(() => {
-    const params = parseBody(rawBody, req.headers["content-type"] || "");
+  const params = parseBody(rawBody, req.headers["content-type"] || "");
+  const result = await communicationApiResultAsync(async () => {
+    const batch = getCommunicationBatch(db, Number(params.batchId));
+    const action = String(params.action || "").trim().toLowerCase();
+    const readAmbiguity = communicationAmbiguityReader || communicationAmbiguityStateForBatch;
+    if (["resume", "resume_one"].includes(action)
+      && batch?.browserMode === "edge"
+      && ["paused", "interrupted"].includes(batch.status)
+      && batch.runtime?.browser
+      && !readAmbiguity(db, batch.id).blocked) {
+      await rebindCommunicationBrowser({
+        db,
+        input: params,
+        deps: {
+          communicationAmbiguityReader,
+          inspectAndBindCommunicationBrowser: ({ batch: rebindBatch }) => communicationBrowserRebinder({
+            db,
+            batch: rebindBatch,
+            logger,
+            browserFactory
+          })
+        }
+      });
+    }
     return controlCommunicationBatch({
       db,
       input: params,

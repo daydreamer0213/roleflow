@@ -141,8 +141,10 @@ assertCommunicationViewModel();
   let ambiguityOverride = null;
   let liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=100010000&query=RAG&page=3";
   const browserMutations = [];
+  const browserEvents = [];
   const edgeBrowser = {
     async listTabs() {
+      browserEvents.push("listTabs");
       return [
         { id: 1995685534, windowId: 1995685675, url: liveSearchUrl },
         { id: 1995685619, windowId: 1995685675, url: "https://www.zhipin.com/web/geek/chat" }
@@ -181,6 +183,7 @@ assertCommunicationViewModel();
       return ambiguityOverride || communicationAmbiguityStateForBatch(database, requestedBatchId);
     },
     spawnProcess(file, args, options) {
+    browserEvents.push("spawn");
     spawns.push({ file, args, options });
     const child = new EventEmitter();
     child.pid = 5252;
@@ -293,8 +296,6 @@ assertCommunicationViewModel();
   });
   setCommunicationBatchStatus(db, { batchId: rebindBatch.body.batch.id, status: "running" });
   setCommunicationBatchStatus(db, { batchId: rebindBatch.body.batch.id, status: "paused" });
-  const rebindReview = await getText(baseUrl, `/communication?batchId=${rebindBatch.body.batch.id}`);
-  assert.match(rebindReview.body, /重新检查浏览器页面/);
   const rebound = await postForm(baseUrl, "/api/communication-rebind", { batchId: rebindBatch.body.batch.id });
   assert.strictEqual(rebound.status, 303);
   assert.strictEqual(rebound.location, `/communication?batchId=${rebindBatch.body.batch.id}`);
@@ -308,7 +309,42 @@ assertCommunicationViewModel();
     bindingGeneration: 2
   });
   assert.deepStrictEqual(browserMutations, []);
+  const rebindResumeItem = listCommunicationBatchItems(db, rebindBatch.body.batch.id)[0];
+  const spawnsBeforeRebindResume = spawns.length;
+  browserEvents.length = 0;
+  const reboundOnResume = await postJson(baseUrl, "/api/communication-control", {
+    batchId: rebindBatch.body.batch.id,
+    action: "resume_one",
+    itemId: rebindResumeItem.id
+  });
+  assert.strictEqual(reboundOnResume.status, 200);
+  assert.strictEqual(browserEvents.includes("listTabs"), true);
+  assert.strictEqual(browserEvents.indexOf("listTabs") < browserEvents.indexOf("spawn"), true);
+  assert.deepStrictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser, {
+    mode: "edge",
+    windowId: 1995685675,
+    searchTabId: 1995685534,
+    messageTabId: 1995685619,
+    searchReturnUrl: liveSearchUrl,
+    searchScrollTop: 360,
+    bindingGeneration: 3
+  });
+  assert.strictEqual(spawns.length, spawnsBeforeRebindResume + 1);
+  setCommunicationBatchStatus(db, { batchId: rebindBatch.body.batch.id, status: "paused" });
+  const rebindReview = await getText(baseUrl, `/communication?batchId=${rebindBatch.body.batch.id}`);
+  assert.match(rebindReview.body, /name="action" value="resume_one"/);
+  assert.doesNotMatch(rebindReview.body, /重新检查浏览器页面/);
   liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=101010100";
+  const spawnsBeforeRebindScopeFailure = spawns.length;
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId: rebindBatch.body.batch.id, action: "resume_one", itemId: rebindResumeItem.id },
+    "BOSS_COMMUNICATION_SCOPE_MISMATCH",
+    409
+  );
+  assert.strictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).status, "paused");
+  assert.strictEqual(spawns.length, spawnsBeforeRebindScopeFailure);
   await expectApiError(
     baseUrl,
     "/api/communication-rebind",
@@ -316,7 +352,7 @@ assertCommunicationViewModel();
     "BOSS_COMMUNICATION_SCOPE_MISMATCH",
     409
   );
-  assert.strictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, 2);
+  assert.strictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, 3);
   assert.deepStrictEqual(browserMutations, []);
   liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=100010000&query=RAG&page=3";
 
@@ -431,9 +467,9 @@ assertCommunicationViewModel();
   });
   assert.strictEqual(started.status, 200);
   assert.strictEqual(started.body.batch.status, "running");
-  assert.strictEqual(spawns.length, 1);
+  assert.strictEqual(spawns.length, 2);
   assert.deepStrictEqual(
-    spawns[0].args.slice(spawns[0].args.indexOf("--browser")),
+    spawns[1].args.slice(spawns[1].args.indexOf("--browser")),
     ["--browser", "portable", "--cdp-port", "9222", "--single-item", String(reviewItem.id)]
   );
 
@@ -453,9 +489,9 @@ assertCommunicationViewModel();
   });
   assert.strictEqual(resumedBatch.status, 200);
   assert.strictEqual(resumedBatch.body.batch.status, "running");
-  assert.strictEqual(spawns.length, 2);
-  assert(spawns[0].args.includes("communicate"));
-  assert(spawns[0].args.includes(String(batchId)));
+  assert.strictEqual(spawns.length, 3);
+  assert(spawns[1].args.includes("communicate"));
+  assert(spawns[1].args.includes(String(batchId)));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
   const [ambiguousItem, pendingAfterAmbiguity] = listCommunicationBatchItems(db, batchId);
@@ -507,7 +543,7 @@ assertCommunicationViewModel();
   });
   assert.strictEqual(resumedAfterReview.status, 200);
   assert.strictEqual(resumedAfterReview.body.batch.status, "running");
-  assert.strictEqual(spawns.length, 3);
+  assert.strictEqual(spawns.length, 4);
 
   const discardable = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });
   const discarded = await postForm(baseUrl, "/api/communication-control", { batchId: discardable.body.batch.id, action: "discard" });
@@ -532,7 +568,7 @@ assertCommunicationViewModel();
   const blockedPlan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="daily" disabled/);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="broad" disabled/);
-  assert.strictEqual(spawns.length, 3);
+  assert.strictEqual(spawns.length, 4);
   console.log("dashboard_communication_batch_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);

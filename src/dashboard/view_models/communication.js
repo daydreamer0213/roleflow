@@ -32,11 +32,12 @@ function buildCommunicationViewModel({
   const singleItem = pendingAcceptance ? items.find((item) => item.status === "pending") || null : null;
   const controlAction = pendingAcceptance && action ? `${action}_one` : action;
   const executionEnabled = Boolean(current.calibration?.executionEnabled) && !current.runtimeBlock && !ambiguity.blocked;
+  const executionControlVisible = state === "pending_review"
+    && Boolean(controlAction)
+    && executionEnabled
+    && (!pendingAcceptance || Boolean(singleItem));
   const controls = {
-    visible: state === "pending_review"
-      && Boolean(controlAction)
-      && executionEnabled
-      && (!pendingAcceptance || Boolean(singleItem)),
+    visible: executionControlVisible,
     action: controlAction,
     label: pendingAcceptance ? "验收这个岗位并自动暂停" : action === "start" ? "确认后串行执行" : "继续串行执行",
     singleItemId: pendingAcceptance ? number(singleItem?.id) : 0,
@@ -45,7 +46,8 @@ function buildCommunicationViewModel({
     rebindVisible: state === "pending_review"
       && ["paused", "interrupted"].includes(text(batch.status))
       && text(batch.browserMode) === "edge"
-      && Boolean(batch.runtime?.browser),
+      && Boolean(batch.runtime?.browser)
+      && !executionControlVisible,
     recoveryHref: `/communication?batchId=${encodeURIComponent(number(batch.id))}#communication-recovery`
   };
   return {
