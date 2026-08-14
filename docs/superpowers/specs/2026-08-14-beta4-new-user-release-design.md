@@ -1,7 +1,9 @@
 # RoleFlow beta.4 新用户发布与文件整理设计
 
-**日期：** 2026-08-14  
-**状态：** 方案已获用户确认，等待书面复核  
+**日期：** 2026-08-14
+
+**状态：** 方案已获用户确认，正在实施
+
 **范围：** Windows beta.4 发布、GitHub Release 资产、标准安装包内容与源码入口整理
 
 ## 1. 目标
@@ -26,12 +28,9 @@
 
 Release 资产按以下顺序和定位提供：
 
-1. `RoleFlow-Setup-0.1.0-beta.4.exe`  
-   普通 Windows 用户的推荐入口。
-2. `RoleFlow-Setup-0.1.0-beta.4.exe.sha256`  
-   安装程序完整性校验文件。
-3. `RoleFlow-v0.1.0-beta.4-portable.zip`  
-   明确标注为“高级用户 / 免安装 / 开发与恢复用途”，不作为新用户首选。
+1. `RoleFlow-Setup-0.1.0-beta.4.exe`：普通 Windows 用户的推荐入口。
+2. `RoleFlow-Setup-0.1.0-beta.4.exe.sha256`：安装程序完整性校验文件。
+3. `RoleFlow-v0.1.0-beta.4-portable.zip`：明确标注为“高级用户 / 免安装 / 开发与恢复用途”，不作为新用户首选。
 
 Release 说明和 README 首屏均先引导下载 EXE，并解释 GitHub 的 Source code ZIP 不是安装包。
 
