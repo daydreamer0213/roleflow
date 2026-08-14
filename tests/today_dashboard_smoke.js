@@ -80,11 +80,11 @@ function assertEvaluationScriptExplainsMissingPlaywright() {
 
 function assertRendererIsPureAndEscapesHtml() {
   const viewModel = buildTodayViewModel({
-    profile: { id: 7, displayName: `<img src=x onerror=alert(1)>`, profile: { candidate: { name: `<b>Unsafe</b>`, city: "上海", targetTitles: ["AI 应用"] }, skills: [], projects: [] } },
+    profile: { id: 7, displayName: `<img src=x onerror=alert(1)>`, profile: { candidate: { name: "候选人", city: "上海", targetTitles: ["AI 应用"] }, skills: [], projects: [] } },
     planRecord: { id: 12, profileId: 7 },
     plan: { name: `<script>bad()</script>`, cities: ["上海"], directions: ["AI 应用"], keywords: [], experience: [], jobTypes: [], degrees: [], salary: {}, scan: {} },
     workflowState: { activeRun: null, successfulToday: 0, dailyTarget: 70, inventory: [], slotsUsed: 0, maxRuns: 3, remainingBudget: { details: 360, pages: 60 }, nextPlan: { targetSuccessCount: 35 } },
-    validation: { valid: true, errors: [], warnings: [] },
+    validation: { valid: false, errors: ["至少选择一个城市"], warnings: [] },
     inheritedWorkflowValidation: { valid: true },
     planDependency: { stale: false, matchingCardRequired: false },
     bossRuntimeBlock: null,
@@ -101,8 +101,13 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(viewModel)), viewModel, "today VM must contain plain serializable display data only");
   const html = renderTodayPage(viewModel);
   assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, "today page must prefer the local display name");
   assert.doesNotMatch(html, /<script>bad\(\)<\/script>/);
   assert.strictEqual((html.match(/data-today-primary="true"/g) || []).length, 1, "a standalone renderer must emit one primary CTA without a DB or browser");
+  assert.strictEqual((html.match(/class="metric"/g) || []).length, 3, "first screen must keep only three result metrics");
+  assert.doesNotMatch(html, /class="action-meta"/, "primary action must not repeat the same metrics");
+  assert.doesNotMatch(html, /当前数据安全/, "no-blocker state must not render a reassurance card");
+  assert.doesNotMatch(html, /现在卡在哪里/, "no-blocker state must not render an empty blocker section");
 }
 
 async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
@@ -123,6 +128,13 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   assert.match(page.body, /data-browser-readiness-button[^>]*disabled/);
   assert.match(page.body, /id="browser-readiness-status"/);
   assert.match(page.body, /<details[^>]*>\s*<summary[^>]*><strong>调整筛选条件<\/strong>/);
+  assert.match(page.body, /本地筛选方案/);
+  assert.match(page.body, /平台已继承/);
+  assert.match(page.body, /本地再筛选/);
+  assert.strictEqual((page.body.match(/class="metric"/g) || []).length, 3);
+  assert.doesNotMatch(page.body, /当前数据安全/);
+  assert.doesNotMatch(page.body, /现在卡在哪里/);
+  assert.doesNotMatch(page.body, /class="action-meta"/);
   assertPlanAndAdvancedContracts(page.body);
   assertSingleDocument(page.body);
 }
@@ -159,7 +171,7 @@ function assertPlanAndAdvancedContracts(html) {
   for (const name of ["profileId", "planId", "name", "cities", "experience", "jobTypes", "degrees", "salaryMinK", "salaryMaxK", "salaryMode", "workSchedulePreference", "directions", "keywords", "excludeWords", "hardExcludes", "maxCards", "maxDetailTotal", "browserPageBudget"]) {
     assert.match(html, new RegExp(`name="${name}"`), `plan form must retain ${name}`);
   }
-  assert.match(html, /高级扫描与维护/);
+  assert.match(html, /高级信息与维护/);
   assert.match(html, /<form[^>]*action="\/api\/scan"/);
   for (const kind of ["daily", "broad", "refresh", "activity"]) assert.match(html, new RegExp(`name="scanKind" value="${kind}"`));
   assert.match(html, /href="\/queue\?planId=\d+"/);

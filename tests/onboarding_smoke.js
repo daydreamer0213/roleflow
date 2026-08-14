@@ -340,6 +340,14 @@ const generatedReports = [];
     redirect: "manual"
   });
   assert.strictEqual(profileSaved.status, 303);
+  const locallyRenamed = getCandidateProfile(db, profileId);
+  assert.strictEqual(locallyRenamed.displayName, "Smoke Candidate");
+  assert.strictEqual(
+    locallyRenamed.profile.candidate.name,
+    "候选人",
+    "local display name edits must not restore identity into model-safe profile_json"
+  );
+  assert.strictEqual(profileSaved.status, 303);
   assert.strictEqual(getCandidateProfile(db, profileId).profile.education[0].degree, "本科");
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "画像编辑不产生新匹配卡时，已确认卡仍是方案依据");
 
@@ -659,14 +667,43 @@ async function uploadResume(baseUrl, fileName, fileData, type, profileId = 0) {
   const form = new FormData();
   if (profileId) form.set("profileId", String(profileId));
   form.set("resume", new Blob([fileData], { type }), fileName);
-  return fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" });
+  return settleResumeUpload(
+    baseUrl,
+    await fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" })
+  );
 }
 
 async function uploadResumeText(baseUrl, resumeText, profileId = 0) {
   const form = new FormData();
   if (profileId) form.set("profileId", String(profileId));
   form.set("resumeText", resumeText);
-  return fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" });
+  return settleResumeUpload(
+    baseUrl,
+    await fetch(`${baseUrl}/api/resume`, { method: "POST", body: form, redirect: "manual" })
+  );
+}
+
+async function settleResumeUpload(baseUrl, response) {
+  const location = response.headers.get("location") || "";
+  if (response.status !== 303 || !location.startsWith("/onboarding/progress?runId=")) {
+    return response;
+  }
+  const runId = new URL(`${baseUrl}${location}`).searchParams.get("runId");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const statusResponse = await fetch(
+      `${baseUrl}/api/onboarding-status?runId=${encodeURIComponent(runId)}`
+    );
+    const state = await statusResponse.json();
+    if (state.status === "completed" && state.nextHref) {
+      return new Response("", { status: 303, headers: { location: state.nextHref } });
+    }
+    if (state.status === "failed") {
+      return new Response(state.errorMessage || "onboarding failed", { status: 500 });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return new Response("onboarding timed out", { status: 504 });
 }
 
 function collectGeneratedReports(stdout) {

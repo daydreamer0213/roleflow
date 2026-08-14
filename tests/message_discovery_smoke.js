@@ -11,11 +11,13 @@ const {
 } = require("../src/core/candidate_progress");
 const { safeDigest, messageKey } = require("../src/adapters/sites/boss_message_dom");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
+const { resolveInboundOpportunity } = require("../src/application/message_discovery/inbound");
 const { factStatus } = require("../src/core/candidate_fact_policy");
 const {
   listPreviewStates,
   commitProcessedPreview,
-  listUnresolvedMessageDiscoveryItems
+  listUnresolvedMessageDiscoveryItems,
+  recordUnresolvedMessageDiscoveryItem
 } = require("../src/core/message_preview_state");
 
 const PRIVATE_BODY = "PRIVATE_HR_BODY";
@@ -41,6 +43,7 @@ async function main() {
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
   await unmatchedRetentionSmoke();
+  inboundLocalActionsSmoke();
   await messageSelectionSmoke();
   await messageGroupBoundarySmoke();
   await previewChannelSmoke();
@@ -310,7 +313,20 @@ async function unmatchedRetentionSmoke() {
     "only the valid item may create message-discovery progress events"
   );
   assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId }).some((item) => item.conversationKey === unmatchedKey), false);
-  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId }).length, 1);
+  const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId });
+  assert.strictEqual(unresolved.length, 1);
+  assert.deepStrictEqual({
+    positionTitle: unresolved[0].positionTitle,
+    company: unresolved[0].company,
+    salary: unresolved[0].salary,
+    city: unresolved[0].city
+  }, {
+    positionTitle: unmatchedTitle,
+    company: "Fixture Company",
+    salary: "20-30K",
+    city: "Guangzhou"
+  });
+  assert.match(unresolved[0].identityDigest, /^sha256:[a-f0-9]{64}$/);
   const retainedText = [
     allText(db, "message_discovery_unresolved_items"),
     JSON.stringify(logs)
@@ -359,6 +375,305 @@ async function unmatchedRetentionSmoke() {
     "successful resolution must commit the preview only after removing the durable marker"
   );
   assert.strictEqual(resolved.card.profileId, fixture.profileId);
+}
+
+function inboundLocalActionsSmoke() {
+  const fixture = createFixture({ suffix: "inbound-local", title: "Inbound Engineer" });
+  const createdKey = safeDigest(["conversation", "inbound-create"]);
+  const createdPreview = safeDigest(["preview", "inbound-create"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: createdKey,
+    previewDigest: createdPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: {
+      positionTitle: "Inbound Created Engineer",
+      company: "Inbound Company",
+      salary: "15-25K",
+      city: "Guangzhou"
+    }
+  });
+  const created = resolveInboundOpportunity({
+    db,
+    input: {
+      profileId: fixture.profileId,
+      conversationKey: createdKey,
+      previewDigest: createdPreview,
+      action: "create"
+    },
+    now: () => NOW
+  });
+  assert.strictEqual(created.card.stage, "needs_user_action");
+  assert.strictEqual(created.card.threadKey, createdKey);
+  assert.strictEqual(created.job.source, "boss");
+  assert.strictEqual(created.job.sourceId, `inbound:${createdKey.slice(7)}`);
+  assert.strictEqual(created.job.batchId, null);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM job_observations WHERE job_id = ?").get(created.job.id).count,
+    0
+  );
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === createdKey), false);
+
+  const linkKey = safeDigest(["conversation", "inbound-link"]);
+  const linkPreview = safeDigest(["preview", "inbound-link"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: linkKey,
+    previewDigest: linkPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: {
+      positionTitle: fixture.title,
+      company: fixture.company,
+      salary: fixture.salary,
+      city: fixture.city
+    }
+  });
+  const linked = resolveInboundOpportunity({
+    db,
+    input: {
+      profileId: fixture.profileId,
+      conversationKey: linkKey,
+      previewDigest: linkPreview,
+      action: "link",
+      jobId: fixture.jobId
+    },
+    now: () => NOW
+  });
+  assert.strictEqual(linked.job.id, fixture.jobId);
+  assert.strictEqual(linked.card.threadKey, linkKey);
+  assert.strictEqual(linked.card.stage, "needs_user_action");
+
+  const ignoredKey = safeDigest(["conversation", "inbound-ignore"]);
+  const ignoredPreview = safeDigest(["preview", "inbound-ignore"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: ignoredKey,
+    previewDigest: ignoredPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: {
+      positionTitle: "Ignored Engineer",
+      company: "Ignored Company"
+    }
+  });
+  const ignored = resolveInboundOpportunity({
+    db,
+    input: {
+      profileId: fixture.profileId,
+      conversationKey: ignoredKey,
+      previewDigest: ignoredPreview,
+      action: "ignore"
+    },
+    now: () => NOW
+  });
+  assert.strictEqual(ignored.action, "ignore");
+  assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
+    .find((item) => item.conversationKey === ignoredKey).previewDigest, ignoredPreview);
+
+  const incompleteKey = safeDigest(["conversation", "inbound-incomplete"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: incompleteKey,
+    previewDigest: createdPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "", company: "Incomplete Company" }
+  });
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: fixture.profileId,
+        conversationKey: incompleteKey,
+        previewDigest: createdPreview,
+        action: "create"
+      },
+      now: () => NOW
+    }),
+    (error) => error.code === "INBOUND_IDENTITY_INCOMPLETE"
+  );
+
+  const staleKey = safeDigest(["conversation", "inbound-stale"]);
+  const stalePreview = safeDigest(["preview", "inbound-stale"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: staleKey,
+    previewDigest: stalePreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Stale Engineer", company: "Stale Company" }
+  });
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: fixture.profileId,
+        conversationKey: staleKey,
+        previewDigest: safeDigest(["preview", "stale-form"]),
+        action: "ignore"
+      },
+      now: () => NOW
+    }),
+    (error) => error.code === "INBOUND_PREVIEW_CHANGED"
+  );
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === staleKey), true);
+
+  const inactive = createFixture({ suffix: "inbound-inactive", title: "Inactive Engineer" });
+  db.prepare("UPDATE search_plans SET is_active = 0 WHERE id = ?").run(inactive.planId);
+  const inactiveKey = safeDigest(["conversation", "inbound-inactive"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: inactive.profileId,
+    platform: "boss",
+    conversationKey: inactiveKey,
+    previewDigest: createdPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Inactive Engineer", company: "Inactive Company" }
+  });
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: inactive.profileId,
+        conversationKey: inactiveKey,
+        previewDigest: createdPreview,
+        action: "create"
+      },
+      now: () => NOW
+    }),
+    (error) => error.code === "INBOUND_ACTIVE_PLAN_REQUIRED"
+  );
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE source_id = ?")
+    .get(`inbound:${inactiveKey.slice(7)}`).count, 0);
+
+  const rollback = createFixture({ suffix: "inbound-rollback", title: "Rollback Engineer" });
+  const rollbackKey = safeDigest(["conversation", "inbound-rollback"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: rollback.profileId,
+    platform: "boss",
+    conversationKey: rollbackKey,
+    previewDigest: createdPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Rollback Engineer", company: "Rollback Company" }
+  });
+  db.exec(`CREATE TRIGGER fail_inbound_progress_event
+    BEFORE INSERT ON candidate_progress_events
+    WHEN NEW.type = 'inbound_opportunity_created'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced inbound rollback');
+    END`);
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: rollback.profileId,
+        conversationKey: rollbackKey,
+        previewDigest: createdPreview,
+        action: "create"
+      },
+      now: () => NOW
+    }),
+    /forced inbound rollback/
+  );
+  db.exec("DROP TRIGGER fail_inbound_progress_event");
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE source_id = ?")
+    .get(`inbound:${rollbackKey.slice(7)}`).count, 0);
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: rollback.profileId })
+    .some((item) => item.conversationKey === rollbackKey), true);
+  assert.strictEqual(listPreviewStates(db, { profileId: rollback.profileId })
+    .some((item) => item.conversationKey === rollbackKey), false);
+
+  const jobRollback = createFixture({ suffix: "inbound-job-rollback", title: "Job Rollback Engineer" });
+  const jobRollbackKey = safeDigest(["conversation", "inbound-job-rollback"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: jobRollback.profileId,
+    platform: "boss",
+    conversationKey: jobRollbackKey,
+    previewDigest: createdPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Job Rollback Engineer", company: "Job Rollback Company" }
+  });
+  db.exec(`CREATE TRIGGER fail_inbound_job
+    BEFORE INSERT ON jobs
+    WHEN NEW.source_id LIKE 'inbound:%'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced inbound job rollback');
+    END`);
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: jobRollback.profileId,
+        conversationKey: jobRollbackKey,
+        previewDigest: createdPreview,
+        action: "create"
+      },
+      now: () => NOW
+    }),
+    /forced inbound job rollback/
+  );
+  db.exec("DROP TRIGGER fail_inbound_job");
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: jobRollback.profileId })
+    .some((item) => item.conversationKey === jobRollbackKey), true);
+
+  const baselineRollbackKey = safeDigest(["conversation", "inbound-baseline-rollback"]);
+  const baselineRollbackPreview = safeDigest(["preview", "inbound-baseline-rollback"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: baselineRollbackKey,
+    previewDigest: baselineRollbackPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Baseline Rollback Engineer", company: "Baseline Rollback Company" }
+  });
+  db.exec(`CREATE TRIGGER fail_inbound_baseline
+    BEFORE INSERT ON message_preview_states
+    WHEN NEW.conversation_key = '${baselineRollbackKey}'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced inbound baseline rollback');
+    END`);
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: fixture.profileId,
+        conversationKey: baselineRollbackKey,
+        previewDigest: baselineRollbackPreview,
+        action: "ignore"
+      },
+      now: () => NOW
+    }),
+    /forced inbound baseline rollback/
+  );
+  db.exec("DROP TRIGGER fail_inbound_baseline");
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === baselineRollbackKey), true);
+  assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === baselineRollbackKey), false);
+  assert.strictEqual(db.prepare(`SELECT COUNT(*) AS count FROM events
+    WHERE event_type = 'message_inbound_ignored'
+      AND payload_json LIKE ?`).get(`%${baselineRollbackKey}%`).count, 0);
 }
 
 async function messageSelectionSmoke() {

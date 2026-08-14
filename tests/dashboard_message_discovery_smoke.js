@@ -18,9 +18,13 @@ const {
 } = require("../src/core/storage");
 const {
   ensureProgressCard,
-  transitionProgressCard
+  transitionProgressCard,
+  listProgressCardsWithEvents
 } = require("../src/core/candidate_progress");
-const { recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
+const {
+  recordUnresolvedMessageDiscoveryItem,
+  listUnresolvedMessageDiscoveryItems
+} = require("../src/core/message_preview_state");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
@@ -454,6 +458,12 @@ async function main() {
   assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"));
   assertNoPrivateData(durablePage.body);
 
+  await inboundResolutionDashboardSmoke({
+    base,
+    browserCreations: () => browserCreations,
+    scenarios
+  });
+
   const closeRace = closeRaceRun(fixture);
   scenarios.push(closeRace.run);
   response = await postJson(base, "/api/message-discovery", {
@@ -487,6 +497,156 @@ async function main() {
   await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function inboundResolutionDashboardSmoke({ base, browserCreations, scenarios }) {
+  const createFixtureValue = createFixture();
+  const createKey = `sha256:${"1".repeat(64)}`;
+  const createPreview = `sha256:${"2".repeat(64)}`;
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: createFixtureValue.profileId,
+    platform: "boss",
+    conversationKey: createKey,
+    previewDigest: createPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-13T08:00:00.000Z",
+    identity: {
+      positionTitle: "RAG 应用工程师",
+      company: "示例科技",
+      salary: "15-25K",
+      city: "广州",
+      recruiterLabel: PRIVATE_RECRUITER,
+      messageText: PRIVATE_BODY
+    }
+  });
+  const beforeBrowser = browserCreations();
+  const beforeScenarios = scenarios.length;
+  const page = await request(base, `/messages?profileId=${createFixtureValue.profileId}`);
+  assert.match(page.body, /RAG 应用工程师/);
+  assert.match(page.body, /示例科技/);
+  assert.match(page.body, /15-25K/);
+  assert.match(page.body, /关联现有岗位/);
+  assert.match(page.body, /保存为 HR 主动机会/);
+  assert.match(page.body, /不纳入 RoleFlow/);
+  assert.doesNotMatch(page.body, /action="[^"]*communication|发送消息/);
+  assertNoPrivateData(page.body);
+  let response = await postForm(base, "/api/message-discovery-unresolved", {
+    profileId: createFixtureValue.profileId,
+    conversationKey: createKey,
+    previewDigest: createPreview,
+    action: "create"
+  });
+  assert.strictEqual(response.status, 303);
+  assert.strictEqual(response.headers.get("location"), `/messages?profileId=${createFixtureValue.profileId}`);
+  assert.strictEqual(browserCreations(), beforeBrowser, "local inbound resolution must not create a browser");
+  assert.strictEqual(scenarios.length, beforeScenarios, "local inbound resolution must not start message discovery");
+  const created = listProgressCardsWithEvents(db, { profileId: createFixtureValue.profileId })
+    .find((card) => card.job.sourceId === `inbound:${createKey.slice(7)}`);
+  assert(created);
+  assert.strictEqual(created.stage, "needs_user_action");
+
+  const queue = await request(
+    base,
+    `/queue?planId=${createFixtureValue.planId}&pool=needs_user_action`
+  );
+  assert.match(queue.body, /RAG 应用工程师/);
+  assert.match(queue.body, /HR 主动联系/);
+  const recommendations = await request(
+    base,
+    `/queue?planId=${createFixtureValue.planId}&pool=apply`
+  );
+  assert.doesNotMatch(recommendations.body, /RAG 应用工程师/);
+
+  const linkFixture = createFixture();
+  const linkKey = `sha256:${"3".repeat(64)}`;
+  const linkPreview = `sha256:${"4".repeat(64)}`;
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: linkFixture.profileId,
+    platform: "boss",
+    conversationKey: linkKey,
+    previewDigest: linkPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-13T08:00:00.000Z",
+    identity: {
+      positionTitle: "AI应用开发工程师",
+      company: "测试公司",
+      salary: "10-18K",
+      city: "广州"
+    }
+  });
+  const linkPage = await request(base, `/messages?profileId=${linkFixture.profileId}`);
+  assert.match(linkPage.body, new RegExp(`name="jobId" value="${linkFixture.jobId}"`));
+  response = await postForm(base, "/api/message-discovery-unresolved", {
+    profileId: linkFixture.profileId,
+    conversationKey: linkKey,
+    previewDigest: linkPreview,
+    action: "link",
+    jobId: linkFixture.jobId
+  });
+  assert.strictEqual(response.status, 303);
+  assert.strictEqual(
+    listProgressCardsWithEvents(db, { profileId: linkFixture.profileId })
+      .find((card) => card.jobId === linkFixture.jobId).threadKey,
+    linkKey
+  );
+
+  const ignoreFixture = createFixture();
+  const ignoreKey = `sha256:${"5".repeat(64)}`;
+  const ignorePreview = `sha256:${"6".repeat(64)}`;
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: ignoreFixture.profileId,
+    platform: "boss",
+    conversationKey: ignoreKey,
+    previewDigest: ignorePreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-13T08:00:00.000Z",
+    identity: {
+      positionTitle: "忽略岗位",
+      company: "忽略公司"
+    }
+  });
+  const jobsBeforeIgnore = db.prepare("SELECT COUNT(*) AS count FROM jobs").get().count;
+  response = await postForm(base, "/api/message-discovery-unresolved", {
+    profileId: ignoreFixture.profileId,
+    conversationKey: ignoreKey,
+    previewDigest: ignorePreview,
+    action: "ignore"
+  });
+  assert.strictEqual(response.status, 303);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM jobs").get().count, jobsBeforeIgnore);
+
+  const staleFixture = createFixture();
+  const staleKey = `sha256:${"7".repeat(64)}`;
+  const stalePreview = `sha256:${"8".repeat(64)}`;
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: staleFixture.profileId,
+    platform: "boss",
+    conversationKey: staleKey,
+    previewDigest: stalePreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-13T08:00:00.000Z",
+    identity: {
+      positionTitle: "过期表单岗位",
+      company: "过期表单公司"
+    }
+  });
+  response = await postForm(base, "/api/message-discovery-unresolved", {
+    profileId: staleFixture.profileId,
+    conversationKey: staleKey,
+    previewDigest: `sha256:${"9".repeat(64)}`,
+    action: "ignore"
+  });
+  assert.strictEqual(response.status, 409);
+  assert.strictEqual(
+    listUnresolvedMessageDiscoveryItems(db, { profileId: staleFixture.profileId })
+      .some((item) => item.conversationKey === staleKey),
+    true
+  );
+  assert.strictEqual(browserCreations(), beforeBrowser, "all local inbound actions must remain browser-free");
 }
 
 async function controllerBrowserAuthoritySmoke() {

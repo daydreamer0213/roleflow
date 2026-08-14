@@ -75,6 +75,7 @@ const {
 } = require("../core/storage");
 const {
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   setCommunicationBatchStatus,
   communicationBatchSummary,
   communicationQuotaSnapshot
@@ -92,6 +93,15 @@ const {
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
+const { inferCandidateDisplayName } = require("../core/resume_privacy");
+const {
+  createOnboardingRun,
+  getOnboardingRun,
+  getLatestActiveOnboardingRun,
+  retryOnboardingRun,
+  failOnboardingRun,
+  recoverStaleOnboardingRuns
+} = require("../storage/onboarding_store");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
@@ -122,12 +132,14 @@ const {
   createCommunicationBatch,
   controlCommunicationBatch,
   getCommunicationStatus,
+  rebindCommunicationBrowser,
   resolveAmbiguousCommunication
 } = require("../application/communication");
 const {
   retryOneJobAnalysis,
   retryPendingJobAnalyses
 } = require("../application/analysis");
+const { resolveInboundOpportunity } = require("../application/message_discovery/inbound");
 const { scanRuntimeBlock, communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
 const { buildScanCliArgs } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
@@ -234,6 +246,7 @@ const PROGRESS_ACTIONS = Object.freeze({
 });
 const {
   buildInheritedSearchScope,
+  canonicalizeBossSearchTemplate,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
   freezeKeywordSource,
@@ -359,6 +372,7 @@ function createDashboardServer({
   messageDiscoveryDependencies = {},
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   assetReader = fs.readFileSync
 }) {
   const scanRuns = new Map();
@@ -378,6 +392,10 @@ function createDashboardServer({
   });
   if (recovery.scanRunsInterrupted || recovery.workflowRunsInterrupted || recovery.workflowRunsCompleted) {
     logger.warn("workflow_recovery_reconciled", recovery);
+  }
+  const onboardingRecovery = recoverStaleOnboardingRuns(db);
+  if (onboardingRecovery.interrupted) {
+    logger.warn("onboarding_recovery_reconciled", onboardingRecovery);
   }
   const offlineConnection = {
     status: "verified",
@@ -487,9 +505,18 @@ function createDashboardServer({
       url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname], assetReader);
       if (req.method === "GET" && url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
-      if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db);
+      if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db, {
+        deepModelReady: modelReady("deep_analysis")
+      });
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
-      if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({ modelState: getPublicModelSettings(), searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/onboarding/progress") return sendHtml(res, renderOnboardingProgressPage({
+        run: getOnboardingRun(db, url.searchParams.get("runId"))
+      }));
+      if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({
+        modelState: getPublicModelSettings(),
+        searchParams: url.searchParams,
+        deepModelReady: modelReady("deep_analysis")
+      }));
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
@@ -523,6 +550,12 @@ function createDashboardServer({
         const readiness = await resolvedBrowserReadinessProbe(authority);
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
       }
+      if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
+        recoverStaleOnboardingRuns(db);
+        const run = getOnboardingRun(db, url.searchParams.get("runId"));
+        if (!run) return sendJson(res, 404, { error: "简历处理任务不存在。" });
+        return sendJson(res, 200, publicOnboardingRun(run));
+      }
       if (req.method === "GET" && url.pathname === "/api/scan-status") return sendJson(res, 200, scanStatus(scanRuns, url.searchParams.get("planId"), db));
       if (req.method === "GET" && url.pathname === "/api/workflow-status") return handleWorkflowStatus(res, db, url.searchParams.get("runId"), logger);
       if (req.method === "POST" && url.pathname === "/api/workflow-control") {
@@ -545,6 +578,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
+      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
@@ -552,10 +586,29 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
+      if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, {
+        db,
+        dbPath,
+        root,
+        modelReady: modelReady("deep_analysis"),
+        logger,
+        requestId,
+        spawnProcess,
+        forceMock
+      });
+      if (req.method === "POST" && url.pathname === "/api/onboarding-retry") return handleOnboardingRetry(req, res, {
+        db,
+        dbPath,
+        root,
+        logger,
+        requestId,
+        spawnProcess,
+        forceMock
+      });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
@@ -666,15 +719,35 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
   }
 }
 
-function redirectHome(res, db) {
+function redirectHome(res, db, { deepModelReady = false } = {}) {
+  if (!deepModelReady) return redirect(res, "/settings?firstRun=1&next=%2Fonboarding");
+  const onboardingRun = getLatestActiveOnboardingRun(db);
+  if (onboardingRun) return redirect(res, onboardingProgressLocation(onboardingRun.id));
   const profile = listCandidateProfiles(db)[0];
   if (!profile) return redirect(res, "/onboarding");
+  const activeCard = getActiveMatchingCard(db, profile.id);
+  if (!activeCard) {
+    const draft = listMatchingCards(db, profile.id).find((card) => card.status === "draft");
+    return redirect(
+      res,
+      `/match-card?profileId=${profile.id}${draft ? `&cardId=${draft.id}` : ""}`
+    );
+  }
   const plan = getActiveSearchPlan(db, profile.id);
-  if (!plan) return redirect(res, `/onboarding?profileId=${profile.id}`);
+  if (!plan) return redirect(res, `/plan?profileId=${profile.id}`);
   return redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}`);
 }
 
-async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady, logger, requestId }) {
+async function handleResumeUpload(req, res, {
+  db,
+  dbPath,
+  root,
+  modelReady,
+  logger,
+  requestId,
+  spawnProcess,
+  forceMock = false
+}) {
   let form = { fields: {}, files: {} };
   let parseRecorded = false;
   try {
@@ -705,30 +778,41 @@ async function handleResumeUpload(req, res, { db, root, modelConfig, modelReady,
       logger.info("resume_reupload_same_content", { requestId, profileId: existing.id, contentHash: resume.contentHash });
       return redirect(res, matchingCardEntryLocation(db, existing.id, resume.contentHash));
     }
-    const profile = await analyzeResumeProfile({ modelConfig, resume, logger });
-    const saved = saveProfileAnalysis(db, { profileId: form.fields.profileId, profile, document: resume, searchPlan: null });
-    persistResumeSourceFile({ db, root, documentId: saved.resumeDocumentId, file, logger, requestId });
-    recordResumeParseAttempt(db, { profileId: saved.profileId, document: resume });
+    const created = createOnboardingRun(db, {
+      profileId: requestedProfileId,
+      displayName: inferCandidateDisplayName(resume.text, resume.originalFileName),
+      document: resume
+    });
     parseRecorded = true;
-    logger.info("resume_profile_created", { requestId, profileId: saved.profileId, profileVersionId: saved.profileVersionId, modelProvider: modelConfig?.provider || "mock" });
-    const cardId = await createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId });
-    // 只要已有已确认匹配卡和 active 方案（无论方案当前是否 stale），新简历只生成草稿卡：
-    // 旧卡与旧方案继续作为扫描依据，绝不自动停用、替换或重绑；确认新卡后由用户明确保存方案。
-    // 只有首次上传、没有 confirmed 卡，或确实不存在任何 active 方案时才自动生成初始方案。
-    const activeCard = getActiveMatchingCard(db, saved.profileId);
-    const activePlan = getActiveSearchPlan(db, saved.profileId);
-    if (activeCard && activePlan) {
-      logger.info("search_plan_recommend_skipped", { requestId, profileId: saved.profileId, planId: activePlan.id, reason: "pending_matching_card_draft" });
-    } else {
+    persistResumeSourceFile({
+      db,
+      root,
+      documentId: created.run.resumeDocumentId,
+      file,
+      logger,
+      requestId
+    });
+    if (created.created) {
       try {
-        const plan = await recommendPlanForProfile({ modelConfig, profile, logger });
-        const planId = saveSearchPlan(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, plan });
-        logger.info("search_plan_recommended", { requestId, profileId: saved.profileId, planId, profileVersionId: saved.profileVersionId });
-      } catch (planError) {
-        logger.warn("search_plan_recommend_failed", { requestId, profileId: saved.profileId, error: errorMeta(planError) });
+        startOnboardingProcess({
+          db,
+          dbPath,
+          root,
+          run: created.run,
+          logger,
+          requestId,
+          spawnProcess,
+          forceMock
+        });
+      } catch (startError) {
+        logger.warn("onboarding_process_start_failed", {
+          requestId,
+          runId: created.run.id,
+          error: errorMeta(startError)
+        });
       }
     }
-    return redirect(res, `/match-card?profileId=${saved.profileId}&cardId=${cardId}`);
+    return redirect(res, onboardingProgressLocation(created.run.id));
   } catch (error) {
     maskResumeParseErrorDiagnostics(error);
     const failedFile = form.files?.resume;
@@ -1019,7 +1103,11 @@ async function handleProfileSave(req, res, db, { logger, requestId }) {
     const existing = getCandidateProfile(db, profileId);
     if (!existing) throw new Error("candidate profile not found");
     const profile = profileFromForm(existing.profile, params);
-    updateCandidateProfile(db, { profileId, profile });
+    updateCandidateProfile(db, {
+      profileId,
+      profile,
+      displayName: String(params.name || existing.displayName || "").trim()
+    });
     logger.info("candidate_profile_updated", { requestId, profileId, skillCount: profile.skills.length, projectCount: profile.projects.length });
     redirect(res, `/profile?profileId=${profileId}&saved=1`);
   } catch (error) {
@@ -1104,7 +1192,7 @@ function maskResumeParseErrorDiagnostics(error) {
 
 async function handlePlanRecommend(req, res, { db, modelConfig, modelReady, logger, requestId }) {
   try {
-    if (!modelReady) throw new Error("生成搜索建议需要可用模型，请先完成模型连接测试。");
+    if (!modelReady) throw new Error("生成本地筛选方案需要可用模型，请先完成模型连接测试。");
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const profile = getCandidateProfile(db, Number(params.profileId));
     if (!profile) throw new Error("候选人画像不存在，请重新上传简历。");
@@ -1123,7 +1211,7 @@ function profileFromForm(existing, params) {
     ...existing,
     candidate: {
       ...candidate,
-      name: String(params.name || candidate.name || "").trim(),
+      name: "候选人",
       city: String(params.city || candidate.city || "").trim(),
       targetTitles: splitTerms(params.targetTitles),
       expectedSalary: String(params.expectedSalary || "").trim(),
@@ -1226,7 +1314,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       },
       source: "user-confirmed"
     }, profile.profile);
-    const validation = validateSearchPlan(plan, profile.profile);
+    const validation = validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" });
     if (!validation.valid) throw new Error(validation.errors.join("；"));
     const matchingContext = getCandidateMatchingContext(db, profileId);
     const planId = saveSearchPlan(db, { id: params.planId, profileId, profileVersionId: matchingContext?.profileVersionId || null, plan });
@@ -1265,7 +1353,12 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
     const plan = getSearchPlan(db, params.planId);
     if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     const matchingContext = plan ? getCandidateMatchingContext(db, plan.profileId) : null;
-    assertSearchPlanReady(plan, matchingContext?.candidateProfile || {}, plan ? getSearchPlanDependency(db, plan.id) : {});
+    assertSearchPlanReady(
+      plan,
+      matchingContext?.candidateProfile || {},
+      plan ? getSearchPlanDependency(db, plan.id) : {},
+      { acquisitionMode: "generated" }
+    );
     assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
@@ -2466,6 +2559,168 @@ async function handleMessageDiscovery(req, res, controller) {
   }
 }
 
+function startOnboardingProcess({
+  db,
+  dbPath,
+  root,
+  run,
+  logger,
+  requestId,
+  spawnProcess = spawn,
+  forceMock = false
+}) {
+  if (!dbPath) throw appError(
+    "ONBOARDING_DB_PATH_REQUIRED",
+    "简历后台处理缺少数据库路径。",
+    { statusCode: 500 }
+  );
+  const args = [
+    "--disable-warning=ExperimentalWarning",
+    "src/cli.js",
+    "onboarding-process",
+    "--db", dbPath,
+    "--run", run.id
+  ];
+  if (forceMock) args.push("--force-mock");
+  let child;
+  try {
+    child = spawnProcess(process.execPath, args, {
+      cwd: root,
+      windowsHide: true,
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+    child.unref?.();
+    child.on?.("error", (error) => {
+      const current = getOnboardingRun(db, run.id);
+      if (!current || !["queued", "running"].includes(current.status)) return;
+      failOnboardingRun(db, run.id, {
+        code: "ONBOARDING_PROCESS_ERROR",
+        message: "简历后台处理进程已中断，请在进度页重试。"
+      });
+      logger.error("onboarding_process_error", {
+        requestId,
+        runId: run.id,
+        error: errorMeta(error)
+      });
+    });
+    child.on?.("close", (code, signal) => {
+      if (Number(code || 0) === 0 && !signal) return;
+      const current = getOnboardingRun(db, run.id);
+      if (!current || !["queued", "running"].includes(current.status)) return;
+      failOnboardingRun(db, run.id, {
+        code: "ONBOARDING_PROCESS_EXITED",
+        message: "简历后台处理进程提前退出，请在进度页重试。"
+      });
+      logger.error("onboarding_process_closed", {
+        requestId,
+        runId: run.id,
+        exitCode: code == null ? null : Number(code),
+        signal: signal || null
+      });
+    });
+    logger.info("onboarding_process_started", {
+      requestId,
+      runId: run.id,
+      childPid: child.pid || null
+    });
+  } catch (error) {
+    const failed = Object.assign(
+      new Error("简历后台处理未能启动，请在进度页重试。"),
+      { code: "ONBOARDING_PROCESS_START_FAILED" }
+    );
+    failOnboardingRun(db, run.id, failed);
+    throw failed;
+  }
+  return child;
+}
+
+async function handleOnboardingRetry(req, res, {
+  db,
+  dbPath,
+  root,
+  logger,
+  requestId,
+  spawnProcess,
+  forceMock
+}) {
+  let runId = "";
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    runId = String(params.runId || "");
+    const run = retryOnboardingRun(db, runId);
+    try {
+      startOnboardingProcess({
+        db,
+        dbPath,
+        root,
+        run,
+        logger,
+        requestId,
+        spawnProcess,
+        forceMock
+      });
+    } catch (startError) {
+      logger.warn("onboarding_process_restart_failed", {
+        requestId,
+        runId,
+        error: errorMeta(startError)
+      });
+    }
+    redirect(res, onboardingProgressLocation(run.id));
+  } catch (error) {
+    respondUiError(res, error, runId ? onboardingProgressLocation(runId) : "/onboarding", {
+      logger,
+      requestId,
+      event: "onboarding_retry_failed",
+      fallbackCode: "ONBOARDING_RETRY_FAILED"
+    });
+  }
+}
+
+function onboardingProgressLocation(runId) {
+  return `/onboarding/progress?runId=${encodeURIComponent(String(runId || ""))}`;
+}
+
+async function handleInboundOpportunityResolution(req, res, db) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const result = resolveInboundOpportunity({ db, input: params });
+    redirect(res, `/messages?profileId=${encodeURIComponent(result.profileId)}`);
+  } catch (error) {
+    const known = new Set([
+      "INBOUND_ACTION_INVALID",
+      "INBOUND_ITEM_NOT_FOUND",
+      "INBOUND_PREVIEW_CHANGED",
+      "INBOUND_IDENTITY_INCOMPLETE",
+      "INBOUND_PROFILE_NOT_FOUND",
+      "INBOUND_ACTIVE_PLAN_REQUIRED",
+      "INBOUND_JOB_NOT_LINKABLE",
+      "INBOUND_JOB_IDENTITY_MISMATCH",
+      "PROGRESS_THREAD_CONFLICT"
+    ]);
+    const code = String(error?.code || "INBOUND_RESOLUTION_FAILED");
+    sendJson(res, known.has(code) ? 409 : 400, {
+      error: inboundOpportunityPublicError(code),
+      errorCode: code
+    });
+  }
+}
+
+function inboundOpportunityPublicError(code) {
+  return {
+    INBOUND_ACTION_INVALID: "处理方式无效。",
+    INBOUND_ITEM_NOT_FOUND: "这条待处理记录已变化或已处理，请刷新页面。",
+    INBOUND_PREVIEW_CHANGED: "会话预览已变化，请刷新页面后重新核对。",
+    INBOUND_IDENTITY_INCOMPLETE: "岗位名称或公司仍不完整，请重新只读发现后再处理。",
+    INBOUND_PROFILE_NOT_FOUND: "候选人画像不存在。",
+    INBOUND_ACTIVE_PLAN_REQUIRED: "请先启用一个筛选方案，再保存或关联机会。",
+    INBOUND_JOB_NOT_LINKABLE: "所选岗位不属于当前候选人的可关联范围。",
+    INBOUND_JOB_IDENTITY_MISMATCH: "所选岗位的名称或公司与会话不一致。",
+    PROGRESS_THREAD_CONFLICT: "该岗位已经关联到另一条会话。"
+  }[code] || "本地处理未完成，数据没有改变。";
+}
+
 function handleMessageDiscoveryStatus(res, controller, profileIdValue) {
   try {
     sendJson(res, 200, controller.status(profileIdValue));
@@ -2660,6 +2915,81 @@ async function handleCommunicationControl(req, res, { db, root, dbPath, logger, 
   redirectCommunicationResult(res, result.body.batch);
 }
 
+async function handleCommunicationRebind(req, res, {
+  db,
+  logger,
+  browserFactory = createDashboardBrowser,
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser
+}) {
+  const rawBody = await readBody(req);
+  const params = parseBody(rawBody, req.headers["content-type"] || "");
+  const result = await communicationApiResultAsync(() => rebindCommunicationBrowser({
+    db,
+    input: params,
+    deps: {
+      inspectAndBindCommunicationBrowser: ({ batch }) => communicationBrowserRebinder({
+        db,
+        batch,
+        logger,
+        browserFactory
+      })
+    }
+  }));
+  if (!result.ok || String(req.headers.accept || "").includes("application/json")) {
+    return sendJson(res, result.statusCode, result.body);
+  }
+  redirect(res, `/communication?batchId=${result.body.batch.id}`);
+}
+
+async function inspectAndBindCommunicationBrowser({
+  db,
+  batch,
+  logger,
+  browserFactory = createDashboardBrowser
+}) {
+  const browser = browserFactory({ browserMode: "edge", cdpPort: null });
+  const adapter = new boss.BossSiteAdapter({ browser, logger });
+  const inspected = await inspectBossOperatorTabs({
+    browser,
+    inspectTab: (tabId) => adapter.preflight({ tabId })
+  });
+  const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
+  assertCommunicationRebindScope(db, batch, captured.url);
+  return bindCommunicationBatchRuntime(db, {
+    batchId: batch.id,
+    browser: {
+      mode: "edge",
+      windowId: inspected.windowId,
+      searchTabId: inspected.searchTab.id,
+      messageTabId: inspected.communicationTab.id,
+      searchReturnUrl: captured.url,
+      searchScrollTop: captured.scrollTop,
+      bindingGeneration: batch.runtime.browser.bindingGeneration
+    },
+    rebind: true
+  });
+}
+
+function assertCommunicationRebindScope(db, batch, returnUrl) {
+  const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
+  const expectedUrl = String(
+    workflow?.planner?.searchScope?.templateUrl
+    || batch.runtime?.browser?.searchReturnUrl
+    || ""
+  );
+  let actual;
+  let expected;
+  try {
+    actual = canonicalizeBossSearchTemplate(returnUrl).url;
+    expected = canonicalizeBossSearchTemplate(expectedUrl).url;
+  } catch (cause) {
+    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "无法确认当前 BOSS 搜索页与原筛选范围一致。", { statusCode: 409, cause });
+  }
+  if (actual !== expected) {
+    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页筛选条件与原批次范围不一致。", { statusCode: 409 });
+  }
+}
+
 function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
@@ -2756,6 +3086,15 @@ function handleCommunicationStatus(res, db, batchId) {
 function communicationApiResult(action) {
   try {
     return { ok: true, statusCode: 200, body: action() };
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
+    return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };
+  }
+}
+
+async function communicationApiResultAsync(action) {
+  try {
+    return { ok: true, statusCode: 200, body: await action() };
   } catch (error) {
     const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
     return { ok: false, statusCode: issue.statusCode, body: { error: issue.message, errorCode: issue.code } };
@@ -2869,7 +3208,7 @@ function renderProfilePage({ db, searchParams }) {
   const dependency = activePlan ? getSearchPlanDependency(db, activePlan.id) : null;
   const saved = searchParams.get("saved") ? `<p class="notice">画像已保存。搜索方案不会被静默改写，请在方案页按需确认。</p>` : "";
   const planNotice = !activePlan
-    ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成搜索建议</button></form>`
+    ? `<form class="inline-form" method="post" action="/api/plan/recommend"><input type="hidden" name="profileId" value="${profile.id}"><button>生成本地筛选方案</button></form>`
     : dependency?.stale ? `<p class="setup-warning">当前筛选方案基于旧画像。请在筛选方案页检查并保存后再扫描；系统不会自动覆盖你的人工条件。</p>` : "";
   return renderLegacyDashboardPage({ title: "画像摘要", currentPath: planPath, todayPath: planPath, planId: activePlan?.id || "", stage: "画像", body: `<main id="main-content">
   <h1>画像摘要</h1>
@@ -2878,7 +3217,7 @@ function renderProfilePage({ db, searchParams }) {
   <p class="hint">默认按你提供的内容使用；只在需要调整方向、薪资或项目表述时再编辑。</p>
   <form class="panel form-stack" method="post" action="/api/profile">
     <input type="hidden" name="profileId" value="${escapeAttr(profile.id)}">
-    <label>姓名<input name="name" value="${escapeAttr(candidate.name || profile.displayName)}"></label>
+    <label>姓名<input name="name" value="${escapeAttr(profile.displayName || "候选人")}"></label>
     <label>优先城市<input name="city" value="${escapeAttr(candidate.city || "")}" placeholder="例如：广州"></label>
     <label>目标方向<input name="targetTitles" value="${escapeAttr((candidate.targetTitles || []).join("、"))}" placeholder="用顿号或逗号分隔"></label>
     <label>期望薪资<input name="expectedSalary" value="${escapeAttr(candidate.expectedSalary || "")}" placeholder="例如：9-14K"></label>
@@ -3035,16 +3374,122 @@ function renderOnboarding({ profiles, modelState, modelReady, selectedProfileId 
   <p class="hint">当前模型：${escapeHtml(status)}</p>
   ${unavailable}
   <form class="panel form-stack" method="post" action="/api/resume" enctype="multipart/form-data">
-    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析并生成筛选建议</button>
+    <button data-page-primary="true" data-onboarding-primary="true"${modelReady ? "" : " disabled"}>解析简历并生成筛选方案</button>
     <label>候选人画像<select name="profileId"><option value="">新建候选人</option>${options}</select></label>
     <label>上传简历文件<input name="resume" type="file" accept=".txt,.md,.docx,.pdf" onchange="document.getElementById('resume-text').value=''"></label>
     <label>或粘贴简历文本<textarea id="resume-text" name="resumeText" placeholder="工作/实习经历、项目经历、专业技能、个人优势" oninput="document.querySelector('[name=resume]').value=''"></textarea></label>
     <div class="inline-form"><button type="button" data-template="${escapeAttr(JSON.stringify(resumeTextTemplate()))}" onclick="const target=document.getElementById(&quot;resume-text&quot;);if(!target.value.trim())target.value=JSON.parse(this.dataset.template);target.focus()">使用模板</button></div>
     ${renderResumePreviewControls()}
-    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和搜索建议。API Key 与原始文件不会随请求发送。</p>
+    <p class="hint">提交后先在本地提取文本；姓名、手机号、邮箱、住址和身份证号会在本地遮盖后再发送模型，由当前模型厂商生成画像和本地筛选方案。API Key 与原始文件不会随请求发送。</p>
   </form>
   ${profiles.length ? `<section class="panel"><h2>已有候选人</h2>${profiles.map((profile) => `<p><a href="/plan?profileId=${profile.id}&planId=${profile.activePlanId || ""}">${escapeHtml(profile.displayName)}</a> · 最近更新 ${escapeHtml(profile.updatedAt.slice(0, 16).replace("T", " "))}</p>`).join("")}</section>` : ""}
 </main>${resumePreviewScript()}` });
+}
+
+function renderOnboardingProgressPage({ run }) {
+  if (!run) return renderErrorPage("简历处理任务不存在。", "/onboarding");
+  const state = publicOnboardingRun(run);
+  const completed = state.status === "completed";
+  const failed = state.status === "failed";
+  const retryAvailable = failed || (completed && state.errorCode && !run.searchPlanId);
+  const next = state.nextHref
+    ? `<a class="button-link onboarding-next" href="${escapeAttr(state.nextHref)}">${escapeHtml(state.nextLabel)}</a>`
+    : "";
+  const retry = retryAvailable
+    ? `<form method="post" action="/api/onboarding-retry">
+        <input type="hidden" name="runId" value="${escapeAttr(run.id)}">
+        <button type="submit">重试当前处理</button>
+      </form>`
+    : "";
+  const statusClass = failed ? " failed" : completed ? " completed" : "";
+  const body = `<style>
+    .onboarding-progress{max-width:820px;padding-top:28px}.onboarding-progress-card{padding:24px;border-left:5px solid #176b5b}.onboarding-progress-card.failed{border-left-color:#a33a32}.onboarding-progress-card.completed{border-left-color:#176b5b}.onboarding-stage-list{display:grid;gap:0;margin:22px 0;padding:0;list-style:none;border-top:1px solid #d7e0e6}.onboarding-stage-list li{display:grid;grid-template-columns:26px minmax(0,1fr);gap:10px;padding:13px 0;border-bottom:1px solid #d7e0e6}.onboarding-stage-list li:before{display:grid;place-items:center;width:22px;height:22px;content:"";border:2px solid #aab8c2;border-radius:50%}.onboarding-stage-list li.done:before{content:"✓";color:#fff;background:#176b5b;border-color:#176b5b;font-size:13px;font-weight:800}.onboarding-stage-list li.current:before{border-color:#f07824;box-shadow:0 0 0 4px rgba(240,120,36,.16)}.onboarding-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.onboarding-actions form{margin:0}.onboarding-next{color:#fff;background:#176b5b;border-color:#176b5b}.onboarding-elapsed{font-variant-numeric:tabular-nums}.onboarding-error{padding:10px 12px;border-left:3px solid #a33a32;background:#fff1f0;color:#7c2f29}@media(max-width:700px){.onboarding-progress{padding-top:16px}.onboarding-progress-card{padding:16px}.onboarding-actions{display:grid}.onboarding-actions form,.onboarding-actions button,.onboarding-actions a{box-sizing:border-box;width:100%;text-align:center}}
+  </style><main id="main-content" class="onboarding-progress" data-onboarding-progress data-run-id="${escapeAttr(run.id)}" data-status="${escapeAttr(state.status)}" data-revision="${Number(state.progressRevision)}">
+    <h1>简历处理进度</h1>
+    <section class="panel onboarding-progress-card${statusClass}" aria-live="polite" aria-atomic="true">
+      <p class="eyebrow" data-progress-status>${escapeHtml(state.statusLabel)}</p>
+      <h2 data-progress-stage>${escapeHtml(state.stageLabel)}</h2>
+      <p class="hint">已经耗时 <span class="onboarding-elapsed" data-progress-elapsed>${escapeHtml(state.elapsedLabel)}</span>。页面可以刷新或暂时关闭，处理记录不会丢失。</p>
+      <ol class="onboarding-stage-list">
+        ${renderOnboardingStage("parsed", "简历已接收", state)}
+        ${renderOnboardingStage("analyzing_profile", "正在生成候选人画像", state)}
+        ${renderOnboardingStage("building_match_card", "正在生成匹配偏好卡", state)}
+        ${renderOnboardingStage("building_plan", "正在生成本地筛选方案", state)}
+      </ol>
+      <p class="onboarding-error" data-progress-error${state.errorMessage ? "" : " hidden"}>${escapeHtml(state.errorMessage)}</p>
+      <div class="onboarding-actions" data-progress-actions>${next}${retry}</div>
+    </section>
+  </main>${onboardingProgressScript()}`;
+  return renderLegacyDashboardPage({
+    title: "简历处理进度",
+    currentPath: "/onboarding",
+    stage: "入门",
+    body
+  });
+}
+
+function renderOnboardingStage(stage, label, state) {
+  const order = ["parsed", "analyzing_profile", "building_match_card", "building_plan", "ready"];
+  const current = Math.max(0, order.indexOf(state.stage));
+  const index = order.indexOf(stage);
+  const css = state.status === "completed" || index < current
+    ? "done"
+    : index === current ? "current" : "";
+  return `<li class="${css}" data-stage="${escapeAttr(stage)}"><span>${escapeHtml(label)}</span></li>`;
+}
+
+function publicOnboardingRun(run, now = new Date()) {
+  const stages = {
+    parsed: "简历已接收，正在准备分析",
+    analyzing_profile: "正在生成候选人画像",
+    building_match_card: "正在生成匹配偏好卡",
+    building_plan: "正在生成本地筛选方案",
+    ready: "处理完成"
+  };
+  const statusLabels = {
+    queued: "已进入后台处理",
+    running: "后台处理中",
+    completed: "处理完成",
+    failed: "处理已中断"
+  };
+  const started = Date.parse(run.createdAt);
+  const elapsedSeconds = Number.isFinite(started)
+    ? Math.max(0, Math.round((now.getTime() - started) / 1000))
+    : 0;
+  const nextHref = run.matchingCardId
+    ? `/match-card?profileId=${run.profileId}&cardId=${run.matchingCardId}`
+    : "";
+  return {
+    id: run.id,
+    status: run.status,
+    stage: run.stage,
+    progressRevision: run.progressRevision,
+    statusLabel: statusLabels[run.status] || "处理中",
+    stageLabel: stages[run.stage] || "正在处理",
+    elapsedSeconds,
+    elapsedLabel: elapsedTimeLabel(elapsedSeconds),
+    errorCode: run.errorCode || "",
+    errorMessage: run.errorMessage || "",
+    nextHref,
+    nextLabel: nextHref ? "检查匹配偏好卡" : ""
+  };
+}
+
+function elapsedTimeLabel(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value < 60) return `${value} 秒`;
+  const minutes = Math.floor(value / 60);
+  return `${minutes} 分 ${value % 60} 秒`;
+}
+
+function onboardingProgressScript() {
+  return `<script>
+    (()=>{const page=document.querySelector("[data-onboarding-progress]");if(!page||["completed","failed"].includes(page.dataset.status))return;
+      const runId=page.dataset.runId;let stopped=false;
+      const poll=async()=>{if(stopped)return;try{const response=await fetch("/api/onboarding-status?runId="+encodeURIComponent(runId),{headers:{accept:"application/json"}});if(!response.ok)throw new Error("无法读取处理状态");const state=await response.json();if(Number(state.progressRevision)!==Number(page.dataset.revision)||["completed","failed"].includes(state.status)){location.reload();return}const elapsed=page.querySelector("[data-progress-elapsed]");if(elapsed)elapsed.textContent=state.elapsedLabel}catch{}if(!stopped)setTimeout(poll,2500)};
+      addEventListener("pagehide",()=>{stopped=true},{once:true});setTimeout(poll,2500);
+    })();
+  </script>`;
 }
 
 function renderResumePreviewControls() {
@@ -3055,7 +3500,7 @@ function resumePreviewScript() {
   return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
-function renderModelSettingsPage({ modelState, searchParams }) {
+function renderModelSettingsPage({ modelState, searchParams, deepModelReady = false }) {
   const settings = modelState.settings || {};
   const currentCredentials = [
     settings.sharedCredential,
@@ -3073,6 +3518,9 @@ function renderModelSettingsPage({ modelState, searchParams }) {
     : "";
   const restored = searchParams.get("recommended")
     ? `<p class="setup-warning">已恢复推荐值；请重新测试连接后再使用该任务配置。</p>`
+    : "";
+  const nextStep = deepModelReady
+    ? `<a class="settings-next" href="/onboarding">下一步：填写简历</a>`
     : "";
   const keyStatus = modelState.keyErrorCode === "SECRET_UNREADABLE"
     ? "API Key 文件无法解密，请重新输入"
@@ -3094,7 +3542,7 @@ function renderModelSettingsPage({ modelState, searchParams }) {
   });
   const presetJson = JSON.stringify(presets).replace(/</g, "\\u003c");
   const body = `<style>
-    .settings-page{max-width:980px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-profile{scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}}
+    .settings-page{max-width:1160px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-provider-link{margin-bottom:0}.settings-next{display:inline-flex;align-items:center;min-height:42px;padding:0 16px;border-radius:6px;background:#176b5b;color:#fff;font-weight:700;text-decoration:none}.settings-next:hover{background:#115447;text-decoration:none}.settings-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.settings-profile{min-width:0;scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:900px){.settings-primary-grid{grid-template-columns:1fr}}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}.settings-next{box-sizing:border-box;justify-content:center;width:100%}}
   </style><main id="main-content" class="settings-page">
     <header class="settings-header">
       <p class="eyebrow">按任务选择模型</p>
@@ -3110,8 +3558,10 @@ function renderModelSettingsPage({ modelState, searchParams }) {
         <label class="settings-field">共享 API Key<input id="shared-model-api-key" type="password" autocomplete="new-password" placeholder="${modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key"}"><small>在下方任一共享任务点击“测试连接并保存”时写入。</small></label>
       </div>
       <p class="settings-current">当前共享厂商：${escapeHtml(settings.sharedCredential?.preset || "未设置")} · ${escapeHtml(keyStatus)}</p>
+      <p class="settings-provider-link">还没有 DeepSeek API Key？<a href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">打开 DeepSeek 开放平台</a></p>
+      ${nextStep}
     </section>
-    ${profileSections}
+    <div class="settings-primary-grid">${profileSections}</div>
     ${backupSection}
     <p class="hint">API Key 不进入设置 JSON、日志、数据库或页面响应。</p>
     <script id="model-preset-data" type="application/json">${presetJson}</script>
@@ -3127,7 +3577,7 @@ function renderModelTaskProfileSection({ definition, settings, presets, modelSta
     || presets.find((item) => item.id === "custom")
     || presets[0];
   const purpose = definition.id === "deep_analysis"
-    ? "用于简历解析、候选人画像、搜索建议、匹配偏好卡和主动生成沟通内容。"
+    ? "用于简历解析、候选人画像、本地筛选方案、匹配偏好卡和主动生成沟通内容。"
     : "用于岗位理解、岗位匹配、单岗重试和批量重试。";
   const recommended = definition.recommended;
   const connection = profile.connection || {};
@@ -3324,7 +3774,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const profile = getCandidateProfile(db, profileId);
   if (!profile) return renderErrorPage("还没有候选人画像，请先上传简历。", "/onboarding");
   const planRecord = requestedPlan?.profileId === profile.id ? requestedPlan : getActiveSearchPlan(db, profile.id);
-  if (!planRecord) return renderErrorPage("当前候选人没有可编辑的筛选计划。", "/onboarding");
+  if (!planRecord) return renderErrorPage("当前候选人没有可编辑的本地筛选方案。", "/onboarding");
   const plan = normalizeSearchPlan(planRecord.plan || {}, profile.profile);
   const dailyScan = resolveScanPolicy(plan, "daily");
   const broadScan = resolveScanPolicy(plan, "broad");
@@ -3335,7 +3785,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
     ? plan.platform.salaryLanes
     : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
-  const confirmation = searchParams.get("saved") ? "筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和筛选建议，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const confirmation = searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和本地筛选方案，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
   const viewModel = buildTodayViewModel({
     profile,
     planRecord,
@@ -3347,8 +3797,8 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     dailyBCardLimit: boss.weightedCardLimit("B", dailyScan.maxCards),
     run: scanStatus(scanRuns, planRecord.id, db),
     resumableBatch: getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" }),
-    validation: validateSearchPlan(plan, profile.profile),
-    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { validatePlatformCities: false }),
+    validation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" }),
+    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "inherited" }),
     planDependency: getSearchPlanDependency(db, planRecord.id),
     versionDiff: compareProfileVersions(db, profile.id),
     feedback: buildFeedbackSummary(db, { profileId: profile.id }),
@@ -3563,8 +4013,25 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
   const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
-  const fullPool = listDecisionPool(db, { planId: plan.id })
+  const decisionJobs = listDecisionPool(db, { planId: plan.id })
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
+  const knownJobIds = new Set(decisionJobs.map((job) => Number(job.id)));
+  const directProgressJobs = progressCards
+    .filter((card) => card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId)))
+    .map((card) => ({
+      ...card.job,
+      profileId: card.profileId,
+      searchPlanId: card.planId,
+      progressCard: card,
+      decisionBucket: "",
+      applicationStatus: "",
+      qualityTags: [],
+      risks: [],
+      analysis: {},
+      keyword: "HR 主动联系",
+      inboundOpportunity: true
+    }));
+  const fullPool = [...decisionJobs, ...directProgressJobs];
   const allCandidates = fullPool.filter((job) => compactAwaitingAction(job) && !job.progressCard);
   const noReplyCandidates = fullPool.filter((job) => job.applicationStatus === "no_reply");
   const progressCandidates = fullPool.filter((job) => job.progressCard);
@@ -3796,6 +4263,7 @@ function compactAwaitingAction(job) {
 }
 
 function queueScopeForJob(job, latestMainBatchId) {
+  if (job.inboundOpportunity) return "backlog";
   if (!latestMainBatchId) return "backlog";
   if (Number(job.firstBatchId) === Number(latestMainBatchId)) return "new";
   if (Number(job.latestScanBatchId) === Number(latestMainBatchId)) return "repeated";
@@ -3849,6 +4317,7 @@ function renderCompactJob(job, filters) {
 }
 
 function renderCompactJobBase(job, filters) {
+  if (job.inboundOpportunity) return renderInboundProgressJob(job);
   const analysis = job.analysis || {};
   const query = compactQuery(filters);
   const context = `${job.profileId ? `<input type="hidden" name="profileId" value="${escapeAttr(job.profileId)}">` : ""}${job.searchPlanId ? `<input type="hidden" name="planId" value="${escapeAttr(job.searchPlanId)}">` : ""}`;
@@ -3867,6 +4336,11 @@ function renderCompactJobBase(job, filters) {
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+}
+
+function renderInboundProgressJob(job) {
+  const card = job.progressCard;
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title || "HR 主动岗位")}</div><div class="job-meta">${escapeHtml(job.company || "公司待确认")} · ${escapeHtml(job.location || "地点待确认")} · ${escapeHtml(job.salary || "薪资待确认")}</div><div class="job-meta">来源：HR 主动联系 · 未进入岗位推荐与效果统计</div></div><span class="decision analysis_pending">需要处理</span></div><div class="job-reason">这是从消息只读发现中由你确认保存的本地机会。</div><details class="details"><summary>查看进展与本地操作</summary>${renderProgressPanel(card)}</details></article>`;
 }
 
 function compactVisibleRisks(risks = []) {

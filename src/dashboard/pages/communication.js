@@ -2,6 +2,7 @@
 
 const { escapeAttr, escapeHtml } = require("../http/response");
 const { renderDashboardFrame } = require("../ui/shell");
+const { communicationStatusLabel } = require("../status_labels");
 
 function renderCommunicationPage(vm = {}) {
   const page = vm.page || {};
@@ -20,14 +21,16 @@ function primary(vm) {
   if (vm.state === "integrity_blocked") return `<section id="communication-recovery" class="alert" role="alert"><strong>批次范围无法安全确认</strong><p>检测到 ${escapeHtml(vm.integrityIssue || "范围不一致")}。本地数据未被修改；请从筛选方案重新进入，或查看诊断。</p><a class="button secondary" href="/diagnostics">查看诊断</a></section>`;
   if (vm.state === "needs_resolution") {
     const first = (vm.items || []).find((item) => item.status === "ambiguous");
-    const recovery = first ? `<a class="button secondary" href="/communication?batchId=${number(vm.batch?.id)}#communication-item-${number(first.id)}">处理不明确结果</a>` : `<a class="button secondary" href="/diagnostics">查看诊断</a>`;
-    return `<section id="communication-recovery" class="alert" role="alert"><strong>需要先处理不明确结果</strong><p>${vm.ambiguity?.countsMismatch ? "批次汇总与条目状态不一致。" : "存在不能确认结果的岗位。"} 已移除所有开始和继续表单；请在下方填写可核验的处理依据。</p>${recovery}</section>`;
+    const recovery = first ? `<a class="button secondary" href="/communication?batchId=${number(vm.batch?.id)}#communication-item-${number(first.id)}">核对沟通结果</a>` : `<a class="button secondary" href="/diagnostics">查看诊断</a>`;
+    return `<section id="communication-recovery" class="alert" role="alert"><strong>等待人工确认沟通结果</strong><p>${vm.ambiguity?.countsMismatch ? "批次汇总与条目状态不一致。" : "系统已发出操作，但不能可靠判断平台是否接受。"} 这不代表沟通失败；请在下方核对并填写可验证的处理依据。</p>${recovery}</section>`;
   }
   if (vm.state === "running") return `<section class="action-panel"><p class="section-label">串行执行中</p><h2>正在按确认清单逐项执行</h2><p class="muted">仅显示已核验的沟通结果；配额预留和尝试不会被计作成功。</p></section>`;
   if (vm.state === "completed") return `<section class="action-panel"><p class="section-label">本批次已结束</p><h2>已保留结果，未把未核验尝试当作成功</h2><p class="muted">可在下方查看条目和近期批次。</p></section>`;
-  if (!vm.controls?.visible) return "";
+  const rebind = vm.controls?.rebindVisible ? `<form method="post" action="/api/communication-rebind"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="secondary">重新检查浏览器页面</button></form>` : "";
+  if (!vm.controls?.visible && !rebind) return "";
+  const execute = vm.controls?.visible ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-primary" data-page-primary="true" name="action" value="${escapeAttr(vm.controls.action)}">${escapeHtml(vm.controls.label)}</button></form>` : "";
   const discard = ["confirmed", "paused"].includes(vm.batch?.status) ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-discard" name="action" value="discard">安全撤回</button></form>` : "";
-  return `<section class="action-panel"><p class="section-label">等待人工确认</p><h2>确认后按固定清单串行执行</h2><p class="muted">开始前仍会检查校准、身份、配额、冷却、无重复点击和范围一致性。</p><div class="button-row"><form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-primary" data-page-primary="true" name="action" value="${escapeAttr(vm.controls.action)}">${escapeHtml(vm.controls.label)}</button></form>${discard}</div></section>`;
+  return `<section class="action-panel"><p class="section-label">等待人工确认</p><h2>确认后按固定清单串行执行</h2><p class="muted">开始前仍会检查校准、身份、配额、冷却、无重复点击和范围一致性。“重新检查”只读取现有固定标签并更新本地绑定，不会启动沟通。</p><div class="button-row">${execute}${discard}${rebind}</div></section>`;
 }
 
 function currentBatch(vm) {
@@ -51,8 +54,8 @@ function history(vm) {
 }
 
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; }
-function stateLabel(state) { return { pending_review: "等待确认", running: "串行执行中", needs_resolution: "需要处理", completed: "已结束", no_batch: "尚无批次", integrity_blocked: "范围已阻止" }[state] || "处理中"; }
-function itemStatusLabel(status) { return { pending: "待执行", opening: "正在核对", verified: "身份已核验", click_dispatched: "已发出操作", succeeded: "已核验成功", already_communicated: "已确认已沟通", ambiguous: "结果不明确", stopped: "已停止", platform_rejected: "平台拒绝", transport_failed: "传输失败", job_unavailable: "岗位不可用", target_mismatch: "目标不匹配", action_unavailable: "操作不可用", completed: "已完成", running: "执行中", confirmed: "等待确认", interrupted: "已中断", failed: "失败" }[status] || status || "未知"; }
+function stateLabel(state) { return { pending_review: "等待确认", running: "串行执行中", needs_resolution: "等待人工确认", completed: "已结束", no_batch: "尚无批次", integrity_blocked: "范围已阻止" }[state] || "处理中"; }
+function itemStatusLabel(status) { return communicationStatusLabel(status); }
 function tierLabel(tier) { return { primary: "主投", apply: "可投", caution: "慎投" }[tier] || tier || "未保存"; }
 function statusClass(value) { return ["needs_resolution", "integrity_blocked", "ambiguous", "failed", "platform_rejected", "transport_failed"].includes(value) ? "danger" : ["pending_review", "confirmed", "paused", "interrupted", "opening", "verified", "click_dispatched"].includes(value) ? "waiting" : "good"; }
 

@@ -6,6 +6,7 @@ function Resolve-Node {
   if ($env:ZHIPPING_NODE) {
     $Candidates += $env:ZHIPPING_NODE
   }
+  $Candidates += (Join-Path $ProjectRoot "runtime\node\node.exe")
   $Candidates += (Join-Path $ProjectRoot ".runtime\node\node.exe")
   $Candidates += "D:\hermes\node\node.exe"
 

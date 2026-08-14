@@ -8,6 +8,7 @@ const {
 } = require("../../core/split_semantic_matching");
 
 const MAX_ADAPTIVE_RESPONSE_TOKENS = 8192;
+const LONG_STRUCTURED_TASKS = new Set(["analyzeResume", "recommendSearchPlan"]);
 const DEEPSEEK_V4_MODELS = new Set(["deepseek-v4-pro", "deepseek-v4-flash"]);
 const DETERMINISTIC_EVIDENCE_KINDS = new Set([
   "understandJob",
@@ -431,7 +432,9 @@ class OpenAICompatibleAdapter {
     let attempts = 0;
     let jsonModeFallback = false;
     let structuredJsonModeFallback = false;
-    let responseTokenLimit = this.maxTokens;
+    let responseTokenLimit = LONG_STRUCTURED_TASKS.has(kind)
+      ? Math.max(this.maxTokens, MAX_ADAPTIVE_RESPONSE_TOKENS)
+      : this.maxTokens;
     const startedAt = Date.now();
     try {
       for (const jsonMode of this.jsonMode ? [true, false] : [false]) {

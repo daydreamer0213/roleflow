@@ -51,6 +51,10 @@ function fixture(overrides = {}) {
       stageCount: 3,
       scanWait: { retryAt: "2099-01-02T10:05:00.000Z" },
       eta: { status: "estimating" },
+      scanTargets: { total: 5, completed: 2, pending: 3, partial: 1, failed: 1 },
+      details: { collected: 12, read: 5, pending: 7 },
+      communication: { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0 },
+      remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取",
       analysis: { total: 12, succeeded: 3, running: 1, retryPending: 2, detailRequired: 4, failed: 1, skipped: 0, stopped: 0, pending: 5, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 }
     },
     model: { provider: "mock", model: "workflow-fixture" },
@@ -79,11 +83,13 @@ function assertRendererContracts(vm) {
 
   const html = renderWorkflowPage(vm);
   assert.match(html, /class="app-shell"/, "workflow must use the shared dashboard frame");
-  assertSinglePrimary(html, "scanning", "暂停本轮");
-  assert.match(html, /data-workflow-primary="true"[^>]*>暂停本轮/, "scanning must expose pause as its only primary action");
-  assertPrimaryBeforeDetails(html, "scanning");
+  assertNoPrimary(html, "scanning");
+  assert.match(html, /class="secondary"[^>]*data-action="pause"[^>]*>暂停本轮/, "scanning must keep pause available as a secondary action");
+  assert.match(html, /系统正在继续处理，无需操作/);
+  assert.match(html, /还需完成 3 个搜索目标；7 个岗位详情待读取/);
   assert.match(html, /<script src="\/assets\/workflow\.js"><\/script>/, "workflow behavior must come from the allowlisted external asset");
   assert.strictEqual((html.match(/<script/gi) || []).length, 1, "renderer must not copy client behavior inline");
+  assert.doesNotMatch(fs.readFileSync(asset, "utf8"), /\.focus\(\)/, "workflow polling must not move keyboard focus");
   assert.match(html, /name="workflowRunId" value="workflow-migration-fixture"/);
   assert.match(html, /name="action" value="pause"/);
   assert.match(html, /name="action" value="stop"/);
@@ -113,10 +119,15 @@ function assertRendererContracts(vm) {
   assert.match(confirmed, /name="batchId" value="41"/);
   assert.match(confirmed, /name="action" value="start"/);
 
-  const communicating = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "communicating", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "running" }, calibration: { executionEnabled: true }, summary: { total: 2, statusCounts: { dispatched: 1 }, terminal: 0 } } })));
+  const communicating = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "communicating", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "running" }, calibration: { executionEnabled: true }, summary: { total: 2, statusCounts: { click_dispatched: 1 }, terminal: 0 } } })));
   assertSinglePrimary(communicating, "communicating", "查看执行明细");
   assert.match(communicating, /正在沟通/);
-  assert.match(communicating, /dispatched/);
+  assert.match(communicating, /已发出操作/);
+  assert.doesNotMatch(communicating, />click_dispatched</);
+
+  const unknownCommunicationStatus = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "communicating", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "running" }, calibration: { executionEnabled: true }, summary: { total: 1, statusCounts: { future_status: 1 }, terminal: 0 } } })));
+  assert.match(unknownCommunicationStatus, /状态待确认/);
+  assert.doesNotMatch(unknownCommunicationStatus, />future_status</);
 
   const completed = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "completed", successfulCount: 35 }, progressSnapshot: null })));
   assertSinglePrimary(completed, "completed", "返回今日任务");
@@ -148,7 +159,7 @@ async function assertClientContracts(vm) {
     console.log("workflow_page_migration_smoke browser checks skipped: Playwright unavailable in NODE_PATH");
     return;
   }
-  let responses = [validSnapshot("paused", 5), validSnapshot("scanning", 6), { malformed: true }, validSnapshot("interrupted", 7)];
+  let responses = [validSnapshot("scanning", 5), { malformed: true }];
   let requests = 0;
   let inFlight = 0;
   let maxInFlight = 0;
@@ -161,7 +172,7 @@ async function assertClientContracts(vm) {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await delay(80);
       inFlight -= 1;
-      return json(res, responses.shift() || validSnapshot("interrupted"));
+      return json(res, responses.shift() || validSnapshot("scanning"));
     }
     if (req.url === "/workflow") return serve(res, "text/html", workflowDocument(vm));
     res.writeHead(404); res.end();
@@ -180,7 +191,9 @@ async function assertClientContracts(vm) {
     cdp.on("Runtime.exceptionThrown", ({ exceptionDetails }) => diagnostics.cdp.push({ url: exceptionDetails.url || "", lineNumber: exceptionDetails.lineNumber, columnNumber: exceptionDetails.columnNumber, text: exceptionDetails.text, description: exceptionDetails.exception?.description || "" }));
     await page.goto(`${baseUrl}/workflow`, { waitUntil: "networkidle" });
     assert.deepStrictEqual(diagnostics.pageErrors, [], `workflow client must initialize without page errors: ${JSON.stringify(diagnostics.cdp)}`);
-    await assertViewportPrimary(page, "暂停本轮");
+    await assertNoViewportPrimary(page);
+    assert.strictEqual(await page.locator('[data-action="pause"]').isVisible(), true, "pause must remain available while scanning");
+    assert.match(await page.locator('[data-action="pause"]').getAttribute("class"), /\bsecondary\b/, "pause must use the secondary treatment");
     const state = async () => page.evaluate(() => {
       const preview = document.querySelector('[data-action="stop-preview"]'); const confirm = document.querySelector('[data-stop-confirmation]');
       const ancestors = []; for (let node = confirm; node; node = node.parentElement) ancestors.push({ tag: node.tagName, hidden: node.hidden, display: getComputedStyle(node).display });
@@ -192,26 +205,15 @@ async function assertClientContracts(vm) {
     await page.locator('[data-action="stop-cancel"]').click();
     assert.strictEqual(await page.locator("[data-stop-confirmation]").isHidden(), true, "stop cancellation must hide confirmation");
     await page.waitForFunction(() => {
-      const resume = document.querySelector('[data-action="resume"]');
-      return resume?.dataset.workflowPrimary === "true" && Boolean(resume.offsetWidth || resume.offsetHeight);
-    }, null, { timeout: 4000 });
-    assert.deepStrictEqual(await livePrimaryState(page), { total: 1, visible: 1, hidden: 0, action: "resume", focused: true, enabled: true }, "paused polling must move the only primary marker and focus to resume");
-    await page.waitForFunction(() => {
-      const pause = document.querySelector('[data-action="pause"]');
-      return pause?.dataset.workflowPrimary === "true" && Boolean(pause.offsetWidth || pause.offsetHeight);
-    }, null, { timeout: 4000 });
-    assert.deepStrictEqual(await livePrimaryState(page), { total: 1, visible: 1, hidden: 0, action: "pause", focused: true, enabled: true }, "running polling must restore the only primary marker and focus to pause");
-    await page.waitForFunction(() => {
       const error = document.querySelector("[data-workflow-error]");
       return Boolean(error && !error.hidden);
     }, null, { timeout: 4000 });
     assert.strictEqual(await page.locator("[data-workflow-error]").isVisible(), true, "malformed polling data must fail closed");
     assert.strictEqual(await page.locator('[data-action="pause"]').isDisabled(), true, "failed polling must disable control submission");
     assert.ok(maxInFlight <= 1, "polling requests must remain serialized");
-    await page.waitForTimeout(2700);
-    const terminalRequests = requests;
-    await page.waitForTimeout(2700);
-    assert.strictEqual(requests, terminalRequests, "terminal workflow snapshots must stop polling");
+    await waitFor(() => requests >= 3, 5000);
+    assert.ok(requests >= 3, "polling must recover after a malformed response");
+    await assertNoViewportPrimary(page);
     await page.close();
 
     const reviewVm = buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 1, url: "https://example.test/one", title: "一", company: "甲", analysis: {}, workflowTier: "primary", defaultChecked: true }, { id: 2, url: "https://example.test/two", title: "二", company: "乙", analysis: {}, workflowTier: "apply", defaultChecked: false }], quota: { remaining: 1 } }));
@@ -223,6 +225,7 @@ async function assertClientContracts(vm) {
     server.on("request", (req, res) => {
       if (req.url === "/assets/workflow.js") return serve(res, "application/javascript", fs.readFileSync(asset));
       if (req.url === "/assets/roleflow.css") return serve(res, "text/css", fs.readFileSync(stylesheet));
+      if (req.url?.startsWith("/api/workflow-status")) return json(res, validSnapshot("paused"));
       if (pages.has(req.url)) return serve(res, "text/html", workflowDocument(pages.get(req.url)));
       res.writeHead(404); res.end();
     });
@@ -273,11 +276,14 @@ function assertEvaluatorContracts() {
     assert.strictEqual(evaluation.expectPrimary, true, "evaluator output must record strict primary mode");
     assert.strictEqual(evaluation.pages.length, 16, "evaluator must audit every state and viewport");
     for (const page of evaluation.pages) {
-      assert.strictEqual(page.audit.primaryCount, 1, `${page.state} ${page.viewport.width}x${page.viewport.height} must expose one total primary`);
-      assert.strictEqual(page.audit.visiblePrimaryCount, 1, `${page.state} ${page.viewport.width}x${page.viewport.height} must expose one visible primary`);
-      assert.strictEqual(page.audit.primary.fullyWithinViewport, true, `${page.state} ${page.viewport.width}x${page.viewport.height} primary must remain in the initial viewport`);
-      assert.strictEqual(page.audit.primary.focused, true, `${page.state} ${page.viewport.width}x${page.viewport.height} primary must retain focus`);
-      assert.strictEqual(page.audit.primary.outline.style, "solid", `${page.state} ${page.viewport.width}x${page.viewport.height} primary must have a solid focus outline`);
+      const expectedPrimaryCount = page.state === "scanning" ? 0 : 1;
+      assert.strictEqual(page.audit.primaryCount, expectedPrimaryCount, `${page.state} ${page.viewport.width}x${page.viewport.height} primary count must match the state contract`);
+      assert.strictEqual(page.audit.visiblePrimaryCount, expectedPrimaryCount, `${page.state} ${page.viewport.width}x${page.viewport.height} visible primary count must match the state contract`);
+      if (expectedPrimaryCount) {
+        assert.strictEqual(page.audit.primary.fullyWithinViewport, true, `${page.state} ${page.viewport.width}x${page.viewport.height} primary must remain in the initial viewport`);
+        assert.strictEqual(page.audit.primary.focused, true, `${page.state} ${page.viewport.width}x${page.viewport.height} primary must retain focus`);
+        assert.strictEqual(page.audit.primary.outline.style, "solid", `${page.state} ${page.viewport.width}x${page.viewport.height} primary must have a solid focus outline`);
+      }
       assert.ok(page.audit.document.width >= page.viewport.width && page.audit.body.width >= 0, "evaluator must record document and body widths");
       assert.strictEqual(typeof page.audit.motion.reduced, "boolean", "evaluator must record reduced-motion state");
       assert.strictEqual(typeof page.interaction, "object", "evaluator must record structured interaction results");
@@ -300,7 +306,7 @@ function assertEvaluatorStrictGate() {
 function validSnapshot(status) {
   return {
     workflow: { status, controlState: "", progressRevision: status === "interrupted" ? 6 : 5, lastActivityAt: new Date().toISOString(), errorCode: "" },
-    progress: { stage: "阶段", stageIndex: 1, stageCount: 3, scanWait: null, eta: { status: "estimating" }, analysis: { total: 12, succeeded: 3, running: 0, retryPending: 0, detailRequired: 0, failed: 0, skipped: 0, stopped: 0, pending: 9, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 } },
+    progress: { stage: "阶段", stageIndex: 1, stageCount: 3, scanWait: null, eta: { status: "estimating" }, scanTargets: { total: 5, completed: 2, pending: 3, partial: 0, failed: 0 }, details: { collected: 12, read: 5, pending: 7 }, remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取", analysis: { total: 12, succeeded: 3, running: 0, retryPending: 0, detailRequired: 0, failed: 0, skipped: 0, stopped: 0, pending: 9, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 } },
     controls: { canPause: status === "scanning", canResume: status === "paused", canStop: status !== "interrupted", stopConsumesRunSlot: true },
     recentActivity: []
   };
@@ -310,11 +316,22 @@ function serve(res, type, body) { res.writeHead(200, { "content-type": `${type};
 function json(res, body) { serve(res, "application/json", JSON.stringify(body)); }
 function workflowDocument(vm) { return renderPage({ title: "Workflow fixture", body: renderWorkflowPage(vm) }); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function waitFor(predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await delay(50);
+  }
+  return true;
+}
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`))); }
 function close(server) { return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 function assertSinglePrimary(html, phase, label) {
   assert.strictEqual((html.match(/data-workflow-primary="true"/g) || []).length, 1, `${phase} must render exactly one primary marker`);
   assert.match(html, new RegExp(`data-workflow-primary="true"[^>]*>${label}`), `${phase} must mark ${label} as primary`);
+}
+function assertNoPrimary(html, phase) {
+  assert.strictEqual((html.match(/data-workflow-primary="true"/g) || []).length, 0, `${phase} must not promote an interruption action as the page primary`);
 }
 function assertPrimaryBeforeDetails(html, phase) {
   const primary = html.indexOf('data-workflow-primary="true"');
@@ -347,6 +364,13 @@ async function assertViewportPrimary(page, label) {
   assert.strictEqual(state.focused, true, `${label} must retain focus at the top of the page`);
   assert.strictEqual(state.outlineStyle, "solid", `${label} must have a solid focus outline: ${JSON.stringify(state)}`);
 }
+async function assertNoViewportPrimary(page) {
+  const state = await page.evaluate(() => ({
+    total: document.querySelectorAll('[data-workflow-primary="true"]').length,
+    pauseFocused: document.activeElement === document.querySelector('[data-action="pause"]')
+  }));
+  assert.deepStrictEqual(state, { total: 0, pauseFocused: false }, "an active run must not promote or automatically focus pause");
+}
 async function focusPrimaryWithKeyboard(page) {
   const primary = page.locator('[data-workflow-primary="true"]');
   for (let index = 0; index < 32; index += 1) {
@@ -354,12 +378,4 @@ async function focusPrimaryWithKeyboard(page) {
     await page.keyboard.press("Tab");
   }
   assert.fail("keyboard navigation must reach the workflow primary action");
-}
-async function livePrimaryState(page) {
-  return page.evaluate(() => {
-    const primary = [...document.querySelectorAll('[data-workflow-primary="true"]')];
-    const visible = primary.filter((element) => Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length));
-    const action = visible[0];
-    return { total: primary.length, visible: visible.length, hidden: primary.length - visible.length, action: action?.dataset.action || "", focused: document.activeElement === action, enabled: Boolean(action && !action.disabled) };
-  });
 }

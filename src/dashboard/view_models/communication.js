@@ -33,6 +33,10 @@ function buildCommunicationViewModel({
     visible: state === "pending_review" && Boolean(action) && executionEnabled,
     action,
     label: action === "start" ? "确认后串行执行" : "继续串行执行",
+    rebindVisible: state === "pending_review"
+      && ["paused", "interrupted"].includes(text(batch.status))
+      && text(batch.browserMode) === "edge"
+      && Boolean(batch.runtime?.browser),
     recoveryHref: `/communication?batchId=${encodeURIComponent(number(batch.id))}#communication-recovery`
   };
   return {
@@ -53,11 +57,11 @@ function buildCommunicationViewModel({
 }
 
 function blockedView({ page, integrityIssue, discoveredBatchIds }) {
-  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: { visible: false, action: "", recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
+  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: { visible: false, action: "", rebindVisible: false, recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
 }
 
 function emptyView({ page, discoveredBatchIds }) {
-  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: { visible: false, action: "", recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
+  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: { visible: false, action: "", rebindVisible: false, recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
 }
 
 function stateFor(batch, summary) {
@@ -67,7 +71,7 @@ function stateFor(batch, summary) {
 }
 
 function batchView(batch, summary) {
-  return { id: number(batch.id), status: text(batch.status), total: number(summary.total), terminal: number(summary.terminal), remaining: number(summary.remaining), statusCounts: countMap(summary.statusCounts), confirmedAt: text(batch.confirmedAt) };
+  return { id: number(batch.id), browserMode: text(batch.browserMode), status: text(batch.status), total: number(summary.total), terminal: number(summary.terminal), remaining: number(summary.remaining), statusCounts: countMap(summary.statusCounts), confirmedAt: text(batch.confirmedAt) };
 }
 
 function itemView(item = {}, detailsByJobId) {

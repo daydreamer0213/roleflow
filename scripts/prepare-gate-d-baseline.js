@@ -4,11 +4,12 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
+const { SCHEMA_VERSION } = require("../src/core/storage");
 
 const ROOT = path.resolve(__dirname, "..");
 const PRODUCTION_DB = path.join(ROOT, "data", "jobs.sqlite");
 const DEFAULT_ROOT = "D:\\DevData\\RoleFlow-gate-d";
-const SUPPORTED_SCHEMA_VERSION = 11;
+const SUPPORTED_SCHEMA_VERSION = SCHEMA_VERSION;
 
 const PRESERVED_TABLES = [
   "schema_migrations",
@@ -22,7 +23,7 @@ const PRESERVED_TABLES = [
 ];
 const REQUIRED_NONZERO_PRESERVED = PRESERVED_TABLES.filter((table) => table !== "candidate_facts");
 const OPERATIONAL_TABLES = [
-  "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
+  "onboarding_runs", "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
   "job_analysis_attempts", "workflow_job_tasks", "workflow_runs", "candidate_progress_events", "candidate_progress_cards",
   "message_preview_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
   "candidate_job_events", "candidate_job_states", "applications", "events", "job_refresh_attempts", "job_observations",
@@ -138,7 +139,7 @@ function inspectSource(source) {
     if (schemaVersion !== SUPPORTED_SCHEMA_VERSION) throw new Error(`unsupported schema version: expected v${SUPPORTED_SCHEMA_VERSION}, got v${schemaVersion}`);
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name);
     const missing = [...KNOWN_TABLES].filter((table) => !tables.includes(table));
-    if (missing.length) throw new Error(`unsupported v11 schema missing required tables: ${missing.join(", ")}`);
+    if (missing.length) throw new Error(`unsupported v${SUPPORTED_SCHEMA_VERSION} schema missing required tables: ${missing.join(", ")}`);
     const preserved = counts(db, PRESERVED_TABLES);
     const emptyRequired = REQUIRED_NONZERO_PRESERVED.filter((table) => preserved[table] === 0);
     if (emptyRequired.length) throw new Error(`required preserved tables are empty: ${emptyRequired.join(", ")}`);
@@ -303,7 +304,7 @@ function prepare(options, hooks = {}) {
       preserved: { before: cleaned.before.preserved, after: cleaned.after.preserved },
       operational: { before: cleaned.before.operational, after: cleaned.after.operational },
       checks: cleaned.checks,
-      externalModelSettings: "not stored in SQLite v11; no external configuration was modified",
+      externalModelSettings: `not stored in SQLite v${sourceInfo.schemaVersion}; no external configuration was modified`,
       unknownEmptyTables: sourceInfo.unknownEmptyTables
     };
     fs.writeFileSync(partialManifest, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });

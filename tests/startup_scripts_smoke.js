@@ -20,6 +20,7 @@ const projectRoot = path.join(tempRoot, "project with spaces");
 const outsideCwd = path.join(tempRoot, "outside cwd");
 const children = new Set();
 const processRegistry = new Map();
+let dashboardPort = 0;
 
 runSmoke()
   .then(() => console.log("startup_scripts_smoke ok"))
@@ -55,6 +56,9 @@ async function runSmoke() {
 }
 
 async function main() {
+  dashboardPort = Number(process.env.ROLEFLOW_STARTUP_DASHBOARD_PORT || 0)
+    || await reserveFreePort();
+  process.env.ROLEFLOW_STARTUP_DASHBOARD_PORT = String(dashboardPort);
   const cleanupProbe = process.env.ROLEFLOW_STARTUP_CLEANUP_PROBE || "";
   if (cleanupProbe === "aggregate") {
     throw new Error("STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE");
@@ -65,7 +69,7 @@ async function main() {
   fs.mkdirSync(outsideCwd, { recursive: true });
   createProjectFixture();
 
-  await assertPortFree(8787);
+  await assertPortFree(dashboardPort);
   await assertPortFree(9222);
   if (cleanupProbe === "processes") {
     await runIntentionalCleanupProcessProbe();
@@ -115,7 +119,7 @@ function testRunScriptFromOutsideCwd() {
   const result = runPowerShell([
     "-File", path.join(projectRoot, "run.ps1"),
     "workspace-tabs",
-    "--dashboard-url", "http://127.0.0.1:8787/",
+    "--dashboard-url", `http://127.0.0.1:${dashboardPort}/`,
     "--browser", "portable",
     "--cdp-port", "9222"
   ], {
@@ -136,7 +140,7 @@ async function testWorkspaceStartupFromSpacePath() {
   const recordPath = path.join(tempRoot, "workspace-start.jsonl");
   const result = runPowerShell([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
-    "-Port", "8787",
+    "-Port", String(dashboardPort),
     "-NoBrowser"
   ], {
     cwd: outsideCwd,
@@ -165,12 +169,12 @@ async function testWorkspaceStartupFromSpacePath() {
   );
   assert(!workspaceTabs.args.includes("--cdp-port"));
   await stopRegisteredProcess(dashboard.pid);
-  await waitForPortClosed(8787);
+  await waitForPortClosed(dashboardPort);
 
   const portableRecordPath = path.join(tempRoot, "workspace-portable.jsonl");
   const portable = runPowerShell([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
-    "-Port", "8787",
+    "-Port", String(dashboardPort),
     "-BrowserMode", "portable",
     "-NoBrowser"
   ], {
@@ -193,7 +197,7 @@ async function testWorkspaceStartupFromSpacePath() {
   assert(portableTabs.args.includes("--cdp-port"));
   assert(portableTabs.args.includes("9222"));
   await stopRegisteredProcess(portableDashboard.pid);
-  await waitForPortClosed(8787);
+  await waitForPortClosed(dashboardPort);
 }
 
 function testPortableModeRejectsInvalidCdpPort() {
@@ -215,7 +219,7 @@ function testPortableModeRejectsInvalidCdpPort() {
   try {
     const result = runPowerShell([
       "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
-      "-Port", "8787",
+      "-Port", String(dashboardPort),
       "-BrowserMode", "portable",
       "-CdpPort", "9333"
     ], {
@@ -238,14 +242,14 @@ function testPortableModeRejectsInvalidCdpPort() {
 async function testForeignDashboardIdentityRejected() {
   for (const mode of ["other-project", "missing-identity", "pid-mismatch"]) {
     const child = startNodeServer(path.join(tempRoot, "foreign-health.js"), [
-      "8787",
+      String(dashboardPort),
       mode,
       projectRoot
     ]);
-    await waitForHttp("http://127.0.0.1:8787/health");
+    await waitForHttp(`http://127.0.0.1:${dashboardPort}/health`);
     const result = runPowerShell([
       "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
-      "-Port", "8787",
+      "-Port", String(dashboardPort),
       "-NoBrowser",
       "-NoOpen"
     ], {
@@ -256,7 +260,7 @@ async function testForeignDashboardIdentityRejected() {
     assert.notStrictEqual(result.status, 0, `${mode} health listener must be rejected`);
     assert.match(combinedOutput(result), /identity|current project|listener PID/i);
     await stopChild(child);
-    await waitForPortClosed(8787);
+    await waitForPortClosed(dashboardPort);
   }
 }
 
@@ -348,7 +352,7 @@ async function runIntentionalCleanupProcessProbe() {
   const dashboardRecord = path.join(tempRoot, "cleanup-probe-dashboard.jsonl");
   const dashboardResult = runPowerShell([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
-    "-Port", "8787",
+    "-Port", String(dashboardPort),
     "-NoBrowser",
     "-NoOpen"
   ], {
@@ -405,7 +409,7 @@ async function testFailurePathCleansStartedProcesses() {
     for (const entry of audited) {
       await waitForProcessExited(entry.pid, 1500);
     }
-    await waitForPortClosed(8787, 1500);
+    await waitForPortClosed(dashboardPort, 1500);
     await waitForPortClosed(9222, 1500);
   } catch (error) {
     verificationError = error;
@@ -423,7 +427,7 @@ async function testFailurePathCleansStartedProcesses() {
   for (const entry of audited) {
     await waitForProcessExited(entry.pid, 5000).catch((error) => emergencyCleanupErrors.push(error));
   }
-  await waitForPortClosed(8787, 5000).catch((error) => emergencyCleanupErrors.push(error));
+  await waitForPortClosed(dashboardPort, 5000).catch((error) => emergencyCleanupErrors.push(error));
   await waitForPortClosed(9222, 5000).catch((error) => emergencyCleanupErrors.push(error));
 
   if (verificationError && emergencyCleanupErrors.length) {
@@ -674,7 +678,7 @@ async function cleanupResources() {
       cleanupErrors.push(error);
     }
   }
-  for (const port of [8787, 9222]) {
+  for (const port of [dashboardPort, 9222].filter((value) => value > 0)) {
     try {
       await waitForPortClosed(port, 5000);
     } catch (error) {
@@ -761,6 +765,19 @@ async function assertPortFree(port) {
     throw new Error(`NEEDS_CONTEXT: startup smoke requires free port ${port}: ${error.message}`);
   });
   await new Promise((resolve) => server.close(resolve));
+}
+
+async function reserveFreePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = Number(address && typeof address === "object" ? address.port : 0);
+  await new Promise((resolve) => server.close(resolve));
+  assert(Number.isInteger(port) && port > 0, "could not reserve an isolated dashboard test port");
+  return port;
 }
 
 async function waitForHttp(url, timeoutMs = 5000) {

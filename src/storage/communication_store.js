@@ -152,6 +152,69 @@ function getCommunicationBatch(db, batchId) {
   return row ? batchRow(row) : null;
 }
 
+function bindCommunicationBatchRuntime(db, input = {}) {
+  const batchId = positiveInteger(input.batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required");
+  const requested = validateBrowserBinding(input.browser);
+  const rebind = input.rebind === true;
+  const now = timestamp(input.now);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const batch = getCommunicationBatch(db, batchId);
+    if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
+    if (batch.browserMode !== "edge") {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime tab binding requires ordinary Edge");
+    }
+    const stored = batch.runtime?.browser
+      ? validateBrowserBinding(batch.runtime.browser)
+      : null;
+    let next = requested;
+    if (!stored) {
+      if (rebind || requested.bindingGeneration !== 1) {
+        throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "initial binding must use generation 1");
+      }
+    } else if (!rebind) {
+      if (!sameBrowserBinding(stored, requested)) {
+        throw codedError("COMMUNICATION_BROWSER_BINDING_MISMATCH", "browser binding changed");
+      }
+      next = stored;
+    } else {
+      if (requested.bindingGeneration !== stored.bindingGeneration) {
+        throw codedError("COMMUNICATION_BROWSER_BINDING_MISMATCH", "browser binding generation changed");
+      }
+      const unresolved = db.prepare(`
+        SELECT 1
+        FROM communication_batch_items
+        WHERE batch_id = ?
+          AND status IN ('click_dispatched', 'ambiguous')
+        LIMIT 1
+      `).get(batchId);
+      if (unresolved) {
+        throw codedError(
+          "COMMUNICATION_BROWSER_REBIND_BLOCKED",
+          "clicked communication items require manual resolution before rebind"
+        );
+      }
+      next = Object.freeze({
+        ...requested,
+        bindingGeneration: stored.bindingGeneration + 1
+      });
+    }
+    if (!stored || rebind) {
+      db.prepare(`
+        UPDATE communication_batches
+        SET runtime_json = ?, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify({ browser: next }), now, batchId);
+    }
+    if (rebind) recordBindingAudit(db, batchId, stored, next, now);
+    db.exec("COMMIT");
+    return getCommunicationBatch(db, batchId);
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 function touchCommunicationBatch(db, batchId, now = new Date().toISOString()) {
   const id = positiveInteger(batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required");
   return Number(db.prepare(`UPDATE communication_batches SET updated_at = ?
@@ -512,6 +575,7 @@ function batchRow(row) {
     browserMode: row.browser_mode,
     status: row.status,
     policySnapshot: parseJson(row.policy_json, {}),
+    runtime: parseJson(row.runtime_json, {}),
     confirmedAt: row.confirmed_at,
     startedAt: row.started_at || null,
     finishedAt: row.finished_at || null,
@@ -575,6 +639,63 @@ function normalizeWorkflowPortableCdpPort(value) {
   return value;
 }
 
+function validateBrowserBinding(value) {
+  const browser = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  for (const field of ["windowId", "searchTabId", "messageTabId", "bindingGeneration"]) {
+    if (!Number.isInteger(browser[field]) || browser[field] <= 0) {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", `${field} must be a positive integer`);
+    }
+  }
+  if (browser.mode !== "edge") {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime tab binding requires ordinary Edge");
+  }
+  if (browser.searchTabId === browser.messageTabId) {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "fixed search and message tabs must be different");
+  }
+  if (!Number.isInteger(browser.searchScrollTop) || browser.searchScrollTop < 0) {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchScrollTop must be a non-negative integer");
+  }
+  let searchReturnUrl;
+  try {
+    searchReturnUrl = new URL(browser.searchReturnUrl);
+  } catch {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
+  }
+  if (searchReturnUrl.origin !== "https://www.zhipin.com"
+    || searchReturnUrl.pathname !== "/web/geek/jobs"
+    || searchReturnUrl.username
+    || searchReturnUrl.password
+    || searchReturnUrl.hash) {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
+  }
+  return Object.freeze({
+    mode: "edge",
+    windowId: browser.windowId,
+    searchTabId: browser.searchTabId,
+    messageTabId: browser.messageTabId,
+    searchReturnUrl: searchReturnUrl.toString(),
+    searchScrollTop: browser.searchScrollTop,
+    bindingGeneration: browser.bindingGeneration
+  });
+}
+
+function sameBrowserBinding(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function recordBindingAudit(db, batchId, current, next, now) {
+  const fields = ["windowId", "searchTabId", "messageTabId", "searchReturnUrl", "searchScrollTop"];
+  db.prepare(`
+    INSERT INTO events(job_id, event_type, payload_json, created_at)
+    VALUES (NULL, 'communication_browser_rebind', ?, ?)
+  `).run(JSON.stringify({
+    batchId,
+    fromGeneration: current.bindingGeneration,
+    toGeneration: next.bindingGeneration,
+    changed: Object.fromEntries(fields.map((field) => [field, current[field] !== next[field]]))
+  }), now);
+}
+
 function parseJson(value, fallback) {
   try { return JSON.parse(value || ""); } catch { return fallback; }
 }
@@ -601,6 +722,7 @@ module.exports = {
   TERMINAL_ITEM_STATUSES,
   createCommunicationBatch,
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   touchCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,

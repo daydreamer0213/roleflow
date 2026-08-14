@@ -45,11 +45,11 @@ async function main() {
 
   const beforeSetup = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.strictEqual(beforeSetup.status, 303);
-  assert.strictEqual(beforeSetup.headers.get("location"), "/onboarding");
+  assert.strictEqual(beforeSetup.headers.get("location"), "/settings?firstRun=1&next=%2Fonboarding");
   const onboarding = await fetch(baseUrl + "/onboarding");
   assert((await onboarding.text()).includes("模型尚未通过连接测试"));
 
-  const settings = await fetch(baseUrl + "/settings");
+  const settings = await fetch(baseUrl + "/settings?firstRun=1&next=%2Fonboarding");
   const settingsHtml = await settings.text();
   assert.strictEqual(settings.status, 200);
   for (const text of [
@@ -68,10 +68,16 @@ async function main() {
     'id="shared-model-api-key"',
     "独立厂商和 API Key",
     "备用模型默认关闭",
-    "备用模型必须先通过连接测试"
+    "备用模型必须先通过连接测试",
+    'class="settings-primary-grid"',
+    'href="https://platform.deepseek.com/"',
+    'target="_blank"',
+    'rel="noopener noreferrer"'
   ]) {
     assert(settingsHtml.includes(text), `settings page must include ${text}`);
   }
+  assert(!settingsHtml.includes("下一步：填写简历"), "unverified model must not show the next-step action");
+  assert(/settings-primary-grid[\s\S]*model-profile-deep_analysis[\s\S]*model-profile-batch_screening/.test(settingsHtml));
   assert(/<select[^>]*name="model"[^>]*>[\s\S]*deepseek-v4-pro[\s\S]*deepseek-v4-flash[\s\S]*<\/select>/.test(settingsHtml));
   assert(/model-profile-deep_analysis[\s\S]*name="concurrency" value="1"/.test(settingsHtml));
   assert(/model-profile-batch_screening[\s\S]*<select[^>]*name="concurrency"[\s\S]*value="1"[\s\S]*value="2"/.test(settingsHtml));
@@ -114,7 +120,11 @@ async function main() {
   const deepOnlyOnboarding = await fetch(baseUrl + "/onboarding");
   const deepOnlyHtml = await deepOnlyOnboarding.text();
   assert(!deepOnlyHtml.includes("模型尚未通过连接测试"));
-  assert(!/disabled[^>]*>解析并生成筛选建议/.test(deepOnlyHtml));
+  assert(!/disabled[^>]*>解析简历并生成筛选方案/.test(deepOnlyHtml));
+  const deepReadySettings = await fetch(baseUrl + "/settings?profile=deep_analysis&modelConfigured=1");
+  const deepReadySettingsHtml = await deepReadySettings.text();
+  assert(deepReadySettingsHtml.includes('href="/onboarding"'));
+  assert(deepReadySettingsHtml.includes("下一步：填写简历"));
 
   const savedBatch = await fetch(baseUrl + "/api/settings/model", {
     method: "POST",

@@ -26,7 +26,7 @@ function buildTodayViewModel(input = {}) {
       eyebrow: "01 / 准备与筛选",
       title: "今天先把高质量机会推进到人工确认。",
       lede: "RoleFlow 会保留完整 JD 与匹配证据；只有你确认清单后才会进入沟通。",
-      meta: [`Search Plan #${planId}`, plan.name || "未命名筛选方案"],
+      meta: [`本地筛选方案 #${planId}`, plan.name || "未命名方案"],
       status: dependency.stale || dependency.matchingCardRequired ? "方案待确认" : "方案可用"
     },
     primary: buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }),
@@ -40,7 +40,12 @@ function buildTodayViewModel(input = {}) {
       targetSuccessCount: Number(activeRun?.targetSuccessCount ?? nextPlan?.targetSuccessCount ?? 0),
       remainingPages: Number(remainingBudget.pages || 0)
     },
-    blockers: buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }),
+    blockers: buildBlockers({
+      dependency,
+      runtimeBlock,
+      validation: inheritedValidation,
+      profileId
+    }),
     confirmation: String(input.confirmation || ""),
     run: { state: String(input.run?.state || "idle"), label: String(input.runLabel || "尚未运行"), error: String(input.run?.error || "") },
     scan: {
@@ -60,7 +65,7 @@ function buildTodayViewModel(input = {}) {
     },
     profile: {
       id: profileId,
-      name: candidate.name || profile.displayName || "候选人待确认",
+      name: profile.displayName || candidate.name || "候选人待确认",
       city: candidate.city || "目标城市待确认",
       targetTitles: [...(candidate.targetTitles || [])],
       skills: (profile.profile?.skills || []).map((item) => item?.name || item).filter(Boolean),
@@ -88,8 +93,6 @@ function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profile
   if (dependency.matchingCardRequired) blockers.push({ tone: "danger", title: "尚未确认匹配偏好卡", detail: "扫描和岗位匹配只会使用已确认的偏好卡。", action: { label: "检查匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}` } });
   if (runtimeBlock) blockers.push({ tone: "danger", title: "BOSS 扫描因安全验证暂停", detail: `限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。${runtimeBlock.reasonCode ? ` ${runtimeBlock.reasonCode}` : ""}`, action: { label: "查看诊断", href: "/diagnostics" } });
   for (const error of validation.errors || []) blockers.push({ tone: "waiting", title: "扫描前需要修正", detail: String(error), action: { label: "调整筛选条件", href: "#plan-settings" } });
-  if (nextPlan?.shortfallReason) blockers.push({ tone: "waiting", title: "本轮质量护栏", detail: workflowShortfallLabel(nextPlan.shortfallReason) });
-  if (!blockers.length) blockers.push({ tone: "good", title: "当前数据安全", detail: "方案、候选人画像和已读取的岗位详情均保存在本地；不会自动沟通或投递。" });
   return blockers;
 }
 

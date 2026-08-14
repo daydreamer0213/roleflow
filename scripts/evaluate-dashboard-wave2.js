@@ -11,10 +11,11 @@ const RELEVANT_CONTROL_SELECTOR = "main form button, main form input:not([type=h
 
 const PAGE_SPECS = Object.freeze([
   { id: "today-ready", family: "today", state: "ready", primaryPolicy: "required", primarySelector: "[data-today-primary]", interaction: "none", interactionPolicy: "read-only-none", path: ({ planId }) => `/plan?planId=${planId}` },
-  { id: "workflow-scanning", family: "workflow", state: "scanning", primaryPolicy: "required", primarySelector: '[data-workflow-primary="true"]', interaction: "stop-preview-cancel", interactionPolicy: "exercised", path: ({ workflowId }) => `/workflow?runId=${encodeURIComponent(workflowId)}` },
+  { id: "workflow-scanning", family: "workflow", state: "scanning", primaryPolicy: "none-expected", primaryRationale: "An active run continues without user action; pause and stop remain secondary interruption controls.", interaction: "stop-preview-cancel", interactionPolicy: "exercised", path: ({ workflowId }) => `/workflow?runId=${encodeURIComponent(workflowId)}` },
   { id: "queue-primary", family: "queue", state: "primary", primaryPolicy: "none-expected", primaryRationale: "Queue presents several safe local status actions, not one page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/queue?planId=${planId}&pool=primary` },
   { id: "jobs-latest", family: "jobs", state: "latest-batch", primaryPolicy: "none-expected", primaryRationale: "Jobs filters and local record actions intentionally have no page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/jobs?planId=${planId}&batch=latest` },
   { id: "communication-review", family: "communication", state: "confirmed-offline", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}` },
+  { id: "messages-unresolved", family: "messages", state: "inbound-opportunity", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/messages?profileId=${profileId}` },
   { id: "settings", family: "settings", state: "default", primaryPolicy: "none-expected", primaryRationale: "Saving settings can test a model connection and is deliberately not promoted or executed by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/settings" },
   { id: "onboarding-existing", family: "onboarding", state: "existing-profile", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/onboarding" },
   { id: "match-card", family: "matchCard", state: "confirmed-profile", primaryPolicy: "none-expected", primaryRationale: "Matching-card edits are persisted only after explicit review and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId, matchCardId }) => `/match-card?profileId=${profileId}&cardId=${matchCardId}` },
@@ -43,12 +44,13 @@ async function main() {
   const storage = require(path.join(options.targetRoot, "src", "core", "storage"));
   const { matchingCardFromProfile } = require(path.join(options.targetRoot, "src", "core", "matching_card"));
   const { createCommunicationBatch } = require(path.join(options.targetRoot, "src", "core", "communication_batches"));
+  const { recordUnresolvedMessageDiscoveryItem } = require(path.join(options.targetRoot, "src", "core", "message_preview_state"));
   const { createDashboardServer } = require(path.join(options.targetRoot, "src", "dashboard", "server"));
   const dbPath = path.join(options.outputDir, `.${options.label}.sqlite`);
   let db; let server; let browser;
   try {
     db = storage.openDb(dbPath);
-    const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, db });
+    const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db });
     server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(), browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -71,7 +73,7 @@ async function main() {
   assertCanonicalArtifacts(options.outputDir, options.label, result.pages.length);
 }
 
-function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, db }) {
+function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db }) {
   const profile = { candidate: { name: "Dashboard acceptance fixture", city: "Shanghai", targetTitles: ["AI application engineer"], expectedSalary: "15-25K" }, education: [], experiences: [], skills: [{ name: "Python", evidence: ["offline fixture"] }], projects: [{ name: "RAG fixture", canSay: ["RAG"] }], credentials: [], strengths: [] };
   const saved = storage.saveProfileAnalysis(db, { profile, document: { originalFileName: "dashboard-wave2-fixture.txt", format: "text", contentHash: "dashboard-wave2-offline-v1", text: "Python RAG offline dashboard acceptance fixture. ".repeat(16), diagnostics: {} }, searchPlan: { name: "Dashboard acceptance plan", cities: ["Shanghai"], directions: ["AI application"], keywords: [{ word: "RAG", priority: "A", reason: "fixture" }], experience: ["1-3 years"], jobTypes: ["full time"], degrees: [], salary: { minK: 15, maxK: 25 }, bossActiveDays: 3, platform: { site: "boss" } } });
   const card = storage.createMatchingCardDraft(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, resumeDocumentId: saved.resumeDocumentId, resumeContentHash: "dashboard-wave2-offline-v1", card: matchingCardFromProfile(profile), source: "migration" });
@@ -84,6 +86,16 @@ function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatc
   storage.attachWorkflowScan(db, { id: workflow.id, scanRunId: scan.id, scanBatchId: batchId });
   storage.recordWorkflowScanWait(db, { workflowRunId: workflow.id, runId: scan.id, action: "detail_open", delayMs: 600000, retryAt: "2099-01-01T00:10:00.000Z", now: "2099-01-01T00:00:00.000Z" });
   const communication = createCommunicationBatch(db, { planId: saved.planId, jobIds: [jobId], browserMode: "edge", now: "2099-01-01T00:00:00.000Z" });
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: saved.profileId,
+    platform: "boss",
+    conversationKey: `sha256:${"d".repeat(64)}`,
+    previewDigest: `sha256:${"e".repeat(64)}`,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2099-01-01T00:00:00.000Z",
+    identity: { positionTitle: "数据产品经理", company: "主动邀请示例公司", salary: "18-25K", city: "上海" }
+  });
   return { profileId: saved.profileId, matchCardId: card.id, planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id };
 }
 
@@ -149,7 +161,7 @@ function pageAudit({ pageId = "", primarySelector = "", primaryPolicy = "", rele
   const actions = [...document.querySelectorAll("main a[href], main button, main input:not([type=hidden]), main select, main summary")].filter(visible);
   const primaryAll = primarySelector ? [...document.querySelectorAll(primarySelector)] : [];
   const primaryVisible = primaryAll.filter(visible);
-  const primaryMarkerCount = primaryPolicy === "required" ? primaryAll.length : document.querySelectorAll("[data-page-primary]").length;
+  const primaryMarkerCount = primaryPolicy === "required" ? primaryAll.length : document.querySelectorAll('[data-page-primary], [data-workflow-primary="true"]').length;
   const communicationPrimary = pageId === "communication-review" ? primaryVisible[0] : null;
   const destructive = pageId === "communication-review" ? document.querySelector('button[name="action"][value="discard"]') : null;
   const primaryStyle = communicationPrimary ? getComputedStyle(communicationPrimary) : null;
@@ -225,7 +237,7 @@ function validateOptions(options) {
   if (!fs.existsSync(path.join(options.targetRoot, "src", "dashboard", "server.js"))) throw new Error(`Target root does not contain src/dashboard/server.js: ${options.targetRoot}`);
 }
 function clearLabelArtifacts(outputDir, label) { fs.mkdirSync(outputDir, { recursive: true }); for (const name of fs.readdirSync(outputDir)) if (name === `${label}.json` || name === `.${label}.sqlite` || name.startsWith(`.${label}.sqlite-`) || (name.startsWith(`${label}-`) && name.endsWith(".png"))) fs.rmSync(path.join(outputDir, name), { force: true }); }
-function assertCanonicalArtifacts(outputDir, label, pageCount) { const names = fs.readdirSync(outputDir).sort(); const expected = new Set([`${label}.json`, ...PAGE_SPECS.flatMap((spec) => VIEWPORTS.map((viewport) => `${label}-${spec.id}-${viewport.width}x${viewport.height}.png`))]); if (pageCount !== 44 || names.length !== expected.size || names.some((name) => !expected.has(name))) throw new Error(`Canonical evidence must contain exactly ${expected.size - 1} PNGs and one UTF-8 JSON manifest; found: ${names.join(", ")}`); JSON.parse(fs.readFileSync(path.join(outputDir, `${label}.json`), "utf8")); }
+function assertCanonicalArtifacts(outputDir, label, pageCount) { const names = fs.readdirSync(outputDir).filter((name) => name === `${label}.json` || name.startsWith(`${label}-`)).sort(); const expected = new Set([`${label}.json`, ...PAGE_SPECS.flatMap((spec) => VIEWPORTS.map((viewport) => `${label}-${spec.id}-${viewport.width}x${viewport.height}.png`))]); if (pageCount !== PAGE_SPECS.length * VIEWPORTS.length || names.length !== expected.size || names.some((name) => !expected.has(name))) throw new Error(`Canonical evidence must contain exactly ${expected.size - 1} PNGs and one UTF-8 JSON manifest for label ${label}; found: ${names.join(", ")}`); JSON.parse(fs.readFileSync(path.join(outputDir, `${label}.json`), "utf8")); }
 function gitRevision(targetRoot) { return execFileSync("git", ["-C", targetRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
 function gitStatus(targetRoot) { return execFileSync("git", ["-C", targetRoot, "status", "--porcelain"], { encoding: "utf8" }).trim(); }
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }
@@ -237,4 +249,4 @@ function quietLogger() { return { info() {}, warn() {}, error() {}, requestId() 
 function usage() { return ["Usage: node scripts/evaluate-dashboard-wave2.js [options]", "", "Strict prerequisites: ROLEFLOW_REQUIRE_PLAYWRIGHT=1 and NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --browser-channel <name>   Playwright Chromium channel (default: msedge)", "  -h, --help                 Show this help", ""].join("\n"); }
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
-module.exports = { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, VIEWPORTS, assertStrictPage, pageAudit, parseArgs };
+module.exports = { PAGE_SPECS, RELEVANT_CONTROL_SELECTOR, VIEWPORTS, assertCanonicalArtifacts, assertStrictPage, pageAudit, parseArgs };

@@ -2,15 +2,17 @@ const { cityToBossCode } = require("./search_plan");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { appError } = require("./observability");
 
-function validateSearchPlan(plan = {}, candidateProfile = {}, { validatePlatformCities = true } = {}) {
+function validateSearchPlan(plan = {}, candidateProfile = {}, { acquisitionMode = "generated" } = {}) {
   const errors = [];
   const warnings = [];
+  const mode = String(acquisitionMode || "").trim().toLowerCase();
   const cities = plan.cities || [];
   const keywords = (plan.keywords || []).map((item) => typeof item === "string" ? item : item.word).filter(Boolean);
   const directions = plan.directions || candidateProfile?.candidate?.targetTitles || [];
   const salary = plan.salary || {};
-  if (!cities.length) errors.push("至少选择一个目标城市。");
-  if (validatePlatformCities && (plan.platform?.site || "boss") === "boss") {
+  if (!["generated", "inherited"].includes(mode)) errors.push("采集模式无效。");
+  if (mode === "generated" && !cities.length) errors.push("至少选择一个目标城市。");
+  if (mode === "generated" && (plan.platform?.site || "boss") === "boss") {
     const unsupportedCities = cities.filter((city) => !cityToBossCode(city));
     if (unsupportedCities.length) errors.push(`BOSS 暂不支持这些城市：${unsupportedCities.join("、")}。请从城市选项中选择。`);
   }

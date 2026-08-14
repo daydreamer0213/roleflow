@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS communication_batches (
   browser_mode TEXT NOT NULL CHECK(browser_mode IN ('edge', 'portable')),
   status TEXT NOT NULL CHECK(status IN ('confirmed','running','paused','stopping','completed','stopped','interrupted','failed')),
   policy_json TEXT NOT NULL DEFAULT '{}',
+  runtime_json TEXT NOT NULL DEFAULT '{}',
   confirmed_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
@@ -687,9 +688,46 @@ CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
   reason_code TEXT NOT NULL,
   first_observed_at TEXT NOT NULL,
   last_observed_at TEXT NOT NULL,
+  position_title TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  salary TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT '',
+  identity_digest TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(profile_id, platform, conversation_key),
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
 );
+`;
+
+const ONBOARDING_RUN_SCHEMA = `
+CREATE TABLE IF NOT EXISTS onboarding_runs (
+  id TEXT PRIMARY KEY,
+  profile_id INTEGER NOT NULL,
+  resume_document_id INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
+  stage TEXT NOT NULL CHECK(stage IN (
+    'parsed','analyzing_profile','building_match_card','building_plan','ready'
+  )),
+  progress_revision INTEGER NOT NULL DEFAULT 0 CHECK(progress_revision >= 0),
+  profile_version_id INTEGER,
+  matching_card_id INTEGER,
+  search_plan_id INTEGER,
+  error_code TEXT,
+  error_message TEXT,
+  heartbeat_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_at TEXT,
+  UNIQUE(profile_id, resume_document_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(resume_document_id) REFERENCES resume_documents(id),
+  FOREIGN KEY(profile_version_id) REFERENCES profile_versions(id) ON DELETE SET NULL,
+  FOREIGN KEY(matching_card_id) REFERENCES candidate_matching_cards(id) ON DELETE SET NULL,
+  FOREIGN KEY(search_plan_id) REFERENCES search_plans(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_runs_status
+  ON onboarding_runs(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_onboarding_runs_profile
+  ON onboarding_runs(profile_id, created_at);
 `;
 
 const MIGRATIONS = [
@@ -789,6 +827,55 @@ const MIGRATIONS = [
     name: "message_discovery_unresolved_items_v1",
     apply(db) {
       db.exec(MESSAGE_DISCOVERY_UNRESOLVED_ITEMS_SCHEMA);
+    }
+  },
+  {
+    version: 12,
+    name: "communication_runtime_binding_v1",
+    apply(db) {
+      const columns = db.prepare(
+        "PRAGMA table_info(communication_batches)"
+      ).all();
+      if (!columns.some((column) => column.name === "runtime_json")) {
+        db.exec(
+          "ALTER TABLE communication_batches ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'"
+        );
+      }
+    }
+  },
+  {
+    version: 13,
+    name: "message_discovery_safe_identity_v1",
+    apply(db) {
+      const columns = new Set(db.prepare(
+        "PRAGMA table_info(message_discovery_unresolved_items)"
+      ).all().map((column) => column.name));
+      for (const [name, sql] of [
+        ["position_title", "TEXT NOT NULL DEFAULT ''"],
+        ["company", "TEXT NOT NULL DEFAULT ''"],
+        ["salary", "TEXT NOT NULL DEFAULT ''"],
+        ["city", "TEXT NOT NULL DEFAULT ''"],
+        ["identity_digest", "TEXT NOT NULL DEFAULT ''"]
+      ]) {
+        if (!columns.has(name)) {
+          db.exec(`ALTER TABLE message_discovery_unresolved_items ADD COLUMN ${name} ${sql}`);
+        }
+      }
+    }
+  },
+  {
+    version: 14,
+    name: "onboarding_runs_v1",
+    apply(db) {
+      const columns = new Set(db.prepare(
+        "PRAGMA table_info(candidate_profiles)"
+      ).all().map((column) => column.name));
+      if (!columns.has("is_ready")) {
+        db.exec(
+          "ALTER TABLE candidate_profiles ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 1 CHECK(is_ready IN (0, 1))"
+        );
+      }
+      db.exec(ONBOARDING_RUN_SCHEMA);
     }
   }
 ];

@@ -1,3 +1,5 @@
+const crypto = require("node:crypto");
+
 const PREVIEW_KINDS = new Set([
   "self_delivered",
   "self_read",
@@ -64,17 +66,37 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
   const previewKind = previewKindValue(input.previewKind);
   const reasonCode = safeReasonCode(input.reasonCode);
   const observedAt = isoText(input.observedAt);
+  const identity = safeUnresolvedIdentity(input.identity);
   if (!platform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
   db.prepare(`INSERT INTO message_discovery_unresolved_items(
     profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code,
-    first_observed_at, last_observed_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    first_observed_at, last_observed_at, position_title, company, salary, city, identity_digest
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(profile_id, platform, conversation_key) DO UPDATE SET
     preview_digest = excluded.preview_digest,
     preview_kind = excluded.preview_kind,
     reason_code = excluded.reason_code,
+    position_title = excluded.position_title,
+    company = excluded.company,
+    salary = excluded.salary,
+    city = excluded.city,
+    identity_digest = excluded.identity_digest,
     last_observed_at = excluded.last_observed_at`)
-    .run(profileId, platform, conversationKey, previewDigest, previewKind, reasonCode, observedAt, observedAt);
+    .run(
+      profileId,
+      platform,
+      conversationKey,
+      previewDigest,
+      previewKind,
+      reasonCode,
+      observedAt,
+      observedAt,
+      identity.positionTitle,
+      identity.company,
+      identity.salary,
+      identity.city,
+      identity.identityDigest
+    );
   return mapUnresolvedItem(db.prepare(`SELECT * FROM message_discovery_unresolved_items
     WHERE profile_id = ? AND platform = ? AND conversation_key = ?`)
     .get(profileId, platform, conversationKey));
@@ -188,6 +210,11 @@ function mapUnresolvedItem(row) {
     previewDigest: row.preview_digest,
     previewKind: row.preview_kind,
     reasonCode: row.reason_code,
+    positionTitle: row.position_title || "",
+    company: row.company || "",
+    salary: row.salary || "",
+    city: row.city || "",
+    identityDigest: row.identity_digest || "",
     firstObservedAt: row.first_observed_at,
     lastObservedAt: row.last_observed_at
   } : null;
@@ -222,7 +249,27 @@ function isoText(value) {
 }
 
 function shortText(value, maxLength) {
-  return String(value || "").trim().slice(0, maxLength);
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function safeUnresolvedIdentity(value = {}) {
+  const identity = {
+    positionTitle: shortText(value?.positionTitle, 160),
+    company: shortText(value?.company, 160),
+    salary: shortText(value?.salary, 80),
+    city: shortText(value?.city, 80)
+  };
+  return {
+    ...identity,
+    identityDigest: `sha256:${crypto.createHash("sha256")
+      .update(JSON.stringify([
+        identity.positionTitle,
+        identity.company,
+        identity.salary,
+        identity.city
+      ]))
+      .digest("hex")}`
+  };
 }
 
 function isDigest(value) {

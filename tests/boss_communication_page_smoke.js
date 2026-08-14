@@ -49,6 +49,19 @@ const secondJob = {
   company: "\u53e6\u4e00\u5bb6\u79d1\u6280"
 };
 
+function numericBinding(overrides = {}) {
+  return {
+    mode: "edge",
+    windowId: 1995685675,
+    searchTabId: 1995685534,
+    messageTabId: 1995685619,
+    searchReturnUrl: searchUrl,
+    searchScrollTop: 900,
+    bindingGeneration: 1,
+    ...overrides
+  };
+}
+
 assert.deepStrictEqual(
   classifyBossCommunicationSnapshot(readySnapshot, expectedJob),
   {
@@ -211,13 +224,17 @@ function snapshotContext(url, fixtures, onActionClick = () => {}, transport = nu
           : []
       };
       return collections[selector] || [];
-    }
+    },
+    documentElement: { scrollHeight: 1440 }
   };
   context = vm.createContext({
     document,
     location: new URL(url),
     URL,
     URLSearchParams,
+    innerHeight: 800,
+    scrollTo(_x, y) { context.scrollY = y; },
+    scrollY: 0,
     getComputedStyle(element) {
       return { display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto", ...(element?.style || {}) };
     }
@@ -267,7 +284,7 @@ function fakeBrowser({
   createTabGate = null,
   createStarted = null
 } = {}) {
-  const calls = { listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [], guardedClick: [] };
+  const calls = { listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [], guardedClick: [], restoreScroll: [] };
   let currentTabs = tabs;
   const contexts = new Map();
   const helperExpressions = new Map();
@@ -342,6 +359,9 @@ function fakeBrowser({
         }
       }
       const result = vm.runInContext(expression, contexts.get(tabId));
+      if (expression.includes("document.documentElement.scrollHeight") && result?.requested !== undefined) {
+        calls.restoreScroll.push({ tabId, requested: result.requested, applied: result.applied });
+      }
       if (expression === "(() => window.__bossCommunicationSnapshot())()") snapshots.push(result);
       return result;
     },
@@ -362,6 +382,10 @@ function fakeBrowser({
     },
     context(tabId) {
       return contexts.get(tabId) || null;
+    },
+    tab(tabId) {
+      const tab = currentTabs.find((candidate) => candidate.id === tabId);
+      return tab ? { ...tab } : null;
     }
   };
 }
@@ -636,17 +660,39 @@ function assertNoPreparationAction(browser, before) {
 
   const boundBrowser = fakeBrowser({
     tabs: [
-      { id: "bound-search", url: searchUrl, windowId: "window-1" },
-      { id: "bound-chat", url: "https://www.zhipin.com/web/geek/chat", windowId: "window-1" }
+      { id: 1995685534, url: searchUrl, windowId: 1995685675 },
+      { id: 1995685619, url: "https://www.zhipin.com/web/geek/chat", windowId: 1995685675 }
     ]
   });
   const boundAdapter = new BossSiteAdapter({ browser: boundBrowser, sleepFn: async () => {} });
-  boundAdapter.bindCommunicationTabs({ searchTabId: "bound-search", communicationTabId: "bound-chat" });
-  assert.strictEqual(await boundAdapter.prepareCommunicationTab("bound-search"), "bound-chat");
+  boundAdapter.bindCommunicationTabs(numericBinding());
+  await boundAdapter.beginCommunicationSession();
+  assert.strictEqual(await boundAdapter.prepareCommunicationTab(1995685534), 1995685534);
+  assert.strictEqual((await boundAdapter.inspectCommunicationJob(expectedJob)).state, "ready");
+  assert.strictEqual((await boundAdapter.inspectCommunicationJob(secondJob)).state, "ready");
+  await boundAdapter.restoreCommunicationSearchPage();
+  await boundAdapter.restoreCommunicationSearchPage();
   assert.deepStrictEqual(boundBrowser.calls.createTab, []);
-  boundBrowser.removeTab("bound-chat");
+  assert.deepStrictEqual(boundBrowser.calls.navigate, [
+    [1995685534, jobUrl],
+    [1995685534, secondJobUrl],
+    [1995685534, searchUrl]
+  ]);
+  assert.strictEqual(boundBrowser.tab(1995685619).url, "https://www.zhipin.com/web/geek/chat");
+  assert.deepStrictEqual(boundBrowser.calls.restoreScroll, [{
+    tabId: 1995685534,
+    requested: 900,
+    applied: 640
+  }]);
+  assert.throws(
+    () => new BossSiteAdapter({ browser: boundBrowser, sleepFn: async () => {} }).bindCommunicationTabs(
+      numericBinding({ searchTabId: "1995685534" })
+    ),
+    (error) => error.code === "BOSS_COMMUNICATION_BINDING_REQUIRED"
+  );
+  boundBrowser.removeTab(1995685619);
   await assert.rejects(
-    () => boundAdapter.prepareCommunicationTab("bound-search"),
+    () => boundAdapter.prepareCommunicationTab(1995685534),
     (error) => error.code === "BOSS_OPERATOR_TABS_CHANGED"
   );
   assert.deepStrictEqual(boundBrowser.calls.createTab, []);

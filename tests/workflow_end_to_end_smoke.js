@@ -121,7 +121,10 @@ let server;
   );
 
   const planPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
-  assert.match(planPage.body, /70\s*\/\s*70/);
+  assert.match(
+    planPage.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "),
+    /70\s*\/\s*70/
+  );
   const third = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
     browserMode: "portable",

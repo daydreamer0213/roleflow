@@ -3,6 +3,7 @@ const { spawnSync } = require("node:child_process");
 
 const tests = [
   "self_check.js",
+  "windows_installer_smoke.js",
   "startup_scripts_smoke.js",
   "background_process_visibility_smoke.js",
   "scoring_url_smoke.js",
@@ -68,6 +69,9 @@ const tests = [
   "cli_model_settings_root_smoke.js",
   "model_task_profiles_smoke.js",
   "model_settings_ui_smoke.js",
+  "onboarding_run_smoke.js",
+  "onboarding_progress_ui_smoke.js",
+  "onboarding_cli_smoke.js",
   "observability_smoke.js",
   "observability_context_smoke.js",
   "profile_quality_smoke.js",

@@ -143,6 +143,25 @@ const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, prof
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));
 assert.throws(() => assertSearchPlanReady({ plan: { ...plan, cities: ["惠州"] } }, profile), /惠州/);
+const noCityPlan = { ...plan, cities: [] };
+assert.strictEqual(
+  validateSearchPlan(noCityPlan, profile, { acquisitionMode: "inherited" }).valid,
+  true,
+  "inherited acquisition reads location from the verified BOSS search page"
+);
+assert.deepStrictEqual(
+  validateSearchPlan(noCityPlan, profile, { acquisitionMode: "generated" }).errors,
+  ["至少选择一个目标城市。"],
+  "generated acquisition must retain the city requirement"
+);
+assert.strictEqual(
+  validateSearchPlan({
+    ...noCityPlan,
+    keywords: [{ word: "Python后端", priority: "A" }]
+  }, profile, { acquisitionMode: "inherited" }).valid,
+  false,
+  "inherited acquisition must retain shared keyword safety checks"
+);
 assert.throws(() => assertSearchPlanReady({ plan }, profile, { stale: true }), /旧画像/);
 assert.strictEqual(assertSearchPlanReady({ plan }, profile).valid, true);
 assert.deepStrictEqual(normalizeSearchPlan({ experience: ["2-3?", "3-5?"] }, profile).experience, ["2-3年", "3-5年（可冲）"]);

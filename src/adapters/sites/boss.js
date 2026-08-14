@@ -749,7 +749,10 @@ class BossSiteAdapter {
     this.pageBudget = SEARCH_PLAN_POLICY.broadScanDefaults.browserPageBudget;
     this.communicationTabId = null;
     this.communicationSearchTabId = null;
+    this.communicationMessageTabId = null;
+    this.communicationBinding = null;
     this.communicationTabsBound = false;
+    this.communicationSearchRestored = false;
     this.communicationTabPreparationPromise = null;
     this.communicationOperationInFlight = "";
     this.communicationDispatchedJobIds = new Set();
@@ -1897,23 +1900,109 @@ class BossSiteAdapter {
     }
   }
 
-  bindCommunicationTabs({ searchTabId, communicationTabId } = {}) {
-    if (searchTabId === null || searchTabId === undefined
-      || communicationTabId === null || communicationTabId === undefined) {
-      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Fixed BOSS search and communication tab IDs are required.");
+  bindCommunicationTabs(binding = {}) {
+    const normalized = normalizeCommunicationTabBinding(binding);
+    if (this.communicationBinding
+      && JSON.stringify(this.communicationBinding) !== JSON.stringify(normalized)) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS operator tabs cannot be rebound during communication inspection.");
     }
-    if (this.communicationSearchTabId !== null && String(this.communicationSearchTabId) !== String(searchTabId)) {
-      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
-    }
-    if (this.communicationTabId !== null && String(this.communicationTabId) !== String(communicationTabId)) {
-      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS communication tab cannot be rebound during communication inspection.");
-    }
-    this.communicationSearchTabId = searchTabId;
-    this.communicationTabId = communicationTabId;
+    this.communicationBinding = normalized;
+    this.communicationSearchTabId = normalized.searchTabId;
+    this.communicationTabId = normalized.searchTabId;
+    this.communicationMessageTabId = normalized.messageTabId;
     this.communicationTabsBound = true;
+    this.communicationSearchRestored = false;
+  }
+
+  async beginCommunicationSession() {
+    if (!this.communicationTabsBound) return this.prepareCommunicationTab();
+    this.communicationSearchRestored = false;
+    await this.assertBoundCommunicationTabs({ requireSearchPage: true });
+    return this.communicationBinding.searchTabId;
+  }
+
+  async captureCommunicationSearchState(tabId) {
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A numeric fixed search tab ID is required.");
+    }
+    await this.assertSearchPage(tabId);
+    const state = await this.browser.evalValue(tabId, `(() => ({
+      url: location.href,
+      scrollTop: Math.max(0, Math.floor(window.scrollY || document.documentElement.scrollTop || 0))
+    }))()`);
+    let url;
+    try {
+      url = new URL(String(state?.url || ""));
+    } catch {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search page returned an invalid URL.");
+    }
+    const scrollTop = Number(state?.scrollTop);
+    if (url.origin !== "https://www.zhipin.com"
+      || url.pathname !== "/web/geek/jobs"
+      || url.username
+      || url.password
+      || url.hash
+      || !Number.isInteger(scrollTop)
+      || scrollTop < 0) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search page returned invalid restoration state.");
+    }
+    return { url: url.toString(), scrollTop };
+  }
+
+  async assertBoundCommunicationTabs({ requireSearchPage = false } = {}) {
+    const binding = this.communicationBinding;
+    if (!this.communicationTabsBound || !binding) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A persisted ordinary Edge binding is required.");
+    }
+    const tabs = await this.browser.listTabs();
+    const searchTab = tabs.find((tab) => tab.id === binding.searchTabId);
+    const messageTab = tabs.find((tab) => tab.id === binding.messageTabId);
+    if (!searchTab || !messageTab) {
+      throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS operator tabs changed.");
+    }
+    if (searchTab.windowId !== binding.windowId || messageTab.windowId !== binding.windowId) {
+      throw bossError("BOSS_WINDOW_MISMATCH", "The fixed BOSS operator tabs moved to another window.");
+    }
+    if (bossTabPath(messageTab) !== "/web/geek/chat") {
+      throw bossError("BOSS_COMMUNICATION_PAGE_LOST", "The fixed BOSS message tab left the chat page.");
+    }
+    const searchPath = bossTabPath(searchTab);
+    const validSearchPath = searchPath === "/web/geek/jobs";
+    const validDetailPath = /^\/job_detail\/[^/?#]+\.html$/i.test(searchPath);
+    if ((requireSearchPage && !validSearchPath)
+      || (!requireSearchPage && !validSearchPath && !validDetailPath)) {
+      throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab left its permitted page.");
+    }
+    return { searchTab, messageTab, windowId: binding.windowId };
+  }
+
+  async restoreCommunicationSearchPage() {
+    if (!this.communicationTabsBound || this.communicationSearchRestored) return;
+    this.communicationSearchRestored = true;
+    const binding = this.communicationBinding;
+    await this.assertBoundCommunicationTabs({ requireSearchPage: false });
+    await this.browser.navigate(binding.searchTabId, binding.searchReturnUrl);
+    await this.waitWithPacing("detail");
+    await this.assertSearchPage(binding.searchTabId);
+    await this.browser.evalValue(binding.searchTabId, `(() => {
+      const requested = ${JSON.stringify(binding.searchScrollTop)};
+      const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+      const applied = Math.min(maximum, Math.max(0, requested));
+      scrollTo(0, applied);
+      return { requested, applied };
+    })()`);
+    await this.assertBoundCommunicationTabs({ requireSearchPage: true });
   }
 
   async prepareCommunicationTabOnce(searchTabId = null) {
+    if (this.communicationTabsBound) {
+      if (searchTabId !== null && searchTabId !== undefined
+        && searchTabId !== this.communicationBinding.searchTabId) {
+        throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
+      }
+      await this.assertBoundCommunicationTabs({ requireSearchPage: false });
+      return this.communicationBinding.searchTabId;
+    }
     const hasCachedSearchTab = this.communicationSearchTabId !== null;
     const hasExplicitSearchTab = searchTabId !== null && searchTabId !== undefined;
     if (hasCachedSearchTab
@@ -1990,6 +2079,7 @@ class BossSiteAdapter {
       const tabId = await this.prepareCommunicationTab();
       await this.browser.navigate(tabId, url);
       await this.waitWithPacing("detail");
+      if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
       await this.browser.evalValue(tabId, PAGE_HELPERS);
 
       let inspection = { state: "action_unavailable" };
@@ -1997,6 +2087,7 @@ class BossSiteAdapter {
       let settledUnavailableSnapshots = 0;
       for (let attempt = 0; attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS; attempt += 1) {
         throwIfAborted(signal);
+        if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         inspection = classifyBossCommunicationSnapshot(snapshot, { ...job, url });
         if (inspection.state === "ready") {
@@ -2036,6 +2127,7 @@ class BossSiteAdapter {
       }
       throwIfAborted(signal);
       tabId = await this.prepareCommunicationTab();
+      if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
@@ -2103,9 +2195,10 @@ class BossSiteAdapter {
       }
       throwIfAborted(signal);
       tabId = await this.prepareCommunicationTab();
-      if (String(tabId) !== String(dispatch.tabId)) {
+      if (tabId !== dispatch.tabId) {
         throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The fixed BOSS communication tab changed before result verification.");
       }
+      if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
       await this.waitWithPacing("detail");
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       let observation = { state: "pending", evidence: { endpoints: [], pageState: "no_matching_request" } };
@@ -2970,6 +3063,51 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
 
 function isBossSearchTab(tab) {
   return /^https:\/\/www\.zhipin\.com\/web\/geek\/jobs(?:[/?#]|$)/i.test(String(tab?.url || ""));
+}
+
+function normalizeCommunicationTabBinding(value = {}) {
+  for (const field of ["windowId", "searchTabId", "messageTabId", "bindingGeneration"]) {
+    if (!Number.isInteger(value[field]) || value[field] <= 0) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", `${field} must be a numeric Edge identifier.`);
+    }
+  }
+  if (value.mode !== "edge"
+    || value.searchTabId === value.messageTabId
+    || !Number.isInteger(value.searchScrollTop)
+    || value.searchScrollTop < 0) {
+    throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A complete ordinary Edge binding is required.");
+  }
+  let returnUrl;
+  try {
+    returnUrl = new URL(value.searchReturnUrl);
+  } catch {
+    throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A trusted BOSS search return URL is required.");
+  }
+  if (returnUrl.origin !== "https://www.zhipin.com"
+    || returnUrl.pathname !== "/web/geek/jobs"
+    || returnUrl.username
+    || returnUrl.password
+    || returnUrl.hash) {
+    throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A trusted BOSS search return URL is required.");
+  }
+  return Object.freeze({
+    mode: "edge",
+    windowId: value.windowId,
+    searchTabId: value.searchTabId,
+    messageTabId: value.messageTabId,
+    searchReturnUrl: returnUrl.toString(),
+    searchScrollTop: value.searchScrollTop,
+    bindingGeneration: value.bindingGeneration
+  });
+}
+
+function bossTabPath(tab) {
+  try {
+    const url = new URL(String(tab?.url || ""));
+    return url.origin === "https://www.zhipin.com" ? url.pathname : "";
+  } catch {
+    return "";
+  }
 }
 
 function isReusableBossCommunicationTab(tab) {

@@ -6,6 +6,7 @@ const {
   createBatch,
   upsertJob,
   listDecisionPool,
+  getOutcomeAnalyticsSnapshot,
   listReportJobs,
   saveProfileAnalysis,
   isJobAwaitingAction,
@@ -16,8 +17,11 @@ const boss = require("../src/adapters/sites/boss");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const {
   ensureProgressCard,
-  transitionProgressCard
+  transitionProgressCard,
+  listProgressCardsWithEvents
 } = require("../src/core/candidate_progress");
+const { recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
+const { resolveInboundOpportunity } = require("../src/application/message_discovery/inbound");
 const { handleMarkApi, getDashboardData, renderPlanPage, renderQueuePage } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
@@ -45,6 +49,7 @@ try {
   queueUiSmoke({ profileId, planId });
   dashboardLatestBatchSmoke({ profileId, planId });
   planPolicyUiSmoke({ profileId, planId });
+  inboundVisibilitySmoke({ profileId, planId });
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   console.log("data_visibility_smoke ok");
 } finally {
@@ -52,6 +57,50 @@ try {
   for (const suffix of ["", "-shm", "-wal"]) {
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch { /* no-op */ }
   }
+}
+
+function inboundVisibilitySmoke({ profileId, planId }) {
+  const conversationKey = `sha256:${"c".repeat(64)}`;
+  const previewDigest = `sha256:${"d".repeat(64)}`;
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId,
+    platform: "boss",
+    conversationKey,
+    previewDigest,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-08-13T08:00:00.000Z",
+    identity: {
+      positionTitle: "HR 主动岗位",
+      company: "主动联系公司",
+      salary: "12-18K",
+      city: "广州"
+    }
+  });
+  const priorPool = listDecisionPool(db, { planId }).length;
+  const priorOutcomeTotal = getOutcomeAnalyticsSnapshot(db, { planId }).total;
+  const created = resolveInboundOpportunity({
+    db,
+    input: { profileId, conversationKey, previewDigest, action: "create" },
+    now: () => "2026-08-13T08:00:00.000Z"
+  });
+  assert.strictEqual(listDecisionPool(db, { planId }).length, priorPool);
+  assert.strictEqual(getOutcomeAnalyticsSnapshot(db, { planId }).total, priorOutcomeTotal);
+  const progress = listProgressCardsWithEvents(db, { profileId })
+    .find((card) => card.id === created.card.id);
+  assert.strictEqual(progress.job.title, "HR 主动岗位");
+  assert.strictEqual(progress.job.batchId, null);
+  const progressHtml = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "needs_user_action" })
+  });
+  assert(progressHtml.includes("HR 主动岗位"));
+  assert(progressHtml.includes("HR 主动联系"));
+  const recommendationHtml = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "apply" })
+  });
+  assert(!recommendationHtml.includes("HR 主动岗位"));
 }
 
 function uniqueJobsBeforeLimitSmoke({ profileId, planId }) {

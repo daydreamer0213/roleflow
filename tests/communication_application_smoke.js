@@ -11,6 +11,7 @@ const {
 } = require("../src/core/storage");
 const {
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
   transitionCommunicationItem
@@ -19,6 +20,7 @@ const {
   createCommunicationBatch,
   controlCommunicationBatch,
   getCommunicationStatus,
+  rebindCommunicationBrowser,
   resolveAmbiguousCommunication
 } = require("../src/application/communication");
 const { createDashboardServer } = require("../src/dashboard/server");
@@ -57,7 +59,7 @@ let noDbPathServer;
   });
   const baseUrl = await listen(server);
 
-  for (const fn of [createCommunicationBatch, controlCommunicationBatch, getCommunicationStatus, resolveAmbiguousCommunication]) {
+  for (const fn of [createCommunicationBatch, controlCommunicationBatch, getCommunicationStatus, rebindCommunicationBrowser, resolveAmbiguousCommunication]) {
     assert.strictEqual(typeof fn, "function");
   }
 
@@ -78,6 +80,41 @@ let noDbPathServer;
     (error) => error.code === "COMMUNICATION_PROCESS_LAUNCHER_REQUIRED"
   );
   assert.strictEqual(getCommunicationBatch(db, missingLauncher.batch.id).status, "confirmed");
+  const rebindable = createCommunicationBatch({
+    db,
+    input: { planId: fixture.planId, jobIds: [fixture.rebindJobId], browserMode: "edge" }
+  });
+  bindCommunicationBatchRuntime(db, {
+    batchId: rebindable.batch.id,
+    browser: browserBinding({ bindingGeneration: 1 })
+  });
+  setCommunicationBatchStatus(db, { batchId: rebindable.batch.id, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: rebindable.batch.id, status: "paused" });
+  let rebindCalls = 0;
+  const rebound = await rebindCommunicationBrowser({
+    db,
+    input: { batchId: rebindable.batch.id },
+    deps: {
+      async inspectAndBindCommunicationBrowser({ batch }) {
+        rebindCalls += 1;
+        return bindCommunicationBatchRuntime(db, {
+          batchId: batch.id,
+          browser: browserBinding({
+            windowId: 1995685675,
+            searchTabId: 1995685534,
+            messageTabId: 1995685619,
+            searchScrollTop: 360,
+            bindingGeneration: batch.runtime.browser.bindingGeneration
+          }),
+          rebind: true
+        });
+      }
+    }
+  });
+  assert.strictEqual(rebindCalls, 1);
+  assert.strictEqual(rebound.batch.status, "paused");
+  assert.strictEqual(rebound.batch.runtime.browser.bindingGeneration, 2);
+  assert.strictEqual(rebound.batch.runtime.browser.searchTabId, 1995685534);
   recoveryFloorCommunicationGuardSmoke(db, fixture);
   const directResolution = createCommunicationBatch({
     db,
@@ -154,6 +191,21 @@ let noDbPathServer;
   transitionCommunicationItem(db, { itemId: interruptedItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(interruptedItem) });
   transitionCommunicationItem(db, { itemId: interruptedItem.id, expectedStatus: "click_dispatched", status: "ambiguous" });
   setCommunicationBatchStatus(db, { batchId: interrupted.body.batch.id, status: "interrupted" });
+  let ambiguousRebindCalls = 0;
+  await assert.rejects(
+    () => rebindCommunicationBrowser({
+      db,
+      input: { batchId: interrupted.body.batch.id },
+      deps: {
+        async inspectAndBindCommunicationBrowser() {
+          ambiguousRebindCalls += 1;
+          throw new Error("ambiguous rebind must fail before browser inspection");
+        }
+      }
+    }),
+    (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409
+  );
+  assert.strictEqual(ambiguousRebindCalls, 0);
   await expectApiError(baseUrl, "/api/communication-control", { batchId: interrupted.body.batch.id, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
   assert.strictEqual(spawns.length, 1);
   await expectApiError(baseUrl, "/api/communication-resolve", { batchId: interrupted.body.batch.id, itemId: interruptedItem.id, status: "stopped" }, "COMMUNICATION_AMBIGUOUS_EVIDENCE_REQUIRED");
@@ -245,6 +297,7 @@ function seed(database) {
     planId,
     directJobId: upsertJob(database, job("direct", { title: "Direct role" }), scanBatchId),
     launcherJobId: upsertJob(database, job("launcher", { title: "Launcher role" }), scanBatchId),
+    rebindJobId: upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId),
     directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
     startJobId: upsertJob(database, job("start", { title: "Start role", company: "Start company" }), scanBatchId),
     ambiguousJobId: upsertJob(database, job("ambiguous", { title: "Ambiguous role" }), scanBatchId),
@@ -252,6 +305,19 @@ function seed(database) {
     syncSpawnJobId: upsertJob(database, job("sync-spawn", { title: "Sync spawn role" }), scanBatchId),
     childErrorJobId: upsertJob(database, job("child-error", { title: "Child error role" }), scanBatchId),
     missingDbPathJobId: upsertJob(database, job("missing-db-path", { title: "Missing dbPath role" }), scanBatchId)
+  };
+}
+
+function browserBinding(overrides = {}) {
+  return {
+    mode: "edge",
+    windowId: 103,
+    searchTabId: 101,
+    messageTabId: 102,
+    searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000",
+    searchScrollTop: 120,
+    bindingGeneration: 1,
+    ...overrides
   };
 }
 

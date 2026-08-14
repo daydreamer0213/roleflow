@@ -213,6 +213,32 @@ async function sharedLedgerCommunicationReuseAuditsEachBaselineSmoke() {
   }
 }
 
+async function communicationRecoveryReservationSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-08-13T01:45:00+08:00");
+  try {
+    const controller = createSiteAccessController({
+      db,
+      site: "boss",
+      runId: "communication-recovery",
+      nowFn: () => now,
+      sleepFn: async () => {}
+    });
+    const details = { batchId: 4, itemId: 8, jobId: 12 };
+    const first = await controller.reserve("communication_visit", details);
+    const recovery = await controller.reserve("communication_visit", { ...details, recoveryAttempt: 1 });
+    const repeatedRecovery = await controller.reserve("communication_visit", { ...details, recoveryAttempt: 1 });
+    assert.strictEqual(first.reused, false);
+    assert.strictEqual(recovery.reused, false);
+    assert.strictEqual(repeatedRecovery.reused, true);
+    const events = listSiteAccessEvents(db, { site: "boss", action: "communication_visit" });
+    assert.strictEqual(events.length, 2, "one normal visit and one recovery visit must each count once");
+    assert.deepStrictEqual(events.map((event) => event.details.recoveryAttempt || 0), [0, 1]);
+  } finally {
+    db.close();
+  }
+}
+
 async function reservationPrivacySanitizationSmoke() {
   const db = openDb(":memory:");
   const now = Date.parse("2026-07-21T12:30:00+08:00");
@@ -783,6 +809,7 @@ Promise.resolve()
   .then(persistedReservationCallbackSmoke)
   .then(sharedLedgerAcrossOperationalBaselinesSmoke)
   .then(sharedLedgerCommunicationReuseAuditsEachBaselineSmoke)
+  .then(communicationRecoveryReservationSmoke)
   .then(reservationPrivacySanitizationSmoke)
   .then(naturalDayResetSmoke)
   .then(naturalDayRetryAtSmoke)

@@ -11,6 +11,7 @@ const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
 const { completedWorkflowAnalysisCount } = require("./core/workflow_analysis_tasks");
 const { analyzeResumeToPlan } = require("./core/profile_onboarding");
+const { processOnboardingRun } = require("./core/onboarding_run");
 const {
   CITY_CODES,
   cityToBossCode,
@@ -88,6 +89,7 @@ const { resolveBossRiskWindow } = require("./core/boss_risk_window");
 const { stableHash } = require("./core/analysis_revision");
 const { matchingCardRevision } = require("./core/matching_card");
 const {
+  canonicalizeBossSearchTemplate,
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
@@ -96,7 +98,13 @@ const {
 } = require("./core/inherited_search_scope");
 const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
 const { resolveScanKind, resolveDetailMode, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
-const { getCommunicationBatch, setCommunicationBatchStatus, touchCommunicationBatch } = require("./core/communication_batches");
+const {
+  getCommunicationBatch,
+  bindCommunicationBatchRuntime,
+  setCommunicationBatchStatus,
+  touchCommunicationBatch
+} = require("./core/communication_batches");
+const { communicationAmbiguityStateForBatch } = require("./core/communication_ambiguity");
 const { runCommunicationBatch } = require("./core/communication_executor");
 const { finalizeWorkflowControl } = require("./core/workflow_control");
 const {
@@ -153,6 +161,7 @@ async function main() {
   if (command === "refresh-details") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, args, { signal, execution }));
   if (command === "refresh-activity") return executeWithSiteScanLease(db, args, command, (signal, execution) => refreshDetails(db, { ...args, "activity-only": true }, { signal, execution }));
   if (command === "profile-create") return createProfile(db, args);
+  if (command === "onboarding-process") return processOnboardingCommand(db, args);
   if (command === "bind-batch") return bindBatch(db, args);
   if (command === "reassess-batch") return reassessBatch(db, args);
   if (command === "rescore-plan") return rescorePlan(db, args);
@@ -231,6 +240,9 @@ async function communicate(
   if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw new Error(`未找到沟通批次 #${batchId}`);
+  if (communicationAmbiguityStateForBatch(db, batchId).blocked) {
+    throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工确认结果不明确的岗位，再继续沟通。");
+  }
   const browserArgs = resolveCommunicationBrowserAuthority(batch, args);
   const browserMode = browserArgs.browser;
   const browser = createBrowserFn(browserArgs);
@@ -248,6 +260,10 @@ async function communicate(
   const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
   const adapter = createSiteAdapterFn("boss", { browser, logger: communicationLogger, accessController });
   const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
+  let sessionStarted = false;
+  let runError = null;
+  let restoreError = null;
+  let summary = null;
 
   try {
     if (browserMode === "edge") {
@@ -258,19 +274,51 @@ async function communicate(
       if (typeof adapter.bindCommunicationTabs !== "function") {
         throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication requires fixed BOSS operator tab binding.");
       }
-      adapter.bindCommunicationTabs({
-        searchTabId: inspected.searchTab.id,
-        communicationTabId: inspected.communicationTab.id
+      if (typeof adapter.captureCommunicationSearchState !== "function"
+        || typeof adapter.beginCommunicationSession !== "function"
+        || typeof adapter.restoreCommunicationSearchPage !== "function") {
+        throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication adapter is missing its fixed-tab lifecycle.");
+      }
+      const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
+      assertCommunicationSearchScope(workflowRun, captured.url);
+      const current = getCommunicationBatch(db, batchId);
+      const bound = bindCommunicationBatchRuntime(db, {
+        batchId,
+        browser: {
+          mode: "edge",
+          windowId: inspected.windowId,
+          searchTabId: inspected.searchTab.id,
+          messageTabId: inspected.communicationTab.id,
+          searchReturnUrl: captured.url,
+          searchScrollTop: captured.scrollTop,
+          bindingGeneration: current.runtime?.browser?.bindingGeneration || 1
+        }
       });
-      await adapter.prepareCommunicationTab(inspected.searchTab.id);
+      adapter.bindCommunicationTabs(bound.runtime.browser);
+      await adapter.beginCommunicationSession();
+      sessionStarted = true;
     } else {
       const browserState = await adapter.preflight();
       await adapter.prepareCommunicationTab(browserState.tabId);
     }
-    const summary = await runCommunicationBatchFn({ db, batchId, adapter, accessController, logger: communicationLogger });
-    console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
+    summary = await runCommunicationBatchFn({
+      db,
+      batchId,
+      adapter,
+      accessController,
+      logger: communicationLogger,
+      beforeReadOnlyRetry: async ({ item, recoveryAttempt }) => {
+        await accessController.reserve("communication_visit", {
+          batchId,
+          itemId: item.id,
+          jobId: item.jobId,
+          recoveryAttempt
+        });
+      }
+    });
     return summary;
   } catch (error) {
+    runError = error;
     const current = getCommunicationBatch(db, batchId);
     if (current?.status === "running") {
       setCommunicationBatchStatus(db, {
@@ -296,7 +344,38 @@ async function communicate(
     }
     throw error;
   } finally {
+    if (sessionStarted) {
+      try {
+        await adapter.restoreCommunicationSearchPage();
+      } catch (error) {
+        restoreError = error;
+        communicationLogger.error("communication_search_restore_failed", {
+          batchId,
+          code: error?.code || "COMMUNICATION_SEARCH_RESTORE_FAILED"
+        });
+      }
+    }
     stopHeartbeat();
+    if (!runError && restoreError) throw restoreError;
+    if (!runError && !restoreError && summary) {
+      console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
+    }
+  }
+}
+
+function assertCommunicationSearchScope(workflowRun, returnUrl) {
+  const expected = String(workflowRun?.planner?.searchScope?.templateUrl || "");
+  if (!expected) return;
+  let actual;
+  try {
+    actual = canonicalizeBossSearchTemplate(returnUrl).url;
+  } catch (cause) {
+    const error = codedError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页不是本轮冻结的筛选范围。");
+    error.cause = cause;
+    throw error;
+  }
+  if (actual !== expected) {
+    throw codedError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页筛选条件与本轮冻结范围不一致。");
   }
 }
 
@@ -718,7 +797,7 @@ async function scan(
       planRecord,
       matchingContext?.candidateProfile || {},
       getSearchPlanDependency(db, planRecord.id),
-      { validatePlatformCities: acquisitionMode === "generated" }
+      { acquisitionMode: acquisitionMode || "inherited" }
     );
     if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
     configs = profileToRuntimeConfigs(
@@ -895,7 +974,8 @@ async function scan(
     assertSearchPlanReady(
       planRecord,
       matchingContext?.candidateProfile || {},
-      getSearchPlanDependency(db, planRecord.id)
+      getSearchPlanDependency(db, planRecord.id),
+      { acquisitionMode: "generated" }
     );
     plannedCityScopes = resolveCityScopes(args, planRecord, configs);
     if (directSearchContext) {
@@ -1555,7 +1635,12 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const profileRecord = getCandidateProfile(db, planRecord.profileId);
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   let configs = loadConfigs(ROOT);
   const batchModelState = resolveRuntimeModelConfig({
@@ -2264,6 +2349,32 @@ async function createProfile(db, args) {
   console.log(`Keywords: ${planKeywords(plan).join("、")}`);
 }
 
+async function processOnboardingCommand(db, args) {
+  const runId = String(args.run || "").trim();
+  if (!runId) throw new Error("需要 --run <Onboarding Run ID>");
+  const fallbackModelConfig = loadConfigs(ROOT).model;
+  const modelConfig = args["force-mock"] === true
+    ? offlineMockModelConfig()
+    : resolveRuntimeModelConfig({
+        root: ROOT,
+        fallbackModelConfig,
+        taskProfile: "deep_analysis"
+      }).modelConfig;
+  const result = await processOnboardingRun({
+    db,
+    runId,
+    modelConfig,
+    logger: logger.child({ runId, operation: "onboarding" })
+  });
+  if (result.status === "failed") {
+    const error = new Error(result.errorMessage || "简历后台处理失败。");
+    error.code = result.errorCode || "ONBOARDING_RUN_FAILED";
+    throw error;
+  }
+  console.log(`Onboarding run ${result.id} completed`);
+  return result;
+}
+
 function bindBatch(db, args) {
   const batchId = Number(args.batch);
   const planId = Number(args.plan);
@@ -2285,7 +2396,12 @@ async function reassessBatch(db, args) {
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在。`);
   // 重评与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重评结果。
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
 
   let configs = loadConfigs(ROOT);
@@ -2341,7 +2457,12 @@ function rescorePlan(db, args) {
   if (!profileRecord) throw new Error(`Search Plan #${planId} 对应的候选人画像不存在`);
   // 重算与扫描使用同一套已确认匹配上下文：未确认的新简历不得影响重算结果。
   const matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
-  assertSearchPlanReady(planRecord, matchingContext?.candidateProfile || {}, getSearchPlanDependency(db, planRecord.id));
+  assertSearchPlanReady(
+    planRecord,
+    matchingContext?.candidateProfile || {},
+    getSearchPlanDependency(db, planRecord.id),
+    { acquisitionMode: "inherited" }
+  );
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   const configs = profileToRuntimeConfigs(loadConfigs(ROOT), matchingContext.candidateProfile, planRecord.plan, listMatchingResumeVersions(db, planRecord.profileId), matchingContext.matchingCard);
   const result = rescorePlanObservations(db, { planId, configs });
