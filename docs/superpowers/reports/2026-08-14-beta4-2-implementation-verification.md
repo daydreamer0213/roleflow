@@ -16,8 +16,10 @@
   - 最终页面守卫只核对目标和点击坐标，不再在页面脚本里调用 DOM `.click()`。
   - 每个岗位最多发送一次浏览器级鼠标点击；点击后不会自动重试。
   - Edge 网络日志只记录两个沟通相关接口，并设置条目数、正文数和正文大小上限。
-  - 持久化证据只保留接口类别、HTTP 状态、受限业务码、结果类别和耗时；不保留原始 URL、响应正文、请求标识或网络错误原文。
+  - 网络结果只接受 `https://www.zhipin.com` 的目标接口；适配器和持久化入口都把证据限制为最多 12 条。
+  - 持久化证据只保留接口类别、HTTP 状态、受限业务码、结果类别、耗时和脱敏弹层类别；不保留原始 URL、响应正文、请求标识或网络错误原文。
   - 网络请求、页面状态或中间弹层不一致时安全中断，保留后续条目未执行，并向用户显示中文原因和原始技术码。
+  - 模型兼容接口返回的错误消息如果回显当前 API Key，会在进入页面和日志前精确遮蔽。
 
 ## 验证证据
 
@@ -47,6 +49,7 @@
   - `80cb599 feat: expose bounded Edge network logging`
   - `395f26a fix: verify BOSS communication dispatch evidence`
   - `61fd362 docs: correct communication acceptance status`
+  - `8f5d557 fix: harden external evidence boundaries`
 
 ## 明确未执行
 
