@@ -434,11 +434,16 @@ assertCommunicationViewModel();
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
   const [ambiguousItem, secondAmbiguousItem] = listCommunicationBatchItems(db, batchId);
-  for (const item of [ambiguousItem, secondAmbiguousItem]) {
+  for (const [index, item] of [ambiguousItem, secondAmbiguousItem].entries()) {
     transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "pending", status: "opening" });
     transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "opening", status: "verified" });
     transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
-    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+    transitionCommunicationItem(db, {
+      itemId: item.id,
+      expectedStatus: "click_dispatched",
+      status: "ambiguous",
+      errorCode: index === 0 ? "COMMUNICATION_ACTION_NOT_TRIGGERED" : "COMMUNICATION_RESULT_AMBIGUOUS"
+    });
   }
   setCommunicationBatchStatus(db, {
     batchId,
@@ -450,6 +455,8 @@ assertCommunicationViewModel();
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
   assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
   assert.match(ambiguousReview.body, /等待人工确认沟通结果/);
+  assert.match(ambiguousReview.body, /平台没有响应本次点击，RoleFlow 已停止且不会自动重试。/);
+  assert.match(ambiguousReview.body, /COMMUNICATION_ACTION_NOT_TRIGGERED/);
   assert.doesNotMatch(ambiguousReview.body, /重新检查浏览器页面/);
   assert.match(ambiguousReview.body, new RegExp(`href="/communication\\?batchId=${batchId}#communication-item-${ambiguousItem.id}"`));
   assert.match(ambiguousReview.body, new RegExp(`id="communication-item-${ambiguousItem.id}"`));

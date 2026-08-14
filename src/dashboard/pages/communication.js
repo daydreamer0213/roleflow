@@ -2,7 +2,7 @@
 
 const { escapeAttr, escapeHtml } = require("../http/response");
 const { renderDashboardFrame } = require("../ui/shell");
-const { communicationStatusLabel } = require("../status_labels");
+const { communicationStatusLabel, communicationErrorLabel } = require("../status_labels");
 
 function renderCommunicationPage(vm = {}) {
   const page = vm.page || {};
@@ -45,7 +45,7 @@ function currentBatch(vm) {
 function item(row = {}) {
   const title = row.jobUrl ? `<a href="${escapeAttr(row.jobUrl)}" target="_blank" rel="noreferrer">${escapeHtml(row.title || "未保存岗位")}</a>` : escapeHtml(row.title || "未保存岗位");
   const resolution = row.resolution ? `<form class="communication-resolution" method="post" action="/api/communication-resolve"><input type="hidden" name="batchId" value="${number(row.batchId)}"><input type="hidden" name="itemId" value="${number(row.id)}"><label>处理依据（必须可核验）<input name="evidenceNote" maxlength="1000" placeholder="例如：聊天页已显示对应岗位和招聘方" required></label><div class="button-row"><button class="secondary" name="status" value="succeeded">确认已沟通</button><button class="secondary" name="status" value="stopped">标记停止</button></div></form>` : "";
-  return `<article id="communication-item-${number(row.id)}" class="communication-item"><div class="communication-item-head"><div><p class="section-label">#${number(row.position)}</p><h3>${title}</h3><p class="muted">${escapeHtml(row.company || "未保存公司")}</p></div><span class="status ${statusClass(row.status)}">${escapeHtml(itemStatusLabel(row.status))}</span></div><dl class="definition-grid communication-facts"><div><dt>薪资</dt><dd>${escapeHtml(row.salary)}</dd></div><div><dt>地点</dt><dd>${escapeHtml(row.location)}</dd></div><div><dt>推荐层级</dt><dd>${escapeHtml(tierLabel(row.tier))}</dd></div><div><dt>点击记录</dt><dd>${number(row.clickCount)}</dd></div></dl><details><summary>查看推荐依据、风险和处理信息</summary><div class="communication-detail"><p><strong>关键证据：</strong>${escapeHtml((row.evidence || []).join("；") || "未保存")}</p><p><strong>风险：</strong>${escapeHtml((row.risks || []).join("；") || "未保存")}</p><p><strong>建议原因：</strong>${escapeHtml(row.proposalReason || "未保存")}</p>${row.errorCode ? `<p class="risk-text"><strong>${escapeHtml(row.errorCode)}</strong> ${escapeHtml(row.errorMessage)}</p>` : ""}</div></details>${resolution}</article>`;
+  return `<article id="communication-item-${number(row.id)}" class="communication-item"><div class="communication-item-head"><div><p class="section-label">#${number(row.position)}</p><h3>${title}</h3><p class="muted">${escapeHtml(row.company || "未保存公司")}</p></div><span class="status ${statusClass(row.status)}">${escapeHtml(itemStatusLabel(row.status))}</span></div><dl class="definition-grid communication-facts"><div><dt>薪资</dt><dd>${escapeHtml(row.salary)}</dd></div><div><dt>地点</dt><dd>${escapeHtml(row.location)}</dd></div><div><dt>推荐层级</dt><dd>${escapeHtml(tierLabel(row.tier))}</dd></div><div><dt>点击记录</dt><dd>${number(row.clickCount)}</dd></div></dl><details><summary>查看推荐依据、风险和处理信息</summary><div class="communication-detail"><p><strong>关键证据：</strong>${escapeHtml((row.evidence || []).join("；") || "未保存")}</p><p><strong>风险：</strong>${escapeHtml((row.risks || []).join("；") || "未保存")}</p><p><strong>建议原因：</strong>${escapeHtml(row.proposalReason || "未保存")}</p>${row.errorCode ? `<p class="risk-text"><strong>${escapeHtml(communicationErrorLabel(row.errorCode))}</strong><br><span>${escapeHtml(row.errorCode)}</span>${row.errorMessage ? ` · ${escapeHtml(row.errorMessage)}` : ""}</p>` : ""}</div></details>${resolution}</article>`;
 }
 
 function history(vm) {

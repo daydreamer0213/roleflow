@@ -282,11 +282,18 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     return;
   }
   if (resultState !== "succeeded") {
+    const ambiguityCode = [
+      "COMMUNICATION_ACTION_NOT_TRIGGERED",
+      "COMMUNICATION_USER_ACTION_REQUIRED",
+      "COMMUNICATION_RESULT_AMBIGUOUS"
+    ].includes(String(result?.errorCode || ""))
+      ? String(result.errorCode)
+      : "COMMUNICATION_RESULT_AMBIGUOUS";
     return ambiguousAndThrow(
       db,
       batchId,
       item,
-      codedError("COMMUNICATION_RESULT_AMBIGUOUS", "communication result could not be verified"),
+      codedError(ambiguityCode, "communication result could not be verified"),
       logger,
       communicationOutcomeEvidence(result)
     );

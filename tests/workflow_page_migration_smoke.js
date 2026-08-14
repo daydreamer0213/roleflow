@@ -158,6 +158,17 @@ function assertRendererContracts(vm) {
   assert.match(interrupted, /data-workflow-primary="true"/);
   assert.match(interrupted, /communication\?batchId=41/);
 
+  const actionNotTriggered = renderWorkflowPage(buildWorkflowViewModel(fixture({
+    workflow: {
+      status: "interrupted",
+      communicationBatchId: 41,
+      errorCode: "COMMUNICATION_ACTION_NOT_TRIGGERED"
+    },
+    progressSnapshot: null
+  })));
+  assert.match(actionNotTriggered, /平台没有响应本次点击，RoleFlow 已停止且不会自动重试。/);
+  assert.match(actionNotTriggered, /COMMUNICATION_ACTION_NOT_TRIGGERED/);
+
   const unsafeUrl = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 91, url: "javascript:alert(1)", title: "不安全链接", company: "甲", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
   assert.match(unsafeUrl, /不安全链接/);
   assert.doesNotMatch(unsafeUrl, /href="javascript:/i, "review must not create executable links from an unsafe URL");

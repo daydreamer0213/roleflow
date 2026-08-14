@@ -252,6 +252,41 @@ async function ambiguousAndFatalStopSmoke() {
   assert.deepStrictEqual(listCommunicationBatchItems(ambiguous.db, ambiguous.batch.id).map((item) => item.status), ["ambiguous", "pending"]);
   ambiguous.close();
 
+  for (const code of ["COMMUNICATION_ACTION_NOT_TRIGGERED", "COMMUNICATION_USER_ACTION_REQUIRED"]) {
+    const diagnostic = createFixture(2);
+    const workflow = attachReviewWorkflow(diagnostic);
+    let dispatches = 0;
+    await assert.rejects(
+      () => runPermittedBatch({
+        db: diagnostic.db,
+        batchId: diagnostic.batch.id,
+        accessController: { async reserve() {} },
+        adapter: {
+          async inspectCommunicationJob() { return { state: "ready" }; },
+          async dispatchCommunication() { dispatches += 1; },
+          async verifyCommunicationResult() {
+            return {
+              state: "ambiguous",
+              errorCode: code,
+              evidence: { endpoints: [], pageState: code === "COMMUNICATION_ACTION_NOT_TRIGGERED" ? "no_matching_request" : "confirmation_dialog" }
+            };
+          }
+        },
+        sleepFn: async () => {}
+      }),
+      (error) => error.code === code
+    );
+    const items = listCommunicationBatchItems(diagnostic.db, diagnostic.batch.id);
+    assert.strictEqual(dispatches, 1);
+    assert.deepStrictEqual(items.map((item) => item.status), ["ambiguous", "pending"]);
+    assert.deepStrictEqual(items.map((item) => item.clickCount), [1, 0]);
+    assert.strictEqual(items[0].errorCode, code);
+    assert.strictEqual(getCommunicationBatch(diagnostic.db, diagnostic.batch.id).stopCode, code);
+    assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).status, "interrupted");
+    assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).errorCode, code);
+    diagnostic.close();
+  }
+
   const fatal = createFixture(2);
   let fatalInspections = 0;
   const fatalError = Object.assign(new Error("detail page disappeared"), { code: "BOSS_DETAIL_PAGE_LOST" });

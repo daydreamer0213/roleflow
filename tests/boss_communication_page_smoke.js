@@ -36,6 +36,7 @@ const readySnapshot = {
     hasChatIdentity: true
   }],
   successDialog: { visible: false, title: "", footer: "" },
+  intermediateDialog: { visible: false, category: "" },
   inlineChatSent: false
 };
 const expectedJob = {
@@ -210,6 +211,12 @@ function snapshotContext(url, fixtures, onActionClick = () => {}, transport = nu
       rect: { x: 220, y: 180, width: 42, height: 18 }
     });
   }
+  if (fixture.intermediateDialog) {
+    nodes.__intermediateDialog = testNode({
+      text: "private dialog text",
+      rect: { x: 180, y: 100, width: 520, height: 300 }
+    });
+  }
   if (fixture.jobStatus !== undefined) nodes[".job-status"] = testNode({ text: fixture.jobStatus });
   const document = {
     title: fixture.title || "",
@@ -221,10 +228,14 @@ function snapshotContext(url, fixtures, onActionClick = () => {}, transport = nu
         ".sign-form, .login-register, [class*='login-form']": [],
         ".dialog-wrap.startchat-dialog .message-list .message-item .status.success": nodes[".dialog-wrap.startchat-dialog .message-list .message-item .status.success"]
           ? [nodes[".dialog-wrap.startchat-dialog .message-list .message-item .status.success"]]
+          : [],
+        ".dialog-wrap:not(.startchat-dialog), .boss-dialog, .dialog-container": nodes.__intermediateDialog
+          ? [nodes.__intermediateDialog]
           : []
       };
       return collections[selector] || [];
     },
+    elementFromPoint() { return fixture.actions?.[0] || null; },
     documentElement: { scrollHeight: 1440 }
   };
   context = vm.createContext({
@@ -264,6 +275,7 @@ function testNode({
       return disabled && name === "aria-disabled" ? "true" : null;
     },
     getBoundingClientRect() { return rect; },
+    contains(node) { return node === this; },
     matches(selector) { return disabled && selector === ":disabled"; },
     querySelector(selector) { return children[selector] || null; },
     querySelectorAll(selector) { return selector === "a, button, [role='button']" ? actions : []; }
@@ -275,6 +287,7 @@ function fakeBrowser({
   fixtures = new Map(),
   afterClickFixtures = new Map(),
   observerOutcomes = [],
+  networkLogs = [],
   realObserver = false,
   transport = null,
   snapshotSequence = [],
@@ -284,12 +297,18 @@ function fakeBrowser({
   createTabGate = null,
   createStarted = null
 } = {}) {
-  const calls = { listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [], guardedClick: [], restoreScroll: [] };
+  const calls = {
+    listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
+    guardedClick: [], startNetworkLog: [], getNetworkLogMark: [], readNetworkLog: [],
+    stopNetworkLog: [], restoreScroll: []
+  };
   let currentTabs = tabs;
   const contexts = new Map();
   const helperExpressions = new Map();
   const snapshots = [];
   const queuedObserverOutcomes = [...observerOutcomes];
+  const queuedNetworkLogs = [...networkLogs];
+  const fallbackNetworkLog = networkLogs.at(-1) || acceptedNetworkLog();
   const queuedSnapshots = [...snapshotSequence];
   return {
     calls,
@@ -365,7 +384,31 @@ function fakeBrowser({
       if (expression === "(() => window.__bossCommunicationSnapshot())()") snapshots.push(result);
       return result;
     },
-    async clickAt(tabId, point) { calls.clickAt.push([tabId, point]); },
+    async startNetworkLog(tabId, options) {
+      calls.startNetworkLog.push([tabId, options]);
+      return { tabId, entries: [], meta: { enabled: true } };
+    },
+    async getNetworkLogMark(tabId) {
+      calls.getNetworkLogMark.push(tabId);
+      return { tabId, mark: { lastSequence: 7, nextSequence: 8 } };
+    },
+    async readNetworkLog(tabId, options) {
+      calls.readNetworkLog.push([tabId, options]);
+      return queuedNetworkLogs.shift() || fallbackNetworkLog;
+    },
+    async stopNetworkLog(tabId, options) {
+      calls.stopNetworkLog.push([tabId, options]);
+      return { tabId, stopped: true };
+    },
+    async clickAt(tabId, point) {
+      calls.clickAt.push([tabId, point]);
+      const tab = currentTabs.find((candidate) => candidate.id === tabId);
+      const contextUrl = tab?.url || "";
+      transport?.onAction?.(contexts.get(tabId));
+      const nextFixture = afterClickFixtures.get(contextUrl);
+      if (nextFixture) fixtures.set(contextUrl, nextFixture);
+      contexts.delete(tabId);
+    },
     setTabUrl(tabId, url) {
       currentTabs = currentTabs.map((tab) => tab.id === tabId ? { ...tab, url } : tab);
       contexts.delete(tabId);
@@ -387,6 +430,32 @@ function fakeBrowser({
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       return tab ? { ...tab } : null;
     }
+  };
+}
+
+function acceptedNetworkLog({
+  status = 200,
+  code = 0,
+  failed = false,
+  elapsedMs = 291,
+  url = "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=private&chatId=private"
+} = {}) {
+  const startedAt = "2026-08-14T08:00:00.000Z";
+  const completedAt = new Date(Date.parse(startedAt) + elapsedMs).toISOString();
+  return {
+    entries: [{
+      sequence: 8,
+      requestId: "private-request-id",
+      url,
+      resourceType: "XHR",
+      status,
+      startedAt,
+      completedAt,
+      failed,
+      errorText: failed ? "private network error" : null,
+      content: JSON.stringify({ code, message: "private response body", securityId: "private" })
+    }],
+    meta: { enabled: true }
   };
 }
 
@@ -829,7 +898,7 @@ function assertNoPreparationAction(browser, before) {
   const snapshot = JSON.parse(JSON.stringify(inspectBrowser.snapshots[0]));
   assert.deepStrictEqual(snapshot, readySnapshot);
   assert.deepStrictEqual(Object.keys(snapshot).sort(), [
-    "actions", "bossActiveText", "company", "documentReadyState", "inlineChatSent", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
+    "actions", "bossActiveText", "company", "documentReadyState", "inlineChatSent", "intermediateDialog", "jobId", "jobStatus", "login", "pageReady", "risk", "salary", "successDialog", "title", "url"
   ]);
 
   const alreadyCommunicatedBrowser = fakeBrowser({
@@ -904,28 +973,17 @@ function assertNoPreparationAction(browser, before) {
     await executionAdapter.dispatchCommunication(executionInspection),
     { state: "dispatched", jobId: "fake123" }
   );
-  assert.strictEqual(executionBrowser.calls.clickAt.length, 0);
+  assert.strictEqual(executionBrowser.calls.startNetworkLog.length, 1);
+  assert.strictEqual(executionBrowser.calls.getNetworkLogMark.length, 1);
+  assert.strictEqual(executionBrowser.calls.clickAt.length, 1);
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
+  assert(executionBrowser.calls.guardedClick[0][1].includes("elementFromPoint"));
+  assert(!executionBrowser.calls.guardedClick[0][1].includes("candidates[0].click()"));
 
   const observedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
     afterClickFixtures: new Map([[jobUrl, sentFixture()]]),
-    observerOutcomes: [{
-      state: "accepted",
-      evidence: {
-        endpoints: [{
-          endpointKind: "friend_add",
-          httpStatus: 200,
-          businessCode: "0",
-          businessCategory: "success",
-          elapsedMs: 291,
-          url: `${jobUrl}?securityId=fixture-security&chatId=private-chat`,
-          responseBody: "private message body"
-        }],
-        pageState: "request_accepted",
-        securityId: "fixture-security"
-      }
-    }]
+    networkLogs: [acceptedNetworkLog()]
   });
   const observedSuccessAdapter = new BossSiteAdapter({ browser: observedSuccessBrowser, sleepFn: async () => {} });
   const observedSuccessInspection = await observedSuccessAdapter.inspectCommunicationJob(expectedJob);
@@ -941,27 +999,17 @@ function assertNoPreparationAction(browser, before) {
   });
   assert(!JSON.stringify(observedSuccess).includes("fixture-security"));
   assert(!JSON.stringify(observedSuccess).includes("private message body"));
-  assert(observedSuccessBrowser.calls.guardedClick[0][1].includes("__bossRegisterCommunicationOutcomeObserver"));
+  assert.strictEqual(observedSuccessBrowser.calls.stopNetworkLog.length, 1);
 
-  for (const [name, observerOutcome, expectedState, expectedPageState] of [
-    ["HTTP failure", {
-      state: "platform_rejected",
-      evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 503, businessCategory: "http_failure", elapsedMs: 91 }] }
-    }, "platform_rejected"],
-    ["network rejection", {
-      state: "transport_failed",
-      evidence: { endpoints: [{ endpointKind: "friend_add", businessCategory: "network_rejected", elapsedMs: 17 }] }
-    }, "transport_failed"],
-    ["non-zero BOSS business result", {
-      state: "platform_rejected",
-      evidence: { endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "10003", businessCategory: "business_rejected", elapsedMs: 44 }] }
-    }, "platform_rejected"],
-    ["observer timeout", { state: "timeout", evidence: { pageState: "observer_timeout" } }, "ambiguous", "observer_timeout"],
-    ["no matching request", { state: "no_matching_request", evidence: { pageState: "no_matching_request" } }, "ambiguous", "no_matching_request"]
+  for (const [name, networkLog, expectedState, expectedPageState, expectedErrorCode] of [
+    ["HTTP failure", acceptedNetworkLog({ status: 503, code: "retry", elapsedMs: 91 }), "platform_rejected"],
+    ["network rejection", acceptedNetworkLog({ failed: true, elapsedMs: 17 }), "transport_failed"],
+    ["non-zero BOSS business result", acceptedNetworkLog({ code: 10003, elapsedMs: 44 }), "platform_rejected"],
+    ["no matching request", { entries: [], meta: { enabled: true } }, "ambiguous", "no_matching_request", "COMMUNICATION_ACTION_NOT_TRIGGERED"]
   ]) {
     const browser = fakeBrowser({
       tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
-      observerOutcomes: [observerOutcome]
+      networkLogs: Array.from({ length: 20 }, () => networkLog)
     });
     const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
     const inspected = await adapter.inspectCommunicationJob(expectedJob);
@@ -969,8 +1017,39 @@ function assertNoPreparationAction(browser, before) {
     const result = await adapter.verifyCommunicationResult(expectedJob);
     assert.strictEqual(result.state, expectedState, name);
     if (expectedPageState) assert.strictEqual(result.evidence?.pageState, expectedPageState, name);
+    if (expectedErrorCode) assert.strictEqual(result.errorCode, expectedErrorCode, name);
     assert(!JSON.stringify(result).includes("securityId"), `${name} must keep evidence sanitized`);
+    assert.strictEqual(browser.calls.clickAt.length, 1, `${name} must never click twice`);
   }
+
+  const userActionBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, { intermediateDialog: true }]]),
+    networkLogs: [{ entries: [], meta: { enabled: true } }]
+  });
+  const userActionAdapter = new BossSiteAdapter({ browser: userActionBrowser, sleepFn: async () => {} });
+  const userActionInspection = await userActionAdapter.inspectCommunicationJob(expectedJob);
+  await userActionAdapter.dispatchCommunication(userActionInspection);
+  const userActionResult = await userActionAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(userActionResult.state, "ambiguous");
+  assert.strictEqual(userActionResult.errorCode, "COMMUNICATION_USER_ACTION_REQUIRED");
+  assert.strictEqual(userActionResult.evidence.pageState, "confirmation_dialog");
+  assert(!JSON.stringify(userActionResult).includes("private dialog text"));
+  assert.strictEqual(userActionBrowser.calls.clickAt.length, 1);
+
+  const conflictBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, sentFixture()]]),
+    networkLogs: [acceptedNetworkLog({ code: 10003 })]
+  });
+  const conflictAdapter = new BossSiteAdapter({ browser: conflictBrowser, sleepFn: async () => {} });
+  const conflictInspection = await conflictAdapter.inspectCommunicationJob(expectedJob);
+  await conflictAdapter.dispatchCommunication(conflictInspection);
+  const conflictResult = await conflictAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(conflictResult.state, "ambiguous");
+  assert.strictEqual(conflictResult.errorCode, "COMMUNICATION_RESULT_AMBIGUOUS");
+  assert.strictEqual(conflictResult.evidence.pageState, "request_conflict");
+  assert.strictEqual(conflictBrowser.calls.clickAt.length, 1);
 
   const unstableReadinessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
@@ -1192,8 +1271,9 @@ function assertNoPreparationAction(browser, before) {
   const continuedWithoutSuccessEvidenceAdapter = new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} });
   const ambiguousInspection = await continuedWithoutSuccessEvidenceAdapter.inspectCommunicationJob(expectedJob);
   await continuedWithoutSuccessEvidenceAdapter.dispatchCommunication(ambiguousInspection);
-  assert.strictEqual((await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob)).state, "ambiguous");
-  assert.strictEqual(continuedWithoutSuccessEvidenceBrowser.snapshots.length, 44);
+  const continuedWithoutSuccessEvidence = await continuedWithoutSuccessEvidenceAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(continuedWithoutSuccessEvidence.state, "ambiguous");
+  assert.strictEqual(continuedWithoutSuccessEvidence.errorCode, "COMMUNICATION_RESULT_AMBIGUOUS");
   await assert.rejects(
     () => new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} }).verifyCommunicationResult(expectedJob),
     (error) => error.code === "BOSS_COMMUNICATION_VERIFICATION_UNAVAILABLE"
@@ -1238,12 +1318,12 @@ function assertNoPreparationAction(browser, before) {
     (error) => error.code === "BOSS_COMMUNICATION_TARGET_CHANGED"
   );
   assert.strictEqual(closedAfterClickBrowser.calls.guardedClick.length, 1);
+  assert.strictEqual(closedAfterClickBrowser.calls.stopNetworkLog.length, 1);
 
   await assert.rejects(
     () => executionAdapter.dispatchCommunication({}),
     (error) => error.code === "BOSS_COMMUNICATION_INSPECTION_INVALID"
   );
-  await realObserverBehaviorSmoke();
   assert.strictEqual(inspectBrowser.calls.clickAt.length, 0);
   assert.deepStrictEqual(communicationCalibrationStatus(), {
     implementation: "implemented",
