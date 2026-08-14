@@ -2145,12 +2145,7 @@ class BossSiteAdapter {
         throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab cannot be activated safely.");
       }
       await this.browser.bringToFront(tabId);
-      const activeTab = this.communicationTabsBound
-        ? (await this.assertBoundCommunicationTabs({ requireSearchPage: false })).searchTab
-        : (await this.browser.listTabs()).find((tab) => String(tab.id) === String(tabId));
-      if (!activeTab || activeTab.active !== true) {
-        throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The fixed BOSS search tab did not become active before communication.");
-      }
+      await this.assertCommunicationTabActive(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
@@ -2177,6 +2172,7 @@ class BossSiteAdapter {
         }
         throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The guarded BOSS communication target changed before click dispatch.");
       }
+      await this.assertCommunicationTabActive(tabId);
       await this.browser.clickAt(tabId, clickTarget.clickPoint);
       this.lastCommunicationDispatch = {
         jobId: expectedJob.jobId,
@@ -2193,6 +2189,19 @@ class BossSiteAdapter {
       }
       this.finishCommunicationOperation("dispatch");
     }
+  }
+
+  async assertCommunicationTabActive(tabId) {
+    if (typeof this.browser.listTabs !== "function") {
+      throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab activity cannot be verified.");
+    }
+    const activeTab = this.communicationTabsBound
+      ? (await this.assertBoundCommunicationTabs({ requireSearchPage: false })).searchTab
+      : (await this.browser.listTabs()).find((tab) => String(tab.id) === String(tabId));
+    if (!activeTab || activeTab.active !== true) {
+      throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The fixed BOSS search tab did not remain active before communication.");
+    }
+    return activeTab;
   }
 
   async closeCommunicationOutcomeObserver(tabId) {

@@ -327,24 +327,34 @@ Implement `checkpointSingleItemRun()` with existing transitions only:
 ```js
 function checkpointSingleItemRun(db, batchId, logger) {
   const code = "COMMUNICATION_SINGLE_ITEM_CHECKPOINT";
-  setCommunicationBatchStatus(db, {
-    batchId,
-    status: "interrupted",
-    stopCode: code,
-    stopMessage: "single communication item acceptance checkpoint"
-  });
-  const batch = getCommunicationBatch(db, batchId);
-  const summary = communicationBatchSummary(db, batchId);
-  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
-  if (workflow?.status === "communicating") {
-    transitionWorkflowRun(db, {
-      id: workflow.id,
+  let summary;
+  let workflow;
+  db.exec("SAVEPOINT communication_single_item_checkpoint");
+  try {
+    setCommunicationBatchStatus(db, {
+      batchId,
       status: "interrupted",
-      successfulCount: successfulCommunicationCount(db, batchId),
-      metrics: communicationWorkflowMetrics(workflow, summary, batch),
-      errorCode: code,
-      errorMessage: "single communication item acceptance checkpoint"
+      stopCode: code,
+      stopMessage: "single communication item acceptance checkpoint"
     });
+    const batch = getCommunicationBatch(db, batchId);
+    summary = communicationBatchSummary(db, batchId);
+    workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+    if (workflow?.status === "communicating") {
+      transitionWorkflowRun(db, {
+        id: workflow.id,
+        status: "interrupted",
+        successfulCount: successfulCommunicationCount(db, batchId),
+        metrics: communicationWorkflowMetrics(workflow, summary, batch),
+        errorCode: code,
+        errorMessage: "single communication item acceptance checkpoint"
+      });
+    }
+    db.exec("RELEASE SAVEPOINT communication_single_item_checkpoint");
+  } catch (error) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_single_item_checkpoint"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_single_item_checkpoint"); } catch {}
+    throw error;
   }
   logger?.info("communication_single_item_checkpoint", {
     batchId,
@@ -356,6 +366,12 @@ function checkpointSingleItemRun(db, batchId, logger) {
 
 This checkpoint must run before `workflowTargetReached()` so later pending rows remain pending
 even if this one item satisfies the current target.
+
+At the top of the loop, automatic target completion applies only when
+`authorizedItemId === null`. A later explicit single-item authorization must process that exact
+item even when an earlier accepted item already met the workflow target. Add a target=1,
+two-authorizations regression test. The SAVEPOINT test uses a TEMP trigger to force the workflow
+update to fail and proves batch/workflow checkpoint state does not partially commit.
 
 - [ ] **Step 4: Pass the CLI argument without broadening normal execution**
 
@@ -494,6 +510,10 @@ For a bound Edge session, keep numeric binding validation in
 `normalizeCommunicationTabBinding()` unchanged. After the active check, retain the existing
 stable readiness snapshots, final guarded target expression, single browser click, network
 evidence, and no-retry behavior.
+
+After the final guarded target expression succeeds and immediately before `clickAt()`, call the
+same active-tab assertion again. Add a fake-browser case that loses focus after guarded target
+calculation and proves `clickAt()` remains at zero.
 
 Add a Chinese label for `BOSS_COMMUNICATION_TAB_NOT_ACTIVE`.
 

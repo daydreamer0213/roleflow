@@ -297,7 +297,8 @@ function fakeBrowser({
   guardedClickDriftUrl = "",
   createTabGate = null,
   createStarted = null,
-  focusSucceeds = true
+  focusSucceeds = true,
+  loseFocusAfterGuardedClick = false
 } = {}) {
   const calls = {
     listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
@@ -388,6 +389,11 @@ function fakeBrowser({
         }
       }
       const result = vm.runInContext(expression, contexts.get(tabId));
+      if (loseFocusAfterGuardedClick && expression.includes("__bossGuardedCommunicationClick")) {
+        currentTabs = currentTabs.map((candidate) => candidate.windowId === tab?.windowId
+          ? { ...candidate, active: false }
+          : candidate);
+      }
       if (expression.includes("document.documentElement.scrollHeight") && result?.requested !== undefined) {
         calls.restoreScroll.push({ tabId, requested: result.requested, applied: result.applied });
       }
@@ -1010,6 +1016,20 @@ function assertNoPreparationAction(browser, before) {
   );
   assert.deepStrictEqual(inactiveBrowser.calls.bringToFront, ["communication-created"]);
   assert.strictEqual(inactiveBrowser.calls.clickAt.length, 0);
+
+  const lostFocusBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
+    loseFocusAfterGuardedClick: true
+  });
+  const lostFocusAdapter = new BossSiteAdapter({ browser: lostFocusBrowser, sleepFn: async () => {} });
+  const lostFocusInspection = await lostFocusAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => lostFocusAdapter.dispatchCommunication(lostFocusInspection),
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_NOT_ACTIVE"
+  );
+  assert.deepStrictEqual(lostFocusBrowser.calls.bringToFront, ["communication-created"]);
+  assert.strictEqual(lostFocusBrowser.calls.guardedClick.length, 1);
+  assert.strictEqual(lostFocusBrowser.calls.clickAt.length, 0);
 
   const boundExecutionBrowser = fakeBrowser({
     tabs: [

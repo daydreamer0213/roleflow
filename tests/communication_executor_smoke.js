@@ -91,6 +91,74 @@ async function singleItemCheckpointSmoke() {
     [[mismatchFirst.id, "pending", 0], [mismatchSecond.id, "pending", 0]]
   );
   mismatch.close();
+
+  const targetReached = createFixture(2);
+  attachReviewWorkflow(targetReached, { targetSuccessCount: 1 });
+  const [targetFirst, targetSecond] = listCommunicationBatchItems(targetReached.db, targetReached.batch.id);
+  const targetDispatches = [];
+  const targetAdapter = {
+    async inspectCommunicationJob(job) { return { state: "ready", jobId: job.id }; },
+    async dispatchCommunication(inspection) { targetDispatches.push(inspection.jobId); },
+    async verifyCommunicationResult() { return { state: "succeeded" }; }
+  };
+  await runPermittedBatch({
+    db: targetReached.db,
+    batchId: targetReached.batch.id,
+    singleItemId: targetFirst.id,
+    accessController: { async reserve() {} },
+    adapter: targetAdapter,
+    sleepFn: async () => {}
+  });
+  resumeInterruptedCommunicationBatch(targetReached.db, { batchId: targetReached.batch.id });
+  await runPermittedBatch({
+    db: targetReached.db,
+    batchId: targetReached.batch.id,
+    singleItemId: targetSecond.id,
+    accessController: { async reserve() {} },
+    adapter: targetAdapter,
+    sleepFn: async () => {}
+  });
+  assert.deepStrictEqual(targetDispatches, targetReached.jobIds);
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(targetReached.db, targetReached.batch.id)
+      .map((item) => [item.status, item.clickCount]),
+    [["succeeded", 1], ["succeeded", 1]]
+  );
+  assert.strictEqual(getCommunicationBatch(targetReached.db, targetReached.batch.id).status, "interrupted");
+  assert.strictEqual(getCommunicationBatch(targetReached.db, targetReached.batch.id).stopCode, "COMMUNICATION_SINGLE_ITEM_CHECKPOINT");
+  targetReached.close();
+
+  const atomicCheckpoint = createFixture(1);
+  const atomicWorkflow = attachReviewWorkflow(atomicCheckpoint, { targetSuccessCount: 1 });
+  const atomicItem = listCommunicationBatchItems(atomicCheckpoint.db, atomicCheckpoint.batch.id)[0];
+  atomicCheckpoint.db.exec(`CREATE TEMP TRIGGER fail_single_item_workflow_checkpoint
+    BEFORE UPDATE OF status ON workflow_runs
+    WHEN OLD.id = '${atomicWorkflow.id}' AND NEW.status = 'interrupted'
+    BEGIN SELECT RAISE(ABORT, 'forced single-item checkpoint failure'); END`);
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: atomicCheckpoint.db,
+      batchId: atomicCheckpoint.batch.id,
+      singleItemId: atomicItem.id,
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    }),
+    /forced single-item checkpoint failure/
+  );
+  assert.strictEqual(getCommunicationBatch(atomicCheckpoint.db, atomicCheckpoint.batch.id).status, "running");
+  assert.strictEqual(getCommunicationBatch(atomicCheckpoint.db, atomicCheckpoint.batch.id).stopCode, null);
+  assert.strictEqual(getWorkflowRun(atomicCheckpoint.db, atomicWorkflow.id).status, "communicating");
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(atomicCheckpoint.db, atomicCheckpoint.batch.id)
+      .map((item) => [item.status, item.clickCount]),
+    [["succeeded", 1]]
+  );
+  atomicCheckpoint.close();
 }
 
 async function cliSingleItemPassThroughSmoke() {
@@ -1199,13 +1267,13 @@ function pauseWithAmbiguousFirstItem(fixture) {
   setCommunicationBatchStatus(fixture.db, { batchId: fixture.batch.id, status: "paused" });
 }
 
-function attachReviewWorkflow(fixture) {
+function attachReviewWorkflow(fixture, { targetSuccessCount = 2 } = {}) {
   const workflow = createWorkflowRun(fixture.db, {
     profileId: fixture.profileId,
     planId: fixture.planId,
     localDay: "2026-08-11",
     sequence: 1,
-    targetSuccessCount: 2,
+    targetSuccessCount,
     inventoryCount: 2,
     candidateGap: 0,
     scanNeeded: false,

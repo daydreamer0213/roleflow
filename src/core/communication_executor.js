@@ -63,7 +63,7 @@ async function runCommunicationBatch({
   while (true) {
     const control = observeControl(db, batchId, signal, logger);
     if (control) return control;
-    if (workflowTargetReached(db, batchId)) {
+    if (authorizedItemId === null && workflowTargetReached(db, batchId)) {
       assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
       stopPendingReplacements(db, batchId, logger);
       return finalizeBatch(db, batchId, logger);
@@ -448,24 +448,34 @@ function finalizeBatch(db, batchId, logger) {
 
 function checkpointSingleItemRun(db, batchId, logger) {
   const code = "COMMUNICATION_SINGLE_ITEM_CHECKPOINT";
-  setCommunicationBatchStatus(db, {
-    batchId,
-    status: "interrupted",
-    stopCode: code,
-    stopMessage: "single communication item acceptance checkpoint"
-  });
-  const batch = getCommunicationBatch(db, batchId);
-  const summary = communicationBatchSummary(db, batchId);
-  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
-  if (workflow?.status === "communicating") {
-    transitionWorkflowRun(db, {
-      id: workflow.id,
+  let summary;
+  let workflow;
+  db.exec("SAVEPOINT communication_single_item_checkpoint");
+  try {
+    setCommunicationBatchStatus(db, {
+      batchId,
       status: "interrupted",
-      successfulCount: successfulCommunicationCount(db, batchId),
-      metrics: communicationWorkflowMetrics(workflow, summary, batch),
-      errorCode: code,
-      errorMessage: "single communication item acceptance checkpoint"
+      stopCode: code,
+      stopMessage: "single communication item acceptance checkpoint"
     });
+    const batch = getCommunicationBatch(db, batchId);
+    summary = communicationBatchSummary(db, batchId);
+    workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+    if (workflow?.status === "communicating") {
+      transitionWorkflowRun(db, {
+        id: workflow.id,
+        status: "interrupted",
+        successfulCount: successfulCommunicationCount(db, batchId),
+        metrics: communicationWorkflowMetrics(workflow, summary, batch),
+        errorCode: code,
+        errorMessage: "single communication item acceptance checkpoint"
+      });
+    }
+    db.exec("RELEASE SAVEPOINT communication_single_item_checkpoint");
+  } catch (error) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_single_item_checkpoint"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_single_item_checkpoint"); } catch {}
+    throw error;
   }
   logger?.info("communication_single_item_checkpoint", {
     batchId,
