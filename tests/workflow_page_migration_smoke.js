@@ -17,6 +17,10 @@ const stylesheet = path.join(root, "src", "dashboard", "assets", "roleflow.css")
 (async () => {
   const vm = buildWorkflowViewModel(fixture());
   assert.deepStrictEqual(JSON.parse(JSON.stringify(vm)), vm, "workflow VM must be plain display data without DB or browser dependencies");
+  assert.deepStrictEqual(vm.scope.actualKeywords, ["AI应用开发", "RAG", "Agent开发"]);
+  assert.strictEqual(vm.scope.candidateKeywordCount, 14);
+  assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 2 / 5 · 已获取 12 个岗位");
+  assert.strictEqual(vm.overview.jdProgress, "已读取 5 / 12 · 待补 7");
   assertRendererContracts(vm);
   assertEvaluatorStrictGate();
   await assertClientContracts(vm);
@@ -41,7 +45,17 @@ function fixture(overrides = {}) {
     errorMessage: "",
     shortfallCode: "",
     communicationBatchId: null,
-    planner: { acquisitionMode: "inherited", browserMode: "edge", searchScope: { key: "scope-fixture" }, keywordSource: { searchPlanId: 17, keywords: [{ word: "RAG" }] }, platformPolicy: { filterSummary: ["上海"], unresolvedParams: [] } }
+    keywords: ["AI应用开发", "RAG", "Agent开发"],
+    planner: {
+      acquisitionMode: "inherited",
+      browserMode: "edge",
+      searchScope: { key: "scope-fixture" },
+      keywordSource: {
+        searchPlanId: 17,
+        keywords: Array.from({ length: 14 }, (_, index) => ({ word: `候选词${index + 1}` }))
+      },
+      platformPolicy: { filterSummary: ["上海"], unresolvedParams: [] }
+    }
   };
   const progressSnapshot = {
     workflow: { id: workflow.id, status: workflow.status, controlState: "", progressRevision: 4, lastActivityAt: new Date().toISOString() },
@@ -98,6 +112,11 @@ function assertRendererContracts(vm) {
   assert.match(html, /data-detail-read/);
   assert.match(html, /data-detail-pending/);
   assert.match(html, /data-analysis-detail-required/);
+  assert.match(html, /本轮实际关键词：AI应用开发、RAG、Agent开发/);
+  assert.match(html, /方案候选词：14 个/);
+  assert.doesNotMatch(html, /候选词1、候选词2/);
+  assert.match(html, /data-overview-acquisition[^>]*>搜索目标 2 \/ 5 · 已获取 12 个岗位/);
+  assert.match(html, /data-overview-jd[^>]*>已读取 5 \/ 12 · 待补 7/);
 
   const paused = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "paused", errorCode: "SAFE_PAUSE" }, progressSnapshot: { workflow: { id: "workflow-migration-fixture", status: "paused", controlState: "", progressRevision: 5, lastActivityAt: new Date().toISOString() }, controls: { canPause: false, canResume: true, canStop: true, stopConsumesRunSlot: true } } })));
   assert.match(paused, /data-control-group="paused"/);

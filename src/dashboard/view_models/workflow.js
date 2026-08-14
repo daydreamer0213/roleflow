@@ -24,7 +24,7 @@ function buildWorkflowViewModel({
       targetSuccessCount: number(workflow.targetSuccessCount), successfulCount: number(workflow.successfulCount),
       todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), inventoryCount: number(workflow.inventoryCount)
     },
-    scope: scopeView(planner),
+    scope: scopeView(planner, workflow),
     health: { report: JSON.parse(JSON.stringify(healthReport || {})) },
     progress,
     controls,
@@ -34,14 +34,16 @@ function buildWorkflowViewModel({
   };
 }
 
-function scopeView(planner) {
-  if (planner?.acquisitionMode !== "inherited") return { visible: false, filters: [], keywords: [], unresolved: [] };
+function scopeView(planner, workflow) {
+  if (planner?.acquisitionMode !== "inherited") return { visible: false, filters: [], actualKeywords: [], candidateKeywordCount: 0, unresolved: [] };
   const policy = planner.platformPolicy || {};
   const source = planner.keywordSource || {};
   const region = workRegionLabel(policy);
   return {
     visible: true, scopeKey: scopeShortId(planner.searchScope?.key) || "未记录", sourcePlanId: String(source.searchPlanId || ""),
-    filters: [region, ...(policy.filterSummary || []).map(String).filter((item) => !String(item).includes("未解析参数"))].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index), keywords: (source.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
+    filters: [region, ...(policy.filterSummary || []).map(String).filter((item) => !String(item).includes("未解析参数"))].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index),
+    actualKeywords: (workflow?.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
+    candidateKeywordCount: (source.keywords || []).length,
     unresolved: (policy.unresolvedParams || []).map((item) => String(item?.param || "")).filter(Boolean)
   };
 }
@@ -93,12 +95,16 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
   const target = number(workflow.targetSuccessCount);
   const successful = number(workflow.successfulCount);
   const cooldown = progress?.cooldown || { active: false };
+  const scan = progress?.scanTargets || {};
+  const details = progress?.details || {};
   return {
     currentPhase: workflowStatusLabel(workflow.status),
     overallProgress: progress?.visible
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
     usableRecommendations: number(workflow.inventoryCount),
+    acquisitionProgress: `搜索目标 ${number(scan.completed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
+    jdProgress: `已读取 ${number(details.read)} / ${number(details.collected)} · 待补 ${number(details.pending)}`,
     remainingWork: progress?.visible
       ? progress.remainingWorkLabel
       : phase.kind === "review"

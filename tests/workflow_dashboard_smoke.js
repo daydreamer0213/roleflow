@@ -546,12 +546,14 @@ let server;
     "范围：fixture-sc",
     "关键词来源：Search Plan",
     "AI应用开发工程师",
-    "RAG工程师",
-    "Agent工程师",
+    "大模型应用开发工程师",
+    "Agent开发工程师",
+    "方案候选词：6 个",
     "修改 BOSS 筛选会创建新的统计范围"
   ]) {
     assert.match(scanningPage.body, new RegExp(text));
   }
+  assert.doesNotMatch(scanningPage.body, /本轮实际关键词：[^<]*RAG工程师/);
   assert.doesNotMatch(scanningPage.body, /广州 AI.*目标城市/);
   assert.doesNotMatch(scanningPage.body, /https:\/\/www\.zhipin\.com\/web\/geek\/jobs\?/);
 
@@ -1642,7 +1644,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`
   );
   assert.strictEqual(page.status, 200);
-  // Break caught: moving raw progress, health, or scope diagnostics back into the first-view workflow summary.
+  // Break caught: moving technical diagnostics into the first view or hiding user-facing acquisition progress again.
   const primaryStart = page.body.indexOf('class="workflow-primary"');
   const primaryEnd = page.body.indexOf("</section>", primaryStart) + "</section>".length;
   const technicalStart = page.body.indexOf('class="workflow-technical"');
@@ -1653,13 +1655,13 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(primary, /role="region"[^>]*aria-labelledby="workflow-primary-title"/);
   assert.strictEqual(
     (primary.match(/data-workflow-primary-field/g) || []).length,
-    7,
-    "the primary summary must contain only the seven decision fields"
+    9,
+    "the primary summary must contain the nine user-facing decision and progress fields"
   );
-  for (const label of ["当前阶段", "整体进度", "可用推荐", "剩余工作", "预计继续时间", "暂停/阻塞原因", "下一步"]) {
+  for (const label of ["当前阶段", "整体进度", "采集进度", "完整 JD", "可用推荐", "剩余工作", "预计继续时间", "暂停/阻塞原因", "下一步"]) {
     assert(primary.includes(label), `primary summary must identify ${label}`);
   }
-  for (const hook of ["phase", "progress", "recommendations", "remaining", "eta", "blocker", "next-action"]) {
+  for (const hook of ["phase", "progress", "acquisition", "jd", "recommendations", "remaining", "eta", "blocker", "next-action"]) {
     assert.match(primary, new RegExp(`data-overview-${hook}`), `primary summary must expose the ${hook} update hook`);
   }
   assert.doesNotMatch(primary, /data-stop-|data-workflow-control|data-action="stop/, "primary summary must contain fields only, not stop diagnostics or controls");
@@ -1781,6 +1783,8 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
   const windowListeners = new Map();
   const textNode = (textContent) => ({ textContent });
   const overviewProgress = textNode("stale progress");
+  const overviewAcquisition = textNode("stale acquisition");
+  const overviewJd = textNode("stale jd");
   const overviewRemaining = textNode("99");
   const overviewEta = textNode("stale eta");
   const blockerStable = { textContent: "没有阻塞", hidden: false };
@@ -1799,6 +1803,8 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
       return {
         "[data-workflow-panel]": panel,
         "[data-overview-progress]": overviewProgress,
+        "[data-overview-acquisition]": overviewAcquisition,
+        "[data-overview-jd]": overviewJd,
         "[data-overview-remaining]": overviewRemaining,
         "[data-overview-eta]": overviewEta,
         "[data-overview-blocker-stable]": blockerStable,
@@ -1816,6 +1822,8 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
       stage: "分析岗位", stageIndex: 4, stageCount: 5,
       scanWait: { action: "detail_open", retryAt: "2099-02-01T00:10:00.000Z" },
       eta: { status: "available", minSeconds: 60, maxSeconds: 120, sampleSize: 3 },
+      scanTargets: { total: 5, completed: 1, pending: 4 },
+      details: { collected: 12, read: 5, pending: 7 },
       remainingWorkLabel: "还需完成 4 个搜索目标；7 个岗位详情待读取",
       analysis: { pending: 2, running: 1, retryPending: 1 }
     },
@@ -1852,6 +1860,8 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
   await flushPromises();
 
   assert.strictEqual(overviewProgress.textContent, "第 4 / 5 阶段", "same-status polling must refresh overview progress");
+  assert.strictEqual(overviewAcquisition.textContent, "搜索目标 1 / 5 · 已获取 12 个岗位");
+  assert.strictEqual(overviewJd.textContent, "已读取 5 / 12 · 待补 7");
   assert.strictEqual(overviewRemaining.textContent, "还需完成 4 个搜索目标；7 个岗位详情待读取", "same-status polling must reuse the server's stage-specific remaining work");
   assert.match(overviewEta.textContent, /安全冷却至/, "same-status polling must refresh overview ETA from retryAt");
   assert.strictEqual(cooldownReason.textContent, "正在读取岗位详情");

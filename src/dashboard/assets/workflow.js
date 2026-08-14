@@ -46,6 +46,14 @@
     const stable = node("[data-overview-blocker-stable]");
     const countdown = node("[data-cooldown-countdown]");
     setText("[data-overview-progress]", "第 " + number(snapshot.progress.stageIndex) + " / " + number(snapshot.progress.stageCount) + " 阶段");
+    const scanTargets = snapshot.progress.scanTargets || {};
+    const details = snapshot.progress.details || {
+      collected: snapshot.progress.collected ?? snapshot.progress.analysis?.total,
+      read: snapshot.progress.detailsRead,
+      pending: snapshot.progress.detailsPending
+    };
+    setText("[data-overview-acquisition]", "搜索目标 " + number(scanTargets.completed) + " / " + number(scanTargets.total) + " · 已获取 " + number(details.collected) + " 个岗位");
+    setText("[data-overview-jd]", "已读取 " + number(details.read) + " / " + number(details.collected) + " · 待补 " + number(details.pending));
     setText("[data-overview-remaining]", snapshot.progress.remainingWorkLabel || "本轮状态正在更新");
     setText("[data-overview-eta]", Number.isFinite(retryAt) && retryAt > Date.now() ? "安全冷却至 " + new Date(retryAt).toLocaleString("zh-CN", { hour12: false }) : etaText(snapshot.progress.eta));
     if (Number.isFinite(retryAt) && retryAt > Date.now()) {
