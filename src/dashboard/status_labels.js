@@ -32,7 +32,8 @@ function communicationErrorLabel(code) {
     COMMUNICATION_ACTION_NOT_TRIGGERED: "平台没有响应本次点击，RoleFlow 已停止且不会自动重试。",
     COMMUNICATION_USER_ACTION_REQUIRED: "平台出现需要人工处理的提示，RoleFlow 已停止。",
     COMMUNICATION_RESULT_AMBIGUOUS: "平台请求与页面状态不一致，结果无法确认，RoleFlow 已停止。",
-    COMMUNICATION_SINGLE_ITEM_CHECKPOINT: "本次单岗位验收已完成并自动暂停。"
+    COMMUNICATION_SINGLE_ITEM_CHECKPOINT: "本次单岗位验收已完成并自动暂停。",
+    BOSS_COMMUNICATION_TAB_NOT_ACTIVE: "无法确认目标 BOSS 标签已激活，RoleFlow 未继续点击。"
   }[String(code || "")] || "沟通执行已安全停止，请查看处理信息。";
 }
 

@@ -296,7 +296,8 @@ function fakeBrowser({
   guardedClickStarted = null,
   guardedClickDriftUrl = "",
   createTabGate = null,
-  createStarted = null
+  createStarted = null,
+  focusSucceeds = true
 } = {}) {
   const calls = {
     listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
@@ -327,7 +328,15 @@ function fakeBrowser({
       currentTabs = [...currentTabs, { id, url, windowId: opener?.windowId }];
       return id;
     },
-    async bringToFront(tabId) { calls.bringToFront.push(tabId); },
+    async bringToFront(tabId) {
+      calls.bringToFront.push(tabId);
+      if (!focusSucceeds) return;
+      const target = currentTabs.find((tab) => tab.id === tabId);
+      currentTabs = currentTabs.map((tab) => ({
+        ...tab,
+        active: tab.windowId === target?.windowId ? tab.id === tabId : tab.active
+      }));
+    },
     async navigate(tabId, url) {
       calls.navigate.push([tabId, url]);
       currentTabs = currentTabs.map((tab) => tab.id === tabId ? { ...tab, url } : tab);
@@ -402,6 +411,12 @@ function fakeBrowser({
       return { tabId, stopped: true };
     },
     async clickAt(tabId, point) {
+      const activeTab = currentTabs.find((candidate) => candidate.id === tabId);
+      if (activeTab?.active !== true) {
+        throw Object.assign(new Error("fake browser refused a background-tab click"), {
+          code: "BROWSER_COMMAND_FAILED"
+        });
+      }
       calls.clickAt.push([tabId, point]);
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       const contextUrl = tab?.url || "";
@@ -976,10 +991,40 @@ function assertNoPreparationAction(browser, before) {
   );
   assert.strictEqual(executionBrowser.calls.startNetworkLog.length, 1);
   assert.strictEqual(executionBrowser.calls.getNetworkLogMark.length, 1);
+  assert.deepStrictEqual(executionBrowser.calls.bringToFront, ["communication-created"]);
   assert.strictEqual(executionBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(executionBrowser.calls.clickAt[0][0], executionBrowser.calls.bringToFront[0]);
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
   assert(executionBrowser.calls.guardedClick[0][1].includes("elementFromPoint"));
   assert(!executionBrowser.calls.guardedClick[0][1].includes("candidates[0].click()"));
+
+  const inactiveBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
+    focusSucceeds: false
+  });
+  const inactiveAdapter = new BossSiteAdapter({ browser: inactiveBrowser, sleepFn: async () => {} });
+  const inactiveInspection = await inactiveAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => inactiveAdapter.dispatchCommunication(inactiveInspection),
+    (error) => error.code === "BOSS_COMMUNICATION_TAB_NOT_ACTIVE"
+  );
+  assert.deepStrictEqual(inactiveBrowser.calls.bringToFront, ["communication-created"]);
+  assert.strictEqual(inactiveBrowser.calls.clickAt.length, 0);
+
+  const boundExecutionBrowser = fakeBrowser({
+    tabs: [
+      { id: 1995685534, url: searchUrl, windowId: 1995685675, active: false },
+      { id: 1995685619, url: "https://www.zhipin.com/web/geek/chat", windowId: 1995685675, active: false }
+    ],
+    afterClickFixtures: new Map([[jobUrl, sentFixture()]])
+  });
+  const boundExecutionAdapter = new BossSiteAdapter({ browser: boundExecutionBrowser, sleepFn: async () => {} });
+  boundExecutionAdapter.bindCommunicationTabs(numericBinding());
+  await boundExecutionAdapter.beginCommunicationSession();
+  const boundExecutionInspection = await boundExecutionAdapter.inspectCommunicationJob(expectedJob);
+  await boundExecutionAdapter.dispatchCommunication(boundExecutionInspection);
+  assert.deepStrictEqual(boundExecutionBrowser.calls.bringToFront, [1995685534]);
+  assert.deepStrictEqual(boundExecutionBrowser.calls.clickAt.map(([tabId]) => tabId), [1995685534]);
 
   const observedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
