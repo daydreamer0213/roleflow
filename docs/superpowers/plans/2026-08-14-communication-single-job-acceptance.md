@@ -392,6 +392,11 @@ ID with `COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED` while
 `communicationCalibrationStatus().acceptance === "e2e_pending"`. A future `accepted` calibration
 may still omit the ID for normal full-batch execution.
 
+The CLI catch fallback must update a still-running batch and its communicating workflow inside
+one `SAVEPOINT communication_process_failure`. If either update fails, roll both back and leave
+the unified running state for existing heartbeat/orphan recovery. Add a `communicate()` integration
+test with a TEMP workflow trigger proving the fallback never leaves only the batch interrupted.
+
 Change the final console line only when `summary.batchStatus === "interrupted"` and the stored
 batch stop code is `COMMUNICATION_SINGLE_ITEM_CHECKPOINT`, so it says the batch paused after one
 item instead of saying the entire batch completed.

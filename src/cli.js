@@ -328,15 +328,7 @@ async function communicate(
     return summary;
   } catch (error) {
     runError = error;
-    const current = getCommunicationBatch(db, batchId);
-    if (current?.status === "running") {
-      setCommunicationBatchStatus(db, {
-        batchId,
-        status: "interrupted",
-        stopCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
-        stopMessage: error?.message || String(error)
-      });
-    }
+    settleCommunicationProcessFailure(db, batchId, error, communicationLogger);
     if (error?.code === "BOSS_RISK_CONTROL") {
       setSiteRuntimeState(db, "boss", {
         status: "blocked",
@@ -374,6 +366,39 @@ async function communicate(
         console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
       }
     }
+  }
+}
+
+function settleCommunicationProcessFailure(db, batchId, error, communicationLogger) {
+  const current = getCommunicationBatch(db, batchId);
+  if (current?.status !== "running") return current;
+  db.exec("SAVEPOINT communication_process_failure");
+  try {
+    const interrupted = setCommunicationBatchStatus(db, {
+      batchId,
+      status: "interrupted",
+      stopCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
+      stopMessage: error?.message || String(error)
+    });
+    const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+    if (workflow?.status === "communicating") {
+      transitionWorkflowRun(db, {
+        id: workflow.id,
+        status: "interrupted",
+        errorCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
+        errorMessage: error?.message || String(error)
+      });
+    }
+    db.exec("RELEASE SAVEPOINT communication_process_failure");
+    return interrupted;
+  } catch (settlementError) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_process_failure"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_process_failure"); } catch {}
+    communicationLogger?.error("communication_process_settlement_failed", {
+      batchId,
+      error: errorMeta(settlementError)
+    });
+    return getCommunicationBatch(db, batchId);
   }
 }
 

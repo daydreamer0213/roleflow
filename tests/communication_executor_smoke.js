@@ -219,6 +219,55 @@ async function cliSingleItemPassThroughSmoke() {
     (error) => error.code === "COMMUNICATION_SINGLE_ITEM_INVALID"
   );
   fixture.close();
+
+  const fallback = createFixture(1);
+  const fallbackWorkflow = attachReviewWorkflow(fallback, { targetSuccessCount: 1 });
+  const fallbackItem = listCommunicationBatchItems(fallback.db, fallback.batch.id)[0];
+  fallback.db.exec(`CREATE TEMP TRIGGER fail_cli_workflow_interrupt
+    BEFORE UPDATE OF status ON workflow_runs
+    WHEN OLD.id = '${fallbackWorkflow.id}' AND NEW.status = 'interrupted'
+    BEGIN SELECT RAISE(ABORT, 'forced CLI workflow interrupt failure'); END`);
+  await assert.rejects(
+    () => communicate(fallback.db, {
+      batch: fallback.batch.id,
+      browser: "edge",
+      "single-item": String(fallbackItem.id)
+    }, {
+      createBrowserFn: () => ({
+        async listTabs() {
+          return [
+            { id: 41, windowId: 8, url: "https://www.zhipin.com/web/geek/jobs" },
+            { id: 42, windowId: 8, url: "https://www.zhipin.com/web/geek/chat" }
+          ];
+        }
+      }),
+      createSiteAdapterFn: () => ({
+        async preflight({ tabId }) {
+          return tabId === 41
+            ? { tabId, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+            : { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+        },
+        async captureCommunicationSearchState() {
+          return { url: "https://www.zhipin.com/web/geek/jobs", scrollTop: 0 };
+        },
+        bindCommunicationTabs() {},
+        async beginCommunicationSession() {},
+        async restoreCommunicationSearchPage() {},
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() {},
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      })
+    }),
+    /forced CLI workflow interrupt failure/
+  );
+  assert.strictEqual(getCommunicationBatch(fallback.db, fallback.batch.id).status, "running");
+  assert.strictEqual(getWorkflowRun(fallback.db, fallbackWorkflow.id).status, "communicating");
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(fallback.db, fallback.batch.id)
+      .map((candidate) => [candidate.status, candidate.clickCount]),
+    [["succeeded", 1]]
+  );
+  fallback.close();
 }
 
 async function successFlowSmoke() {
