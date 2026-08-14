@@ -115,6 +115,8 @@ const {
   listModelPresets,
   listModelTaskProfiles,
   loadModelSettings,
+  saveModelTaskProfileParameters,
+  saveVerifiedPrimaryModelProfiles,
   saveVerifiedModelTaskProfile,
   saveVerifiedBatchBackup,
   restoreRecommendedTaskProfile,
@@ -512,11 +514,14 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/onboarding/progress") return sendHtml(res, renderOnboardingProgressPage({
         run: getOnboardingRun(db, url.searchParams.get("runId"))
       }));
-      if (req.method === "GET" && url.pathname === "/settings") return sendHtml(res, renderModelSettingsPage({
-        modelState: getPublicModelSettings(),
-        searchParams: url.searchParams,
-        deepModelReady: modelReady("deep_analysis")
-      }));
+      if (req.method === "GET" && url.pathname === "/settings") {
+        const primaryModelsReady = modelReady("deep_analysis") && modelReady("batch_screening");
+        return sendHtml(res, renderModelSettingsPage({
+          modelState: getPublicModelSettings(),
+          searchParams: url.searchParams,
+          primaryModelsReady
+        }));
+      }
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
@@ -994,11 +999,35 @@ async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, co
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     taskProfile = String(params.taskProfile || "").trim();
     action = String(params.action || "save").trim();
+    if (taskProfile === "primary_models") {
+      if (action !== "verify_primary") {
+        throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
+      }
+      const state = await saveVerifiedPrimaryModelProfiles({
+        root,
+        input: {
+          preset: String(params.preset || ""),
+          baseUrl: String(params.baseUrl || ""),
+          apiKey: String(params.apiKey || "")
+        },
+        fallbackModelConfig,
+        connectionTester
+      });
+      logger.info("primary_model_profiles_verified", {
+        requestId,
+        deepAnalysisStatus: state.settings.taskProfiles.deep_analysis.connection.status,
+        batchScreeningStatus: state.settings.taskProfiles.batch_screening.connection.status
+      });
+      return redirect(res, "/settings?profile=primary_models&modelConfigured=1");
+    }
     if (!["deep_analysis", "batch_screening", "batch_backup"].includes(taskProfile)) {
       throw appError("MODEL_TASK_PROFILE_INVALID", "模型任务配置无效。", { statusCode: 400 });
     }
-    if (!["save", "restore_recommended"].includes(action)) {
+    if (!["save", "save_parameters", "restore_recommended"].includes(action)) {
       throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
+    }
+    if (taskProfile === "batch_backup" && action === "save_parameters") {
+      throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型必须通过连接测试后保存。", { statusCode: 400 });
     }
     if (action === "restore_recommended") {
       if (taskProfile === "batch_backup") {
@@ -1046,7 +1075,14 @@ async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, co
         throw appError("MODEL_CONCURRENCY_INVALID", "批量筛选并发只能是 1 或 2。", { statusCode: 400 });
       }
     }
-    const state = taskProfile === "batch_backup"
+    const state = action === "save_parameters"
+      ? saveModelTaskProfileParameters({
+          root,
+          taskProfile,
+          input,
+          fallbackModelConfig
+        })
+      : taskProfile === "batch_backup"
       ? await saveVerifiedBatchBackup({
           root,
           input,
@@ -1070,7 +1106,9 @@ async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, co
       connectionStatus: identity.connection?.status || "unverified",
       latencyMs: identity.connection?.latencyMs ?? null
     });
-    redirect(res, `/settings?profile=${encodeURIComponent(taskProfile)}&modelConfigured=1`);
+    redirect(res, action === "save_parameters"
+      ? `/settings?profile=${encodeURIComponent(taskProfile)}&modelSaved=1`
+      : `/settings?profile=${encodeURIComponent(taskProfile)}&modelConfigured=1`);
   } catch (error) {
     respondUiError(res, error, taskProfile ? `/settings?profile=${encodeURIComponent(taskProfile)}` : "/settings", {
       logger,
@@ -3500,7 +3538,7 @@ function resumePreviewScript() {
   return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
-function renderModelSettingsPage({ modelState, searchParams, deepModelReady = false }) {
+function renderModelSettingsPage({ modelState, searchParams, primaryModelsReady = false }) {
   const settings = modelState.settings || {};
   const currentCredentials = [
     settings.sharedCredential,
@@ -3514,14 +3552,21 @@ function renderModelSettingsPage({ modelState, searchParams, deepModelReady = fa
   const profiles = listModelTaskProfiles();
   const selectedProfile = String(searchParams.get("profile") || "");
   const saved = searchParams.get("modelConfigured")
-    ? `<p class="notice">模型连接测试通过，${escapeHtml(selectedProfile || "任务配置")} 已保存。</p>`
+    ? `<p class="notice">${selectedProfile === "batch_backup"
+      ? "备用模型连接测试通过，配置已保存。"
+      : selectedProfile === "primary_models"
+        ? "深度分析和批量筛选连接测试均已通过，配置已保存。"
+        : "模型连接测试通过，配置已保存。"}</p>`
+    : "";
+  const modelSaved = searchParams.get("modelSaved")
+    ? `<p class="setup-warning">模型参数已保存，请在上方重新测试连接。</p>`
     : "";
   const restored = searchParams.get("recommended")
     ? `<p class="setup-warning">已恢复推荐值；请重新测试连接后再使用该任务配置。</p>`
     : "";
-  const nextStep = deepModelReady
+  const nextStep = primaryModelsReady
     ? `<a class="settings-next" href="/onboarding">下一步：填写简历</a>`
-    : "";
+    : `<span class="settings-next disabled" aria-disabled="true" tabindex="-1">下一步：填写简历</span><small class="settings-next-hint">请先测试两项主模型连接。</small>`;
   const keyStatus = modelState.keyErrorCode === "SECRET_UNREADABLE"
     ? "API Key 文件无法解密，请重新输入"
     : modelState.keyConfigured
@@ -3542,24 +3587,29 @@ function renderModelSettingsPage({ modelState, searchParams, deepModelReady = fa
   });
   const presetJson = JSON.stringify(presets).replace(/</g, "\\u003c");
   const body = `<style>
-    .settings-page{max-width:1160px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-provider-link{margin-bottom:0}.settings-next{display:inline-flex;align-items:center;min-height:42px;padding:0 16px;border-radius:6px;background:#176b5b;color:#fff;font-weight:700;text-decoration:none}.settings-next:hover{background:#115447;text-decoration:none}.settings-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.settings-profile{min-width:0;scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:900px){.settings-primary-grid{grid-template-columns:1fr}}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}.settings-next{box-sizing:border-box;justify-content:center;width:100%}}
+    .settings-page{max-width:1160px;padding-top:28px}.settings-header{max-width:760px;margin:28px 0 20px}.settings-header h1{font-size:30px;margin:4px 0 9px}.eyebrow{margin:0;color:#176b5b;font-size:13px;font-weight:700}.settings-credentials{border-left:4px solid #176b5b}.settings-provider-link{margin-bottom:0}.settings-next{display:inline-flex;align-items:center;min-height:42px;padding:0 16px;border-radius:6px;background:#176b5b;color:#fff;font-weight:700;text-decoration:none}.settings-next:hover{background:#115447;text-decoration:none}.settings-next.disabled{background:#d8dee3;color:#68737d;cursor:not-allowed}.settings-next-hint{align-self:center;color:#57606a}.settings-shared-actions{justify-content:flex-start;align-items:center}.settings-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}.settings-profile{min-width:0;scroll-margin-top:18px;padding:22px}.settings-profile.selected{box-shadow:0 0 0 3px #b9ddd4}.settings-profile-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.settings-profile-head h2{font-size:21px;margin-bottom:4px}.settings-current{margin:0;color:#46545e;font-size:13px}.settings-recommended{margin:12px 0;padding:10px 12px;border:1px solid #c9d8de;border-radius:6px;background:#f7fafb;color:#46545e;font-size:13px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-field{display:grid;gap:6px;font-size:14px;font-weight:600}.settings-field input,.settings-field select{width:100%;box-sizing:border-box}.settings-field small{font-size:12px;line-height:1.45;font-weight:400;color:#57606a}.settings-field-wide{grid-column:1/-1}.settings-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.settings-secondary{background:#fff;color:#176b5b;border-color:#176b5b}.settings-advanced{margin-top:16px}.settings-advanced summary{cursor:pointer;font-weight:700}.settings-advanced-grid{margin-top:14px}.settings-status{padding:9px 11px;border-left:3px solid #8c959f;background:#f6f8fa}.settings-status.verified{border-left-color:#176b5b;background:#edf7f4}.settings-backup{scroll-margin-top:18px}.settings-backup summary{cursor:pointer;font-size:18px;font-weight:700}.settings-backup-body{padding-top:16px}.settings-toggle{display:flex;align-items:center;gap:8px}.settings-toggle input{width:auto}.setup-warning{border-left:4px solid #bf8700;background:#fff8c5;padding:10px 12px;margin:12px 0}@media(max-width:900px){.settings-primary-grid{grid-template-columns:1fr}}@media(max-width:760px){.settings-page{padding-top:16px}.settings-header{margin:20px 0 16px}.settings-header h1{font-size:26px}.settings-profile{padding:16px}.settings-profile-head{display:block}.settings-current{margin-top:7px}.settings-grid{grid-template-columns:1fr}.settings-field-wide{grid-column:auto}.settings-actions{justify-content:stretch}.settings-actions button{width:100%}.settings-next{box-sizing:border-box;justify-content:center;width:100%}}
   </style><main id="main-content" class="settings-page">
     <header class="settings-header">
       <p class="eyebrow">按任务选择模型</p>
       <h1>模型设置</h1>
       <p class="hint">深度分析处理简历与内容生成；批量筛选处理岗位理解、匹配和重试。两套配置默认共享厂商和 API Key，但模型参数互不覆盖。</p>
     </header>
-    ${saved}${restored}
+    ${saved}${modelSaved}${restored}
     <section class="panel settings-credentials">
       <h2>共享厂商和 API Key</h2>
       <p>默认模式：两套任务配置共享厂商和 Windows 加密保存的 Key。需要拆分时，在对应配置的“高级设置”中选择“独立厂商和 API Key”。</p>
-      <div class="settings-grid">
-        <label class="settings-field">共享模型厂商<select id="shared-model-preset">${renderPresetOptions(presets, settings.sharedCredential?.preset || "deepseek")}</select><small>选择后会同步到仍使用共享凭据的任务配置。</small></label>
-        <label class="settings-field">共享 API Key<input id="shared-model-api-key" type="password" autocomplete="new-password" placeholder="${modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key"}"><small>在下方任一共享任务点击“测试连接并保存”时写入。</small></label>
-      </div>
+      <form class="settings-shared-form" method="post" action="/api/settings/model">
+        <input type="hidden" name="taskProfile" value="primary_models">
+        <input type="hidden" name="action" value="verify_primary">
+        <div class="settings-grid">
+          <label class="settings-field">共享模型厂商<select id="shared-model-preset" name="preset">${renderPresetOptions(presets, settings.sharedCredential?.preset || "deepseek")}</select><small>选择后会同步到仍使用共享凭据的任务配置。</small></label>
+          <label class="settings-field">共享 API Key<input id="shared-model-api-key" name="apiKey" type="password" autocomplete="new-password" placeholder="${modelState.keyConfigured ? "已保存，留空保持不变" : "粘贴 API Key"}"><small>一次测试深度分析和批量筛选，两项均通过后保存。</small></label>
+        </div>
+        <div class="settings-actions settings-shared-actions"><button type="submit">测试连接并保存</button>${nextStep}</div>
+      </form>
       <p class="settings-current">当前共享厂商：${escapeHtml(settings.sharedCredential?.preset || "未设置")} · ${escapeHtml(keyStatus)}</p>
+      <p class="settings-current">深度分析：${escapeHtml(modelConnectionLabel(settings.taskProfiles?.deep_analysis?.connection))} · 批量筛选：${escapeHtml(modelConnectionLabel(settings.taskProfiles?.batch_screening?.connection))}</p>
       <p class="settings-provider-link">还没有 DeepSeek API Key？<a href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">打开 DeepSeek 开放平台</a></p>
-      ${nextStep}
     </section>
     <div class="settings-primary-grid">${profileSections}</div>
     ${backupSection}
@@ -3618,7 +3668,7 @@ function renderModelTaskProfileSection({ definition, settings, presets, modelSta
       </details>
       <div class="settings-actions">
         <button class="settings-secondary" name="action" value="restore_recommended" formnovalidate>恢复推荐值</button>
-        <button name="action" value="save">测试连接并保存</button>
+        <button name="action" value="save_parameters">保存模型参数</button>
       </div>
     </form>
   </section>`;
@@ -3691,7 +3741,6 @@ function modelSettingsClientScript() {
   return `<script>(function(){
     const presets=JSON.parse(document.getElementById("model-preset-data").textContent);
     const sharedPreset=document.getElementById("shared-model-preset");
-    const sharedApiKey=document.getElementById("shared-model-api-key");
     ${supportsDeepSeekV4Thinking.toString()}
     const presetById=(id)=>presets.find((item)=>item.id===id)||presets[0];
     document.querySelectorAll(".model-profile-form").forEach((form)=>{
@@ -3705,7 +3754,6 @@ function modelSettingsClientScript() {
       const reasoningSelect=reasoning?.querySelector("select");
       const credentialMode=form.querySelector(".profile-credential-mode");
       const independentCredentials=form.querySelector(".profile-independent-credentials");
-      const profileApiKey=form.querySelector(".profile-api-key");
       const syncModelControls=()=>{
         const preset=presetById(presetSelect.value);
         const model=modelSelect.value==="__custom__"?customModel.value:modelSelect.value;
@@ -3743,7 +3791,6 @@ function modelSettingsClientScript() {
       form.addEventListener("submit",()=>{
         if(credentialMode?.value==="shared"){
           if(sharedPreset)presetSelect.value=sharedPreset.value;
-          if(profileApiKey&&sharedApiKey)profileApiKey.value=sharedApiKey.value;
         }
       });
       syncCredentialMode();

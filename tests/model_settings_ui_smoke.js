@@ -33,12 +33,16 @@ main().catch((error) => {
 
 async function main() {
   db = openDb(dbPath);
+  const connectionProfiles = [];
   server = createDashboardServer({
     db,
     root,
     dbPath,
     modelConfig: fallback,
-    connectionTester: async () => ({ status: "verified", checkedAt: new Date().toISOString(), latencyMs: 7, httpStatus: 200 })
+    connectionTester: async ({ settings }) => {
+      connectionProfiles.push(settings.taskProfile || "batch_backup");
+      return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 7, httpStatus: 200 };
+    }
   });
   await listen(server);
   const baseUrl = "http://127.0.0.1:" + server.address().port;
@@ -66,6 +70,8 @@ async function main() {
     "共享厂商和 API Key",
     'id="shared-model-preset"',
     'id="shared-model-api-key"',
+    'name="taskProfile" value="primary_models"',
+    'name="action" value="verify_primary"',
     "独立厂商和 API Key",
     "备用模型默认关闭",
     "备用模型必须先通过连接测试",
@@ -76,7 +82,13 @@ async function main() {
   ]) {
     assert(settingsHtml.includes(text), `settings page must include ${text}`);
   }
-  assert(!settingsHtml.includes("下一步：填写简历"), "unverified model must not show the next-step action");
+  assert(settingsHtml.includes("下一步：填写简历"), "next-step guidance must remain visible before verification");
+  assert(settingsHtml.includes('class="settings-next disabled"'));
+  assert(settingsHtml.includes('aria-disabled="true"'));
+  assert(settingsHtml.includes('tabindex="-1"'));
+  assert.strictEqual((settingsHtml.match(/>测试连接并保存<\/button>/g) || []).length, 1);
+  assert(/model-profile-deep_analysis[\s\S]*value="save_parameters"[\s\S]*>保存模型参数<\/button>/.test(settingsHtml));
+  assert(/model-profile-batch_screening[\s\S]*value="save_parameters"[\s\S]*>保存模型参数<\/button>/.test(settingsHtml));
   assert(/settings-primary-grid[\s\S]*model-profile-deep_analysis[\s\S]*model-profile-batch_screening/.test(settingsHtml));
   assert(/<select[^>]*name="model"[^>]*>[\s\S]*deepseek-v4-pro[\s\S]*deepseek-v4-flash[\s\S]*<\/select>/.test(settingsHtml));
   assert(/model-profile-deep_analysis[\s\S]*name="concurrency" value="1"/.test(settingsHtml));
@@ -88,25 +100,20 @@ async function main() {
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const backupApiKey = "backup-ui-smoke-key-not-visible-after-save";
-  const savedDeep = await fetch(baseUrl + "/api/settings/model", {
+  const verifiedPrimary = await fetch(baseUrl + "/api/settings/model", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      taskProfile: "deep_analysis",
-      action: "save",
+      taskProfile: "primary_models",
+      action: "verify_primary",
       preset: "deepseek",
-      model: "deepseek-v4-pro",
-      timeoutMs: "120000",
-      thinkingMode: "enabled",
-      reasoningEffort: "high",
-      concurrency: "1",
-      credentialMode: "shared",
       apiKey
     }).toString(),
     redirect: "manual"
   });
-  assert.strictEqual(savedDeep.status, 303);
-  assert.strictEqual(savedDeep.headers.get("location"), "/settings?profile=deep_analysis&modelConfigured=1");
+  assert.strictEqual(verifiedPrimary.status, 303);
+  assert.strictEqual(verifiedPrimary.headers.get("location"), "/settings?profile=primary_models&modelConfigured=1");
+  assert.deepStrictEqual(connectionProfiles, ["deep_analysis", "batch_screening"]);
 
   let publicState = loadModelSettings({ root, fallbackModelConfig: fallback });
   assert.strictEqual(isModelReady(
@@ -116,34 +123,11 @@ async function main() {
   assert.strictEqual(isModelReady(
     resolveRuntimeModelConfig({ root, fallbackModelConfig: fallback, taskProfile: "batch_screening" }),
     { taskProfile: "batch_screening" }
-  ), false);
-  const deepOnlyOnboarding = await fetch(baseUrl + "/onboarding");
-  const deepOnlyHtml = await deepOnlyOnboarding.text();
-  assert(!deepOnlyHtml.includes("模型尚未通过连接测试"));
-  assert(!/disabled[^>]*>解析简历并生成筛选方案/.test(deepOnlyHtml));
-  const deepReadySettings = await fetch(baseUrl + "/settings?profile=deep_analysis&modelConfigured=1");
-  const deepReadySettingsHtml = await deepReadySettings.text();
-  assert(deepReadySettingsHtml.includes('href="/onboarding"'));
-  assert(deepReadySettingsHtml.includes("下一步：填写简历"));
-
-  const savedBatch = await fetch(baseUrl + "/api/settings/model", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      taskProfile: "batch_screening",
-      action: "save",
-      preset: "deepseek",
-      model: "deepseek-v4-flash",
-      timeoutMs: "90000",
-      thinkingMode: "disabled",
-      reasoningEffort: "high",
-      concurrency: "2",
-      credentialMode: "shared"
-    }).toString(),
-    redirect: "manual"
-  });
-  assert.strictEqual(savedBatch.status, 303);
-  assert.strictEqual(savedBatch.headers.get("location"), "/settings?profile=batch_screening&modelConfigured=1");
+  ), true);
+  const readySettings = await fetch(baseUrl + "/settings?profile=primary_models&modelConfigured=1");
+  const readySettingsHtml = await readySettings.text();
+  assert(readySettingsHtml.includes('class="settings-next" href="/onboarding"'));
+  assert(!readySettingsHtml.includes('class="settings-next disabled"'));
 
   const afterSave = await fetch(baseUrl + "/settings");
   const afterHtml = await afterSave.text();
@@ -171,7 +155,7 @@ async function main() {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       taskProfile: "unknown_profile",
-      action: "save",
+      action: "save_parameters",
       preset: "deepseek",
       model: "deepseek-v4-flash"
     }).toString(),
@@ -184,7 +168,7 @@ async function main() {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       taskProfile: "batch_screening",
-      action: "save",
+      action: "save_parameters",
       preset: "deepseek",
       model: "deepseek-v4-flash",
       timeoutMs: "90000",
@@ -203,7 +187,7 @@ async function main() {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       taskProfile: "batch_screening",
-      action: "save",
+      action: "save_parameters",
       preset: "deepseek",
       model: "deepseek-v4-pro",
       timeoutMs: "30000",
@@ -215,6 +199,15 @@ async function main() {
     redirect: "manual"
   });
   assert.strictEqual(changedBatch.status, 303);
+  assert.strictEqual(changedBatch.headers.get("location"), "/settings?profile=batch_screening&modelSaved=1");
+  publicState = loadModelSettings({ root, fallbackModelConfig: fallback });
+  assert.strictEqual(publicState.settings.taskProfiles.deep_analysis.connection.status, "verified");
+  assert.strictEqual(publicState.settings.taskProfiles.batch_screening.connection.status, "unverified");
+  const changedSettings = await fetch(baseUrl + "/settings?profile=batch_screening&modelSaved=1");
+  const changedSettingsHtml = await changedSettings.text();
+  assert(changedSettingsHtml.includes("模型参数已保存，请在上方重新测试连接"));
+  assert(changedSettingsHtml.includes('class="settings-next disabled"'));
+
   const restored = await fetch(baseUrl + "/api/settings/model", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -232,6 +225,18 @@ async function main() {
   assert.strictEqual(publicState.settings.taskProfiles.batch_screening.concurrency, 2);
   assert.strictEqual(publicState.settings.taskProfiles.batch_screening.connection.status, "unverified");
   assert.strictEqual(publicState.settings.taskProfiles.deep_analysis.connection.status, "verified");
+
+  const reverifiedPrimary = await fetch(baseUrl + "/api/settings/model", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      taskProfile: "primary_models",
+      action: "verify_primary",
+      preset: "deepseek"
+    }).toString(),
+    redirect: "manual"
+  });
+  assert.strictEqual(reverifiedPrimary.status, 303);
 
   const backupSaved = await fetch(baseUrl + "/api/settings/model", {
     method: "POST",
@@ -253,6 +258,8 @@ async function main() {
   const backupSavedBody = await backupSaved.text();
   assert.strictEqual(backupSaved.status, 303, backupSavedBody);
   assert.strictEqual(backupSaved.headers.get("location"), "/settings?profile=batch_backup&modelConfigured=1");
+  const backupSavedPage = await fetch(baseUrl + backupSaved.headers.get("location"));
+  assert((await backupSavedPage.text()).includes("备用模型连接测试通过，配置已保存"));
   const backupRuntime = resolveRuntimeBatchBackup({ root, fallbackModelConfig: fallback });
   assert(backupRuntime);
   assert.strictEqual(backupRuntime.modelConfig.providers.openai_compatible.apiKey, backupApiKey);
