@@ -2280,15 +2280,19 @@ class BossSiteAdapter {
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         page = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
         if (["target_mismatch", "job_unavailable"].includes(page.state)) return page;
+        if (network.state === "accepted") {
+          return {
+            state: "succeeded",
+            jobId: dispatch.jobId,
+            evidence: communicationOutcomeEvidence(network, "succeeded")
+          };
+        }
         if (snapshot?.intermediateDialog?.visible === true) {
           return {
             state: "ambiguous",
             errorCode: "COMMUNICATION_USER_ACTION_REQUIRED",
             evidence: communicationOutcomeEvidence(network, "confirmation_dialog")
           };
-        }
-        if (network.state === "accepted" && page.state === "succeeded") {
-          return { ...page, evidence: communicationOutcomeEvidence(network, "succeeded") };
         }
         if (page.state === "succeeded" && ["platform_rejected", "transport_failed", "ambiguous"].includes(network.state)) {
           return {

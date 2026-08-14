@@ -1118,6 +1118,39 @@ function assertNoPreparationAction(browser, before) {
   assert(!JSON.stringify(userActionResult).includes("private dialog text"));
   assert.strictEqual(userActionBrowser.calls.clickAt.length, 1);
 
+  const acceptedWithGenericDialogBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, { intermediateDialog: true }]]),
+    networkLogs: [acceptedNetworkLog()]
+  });
+  const acceptedWithGenericDialogAdapter = new BossSiteAdapter({
+    browser: acceptedWithGenericDialogBrowser,
+    sleepFn: async () => {}
+  });
+  const acceptedWithGenericDialogInspection = await acceptedWithGenericDialogAdapter.inspectCommunicationJob(expectedJob);
+  await acceptedWithGenericDialogAdapter.dispatchCommunication(acceptedWithGenericDialogInspection);
+  const navigationsBeforeAcceptedWithGenericDialogVerification = acceptedWithGenericDialogBrowser.calls.navigate.length;
+  const acceptedWithGenericDialogResult = await acceptedWithGenericDialogAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(
+    acceptedWithGenericDialogResult.state,
+    "succeeded",
+    acceptedWithGenericDialogResult.errorCode
+  );
+  assert.strictEqual(acceptedWithGenericDialogResult.evidence.pageState, "succeeded");
+  assert.deepStrictEqual(acceptedWithGenericDialogResult.evidence.endpoints, [{
+    endpointKind: "friend_add",
+    httpStatus: 200,
+    businessCode: "0",
+    businessCategory: "success",
+    elapsedMs: 291
+  }]);
+  assert(!JSON.stringify(acceptedWithGenericDialogResult).includes("private dialog text"));
+  assert.strictEqual(acceptedWithGenericDialogBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(
+    acceptedWithGenericDialogBrowser.calls.navigate.length,
+    navigationsBeforeAcceptedWithGenericDialogVerification
+  );
+
   const conflictBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
     afterClickFixtures: new Map([[jobUrl, sentFixture()]]),
@@ -1230,7 +1263,11 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(loadingBeforeClickBrowser.calls.guardedClick.length, 0, "readiness timeout must stop before click");
 
   const delayedSuccessBrowser = fakeBrowser({
-    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }]
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    networkLogs: [
+      ...Array.from({ length: 5 }, () => ({ entries: [], meta: { enabled: true } })),
+      acceptedNetworkLog()
+    ]
   });
   let delayedSuccessSleeps = 0;
   const delayedSuccessAdapter = new BossSiteAdapter({
@@ -1257,7 +1294,8 @@ function assertNoPreparationAction(browser, before) {
   ]) {
     const untrustedInlineChatBrowser = fakeBrowser({
       tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
-      afterClickFixtures: new Map([[jobUrl, inlineChatSentFixture({ actions: [action] })]])
+      afterClickFixtures: new Map([[jobUrl, inlineChatSentFixture({ actions: [action] })]]),
+      networkLogs: [{ entries: [], meta: { enabled: true } }]
     });
     const untrustedInlineChatAdapter = new BossSiteAdapter({ browser: untrustedInlineChatBrowser, sleepFn: async () => {} });
     const untrustedInlineChatInspection = await untrustedInlineChatAdapter.inspectCommunicationJob(expectedJob);
@@ -1347,7 +1385,8 @@ function assertNoPreparationAction(browser, before) {
 
   const continuedWithoutSuccessEvidenceBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
-    afterClickFixtures: new Map([[jobUrl, sentFixture({ successDialog: null })]])
+    afterClickFixtures: new Map([[jobUrl, sentFixture({ successDialog: null })]]),
+    networkLogs: [acceptedNetworkLog({ url: "https://www.zhipin.com/wapi/zpchat/config/get" })]
   });
   const continuedWithoutSuccessEvidenceAdapter = new BossSiteAdapter({ browser: continuedWithoutSuccessEvidenceBrowser, sleepFn: async () => {} });
   const ambiguousInspection = await continuedWithoutSuccessEvidenceAdapter.inspectCommunicationJob(expectedJob);
@@ -1362,7 +1401,8 @@ function assertNoPreparationAction(browser, before) {
 
   const missingStatusBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
-    afterClickFixtures: new Map([[jobUrl, sentFixture({ jobStatus: undefined })]])
+    afterClickFixtures: new Map([[jobUrl, sentFixture({ jobStatus: undefined })]]),
+    networkLogs: [{ entries: [], meta: { enabled: true } }]
   });
   const missingStatusAdapter = new BossSiteAdapter({ browser: missingStatusBrowser, sleepFn: async () => {} });
   const missingStatusInspection = await missingStatusAdapter.inspectCommunicationJob(expectedJob);
