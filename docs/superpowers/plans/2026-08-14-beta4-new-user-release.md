@@ -15,7 +15,7 @@
 - The source tree and advanced portable ZIP keep the BAT entry points.
 - Release assets are exactly the installer EXE, its `.sha256`, and `RoleFlow-v0.1.0-beta.4-portable.zip`.
 - Do not overwrite or delete historical tags or Releases.
-- Do not package databases, resumes, model secrets, logs, reports, browser profiles, tests, or Edge Control.
+- Neither package may contain real databases, resumes, model secrets, logs, reports, browser profiles, or Edge Control. The standard installer also excludes tests; the advanced portable ZIP keeps the existing source and test structure.
 - Do not change BOSS browser behavior, `trusted_pane`, `search_page_api`, scan quality, or Wave 5.
 - Run BOSS-free offline and installer checks only.
 
@@ -340,7 +340,7 @@ Read the Release back and confirm:
 
 - [ ] **Step 5: Re-download and verify the public installer**
 
-Download the published EXE and `.sha256` into a new isolated directory under `D:\DevData`, then compare SHA-256 with the local verified artifact.
+Download the published EXE and `.sha256` into a new isolated directory under `D:\DevData`, then verify the downloaded EXE against its published checksum. A GitHub runner build can differ byte-for-byte from the local build because compiler version and build metadata differ, so source/tag identity, the public checksum, and the installed-file acceptance are the reproducibility gates.
 
 - [ ] **Step 6: Simulate first install without touching existing user data**
 
