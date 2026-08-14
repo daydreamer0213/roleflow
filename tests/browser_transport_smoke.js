@@ -365,6 +365,36 @@ async function main() {
     );
 
     reset("ok");
+    const numericTabId = 1995686980;
+    await edge.startNetworkLog(numericTabId, {
+      maxEntries: 12,
+      maxBodies: 4,
+      maxBodyBytes: 8192,
+      resourceTypes: ["XHR", "Fetch"],
+      bodyUrlIncludes: ["/wapi/zpgeek/friend/add.json"],
+      urlIncludes: ["/wapi/zpchat/config/get", "/wapi/zpgeek/friend/add.json"],
+      captureBodies: true,
+      clear: true
+    });
+    await edge.getNetworkLogMark(numericTabId);
+    await edge.readNetworkLog(numericTabId, {
+      sinceSequence: 7,
+      maxEntries: 12,
+      includeBodies: true,
+      resourceTypes: ["XHR", "Fetch"],
+      urlIncludes: ["/wapi/zpchat/config/get", "/wapi/zpgeek/friend/add.json"],
+      consume: false
+    });
+    await edge.stopNetworkLog(numericTabId, { clear: true, detachIfIdle: false });
+    assert.deepStrictEqual(
+      state.edgeRequests.map((request) => request.command),
+      ["start_network_log", "get_network_log_mark", "read_network_log", "stop_network_log"]
+    );
+    assert(state.edgeRequests.every((request) => request.args.tabId === numericTabId));
+    assert.strictEqual(state.edgeRequests[0].args.maxBodyBytes, 8192);
+    assert.strictEqual(state.edgeRequests[2].args.sinceSequence, 7);
+
+    reset("ok");
     state.edgeCdpFailureAt = 3;
     await rejectsWithCode(() => edge.clickAt("edge-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
     assert.strictEqual(

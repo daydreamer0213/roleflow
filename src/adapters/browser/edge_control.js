@@ -133,6 +133,56 @@ class EdgeControlAdapter {
     return this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
   }
 
+  async startNetworkLog(tabId, {
+    maxEntries,
+    maxBodies,
+    maxBodyBytes,
+    resourceTypes,
+    bodyUrlIncludes,
+    urlIncludes,
+    captureBodies = true,
+    clear = true
+  } = {}) {
+    return this.command("start_network_log", compactArgs({
+      tabId,
+      maxEntries,
+      maxBodies,
+      maxBodyBytes,
+      resourceTypes,
+      bodyUrlIncludes,
+      urlIncludes,
+      captureBodies,
+      clear
+    }));
+  }
+
+  async readNetworkLog(tabId, {
+    sinceSequence,
+    maxEntries,
+    includeBodies = true,
+    resourceTypes,
+    urlIncludes,
+    consume = false
+  } = {}) {
+    return this.command("read_network_log", compactArgs({
+      tabId,
+      sinceSequence,
+      maxEntries,
+      includeBodies,
+      resourceTypes,
+      urlIncludes,
+      consume
+    }));
+  }
+
+  async getNetworkLogMark(tabId) {
+    return this.command("get_network_log_mark", { tabId });
+  }
+
+  async stopNetworkLog(tabId, { clear = true, detachIfIdle = false } = {}) {
+    return this.command("stop_network_log", { tabId, clear, detachIfIdle });
+  }
+
   async cdp(tabId, method, params = {}) {
     const result = await this.command("send_cdp", { tabId, method, params });
     return result.result ?? result;
@@ -149,6 +199,10 @@ class EdgeControlAdapter {
     }
     return result.result?.value;
   }
+}
+
+function compactArgs(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
 function chooseAutomationTab(tabs = []) {
