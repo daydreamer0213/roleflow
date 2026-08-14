@@ -29,6 +29,130 @@ function runPermittedBatch(input) {
   return runCommunicationBatch({ ...input, executionGate: () => true });
 }
 
+async function singleItemCheckpointSmoke() {
+  const fixture = createFixture(2);
+  const workflow = attachReviewWorkflow(fixture);
+  const [first, second] = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+  let dispatches = 0;
+  const summary = await runPermittedBatch({
+    db: fixture.db,
+    batchId: fixture.batch.id,
+    singleItemId: first.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() { return { state: "ready" }; },
+      async dispatchCommunication() { dispatches += 1; },
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(dispatches, 1);
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(fixture.db, fixture.batch.id)
+      .map((item) => [item.id, item.status, item.clickCount]),
+    [[first.id, "succeeded", 1], [second.id, "pending", 0]]
+  );
+  assert.strictEqual(summary.batchStatus, "interrupted");
+  assert.strictEqual(
+    getCommunicationBatch(fixture.db, fixture.batch.id).stopCode,
+    "COMMUNICATION_SINGLE_ITEM_CHECKPOINT"
+  );
+  assert.strictEqual(getWorkflowRun(fixture.db, workflow.id).status, "interrupted");
+  assert.strictEqual(
+    getWorkflowRun(fixture.db, workflow.id).errorCode,
+    "COMMUNICATION_SINGLE_ITEM_CHECKPOINT"
+  );
+  fixture.close();
+
+  const mismatch = createFixture(2);
+  const [mismatchFirst, mismatchSecond] = listCommunicationBatchItems(mismatch.db, mismatch.batch.id);
+  let reserves = 0;
+  let mismatchDispatches = 0;
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: mismatch.db,
+      batchId: mismatch.batch.id,
+      singleItemId: mismatchSecond.id,
+      accessController: { async reserve() { reserves += 1; } },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async dispatchCommunication() { mismatchDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    }),
+    (error) => error.code === "COMMUNICATION_SINGLE_ITEM_MISMATCH"
+  );
+  assert.strictEqual(reserves, 0);
+  assert.strictEqual(mismatchDispatches, 0);
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(mismatch.db, mismatch.batch.id)
+      .map((item) => [item.id, item.status, item.clickCount]),
+    [[mismatchFirst.id, "pending", 0], [mismatchSecond.id, "pending", 0]]
+  );
+  mismatch.close();
+}
+
+async function cliSingleItemPassThroughSmoke() {
+  const fixture = createFixture(1);
+  const item = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  let receivedSingleItemId = null;
+  let restored = 0;
+  await communicate(fixture.db, {
+    batch: fixture.batch.id,
+    browser: "edge",
+    "single-item": String(item.id)
+  }, {
+    createBrowserFn: () => ({
+      async listTabs() {
+        return [
+          { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+          { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" }
+        ];
+      }
+    }),
+    createSiteAdapterFn: () => ({
+      async preflight({ tabId }) {
+        return tabId === 31
+          ? { tabId, url: "https://www.zhipin.com/web/geek/jobs", isSearchPage: true }
+          : { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false };
+      },
+      async captureCommunicationSearchState() {
+        return { url: "https://www.zhipin.com/web/geek/jobs", scrollTop: 0 };
+      },
+      bindCommunicationTabs() {},
+      async beginCommunicationSession() {},
+      async restoreCommunicationSearchPage() { restored += 1; }
+    }),
+    async runCommunicationBatchFn(input) {
+      receivedSingleItemId = input.singleItemId;
+      return { batchStatus: "interrupted", terminal: 0, total: 1 };
+    }
+  });
+  assert.strictEqual(receivedSingleItemId, item.id);
+  assert.strictEqual(restored, 1);
+  await assert.rejects(
+    () => communicate(fixture.db, {
+      batch: fixture.batch.id,
+      browser: "edge"
+    }, {
+      createBrowserFn() { throw new Error("pending acceptance must require a single item before browser creation"); }
+    }),
+    (error) => error.code === "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED"
+  );
+  await assert.rejects(
+    () => communicate(fixture.db, {
+      batch: fixture.batch.id,
+      browser: "edge",
+      "single-item": "0"
+    }, {
+      createBrowserFn() { throw new Error("invalid single item must fail before browser creation"); }
+    }),
+    (error) => error.code === "COMMUNICATION_SINGLE_ITEM_INVALID"
+  );
+  fixture.close();
+}
+
 async function successFlowSmoke() {
   const fixture = createFixture(2);
   const calls = [];
@@ -1144,6 +1268,8 @@ function job(index) {
 }
 
 Promise.resolve()
+  .then(singleItemCheckpointSmoke)
+  .then(cliSingleItemPassThroughSmoke)
   .then(successFlowSmoke)
   .then(atomicProgressFailureSmoke)
   .then(alreadyCommunicatedSmoke)

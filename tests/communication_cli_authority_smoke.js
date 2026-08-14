@@ -48,6 +48,8 @@ let db;
     dbPath,
     "--batch",
     String(batchId),
+    "--single-item",
+    "1",
     "--browser",
     "portable",
     "--cdp-port",
@@ -115,11 +117,12 @@ let db;
       events.push("restore");
     }
   };
-  const summary = await communicate(db, { batch: edgeBatchId, browser: "edge" }, {
+  const summary = await communicate(db, { batch: edgeBatchId, browser: "edge", "single-item": "1" }, {
     createBrowserFn: () => edgeBrowser,
     createSiteAdapterFn: () => edgeAdapter,
-    runCommunicationBatchFn: async ({ adapter }) => {
+    runCommunicationBatchFn: async ({ adapter, singleItemId }) => {
       assert.strictEqual(adapter, edgeAdapter);
+      assert.strictEqual(singleItemId, 1);
       events.push("run");
       return { terminal: 0, total: 0 };
     }
@@ -156,7 +159,7 @@ let db;
 
   let failedRunCalls = 0;
   await assert.rejects(
-    () => communicate(db, { batch: edgeBatchId, browser: "edge" }, {
+    () => communicate(db, { batch: edgeBatchId, browser: "edge", "single-item": "1" }, {
       createBrowserFn: () => edgeBrowser,
       createSiteAdapterFn: () => ({
         async preflight({ tabId }) {
@@ -176,7 +179,7 @@ let db;
   const runError = Object.assign(new Error("fixture run failed"), { code: "FIXTURE_RUN_FAILED" });
   let restoreCalls = 0;
   await assert.rejects(
-    () => communicate(db, { batch: edgeBatchId, browser: "edge" }, {
+    () => communicate(db, { batch: edgeBatchId, browser: "edge", "single-item": "1" }, {
       createBrowserFn: () => edgeBrowser,
       createSiteAdapterFn: () => ({
         async preflight({ tabId }) {
@@ -201,7 +204,7 @@ let db;
   try {
     console.log = (...values) => completionLogs.push(values.join(" "));
     await assert.rejects(
-      () => communicate(db, { batch: edgeBatchId, browser: "edge" }, {
+      () => communicate(db, { batch: edgeBatchId, browser: "edge", "single-item": "1" }, {
         createBrowserFn: () => edgeBrowser,
         createSiteAdapterFn: () => ({
           async preflight({ tabId }) {
@@ -249,7 +252,7 @@ let db;
   let driftBound = 0;
   let driftRun = 0;
   await assert.rejects(
-    () => communicate(db, { batch: driftBatchId, browser: "edge" }, {
+    () => communicate(db, { batch: driftBatchId, browser: "edge", "single-item": "1" }, {
       createBrowserFn: () => edgeBrowser,
       createSiteAdapterFn: () => ({
         async preflight({ tabId }) {

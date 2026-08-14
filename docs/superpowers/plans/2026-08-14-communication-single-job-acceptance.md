@@ -215,6 +215,10 @@ git commit -m "feat: require one communication item during acceptance"
 **Files:**
 
 - Modify: `tests/communication_executor_smoke.js`
+- Modify: `tests/communication_cli_authority_smoke.js`
+- Modify: `tests/workflow_communication_smoke.js`
+- Modify: `tests/communication_calibration_gate_smoke.js`
+- Modify: `tests/workflow_end_to_end_smoke.js`
 - Modify: `src/core/communication_executor.js`
 - Modify: `src/cli.js`
 - Modify: `src/dashboard/status_labels.js`
@@ -367,8 +371,10 @@ if (singleItemId !== null
 }
 ```
 
-Pass `singleItemId` to `runCommunicationBatchFn()`. Leave it `null` for direct CLI invocations
-that do not request the acceptance boundary.
+Pass `singleItemId` to `runCommunicationBatchFn()`. Before creating a browser, reject a missing
+ID with `COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED` while
+`communicationCalibrationStatus().acceptance === "e2e_pending"`. A future `accepted` calibration
+may still omit the ID for normal full-batch execution.
 
 Change the final console line only when `summary.batchStatus === "interrupted"` and the stored
 batch stop code is `COMMUNICATION_SINGLE_ITEM_CHECKPOINT`, so it says the batch paused after one
@@ -391,7 +397,7 @@ Expected: both exit 0; default multi-item execution remains covered by the exist
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add tests/communication_executor_smoke.js src/core/communication_executor.js src/cli.js src/dashboard/status_labels.js
+git add tests/communication_executor_smoke.js tests/communication_cli_authority_smoke.js tests/workflow_communication_smoke.js tests/communication_calibration_gate_smoke.js tests/workflow_end_to_end_smoke.js src/core/communication_executor.js src/cli.js src/dashboard/status_labels.js docs/superpowers/specs/2026-08-14-communication-single-job-acceptance-design.md docs/superpowers/plans/2026-08-14-communication-single-job-acceptance.md
 git commit -m "feat: checkpoint communication after one authorized item"
 ```
 

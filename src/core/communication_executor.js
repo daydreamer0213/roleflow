@@ -44,10 +44,12 @@ async function runCommunicationBatch({
   randomFn = Math.random,
   signal = null,
   beforeReadOnlyRetry = null,
+  singleItemId = null,
   executionGate = assertCommunicationExecutionEnabled,
   ambiguityReader = communicationAmbiguityStateForBatch
 }) {
   validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader });
+  const authorizedItemId = normalizeSingleItemId(singleItemId);
   assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
@@ -70,6 +72,15 @@ async function runCommunicationBatch({
     if (!item) {
       assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
       return finalizeBatch(db, batchId, logger);
+    }
+    if (authorizedItemId !== null
+      && (item.id !== authorizedItemId || item.status !== "pending" || Number(item.clickCount || 0) !== 0)) {
+      return interruptAndThrow(
+        db,
+        batchId,
+        codedError("COMMUNICATION_SINGLE_ITEM_MISMATCH", "authorized communication item changed"),
+        logger
+      );
     }
     if (item.status !== "pending") {
       assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
@@ -130,6 +141,7 @@ async function runCommunicationBatch({
       if (afterInspectFailure) return afterInspectFailure;
       transitionToUnavailable(db, batchId, item, error);
       if (isFatal(error) || signal?.aborted) return interruptAndThrow(db, batchId, error, logger);
+      if (authorizedItemId !== null) return checkpointSingleItemRun(db, batchId, logger);
       const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
       if (pacing) return pacing;
       continue;
@@ -177,10 +189,20 @@ async function runCommunicationBatch({
       recordAudit(db, item, "communication_result", finalState);
     }
 
+    if (authorizedItemId !== null) return checkpointSingleItemRun(db, batchId, logger);
     if (workflowTargetReached(db, batchId)) continue;
     const pacing = await paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal });
     if (pacing) return pacing;
   }
+}
+
+function normalizeSingleItemId(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const itemId = Number(value);
+  if (!Number.isInteger(itemId) || itemId <= 0) {
+    throw codedError("COMMUNICATION_SINGLE_ITEM_INVALID", "single communication item id is invalid");
+  }
+  return itemId;
 }
 
 async function inspectWithOneRecovery({ adapter, item, signal, beforeReadOnlyRetry }) {
@@ -422,6 +444,34 @@ function finalizeBatch(db, batchId, logger) {
   }
   logger?.info("communication_batch_completed", { batchId, workflowRunId: workflow?.id || null, successfulCount });
   return communicationBatchSummary(db, batchId);
+}
+
+function checkpointSingleItemRun(db, batchId, logger) {
+  const code = "COMMUNICATION_SINGLE_ITEM_CHECKPOINT";
+  setCommunicationBatchStatus(db, {
+    batchId,
+    status: "interrupted",
+    stopCode: code,
+    stopMessage: "single communication item acceptance checkpoint"
+  });
+  const batch = getCommunicationBatch(db, batchId);
+  const summary = communicationBatchSummary(db, batchId);
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  if (workflow?.status === "communicating") {
+    transitionWorkflowRun(db, {
+      id: workflow.id,
+      status: "interrupted",
+      successfulCount: successfulCommunicationCount(db, batchId),
+      metrics: communicationWorkflowMetrics(workflow, summary, batch),
+      errorCode: code,
+      errorMessage: "single communication item acceptance checkpoint"
+    });
+  }
+  logger?.info("communication_single_item_checkpoint", {
+    batchId,
+    workflowRunId: workflow?.id || null
+  });
+  return summary;
 }
 
 function ensureWorkflowCommunicating(db, batchId) {

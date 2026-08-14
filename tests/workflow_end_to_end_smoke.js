@@ -287,9 +287,11 @@ async function confirmAndStart(baseUrl, workflow, review) {
   assert.strictEqual(confirmed.status, 200, confirmed.body);
   const payload = JSON.parse(confirmed.body);
   const batch = getCommunicationBatch(db, payload.batch.id);
+  const item = listCommunicationBatchItems(db, batch.id)[0];
   const started = await postForm(baseUrl, "/api/communication-control", {
     batchId: batch.id,
-    action: "start"
+    action: "start_one",
+    itemId: item.id
   }, "application/json");
   assert.strictEqual(started.status, 200, started.body);
   return getCommunicationBatch(db, batch.id);

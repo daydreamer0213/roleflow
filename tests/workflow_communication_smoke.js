@@ -203,7 +203,8 @@ async function workflowCommunicationSmoke() {
       () => communicate(db, {
         batch: batch.id,
         browser: "portable",
-        "cdp-port": "9333"
+        "cdp-port": "9333",
+        "single-item": String(listCommunicationBatchItems(db, batch.id)[0].id)
       }, {
         createBrowserFn() {
           browserFactoryCalls += 1;

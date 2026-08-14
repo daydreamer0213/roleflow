@@ -105,6 +105,7 @@ const {
   touchCommunicationBatch
 } = require("./core/communication_batches");
 const { communicationAmbiguityStateForBatch } = require("./core/communication_ambiguity");
+const { communicationCalibrationStatus } = require("./core/communication_calibration");
 const { runCommunicationBatch } = require("./core/communication_executor");
 const { finalizeWorkflowControl } = require("./core/workflow_control");
 const {
@@ -238,10 +239,17 @@ async function communicate(
 ) {
   const batchId = Number(args.batch);
   if (!Number.isInteger(batchId) || batchId <= 0) throw new Error("需要 --batch <Communication Batch ID>");
+  const singleItemId = args["single-item"] === undefined ? null : Number(args["single-item"]);
+  if (singleItemId !== null && (!Number.isInteger(singleItemId) || singleItemId <= 0)) {
+    throw codedError("COMMUNICATION_SINGLE_ITEM_INVALID", "需要有效的 --single-item <item ID>");
+  }
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw new Error(`未找到沟通批次 #${batchId}`);
   if (communicationAmbiguityStateForBatch(db, batchId).blocked) {
     throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工确认结果不明确的岗位，再继续沟通。");
+  }
+  if (communicationCalibrationStatus().acceptance === "e2e_pending" && singleItemId === null) {
+    throw codedError("COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED", "端到端验收期间需要 --single-item <item ID>");
   }
   const browserArgs = resolveCommunicationBrowserAuthority(batch, args);
   const browserMode = browserArgs.browser;
@@ -307,6 +315,7 @@ async function communicate(
       adapter,
       accessController,
       logger: communicationLogger,
+      singleItemId,
       beforeReadOnlyRetry: async ({ item, recoveryAttempt }) => {
         await accessController.reserve("communication_visit", {
           batchId,
@@ -358,7 +367,12 @@ async function communicate(
     stopHeartbeat();
     if (!runError && restoreError) throw restoreError;
     if (!runError && !restoreError && summary) {
-      console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
+      const finished = getCommunicationBatch(db, batchId);
+      if (finished?.stopCode === "COMMUNICATION_SINGLE_ITEM_CHECKPOINT") {
+        console.log(`沟通批次 #${batchId} 已在单岗位验收后暂停：${summary.terminal}/${summary.total}`);
+      } else {
+        console.log(`沟通批次 #${batchId} 完成：${summary.terminal}/${summary.total}`);
+      }
     }
   }
 }
@@ -2653,7 +2667,7 @@ function printHelp() {
   run.ps1 rebuild-report --batch <Batch ID>
   run.ps1 feedback-summary
   run.ps1 batch-summary --batch latest
-  run.ps1 communicate --batch <Communication Batch ID> --browser edge
+  run.ps1 communicate --batch <Communication Batch ID> --browser edge --single-item <Communication Item ID>
   run.ps1 mark-applied --job-id <id> --note "人工确认已沟通"
   run.ps1 mark-skipped --job-id <id> --reason "地点不合适"
   run.ps1 mark-no-reply --job-id <id> --note "已投递，暂未回复"
