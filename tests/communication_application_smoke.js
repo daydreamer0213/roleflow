@@ -5,6 +5,9 @@ const path = require("node:path");
 const {
   openDb,
   createBatch,
+  createWorkflowRun,
+  getWorkflowRun,
+  transitionWorkflowRun,
   upsertJob,
   setSiteRuntimeState,
   clearSiteRuntimeState
@@ -320,6 +323,36 @@ let noDbPathServer;
     { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_ERROR" }
   );
 
+  const parentFailureWorkflow = createReviewWorkflow(db, fixture);
+  const parentFailure = createCommunicationBatch({
+    db,
+    input: {
+      workflowRunId: parentFailureWorkflow.id,
+      planId: fixture.planId,
+      jobIds: [fixture.parentFailureJobId],
+      browserMode: "edge"
+    }
+  });
+  const parentFailureItem = listCommunicationBatchItems(db, parentFailure.batch.id)[0];
+  const parentFailureStarted = await postJson(baseUrl, "/api/communication-control", {
+    batchId: parentFailure.batch.id,
+    action: "start_one",
+    itemId: parentFailureItem.id
+  });
+  assert.strictEqual(parentFailureStarted.status, 200);
+  transitionWorkflowRun(db, { id: parentFailureWorkflow.id, status: "communicating" });
+  db.exec(`CREATE TEMP TRIGGER fail_parent_workflow_interrupt
+    BEFORE UPDATE OF status ON workflow_runs
+    WHEN OLD.id = '${parentFailureWorkflow.id}' AND NEW.status = 'interrupted'
+    BEGIN SELECT RAISE(ABORT, 'forced parent workflow interrupt failure'); END`);
+  spawnedChildren.at(-1).emit("close", 1, null);
+  db.exec("DROP TRIGGER fail_parent_workflow_interrupt");
+  assert.strictEqual(getCommunicationBatch(db, parentFailure.batch.id).status, "running");
+  assert.strictEqual(getWorkflowRun(db, parentFailureWorkflow.id).status, "communicating");
+  spawnedChildren.at(-1).emit("close", 1, null);
+  assert.strictEqual(getCommunicationBatch(db, parentFailure.batch.id).status, "interrupted");
+  assert.strictEqual(getWorkflowRun(db, parentFailureWorkflow.id).status, "interrupted");
+
   noDbPathServer = createDashboardServer({ db, root, dbPath: "", logger, spawnProcess() { throw new Error("spawn must not run without dbPath"); } });
   const noDbPathBaseUrl = await listen(noDbPathServer);
   const missingDbPath = await postJson(baseUrl, "/api/communication-batch", {
@@ -357,6 +390,7 @@ function seed(database) {
   const planId = Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(profileId, "Application smoke", "{}", now, now).lastInsertRowid);
   const scanBatchId = createBatch(database, "boss", "communication-application", "communication application smoke", { profileId, searchPlanId: planId });
   return {
+    profileId,
     planId,
     directJobId: upsertJob(database, job("direct", { title: "Direct role" }), scanBatchId),
     launcherJobId: upsertJob(database, job("launcher", { title: "Launcher role" }), scanBatchId),
@@ -369,8 +403,32 @@ function seed(database) {
     discardJobId: upsertJob(database, job("discard", { title: "Discard role" }), scanBatchId),
     syncSpawnJobId: upsertJob(database, job("sync-spawn", { title: "Sync spawn role" }), scanBatchId),
     childErrorJobId: upsertJob(database, job("child-error", { title: "Child error role" }), scanBatchId),
+    parentFailureJobId: upsertJob(database, job("parent-failure", {
+      title: "Parent failure role",
+      description: "Build Python services for communication application testing with complete role evidence. ".repeat(4)
+    }), scanBatchId),
     missingDbPathJobId: upsertJob(database, job("missing-db-path", { title: "Missing dbPath role" }), scanBatchId)
   };
+}
+
+function createReviewWorkflow(database, fixture) {
+  const workflow = createWorkflowRun(database, {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    localDay: "2026-08-14",
+    sequence: 1,
+    targetSuccessCount: 1,
+    inventoryCount: 1,
+    candidateGap: 0,
+    scanNeeded: false,
+    keywords: [],
+    budget: { maxDetailTotal: 0, browserPageBudget: 0 },
+    planner: { browserMode: "edge" }
+  });
+  transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+  transitionWorkflowRun(database, { id: workflow.id, status: "analyzing" });
+  transitionWorkflowRun(database, { id: workflow.id, status: "review_required" });
+  return getWorkflowRun(database, workflow.id);
 }
 
 function browserBinding(overrides = {}) {

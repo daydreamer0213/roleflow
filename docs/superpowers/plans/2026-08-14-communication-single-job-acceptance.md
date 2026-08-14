@@ -397,6 +397,11 @@ one `SAVEPOINT communication_process_failure`. If either update fails, roll both
 the unified running state for existing heartbeat/orphan recovery. Add a `communicate()` integration
 test with a TEMP workflow trigger proving the fallback never leaves only the batch interrupted.
 
+The dashboard parent-process `error` / non-zero `close` handlers and stale communication recovery
+must reuse that same atomic batch/workflow interruption primitive. Add TEMP-trigger regressions
+for both paths so a workflow transition failure leaves the pair at `running` / `communicating`
+instead of partially committing only the batch interruption.
+
 Change the final console line only when `summary.batchStatus === "interrupted"` and the stored
 batch stop code is `COMMUNICATION_SINGLE_ITEM_CHECKPOINT`, so it says the batch paused after one
 item instead of saying the entire batch completed.

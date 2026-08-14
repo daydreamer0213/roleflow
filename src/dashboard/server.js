@@ -150,7 +150,8 @@ const {
   planWorkflowRun,
   consumedWorkflowBudget,
   countSlotConsumingRuns,
-  recoverWorkflowRuns
+  recoverWorkflowRuns,
+  settleCommunicationInterruption
 } = require("../core/workflow_run");
 const {
   workflowEligibility,
@@ -3066,7 +3067,18 @@ function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = nul
       stdio: ["ignore", "pipe", "pipe"]
     });
   } catch (error) {
-    setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED", stopMessage: error.message });
+    try {
+      settleCommunicationInterruption(db, {
+        batchId: batch.id,
+        stopCode: "COMMUNICATION_PROCESS_START_FAILED",
+        stopMessage: error.message
+      });
+    } catch (settlementError) {
+      processLogger.error("communication_process_settlement_failed", {
+        batchId: batch.id,
+        error: errorMeta(settlementError)
+      });
+    }
     throw error;
   }
   processLogger.info("communication_process_started", {
@@ -3077,9 +3089,17 @@ function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = nul
   child.stdout?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stdout", message: String(chunk).slice(-2000) }));
   child.stderr?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stderr", message: String(chunk).slice(-2000) }));
   const interruptRunning = (code, message) => {
-    const current = getCommunicationBatch(db, batch.id);
-    if (current?.status === "running") {
-      setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: code, stopMessage: message });
+    try {
+      settleCommunicationInterruption(db, {
+        batchId: batch.id,
+        stopCode: code,
+        stopMessage: message
+      });
+    } catch (error) {
+      processLogger.error("communication_process_settlement_failed", {
+        batchId: batch.id,
+        error: errorMeta(error)
+      });
     }
   };
   child.on("error", (error) => {

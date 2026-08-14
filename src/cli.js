@@ -101,12 +101,12 @@ const { resolveScanKind, resolveDetailMode, withSiteScanLease: runWithSiteScanLe
 const {
   getCommunicationBatch,
   bindCommunicationBatchRuntime,
-  setCommunicationBatchStatus,
   touchCommunicationBatch
 } = require("./core/communication_batches");
 const { communicationAmbiguityStateForBatch } = require("./core/communication_ambiguity");
 const { communicationCalibrationStatus } = require("./core/communication_calibration");
 const { runCommunicationBatch } = require("./core/communication_executor");
+const { settleCommunicationInterruption } = require("./core/workflow_run");
 const { finalizeWorkflowControl } = require("./core/workflow_control");
 const {
   buildScanExecutionSnapshot,
@@ -370,30 +370,13 @@ async function communicate(
 }
 
 function settleCommunicationProcessFailure(db, batchId, error, communicationLogger) {
-  const current = getCommunicationBatch(db, batchId);
-  if (current?.status !== "running") return current;
-  db.exec("SAVEPOINT communication_process_failure");
   try {
-    const interrupted = setCommunicationBatchStatus(db, {
+    return settleCommunicationInterruption(db, {
       batchId,
-      status: "interrupted",
       stopCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
       stopMessage: error?.message || String(error)
-    });
-    const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
-    if (workflow?.status === "communicating") {
-      transitionWorkflowRun(db, {
-        id: workflow.id,
-        status: "interrupted",
-        errorCode: error?.code || "COMMUNICATION_PROCESS_FAILED",
-        errorMessage: error?.message || String(error)
-      });
-    }
-    db.exec("RELEASE SAVEPOINT communication_process_failure");
-    return interrupted;
+    }).batch;
   } catch (settlementError) {
-    try { db.exec("ROLLBACK TO SAVEPOINT communication_process_failure"); } catch {}
-    try { db.exec("RELEASE SAVEPOINT communication_process_failure"); } catch {}
     communicationLogger?.error("communication_process_settlement_failed", {
       batchId,
       error: errorMeta(settlementError)

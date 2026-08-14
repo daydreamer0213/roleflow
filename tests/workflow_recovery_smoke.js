@@ -196,6 +196,7 @@ const { runWorkflowAnalysisPhase } = require("../src/core/job_analysis");
   await timeoutCircuitRecoveryE2E();
   pausedRecoveryNoBrowserNoChild();
   orphanAnalyzingTaskRecoveryCounts();
+  atomicOrphanCommunicationRecovery();
   activeAnalysisExecutionRecoverySmoke();
   console.log("workflow_recovery_smoke ok");
   } finally {
@@ -978,6 +979,38 @@ function dashboardStartupRecovery() {
       }
     });
     assert.strictEqual(getWorkflowRun(database, stale.workflow.id).status, "interrupted");
+  } finally {
+    database.close();
+  }
+}
+
+function atomicOrphanCommunicationRecovery() {
+  const database = openDb(":memory:");
+  try {
+    const { profileId, planId } = seedPlan(database);
+    const stale = seedCommunicatingWorkflow(database, {
+      profileId,
+      planId,
+      localDay: "2026-09-13",
+      sequence: 1,
+      batchStatus: "running",
+      batchUpdatedAt: "2026-09-13T01:00:00.000Z",
+      itemStatuses: ["pending"]
+    });
+    database.exec(`CREATE TEMP TRIGGER fail_orphan_workflow_interrupt
+      BEFORE UPDATE OF status ON workflow_runs
+      WHEN OLD.id = '${stale.workflow.id}' AND NEW.status = 'interrupted'
+      BEGIN SELECT RAISE(ABORT, 'forced orphan workflow interrupt failure'); END`);
+    assert.throws(
+      () => recoverWorkflowRuns(database, {
+        workflowRunId: stale.workflow.id,
+        now: new Date("2026-09-13T02:00:00.000Z"),
+        orphanTimeoutMs: 60_000
+      }),
+      /forced orphan workflow interrupt failure/
+    );
+    assert.strictEqual(getCommunicationBatch(database, stale.batchId).status, "running");
+    assert.strictEqual(getWorkflowRun(database, stale.workflow.id).status, "communicating");
   } finally {
     database.close();
   }

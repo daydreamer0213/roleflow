@@ -1,6 +1,7 @@
 const { PRODUCT_POLICY } = require("./product_policy");
 const {
   getWorkflowRun,
+  getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
   getScanRun,
   interruptOrphanedScanRuns,
@@ -450,26 +451,59 @@ function recoverCommunicationWorkflow(db, run, report, { now, orphanTimeoutMs })
   }
   const latestActivityAt = latestCommunicationActivityAt(db, batch);
   if (["running", "stopping"].includes(batch.status) && isOlderThan(latestActivityAt, now, orphanTimeoutMs)) {
-    const interruptedBatch = setCommunicationBatchStatus(db, {
+    settleCommunicationInterruption(db, {
       batchId: batch.id,
-      status: "interrupted",
       now,
       stopCode: "COMMUNICATION_RUN_ORPHANED",
       stopMessage: "communication batch activity expired"
-    });
-    const summary = communicationBatchSummary(db, batch.id);
-    transitionWorkflowRun(db, {
-      id: run.id,
-      status: "interrupted",
-      successfulCount: successfulCount(summary),
-      metrics: communicationWorkflowMetrics(run, summary, interruptedBatch),
-      errorCode: "COMMUNICATION_RUN_ORPHANED",
-      errorMessage: "communication batch activity expired"
     });
     report.workflowRunsInterrupted += 1;
     return;
   }
   report.activeRunsPreserved += 1;
+}
+
+function settleCommunicationInterruption(db, input = {}) {
+  const batchId = Number(input.batchId);
+  const batch = getCommunicationBatch(db, batchId);
+  if (!batch) return { batch: null, workflow: null, settled: false };
+  const workflow = getWorkflowRunByCommunicationBatch(db, batchId);
+  const interruptBatch = ["running", "stopping"].includes(batch.status);
+  const interruptWorkflow = workflow?.status === "communicating";
+  if (!interruptBatch && !interruptWorkflow) {
+    return { batch, workflow, settled: false };
+  }
+
+  db.exec("SAVEPOINT communication_interruption");
+  try {
+    const interruptedBatch = interruptBatch
+      ? setCommunicationBatchStatus(db, {
+        batchId,
+        status: "interrupted",
+        ...(input.now ? { now: input.now } : {}),
+        stopCode: input.stopCode || "COMMUNICATION_PROCESS_FAILED",
+        stopMessage: input.stopMessage || "communication process failed"
+      })
+      : batch;
+    let interruptedWorkflow = workflow;
+    if (interruptWorkflow) {
+      const summary = communicationBatchSummary(db, batchId);
+      interruptedWorkflow = transitionWorkflowRun(db, {
+        id: workflow.id,
+        status: "interrupted",
+        successfulCount: successfulCount(summary),
+        metrics: communicationWorkflowMetrics(workflow, summary, interruptedBatch),
+        errorCode: input.stopCode || "COMMUNICATION_PROCESS_FAILED",
+        errorMessage: input.stopMessage || "communication process failed"
+      });
+    }
+    db.exec("RELEASE SAVEPOINT communication_interruption");
+    return { batch: interruptedBatch, workflow: interruptedWorkflow, settled: true };
+  } catch (error) {
+    try { db.exec("ROLLBACK TO SAVEPOINT communication_interruption"); } catch {}
+    try { db.exec("RELEASE SAVEPOINT communication_interruption"); } catch {}
+    throw error;
+  }
 }
 
 function latestCommunicationActivityAt(db, batch) {
@@ -532,5 +566,6 @@ module.exports = {
   consumedWorkflowBudget,
   countSlotConsumingRuns,
   recoverWorkflowRuns,
-  communicationWorkflowMetrics
+  communicationWorkflowMetrics,
+  settleCommunicationInterruption
 };
