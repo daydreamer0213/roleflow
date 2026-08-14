@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v0.1.0-beta.4.2](https://img.shields.io/badge/release-v0.1.0--beta.4.2-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.2)
+[![Release: v0.1.0-beta.4.3](https://img.shields.io/badge/release-v0.1.0--beta.4.3-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.3)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,7 +12,7 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v0.1.0-beta.4.2` 是 RoleFlow 第一阶段 Wave 4 新用户人工验收后的整改候选版。发布候选已通过 97 组离线检查，不会在测试中访问 BOSS 或执行真实沟通。
+`v0.1.0-beta.4.3` 是 RoleFlow 第一阶段 Wave 4 沟通环节续验候选版。它允许覆盖安装后复用现有数据，并把 `e2e_pending` 的每次验收限制为页面明确显示的一个岗位；发布候选已通过 97 组离线检查，测试不会访问 BOSS 或执行真实沟通。
 
 当前版本适合本地试用、代码审阅和离线流程验证。BOSS 页面结构可能变化，真实消息读取与沟通链路尚未完成人工端到端验收，因此不能把离线通过等同于真实页面已完全验收。任何真实沟通仍必须由用户明确确认，并遵守下文的安全边界。
 
@@ -31,11 +31,11 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-> **请前往 [v0.1.0-beta.4.2 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.2)，下载 `RoleFlow-Setup-0.1.0-beta.4.2.exe`。**
+> **请前往 [v0.1.0-beta.4.3 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.3)，下载 `RoleFlow-Setup-0.1.0-beta.4.3.exe`。**
 >
-> `RoleFlow-v0.1.0-beta.4.2-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
+> `RoleFlow-v0.1.0-beta.4.3-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
-1. 下载并运行 `RoleFlow-Setup-0.1.0-beta.4.2.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。
+1. 下载并运行 `RoleFlow-Setup-0.1.0-beta.4.3.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。覆盖安装会保留现有本地数据，便于继续未完成的人工验收。
 2. 从桌面或开始菜单启动 RoleFlow。启动过程不会显示常驻黑色终端；失败时会显示原因和日志位置。
 3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。
