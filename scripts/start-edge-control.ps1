@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [ValidateSet("", "auto", "plugin", "bundled")]
   [string]$Source = "",
@@ -138,7 +138,7 @@ if ($null -ne $ExistingConfig) {
 $Resolved = Resolve-EdgeControlRoot
 $Root = Resolve-Path -LiteralPath $Resolved.Root -ErrorAction SilentlyContinue
 if ($null -eq $Root) {
-  throw "浏览器连接组件尚未安装或服务未启动。请按 README 的“浏览器连接”步骤准备 Edge Control 后重试。未自动切换到独立浏览器。"
+  throw "浏览器连接组件尚未安装或服务未启动。请按 README 的《浏览器连接》步骤准备 Edge Control 后重试。未自动切换到独立浏览器。"
 }
 $RootPath = $Root.Path
 $ScriptsDir = Join-Path $RootPath "scripts"

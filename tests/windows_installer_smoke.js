@@ -63,6 +63,7 @@ assertUninstallPreservesUserDataByDefault();
 assertUninstallDeletesOnlyApprovedChildren();
 assertInstalledSelfCheckStartsOnAnIsolatedPort();
 assertStandardInstallerStageExcludesLegacyEntrypoints();
+assertPackagedPowerShellScriptsParse();
 
 console.log("windows_installer_smoke ok");
 
@@ -145,6 +146,35 @@ function assertStandardInstallerStageExcludesLegacyEntrypoints() {
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
+}
+
+function assertPackagedPowerShellScriptsParse() {
+  const command = [
+    "$failures = @()",
+    "Get-ChildItem -LiteralPath $env:ROLEFLOW_SCRIPT_ROOT -Recurse -File -Filter '*.ps1' | ForEach-Object {",
+    "  $tokens = $null",
+    "  $errors = $null",
+    "  [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null",
+    "  if ($errors.Count) { $failures += ('{0}: {1}' -f $_.FullName, $errors[0].Message) }",
+    "}",
+    "if ($failures.Count) { Write-Error ($failures -join [Environment]::NewLine); exit 1 }"
+  ].join("; ");
+  const result = spawnSync(powershell, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    command
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ROLEFLOW_SCRIPT_ROOT: path.join(root, "scripts")
+    },
+    timeout: 30_000,
+    windowsHide: true
+  });
+  assert.strictEqual(result.status, 0, combined(result));
 }
 
 function createUninstallFixture() {
