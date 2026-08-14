@@ -19,12 +19,23 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.23.1"
           cache: npm
       - name: Install dependencies
         run: npm ci
       - name: Prepare Windows test storage
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "D:\DevData" | Out-Null
+      - name: Prepare portable Node runtime
+        shell: pwsh
+        run: |
+          $nodeRoot = Split-Path -Parent (Get-Command node -ErrorAction Stop).Source
+          New-Item -ItemType Directory -Force -Path ".runtime" | Out-Null
+          Copy-Item `
+            -LiteralPath $nodeRoot `
+            -Destination ".runtime\node" `
+            -Recurse `
+            -Force
       - name: Run offline checks
-        run: npm test
+        shell: pwsh
+        run: .\.runtime\node\node.exe --disable-warning=ExperimentalWarning .\tests\run_all.js
