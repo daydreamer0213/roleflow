@@ -31,7 +31,9 @@ function createCommunicationBatch({ db, input = {}, deps = {} }) {
 }
 
 function controlCommunicationBatch({ db, input = {}, deps = {} }) {
-  const action = String(input.action || "").trim().toLowerCase();
+  const requestedAction = String(input.action || "").trim().toLowerCase();
+  const singleItemAction = requestedAction === "start_one" || requestedAction === "resume_one";
+  const action = requestedAction.replace(/_one$/, "");
   const batchId = Number(input.batchId);
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
@@ -44,6 +46,13 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
     if (readAmbiguity(db, batchId).blocked) {
       throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
     }
+    const calibration = (deps.communicationCalibrationReader || communicationCalibrationStatus)();
+    if (calibration.acceptance === "e2e_pending" && !singleItemAction) {
+      throw appError("COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED", "端到端验收期间每次只能确认一个岗位。", { statusCode: 409 });
+    }
+    const singleItem = singleItemAction
+      ? authorizedSingleCommunicationItem(listCommunicationBatchItems(db, batchId), input.itemId)
+      : null;
     assertCommunicationExecutionEnabled();
     assertCommunicationRuntimeAvailable(db);
     if (typeof deps.spawnCommunication !== "function") {
@@ -55,11 +64,15 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
     if (running.status !== "running") {
       throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
     }
-    deps.spawnCommunication({ db, batch: running });
+    deps.spawnCommunication({
+      db,
+      batch: running,
+      ...(singleItem ? { singleItemId: singleItem.id } : {})
+    });
     return communicationControlResult(db, running);
   }
   if (action !== "discard") {
-    throw appError("COMMUNICATION_CONTROL_INVALID", "communication action must be start, resume, or discard");
+    throw appError("COMMUNICATION_CONTROL_INVALID", "communication action must be start, resume, start_one, resume_one, or discard");
   }
   const items = listCommunicationBatchItems(db, batchId);
   if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
@@ -79,6 +92,19 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
     stopMessage: "discarded before calibrated execution"
   });
   return communicationControlResult(db, updated);
+}
+
+function authorizedSingleCommunicationItem(items, itemId) {
+  const next = items.find((item) => item.status === "pending");
+  const requestedId = Number(itemId);
+  if (!next
+    || !Number.isInteger(requestedId)
+    || requestedId <= 0
+    || next.id !== requestedId
+    || Number(next.clickCount || 0) !== 0) {
+    throw appError("COMMUNICATION_SINGLE_ITEM_MISMATCH", "授权岗位已变化，请刷新后重新确认。", { statusCode: 409 });
+  }
+  return next;
 }
 
 function getCommunicationStatus({ db, batchId, deps = {} }) {

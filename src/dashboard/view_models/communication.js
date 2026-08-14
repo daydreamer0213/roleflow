@@ -28,11 +28,20 @@ function buildCommunicationViewModel({
     .sort((left, right) => Number(right.status === "ambiguous") - Number(left.status === "ambiguous") || left.position - right.position || left.id - right.id);
   const state = ambiguity.blocked ? "needs_resolution" : stateFor(batch, summary);
   const action = batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
+  const pendingAcceptance = text(current.calibration?.acceptance) === "e2e_pending";
+  const singleItem = pendingAcceptance ? items.find((item) => item.status === "pending") || null : null;
+  const controlAction = pendingAcceptance && action ? `${action}_one` : action;
   const executionEnabled = Boolean(current.calibration?.executionEnabled) && !current.runtimeBlock && !ambiguity.blocked;
   const controls = {
-    visible: state === "pending_review" && Boolean(action) && executionEnabled,
-    action,
-    label: action === "start" ? "确认后串行执行" : "继续串行执行",
+    visible: state === "pending_review"
+      && Boolean(controlAction)
+      && executionEnabled
+      && (!pendingAcceptance || Boolean(singleItem)),
+    action: controlAction,
+    label: pendingAcceptance ? "验收这个岗位并自动暂停" : action === "start" ? "确认后串行执行" : "继续串行执行",
+    singleItemId: pendingAcceptance ? number(singleItem?.id) : 0,
+    singleItemTitle: pendingAcceptance ? text(singleItem?.title) : "",
+    singleItemCompany: pendingAcceptance ? text(singleItem?.company) : "",
     rebindVisible: state === "pending_review"
       && ["paused", "interrupted"].includes(text(batch.status))
       && text(batch.browserMode) === "edge"
@@ -57,11 +66,15 @@ function buildCommunicationViewModel({
 }
 
 function blockedView({ page, integrityIssue, discoveredBatchIds }) {
-  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: { visible: false, action: "", rebindVisible: false, recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
+  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: emptyControls("/diagnostics"), history: [], discoveredBatchIds };
 }
 
 function emptyView({ page, discoveredBatchIds }) {
-  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: { visible: false, action: "", rebindVisible: false, recoveryHref: "/diagnostics" }, history: [], discoveredBatchIds };
+  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: emptyControls("/diagnostics"), history: [], discoveredBatchIds };
+}
+
+function emptyControls(recoveryHref) {
+  return { visible: false, action: "", label: "", singleItemId: 0, singleItemTitle: "", singleItemCompany: "", rebindVisible: false, recoveryHref };
 }
 
 function stateFor(batch, summary) {

@@ -3028,7 +3028,7 @@ function assertCommunicationRebindScope(db, batch, returnUrl) {
   }
 }
 
-function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess = spawn }) {
+function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = null, logger, requestId, spawnProcess = spawn }) {
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
     ...workflowLogContext({ ...(workflow || {}), communicationBatchId: batch.id }),
@@ -3057,6 +3057,9 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
         String(portableCdpPort)
       );
     }
+    if (Number.isInteger(Number(singleItemId)) && Number(singleItemId) > 0) {
+      commandArgs.push("--single-item", String(Number(singleItemId)));
+    }
     child = spawnProcess(process.execPath, commandArgs, {
       cwd: root,
       windowsHide: true,
@@ -3066,7 +3069,11 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
     setCommunicationBatchStatus(db, { batchId: batch.id, status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED", stopMessage: error.message });
     throw error;
   }
-  processLogger.info("communication_process_started", { browserMode: batch.browserMode, childPid: child.pid });
+  processLogger.info("communication_process_started", {
+    browserMode: batch.browserMode,
+    childPid: child.pid,
+    singleItemId: Number(singleItemId) || null
+  });
   child.stdout?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stdout", message: String(chunk).slice(-2000) }));
   child.stderr?.on("data", (chunk) => processLogger.info("communication_process_output", { stream: "stderr", message: String(chunk).slice(-2000) }));
   const interruptRunning = (code, message) => {
@@ -3088,7 +3095,16 @@ function startCommunicationProcess({ db, root, dbPath, batch, logger, requestId,
 
 function communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader }) {
   return {
-    spawnCommunication: ({ batch }) => startCommunicationProcess({ db, root, dbPath, batch, logger, requestId, spawnProcess }),
+    spawnCommunication: ({ batch, singleItemId }) => startCommunicationProcess({
+      db,
+      root,
+      dbPath,
+      batch,
+      singleItemId,
+      logger,
+      requestId,
+      spawnProcess
+    }),
     ...(communicationAmbiguityReader ? { communicationAmbiguityReader } : {})
   };
 }

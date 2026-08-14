@@ -75,11 +75,39 @@ let noDbPathServer;
     db,
     input: { planId: fixture.planId, jobIds: [fixture.launcherJobId], browserMode: "edge" }
   });
+  const missingLauncherItem = listCommunicationBatchItems(db, missingLauncher.batch.id)[0];
   assert.throws(
-    () => controlCommunicationBatch({ db, input: { batchId: missingLauncher.batch.id, action: "start" } }),
+    () => controlCommunicationBatch({
+      db,
+      input: { batchId: missingLauncher.batch.id, action: "start_one", itemId: missingLauncherItem.id }
+    }),
     (error) => error.code === "COMMUNICATION_PROCESS_LAUNCHER_REQUIRED"
   );
   assert.strictEqual(getCommunicationBatch(db, missingLauncher.batch.id).status, "confirmed");
+  const mismatched = createCommunicationBatch({
+    db,
+    input: {
+      planId: fixture.planId,
+      jobIds: [fixture.mismatchFirstJobId, fixture.mismatchSecondJobId],
+      browserMode: "edge"
+    }
+  });
+  const [mismatchFirst, mismatchSecond] = listCommunicationBatchItems(db, mismatched.batch.id);
+  let mismatchSpawns = 0;
+  assert.throws(
+    () => controlCommunicationBatch({
+      db,
+      input: { batchId: mismatched.batch.id, action: "start_one", itemId: mismatchSecond.id },
+      deps: { spawnCommunication() { mismatchSpawns += 1; } }
+    }),
+    (error) => error.code === "COMMUNICATION_SINGLE_ITEM_MISMATCH" && error.statusCode === 409
+  );
+  assert.strictEqual(mismatchSpawns, 0);
+  assert.strictEqual(getCommunicationBatch(db, mismatched.batch.id).status, "confirmed");
+  assert.deepStrictEqual(
+    listCommunicationBatchItems(db, mismatched.batch.id).map((item) => [item.id, item.status, item.clickCount]),
+    [[mismatchFirst.id, "pending", 0], [mismatchSecond.id, "pending", 0]]
+  );
   const rebindable = createCommunicationBatch({
     db,
     input: { planId: fixture.planId, jobIds: [fixture.rebindJobId], browserMode: "edge" }
@@ -164,19 +192,39 @@ let noDbPathServer;
     reasonCode: "BOSS_RISK_CONTROL",
     details: { blockedUntil: "2099-01-01T00:00:00.000Z" }
   });
-  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "BOSS_RISK_CONTROL", 409);
+  const startItem = listCommunicationBatchItems(db, batchId)[0];
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId, action: "start_one", itemId: startItem.id },
+    "BOSS_RISK_CONTROL",
+    409
+  );
   assert.strictEqual(spawns.length, 0);
   clearSiteRuntimeState(db, "boss");
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "pause" }, "COMMUNICATION_CONTROL_INVALID");
   assert.strictEqual(spawns.length, 0);
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId, action: "start" },
+    "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED",
+    409
+  );
+  assert.strictEqual(spawns.length, 0);
 
-  const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
+  const started = await postJson(baseUrl, "/api/communication-control", {
+    batchId,
+    action: "start_one",
+    itemId: startItem.id
+  });
   assert.strictEqual(started.status, 200);
   assert.deepStrictEqual(Object.keys(started.body).sort(), ["batch", "items", "summary"]);
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
   assert.deepStrictEqual(spawns[0].args.slice(spawns[0].args.indexOf("communicate")), [
-    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "portable", "--cdp-port", "9222"
+    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "portable", "--cdp-port", "9222",
+    "--single-item", String(startItem.id)
   ]);
 
   const interrupted = await postJson(baseUrl, "/api/communication-batch", {
@@ -241,8 +289,13 @@ let noDbPathServer;
     jobIds: fixture.syncSpawnJobId,
     browserMode: "edge"
   });
+  const syncSpawnItem = listCommunicationBatchItems(db, syncSpawnFailure.body.batch.id)[0];
   spawnBehavior = "throw";
-  await expectApiError(baseUrl, "/api/communication-control", { batchId: syncSpawnFailure.body.batch.id, action: "start" }, "COMMUNICATION_REQUEST_FAILED");
+  await expectApiError(baseUrl, "/api/communication-control", {
+    batchId: syncSpawnFailure.body.batch.id,
+    action: "start_one",
+    itemId: syncSpawnItem.id
+  }, "COMMUNICATION_REQUEST_FAILED");
   assert.deepStrictEqual(
     pickBatchState(getCommunicationBatch(db, syncSpawnFailure.body.batch.id)),
     { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED" }
@@ -254,7 +307,12 @@ let noDbPathServer;
     jobIds: fixture.childErrorJobId,
     browserMode: "edge"
   });
-  const childErrorStarted = await postJson(baseUrl, "/api/communication-control", { batchId: childErrorFailure.body.batch.id, action: "start" });
+  const childErrorItem = listCommunicationBatchItems(db, childErrorFailure.body.batch.id)[0];
+  const childErrorStarted = await postJson(baseUrl, "/api/communication-control", {
+    batchId: childErrorFailure.body.batch.id,
+    action: "start_one",
+    itemId: childErrorItem.id
+  });
   assert.strictEqual(childErrorStarted.status, 200);
   spawnedChildren.at(-1).emit("error", new Error("child process error"));
   assert.deepStrictEqual(
@@ -269,7 +327,12 @@ let noDbPathServer;
     jobIds: fixture.missingDbPathJobId,
     browserMode: "edge"
   });
-  await expectApiError(noDbPathBaseUrl, "/api/communication-control", { batchId: missingDbPath.body.batch.id, action: "start" }, "COMMUNICATION_DB_PATH_REQUIRED", 500);
+  const missingDbPathItem = listCommunicationBatchItems(db, missingDbPath.body.batch.id)[0];
+  await expectApiError(noDbPathBaseUrl, "/api/communication-control", {
+    batchId: missingDbPath.body.batch.id,
+    action: "start_one",
+    itemId: missingDbPathItem.id
+  }, "COMMUNICATION_DB_PATH_REQUIRED", 500);
   assert.deepStrictEqual(
     pickBatchState(getCommunicationBatch(db, missingDbPath.body.batch.id)),
     { status: "interrupted", stopCode: "COMMUNICATION_PROCESS_START_FAILED" }
@@ -299,6 +362,8 @@ function seed(database) {
     launcherJobId: upsertJob(database, job("launcher", { title: "Launcher role" }), scanBatchId),
     rebindJobId: upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId),
     directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
+    mismatchFirstJobId: upsertJob(database, job("mismatch-first", { title: "Mismatch first role" }), scanBatchId),
+    mismatchSecondJobId: upsertJob(database, job("mismatch-second", { title: "Mismatch second role" }), scanBatchId),
     startJobId: upsertJob(database, job("start", { title: "Start role", company: "Start company" }), scanBatchId),
     ambiguousJobId: upsertJob(database, job("ambiguous", { title: "Ambiguous role" }), scanBatchId),
     discardJobId: upsertJob(database, job("discard", { title: "Discard role" }), scanBatchId),
@@ -342,13 +407,18 @@ function recoveryFloorCommunicationGuardSmoke(database, fixture) {
   }).batch;
   setCommunicationBatchStatus(database, { batchId: resumeBatch.id, status: "running" });
   setCommunicationBatchStatus(database, { batchId: resumeBatch.id, status: "paused" });
+  const startItem = listCommunicationBatchItems(database, startBatch.id)[0];
+  const resumeItem = listCommunicationBatchItems(database, resumeBatch.id)[0];
   let spawnCalls = 0;
   withFrozenNow(riskAtMs + 47 * 60 * 60_000, () => {
-    for (const [batchId, action] of [[startBatch.id, "start"], [resumeBatch.id, "resume"]]) {
+    for (const [batchId, action, itemId] of [
+      [startBatch.id, "start_one", startItem.id],
+      [resumeBatch.id, "resume_one", resumeItem.id]
+    ]) {
       assert.throws(
         () => controlCommunicationBatch({
           db: database,
-          input: { batchId, action },
+          input: { batchId, action, itemId },
           deps: { spawnCommunication() { spawnCalls += 1; } }
         }),
         (error) => error.code === "BOSS_RISK_CONTROL" && error.statusCode === 409

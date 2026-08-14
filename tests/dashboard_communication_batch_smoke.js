@@ -52,7 +52,10 @@ function assertCommunicationViewModel() {
     current: communicationStatus({}, {}, [{ id: 1, batchId: 41, status: "pending", titleSnapshot: "Pending role", companySnapshot: "Example", salarySnapshot: "15-20K", locationSnapshot: "Guangzhou", tierSnapshot: "primary", evidenceSnapshot: ["Python"], riskSnapshot: ["weekend unknown"], proposalReasonSnapshot: "skill match" }])
   });
   assert.equal(pending.state, "pending_review");
-  assert.equal(pending.controls.action, "start");
+  assert.equal(pending.controls.action, "start_one");
+  assert.equal(pending.controls.singleItemId, 1);
+  assert.equal(pending.controls.singleItemTitle, "Pending role");
+  assert.equal(pending.controls.singleItemCompany, "Example");
   assert.equal(pending.controls.visible, true);
   assert.equal(pending.quota.used, 4);
   assert.equal(pending.outcomes.succeeded, 0);
@@ -251,7 +254,7 @@ assertCommunicationViewModel();
     const spawnsBeforeInvalidScope = spawns.length;
     const invalidScope = await getText(baseUrl, pathname);
     assert.match(invalidScope.body, /批次范围无法安全确认/, `${pathname} must fail closed`);
-    assert.doesNotMatch(invalidScope.body, /name="action" value="(?:start|resume)"/, `${pathname} must not expose execution controls`);
+    assert.doesNotMatch(invalidScope.body, /name="action" value="(?:start|resume)(?:_one)?"/, `${pathname} must not expose execution controls`);
     assert.strictEqual(spawns.length, spawnsBeforeInvalidScope, `${pathname} must not spawn communication`);
   }
   const [unsafeSchemeItem, unsafeOriginItem] = listCommunicationBatchItems(db, batchId);
@@ -321,7 +324,7 @@ assertCommunicationViewModel();
   assert.match(directOrphan.body, new RegExp(`批次 #${batchId}</h2>`), "a direct legacy batch URL must remain readable");
   const mismatchedBatch = await getText(baseUrl, `/communication?batchId=${batchId}&planId=${fixture.smallPlanId}`);
   assert.match(mismatchedBatch.body, /批次范围无法安全确认/);
-  assert.doesNotMatch(mismatchedBatch.body, /name="action" value="(?:start|resume)"/);
+  assert.doesNotMatch(mismatchedBatch.body, /name="action" value="(?:start|resume)(?:_one)?"/);
 
   const tamperedPortable = await postJson(baseUrl, "/api/communication-batch", {
     planId: fixture.planId,
@@ -330,6 +333,7 @@ assertCommunicationViewModel();
   });
   assert.strictEqual(tamperedPortable.status, 200);
   const tamperedBatchId = tamperedPortable.body.batch.id;
+  const tamperedItem = listCommunicationBatchItems(db, tamperedBatchId)[0];
   db.prepare("UPDATE communication_batches SET policy_json = ? WHERE id = ?").run(JSON.stringify({
     ...tamperedPortable.body.batch.policySnapshot,
     browser: { mode: "portable", cdpPort: 9223 }
@@ -338,7 +342,7 @@ assertCommunicationViewModel();
   await expectApiError(
     baseUrl,
     "/api/communication-control",
-    { batchId: tamperedBatchId, action: "start" },
+    { batchId: tamperedBatchId, action: "start_one", itemId: tamperedItem.id },
     "COMMUNICATION_PORTABLE_CDP_PORT_INVALID",
     409
   );
@@ -352,8 +356,13 @@ assertCommunicationViewModel();
   assert.match(review.body, /校准：已完成/);
   assert.match(review.body, /端到端验收：待人工 E2E 验收（e2e_pending）/);
   assert.match(review.body, /技术执行门：已启用/);
-  assert.match(review.body, /name="action" value="start"/);
-  assert.match(review.body, /class="communication-primary" data-page-primary="true" name="action" value="start"/);
+  const reviewItem = listCommunicationBatchItems(db, batchId)[0];
+  assert.match(review.body, /下一次仅验收 1 个岗位/);
+  assert.match(review.body, /Primary role \/ Company primary/);
+  assert.match(review.body, new RegExp(`name="itemId" value="${reviewItem.id}"`));
+  assert.match(review.body, /name="action" value="start_one"/);
+  assert.match(review.body, /验收这个岗位并自动暂停/);
+  assert.doesNotMatch(review.body, /name="action" value="start"/);
   assert.match(review.body, /class="communication-discard" name="action" value="discard"/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
@@ -367,7 +376,6 @@ assertCommunicationViewModel();
   assert.strictEqual(status.body.calibration.executionEnabled, true);
   assert.strictEqual(status.body.quota.limit, 150);
   assert.strictEqual(typeof communicationAmbiguityState, "function");
-  const reviewItem = listCommunicationBatchItems(db, batchId)[0];
   assert.strictEqual(communicationAmbiguityState(
     { statusCounts: { ambiguous: 1, pending: 1 } },
     [{ ...reviewItem, status: "pending" }]
@@ -377,17 +385,17 @@ assertCommunicationViewModel();
     [{ ...reviewItem, status: "ambiguous" }]
   ).firstItemId, reviewItem.id);
   for (const [drift, action, jobId] of [
-    ["summary-only", "start", fixture.summaryDriftStartId],
-    ["summary-only", "resume", fixture.summaryDriftResumeId],
-    ["item-only", "start", fixture.itemDriftStartId],
-    ["item-only", "resume", fixture.itemDriftResumeId]
+    ["summary-only", "start_one", fixture.summaryDriftStartId],
+    ["summary-only", "resume_one", fixture.summaryDriftResumeId],
+    ["item-only", "start_one", fixture.itemDriftStartId],
+    ["item-only", "resume_one", fixture.itemDriftResumeId]
   ]) {
     const driftBatch = await postJson(baseUrl, "/api/communication-batch", {
       planId: fixture.planId,
       jobIds: jobId,
       browserMode: "edge"
     });
-    if (action === "resume") {
+    if (action === "resume_one") {
       setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "running" });
       setCommunicationBatchStatus(db, { batchId: driftBatch.body.batch.id, status: "paused" });
     }
@@ -400,7 +408,8 @@ assertCommunicationViewModel();
     const spawnsBefore = spawns.length;
     await expectApiError(baseUrl, "/api/communication-control", {
       batchId: driftBatch.body.batch.id,
-      action
+      action,
+      itemId: driftItem.id
     }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
     assert.deepStrictEqual(getCommunicationBatch(db, driftBatch.body.batch.id), batchBefore);
     assert.deepStrictEqual(listCommunicationBatchItems(db, driftBatch.body.batch.id), itemsBefore);
@@ -408,13 +417,24 @@ assertCommunicationViewModel();
     ambiguityOverride = null;
   }
 
-  const started = await postJson(baseUrl, "/api/communication-control", { batchId, action: "start" });
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId, action: "start" },
+    "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED",
+    409
+  );
+  const started = await postJson(baseUrl, "/api/communication-control", {
+    batchId,
+    action: "start_one",
+    itemId: reviewItem.id
+  });
   assert.strictEqual(started.status, 200);
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
   assert.deepStrictEqual(
     spawns[0].args.slice(spawns[0].args.indexOf("--browser")),
-    ["--browser", "portable", "--cdp-port", "9222"]
+    ["--browser", "portable", "--cdp-port", "9222", "--single-item", String(reviewItem.id)]
   );
 
   setCommunicationBatchStatus(db, {
@@ -424,8 +444,13 @@ assertCommunicationViewModel();
     stopMessage: "test interruption"
   });
   const interruptedReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
-  assert.match(interruptedReview.body, /name="action" value="resume"/);
-  const resumedBatch = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
+  assert.match(interruptedReview.body, /name="action" value="resume_one"/);
+  assert.match(interruptedReview.body, new RegExp(`name="itemId" value="${reviewItem.id}"`));
+  const resumedBatch = await postJson(baseUrl, "/api/communication-control", {
+    batchId,
+    action: "resume_one",
+    itemId: reviewItem.id
+  });
   assert.strictEqual(resumedBatch.status, 200);
   assert.strictEqual(resumedBatch.body.batch.status, "running");
   assert.strictEqual(spawns.length, 2);
@@ -433,18 +458,16 @@ assertCommunicationViewModel();
   assert(spawns[0].args.includes(String(batchId)));
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "start" }, "COMMUNICATION_BATCH_STATUS_INVALID", 409);
 
-  const [ambiguousItem, secondAmbiguousItem] = listCommunicationBatchItems(db, batchId);
-  for (const [index, item] of [ambiguousItem, secondAmbiguousItem].entries()) {
-    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "pending", status: "opening" });
-    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "opening", status: "verified" });
-    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
-    transitionCommunicationItem(db, {
-      itemId: item.id,
-      expectedStatus: "click_dispatched",
-      status: "ambiguous",
-      errorCode: index === 0 ? "COMMUNICATION_ACTION_NOT_TRIGGERED" : "COMMUNICATION_RESULT_AMBIGUOUS"
-    });
-  }
+  const [ambiguousItem, pendingAfterAmbiguity] = listCommunicationBatchItems(db, batchId);
+  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, { itemId: ambiguousItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(ambiguousItem) });
+  transitionCommunicationItem(db, {
+    itemId: ambiguousItem.id,
+    expectedStatus: "click_dispatched",
+    status: "ambiguous",
+    errorCode: "COMMUNICATION_ACTION_NOT_TRIGGERED"
+  });
   setCommunicationBatchStatus(db, {
     batchId,
     status: "interrupted",
@@ -453,7 +476,7 @@ assertCommunicationViewModel();
   });
   const ambiguousReview = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
-  assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
+  assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume_one"/);
   assert.match(ambiguousReview.body, /等待人工确认沟通结果/);
   assert.match(ambiguousReview.body, /平台没有响应本次点击，RoleFlow 已停止且不会自动重试。/);
   assert.match(ambiguousReview.body, /COMMUNICATION_ACTION_NOT_TRIGGERED/);
@@ -470,11 +493,18 @@ assertCommunicationViewModel();
   const resolutionAudit = db.prepare("SELECT payload_json FROM events WHERE job_id = ? AND event_type = 'communication_manual_resolution' ORDER BY id DESC LIMIT 1").get(fixture.primaryId);
   assert.strictEqual(JSON.parse(resolutionAudit.payload_json).note, evidenceNote);
   assert.strictEqual(db.prepare("SELECT status FROM candidate_job_states WHERE profile_id = ? AND job_id = ?").get(1, fixture.primaryId), undefined);
-  await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "resume" }, "COMMUNICATION_RESUME_REQUIRES_REVIEW", 409);
-  const secondResolved = await postJson(baseUrl, "/api/communication-resolve", { batchId, itemId: secondAmbiguousItem.id, status: "stopped", evidenceNote: "第二个岗位已人工核对并停止" });
-  assert.strictEqual(secondResolved.status, 200);
-  assert.strictEqual(secondResolved.body.item.status, "stopped");
-  const resumedAfterReview = await postJson(baseUrl, "/api/communication-control", { batchId, action: "resume" });
+  await expectApiError(
+    baseUrl,
+    "/api/communication-control",
+    { batchId, action: "resume" },
+    "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED",
+    409
+  );
+  const resumedAfterReview = await postJson(baseUrl, "/api/communication-control", {
+    batchId,
+    action: "resume_one",
+    itemId: pendingAfterAmbiguity.id
+  });
   assert.strictEqual(resumedAfterReview.status, 200);
   assert.strictEqual(resumedAfterReview.body.batch.status, "running");
   assert.strictEqual(spawns.length, 3);

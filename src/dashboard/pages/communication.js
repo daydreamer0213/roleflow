@@ -28,9 +28,16 @@ function primary(vm) {
   if (vm.state === "completed") return `<section class="action-panel"><p class="section-label">本批次已结束</p><h2>已保留结果，未把未核验尝试当作成功</h2><p class="muted">可在下方查看条目和近期批次。</p></section>`;
   const rebind = vm.controls?.rebindVisible ? `<form method="post" action="/api/communication-rebind"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="secondary">重新检查浏览器页面</button></form>` : "";
   if (!vm.controls?.visible && !rebind) return "";
-  const execute = vm.controls?.visible ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-primary" data-page-primary="true" name="action" value="${escapeAttr(vm.controls.action)}">${escapeHtml(vm.controls.label)}</button></form>` : "";
+  const singleItemId = number(vm.controls?.singleItemId);
+  const execute = vm.controls?.visible ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}">${singleItemId ? `<input type="hidden" name="itemId" value="${singleItemId}">` : ""}<button class="communication-primary" data-page-primary="true" name="action" value="${escapeAttr(vm.controls.action)}">${escapeHtml(vm.controls.label)}</button></form>` : "";
   const discard = ["confirmed", "paused"].includes(vm.batch?.status) ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-discard" name="action" value="discard">安全撤回</button></form>` : "";
-  return `<section class="action-panel"><p class="section-label">等待人工确认</p><h2>确认后按固定清单串行执行</h2><p class="muted">开始前仍会检查校准、身份、配额、冷却、无重复点击和范围一致性。“重新检查”只读取现有固定标签并更新本地绑定，不会启动沟通。</p><div class="button-row">${execute}${discard}${rebind}</div></section>`;
+  const heading = singleItemId
+    ? `${escapeHtml(vm.controls.singleItemTitle || "未保存岗位")} / ${escapeHtml(vm.controls.singleItemCompany || "未保存公司")}`
+    : "确认后按固定清单串行执行";
+  const copy = singleItemId
+    ? "本次只处理这个岗位，随后自动暂停；结果不明不会重试。"
+    : "开始前仍会检查校准、身份、配额、冷却、无重复点击和范围一致性。“重新检查”只读取现有固定标签并更新本地绑定，不会启动沟通。";
+  return `<section class="action-panel"><p class="section-label">${singleItemId ? "下一次仅验收 1 个岗位" : "等待人工确认"}</p><h2>${heading}</h2><p class="muted">${copy}</p><div class="button-row">${execute}${discard}${rebind}</div></section>`;
 }
 
 function currentBatch(vm) {
