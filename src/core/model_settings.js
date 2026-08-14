@@ -269,6 +269,83 @@ function saveModelSettings({ root, input, fallbackModelConfig }) {
   return settings;
 }
 
+function saveModelTaskProfileParameters({ root, taskProfile, input, fallbackModelConfig }) {
+  const profileId = normalizeTaskProfileId(taskProfile);
+  const current = loadModelSettings({ root, fallbackModelConfig });
+  const settings = applyTaskProfileInput(current.settings, profileId, input);
+  const profile = settings.taskProfiles[profileId];
+  const targetSecretId = secretIdForSettings(settings, profileId);
+  const suppliedKey = profile.credentialRef === "independent" ? String(input.apiKey || "").trim() : "";
+  const settingsFile = settingsPath(root);
+  const oldSettings = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
+  const targetFile = targetSecretId ? secretPath(root, targetSecretId) : "";
+  const oldSecret = targetFile && fs.existsSync(targetFile) ? fs.readFileSync(targetFile) : null;
+  try {
+    if (targetSecretId && suppliedKey) saveSecret(root, targetSecretId, suppliedKey);
+    writeSettings(root, settings);
+  } catch (error) {
+    restoreFile(settingsFile, oldSettings);
+    if (targetFile) restoreFile(targetFile, oldSecret);
+    throw appError("MODEL_SETTINGS_SAVE_FAILED", "模型参数保存失败；原配置已恢复，请重试。", { cause: error, statusCode: 500 });
+  }
+  return loadModelSettings({ root, fallbackModelConfig });
+}
+
+async function saveVerifiedPrimaryModelProfiles({
+  root,
+  input,
+  fallbackModelConfig,
+  connectionTester = testModelConnection
+}) {
+  const current = loadModelSettings({ root, fallbackModelConfig });
+  const settings = applySharedCredentialInput(current.settings, input);
+  const sharedSecretId = secretIdForCredential("model-api-key-shared", settings.sharedCredential);
+  const suppliedSharedKey = String(input.apiKey || "").trim();
+  const storedSharedKey = sharedSecretId && inspectSecret(root, sharedSecretId).configured
+    ? loadSecret(root, sharedSecretId)
+    : "";
+  const verifications = {};
+
+  for (const profileId of MODEL_TASK_PROFILE_IDS) {
+    const effective = effectiveTaskProfile(settings, profileId);
+    const secretId = secretIdForSettings(settings, profileId);
+    const apiKey = effective.credentialRef === "shared"
+      ? suppliedSharedKey || storedSharedKey
+      : secretId && inspectSecret(root, secretId).configured
+        ? loadSecret(root, secretId)
+        : "";
+    if (effective.provider !== "mock" && !apiKey) {
+      throw appError("MODEL_KEY_REQUIRED", `${listModelTaskProfiles().find((item) => item.id === profileId)?.label || profileId}缺少可用 API Key。`, { statusCode: 400 });
+    }
+    verifications[profileId] = effective.provider === "mock"
+      ? { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 0, httpStatus: 0 }
+      : await connectionTester({ settings: { ...effective, taskProfile: profileId }, apiKey });
+  }
+
+  for (const profileId of MODEL_TASK_PROFILE_IDS) {
+    const effective = effectiveTaskProfile(settings, profileId);
+    settings.taskProfiles[profileId].connection = {
+      ...verifications[profileId],
+      fingerprint: profileFingerprint(effective)
+    };
+  }
+  settings.revision = settingsFingerprint(settings);
+  const finalized = normalizeSettings(settings);
+  const settingsFile = settingsPath(root);
+  const oldSettings = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
+  const targetFile = sharedSecretId ? secretPath(root, sharedSecretId) : "";
+  const oldSecret = targetFile && fs.existsSync(targetFile) ? fs.readFileSync(targetFile) : null;
+  try {
+    if (sharedSecretId && suppliedSharedKey) saveSecret(root, sharedSecretId, suppliedSharedKey);
+    writeSettings(root, finalized);
+  } catch (error) {
+    restoreFile(settingsFile, oldSettings);
+    if (targetFile) restoreFile(targetFile, oldSecret);
+    throw appError("MODEL_SETTINGS_SAVE_FAILED", "模型已验证，但本机配置保存失败；原配置已恢复，请重试。", { cause: error, statusCode: 500 });
+  }
+  return loadModelSettings({ root, fallbackModelConfig });
+}
+
 async function saveVerifiedModelConfiguration({ root, input, fallbackModelConfig, connectionTester = testModelConnection }) {
   return saveVerifiedModelTaskProfile({
     root,
@@ -902,6 +979,30 @@ function applyTaskProfileInput(settings, profileId, input = {}) {
   return finalized;
 }
 
+function applySharedCredentialInput(settings, input = {}) {
+  const result = normalizeSettings(settings);
+  const presetId = normalizePresetId(input.preset || result.sharedCredential.preset);
+  const preset = MODEL_PRESETS[presetId];
+  result.sharedCredential = {
+    preset: presetId,
+    provider: preset.provider,
+    baseUrl: presetId === "custom"
+      ? normalizeBaseUrl(input.baseUrl || result.sharedCredential.baseUrl)
+      : normalizeBaseUrl(preset.baseUrl)
+  };
+  for (const profileId of MODEL_TASK_PROFILE_IDS) {
+    const profile = result.taskProfiles[profileId];
+    if (profile.credentialRef !== "shared") continue;
+    profile.preset = result.sharedCredential.preset;
+    profile.provider = result.sharedCredential.provider;
+    profile.baseUrl = result.sharedCredential.baseUrl;
+    profile.connection = { status: "unverified", checkedAt: "", latencyMs: null, httpStatus: null, fingerprint: "" };
+    profile.revision = profileFingerprint(profile);
+  }
+  result.revision = settingsFingerprint(result);
+  return normalizeSettings(result);
+}
+
 function secretIdForSettings(settings = {}, taskProfile = "") {
   const normalized = normalizeSettings(settings);
   if (taskProfile) {
@@ -1149,6 +1250,8 @@ module.exports = {
   listModelTaskProfiles,
   loadModelSettings,
   saveModelSettings,
+  saveModelTaskProfileParameters,
+  saveVerifiedPrimaryModelProfiles,
   saveVerifiedModelConfiguration,
   saveVerifiedModelTaskProfile,
   saveVerifiedBatchBackup,

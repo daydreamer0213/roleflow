@@ -9,6 +9,8 @@ const {
   resolveRuntimeModelConfig,
   resolveRuntimeBatchBackup,
   isModelReady,
+  saveModelTaskProfileParameters,
+  saveVerifiedPrimaryModelProfiles,
   saveVerifiedModelTaskProfile,
   saveVerifiedBatchBackup,
   restoreRecommendedTaskProfile,
@@ -27,6 +29,7 @@ const verified = async () => ({ status: "verified", checkedAt: new Date().toISOS
   await v1MigrationSmoke();
   await legacyFallbackSmoke();
   await taskRoutingAndReadinessSmoke();
+  await primaryProfilesAtomicVerificationSmoke();
   await independentCredentialsAndBackupSmoke();
   console.log("model_task_profiles_smoke ok");
 })().catch((error) => {
@@ -268,6 +271,82 @@ async function taskRoutingAndReadinessSmoke() {
     assert.strictEqual(state.settings.taskProfiles.deep_analysis.connection.status, "unverified");
     assert.strictEqual(isModelReady(state, { taskProfile: "deep_analysis" }), false);
     assert.strictEqual(state.settings.taskProfiles.batch_screening.connection.status, "verified", "restore must not touch the other profile");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function primaryProfilesAtomicVerificationSmoke() {
+  const root = tempRoot("zhiping-profiles-primary-");
+  try {
+    let state = saveModelTaskProfileParameters({
+      root,
+      taskProfile: "batch_screening",
+      fallbackModelConfig: fallback,
+      input: {
+        credentialRef: "shared",
+        model: "deepseek-v4-flash",
+        timeoutMs: 45000,
+        thinkingMode: "disabled",
+        reasoningEffort: "high",
+        concurrency: 2
+      }
+    });
+    assert.strictEqual(state.settings.taskProfiles.batch_screening.timeoutMs, 45000);
+    assert.strictEqual(state.settings.taskProfiles.batch_screening.connection.status, "unverified");
+
+    const probes = [];
+    state = await saveVerifiedPrimaryModelProfiles({
+      root,
+      fallbackModelConfig: fallback,
+      input: { preset: "deepseek", apiKey: "shared-primary-key" },
+      connectionTester: async ({ settings }) => {
+        probes.push(settings.taskProfile);
+        return {
+          status: "verified",
+          checkedAt: "2026-08-14T08:00:00.000Z",
+          latencyMs: settings.taskProfile === "deep_analysis" ? 11 : 13,
+          httpStatus: 200
+        };
+      }
+    });
+    assert.deepStrictEqual(probes, ["deep_analysis", "batch_screening"]);
+    assert.strictEqual(state.settings.taskProfiles.deep_analysis.connection.status, "verified");
+    assert.strictEqual(state.settings.taskProfiles.batch_screening.connection.status, "verified");
+    assert.strictEqual(
+      loadSecret(root, secretIdForSettings(state.settings, "deep_analysis")),
+      "shared-primary-key"
+    );
+
+    const settingsBeforeFailure = fs.readFileSync(settingsPath(root));
+    const sharedSecretFile = secretPath(root, secretIdForSettings(state.settings, "deep_analysis"));
+    const secretBeforeFailure = fs.readFileSync(sharedSecretFile);
+    const failedProbes = [];
+    await assert.rejects(
+      () => saveVerifiedPrimaryModelProfiles({
+        root,
+        fallbackModelConfig: fallback,
+        input: { preset: "deepseek", apiKey: "must-not-replace-shared-key" },
+        connectionTester: async ({ settings }) => {
+          failedProbes.push(settings.taskProfile);
+          if (settings.taskProfile === "batch_screening") {
+            const error = new Error("batch authentication failed");
+            error.code = "MODEL_AUTH_FAILED";
+            throw error;
+          }
+          return {
+            status: "verified",
+            checkedAt: "2026-08-14T08:01:00.000Z",
+            latencyMs: 9,
+            httpStatus: 200
+          };
+        }
+      }),
+      (error) => error.code === "MODEL_AUTH_FAILED"
+    );
+    assert.deepStrictEqual(failedProbes, ["deep_analysis", "batch_screening"]);
+    assert.deepStrictEqual(fs.readFileSync(settingsPath(root)), settingsBeforeFailure);
+    assert.deepStrictEqual(fs.readFileSync(sharedSecretFile), secretBeforeFailure);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
