@@ -151,6 +151,14 @@ async function connectionErrorSmoke() {
       fetchImpl: async () => new Response(JSON.stringify({ error: { message: "upstream test" } }), { status, headers: { "content-type": "application/json" } })
     }), (error) => error.code === code);
   }
+  const echoedApiKey = "echoed-api-key-value";
+  await assert.rejects(() => testModelConnection({
+    settings,
+    apiKey: echoedApiKey,
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: { message: `upstream rejected ${echoedApiKey}` }
+    }), { status: 401, headers: { "content-type": "application/json" } })
+  }), (error) => error.code === "MODEL_AUTH_FAILED" && !error.message.includes(echoedApiKey));
   await assert.rejects(() => testModelConnection({
     settings,
     apiKey: "test",

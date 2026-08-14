@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const {
   BossSiteAdapter,
-  classifyBossCommunicationSnapshot
+  classifyBossCommunicationSnapshot,
+  classifyBossCommunicationNetworkLog
 } = require("../src/adapters/sites/boss");
 const { communicationCalibrationStatus } = require("../src/core/communication_calibration");
 
@@ -1000,6 +1001,21 @@ function assertNoPreparationAction(browser, before) {
   assert(!JSON.stringify(observedSuccess).includes("fixture-security"));
   assert(!JSON.stringify(observedSuccess).includes("private message body"));
   assert.strictEqual(observedSuccessBrowser.calls.stopNetworkLog.length, 1);
+
+  const externalSamePath = classifyBossCommunicationNetworkLog({
+    entries: [{
+      ...acceptedNetworkLog().entries[0],
+      url: "https://example.com/wapi/zpgeek/friend/add.json"
+    }]
+  });
+  assert.deepStrictEqual(externalSamePath, {
+    state: "no_matching_request",
+    evidence: { endpoints: [] }
+  });
+  const boundedNetworkEvidence = classifyBossCommunicationNetworkLog({
+    entries: Array.from({ length: 20 }, () => ({ ...acceptedNetworkLog().entries[0] }))
+  });
+  assert.strictEqual(boundedNetworkEvidence.evidence.endpoints.length, 12);
 
   for (const [name, networkLog, expectedState, expectedPageState, expectedErrorCode] of [
     ["HTTP failure", acceptedNetworkLog({ status: 503, code: "retry", elapsedMs: 91 }), "platform_rejected"],

@@ -509,7 +509,7 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
     clearTimeout(timer);
   }
 
-  if (!response.ok) throw modelHttpError(response.status, upstreamMessage(payload));
+  if (!response.ok) throw modelHttpError(response.status, upstreamMessage(payload, apiKey));
   if (!Array.isArray(payload?.choices) || !payload.choices.length) {
     throw appError("MODEL_INVALID_RESPONSE", "模型接口已响应，但返回格式不符合 OpenAI 兼容协议。", { statusCode: 502, details: { httpStatus: response.status } });
   }
@@ -1164,8 +1164,10 @@ function modelHttpError(status, upstream = "") {
   return appError("MODEL_REQUEST_REJECTED", `模型接口拒绝了连接测试${suffix}`, { statusCode: 400, details: { httpStatus: status } });
 }
 
-function upstreamMessage(payload) {
-  return String(payload?.error?.message || payload?.message || "").replace(/[\r\n]+/g, " ").slice(0, 180);
+function upstreamMessage(payload, apiKey = "") {
+  const message = String(payload?.error?.message || payload?.message || "").replace(/[\r\n]+/g, " ");
+  const secret = String(apiKey || "").trim();
+  return (secret ? message.split(secret).join("[REDACTED]") : message).slice(0, 180);
 }
 
 function legacyApiKeyEnv(config = {}) {

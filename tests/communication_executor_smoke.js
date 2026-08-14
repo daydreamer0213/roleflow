@@ -268,7 +268,18 @@ async function ambiguousAndFatalStopSmoke() {
             return {
               state: "ambiguous",
               errorCode: code,
-              evidence: { endpoints: [], pageState: code === "COMMUNICATION_ACTION_NOT_TRIGGERED" ? "no_matching_request" : "confirmation_dialog" }
+              evidence: {
+                endpoints: code === "COMMUNICATION_USER_ACTION_REQUIRED"
+                  ? Array.from({ length: 20 }, () => ({
+                      endpointKind: "chat_config",
+                      httpStatus: 200,
+                      businessCode: "0",
+                      businessCategory: "success",
+                      elapsedMs: 7
+                    }))
+                  : [],
+                pageState: code === "COMMUNICATION_ACTION_NOT_TRIGGERED" ? "no_matching_request" : "confirmation_dialog"
+              }
             };
           }
         },
@@ -284,6 +295,10 @@ async function ambiguousAndFatalStopSmoke() {
     assert.strictEqual(getCommunicationBatch(diagnostic.db, diagnostic.batch.id).stopCode, code);
     assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).status, "interrupted");
     assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).errorCode, code);
+    if (code === "COMMUNICATION_USER_ACTION_REQUIRED") {
+      assert.strictEqual(items[0].evidence.outcome.pageState, "confirmation_dialog");
+      assert.strictEqual(items[0].evidence.outcome.endpoints.length, 12);
+    }
     diagnostic.close();
   }
 

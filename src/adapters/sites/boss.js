@@ -2889,7 +2889,7 @@ function sanitizeCommunicationObservation(value = {}) {
 }
 
 function classifyBossCommunicationNetworkLog(log = {}) {
-  const endpoints = (Array.isArray(log?.entries) ? log.entries : []).map((entry) => {
+  const endpoints = (Array.isArray(log?.entries) ? log.entries : []).slice(0, 12).map((entry) => {
     const endpointKind = communicationEndpointKind(entry?.url);
     if (!endpointKind) return null;
     const httpStatus = Number(entry?.status);
@@ -2927,9 +2927,10 @@ function classifyBossCommunicationNetworkLog(log = {}) {
 
 function communicationEndpointKind(value) {
   try {
-    const pathname = new URL(String(value || ""), "https://www.zhipin.com").pathname;
-    if (pathname === "/wapi/zpchat/config/get") return "chat_config";
-    if (pathname === "/wapi/zpgeek/friend/add.json") return "friend_add";
+    const url = new URL(String(value || ""));
+    if (url.origin !== "https://www.zhipin.com") return "";
+    if (url.pathname === "/wapi/zpchat/config/get") return "chat_config";
+    if (url.pathname === "/wapi/zpgeek/friend/add.json") return "friend_add";
   } catch {}
   return "";
 }
@@ -2956,7 +2957,7 @@ function boundedCommunicationElapsedMs(startedAt, completedAt) {
 
 function communicationOutcomeEvidence(value = {}, pageState = "") {
   const source = value?.evidence || value || {};
-  const endpoints = Array.isArray(source.endpoints) ? source.endpoints : [];
+  const endpoints = Array.isArray(source.endpoints) ? source.endpoints.slice(0, 12) : [];
   const sanitizedEndpoints = endpoints.map((endpoint) => {
     const endpointKind = String(endpoint?.endpointKind || "").trim();
     if (!["chat_config", "friend_add"].includes(endpointKind)) return null;
