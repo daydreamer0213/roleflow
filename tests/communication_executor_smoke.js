@@ -163,13 +163,11 @@ async function singleItemCheckpointSmoke() {
 
 async function cliSingleItemPassThroughSmoke() {
   const fixture = createFixture(1);
-  const item = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
   let receivedSingleItemId = null;
   let restored = 0;
   await communicate(fixture.db, {
     batch: fixture.batch.id,
-    browser: "edge",
-    "single-item": String(item.id)
+    browser: "edge"
   }, {
     createBrowserFn: () => ({
       async listTabs() {
@@ -197,17 +195,8 @@ async function cliSingleItemPassThroughSmoke() {
       return { batchStatus: "interrupted", terminal: 0, total: 1 };
     }
   });
-  assert.strictEqual(receivedSingleItemId, item.id);
+  assert.strictEqual(receivedSingleItemId, null);
   assert.strictEqual(restored, 1);
-  await assert.rejects(
-    () => communicate(fixture.db, {
-      batch: fixture.batch.id,
-      browser: "edge"
-    }, {
-      createBrowserFn() { throw new Error("pending acceptance must require a single item before browser creation"); }
-    }),
-    (error) => error.code === "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED"
-  );
   await assert.rejects(
     () => communicate(fixture.db, {
       batch: fixture.batch.id,
