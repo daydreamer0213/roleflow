@@ -183,7 +183,7 @@ let noDbPathServer;
   assert.deepStrictEqual(status.calibration, {
     implementation: "implemented",
     calibration: "calibrated",
-    acceptance: "e2e_pending",
+    acceptance: "accepted",
     executionEnabled: true
   });
   const httpStatus = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
@@ -207,27 +207,34 @@ let noDbPathServer;
   clearSiteRuntimeState(db, "boss");
   await expectApiError(baseUrl, "/api/communication-control", { batchId, action: "pause" }, "COMMUNICATION_CONTROL_INVALID");
   assert.strictEqual(spawns.length, 0);
-  await expectApiError(
-    baseUrl,
-    "/api/communication-control",
-    { batchId, action: "start" },
-    "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED",
-    409
+  assert.throws(
+    () => controlCommunicationBatch({
+      db,
+      input: { batchId, action: "start" },
+      deps: {
+        communicationCalibrationReader: () => ({
+          implementation: "implemented",
+          calibration: "calibrated",
+          acceptance: "e2e_pending",
+          executionEnabled: true
+        }),
+        spawnCommunication() {}
+      }
+    }),
+    (error) => error.code === "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED"
   );
   assert.strictEqual(spawns.length, 0);
 
   const started = await postJson(baseUrl, "/api/communication-control", {
     batchId,
-    action: "start_one",
-    itemId: startItem.id
+    action: "start"
   });
   assert.strictEqual(started.status, 200);
   assert.deepStrictEqual(Object.keys(started.body).sort(), ["batch", "items", "summary"]);
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
   assert.deepStrictEqual(spawns[0].args.slice(spawns[0].args.indexOf("communicate")), [
-    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "portable", "--cdp-port", "9222",
-    "--single-item", String(startItem.id)
+    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "portable", "--cdp-port", "9222"
   ]);
 
   const interrupted = await postJson(baseUrl, "/api/communication-batch", {

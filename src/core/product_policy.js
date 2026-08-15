@@ -130,7 +130,7 @@ const PRODUCT_POLICY = Object.freeze({
       calibration: Object.freeze({
         implementation: "implemented",
         status: "calibrated",
-        acceptance: "e2e_pending",
+        acceptance: "accepted",
         executionEnabled: true
       }),
       selection: Object.freeze({ targetCount: 30, acceptableMin: 22 }),

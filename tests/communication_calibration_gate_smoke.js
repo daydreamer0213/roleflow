@@ -20,20 +20,14 @@ let server;
   assert.deepStrictEqual(communicationCalibrationStatus(), {
     implementation: "implemented",
     calibration: "calibrated",
-    acceptance: "e2e_pending",
-    executionEnabled: true
-  });
-  assert.strictEqual(communicationCalibrationStatus().status, "calibrated");
-  assert.notDeepStrictEqual(communicationCalibrationStatus(), {
-    implementation: "implemented",
-    calibration: "calibrated",
     acceptance: "accepted",
     executionEnabled: true
   });
+  assert.strictEqual(communicationCalibrationStatus().status, "calibrated");
   assert.deepStrictEqual(assertCommunicationExecutionEnabled(), {
     implementation: "implemented",
     calibration: "calibrated",
-    acceptance: "e2e_pending",
+    acceptance: "accepted",
     executionEnabled: true
   });
 
@@ -59,11 +53,9 @@ let server;
   });
   const baseUrl = await listen(server);
 
-  const item = listCommunicationBatchItems(db, batch.id)[0];
   const response = await postJson(baseUrl, "/api/communication-control", {
     batchId: batch.id,
-    action: "start_one",
-    itemId: item.id
+    action: "start"
   });
   assert.strictEqual(response.status, 200);
   assert.strictEqual(response.body.batch.status, "running");
@@ -72,7 +64,7 @@ let server;
   assert.deepStrictEqual(spawns[0].args.slice(0, 4), ["--disable-warning=ExperimentalWarning", "src/cli.js", "communicate", "--db"]);
   assert(spawns[0].args.includes(String(batch.id)));
   assert(spawns[0].args.includes("edge"));
-  assert.deepStrictEqual(spawns[0].args.slice(-2), ["--single-item", String(item.id)]);
+  assert.strictEqual(spawns[0].args.includes("--single-item"), false);
   spawnedChild.emit("close", 1, null);
   assert.strictEqual(getCommunicationBatch(db, batch.id).status, "interrupted");
   assert.strictEqual(getCommunicationBatch(db, batch.id).stopCode, "COMMUNICATION_PROCESS_EXITED");
