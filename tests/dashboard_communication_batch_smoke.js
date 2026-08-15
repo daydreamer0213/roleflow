@@ -209,6 +209,77 @@ assertCommunicationViewModel();
   assert.strictEqual((builder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 30);
   assert.match(builder.body, /已达到日常沟通区间，无需为凑满 30 个补扫/);
 
+  const malformedApiResponse = await fetch(`${baseUrl}/api/communication-batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: "{"
+  });
+  assert.strictEqual(malformedApiResponse.status, 400);
+  assert.match(malformedApiResponse.headers.get("content-type") || "", /^application\/json/);
+  assert.strictEqual((await malformedApiResponse.json()).errorCode, "COMMUNICATION_REQUEST_FAILED");
+
+  const oversizedFormResponse = await fetch(`${baseUrl}/api/communication-batch`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "text/html" },
+    body: new URLSearchParams({
+      planId: String(fixture.planId),
+      jobIds: String(fixture.primaryId),
+      browserMode: "edge",
+      padding: "x".repeat(70 * 1024)
+    }),
+    redirect: "manual"
+  });
+  assert.strictEqual(oversizedFormResponse.status, 413);
+  assert.match(oversizedFormResponse.headers.get("content-type") || "", /^text\/html/);
+  assert.match(await oversizedFormResponse.text(), /请求内容过大，请返回清单后重新确认。/);
+
+  const oversizedApiResponse = await fetch(`${baseUrl}/api/communication-batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(70 * 1024) })
+  });
+  assert.strictEqual(oversizedApiResponse.status, 413);
+  assert.match(oversizedApiResponse.headers.get("content-type") || "", /^application\/json/);
+  assert.strictEqual((await oversizedApiResponse.json()).errorCode, "REQUEST_BODY_TOO_LARGE");
+
+  const oversizedUnicodeApiResponse = await fetch(`${baseUrl}/api/communication-batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ padding: "中".repeat(25 * 1024) })
+  });
+  assert.strictEqual(oversizedUnicodeApiResponse.status, 413);
+  assert.strictEqual((await oversizedUnicodeApiResponse.json()).errorCode, "REQUEST_BODY_TOO_LARGE");
+  assert.strictEqual((await getJson(baseUrl, "/health")).status, 200);
+
+  const historical = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.historySucceededId,
+    browserMode: "edge"
+  });
+  const historicalItem = listCommunicationBatchItems(db, historical.body.batch.id)[0];
+  transitionCommunicationItem(db, { itemId: historicalItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: historicalItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, { itemId: historicalItem.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(historicalItem) });
+  transitionCommunicationItem(db, { itemId: historicalItem.id, expectedStatus: "click_dispatched", status: "succeeded" });
+  setCommunicationBatchStatus(db, { batchId: historical.body.batch.id, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: historical.body.batch.id, status: "completed" });
+  const refreshedBuilder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
+  assert.doesNotMatch(refreshedBuilder.body, new RegExp(`name="jobIds" value="${fixture.historySucceededId}"`));
+  await expectApiError(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.historySucceededId,
+    browserMode: "edge"
+  }, "COMMUNICATION_JOB_INELIGIBLE");
+  const staleForm = await postForm(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.historySucceededId,
+    browserMode: "edge"
+  });
+  assert.strictEqual(staleForm.status, 400);
+  assert.match(staleForm.contentType, /^text\/html/);
+  assert.match(staleForm.body, /所选岗位已沟通过或当前不可加入清单，请刷新后重新确认。/);
+  assert.match(staleForm.body, /COMMUNICATION_JOB_INELIGIBLE/);
+
   const smallBuilder = await getText(baseUrl, `/communication/new?planId=${fixture.smallPlanId}`);
   assert.strictEqual((smallBuilder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 21);
   assert.match(smallBuilder.body, /当前可沟通候选不足 22 个，可在风险额度允许时补扫一轮/);
@@ -582,6 +653,7 @@ function seed(database) {
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const rebindId = upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId);
+  const historySucceededId = upsertJob(database, job("history-succeeded", { title: "Previously communicated role" }), scanBatchId);
   const skippedId = upsertJob(database, job("skipped", { title: "Skipped role" }), scanBatchId);
   const summaryDriftStartId = upsertJob(database, job("summary-drift-start"), scanBatchId);
   const summaryDriftResumeId = upsertJob(database, job("summary-drift-resume"), scanBatchId);
@@ -600,7 +672,7 @@ function seed(database) {
   }
   const otherProfileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Other dashboard smoke", "{}", now, now).lastInsertRowid);
   Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(otherProfileId, "Other dashboard plan", "{}", now, now).lastInsertRowid);
-  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, historySucceededId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function reviewWorkflow(database, { id, planId, localDay, planner = {} }) {
@@ -670,7 +742,12 @@ async function postJson(baseUrl, pathname, body) {
 async function postForm(baseUrl, pathname, body) {
   const params = new URLSearchParams(body);
   const response = await fetch(`${baseUrl}${pathname}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: params, redirect: "manual" });
-  return { status: response.status, location: response.headers.get("location") };
+  return {
+    status: response.status,
+    location: response.headers.get("location"),
+    contentType: response.headers.get("content-type") || "",
+    body: await response.text()
+  };
 }
 
 async function expectApiError(baseUrl, pathname, body, code, status = 400) {

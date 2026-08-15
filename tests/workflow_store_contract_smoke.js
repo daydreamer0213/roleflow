@@ -61,7 +61,7 @@ function contract01ExportsAndFacadeIdentity() {
   assert.equal(Object.keys(candidateStore).length, 29);
   assert.equal(Object.keys(jobStore).length, 26);
   assert.equal(Object.keys(scanStore).length, 35);
-  assert.equal(Object.keys(communicationStore).length, 15);
+  assert.equal(Object.keys(communicationStore).length, 16);
   assert.equal(Object.keys(sharedStore).length, 9);
   for (const name of WORKFLOW_EXPORTS) assert.strictEqual(storage[name], workflowStore[name], `${name} must retain its owner reference`);
   assert.strictEqual(storage.immediateTransaction, sharedStore.immediateTransaction);

@@ -31,6 +31,8 @@ const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
 const {
+  createCommunicationBatch,
+  listCommunicationBatchItems,
   setCommunicationBatchStatus,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
@@ -1048,13 +1050,56 @@ let server;
     await new Promise((resolve) => failOpenServer.close(resolve));
   }
 
+  const historicalStoppedJobId = listWorkflowReviewCandidates(db, workflow.id)[0].id;
+  const historicalStoppedBatch = createCommunicationBatch(db, {
+    planId: saved.planId,
+    jobIds: [historicalStoppedJobId],
+    browserMode: "edge"
+  });
+  const historicalStoppedItem = listCommunicationBatchItems(db, historicalStoppedBatch.id)[0];
+  transitionCommunicationItem(db, { itemId: historicalStoppedItem.id, expectedStatus: "pending", status: "opening" });
+  transitionCommunicationItem(db, { itemId: historicalStoppedItem.id, expectedStatus: "opening", status: "verified" });
+  transitionCommunicationItem(db, {
+    itemId: historicalStoppedItem.id,
+    expectedStatus: "verified",
+    status: "click_dispatched",
+    audit: {
+      eventType: "communication_click",
+      payload: {
+        batchId: historicalStoppedItem.batchId,
+        itemId: historicalStoppedItem.id,
+        jobId: historicalStoppedItem.jobId,
+        state: "click_dispatched"
+      }
+    }
+  });
+  transitionCommunicationItem(db, { itemId: historicalStoppedItem.id, expectedStatus: "click_dispatched", status: "stopped" });
+  setCommunicationBatchStatus(db, { batchId: historicalStoppedBatch.id, status: "stopped" });
+
+  const workflowBeforeRefillProbe = getWorkflowRun(db, workflow.id);
+  db.prepare("UPDATE workflow_runs SET target_success_count = 1, planner_json = ? WHERE id = ?").run(
+    JSON.stringify({ ...workflowBeforeRefillProbe.planner, replacementBuffer: 0 }),
+    workflow.id
+  );
+  const refillPage = await getText(baseUrl, started.location);
+  assert.doesNotMatch(refillPage.body, new RegExp(`name="jobIds" value="${historicalStoppedJobId}"`));
+  assert.strictEqual((refillPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 1);
+  assert.doesNotMatch(refillPage.body, /id="workflow-confirm" disabled/);
+  assert.match(refillPage.body, /<dt>可用推荐<\/dt><dd[^>]*>1<\/dd>/);
+  db.prepare("UPDATE workflow_runs SET target_success_count = ?, planner_json = ? WHERE id = ?").run(
+    workflowBeforeRefillProbe.targetSuccessCount,
+    JSON.stringify(workflowBeforeRefillProbe.planner),
+    workflow.id
+  );
+
   const reviewPage = await getText(baseUrl, started.location);
   assert.match(reviewPage.body, /确认本轮沟通清单/);
   assert.match(reviewPage.body, new RegExp(`name="workflowRunId" value="${workflow.id}"`));
   assert.match(reviewPage.body, /name="browserMode" value="edge"/);
-  assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length >= 6, true);
+  assert.doesNotMatch(reviewPage.body, new RegExp(`name="jobIds" value="${historicalStoppedJobId}"`));
+  assert.strictEqual((reviewPage.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 5);
   assert.match(reviewPage.body, /本轮成功目标\s*35/);
-  assert.match(reviewPage.body, /<dt>可用推荐<\/dt><dd[^>]*>6<\/dd>/);
+  assert.match(reviewPage.body, /<dt>可用推荐<\/dt><dd[^>]*>5<\/dd>/);
   assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount >= 6, true);
   for (const label of ["匹配分支", "大模型应用开发", "岗位主体", "主体匹配", "基本一致", "已覆盖根基", "待确认根基"]) {
     assert.match(reviewPage.body, new RegExp(label));
@@ -1068,9 +1113,17 @@ let server;
   }
   assert.doesNotMatch(jobsPage.body, /简历：完成 RAG 应用交付/);
 
-  const selectedIds = listWorkflowReviewCandidates(db, workflow.id)
-    .filter((candidate) => candidate.defaultChecked)
-    .map((candidate) => candidate.id);
+  const selectedIds = [...reviewPage.body.matchAll(/name="jobIds" value="(\d+)" checked/g)]
+    .map((match) => Number(match[1]));
+  const staleWorkflowForm = await postForm(baseUrl, "/api/communication-batch", {
+    workflowRunId: workflow.id,
+    planId: saved.planId,
+    browserMode: "edge",
+    jobIds: historicalStoppedJobId
+  });
+  assert.strictEqual(staleWorkflowForm.status, 400);
+  assert.match(staleWorkflowForm.body, new RegExp(`href="/workflow\\?runId=${workflow.id}"`));
+  assert.doesNotMatch(staleWorkflowForm.body, new RegExp(`href="/communication/new\\?planId=${saved.planId}"`));
   const confirmed = await postForm(baseUrl, "/api/communication-batch", {
     workflowRunId: workflow.id,
     planId: saved.planId,

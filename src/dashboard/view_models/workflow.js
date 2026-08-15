@@ -102,7 +102,7 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
     overallProgress: progress?.visible
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
-    usableRecommendations: number(workflow.inventoryCount),
+    usableRecommendations: phase.kind === "review" ? number(phase.review.defaultCount) : number(workflow.inventoryCount),
     acquisitionProgress: `搜索目标 ${number(scan.completed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
     jdProgress: `已读取 ${number(details.read)} / ${number(details.collected)} · 待补 ${number(details.pending)}`,
     remainingWork: progress?.visible

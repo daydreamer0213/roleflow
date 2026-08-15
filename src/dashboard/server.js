@@ -78,7 +78,8 @@ const {
   bindCommunicationBatchRuntime,
   setCommunicationBatchStatus,
   communicationBatchSummary,
-  communicationQuotaSnapshot
+  communicationQuotaSnapshot,
+  isCommunicationJobEligible
 } = require("../core/communication_batches");
 const { communicationAmbiguityStateForBatch } = require("../core/communication_ambiguity");
 const {
@@ -2933,13 +2934,35 @@ function parseBody(rawBody, contentType) {
 }
 
 async function handleCommunicationBatch(req, res, db) {
-  const rawBody = await readBody(req);
+  const wantsJson = String(req.headers.accept || "").includes("application/json");
+  let rawBody;
+  try {
+    rawBody = await readBody(req);
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "COMMUNICATION_REQUEST_FAILED" });
+    if (wantsJson) return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code });
+    return sendHtml(res, renderErrorPage(issue.message, "/queue", { code: issue.code }), issue.statusCode);
+  }
+  let params = {};
   const result = communicationApiResult(() => {
-    const params = parseBody(rawBody, req.headers["content-type"] || "");
+    params = parseBody(rawBody, req.headers["content-type"] || "");
     return createCommunicationBatch({ db, input: { ...params, jobIds: arrayValue(params.jobIds) } });
   });
-  if (!result.ok) return sendJson(res, result.statusCode, result.body);
-  if (String(req.headers.accept || "").includes("application/json")) return sendJson(res, 200, result.body);
+  if (!result.ok) {
+    if (wantsJson) return sendJson(res, result.statusCode, result.body);
+    const message = result.body.errorCode === "COMMUNICATION_JOB_INELIGIBLE"
+      ? "所选岗位已沟通过或当前不可加入清单，请刷新后重新确认。"
+      : "沟通清单未能确认，请根据错误编号查看诊断日志。";
+    const planId = Number(params.planId || 0);
+    const workflowRunId = String(params.workflowRunId || "").trim();
+    const back = workflowRunId
+      ? `/workflow?runId=${encodeURIComponent(workflowRunId)}`
+      : planId ? `/communication/new?planId=${planId}` : "/queue";
+    return sendHtml(res, renderErrorPage(message, back, {
+      code: result.body.errorCode
+    }), result.statusCode);
+  }
+  if (wantsJson) return sendJson(res, 200, result.body);
   redirectCommunicationResult(res, result.body.batch);
 }
 
@@ -3232,15 +3255,25 @@ function arrayValue(value) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let bodyBytes = 0;
+    let tooLarge = false;
     req.setEncoding("utf8");
     req.on("data", (chunk) => {
+      if (tooLarge) return;
       body += chunk;
-      if (body.length > 64 * 1024) {
-        req.destroy();
-        reject(new Error("Request body too large"));
+      bodyBytes += Buffer.byteLength(chunk, "utf8");
+      if (bodyBytes > 64 * 1024) {
+        tooLarge = true;
+        body = "";
       }
     });
-    req.on("end", () => resolve(body));
+    req.on("end", () => {
+      if (tooLarge) {
+        reject(appError("REQUEST_BODY_TOO_LARGE", "请求内容过大，请返回清单后重新确认。", { statusCode: 413 }));
+      } else {
+        resolve(body);
+      }
+    });
     req.on("error", reject);
   });
 }
@@ -3998,9 +4031,23 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
   return renderPage("执行一轮", renderWorkflowDocument(buildWorkflowViewModel({
     workflow, plan, daily, communication, runtimeBlock, progressSnapshot,
     stopPreview: progressSnapshot ? workflowStopPreview(db, { workflowRunId: workflow.id }) : {}, healthReport,
-    reviewCandidates: workflow.status === "review_required" && !communication ? listWorkflowReviewCandidates(db, workflow.id) : [],
+    reviewCandidates: workflow.status === "review_required" && !communication
+      ? communicationWorkflowReviewCandidates(db, workflow)
+      : [],
     quota: workflow.status === "review_required" && !communication ? communicationQuota(db) : { remaining: 0 }
   })));
+}
+
+function communicationWorkflowReviewCandidates(db, workflow) {
+  const candidates = listWorkflowReviewCandidates(db, workflow.id);
+  let remainingDefaults = candidates.filter((job) => job.defaultChecked).length;
+  return candidates
+    .filter((job) => isCommunicationJobEligible(db, job))
+    .map((job) => {
+      const defaultChecked = defaultSelectedForBatch(job.decisionBucket) && remainingDefaults > 0;
+      if (defaultChecked) remainingDefaults -= 1;
+      return { ...job, defaultChecked };
+    });
 }
 
 function roleAlignmentLabel(value) {
@@ -4302,8 +4349,7 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
   if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
   const quota = communicationQuota(db);
   const runtimeBlock = communicationRuntimeBlock(db);
-  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => ["primary", "apply", "caution"].includes(job.decisionBucket)
-    && String(job.applicationStatus ?? "").length === 0);
+  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => isCommunicationJobEligible(db, job));
   const selection = PRODUCT_POLICY.operations.bossCommunication.selection;
   const defaultIds = new Set(eligible
     .filter((job) => defaultSelectedForBatch(job.decisionBucket))

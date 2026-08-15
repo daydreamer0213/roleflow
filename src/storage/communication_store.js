@@ -99,15 +99,9 @@ function createCommunicationBatch(db, input = {}) {
       ? listWorkflowReviewCandidates(db, workflow.id, { now })
       : listDecisionPool(db, { planId }))
       .map((job) => [Number(job.id), job]));
-    const conflicts = db.prepare(`SELECT communication_batch_items.id FROM communication_batch_items
-      JOIN communication_batches ON communication_batches.id = communication_batch_items.batch_id
-      WHERE communication_batch_items.job_id = ?
-        AND communication_batch_items.status IN ('click_dispatched', 'platform_rejected', 'transport_failed', 'ambiguous', 'succeeded', 'already_communicated')
-      LIMIT 1`);
     const selected = jobIds.map((jobId) => {
       const job = jobsById.get(jobId);
-      if (!job || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url)
-        || hasUserApplicationStatus(job) || conflicts.get(jobId)) {
+      if (!isCommunicationJobEligible(db, job)) {
         throw codedError("COMMUNICATION_JOB_INELIGIBLE", `job ${jobId} is not eligible for communication`);
       }
       return job;
@@ -543,6 +537,16 @@ function hasUserApplicationStatus(job) {
   return String(job?.applicationStatus ?? "").length > 0;
 }
 
+function isCommunicationJobEligible(db, job) {
+  if (!job || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
+    return false;
+  }
+  return !db.prepare(`SELECT 1 FROM communication_batch_items
+    WHERE job_id = ?
+      AND (click_count > 0 OR status IN ('click_dispatched', 'platform_rejected', 'transport_failed', 'ambiguous', 'succeeded', 'already_communicated'))
+    LIMIT 1`).get(Number(job.id));
+}
+
 function communicationBatchSummary(db, batchId) {
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
@@ -720,6 +724,7 @@ module.exports = {
   BATCH_STATUSES,
   ITEM_STATUSES,
   TERMINAL_ITEM_STATUSES,
+  isCommunicationJobEligible,
   createCommunicationBatch,
   getCommunicationBatch,
   bindCommunicationBatchRuntime,

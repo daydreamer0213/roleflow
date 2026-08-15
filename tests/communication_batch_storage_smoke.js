@@ -265,10 +265,37 @@ try {
   communicationNaturalDayResetSmoke();
   batchTransitionGraphSmoke();
   interruptedResumeSmoke();
+  clickedStoppedCannotRetrySmoke();
 
   console.log("communication_batch_storage_smoke ok");
 } finally {
   db.close();
+}
+
+function clickedStoppedCannotRetrySmoke() {
+  const database = openDb(":memory:");
+  try {
+    const now = new Date().toISOString();
+    const profileId = Number(database.prepare(`INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?)`).run("Clicked stopped smoke", "{}", now, now).lastInsertRowid);
+    const planId = Number(database.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)`).run(profileId, "Clicked stopped smoke", "{}", now, now).lastInsertRowid);
+    const scanBatchId = createBatch(database, "boss", "clicked-stopped", "clicked stopped smoke", { profileId, searchPlanId: planId });
+    const jobId = upsertJob(database, job("clicked-stopped", { title: "Clicked then stopped role" }), scanBatchId);
+    const batch = createCommunicationBatch(database, { planId, jobIds: [jobId], browserMode: "edge" });
+    const item = listCommunicationBatchItems(database, batch.id)[0];
+    transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "pending", status: "opening" });
+    transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "opening", status: "verified" });
+    transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
+    transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "click_dispatched", status: "stopped" });
+    setCommunicationBatchStatus(database, { batchId: batch.id, status: "stopped" });
+    assert.throws(
+      () => createCommunicationBatch(database, { planId, jobIds: [jobId], browserMode: "edge" }),
+      (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"
+    );
+  } finally {
+    database.close();
+  }
 }
 
 function job(sourceId, overrides = {}) {

@@ -5,6 +5,7 @@ const { spawnSync } = require("node:child_process");
 
 const COMMUNICATION_EXPORTS = [
   "BATCH_STATUSES", "ITEM_STATUSES", "TERMINAL_ITEM_STATUSES",
+  "isCommunicationJobEligible",
   "createCommunicationBatch", "getCommunicationBatch", "touchCommunicationBatch",
   "bindCommunicationBatchRuntime",
   "listCommunicationBatchItems", "setCommunicationBatchStatus",
