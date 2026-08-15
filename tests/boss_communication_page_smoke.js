@@ -297,15 +297,16 @@ function fakeBrowser({
   guardedClickDriftUrl = "",
   createTabGate = null,
   createStarted = null,
-  focusSucceeds = true,
-  loseFocusAfterGuardedClick = false
+  loseFocusAfterGuardedClick = false,
+  clickAtError = null
 } = {}) {
   const calls = {
     listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
     guardedClick: [], startNetworkLog: [], getNetworkLogMark: [], readNetworkLog: [],
-    stopNetworkLog: [], restoreScroll: []
+    stopNetworkLog: [], restoreScroll: [], focusEmulation: [], timeline: []
   };
   let currentTabs = tabs;
+  const focusEmulatedTabs = new Set();
   const contexts = new Map();
   const helperExpressions = new Map();
   const snapshots = [];
@@ -318,6 +319,7 @@ function fakeBrowser({
     snapshots,
     async listTabs() {
       calls.listTabs += 1;
+      calls.timeline.push("listTabs");
       return currentTabs;
     },
     async createTab(openerTabId, url) {
@@ -331,12 +333,19 @@ function fakeBrowser({
     },
     async bringToFront(tabId) {
       calls.bringToFront.push(tabId);
-      if (!focusSucceeds) return;
       const target = currentTabs.find((tab) => tab.id === tabId);
       currentTabs = currentTabs.map((tab) => ({
         ...tab,
         active: tab.windowId === target?.windowId ? tab.id === tabId : tab.active
       }));
+    },
+    async cdp(tabId, method, params) {
+      assert.strictEqual(method, "Emulation.setFocusEmulationEnabled");
+      const enabled = params?.enabled === true;
+      calls.focusEmulation.push([tabId, enabled]);
+      if (enabled) focusEmulatedTabs.add(tabId);
+      else focusEmulatedTabs.delete(tabId);
+      return {};
     },
     async navigate(tabId, url) {
       calls.navigate.push([tabId, url]);
@@ -350,6 +359,7 @@ function fakeBrowser({
       }
       if (expression.includes("__bossGuardedCommunicationClick")) {
         calls.guardedClick.push([tabId, expression]);
+        calls.timeline.push("guardedClick");
         guardedClickStarted?.resolve();
         if (guardedClickGate) await guardedClickGate.promise;
         if (guardedClickDriftUrl) {
@@ -418,12 +428,14 @@ function fakeBrowser({
     },
     async clickAt(tabId, point) {
       const activeTab = currentTabs.find((candidate) => candidate.id === tabId);
-      if (activeTab?.active !== true) {
+      if (activeTab?.active !== true && !focusEmulatedTabs.has(tabId)) {
         throw Object.assign(new Error("fake browser refused a background-tab click"), {
           code: "BROWSER_COMMAND_FAILED"
         });
       }
       calls.clickAt.push([tabId, point]);
+      calls.timeline.push("clickAt");
+      if (clickAtError) throw clickAtError;
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       const contextUrl = tab?.url || "";
       transport?.onAction?.(contexts.get(tabId));
@@ -997,25 +1009,32 @@ function assertNoPreparationAction(browser, before) {
   );
   assert.strictEqual(executionBrowser.calls.startNetworkLog.length, 1);
   assert.strictEqual(executionBrowser.calls.getNetworkLogMark.length, 1);
-  assert.deepStrictEqual(executionBrowser.calls.bringToFront, ["communication-created"]);
+  assert.deepStrictEqual(executionBrowser.calls.bringToFront, []);
+  assert.deepStrictEqual(executionBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
   assert.strictEqual(executionBrowser.calls.clickAt.length, 1);
-  assert.strictEqual(executionBrowser.calls.clickAt[0][0], executionBrowser.calls.bringToFront[0]);
+  assert.strictEqual(executionBrowser.calls.clickAt[0][0], "communication-created");
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
   assert(executionBrowser.calls.guardedClick[0][1].includes("elementFromPoint"));
   assert(!executionBrowser.calls.guardedClick[0][1].includes("candidates[0].click()"));
 
   const inactiveBrowser = fakeBrowser({
-    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
-    focusSucceeds: false
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }]
   });
   const inactiveAdapter = new BossSiteAdapter({ browser: inactiveBrowser, sleepFn: async () => {} });
   const inactiveInspection = await inactiveAdapter.inspectCommunicationJob(expectedJob);
-  await assert.rejects(
-    () => inactiveAdapter.dispatchCommunication(inactiveInspection),
-    (error) => error.code === "BOSS_COMMUNICATION_TAB_NOT_ACTIVE"
+  assert.deepStrictEqual(
+    await inactiveAdapter.dispatchCommunication(inactiveInspection),
+    { state: "dispatched", jobId: "fake123" }
   );
-  assert.deepStrictEqual(inactiveBrowser.calls.bringToFront, ["communication-created"]);
-  assert.strictEqual(inactiveBrowser.calls.clickAt.length, 0);
+  assert.deepStrictEqual(inactiveBrowser.calls.bringToFront, []);
+  assert.deepStrictEqual(inactiveBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
+  assert.strictEqual(inactiveBrowser.calls.clickAt.length, 1);
 
   const lostFocusBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
@@ -1023,13 +1042,17 @@ function assertNoPreparationAction(browser, before) {
   });
   const lostFocusAdapter = new BossSiteAdapter({ browser: lostFocusBrowser, sleepFn: async () => {} });
   const lostFocusInspection = await lostFocusAdapter.inspectCommunicationJob(expectedJob);
-  await assert.rejects(
-    () => lostFocusAdapter.dispatchCommunication(lostFocusInspection),
-    (error) => error.code === "BOSS_COMMUNICATION_TAB_NOT_ACTIVE"
+  assert.deepStrictEqual(
+    await lostFocusAdapter.dispatchCommunication(lostFocusInspection),
+    { state: "dispatched", jobId: "fake123" }
   );
-  assert.deepStrictEqual(lostFocusBrowser.calls.bringToFront, ["communication-created"]);
+  assert.deepStrictEqual(lostFocusBrowser.calls.bringToFront, []);
+  assert.deepStrictEqual(lostFocusBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
   assert.strictEqual(lostFocusBrowser.calls.guardedClick.length, 1);
-  assert.strictEqual(lostFocusBrowser.calls.clickAt.length, 0);
+  assert.strictEqual(lostFocusBrowser.calls.clickAt.length, 1);
 
   const boundExecutionBrowser = fakeBrowser({
     tabs: [
@@ -1043,8 +1066,33 @@ function assertNoPreparationAction(browser, before) {
   await boundExecutionAdapter.beginCommunicationSession();
   const boundExecutionInspection = await boundExecutionAdapter.inspectCommunicationJob(expectedJob);
   await boundExecutionAdapter.dispatchCommunication(boundExecutionInspection);
-  assert.deepStrictEqual(boundExecutionBrowser.calls.bringToFront, [1995685534]);
+  assert.deepStrictEqual(boundExecutionBrowser.calls.bringToFront, []);
+  assert.deepStrictEqual(boundExecutionBrowser.calls.focusEmulation, [
+    [1995685534, true],
+    [1995685534, false]
+  ]);
   assert.deepStrictEqual(boundExecutionBrowser.calls.clickAt.map(([tabId]) => tabId), [1995685534]);
+  const guardedClickIndex = boundExecutionBrowser.calls.timeline.lastIndexOf("guardedClick");
+  const inputClickIndex = boundExecutionBrowser.calls.timeline.lastIndexOf("clickAt");
+  assert(guardedClickIndex >= 0 && inputClickIndex > guardedClickIndex);
+  assert(!boundExecutionBrowser.calls.timeline.slice(guardedClickIndex + 1, inputClickIndex).includes("listTabs"));
+
+  const clickFailure = Object.assign(new Error("input dispatch failed"), { code: "BROWSER_COMMAND_FAILED" });
+  const clickFailureBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
+    clickAtError: clickFailure
+  });
+  const clickFailureAdapter = new BossSiteAdapter({ browser: clickFailureBrowser, sleepFn: async () => {} });
+  const clickFailureInspection = await clickFailureAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => clickFailureAdapter.dispatchCommunication(clickFailureInspection),
+    (error) => error === clickFailure
+  );
+  assert.deepStrictEqual(clickFailureBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
+  assert.strictEqual(clickFailureBrowser.calls.clickAt.length, 1);
 
   const observedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
@@ -1389,6 +1437,12 @@ function assertNoPreparationAction(browser, before) {
     (error) => error.code === "BOSS_COMMUNICATION_ALREADY_DISPATCHED"
   );
   assert.strictEqual(clickDriftBrowser.calls.guardedClick.length, 1);
+  assert.strictEqual(clickDriftBrowser.calls.clickAt.length, 0);
+  assert.deepStrictEqual(clickDriftBrowser.calls.bringToFront, []);
+  assert.deepStrictEqual(clickDriftBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
 
   const guardRiskGate = deferred();
   const guardRiskStarted = deferred();

@@ -384,7 +384,7 @@ function getWorkflowStatus({ db, workflowRunId, deps = {} }) {
   return {
     statusCode: 200,
     body: {
-      workflow: publicWorkflow({ ...snapshot.workflow, errorCode: workflow.errorCode }),
+      workflow: publicWorkflow({ ...snapshot.workflow, successfulCount: workflow.successfulCount, errorCode: workflow.errorCode }),
       progress: snapshot.progress,
       controls: snapshot.controls,
       recentActivity: snapshot.recentActivity,

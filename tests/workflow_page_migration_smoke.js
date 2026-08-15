@@ -142,6 +142,7 @@ function assertRendererContracts(vm) {
   assertSinglePrimary(communicating, "communicating", "查看执行明细");
   assert.match(communicating, /正在沟通/);
   assert.match(communicating, /已发出操作/);
+  assert.match(communicating, /data-polling-key="communicating\|running\|3\|0\|0\|0"/);
   assert.doesNotMatch(communicating, />click_dispatched</);
 
   const unknownCommunicationStatus = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "communicating", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "running" }, calibration: { executionEnabled: true }, summary: { total: 1, statusCounts: { future_status: 1 }, terminal: 0 } } })));

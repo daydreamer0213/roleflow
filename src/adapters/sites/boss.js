@@ -2140,12 +2140,10 @@ class BossSiteAdapter {
       throwIfAborted(signal);
       tabId = await this.prepareCommunicationTab();
       if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
-      if (typeof this.browser.bringToFront !== "function"
-        || typeof this.browser.listTabs !== "function") {
-        throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab cannot be activated safely.");
+      if (typeof this.browser.cdp !== "function"
+        || typeof this.browser.clickAt !== "function") {
+        throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab cannot be focused safely in the background.");
       }
-      await this.browser.bringToFront(tabId);
-      await this.assertCommunicationTabActive(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
@@ -2162,18 +2160,23 @@ class BossSiteAdapter {
       });
       networkLogStarted = true;
       const mark = await this.browser.getNetworkLogMark(tabId);
-      const clickTarget = await this.browser.evalValue(tabId, guardedBossCommunicationClickExpression(expectedJob));
-      if (clickTarget?.ready !== true || clickTarget?.jobId !== expectedJob.jobId) {
-        if (clickTarget?.reason === "risk_control") {
-          throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication dispatch has stopped.");
+      await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+      try {
+        if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
+        const clickTarget = await this.browser.evalValue(tabId, guardedBossCommunicationClickExpression(expectedJob));
+        if (clickTarget?.ready !== true || clickTarget?.jobId !== expectedJob.jobId) {
+          if (clickTarget?.reason === "risk_control") {
+            throw bossError("BOSS_RISK_CONTROL", "BOSS requires security verification; communication dispatch has stopped.");
+          }
+          if (clickTarget?.reason === "login_required") {
+            throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication dispatch has stopped.");
+          }
+          throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The guarded BOSS communication target changed before click dispatch.");
         }
-        if (clickTarget?.reason === "login_required") {
-          throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication dispatch has stopped.");
-        }
-        throw bossError("BOSS_COMMUNICATION_TARGET_CHANGED", "The guarded BOSS communication target changed before click dispatch.");
+        await this.browser.clickAt(tabId, clickTarget.clickPoint);
+      } finally {
+        await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: false });
       }
-      await this.assertCommunicationTabActive(tabId);
-      await this.browser.clickAt(tabId, clickTarget.clickPoint);
       this.lastCommunicationDispatch = {
         jobId: expectedJob.jobId,
         tabId,
@@ -2189,19 +2192,6 @@ class BossSiteAdapter {
       }
       this.finishCommunicationOperation("dispatch");
     }
-  }
-
-  async assertCommunicationTabActive(tabId) {
-    if (typeof this.browser.listTabs !== "function") {
-      throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab activity cannot be verified.");
-    }
-    const activeTab = this.communicationTabsBound
-      ? (await this.assertBoundCommunicationTabs({ requireSearchPage: false })).searchTab
-      : (await this.browser.listTabs()).find((tab) => String(tab.id) === String(tabId));
-    if (!activeTab || activeTab.active !== true) {
-      throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The fixed BOSS search tab did not remain active before communication.");
-    }
-    return activeTab;
   }
 
   async closeCommunicationOutcomeObserver(tabId) {

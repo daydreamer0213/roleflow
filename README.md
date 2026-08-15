@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v0.1.0-beta.4.5](https://img.shields.io/badge/release-v0.1.0--beta.4.5-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.5)
+[![Release: v0.1.0-beta.4.6](https://img.shields.io/badge/release-v0.1.0--beta.4.6-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.6)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,9 +12,9 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v0.1.0-beta.4.5` 是 RoleFlow 第一阶段 Wave 4 沟通环节验收推进候选版。上一候选版的单岗位真实端到端校准已用一次点击并接受 `friend_add` 响应；本版将该校准提升为已接受状态，并开放既有的完整串行执行路径。所有安全停止和不重试规则保持不变；连续批次沟通与消息发现的真实验收仍须在本次运行完成后进行。候选已通过 97 组离线检查，测试不会访问 BOSS 或执行真实沟通。
+`v0.1.0-beta.4.6` 是 RoleFlow 第一阶段 Wave 4 沟通环节验收候选版。beta.4.5 的连续批次人工验收发现沟通点击会激活 BOSS 标签，以及工作流页面会反复整页刷新；本版让沟通点击复用既有的短时焦点模拟，并统一首屏与状态接口的沟通进度键。所有身份校验、安全停止和不重试规则保持不变。本轮已通过除 `startup_scripts_smoke.js` 外的 96 组安全离线检查；该启动测试会临时编译名为 `msedge.exe` 的本地桩程序并触发 360 告警，因此没有重跑。
 
-真实批量沟通仍待用户按页面显示的不可变岗位逐项人工验收，不能把离线通过等同于真实页面已验收。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
+真实连续批次验收已完成：批次 #1 共 12 个岗位，其中 10 个成功、2 个历史停止项保持原样，未自动重试；只读消息发现也已完成。验收期间 BOSS 固定标签未被激活，工作流轮询未再出现高频整页刷新。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
 
 ## 核心能力
 
@@ -31,11 +31,11 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-> **请前往 [v0.1.0-beta.4.5 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.5)，下载 `RoleFlow-Setup-0.1.0-beta.4.5.exe`。**
+> **请前往 [v0.1.0-beta.4.6 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v0.1.0-beta.4.6)，下载 `RoleFlow-Setup-0.1.0-beta.4.6.exe`。**
 >
-> `RoleFlow-v0.1.0-beta.4.5-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
+> `RoleFlow-v0.1.0-beta.4.6-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
-1. 下载并运行 `RoleFlow-Setup-0.1.0-beta.4.5.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。覆盖安装会保留现有本地数据，便于继续未完成的人工验收。
+1. 下载并运行 `RoleFlow-Setup-0.1.0-beta.4.6.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。覆盖安装会保留现有本地数据，便于继续未完成的人工验收。
 2. 从桌面或开始菜单启动 RoleFlow。启动过程不会显示常驻黑色终端；失败时会显示原因和日志位置。
 3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。

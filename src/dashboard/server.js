@@ -2037,6 +2037,7 @@ function publicWorkflow(workflow) {
     controlState: String(workflow.controlState || "none"),
     lastActivityAt: workflow.lastActivityAt || null,
     progressRevision: Number(workflow.progressRevision || 0),
+    successfulCount: Number(workflow.successfulCount || 0),
     errorCode: workflow.errorCode ? String(workflow.errorCode) : null
   };
 }

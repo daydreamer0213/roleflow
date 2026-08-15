@@ -1535,6 +1535,7 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
     resumePhase: "analyzing"
   });
   seedSensitiveCommunicationFixture(database, fixture);
+  database.prepare("UPDATE workflow_runs SET successful_count = 2 WHERE id = ?").run(fixture.workflowId);
   const before = getWorkflowRun(database, fixture.workflowId);
   const response = await getJson(baseUrl, `/api/workflow-status?runId=${encodeURIComponent(fixture.workflowId)}`);
   assert.strictEqual(response.status, 200);
@@ -1547,6 +1548,7 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   ]);
   assert.strictEqual(response.body.workflow.id, fixture.workflowId);
   assert.strictEqual(response.body.workflow.status, "analyzing");
+  assert.strictEqual(response.body.workflow.successfulCount, 2);
   assert.strictEqual(response.body.progress.analysis.total, 2);
   assert.strictEqual(response.body.progress.analysis.succeeded, 1);
   assert.strictEqual(response.body.progress.analysis.pending, 1);
