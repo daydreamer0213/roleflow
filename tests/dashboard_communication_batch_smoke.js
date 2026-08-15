@@ -334,6 +334,18 @@ assertCommunicationViewModel();
   const rebindReview = await getText(baseUrl, `/communication?batchId=${rebindBatch.body.batch.id}`);
   assert.match(rebindReview.body, /name="action" value="resume_one"/);
   assert.doesNotMatch(rebindReview.body, /重新检查浏览器页面/);
+  for (const [body, code] of [
+    [{ batchId: rebindBatch.body.batch.id, action: "resume_one", itemId: rebindResumeItem.id + 1 }, "COMMUNICATION_SINGLE_ITEM_MISMATCH"],
+    [{ batchId: rebindBatch.body.batch.id, action: "resume" }, "COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED"]
+  ]) {
+    const generationBeforeInvalidResume = getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser.bindingGeneration;
+    const spawnsBeforeInvalidResume = spawns.length;
+    browserEvents.length = 0;
+    await expectApiError(baseUrl, "/api/communication-control", body, code, 409);
+    assert.deepStrictEqual(browserEvents, [], `${code} must stop before browser rebind or process launch`);
+    assert.strictEqual(getCommunicationBatch(db, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, generationBeforeInvalidResume);
+    assert.strictEqual(spawns.length, spawnsBeforeInvalidResume);
+  }
   liveSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=101010100";
   const spawnsBeforeRebindScopeFailure = spawns.length;
   await expectApiError(

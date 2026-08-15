@@ -1151,6 +1151,43 @@ function assertNoPreparationAction(browser, before) {
     navigationsBeforeAcceptedWithGenericDialogVerification
   );
 
+  const acceptedWhileLoadingDriftBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    fixtures: new Map([[secondJobUrl, { documentReadyState: "loading" }]]),
+    networkLogs: [acceptedNetworkLog()]
+  });
+  const acceptedWhileLoadingDriftAdapter = new BossSiteAdapter({
+    browser: acceptedWhileLoadingDriftBrowser,
+    sleepFn: async () => {}
+  });
+  const acceptedWhileLoadingDriftInspection = await acceptedWhileLoadingDriftAdapter.inspectCommunicationJob(expectedJob);
+  await acceptedWhileLoadingDriftAdapter.dispatchCommunication(acceptedWhileLoadingDriftInspection);
+  acceptedWhileLoadingDriftBrowser.setTabUrl("communication-created", secondJobUrl);
+  const navigationsBeforeAcceptedWhileLoadingDriftVerification = acceptedWhileLoadingDriftBrowser.calls.navigate.length;
+  const acceptedWhileLoadingDriftResult = await acceptedWhileLoadingDriftAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(acceptedWhileLoadingDriftResult.state, "target_mismatch");
+  assert.strictEqual(acceptedWhileLoadingDriftBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(acceptedWhileLoadingDriftBrowser.calls.navigate.length, navigationsBeforeAcceptedWhileLoadingDriftVerification);
+  assert.strictEqual(acceptedWhileLoadingDriftBrowser.calls.readNetworkLog.length, 1);
+
+  const acceptedWhileLoadingUnavailableBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    afterClickFixtures: new Map([[jobUrl, { documentReadyState: "loading", jobStatus: "停止招聘" }]]),
+    networkLogs: [acceptedNetworkLog()]
+  });
+  const acceptedWhileLoadingUnavailableAdapter = new BossSiteAdapter({
+    browser: acceptedWhileLoadingUnavailableBrowser,
+    sleepFn: async () => {}
+  });
+  const acceptedWhileLoadingUnavailableInspection = await acceptedWhileLoadingUnavailableAdapter.inspectCommunicationJob(expectedJob);
+  await acceptedWhileLoadingUnavailableAdapter.dispatchCommunication(acceptedWhileLoadingUnavailableInspection);
+  const navigationsBeforeAcceptedWhileLoadingUnavailableVerification = acceptedWhileLoadingUnavailableBrowser.calls.navigate.length;
+  const acceptedWhileLoadingUnavailableResult = await acceptedWhileLoadingUnavailableAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(acceptedWhileLoadingUnavailableResult.state, "job_unavailable");
+  assert.strictEqual(acceptedWhileLoadingUnavailableBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(acceptedWhileLoadingUnavailableBrowser.calls.navigate.length, navigationsBeforeAcceptedWhileLoadingUnavailableVerification);
+  assert.strictEqual(acceptedWhileLoadingUnavailableBrowser.calls.readNetworkLog.length, 1);
+
   const conflictBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
     afterClickFixtures: new Map([[jobUrl, sentFixture()]]),

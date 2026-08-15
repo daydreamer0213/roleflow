@@ -31,6 +31,43 @@ function createCommunicationBatch({ db, input = {}, deps = {} }) {
 }
 
 function controlCommunicationBatch({ db, input = {}, deps = {} }) {
+  const control = validateCommunicationControl({ db, input, deps });
+  const { action, batchId, batch, singleItem } = control;
+  if (action === "start" || action === "resume") {
+    const running = batch.status === "interrupted"
+      ? resumeInterruptedCommunicationBatch(db, { batchId }).batch
+      : setCommunicationBatchStatus(db, { batchId, status: "running" });
+    if (running.status !== "running") {
+      throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
+    }
+    deps.spawnCommunication({
+      db,
+      batch: running,
+      ...(singleItem ? { singleItemId: singleItem.id } : {})
+    });
+    return communicationControlResult(db, running);
+  }
+  const items = listCommunicationBatchItems(db, batchId);
+  if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
+    throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
+  }
+  for (const item of items) {
+    if (["pending", "opening", "verified"].includes(item.status)) {
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
+    } else if (item.status === "click_dispatched") {
+      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
+    }
+  }
+  const updated = setCommunicationBatchStatus(db, {
+    batchId,
+    status: "stopped",
+    stopCode: "COMMUNICATION_BATCH_DISCARDED",
+    stopMessage: "discarded before calibrated execution"
+  });
+  return communicationControlResult(db, updated);
+}
+
+function validateCommunicationControl({ db, input = {}, deps = {} }) {
   const requestedAction = String(input.action || "").trim().toLowerCase();
   const singleItemAction = requestedAction === "start_one" || requestedAction === "resume_one";
   const action = requestedAction.replace(/_one$/, "");
@@ -58,40 +95,12 @@ function controlCommunicationBatch({ db, input = {}, deps = {} }) {
     if (typeof deps.spawnCommunication !== "function") {
       throw appError("COMMUNICATION_PROCESS_LAUNCHER_REQUIRED", "communication process launcher is required", { statusCode: 500 });
     }
-    const running = batch.status === "interrupted"
-      ? resumeInterruptedCommunicationBatch(db, { batchId }).batch
-      : setCommunicationBatchStatus(db, { batchId, status: "running" });
-    if (running.status !== "running") {
-      throw appError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工处理结果不明确的岗位，再继续沟通。", { statusCode: 409 });
-    }
-    deps.spawnCommunication({
-      db,
-      batch: running,
-      ...(singleItem ? { singleItemId: singleItem.id } : {})
-    });
-    return communicationControlResult(db, running);
+    return { requestedAction, action, batchId, batch, singleItem };
   }
   if (action !== "discard") {
     throw appError("COMMUNICATION_CONTROL_INVALID", "communication action must be start, resume, start_one, resume_one, or discard");
   }
-  const items = listCommunicationBatchItems(db, batchId);
-  if (items.some((item) => ["succeeded", "already_communicated"].includes(item.status))) {
-    throw appError("COMMUNICATION_DISCARD_PROTECTED", "a completed communication item prevents discard");
-  }
-  for (const item of items) {
-    if (["pending", "opening", "verified"].includes(item.status)) {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: item.status, status: "stopped" });
-    } else if (item.status === "click_dispatched") {
-      transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "click_dispatched", status: "ambiguous" });
-    }
-  }
-  const updated = setCommunicationBatchStatus(db, {
-    batchId,
-    status: "stopped",
-    stopCode: "COMMUNICATION_BATCH_DISCARDED",
-    stopMessage: "discarded before calibrated execution"
-  });
-  return communicationControlResult(db, updated);
+  return { requestedAction, action, batchId, batch, singleItem: null };
 }
 
 function authorizedSingleCommunicationItem(items, itemId) {
@@ -177,6 +186,7 @@ function communicationControlResult(db, batch) {
 module.exports = {
   createCommunicationBatch,
   controlCommunicationBatch,
+  validateCommunicationControl,
   getCommunicationStatus,
   rebindCommunicationBrowser,
   resolveAmbiguousCommunication

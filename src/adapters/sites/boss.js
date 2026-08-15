@@ -3207,6 +3207,12 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
   if (snapshot?.login) {
     throw bossError("BOSS_LOGIN_REQUIRED", "BOSS login is no longer valid; communication verification has stopped.");
   }
+  if (hasExplicitBossCommunicationDrift(snapshot, expectedJob)) return { state: "target_mismatch" };
+  const jobStatus = String(snapshot?.jobStatus || "").trim();
+  if (sameBossCommunicationJob(snapshot, expectedJob)
+    && isExplicitlyUnavailableBossJobStatus(jobStatus)) {
+    return { state: "job_unavailable", statusLabel: jobStatus };
+  }
   if (snapshot?.documentReadyState && snapshot.documentReadyState !== "complete") {
     return { state: "ambiguous" };
   }
@@ -3216,7 +3222,6 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
     || !sameBossCommunicationCompany(snapshot, expectedJob)) {
     return { state: "target_mismatch" };
   }
-  const jobStatus = String(snapshot?.jobStatus || "").trim();
   if (!jobStatus) return { state: "ambiguous" };
   if (isExplicitlyUnavailableBossJobStatus(jobStatus)) {
     return { state: "job_unavailable", statusLabel: jobStatus };
@@ -3236,6 +3241,22 @@ function classifyBossCommunicationResultSnapshot(snapshot = {}, expectedJob = {}
   const succeeded = hasTrustedContinuedCommunication
     && (hasLegacySuccessDialog || snapshot?.inlineChatSent === true);
   return succeeded ? { state: "succeeded", jobId: expectedJobId } : { state: "ambiguous" };
+}
+
+function hasExplicitBossCommunicationDrift(snapshot = {}, expectedJob = {}) {
+  const expectedJobId = communicationJobId(expectedJob?.url);
+  const snapshotUrlJobId = communicationJobId(snapshot?.url);
+  const snapshotJobId = String(snapshot?.jobId || "").trim();
+  const expectedTitle = normalizeCommunicationText(expectedJob?.title);
+  const snapshotTitle = normalizeCommunicationText(snapshot?.title);
+  const expectedCompany = normalizeCommunicationText(expectedJob?.company);
+  const snapshotCompany = normalizeCommunicationText(snapshot?.company);
+  return Boolean(
+    (expectedJobId && snapshotUrlJobId && expectedJobId !== snapshotUrlJobId)
+    || (expectedJobId && snapshotJobId && expectedJobId !== snapshotJobId)
+    || (expectedTitle && snapshotTitle && expectedTitle !== snapshotTitle)
+    || (expectedCompany && snapshotCompany && !sameBossCommunicationCompany(snapshot, expectedJob))
+  );
 }
 
 function isBossSearchTab(tab) {

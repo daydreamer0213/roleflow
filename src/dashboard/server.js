@@ -134,6 +134,7 @@ const { defaultSelectedForBatch } = require("../core/decision_policy");
 const {
   createCommunicationBatch,
   controlCommunicationBatch,
+  validateCommunicationControl,
   getCommunicationStatus,
   rebindCommunicationBrowser,
   resolveAmbiguousCommunication
@@ -2955,7 +2956,9 @@ async function handleCommunicationControl(req, res, {
   const rawBody = await readBody(req);
   const params = parseBody(rawBody, req.headers["content-type"] || "");
   const result = await communicationApiResultAsync(async () => {
-    const batch = getCommunicationBatch(db, Number(params.batchId));
+    const controlDeps = communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
+    const control = validateCommunicationControl({ db, input: params, deps: controlDeps });
+    const batch = control.batch;
     const action = String(params.action || "").trim().toLowerCase();
     const readAmbiguity = communicationAmbiguityReader || communicationAmbiguityStateForBatch;
     if (["resume", "resume_one"].includes(action)
@@ -2980,7 +2983,7 @@ async function handleCommunicationControl(req, res, {
     return controlCommunicationBatch({
       db,
       input: params,
-      deps: communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader })
+      deps: controlDeps
     });
   });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) return sendJson(res, result.statusCode, result.body);
