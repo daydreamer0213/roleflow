@@ -1486,7 +1486,7 @@ function assertNoPreparationAction(browser, before) {
   assert.deepStrictEqual(communicationCalibrationStatus(), {
     implementation: "implemented",
     calibration: "calibrated",
-    acceptance: "e2e_pending",
+    acceptance: "accepted",
     executionEnabled: true
   });
   console.log("boss_communication_page_smoke ok");
