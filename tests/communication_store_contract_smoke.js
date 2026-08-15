@@ -105,7 +105,7 @@ function runOwnerContract() {
       calibration: calibrationSnapshot,
       browser: { mode: "portable", cdpPort: 9222 }
     });
-    assert.strictEqual(batch.policySnapshot.calibration.acceptance, "e2e_pending");
+    assert.strictEqual(batch.policySnapshot.calibration.acceptance, "accepted");
     assert.strictEqual(batch.policySnapshot.calibration.executionEnabled, true);
     assert.strictEqual(batch.status, "confirmed");
     const bindingBatch = createCommunicationBatch(db, {
