@@ -1,5 +1,6 @@
 const { formatNativeFilterSummary } = require("../../core/platform_filters");
 const { feedbackReasonLabel } = require("../../core/feedback");
+const { PRODUCT_POLICY } = require("../../core/product_policy");
 
 function buildTodayViewModel(input = {}) {
   const profile = input.profile || {};
@@ -47,7 +48,11 @@ function buildTodayViewModel(input = {}) {
       profileId
     }),
     confirmation: String(input.confirmation || ""),
-    run: { state: String(input.run?.state || "idle"), label: String(input.runLabel || "尚未运行"), error: String(input.run?.error || "") },
+    run: {
+      state: String(input.run?.state || "idle"),
+      label: scanLabel(input.run, plan.bossActiveDays),
+      error: String(input.run?.error || "")
+    },
     scan: {
       disabled: Boolean(scanBlocked),
       resumableBatchId: input.resumableBatch?.id || null,
@@ -112,6 +117,25 @@ function buildBossFilter(snapshot, catalog) {
   return { known: true, summary: formatNativeFilterSummary(snapshot) || "未命中可用的 BOSS 预筛档位", discoveredAt: String(catalog.discoveredAt || "").replace("T", " ").slice(0, 16) };
 }
 
+function scanLabel(run = {}, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossActiveDays) {
+  if (run.state === "running" && run.kind === "daily") return "正在执行日常扫描";
+  if (run.state === "completed" && run.kind === "daily") return "日常扫描已完成";
+  if (run.state === "running" && run.kind === "broad") return "正在执行广泛扫描";
+  if (run.state === "completed" && run.kind === "broad") return "广泛扫描已完成";
+  if (run.state === "running" && run.kind === "refresh") return "正在补读待刷新岗位";
+  if (run.state === "completed" && run.kind === "refresh") return "待刷新岗位补读完成";
+  if (run.state === "running" && run.kind === "activity") return `正在更新超过 ${bossActiveDays} 天有效期的招聘方活跃状态`;
+  if (run.state === "completed" && run.kind === "activity") return "招聘方活跃状态更新完成";
+  return {
+    idle: "尚未运行",
+    running: "扫描中",
+    completed: "本次扫描已完成",
+    partial: "本次扫描部分完成，可查看诊断后继续",
+    failed: "扫描失败，请查看错误",
+    interrupted: "扫描已中断，可重新启动"
+  }[run.state] || "尚未运行";
+}
+
 function workflowStatusLabel(status) {
   return { created: "本轮已建立", scanning: "正在筛选岗位", analyzing: "正在分析岗位", paused: "本轮已暂停", review_required: "等待确认本轮清单", communicating: "正在沟通", interrupted: "本轮已中断，等待继续", completed: "本轮已完成", failed: "本轮未完成", stopped: "本轮已停止" }[status] || "本轮进行中";
 }
@@ -124,4 +148,4 @@ function workflowBlockedMessage(code, plan = {}) {
   return { WORKFLOW_DAILY_RUN_LIMIT: "今天的三轮任务都已创建。", WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。", WORKFLOW_THIRD_SCAN_NOT_NEEDED: "当前候选库存已足够，不需要追加第三轮扫描。", WORKFLOW_SCAN_INTERVAL: plan.nextRunAt ? `两轮扫描至少间隔 2 小时，下次可在 ${new Date(plan.nextRunAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 开始。` : "两轮扫描至少间隔 2 小时。" }[code] || "当前不能创建新一轮。";
 }
 
-module.exports = { buildTodayViewModel, workflowStatusLabel, workflowShortfallLabel };
+module.exports = { buildTodayViewModel, workflowStatusLabel, workflowShortfallLabel, scanLabel };

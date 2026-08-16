@@ -4123,25 +4123,6 @@ function keywordLines(keywords = []) {
   return keywords.map((item) => `${item.word || item} | ${item.priority || "B"} | ${item.reason || "用户确认的搜索关键词"}`).join("\n");
 }
 
-function scanLabel(run, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossActiveDays) {
-  if (run.state === "running" && run.kind === "daily") return "正在执行日常扫描";
-  if (run.state === "completed" && run.kind === "daily") return "日常扫描已完成";
-  if (run.state === "running" && run.kind === "broad") return "正在执行广泛扫描";
-  if (run.state === "completed" && run.kind === "broad") return "广泛扫描已完成";
-  if (run.state === "running" && run.kind === "refresh") return "正在补读待刷新岗位";
-  if (run.state === "completed" && run.kind === "refresh") return "待刷新岗位补读完成";
-  if (run.state === "running" && run.kind === "activity") return `正在更新超过 ${bossActiveDays} 天有效期的招聘方活跃状态`;
-  if (run.state === "completed" && run.kind === "activity") return "招聘方活跃状态更新完成";
-  return {
-    idle: "尚未运行",
-    running: "扫描中",
-    completed: "本次扫描已完成",
-    partial: "本次扫描部分完成，可查看诊断后继续",
-    failed: "扫描失败，请查看错误",
-    interrupted: "扫描已中断，可重新启动"
-  }[run.state] || "尚未运行";
-}
-
 function navLinks({ currentPath = "", todayPath = "", planId = "" } = {}) {
   return renderNavigation({ currentPath, todayPath, planId });
 }

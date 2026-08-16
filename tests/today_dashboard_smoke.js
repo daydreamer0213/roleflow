@@ -7,12 +7,14 @@ const {
   saveProfileAnalysis,
   createMatchingCardDraft,
   confirmMatchingCard,
+  createScanRun,
+  finishScanRun,
   createWorkflowRun,
   transitionWorkflowRun
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { createDashboardServer } = require("../src/dashboard/server");
-const { buildTodayViewModel } = require("../src/dashboard/view_models/today");
+const { buildTodayViewModel, scanLabel } = require("../src/dashboard/view_models/today");
 const { renderTodayPage } = require("../src/dashboard/pages/today");
 
 const root = path.join(__dirname, "..");
@@ -23,6 +25,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
 (async () => {
   assertEvaluationScriptExplainsMissingPlaywright();
   assertRendererIsPureAndEscapesHtml();
+  assertScanStatusLabels();
   fs.mkdirSync(smokeDir, { recursive: true });
   const db = openDb(dbPath);
   const privateFileNameContacts = ["13876543210", "上海市浦东新区今日页路66号"];
@@ -44,6 +47,14 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   try {
     await assertConfirmedMatchCardPage(baseUrl, ready, privateFileNameContacts);
     await assertReadyTodayPage(baseUrl, ready, privateFileNameContacts);
+    const persistedRun = createScanRun(db, {
+      runId: "today-persisted-scan",
+      site: "boss",
+      command: "daily",
+      planId: ready.planId
+    });
+    finishScanRun(db, { runId: persistedRun.runId, status: "completed" });
+    await assertPersistedScanStatusPage(baseUrl, ready);
     await assertBlockedTodayPage(baseUrl, blocked);
     createActiveWorkflow(db, ready);
     await assertActiveTodayPage(baseUrl, ready);
@@ -110,6 +121,31 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.doesNotMatch(html, /现在卡在哪里/, "no-blocker state must not render an empty blocker section");
 }
 
+function assertScanStatusLabels() {
+  const cases = [
+    [{ state: "running", kind: "daily" }, "正在执行日常扫描"],
+    [{ state: "completed", kind: "daily" }, "日常扫描已完成"],
+    [{ state: "running", kind: "broad" }, "正在执行广泛扫描"],
+    [{ state: "completed", kind: "broad" }, "广泛扫描已完成"],
+    [{ state: "running", kind: "refresh" }, "正在补读待刷新岗位"],
+    [{ state: "completed", kind: "refresh" }, "待刷新岗位补读完成"],
+    [{ state: "running", kind: "activity" }, "正在更新超过 3 天有效期的招聘方活跃状态"],
+    [{ state: "completed", kind: "activity" }, "招聘方活跃状态更新完成"],
+    [{ state: "partial" }, "本次扫描部分完成，可查看诊断后继续"],
+    [{ state: "failed" }, "扫描失败，请查看错误"],
+    [{ state: "interrupted" }, "扫描已中断，可重新启动"],
+    [{ state: "idle" }, "尚未运行"]
+  ];
+  for (const [run, expected] of cases) assert.strictEqual(scanLabel(run, 3), expected);
+
+  const viewModel = buildTodayViewModel({
+    plan: { bossActiveDays: 3 },
+    run: { state: "running", kind: "daily", error: "" }
+  });
+  assert.strictEqual(viewModel.run.label, "正在执行日常扫描");
+  assert.match(renderTodayPage(viewModel), /扫描状态：<\/strong>正在执行日常扫描/);
+}
+
 async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   const favicon = await getText(baseUrl, "/favicon.ico");
   assert.strictEqual(favicon.status, 204, "dashboard pages must not emit a favicon 404 console error");
@@ -147,6 +183,13 @@ async function assertConfirmedMatchCardPage(baseUrl, saved, privateFileNameConta
   }
   assert.match(page.body, /当前扫描使用：简历文件\.txt/);
   assert.match(page.body, /匹配偏好卡 #\d+（已确认）/);
+}
+
+async function assertPersistedScanStatusPage(baseUrl, saved) {
+  const page = await getText(baseUrl, `/plan?planId=${saved.planId}`);
+  assert.strictEqual(page.status, 200);
+  assert.match(page.body, /扫描状态：<\/strong>日常扫描已完成/);
+  assert.doesNotMatch(page.body, /扫描状态：<\/strong>尚未运行/);
 }
 
 async function assertBlockedTodayPage(baseUrl, saved) {
