@@ -11,7 +11,9 @@ const {
   commitProcessedPreview,
   listUnresolvedMessageDiscoveryItems,
   recordUnresolvedMessageDiscoveryItem,
-  clearUnresolvedMessageDiscoveryItem
+  clearUnresolvedMessageDiscoveryItem,
+  getMessageDiscoveryRuntimeState,
+  saveMessageDiscoveryRuntimeState
 } = require("../src/core/message_preview_state");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-preview-state-"));
@@ -24,6 +26,47 @@ try {
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES ('Preview Candidate', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
   const platform = "boss";
+  const pacing = {
+    pacedActions: 19,
+    nextPacingCooldownAt: 24,
+    detailActions: 7,
+    nextDetailMicroCooldownAt: 13,
+    nextDetailMacroCooldownAt: 18
+  };
+  assert.deepStrictEqual(
+    getMessageDiscoveryRuntimeState(db, { profileId, platform }),
+    { profileId, platform, pacing: null, updatedAt: "" }
+  );
+  saveMessageDiscoveryRuntimeState(db, {
+    profileId,
+    platform,
+    pacing: { ...pacing, securityId: "must-not-persist" },
+    updatedAt: now
+  });
+  assert.deepStrictEqual(getMessageDiscoveryRuntimeState(db, { profileId, platform }), {
+    profileId,
+    platform,
+    pacing,
+    updatedAt: now
+  });
+  assert.doesNotMatch(
+    db.prepare("SELECT pacing_json FROM message_discovery_runtime_states WHERE profile_id = ? AND platform = ?").get(profileId, platform).pacing_json,
+    /securityId|must-not-persist/
+  );
+  saveMessageDiscoveryRuntimeState(db, {
+    profileId,
+    platform,
+    pacing: { ...pacing, detailActions: -1 },
+    updatedAt: "2026-08-01T08:00:01.000Z"
+  });
+  assert.strictEqual(getMessageDiscoveryRuntimeState(db, { profileId, platform }).pacing, null);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM message_discovery_runtime_states WHERE profile_id = ? AND platform = ?").get(profileId, platform).n,
+    1,
+    "runtime checkpoints must upsert one row per profile and platform"
+  );
+  db.prepare("UPDATE message_discovery_runtime_states SET pacing_json = '{broken'").run();
+  assert.strictEqual(getMessageDiscoveryRuntimeState(db, { profileId, platform }).pacing, null);
 
   let planned = planMessageDiscoveryQueue({
     rows: [readRow(digest("conversation-a"), digest("first"))],

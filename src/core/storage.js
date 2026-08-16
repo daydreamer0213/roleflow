@@ -698,6 +698,17 @@ CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
 );
 `;
 
+const MESSAGE_DISCOVERY_RUNTIME_STATES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_discovery_runtime_states (
+  profile_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  pacing_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(profile_id, platform),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+`;
+
 const ONBOARDING_RUN_SCHEMA = `
 CREATE TABLE IF NOT EXISTS onboarding_runs (
   id TEXT PRIMARY KEY,
@@ -876,6 +887,13 @@ const MIGRATIONS = [
         );
       }
       db.exec(ONBOARDING_RUN_SCHEMA);
+    }
+  },
+  {
+    version: 15,
+    name: "message_discovery_runtime_states_v1",
+    apply(db) {
+      db.exec(MESSAGE_DISCOVERY_RUNTIME_STATES_SCHEMA);
     }
   }
 ];

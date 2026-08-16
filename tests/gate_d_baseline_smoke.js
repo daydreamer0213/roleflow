@@ -37,6 +37,7 @@ const OPERATIONAL_TABLES = [
   "candidate_progress_events",
   "candidate_progress_cards",
   "message_preview_states",
+  "message_discovery_runtime_states",
   "message_discovery_unresolved_items",
   "communication_batch_items",
   "communication_batches",
@@ -129,6 +130,8 @@ function createFixture(file) {
     VALUES (?, 'progress-1', 'created', 'user', ?, ?)`, progressCardId, now, now);
   insert(db, `INSERT INTO message_preview_states(profile_id, platform, conversation_key, preview_digest, preview_kind, observed_at, updated_at)
     VALUES (?, 'boss', 'conversation-1', 'digest', 'text', ?, ?)`, profileId, now, now);
+  insert(db, `INSERT INTO message_discovery_runtime_states(profile_id, platform, pacing_json, updated_at)
+    VALUES (?, 'boss', '{"detailActions":1}', ?)`, profileId, now);
   insert(db, `INSERT INTO message_discovery_unresolved_items(profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code, first_observed_at, last_observed_at)
     VALUES (?, 'boss', 'conversation-2', 'digest', 'text', 'unknown', ?, ?)`, profileId, now, now);
   const before = { preserved: tableCounts(db, PRESERVED_TABLES), operational: tableCounts(db, OPERATIONAL_TABLES) };

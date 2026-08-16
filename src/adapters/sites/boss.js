@@ -988,11 +988,13 @@ class BossSiteAdapter {
     await this.waitWithPacing(kind, { signal, assertTabBindings });
   }
 
-  async waitWithPacing(kind, { signal = null, assertTabBindings = null } = {}) {
+  async waitWithPacing(kind, { signal = null, assertTabBindings = null, onWait = null } = {}) {
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
     const [min, max] = BOSS_PACING_POLICY.delayMs[kind] || BOSS_PACING_POLICY.delayMs.list;
-    await waitForAbortableSleep(this.sleep(randomBetween(min, max, this.random)), signal);
+    const delayMs = randomBetween(min, max, this.random);
+    if (typeof onWait === "function") await onWait({ kind, durationMs: delayMs });
+    await waitForAbortableSleep(this.sleep(delayMs), signal);
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
     if (!["catalog", "list", "detail", "scroll", "card", "refresh", "target", "pane_detail_read"].includes(kind)) return;
@@ -1000,6 +1002,7 @@ class BossSiteAdapter {
     if (this.pacedActions < this.nextPacingCooldownAt) return;
     const cooldownMs = randomBetween(...BOSS_PACING_POLICY.periodicDelayMs, this.random);
     this.logger?.info("boss_pacing_cooldown", { pacedActions: this.pacedActions, cooldownMs });
+    if (typeof onWait === "function") await onWait({ kind: "periodic", durationMs: cooldownMs });
     await waitForAbortableSleep(this.sleep(cooldownMs), signal);
     this.nextPacingCooldownAt += randomBetween(...BOSS_PACING_POLICY.periodicEvery, this.random);
   }
@@ -1035,15 +1038,16 @@ class BossSiteAdapter {
     for (const field of PACING_STATE_FIELDS) this[field] = state[field];
   }
 
-  async waitAfterDetailAction({ signal = null, assertTabBindings = null, onPacingCheckpoint = null } = {}) {
-    throwIfAborted(signal);
-    await assertRuntimeTabBindings(assertTabBindings);
+  async waitAfterDetailAction({ signal = null, assertTabBindings = null, onPacingCheckpoint = null, onWait = null } = {}) {
     this.detailActions += 1;
     if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
+    throwIfAborted(signal);
+    await assertRuntimeTabBindings(assertTabBindings);
     if (this.detailActions >= this.nextDetailMacroCooldownAt) {
       const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.macroDelayMs, this.random);
       console.error(`[boss] 已读取 ${this.detailActions} 个右栏详情，阶段冷却 ${Math.ceil(cooldownMs / 1000)} 秒后继续`);
       this.logger?.info("boss_detail_macro_cooldown", { detailActions: this.detailActions, cooldownMs });
+      if (typeof onWait === "function") await onWait({ kind: "detail_macro", durationMs: cooldownMs });
       await waitForAbortableSleep(this.sleep(cooldownMs), signal);
       this.nextDetailMacroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.macroEvery, this.random);
       while (this.nextDetailMicroCooldownAt <= this.detailActions) {
@@ -1055,6 +1059,7 @@ class BossSiteAdapter {
     if (this.detailActions >= this.nextDetailMicroCooldownAt) {
       const cooldownMs = randomBetween(...BOSS_PACING_POLICY.detail.microDelayMs, this.random);
       this.logger?.info("boss_detail_micro_cooldown", { detailActions: this.detailActions, cooldownMs });
+      if (typeof onWait === "function") await onWait({ kind: "detail_micro", durationMs: cooldownMs });
       await waitForAbortableSleep(this.sleep(cooldownMs), signal);
       this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
       if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());

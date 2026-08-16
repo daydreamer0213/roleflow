@@ -23,10 +23,15 @@ const {
 } = require("../src/core/candidate_progress");
 const {
   recordUnresolvedMessageDiscoveryItem,
-  listUnresolvedMessageDiscoveryItems
+  listUnresolvedMessageDiscoveryItems,
+  getMessageDiscoveryRuntimeState,
+  saveMessageDiscoveryRuntimeState
 } = require("../src/core/message_preview_state");
 const { createDashboardServer } = require("../src/dashboard/server");
-const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
+const {
+  createMessageDiscoveryController,
+  createMessageDiscoveryDetailSafety
+} = require("../src/dashboard/message_discovery_controller");
 const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
 const { communicationRuntimeBlock } = require("../src/core/communication_runtime");
 
@@ -58,6 +63,7 @@ main().catch((error) => {
 
 async function main() {
   await controllerBrowserAuthoritySmoke();
+  await detailSafetyCompositionSmoke();
   await dashboardSignalShutdownSmoke();
   const fixture = createFixture();
   await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
@@ -497,6 +503,79 @@ async function main() {
   await leaseConstraintSmoke(db, root, dbPath, logger, fixture.profileId);
   assertNoPrivateData(logs);
   console.log("dashboard_message_discovery_smoke ok");
+}
+
+async function detailSafetyCompositionSmoke() {
+  const safetyDb = openDb(":memory:");
+  try {
+    const now = "2026-08-16T08:00:00.000Z";
+    const profileId = Number(safetyDb.prepare(`INSERT INTO candidate_profiles(
+      display_name, profile_json, source_hash, created_at, updated_at
+    ) VALUES ('Detail Safety', '{}', 'detail-safety', ?, ?)`).run(now, now).lastInsertRowid);
+    saveMessageDiscoveryRuntimeState(safetyDb, {
+      profileId,
+      platform: "boss",
+      pacing: {
+        pacedActions: 2,
+        nextPacingCooldownAt: 18,
+        detailActions: 2,
+        nextDetailMicroCooldownAt: 6,
+        nextDetailMacroCooldownAt: 16
+      },
+      updatedAt: now
+    });
+    const run = { phase: "starting", waitUntil: "", updatedAt: now };
+    const sleeps = [];
+    const safety = createMessageDiscoveryDetailSafety({
+      db: safetyDb,
+      profileId,
+      owner: "detail-safety-run",
+      run,
+      now: () => new Date(now),
+      sleepFn: async (durationMs) => sleeps.push({ durationMs, phase: run.phase, waitUntil: run.waitUntil }),
+      randomFn: () => 0
+    });
+    assert.deepStrictEqual(safety.pacing.pacingState(), {
+      pacedActions: 2,
+      nextPacingCooldownAt: 18,
+      detailActions: 2,
+      nextDetailMicroCooldownAt: 6,
+      nextDetailMacroCooldownAt: 16
+    });
+    await safety.beforeOpen({ jobId: "stable-job-id", assertTabBindings: async () => {} });
+    assert.deepStrictEqual(
+      listSiteAccessEvents(safetyDb, { site: "boss" }).map((event) => event.action),
+      ["pane_detail_read", "detail_open"]
+    );
+    assert.strictEqual(sleeps[0].durationMs, 8000);
+    assert.strictEqual(sleeps[0].phase, "cooldown");
+    assert.match(sleeps[0].waitUntil, /^2026-08-16T08:00:08\.000Z$/);
+    assert.strictEqual(run.phase, "reading_detail");
+
+    await safety.afterIssuedAttempt({ jobId: "stable-job-id", assertTabBindings: async () => {} });
+    assert.strictEqual(
+      getMessageDiscoveryRuntimeState(safetyDb, { profileId, platform: "boss" }).pacing.detailActions,
+      3
+    );
+
+    const stop = new AbortController();
+    stop.abort(Object.assign(new Error("stopped"), { code: "MESSAGE_DISCOVERY_STOPPED" }));
+    await assert.rejects(
+      () => safety.afterIssuedAttempt({
+        jobId: "stable-job-id",
+        signal: stop.signal,
+        assertTabBindings: async () => {}
+      }),
+      (error) => error.code === "MESSAGE_DISCOVERY_STOPPED"
+    );
+    assert.strictEqual(
+      getMessageDiscoveryRuntimeState(safetyDb, { profileId, platform: "boss" }).pacing.detailActions,
+      4,
+      "an aborted issued request must still persist its detail pacing count"
+    );
+  } finally {
+    safetyDb.close();
+  }
 }
 
 async function inboundResolutionDashboardSmoke({ base, browserCreations, scenarios }) {

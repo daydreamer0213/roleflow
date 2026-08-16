@@ -25,7 +25,7 @@ const REQUIRED_NONZERO_PRESERVED = PRESERVED_TABLES.filter((table) => table !== 
 const OPERATIONAL_TABLES = [
   "onboarding_runs", "resume_parse_attempts", "keyword_sources", "platform_filter_catalogs", "model_cache", "site_runtime_states", "site_scan_leases",
   "job_analysis_attempts", "workflow_job_tasks", "workflow_runs", "candidate_progress_events", "candidate_progress_cards",
-  "message_preview_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
+  "message_preview_states", "message_discovery_runtime_states", "message_discovery_unresolved_items", "communication_batch_items", "communication_batches",
   "candidate_job_events", "candidate_job_states", "applications", "events", "job_refresh_attempts", "job_observations",
   "scan_target_results", "scan_runs", "batches", "jobs"
 ];

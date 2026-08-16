@@ -1,8 +1,14 @@
 const { randomUUID } = require("node:crypto");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
+const { BossSiteAdapter } = require("../adapters/sites/boss");
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
-const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
+const {
+  listUnresolvedMessageDiscoveryItems,
+  getMessageDiscoveryRuntimeState,
+  saveMessageDiscoveryRuntimeState
+} = require("../core/message_preview_state");
+const { createSiteAccessController } = require("../core/site_access_budget");
 const { communicationRuntimeBlock } = require("../core/communication_runtime");
 const { resolveBossRiskWindow } = require("../core/boss_risk_window");
 const {
@@ -421,6 +427,98 @@ function createMessageDiscoveryController(deps = {}) {
   }
 }
 
+function createMessageDiscoveryDetailSafety({
+  db,
+  profileId,
+  owner = "",
+  run = null,
+  logger = null,
+  signal = null,
+  now = () => new Date(),
+  sleepFn,
+  randomFn = Math.random,
+  createAccessController = createSiteAccessController,
+  createPacingAdapter = (options) => new BossSiteAdapter(options)
+} = {}) {
+  let assertActiveBindings = null;
+  const onWait = ({ durationMs }) => setDetailWait(run, durationMs, now);
+  const accessController = createAccessController({
+    db,
+    auditDb: db,
+    site: "boss",
+    runId: owner,
+    logger,
+    signal,
+    sleepFn,
+    randomFn,
+    onWait,
+    assertActive: async () => {
+      if (typeof assertActiveBindings === "function") await assertActiveBindings();
+    }
+  });
+  const pacing = createPacingAdapter({ logger, sleepFn, randomFn, accessController });
+  pacing.restorePacing(getMessageDiscoveryRuntimeState(db, { profileId, platform: "boss" }).pacing);
+
+  return {
+    pacing,
+    async beforeOpen({ jobId, signal: operationSignal = signal, assertTabBindings } = {}) {
+      assertActiveBindings = assertTabBindings;
+      setDetailPhase(run, "reading_detail", now);
+      try {
+        await pacing.waitWithPacing("pane_detail_read", {
+          signal: operationSignal,
+          assertTabBindings,
+          onWait
+        });
+        await pacing.reserveAccess("pane_detail_read", { jobId });
+        await pacing.reserveAccess("detail_open", { jobId });
+      } finally {
+        assertActiveBindings = null;
+        setDetailPhase(run, "reading_detail", now);
+      }
+    },
+    async afterIssuedAttempt({ signal: operationSignal = signal, assertTabBindings } = {}) {
+      try {
+        await pacing.waitAfterDetailAction({
+          signal: operationSignal,
+          assertTabBindings,
+          onWait,
+          onPacingCheckpoint: async (state) => saveMessageDiscoveryRuntimeState(db, {
+            profileId,
+            platform: "boss",
+            pacing: state,
+            updatedAt: safeNow(now).toISOString()
+          })
+        });
+      } finally {
+        if (!operationSignal?.aborted) setDetailPhase(run, "reading_detail", now);
+      }
+    }
+  };
+}
+
+function setDetailWait(run, durationMs, now) {
+  if (!run) return;
+  const current = safeNow(now);
+  const delay = Math.max(0, Math.floor(Number(durationMs) || 0));
+  run.phase = "cooldown";
+  run.waitUntil = new Date(current.getTime() + delay).toISOString();
+  run.updatedAt = current.toISOString();
+}
+
+function setDetailPhase(run, phase, now) {
+  if (!run) return;
+  run.phase = phase;
+  run.waitUntil = "";
+  run.updatedAt = safeNow(now).toISOString();
+}
+
+function safeNow(now) {
+  const value = typeof now === "function" ? now() : now;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date : new Date();
+}
+
 function messageDiscoveryProfileId(value) {
   const profileId = Number(value);
   if (!Number.isSafeInteger(profileId) || profileId <= 0) {
@@ -496,5 +594,6 @@ function createMessageModelAdapter(modelConfig, logger) {
 }
 
 module.exports = {
-  createMessageDiscoveryController
+  createMessageDiscoveryController,
+  createMessageDiscoveryDetailSafety
 };

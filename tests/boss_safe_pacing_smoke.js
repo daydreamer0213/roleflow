@@ -30,6 +30,8 @@ async function main() {
   await paneDetailDelaySmoke();
   detailFetchPacingPolicySmoke();
   await pacingRestoreFailClosedSmoke();
+  await pacingWaitVisibilitySmoke();
+  await abortedIssuedDetailStillCountsSmoke();
   await productionScanPacingCompositionSmoke();
   await sqliteCheckpointResumeChainSmoke();
   await threeMinuteBudgetSmoke();
@@ -42,6 +44,55 @@ async function main() {
   await riskPersistenceFailurePreservesOriginalErrorSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+async function pacingWaitVisibilitySmoke() {
+  const waits = [];
+  const sleeps = [];
+  const adapter = new BossSiteAdapter({
+    sleepFn: async (ms) => sleeps.push(ms),
+    randomFn: () => 0
+  });
+  adapter.restorePacing({
+    pacedActions: 18,
+    nextPacingCooldownAt: 18,
+    detailActions: 5,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  });
+  await adapter.waitWithPacing("pane_detail_read", {
+    onWait: (event) => waits.push(event)
+  });
+  await adapter.waitAfterDetailAction({
+    onWait: (event) => waits.push(event)
+  });
+  assert.deepStrictEqual(sleeps, [8000, 4000, 15000]);
+  assert.deepStrictEqual(waits, [
+    { kind: "pane_detail_read", durationMs: 8000 },
+    { kind: "periodic", durationMs: 4000 },
+    { kind: "detail_micro", durationMs: 15000 }
+  ]);
+}
+
+async function abortedIssuedDetailStillCountsSmoke() {
+  const checkpoints = [];
+  const sleeps = [];
+  const controller = new AbortController();
+  controller.abort(Object.assign(new Error("stopped"), { code: "MESSAGE_DISCOVERY_STOPPED" }));
+  const adapter = new BossSiteAdapter({
+    sleepFn: async (ms) => sleeps.push(ms),
+    randomFn: () => 0
+  });
+  await assert.rejects(
+    () => adapter.waitAfterDetailAction({
+      signal: controller.signal,
+      onPacingCheckpoint: async (state) => checkpoints.push(state.detailActions)
+    }),
+    (error) => error.code === "MESSAGE_DISCOVERY_STOPPED"
+  );
+  assert.strictEqual(adapter.detailActions, 1, "an issued detail attempt must count even when stop arrives before cooldown");
+  assert.deepStrictEqual(checkpoints, [1]);
+  assert.deepStrictEqual(sleeps, [], "an aborted run must checkpoint the attempt without sleeping again");
 }
 
 function detailFetchPacingPolicySmoke() {

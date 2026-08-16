@@ -16,6 +16,13 @@ const UNRESOLVED_REASON_CODES = new Set([
   "BOSS_MESSAGE_COMPANY_MISMATCH",
   "BOSS_MESSAGE_THREAD_MISMATCH"
 ]);
+const PACING_FIELDS = Object.freeze([
+  "pacedActions",
+  "nextPacingCooldownAt",
+  "detailActions",
+  "nextDetailMicroCooldownAt",
+  "nextDetailMacroCooldownAt"
+]);
 
 function listPreviewStates(db, { profileId } = {}) {
   const id = positiveInteger(profileId, "profileId");
@@ -110,6 +117,36 @@ function clearUnresolvedMessageDiscoveryItem(db, input = {}) {
   return db.prepare(`DELETE FROM message_discovery_unresolved_items
     WHERE profile_id = ? AND platform = ? AND conversation_key = ?`)
     .run(profileId, platform, conversationKey).changes > 0;
+}
+
+function getMessageDiscoveryRuntimeState(db, { profileId, platform } = {}) {
+  const id = positiveInteger(profileId, "profileId");
+  const normalizedPlatform = shortText(platform, 40);
+  if (!normalizedPlatform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
+  const row = db.prepare(`SELECT pacing_json, updated_at
+    FROM message_discovery_runtime_states
+    WHERE profile_id = ? AND platform = ?`).get(id, normalizedPlatform);
+  return {
+    profileId: id,
+    platform: normalizedPlatform,
+    pacing: row ? parsePacing(row.pacing_json) : null,
+    updatedAt: row?.updated_at || ""
+  };
+}
+
+function saveMessageDiscoveryRuntimeState(db, input = {}) {
+  const profileId = positiveInteger(input.profileId, "profileId");
+  const platform = shortText(input.platform, 40);
+  const updatedAt = isoText(input.updatedAt);
+  if (!platform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
+  const pacing = safePacing(input.pacing);
+  db.prepare(`INSERT INTO message_discovery_runtime_states(profile_id, platform, pacing_json, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(profile_id, platform) DO UPDATE SET
+      pacing_json = excluded.pacing_json,
+      updated_at = excluded.updated_at`)
+    .run(profileId, platform, JSON.stringify(pacing || {}), updatedAt);
+  return getMessageDiscoveryRuntimeState(db, { profileId, platform });
 }
 
 function planMessageDiscoveryQueue({ rows = [], baselines = new Map(), unresolved = new Map() } = {}) {
@@ -276,6 +313,24 @@ function isDigest(value) {
   return /^sha256:[a-f0-9]{64}$/.test(String(value || "").trim().toLowerCase());
 }
 
+function parsePacing(value) {
+  try {
+    return safePacing(JSON.parse(String(value || "{}")));
+  } catch {
+    return null;
+  }
+}
+
+function safePacing(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const pacing = {};
+  for (const field of PACING_FIELDS) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) return null;
+    pacing[field] = value[field];
+  }
+  return pacing;
+}
+
 function safeReasonCode(value) {
   const code = String(value || "").trim();
   if (!UNRESOLVED_REASON_CODES.has(code)) {
@@ -296,6 +351,8 @@ module.exports = {
   listUnresolvedMessageDiscoveryItems,
   recordUnresolvedMessageDiscoveryItem,
   clearUnresolvedMessageDiscoveryItem,
+  getMessageDiscoveryRuntimeState,
+  saveMessageDiscoveryRuntimeState,
   planMessageDiscoveryQueue,
   commitProcessedPreview
 };
