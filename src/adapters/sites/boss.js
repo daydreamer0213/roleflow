@@ -1118,10 +1118,27 @@ class BossSiteAdapter {
           await assertRuntimeTabBindings(options.assertTabBindings);
           const { cityOrder, city, item, keyword, cardLimit, lane, laneId, targetKey, detailLimitOverride } = target;
           targetPosition += 1;
+          const frozenTargetPosition = allTargets.findIndex((entry) => entry.targetKey === targetKey) + 1;
+          const frozenTargetTotal = allTargets.length;
           const startedAt = new Date().toISOString();
           let targetJobs = [];
           let targetEntries = [];
+          let targetDiscovered = 0;
+          let lastDetailPosition = 0;
+          let detailTotal = 0;
           try {
+            if (typeof options.onProgressCheckpoint === "function") {
+              await options.onProgressCheckpoint({
+                activity: "searching",
+                targetKey,
+                targetPosition: frozenTargetPosition,
+                targetTotal: frozenTargetTotal,
+                targetDiscovered,
+                detailPosition: 0,
+                detailTotal: 0,
+                jobs: []
+              });
+            }
             const url = buildBossSearchUrl({ keyword, cityCode: city.cityCode, nativeFilters: lane, searchTemplate: options.searchTemplate });
             console.error(`[boss] 打开城市：${city.city || city.cityCode} · ${keyword}（${item.priority}，最多 ${cardLimit} 条）`);
             this.logger?.info("boss_keyword_opened", {
@@ -1140,12 +1157,38 @@ class BossSiteAdapter {
             });
             throwIfAborted(options.signal);
             await this.assertSearchPage(tabId);
-            const collected = await this.collectCards(tabId, cardLimit, options.signal, options.assertTabBindings);
+            const collected = await this.collectCards(
+              tabId,
+              cardLimit,
+              options.signal,
+              options.assertTabBindings,
+              async ({ cards: addedCards, total }) => {
+                targetDiscovered = Number(total || 0);
+                if (typeof options.onProgressCheckpoint !== "function") return;
+                const jobs = addedCards.map((card) => {
+                  const job = normalizeBossJob({ ...card, keyword, source: "boss", searchCity: city.city || "" });
+                  job.detailRequired = typeof options.shouldReadDetail !== "function"
+                    || options.shouldReadDetail(job) !== false;
+                  return job;
+                });
+                await options.onProgressCheckpoint({
+                  activity: "searching",
+                  targetKey,
+                  targetPosition: frozenTargetPosition,
+                  targetTotal: frozenTargetTotal,
+                  targetDiscovered,
+                  detailPosition: 0,
+                  detailTotal: 0,
+                  jobs
+                });
+              }
+            );
             throwIfAborted(options.signal);
             const collection = Array.isArray(collected)
               ? { cards: collected, status: "completed", stopReason: "external_collection", scrollRounds: 0, growthRounds: 0, quietWindows: 0 }
               : collected;
             const cards = Array.isArray(collection?.cards) ? collection.cards : [];
+            targetDiscovered = cards.length;
             console.error(`[boss] ${city.city || city.cityCode} · ${keyword} 列表岗位：${cards.length}`);
             this.logger?.info("boss_cards_collected", {
               targetKey,
@@ -1209,6 +1252,7 @@ class BossSiteAdapter {
               ? Math.min(Math.max(0, configuredDetailLimit), remainingDetailBudget)
               : Math.ceil(remainingDetailBudget / remainingTargets);
             const detailEntries = eligibleDetailEntries.slice(0, targetDetailQuota);
+            detailTotal = detailEntries.length;
             const selectedDetailIds = new Set(detailEntries.map((entry) => bossSourceId(entry.job)));
             for (const entry of eligibleDetailEntries) {
               const key = bossSourceId(entry.job);
@@ -1235,9 +1279,23 @@ class BossSiteAdapter {
             });
             targetJobs = targetEntries.map((entry) => candidates.get(bossSourceId(entry.job))?.job || entry.job);
 
-            for (const entry of detailEntries) {
+            for (let detailIndex = 0; detailIndex < detailEntries.length; detailIndex += 1) {
+              const entry = detailEntries[detailIndex];
               throwIfAborted(options.signal);
               await assertRuntimeTabBindings(options.assertTabBindings);
+              lastDetailPosition = detailIndex + 1;
+              if (typeof options.onProgressCheckpoint === "function") {
+                await options.onProgressCheckpoint({
+                  activity: "reading_detail",
+                  targetKey,
+                  targetPosition: frozenTargetPosition,
+                  targetTotal: frozenTargetTotal,
+                  targetDiscovered,
+                  detailPosition: lastDetailPosition,
+                  detailTotal,
+                  jobs: []
+                });
+              }
               console.error(`[boss] 读详情：${keyword}（${item.priority}） ${entry.job.title}`);
               const useSearchPageApi = detailMode === "search_page_api";
               const accessMode = useSearchPageApi ? "search_page_api" : "visible_pane";
@@ -1327,6 +1385,11 @@ class BossSiteAdapter {
                 status: collection.status === "partial" ? "partial" : "completed",
                 jobs: targetJobs,
                 jobCount: targetJobs.length,
+                targetPosition: frozenTargetPosition,
+                targetTotal: frozenTargetTotal,
+                targetDiscovered,
+                detailPosition: lastDetailPosition,
+                detailTotal,
                 details: {
                   cardLimit,
                   stopReason: collection.stopReason || "",
@@ -1342,7 +1405,7 @@ class BossSiteAdapter {
             if (collection.status === "partial") partialTargets += 1;
             await this.waitWithPacing("target", { signal: options.signal, assertTabBindings: options.assertTabBindings });
           } catch (error) {
-            if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST"].includes(error?.code)) throw error;
+            if (["SCAN_CHECKPOINT_FAILED", "SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) throw error;
             if (isWorkflowControlError(error)) throw error;
             const safeErrorMessage = options.detailMode === "search_page_api" ? "" : error?.message || String(error);
             this.logger?.warn("boss_scan_target_failed", {
@@ -1365,6 +1428,11 @@ class BossSiteAdapter {
                 status: "failed",
                 jobs: targetJobs,
                 jobCount: targetJobs.length,
+                targetPosition: frozenTargetPosition,
+                targetTotal: frozenTargetTotal,
+                targetDiscovered,
+                detailPosition: lastDetailPosition,
+                detailTotal,
                 errorCode: error?.code || "BOSS_SCAN_TARGET_FAILED",
                 errorMessage: safeErrorMessage,
                 startedAt,
@@ -1513,7 +1581,7 @@ class BossSiteAdapter {
     return refreshed;
   }
 
-  async collectCards(tabId, maxCards, signal = null, assertTabBindings = null) {
+  async collectCards(tabId, maxCards, signal = null, assertTabBindings = null, onCards = null) {
     const found = new Map();
     let readinessAttempts = 0;
     while (!found.size && readinessAttempts < 10) {
@@ -1522,7 +1590,8 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      mergeUniqueCards(found, initialCards);
+      const added = mergeUniqueCards(found, initialCards);
+      if (added.length && typeof onCards === "function") await onCards({ cards: added, total: found.size });
       if (found.size) break;
       readinessAttempts += 1;
       await this.waitWithPacing("list_ready", { signal, assertTabBindings });
@@ -1541,12 +1610,16 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      if (mergeUniqueCards(found, cards) > 0) growthRounds += 1;
+      const added = mergeUniqueCards(found, cards);
+      if (added.length) {
+        growthRounds += 1;
+        if (typeof onCards === "function") await onCards({ cards: added, total: found.size });
+      }
       if (found.size >= maxCards) break;
       const scroll = await this.scrollList(tabId, signal, assertTabBindings);
       scrollRounds += 1;
       if (scroll?.atBottom) {
-        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal, assertTabBindings);
+        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal, assertTabBindings, onCards);
         if (growth.grew) {
           growthRounds += 1;
           quietWindows = 0;
@@ -1573,7 +1646,7 @@ class BossSiteAdapter {
     };
   }
 
-  async waitForCardGrowth(tabId, maxCards, found, signal = null, assertTabBindings = null) {
+  async waitForCardGrowth(tabId, maxCards, found, signal = null, assertTabBindings = null, onCards = null) {
     const timeoutMs = randomBetween(2400, 3400, this.random);
     const pollMs = randomBetween(350, 650, this.random);
     const maxPolls = Math.max(4, Math.ceil(timeoutMs / pollMs));
@@ -1587,7 +1660,8 @@ class BossSiteAdapter {
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       const added = mergeUniqueCards(found, cards);
-      if (added > 0 || found.size >= maxCards) return { grew: true, added, polls: poll + 1 };
+      if (added.length && typeof onCards === "function") await onCards({ cards: added, total: found.size });
+      if (added.length > 0 || found.size >= maxCards) return { grew: true, added: added.length, polls: poll + 1 };
     }
     return { grew: false, added: 0, polls: maxPolls };
   }
@@ -2615,12 +2689,14 @@ function randomBetween(min, max, randomFn = Math.random) {
 }
 
 function mergeUniqueCards(found, cards) {
-  const before = found.size;
+  const added = [];
   for (const card of cards || []) {
     const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
-    if (!found.has(key)) found.set(key, card);
+    if (found.has(key)) continue;
+    found.set(key, card);
+    added.push(card);
   }
-  return found.size - before;
+  return added;
 }
 
 function reusableDetailMatches(job, cached) {

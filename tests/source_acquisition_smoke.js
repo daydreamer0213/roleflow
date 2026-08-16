@@ -80,6 +80,8 @@ assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
   await inheritedPageInspectionSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
+  await cardGrowthCheckpointSmoke();
+  await scanProgressEventOrderSmoke();
   await delayedAppendAtBottomSmoke();
   await confirmedListEndSmoke();
   await scrollSafetyLimitSmoke();
@@ -346,6 +348,82 @@ async function scrollSmoke() {
   assert.strictEqual(result.status, "completed");
   assert.strictEqual(result.stopReason, "card_limit_reached");
   assert.strictEqual(page, 3);
+}
+
+async function cardGrowthCheckpointSmoke() {
+  async function collect(onCards = null) {
+    let visible = 2;
+    const counts = { evalValue: 0, scrollList: 0, searchChecks: 0, waits: 0 };
+    const browser = {
+      async evalValue(_tabId, expression) {
+        counts.evalValue += 1;
+        if (!expression.includes("__bossExtractCards")) return true;
+        return Array.from({ length: visible }, (_, index) => card(`progress-${index + 1}`));
+      }
+    };
+    const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+    adapter.assertSearchPage = async () => { counts.searchChecks += 1; return { isSearchPage: true }; };
+    adapter.scrollList = async () => {
+      counts.scrollList += 1;
+      visible = 4;
+      return { moved: true, atBottom: false, scrollTop: 700 };
+    };
+    adapter.waitWithPacing = async () => { counts.waits += 1; };
+    const result = await adapter.collectCards("tab", 4, null, null, onCards);
+    return { result, counts };
+  }
+
+  const batches = [];
+  const withCheckpoint = await collect(async ({ cards, total }) => {
+    batches.push({ ids: cards.map((entry) => entry.title), total });
+  });
+  const withoutCheckpoint = await collect();
+  assert.deepStrictEqual(batches, [
+    { ids: ["progress-1", "progress-2"], total: 2 },
+    { ids: ["progress-3", "progress-4"], total: 4 }
+  ]);
+  assert.strictEqual(withCheckpoint.result.cards.length, 4);
+  assert.deepStrictEqual(withCheckpoint.counts, withoutCheckpoint.counts,
+    "card checkpoints must not add evaluation, scrolling, search checks, or waits");
+}
+
+async function scanProgressEventOrderSmoke() {
+  const browser = {
+    async activeTabId() { return activeBoss.id; },
+    async navigate() {}
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  const cards = [card("event-1"), card("event-2")];
+  adapter.collectCards = async (_tabId, _maxCards, _signal, _assertBindings, onCards) => {
+    await onCards?.({ cards, total: cards.length });
+    return cards;
+  };
+  adapter.readVisiblePaneDetail = async (_tabId, job) => ({
+    description: `完整职位描述 ${job.title} Python RAG `.repeat(12),
+    bossActiveText: "今日活跃"
+  });
+  const events = [];
+  await adapter.scanBrowser({
+    tabId: activeBoss.id,
+    keywords: ["RAG"],
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    maxCards: 2,
+    maxDetailTotal: 2,
+    onProgressCheckpoint: async (event) => events.push(event)
+  });
+  assert.deepStrictEqual(events.map((event) => [
+    event.activity,
+    event.targetPosition,
+    event.detailPosition,
+    event.detailTotal,
+    event.jobs.length
+  ]), [
+    ["searching", 1, 0, 0, 0],
+    ["searching", 1, 0, 0, 2],
+    ["reading_detail", 1, 1, 2, 0],
+    ["reading_detail", 1, 2, 2, 0]
+  ]);
 }
 
 async function delayedAppendAtBottomSmoke() {
@@ -1510,6 +1588,7 @@ async function scanTargetResumeFilterSmoke() {
   adapter.assertSearchPage = async () => ({ isSearchPage: true });
   adapter.collectCards = async () => [card("resumed")];
   const summaries = [];
+  const checkpoints = [];
   const jobs = await adapter.scanBrowser({
     tabId: activeBoss.id,
     keywords: ["first", "second"],
@@ -1519,10 +1598,13 @@ async function scanTargetResumeFilterSmoke() {
     maxCards: 20,
     maxDetailTotal: 0,
     shouldReadDetail: () => false,
+    onTargetComplete: async (result) => checkpoints.push(result),
     onScanComplete: async (summary) => summaries.push(summary)
   });
   assert.deepStrictEqual(navigated, ["second"]);
   assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(checkpoints[0].targetPosition, 2);
+  assert.strictEqual(checkpoints[0].targetTotal, 2);
   assert.strictEqual(summaries[0].status, "completed");
 
   await assert.rejects(() => adapter.scanBrowser({

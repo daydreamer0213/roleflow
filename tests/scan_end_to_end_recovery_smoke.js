@@ -299,10 +299,54 @@ async function workflowPlatformAccessSmoke(storage) {
   const { workflowRunConsumesSlot } = require("../src/core/workflow_control");
   await scenarioFilterCatalogWaitPrebound(storage);
   await scenarioPauseAfterDetailCheckpoint(storage);
+  await scenarioProgressCheckpointPersistence(storage);
   await scenarioStopBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioFailureBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot);
   await scenarioRepeatedEntry(storage);
+}
+
+async function scenarioProgressCheckpointPersistence(storage) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-wf-progress-"));
+  try {
+    const scenario = seedScenario(storage, root, "2026-10-07", "none");
+    const result = runScan(
+      scenario.dbPath,
+      scenario.planId,
+      "wf-progress-checkpoints",
+      "workflow-progress-checkpoints",
+      {
+        workflowRunId: scenario.workflow.id,
+        keywords: ["RAG", "Agent"]
+      }
+    );
+    assertExit(result, 0, "workflow progress checkpoints");
+    const db = storage.openDb(scenario.dbPath);
+    try {
+      const workflow = storage.getWorkflowRun(db, scenario.workflow.id);
+      const batch = storage.getBatch(db, workflow.scanBatchId);
+      assert.strictEqual(
+        db.prepare("SELECT COUNT(*) AS n FROM job_observations WHERE batch_id = ?").get(batch.id).n,
+        2
+      );
+      assert.deepStrictEqual(batch.filterSnapshot.runtime.scanProgress, {
+        version: 1,
+        activity: "target_complete",
+        targetKey: batch.filterSnapshot.runtime.scanProgress.targetKey,
+        targetPosition: 1,
+        targetTotal: batch.filterSnapshot.execution.targets.length,
+        targetDiscovered: 2,
+        detailPosition: 1,
+        detailTotal: 1,
+        updatedAt: batch.filterSnapshot.runtime.scanProgress.updatedAt
+      });
+      assert.deepStrictEqual(batch.filterSnapshot.runtime.bossPacing, { accessCount: 3 });
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmRecursive(root);
+  }
 }
 
 async function scenarioFilterCatalogWaitPrebound(storage) {
@@ -497,9 +541,10 @@ async function scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot) {
         }),
         (error) => error.code === "WORKFLOW_RUN_TERMINAL"
       );
-      // seed 0 + platform access marker +1 + finalize stop +1. If the marker
-      // were written twice, this would be 3.
-      assert.strictEqual(stopped.progressRevision, 2);
+      // seed 0 + platform access +1 + two persisted target checkpoints +2
+      // + finalize stop +1. The stop is observed at the safe boundary after
+      // the second already-completed target is saved.
+      assert.strictEqual(stopped.progressRevision, 4);
       assert.strictEqual(
         storage.getScanRun(db, "wf-stop-after-first").stopCode,
         "WORKFLOW_STOP_REQUESTED"
@@ -742,8 +787,65 @@ function installOfflineBoundaries() {
         keyword: options.keywords?.[0] || ""
       });
       const requested = Array.isArray(options.targetKeys) ? new Set(options.targetKeys) : null;
-      const targets = boss.buildBossScanTargets(options).filter((target) => !requested || requested.has(target.targetKey));
+      const allTargets = boss.buildBossScanTargets(options);
+      const targets = allTargets.filter((target) => !requested || requested.has(target.targetKey));
       assert(targets.length, "offline adapter received no scan targets");
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-progress-checkpoints") {
+        const target = targets[0];
+        const targetPosition = allTargets.findIndex((entry) => entry.targetKey === target.targetKey) + 1;
+        const targetTotal = allTargets.length;
+        const first = offlineJob(target);
+        const second = {
+          ...first,
+          sourceId: `${first.sourceId}-second`,
+          title: `${target.keyword} 第二个离线岗位`,
+          url: `${first.url}?fixture=second`
+        };
+        const beforeRevision = workflowProgressRevision();
+        await options.onProgressCheckpoint({
+          activity: "searching",
+          targetKey: target.targetKey,
+          targetPosition,
+          targetTotal,
+          targetDiscovered: 2,
+          detailPosition: 0,
+          detailTotal: 0,
+          jobs: [first, second]
+        });
+        await options.onProgressCheckpoint({
+          activity: "reading_detail",
+          targetKey: target.targetKey,
+          targetPosition,
+          targetTotal,
+          targetDiscovered: 2,
+          detailPosition: 1,
+          detailTotal: 1,
+          jobs: []
+        });
+        await options.onDetailCheckpoint({ job: first });
+        await options.onTargetComplete({
+          targetKey: target.targetKey,
+          city: target.city.city,
+          keyword: target.keyword,
+          laneId: target.laneId,
+          status: "completed",
+          jobCount: 2,
+          jobs: [first, second],
+          targetPosition,
+          targetTotal,
+          targetDiscovered: 2,
+          detailPosition: 1,
+          detailTotal: 1
+        });
+        assert.strictEqual(workflowProgressRevision() - beforeRevision, 4,
+          "visible scan checkpoints must each bump the workflow revision exactly once");
+        const beforePacing = workflowProgressRevision();
+        await options.onPacingCheckpoint({ accessCount: 3 });
+        assert.strictEqual(workflowProgressRevision(), beforePacing,
+          "pacing-only checkpoints must not bump the visible workflow revision");
+        options.onScanComplete?.({ status: "completed" });
+        return [first, second];
+      }
       if (process.env.ROLEFLOW_SCAN_E2E_MODE === "workflow-pause-after-detail") {
         await checkpointDetail(options, targets[0]);
         markWorkflowPauseRequested();
@@ -850,6 +952,8 @@ function createOfflineWaitBoundary({ onWait, assertActive }) {
 
 async function checkpoint(options, target) {
   const jobs = [offlineJob(target)];
+  const frozenTargets = require("../src/adapters/sites/boss").buildBossScanTargets(options);
+  const targetPosition = frozenTargets.findIndex((entry) => entry.targetKey === target.targetKey) + 1;
   await options.onTargetComplete({
     targetKey: target.targetKey,
     city: target.city.city,
@@ -857,7 +961,12 @@ async function checkpoint(options, target) {
     laneId: target.laneId,
     status: "completed",
     jobCount: jobs.length,
-    jobs
+    jobs,
+    targetPosition,
+    targetTotal: frozenTargets.length,
+    targetDiscovered: jobs.length,
+    detailPosition: 0,
+    detailTotal: 0
   });
   return jobs;
 }
@@ -872,6 +981,16 @@ function markWorkflowStopRequested() {
         updated_at = ?
       WHERE id = ?
     `).run(new Date().toISOString(), process.env.ROLEFLOW_SCAN_E2E_WORKFLOW);
+  } finally {
+    database.close();
+  }
+}
+
+function workflowProgressRevision() {
+  const storage = require("../src/core/storage");
+  const database = storage.openDb(process.env.ROLEFLOW_SCAN_E2E_DB);
+  try {
+    return storage.getWorkflowRun(database, process.env.ROLEFLOW_SCAN_E2E_WORKFLOW).progressRevision;
   } finally {
     database.close();
   }

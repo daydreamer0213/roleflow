@@ -48,6 +48,7 @@ const {
   releaseSiteScanLease,
   recordWorkflowScanWait,
   recordWorkflowPlatformAccess,
+  incrementWorkflowRunActivity,
   listReusableJobDetails,
   recordJobRefreshAttempt,
   getLatestJobRefreshAttempt,
@@ -1244,16 +1245,48 @@ async function scan(
 
   let checkpointed = 0;
   let scanSummary = null;
+  const checkpointVisibleScanProgress = ({ jobs = [], scanProgress }) => {
+    const now = new Date().toISOString();
+    checkpointScanProgress(db, {
+      runId: execution.runId,
+      batchId,
+      leaseOwner: execution.leaseOwner,
+      jobs: jobs.map((raw) => checkpointScannedJob(raw, configs)),
+      runtime: { scanProgress: { version: 1, ...scanProgress, updatedAt: now } }
+    });
+    if (workflowRun) incrementWorkflowRunActivity(db, {
+      workflowRunId: workflowRun.id,
+      now
+    });
+  };
   const onTargetComplete = args.input ? null : async (result) => {
     assertScanActive(signal);
     try {
       const jobs = (result.jobs || []).map((raw) => checkpointScannedJob(raw, configs));
+      const now = new Date().toISOString();
       checkpointScanTarget(db, {
         runId: execution.runId,
         batchId,
         leaseOwner: execution.leaseOwner,
         target: result,
-        jobs
+        jobs,
+        runtime: {
+          scanProgress: {
+            version: 1,
+            activity: "target_complete",
+            targetKey: result.targetKey,
+            targetPosition: result.targetPosition,
+            targetTotal: result.targetTotal,
+            targetDiscovered: result.targetDiscovered,
+            detailPosition: result.detailPosition,
+            detailTotal: result.detailTotal,
+            updatedAt: now
+          }
+        }
+      });
+      if (workflowRun) incrementWorkflowRunActivity(db, {
+        workflowRunId: workflowRun.id,
+        now
       });
       checkpointed += jobs.length;
     } catch (error) {
@@ -1299,15 +1332,35 @@ async function scan(
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
     getReusableDetail: (job) => reusableDetails.get(job.sourceId),
     onTargetComplete,
+    onProgressCheckpoint: args.input ? null : async (result = {}) => {
+      assertScanActive(signal);
+      try {
+        const { jobs = [], ...scanProgress } = result;
+        checkpointVisibleScanProgress({ jobs, scanProgress });
+      } catch (error) {
+        if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
+          throw error;
+        }
+        const checkpointError = new Error(`扫描进度 ${result.targetKey || ""} 保存失败：${error.message}`);
+        checkpointError.code = "SCAN_CHECKPOINT_FAILED";
+        checkpointError.cause = error;
+        throw checkpointError;
+      }
+    },
     onDetailCheckpoint: args.input ? null : async (result) => {
       assertScanActive(signal);
       try {
         const job = checkpointScannedJob(result.job, configs);
+        const now = new Date().toISOString();
         checkpointScanProgress(db, {
           runId: execution.runId,
           batchId,
           leaseOwner: execution.leaseOwner,
           jobs: [job]
+        });
+        if (workflowRun) incrementWorkflowRunActivity(db, {
+          workflowRunId: workflowRun.id,
+          now
         });
       } catch (error) {
         if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
