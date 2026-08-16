@@ -3,13 +3,23 @@
 const { scopeShortId } = require("../../core/inherited_search_scope");
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 
+const ANALYSIS_STATUS_LABELS = Object.freeze({
+  pending: "等待分析",
+  running: "分析中",
+  retry_pending: "等待重试",
+  succeeded: "已完成",
+  skipped: "已按本地规则处理",
+  failed: "分析失败",
+  stopped: "已停止"
+});
+
 function buildWorkflowViewModel({
   workflow = {}, plan = {}, daily = {}, communication = null, runtimeBlock = null,
-  progressSnapshot = null, stopPreview = {}, healthReport = {}, reviewCandidates = [], quota = { remaining: 0 }
+  progressSnapshot = null, progressJobs = [], stopPreview = {}, healthReport = {}, reviewCandidates = [], quota = { remaining: 0 }
 } = {}) {
   const status = String(workflow.status || "");
   const planner = workflow.planner || {};
-  const progress = progressSnapshot ? progressView(progressSnapshot) : null;
+  const progress = progressSnapshot ? progressView(progressSnapshot, progressJobs) : null;
   const phase = phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewCandidates, quota });
   const controls = controlView(progressSnapshot, workflow, stopPreview);
   return {
@@ -48,7 +58,7 @@ function scopeView(planner, workflow) {
   };
 }
 
-function progressView(snapshot) {
+function progressView(snapshot, progressJobs = []) {
   const source = snapshot?.progress || {};
   const analysis = source.analysis || {};
   const scanTargets = source.scanTargets || {};
@@ -58,37 +68,83 @@ function progressView(snapshot) {
     pending: source.detailsPending
   };
   const communication = source.communication || {};
+  const tracks = source.tracks || {};
   const skipped = number(analysis.skipped);
   const detailRequired = number(analysis.detailRequired);
   const analyzed = number(analysis.succeeded) + Math.max(0, skipped - detailRequired);
   return {
     visible: true, revision: number(snapshot?.workflow?.progressRevision), status: String(snapshot?.workflow?.status || ""),
     controlState: String(snapshot?.workflow?.controlState || ""), stage: String(source.stage || ""),
-    stageIndex: number(source.stageIndex), stageCount: number(source.stageCount),
+    stageIndex: number(source.stageIndex), stageCount: number(source.stageCount), phaseKey: String(source.phaseKey || ""),
     remainingWorkLabel: String(source.remainingWorkLabel || "本轮状态正在更新"),
     modelLabel: [snapshot?.model?.provider, snapshot?.model?.model].filter(Boolean).join(" · ") || "批量模型待记录",
     meter: { max: Math.max(1, number(analysis.total)), value: analyzed + detailRequired + number(analysis.failed) + number(analysis.stopped) },
     scanTargets: {
-      total: number(scanTargets.total), completed: number(scanTargets.completed), pending: number(scanTargets.pending),
+      total: number(scanTargets.total), processed: number(scanTargets.processed), completed: number(scanTargets.completed), pending: number(scanTargets.pending),
       partial: number(scanTargets.partial), failed: number(scanTargets.failed)
     },
     details: {
-      collected: number(details.collected), read: number(details.read), pending: number(details.pending)
+      collected: number(details.collected), required: number(details.required), read: number(details.read), pending: number(details.pending),
+      notRequired: number(details.notRequired), growing: Boolean(details.growing)
     },
     analysis: {
       total: number(analysis.total), succeeded: number(analysis.succeeded), running: number(analysis.running), retryPending: number(analysis.retryPending),
       detailRequired, failed: number(analysis.failed), remaining: number(analysis.pending) + number(analysis.running) + number(analysis.retryPending),
       stopped: number(analysis.stopped), collected: number(details.collected), detailsRead: number(details.read), detailsPending: number(details.pending),
+      terminal: number(analysis.terminal),
       circuitTimeoutJobs: number(analysis.circuitTimeoutJobs), timeoutPauseThreshold: number(analysis.timeoutPauseThreshold || 10), lifetimeTimeoutJobs: number(analysis.lifetimeTimeoutJobs)
     },
     communication: {
       total: number(communication.total), pending: number(communication.pending), ambiguous: number(communication.ambiguous),
       succeeded: number(communication.succeeded), stopped: number(communication.stopped)
     },
+    tracks: {
+      scan: progressTrack(tracks.scan, "扫描岗位", `已处理 ${number(scanTargets.processed)} 个目标；成功 ${number(scanTargets.completed)}、部分 ${number(scanTargets.partial)}、失败 ${number(scanTargets.failed)}`),
+      jd: progressTrack(tracks.jd, "完整 JD", `已读取 ${number(details.read)} 个需要完整 JD 的岗位；待补 ${number(details.pending)}；无需详情 ${number(details.notRequired)}${details.growing ? "；数量仍随扫描增长" : ""}`),
+      analysis: progressTrack(tracks.analysis, "分析岗位", `已完成 ${number(analysis.terminal)} 个；成功 ${number(analysis.succeeded)}、跳过 ${number(analysis.skipped)}、失败 ${number(analysis.failed)}、停止 ${number(analysis.stopped)}`),
+      communication: progressTrack(tracks.communication, "沟通岗位", `已到达终态 ${number(communication.terminal)} 个；成功 ${number(communication.succeeded)}、待人工确认 ${number(communication.ambiguous)}、停止 ${number(communication.stopped)}`)
+    },
+    currentActivityLabel: scanActivityLabel(source.scan, source.phaseKey),
+    analysisJobs: (progressJobs || []).map((job) => ({
+      taskId: number(job.taskId),
+      position: number(job.position),
+      status: String(job.status || ""),
+      statusLabel: job.lastErrorCode === "DETAIL_REQUIRED"
+        ? "详情待补"
+        : ANALYSIS_STATUS_LABELS[String(job.status || "")] || "状态待确认",
+      title: String(job.title || ""),
+      company: String(job.company || "")
+    })),
     cooldown: cooldownView(source.scanWait), scanWaitLabel: scanWaitLabel(source.scanWait), etaLabel: etaLabel(source.eta),
     recentActivityLabel: (snapshot?.recentActivity || []).length ? snapshot.recentActivity.map(activityLabel).join("；") : "还没有新的分析活动。",
     staleEligible: ["created", "scanning", "analyzing"].includes(snapshot?.workflow?.status)
   };
+}
+
+function progressTrack(track = {}, label, description) {
+  const value = number(track.value);
+  const max = number(track.max);
+  return {
+    value,
+    max,
+    indeterminate: Boolean(track.indeterminate),
+    growing: Boolean(track.growing),
+    fraction: `${value} / ${max}`,
+    label,
+    description
+  };
+}
+
+function scanActivityLabel(scan = null, phaseKey = "") {
+  if (!scan) {
+    return phaseKey === "acquisition" ? "正在准备下一个扫描动作" : "当前阶段进度已保存";
+  }
+  const target = `${String(scan.targetLabel || "当前目标")}（目标 ${number(scan.targetPosition)} / ${number(scan.targetTotal)}）`;
+  if (scan.activity === "reading_detail") {
+    return `正在读取 ${target} 的岗位详情 ${number(scan.detailPosition)} / ${number(scan.detailTotal)}`;
+  }
+  if (scan.activity === "target_complete") return `${target} 已处理完成`;
+  return `正在扫描 ${target}，已发现 ${number(scan.targetDiscovered)} 个岗位`;
 }
 
 function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
@@ -103,8 +159,8 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
     usableRecommendations: phase.kind === "review" ? number(phase.review.defaultCount) : number(workflow.inventoryCount),
-    acquisitionProgress: `搜索目标 ${number(scan.completed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
-    jdProgress: `已读取 ${number(details.read)} / ${number(details.collected)} · 待补 ${number(details.pending)}`,
+    acquisitionProgress: `搜索目标 ${number(scan.processed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
+    jdProgress: `已读取 ${number(details.read)} / ${number(details.required)} · 待补 ${number(details.pending)}`,
     remainingWork: progress?.visible
       ? progress.remainingWorkLabel
       : phase.kind === "review"

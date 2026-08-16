@@ -19,7 +19,7 @@ const stylesheet = path.join(root, "src", "dashboard", "assets", "roleflow.css")
   assert.deepStrictEqual(JSON.parse(JSON.stringify(vm)), vm, "workflow VM must be plain display data without DB or browser dependencies");
   assert.deepStrictEqual(vm.scope.actualKeywords, ["AI应用开发", "RAG", "Agent开发"]);
   assert.strictEqual(vm.scope.candidateKeywordCount, 14);
-  assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 2 / 5 · 已获取 12 个岗位");
+  assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 4 / 5 · 已获取 12 个岗位");
   assert.strictEqual(vm.overview.jdProgress, "已读取 5 / 12 · 待补 7");
   assertRendererContracts(vm);
   assertEvaluatorStrictGate();
@@ -60,16 +60,23 @@ function fixture(overrides = {}) {
   const progressSnapshot = {
     workflow: { id: workflow.id, status: workflow.status, controlState: "", progressRevision: 4, lastActivityAt: new Date().toISOString() },
     progress: {
-      stage: "正在读取岗位详情",
-      stageIndex: 1,
-      stageCount: 3,
+      stage: "采集岗位与完整 JD",
+      stageIndex: 2,
+      stageCount: 4,
+      phaseKey: "acquisition",
       scanWait: { retryAt: "2099-01-02T10:05:00.000Z" },
       eta: { status: "estimating" },
-      scanTargets: { total: 5, completed: 2, pending: 3, partial: 1, failed: 1 },
-      details: { collected: 12, read: 5, pending: 7 },
-      communication: { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0 },
-      remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取",
-      analysis: { total: 12, succeeded: 3, running: 1, retryPending: 2, detailRequired: 4, failed: 1, skipped: 0, stopped: 0, pending: 5, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 }
+      scanTargets: { total: 5, processed: 4, completed: 2, pending: 1, partial: 1, failed: 1 },
+      details: { collected: 12, required: 12, read: 5, pending: 7, notRequired: 0, growing: true },
+      communication: { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0, terminal: 0 },
+      tracks: {
+        scan: { value: 4, max: 5, indeterminate: false },
+        jd: { value: 5, max: 12, indeterminate: false, growing: true },
+        analysis: { value: 4, max: 12, indeterminate: false },
+        communication: { value: 0, max: 0, indeterminate: false }
+      },
+      remainingWorkLabel: "还需完成 1 个搜索目标；7 个岗位详情待读取",
+      analysis: { total: 12, terminal: 4, succeeded: 3, running: 1, retryPending: 2, detailRequired: 4, failed: 1, skipped: 0, stopped: 0, pending: 5, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 }
     },
     model: { provider: "mock", model: "workflow-fixture" },
     controls: { canPause: true, canResume: false, canStop: true, stopConsumesRunSlot: true },
@@ -100,7 +107,7 @@ function assertRendererContracts(vm) {
   assertNoPrimary(html, "scanning");
   assert.match(html, /class="secondary"[^>]*data-action="pause"[^>]*>暂停本轮/, "scanning must keep pause available as a secondary action");
   assert.match(html, /系统正在继续处理，无需操作/);
-  assert.match(html, /还需完成 3 个搜索目标；7 个岗位详情待读取/);
+  assert.match(html, /还需完成 1 个搜索目标；7 个岗位详情待读取/);
   assert.match(html, /<script src="\/assets\/workflow\.js"><\/script>/, "workflow behavior must come from the allowlisted external asset");
   assert.strictEqual((html.match(/<script/gi) || []).length, 1, "renderer must not copy client behavior inline");
   assert.doesNotMatch(fs.readFileSync(asset, "utf8"), /\.focus\(\)/, "workflow polling must not move keyboard focus");
@@ -115,7 +122,7 @@ function assertRendererContracts(vm) {
   assert.match(html, /本轮实际关键词：AI应用开发、RAG、Agent开发/);
   assert.match(html, /方案候选词：14 个/);
   assert.doesNotMatch(html, /候选词1、候选词2/);
-  assert.match(html, /data-overview-acquisition[^>]*>搜索目标 2 \/ 5 · 已获取 12 个岗位/);
+  assert.match(html, /data-overview-acquisition[^>]*>搜索目标 4 \/ 5 · 已获取 12 个岗位/);
   assert.match(html, /data-overview-jd[^>]*>已读取 5 \/ 12 · 待补 7/);
 
   const paused = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "paused", errorCode: "SAFE_PAUSE" }, progressSnapshot: { workflow: { id: "workflow-migration-fixture", status: "paused", controlState: "", progressRevision: 5, lastActivityAt: new Date().toISOString() }, controls: { canPause: false, canResume: true, canStop: true, stopConsumesRunSlot: true } } })));

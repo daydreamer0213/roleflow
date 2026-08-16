@@ -1324,6 +1324,7 @@ let server;
   testWorkflowStatusReadBudget();
   const progressPanelFixture = await testWorkflowStatusApi(baseUrl, db, saved);
   await testWorkflowProgressPanel(baseUrl, db, progressPanelFixture);
+  await testPerJobWorkflowProgressPanel(baseUrl, db, saved);
   await testWorkflowControlApi(
     baseUrl,
     db,
@@ -1821,6 +1822,91 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(pausedPage.body, /data-action="resume"/);
   assert.match(pausedPage.body, /继续本轮/);
   assert.match(pausedPage.body, /结束本轮…/);
+}
+
+async function testPerJobWorkflowProgressPanel(baseUrl, database, saved) {
+  const fixture = seedWorkflowApiFixture(database, saved, {
+    localDay: "2099-02-11",
+    resumePhase: "analyzing"
+  });
+  const existing = database.prepare(`
+    SELECT t.id AS task_id, t.position, o.id AS observation_id
+    FROM workflow_job_tasks t
+    JOIN job_observations o ON o.id = t.observation_id
+    WHERE t.workflow_run_id = ?
+    ORDER BY t.position
+  `).all(fixture.workflowId);
+  for (const row of existing) {
+    database.prepare("UPDATE job_observations SET title = ?, company = ? WHERE id = ?").run(
+      `Workflow Progress Job ${row.position}`,
+      `Workflow Progress Company ${row.position}`,
+      row.observation_id
+    );
+  }
+  for (let position = 3; position <= 6; position += 1) {
+    const jobId = upsertJob(database, {
+      ...job(`workflow-progress-${position}`),
+      sourceId: `workflow-progress-${position}`,
+      title: `Workflow Progress Job ${position}`,
+      company: `Workflow Progress Company ${position}`,
+      description: "Complete local workflow progress JD. ".repeat(8)
+    }, fixture.batchId);
+    const observationId = Number(database.prepare(`
+      SELECT id FROM job_observations WHERE batch_id = ? AND job_id = ?
+    `).get(fixture.batchId, jobId).id);
+    insertWorkflowJobTaskRow(database, {
+      workflowRunId: fixture.workflowId,
+      batchId: fixture.batchId,
+      jobId,
+      observationId,
+      position,
+      status: "pending",
+      recoveryGeneration: 0,
+      modelConfigRevision: "fixture-batch-revision",
+      now: "2099-02-11T00:00:01.000Z"
+    });
+  }
+  const statuses = ["pending", "running", "retry_pending", "succeeded", "skipped", "failed"];
+  const tasks = database.prepare(`
+    SELECT id FROM workflow_job_tasks WHERE workflow_run_id = ? ORDER BY position
+  `).all(fixture.workflowId);
+  tasks.forEach((task, index) => database.prepare(`
+    UPDATE workflow_job_tasks
+    SET status = ?, last_error_code = ?, finished_at = ?
+    WHERE id = ?
+  `).run(
+    statuses[index],
+    index === 4 ? "DETAIL_REQUIRED" : null,
+    ["succeeded", "skipped", "failed"].includes(statuses[index])
+      ? "2099-02-11T00:00:02.000Z"
+      : null,
+    task.id
+  ));
+
+  const page = await getText(baseUrl, `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`);
+  assert.strictEqual(page.status, 200);
+  for (const track of ["scan", "jd", "analysis", "communication"]) {
+    assert.match(page.body, new RegExp(`data-progress-track="${track}"`));
+    assert.match(page.body, new RegExp(`data-track-meter="${track}"`));
+    assert.match(page.body, new RegExp(`data-track-fraction="${track}"`));
+  }
+  assert.strictEqual((page.body.match(/data-analysis-task-id=/g) || []).length, 6);
+  assert.match(page.body, /<progress[^>]+aria-describedby="workflow-track-scan-description"/);
+  assert.match(page.body, /aria-live="polite"[^>]*data-current-activity/);
+  assert.doesNotMatch(page.body, /data-overall-percentage/);
+  for (let position = 1; position <= 6; position += 1) {
+    assert(page.body.includes(`Workflow Progress Job ${position}`));
+    assert(page.body.includes(`Workflow Progress Company ${position}`));
+  }
+  assert.match(page.body, /详情待补/);
+  const response = await getJson(baseUrl, `/api/workflow-status?runId=${encodeURIComponent(fixture.workflowId)}`);
+  const serialized = JSON.stringify(response.body);
+  assert(!serialized.includes("Workflow Progress Job"));
+  assert(!serialized.includes("Workflow Progress Company"));
+  assert.match(
+    fs.readFileSync(path.join(root, "src", "dashboard", "assets", "roleflow.css"), "utf8"),
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)/
+  );
 }
 
 async function assertWorkflowSummaryAndTimerLifecycleClient() {

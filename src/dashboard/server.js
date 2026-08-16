@@ -163,7 +163,7 @@ const {
   reconcilePlanWorkflowInventory
 } = require("../core/workflow_inventory");
 const { buildWorkflowHealthReport } = require("../core/workflow_health");
-const { getWorkflowProgressSnapshot } = require("../core/workflow_progress");
+const { getWorkflowProgressSnapshot, listWorkflowProgressJobs } = require("../core/workflow_progress");
 const {
   startWorkflow,
   resumeWorkflow,
@@ -3976,6 +3976,9 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   const runtimeBlock = communicationRuntimeBlock(db);
   const progressSnapshot = getWorkflowProgressSnapshot(db, { workflowRunId: workflow.id });
+  const progressJobs = progressSnapshot?.progress?.phaseKey === "analysis"
+    ? listWorkflowProgressJobs(db, workflow.id)
+    : [];
   let healthReport = {};
   try {
     const snapshot = workflowHealth.getSnapshot(db, { profileId: plan.profileId, planId: plan.id, now: new Date().toISOString() });
@@ -3984,7 +3987,7 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
     logger?.warn("workflow_health_render_failed", { workflowRunId: workflow.id, planId: plan.id, errorCode: workflowHealthFailureCode(error) });
   }
   return renderPage("执行一轮", renderWorkflowDocument(buildWorkflowViewModel({
-    workflow, plan, daily, communication, runtimeBlock, progressSnapshot,
+    workflow, plan, daily, communication, runtimeBlock, progressSnapshot, progressJobs,
     stopPreview: progressSnapshot ? workflowStopPreview(db, { workflowRunId: workflow.id }) : {}, healthReport,
     reviewCandidates: workflow.status === "review_required" && !communication
       ? communicationWorkflowReviewCandidates(db, workflow)
