@@ -28,7 +28,7 @@
 
 - BOSS 默认只读；沟通、发送消息和申请岗位等外部写动作必须针对当前不可变样本获得明确授权。
 - 浏览器严格串行，只使用 `BOSS-SEARCH` 和 `BOSS-COMMUNICATION` 两个固定标签；每次从当前绑定重新读取数值 tab ID。
-- 禁止 `Page.bringToFront`、窗口激活和任何前台焦点恢复。
+- 扫描、JD、分析、消息发现、沟通、轮询、重试和恢复期间禁止 `Page.bringToFront`、窗口激活和任何前台焦点恢复。唯一例外是用户主动启动工作台且未指定 `-NoOpen` 时，`workspace-tabs` 可在就绪检查后调用一次 `Page.bringToFront`：就绪时引导到 Dashboard，未登录时引导到 BOSS；不得把该例外复用于其他路径。
 - 当前岗位详情主线只用 `trusted_pane`；`search_page_api` 保留但不修、不验、不优化、不删除；禁止 `standalone_detail`。
 - 登录、风控、页面丢失、标签身份漂移、目标不一致或结果不明确时立即停止，不自动重试。
 - 不降低 JD 覆盖、召回或匹配质量。可能降低质量的方案必须先量化并由用户决定。
