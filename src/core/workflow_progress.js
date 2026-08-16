@@ -6,24 +6,20 @@ const { hasCompleteJobDescription } = require("./job_description_readiness");
 
 const WORKFLOW_STAGES = Object.freeze([
   "准备本轮",
-  "读取搜索结果",
-  "获取完整 JD",
+  "采集岗位与完整 JD",
   "分析岗位",
-  "等待确认 / 执行沟通"
+  "确认清单与执行沟通"
 ]);
 
-// Deterministic status -> stage index mapping. scanning is the JD collection
-// stage (the user-visible deliverable of the scan phase); review/communication
-// and terminal states share the final stage label.
 const STATUS_STAGE_INDEX = Object.freeze({
   created: 1,
-  scanning: 3,
-  analyzing: 4,
-  review_required: 5,
-  communicating: 5,
-  completed: 5,
-  failed: 5,
-  stopped: 5
+  scanning: 2,
+  analyzing: 3,
+  review_required: 4,
+  communicating: 4,
+  completed: 4,
+  failed: 4,
+  stopped: 4
 });
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed"]);
@@ -64,22 +60,28 @@ function getWorkflowProgressSnapshot(db, {
   const activityLimit = Math.max(1, Math.min(ACTIVITY_CAP, Math.floor(Number(recentActivityLimit) || 8)));
   const controlling = ["pause_requested", "stop_requested"].includes(String(workflow.control_state || "none"));
   const status = String(workflow.status || "");
+  const phaseKey = phaseKeyFor(workflow);
+  const scanSnapshot = parseJson(workflow.scan_filter_snapshot_json, {});
 
   const counts = countTaskStatuses(db, id);
   const detailCoverage = countObservationDetails(db, Number(workflow.scan_batch_id || 0), id);
   const collected = detailCoverage.collected;
   const detailsRead = detailCoverage.read;
-  const detailsPending = Math.max(0, collected - detailsRead);
+  const detailsPending = detailCoverage.pending;
   const scanTargets = countScanTargets(
     db,
     Number(workflow.scan_batch_id || 0),
-    workflow.scan_filter_snapshot_json
+    scanSnapshot
   );
   const details = {
     collected,
+    required: detailCoverage.required,
     read: detailsRead,
-    pending: detailsPending
+    pending: detailsPending,
+    notRequired: detailCoverage.notRequired,
+    growing: phaseKey === "acquisition"
   };
+  const scan = scanProgressFromSnapshot(scanSnapshot);
   const communication = countCommunicationItems(
     db,
     Number(workflow.communication_batch_id || 0),
@@ -87,13 +89,15 @@ function getWorkflowProgressSnapshot(db, {
   );
 
   const tasks = db.prepare(`
-    SELECT id, status, finished_at, model_config_revision
+    SELECT id, position, status, last_error_code, finished_at, model_config_revision
     FROM workflow_job_tasks
     WHERE workflow_run_id = ?
     ORDER BY position ASC, id ASC
   `).all(id).map((row) => ({
     id: Number(row.id),
+    position: Number(row.position),
     status: row.status,
+    lastErrorCode: row.last_error_code === "DETAIL_REQUIRED" ? "DETAIL_REQUIRED" : null,
     finishedAt: row.finished_at || null,
     modelConfigRevision: row.model_config_revision || null
   }));
@@ -111,6 +115,29 @@ function getWorkflowProgressSnapshot(db, {
   });
 
   const stageIndex = stageIndexFor(workflow);
+  const tracks = {
+    scan: {
+      value: scanTargets.processed,
+      max: scanTargets.total,
+      indeterminate: phaseKey === "acquisition" && scanTargets.total === 0
+    },
+    jd: {
+      value: details.read,
+      max: details.required,
+      indeterminate: phaseKey === "acquisition" && details.required === 0,
+      growing: details.growing
+    },
+    analysis: {
+      value: counts.terminal,
+      max: counts.total,
+      indeterminate: phaseKey === "analysis" && counts.total === 0
+    },
+    communication: {
+      value: communication.terminal,
+      max: communication.total,
+      indeterminate: phaseKey === "communication" && communication.total === 0
+    }
+  };
   const metrics = parseJson(workflow.metrics_json, {});
   const scanHeartbeat = workflow.scan_run_id
     ? db.prepare("SELECT heartbeat_at FROM scan_runs WHERE id = ?").get(workflow.scan_run_id)?.heartbeat_at
@@ -143,9 +170,11 @@ function getWorkflowProgressSnapshot(db, {
       stage: WORKFLOW_STAGES[stageIndex - 1],
       stageIndex,
       stageCount: WORKFLOW_STAGES.length,
+      phaseKey,
       collected,
       detailsRead,
       detailsPending,
+      scan,
       scanTargets,
       details,
       scanWait,
@@ -159,11 +188,19 @@ function getWorkflowProgressSnapshot(db, {
         detailRequired: counts.detailRequired,
         stopped: counts.stopped,
         pending: counts.pending,
+        terminal: counts.terminal,
+        tasks: tasks.map((task) => ({
+          id: task.id,
+          position: task.position,
+          status: String(task.status || ""),
+          lastErrorCode: task.lastErrorCode
+        })),
         circuitTimeoutJobs: Number(workflow.circuit_timeout_job_count || 0),
         lifetimeTimeoutJobs: Number(workflow.lifetime_timeout_job_count || 0),
         timeoutPauseThreshold: Number(PRODUCT_POLICY.operations.modelAnalysis.timeoutCircuitThreshold)
       },
       communication,
+      tracks,
       remainingWorkLabel: workflowRemainingWorkLabel(status, {
         scanTargets,
         details,
@@ -318,16 +355,31 @@ function taskCounts(tasks) {
 
 function stageIndexFor(workflow) {
   const status = String(workflow.status || "");
-  if (["paused", "interrupted"].includes(status) && workflow.resume_phase) {
-    return String(workflow.resume_phase || "") === "scanning" ? 3 : 4;
+  if (Object.hasOwn(STATUS_STAGE_INDEX, status)) return STATUS_STAGE_INDEX[status];
+  const phaseKey = phaseKeyFor(workflow);
+  if (phaseKey === "preparing") return 1;
+  if (phaseKey === "acquisition") return 2;
+  if (phaseKey === "analysis") return 3;
+  return 4;
+}
+
+function phaseKeyFor(workflow) {
+  const status = String(workflow.status || "");
+  const resumed = ["paused", "interrupted"].includes(status)
+    ? String(workflow.resume_phase || "")
+    : "";
+  if (resumed === "scanning" || status === "scanning") return "acquisition";
+  if (resumed === "analyzing" || status === "analyzing") return "analysis";
+  if (status === "communicating") return "communication";
+  if (status === "review_required") return "review";
+  if (["completed", "failed", "stopped"].includes(status)) return "terminal";
+  if (["paused", "interrupted"].includes(status)) {
+    if (workflow.communication_batch_id) return "communication";
+    if (workflow.review_ready_at) return "review";
+    if (Number(workflow.has_analysis_tasks || 0) > 0) return "analysis";
+    if (workflow.scan_batch_id) return "acquisition";
   }
-  if (status === "interrupted") {
-    if (workflow.communication_batch_id || workflow.review_ready_at) return 5;
-    if (Number(workflow.has_analysis_tasks || 0) > 0) return 4;
-    if (workflow.scan_batch_id) return 3;
-    return 1;
-  }
-  return STATUS_STAGE_INDEX[status] || WORKFLOW_STAGES.length;
+  return "preparing";
 }
 
 function countTaskStatuses(db, workflowRunId) {
@@ -346,6 +398,7 @@ function countTaskStatuses(db, workflowRunId) {
     skipped: 0,
     detailRequired: 0,
     stopped: 0,
+    terminal: 0,
     total: 0
   };
   for (const row of rows) {
@@ -358,6 +411,7 @@ function countTaskStatuses(db, workflowRunId) {
       counts.detailRequired += Number(row.n);
     }
   }
+  counts.terminal = counts.succeeded + counts.failed + counts.skipped + counts.stopped;
   return counts;
 }
 
@@ -375,21 +429,30 @@ function countObservationDetails(db, scanBatchId, workflowRunId) {
         JOIN job_observations o ON o.id = t.observation_id
         WHERE t.workflow_run_id = ?
       `).all(workflowRunId);
+  let read = 0;
+  let pending = 0;
+  let notRequired = 0;
+  for (const row of rows) {
+    const qualityTags = parseJson(row.quality_tags_json, []);
+    if (hasCompleteJobDescription({ description: row.description, qualityTags })) read += 1;
+    else if (Array.isArray(qualityTags) && qualityTags.includes("detail_unverified")) pending += 1;
+    else notRequired += 1;
+  }
   return {
     collected: rows.length,
-    read: rows.filter((row) => hasCompleteJobDescription({
-      description: row.description,
-      qualityTags: parseJson(row.quality_tags_json, {})
-    })).length
+    required: read + pending,
+    read,
+    pending,
+    notRequired
   };
 }
 
-function countScanTargets(db, scanBatchId, filterSnapshotJson) {
+function countScanTargets(db, scanBatchId, filterSnapshot) {
   const batchId = Number(scanBatchId);
   if (!Number.isInteger(batchId) || batchId <= 0) {
-    return { total: 0, completed: 0, pending: 0, partial: 0, failed: 0 };
+    return { total: 0, processed: 0, completed: 0, partial: 0, failed: 0, pending: 0 };
   }
-  const execution = parseJson(filterSnapshotJson, {}).execution;
+  const execution = filterSnapshot?.execution;
   const targets = Array.isArray(execution?.targets) ? execution.targets : [];
   const rows = db.prepare(`
     SELECT result.target_key, result.status
@@ -402,21 +465,45 @@ function countScanTargets(db, scanBatchId, filterSnapshotJson) {
     ) latest ON latest.id = result.id
   `).all(batchId);
   const statusByKey = new Map(rows.map((row) => [row.target_key, row.status]));
-  const counts = { total: targets.length, completed: 0, pending: 0, partial: 0, failed: 0 };
+  const counts = { total: targets.length, processed: 0, completed: 0, partial: 0, failed: 0, pending: 0 };
   for (const target of targets) {
     const status = statusByKey.get(target?.targetKey);
     if (status === "completed") counts.completed += 1;
-    else counts.pending += 1;
-    if (status === "partial") counts.partial += 1;
-    if (status === "failed") counts.failed += 1;
+    else if (status === "partial") counts.partial += 1;
+    else if (status === "failed") counts.failed += 1;
+    if (["completed", "partial", "failed"].includes(status)) counts.processed += 1;
   }
+  counts.pending = Math.max(0, counts.total - counts.processed);
   return counts;
+}
+
+function scanProgressFromSnapshot(snapshot) {
+  const execution = snapshot?.execution;
+  const progress = snapshot?.runtime?.scanProgress;
+  if (!progress || typeof progress !== "object" || Array.isArray(progress)) return null;
+  const targets = Array.isArray(execution?.targets) ? execution.targets : [];
+  const targetKey = String(progress.targetKey || "").trim();
+  const target = targets.find((entry) => String(entry?.targetKey || "") === targetKey);
+  if (!target) return null;
+  const cityScopes = Array.isArray(execution?.cityScopes) ? execution.cityScopes : [];
+  const city = cityScopes.find((entry) => String(entry?.cityCode || "") === String(target.cityCode || ""))?.city
+    || target.cityCode;
+  return {
+    activity: String(progress.activity || ""),
+    targetKey,
+    targetLabel: [city, target.keyword].filter(Boolean).join(" · "),
+    targetPosition: nonNegativeInt(progress.targetPosition),
+    targetTotal: nonNegativeInt(progress.targetTotal),
+    targetDiscovered: nonNegativeInt(progress.targetDiscovered),
+    detailPosition: nonNegativeInt(progress.detailPosition),
+    detailTotal: nonNegativeInt(progress.detailTotal)
+  };
 }
 
 function countCommunicationItems(db, communicationBatchId, knownStatusCounts = null) {
   const batchId = Number(communicationBatchId);
   if (!Number.isInteger(batchId) || batchId <= 0) {
-    return { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0 };
+    return { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0, terminal: 0 };
   }
   const counts = knownStatusCounts
     ? Object.fromEntries(Object.entries(knownStatusCounts).map(([status, count]) => [status, Number(count)]))
@@ -426,9 +513,11 @@ function countCommunicationItems(db, communicationBatchId, knownStatusCounts = n
         WHERE batch_id = ?
         GROUP BY status
       `).all(batchId).map((row) => [row.status, Number(row.count)]));
+  const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+  const pending = sumStatuses(counts, ["pending", "opening", "verified", "click_dispatched"]);
   return {
-    total: Object.values(counts).reduce((sum, value) => sum + value, 0),
-    pending: sumStatuses(counts, ["pending", "opening", "verified", "click_dispatched"]),
+    total,
+    pending,
     ambiguous: counts.ambiguous || 0,
     succeeded: sumStatuses(counts, ["succeeded", "already_communicated"]),
     stopped: sumStatuses(counts, [
@@ -438,8 +527,27 @@ function countCommunicationItems(db, communicationBatchId, knownStatusCounts = n
       "action_unavailable",
       "platform_rejected",
       "transport_failed"
-    ])
+    ]),
+    terminal: Math.max(0, total - pending)
   };
+}
+
+function listWorkflowProgressJobs(db, workflowRunId) {
+  return db.prepare(`
+    SELECT t.id AS task_id, t.position, t.status, t.last_error_code,
+      o.title, o.company
+    FROM workflow_job_tasks t
+    JOIN job_observations o ON o.id = t.observation_id
+    WHERE t.workflow_run_id = ?
+    ORDER BY t.position ASC, t.id ASC
+  `).all(String(workflowRunId || "").trim()).map((row) => ({
+    taskId: Number(row.task_id),
+    position: Number(row.position),
+    status: String(row.status || ""),
+    lastErrorCode: row.last_error_code === "DETAIL_REQUIRED" ? "DETAIL_REQUIRED" : null,
+    title: String(row.title || ""),
+    company: String(row.company || "")
+  }));
 }
 
 function workflowRemainingWorkLabel(status, progress) {
@@ -608,8 +716,13 @@ function positiveInt(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function nonNegativeInt(value) {
+  return Math.max(0, Math.floor(Number(value) || 0));
+}
+
 module.exports = {
   WORKFLOW_STAGES,
   getWorkflowProgressSnapshot,
+  listWorkflowProgressJobs,
   estimateWorkflowAnalysisEta
 };

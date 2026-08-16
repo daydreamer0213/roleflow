@@ -1600,7 +1600,7 @@ async function testWorkflowStatusApi(baseUrl, database, saved) {
   assert.strictEqual(response.body.progress.analysis.total, 2);
   assert.strictEqual(response.body.progress.analysis.succeeded, 1);
   assert.strictEqual(response.body.progress.analysis.pending, 1);
-  assert.strictEqual(response.body.progress.stageIndex, 4);
+  assert.strictEqual(response.body.progress.stageIndex, 3);
   assert.strictEqual(response.body.controls.stopConsumesRunSlot, true);
   assert(Array.isArray(response.body.recentActivity));
   assert.deepStrictEqual(Object.keys(response.body.communication).sort(), ["batch", "summary"]);
@@ -1741,7 +1741,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   ]) {
     assert.match(page.body, new RegExp(hook), `workflow panel must expose ${hook}`);
   }
-  assert.match(page.body, /第 4 阶段\s*\/\s*共 5 阶段/);
+  assert.match(page.body, /第 3 阶段\s*\/\s*共 4 阶段/);
   assert.match(page.body, /分析岗位/);
   assert.match(page.body, /data-analysis-succeeded[^>]*>1</);
   assert.match(page.body, /data-analysis-failed[^>]*>0</);
@@ -1869,7 +1869,7 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
   const sameStatus = {
     workflow: { status: "scanning", controlState: "", progressRevision: 2, lastActivityAt: "2099-02-01T00:09:57.000Z" },
     progress: {
-      stage: "分析岗位", stageIndex: 4, stageCount: 5,
+      stage: "分析岗位", stageIndex: 3, stageCount: 4,
       scanWait: { action: "detail_open", retryAt: "2099-02-01T00:10:00.000Z" },
       eta: { status: "available", minSeconds: 60, maxSeconds: 120, sampleSize: 3 },
       scanTargets: { total: 5, completed: 1, pending: 4 },
@@ -1909,7 +1909,7 @@ async function assertWorkflowSummaryAndTimerLifecycleClient() {
   new vm.Script(script).runInContext(context);
   await flushPromises();
 
-  assert.strictEqual(overviewProgress.textContent, "第 4 / 5 阶段", "same-status polling must refresh overview progress");
+  assert.strictEqual(overviewProgress.textContent, "第 3 / 4 阶段", "same-status polling must refresh overview progress");
   assert.strictEqual(overviewAcquisition.textContent, "搜索目标 1 / 5 · 已获取 12 个岗位");
   assert.strictEqual(overviewJd.textContent, "已读取 5 / 12 · 待补 7");
   assert.strictEqual(overviewRemaining.textContent, "还需完成 4 个搜索目标；7 个岗位详情待读取", "same-status polling must reuse the server's stage-specific remaining work");

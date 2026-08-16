@@ -24,6 +24,7 @@ const {
 } = require("../src/core/workflow_analysis_tasks");
 const {
   getWorkflowProgressSnapshot,
+  listWorkflowProgressJobs,
   estimateWorkflowAnalysisEta
 } = require("../src/core/workflow_progress");
 
@@ -36,6 +37,7 @@ try {
   testAggregateCountsMatchSqlAndInvariant();
   testCollectedDetailCountsComeFromObservations();
   testStageSpecificProgressBreakdown();
+  testTruthfulFourTrackReadModel();
   testCommunicationProgressSeparatesAmbiguity();
   testStageMapping();
   testModelIdentityFromPlannerSnapshot();
@@ -233,7 +235,15 @@ function testCollectedDetailCountsComeFromObservations() {
   const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
   assert.strictEqual(snapshot.progress.collected, 4);
   assert.strictEqual(snapshot.progress.detailsRead, 2);
-  assert.strictEqual(snapshot.progress.detailsPending, 2);
+  assert.strictEqual(snapshot.progress.detailsPending, 1);
+  assert.deepStrictEqual(snapshot.progress.details, {
+    collected: 4,
+    required: 3,
+    read: 2,
+    pending: 1,
+    notRequired: 1,
+    growing: false
+  });
 }
 
 function testStageSpecificProgressBreakdown() {
@@ -273,18 +283,175 @@ function testStageSpecificProgressBreakdown() {
   });
   assert.deepStrictEqual(snapshot.progress.scanTargets, {
     total: 5,
+    processed: 4,
     completed: 2,
-    pending: 3,
     partial: 1,
-    failed: 1
+    failed: 1,
+    pending: 1
   });
   assert.deepStrictEqual(snapshot.progress.details, {
     collected: 12,
+    required: 5,
     read: 5,
-    pending: 7
+    pending: 0,
+    notRequired: 7,
+    growing: true
   });
-  assert.match(snapshot.progress.remainingWorkLabel, /3 个搜索目标/);
-  assert.match(snapshot.progress.remainingWorkLabel, /7 个岗位详情待读取/);
+  assert.match(snapshot.progress.remainingWorkLabel, /1 个搜索目标/);
+  assert.match(snapshot.progress.remainingWorkLabel, /0 个岗位详情待读取/);
+}
+
+function testTruthfulFourTrackReadModel() {
+  const scanningScenario = seedWorkflow(db, {
+    analyses: [{}, {}, {}],
+    localDay: "2026-08-18",
+    modelConfigRevision: "mrev-truthful-scan-progress",
+    descriptions: ["A".repeat(200), "", ""],
+    keepCreated: true
+  });
+  const observations = observationEntries(db, scanningScenario.batchId);
+  db.prepare(`
+    UPDATE job_observations
+    SET quality_tags_json = '["detail_unverified"]'
+    WHERE id = ?
+  `).run(observations[1].observationId);
+  const targetKey = "101280100|RAG|default";
+  const execution = {
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    targets: [
+      { targetKey: "target-1", cityCode: "101280100", keyword: "AI", cardLimit: 20 },
+      { targetKey, cityCode: "101280100", keyword: "RAG", cardLimit: 20 },
+      { targetKey: "target-3", cityCode: "101280100", keyword: "Agent", cardLimit: 20 }
+    ]
+  };
+  db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?").run(JSON.stringify({
+    execution,
+    runtime: {
+      scanProgress: {
+        version: 1,
+        activity: "reading_detail",
+        targetKey,
+        targetLabel: "不可信标签",
+        targetPosition: 2,
+        targetTotal: 3,
+        targetDiscovered: 12,
+        detailPosition: 4,
+        detailTotal: 7,
+        updatedAt: "2026-08-18T00:00:00.000Z"
+      }
+    }
+  }), scanningScenario.batchId);
+  for (const [key, status] of [["target-1", "partial"], [targetKey, "failed"]]) {
+    recordScanTargetResult(db, {
+      batchId: scanningScenario.batchId,
+      targetKey: key,
+      status,
+      finishedAt: "2026-08-18T00:00:00.000Z"
+    });
+  }
+  transitionWorkflowRun(db, { id: scanningScenario.workflowId, status: "scanning" });
+  attachWorkflowScan(db, {
+    id: scanningScenario.workflowId,
+    scanRunId: scanningScenario.scanRunId,
+    scanBatchId: scanningScenario.batchId
+  });
+
+  const scanning = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scanningScenario.workflowId,
+    now: "2026-08-18T00:01:00.000Z"
+  });
+  assert.strictEqual(scanning.progress.phaseKey, "acquisition");
+  assert.strictEqual(scanning.progress.stageCount, 4);
+  assert.strictEqual(scanning.progress.stageIndex, 2);
+  assert.deepStrictEqual(scanning.progress.scanTargets, {
+    total: 3,
+    processed: 2,
+    completed: 0,
+    partial: 1,
+    failed: 1,
+    pending: 1
+  });
+  assert.deepStrictEqual(scanning.progress.details, {
+    collected: 3,
+    required: 2,
+    read: 1,
+    pending: 1,
+    notRequired: 1,
+    growing: true
+  });
+  assert.deepStrictEqual(scanning.progress.scan, {
+    activity: "reading_detail",
+    targetKey,
+    targetLabel: "广州 · RAG",
+    targetPosition: 2,
+    targetTotal: 3,
+    targetDiscovered: 12,
+    detailPosition: 4,
+    detailTotal: 7
+  });
+  assert.deepStrictEqual(scanning.progress.tracks, {
+    scan: { value: 2, max: 3, indeterminate: false },
+    jd: { value: 1, max: 2, indeterminate: false, growing: true },
+    analysis: { value: 0, max: 0, indeterminate: false },
+    communication: { value: 0, max: 0, indeterminate: false }
+  });
+
+  const analysisScenario = seedWorkflow(db, {
+    analyses: [{}, {}, {}],
+    localDay: "2026-08-19",
+    modelConfigRevision: "mrev-truthful-analysis-progress",
+    titleOverride: "Private Job Title",
+    companyOverride: "Private Company"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: analysisScenario.workflowId,
+    batchId: analysisScenario.batchId,
+    jobs: observationEntries(db, analysisScenario.batchId),
+    modelConfigRevision: "mrev-truthful-analysis-progress",
+    now: "2026-08-19T00:00:00.000Z"
+  });
+  const taskIds = listWorkflowJobTasks(db, {
+    workflowRunId: analysisScenario.workflowId
+  }).map((task) => task.id);
+  db.prepare("UPDATE workflow_job_tasks SET status = 'running' WHERE id = ?").run(taskIds[0]);
+  db.prepare(`
+    UPDATE workflow_job_tasks
+    SET status = 'skipped', last_error_code = 'DETAIL_REQUIRED'
+    WHERE id = ?
+  `).run(taskIds[1]);
+  db.prepare(`
+    UPDATE workflow_job_tasks
+    SET status = 'failed', last_error_code = 'PRIVATE_FAILURE'
+    WHERE id = ?
+  `).run(taskIds[2]);
+  const analyzing = getWorkflowProgressSnapshot(db, {
+    workflowRunId: analysisScenario.workflowId,
+    now: "2026-08-19T00:01:00.000Z"
+  });
+  assert.strictEqual(analyzing.progress.phaseKey, "analysis");
+  assert.strictEqual(analyzing.progress.stageIndex, 3);
+  assert.strictEqual(analyzing.progress.analysis.terminal, 2);
+  assert.deepStrictEqual(analyzing.progress.analysis.tasks, [
+    { id: taskIds[0], position: 1, status: "running", lastErrorCode: null },
+    { id: taskIds[1], position: 2, status: "skipped", lastErrorCode: "DETAIL_REQUIRED" },
+    { id: taskIds[2], position: 3, status: "failed", lastErrorCode: null }
+  ]);
+  assert(!JSON.stringify(analyzing.progress.analysis.tasks).includes("Private Company"));
+  assert(!JSON.stringify(analyzing.progress.analysis.tasks).includes("Private Job Title"));
+  const displayRows = listWorkflowProgressJobs(db, analysisScenario.workflowId);
+  assert.deepStrictEqual(displayRows.map((row) => Object.keys(row).sort()), Array.from(
+    { length: 3 },
+    () => ["company", "lastErrorCode", "position", "status", "taskId", "title"]
+  ));
+  assert(displayRows.every((row) => row.title === "Private Job Title" && row.company === "Private Company"));
+
+  transitionWorkflowRun(db, { id: analysisScenario.workflowId, status: "review_required" });
+  const review = getWorkflowProgressSnapshot(db, {
+    workflowRunId: analysisScenario.workflowId,
+    now: "2026-08-19T00:02:00.000Z"
+  });
+  assert.strictEqual(review.progress.phaseKey, "review");
+  assert.strictEqual(review.progress.stageIndex, 4);
 }
 
 function testCommunicationProgressSeparatesAmbiguity() {
@@ -342,7 +509,13 @@ function testCommunicationProgressSeparatesAmbiguity() {
     pending: 1,
     ambiguous: 1,
     succeeded: 0,
-    stopped: 0
+    stopped: 0,
+    terminal: 1
+  });
+  assert.deepStrictEqual(snapshot.progress.tracks.communication, {
+    value: 1,
+    max: 2,
+    indeterminate: false
   });
   assert.match(snapshot.progress.remainingWorkLabel, /1 个岗位未执行/);
   assert.match(snapshot.progress.remainingWorkLabel, /1 个结果待人工确认/);
@@ -351,20 +524,19 @@ function testCommunicationProgressSeparatesAmbiguity() {
 function testStageMapping() {
   const labels = {
     1: "准备本轮",
-    2: "读取搜索结果",
-    3: "获取完整 JD",
-    4: "分析岗位",
-    5: "等待确认 / 执行沟通"
+    2: "采集岗位与完整 JD",
+    3: "分析岗位",
+    4: "确认清单与执行沟通"
   };
   const statuses = [
     ["created", 1],
-    ["scanning", 3],
-    ["analyzing", 4],
-    ["review_required", 5],
-    ["communicating", 5],
-    ["completed", 5],
-    ["failed", 5],
-    ["stopped", 5]
+    ["scanning", 2],
+    ["analyzing", 3],
+    ["review_required", 4],
+    ["communicating", 4],
+    ["completed", 4],
+    ["failed", 4],
+    ["stopped", 4]
   ];
   for (const [status, index] of statuses) {
     const scenario = seedWorkflow(db, {
@@ -392,7 +564,7 @@ function testStageMapping() {
       transitionWorkflowRun(db, { id: scenario.workflowId, status: "stopped" });
     }
     const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
-    assert.strictEqual(snapshot.progress.stageCount, 5);
+    assert.strictEqual(snapshot.progress.stageCount, 4);
     assert.strictEqual(snapshot.progress.stageIndex, index);
     assert.strictEqual(snapshot.progress.stage, labels[index]);
   }
@@ -408,7 +580,7 @@ function testStageMapping() {
     transitionWorkflowRun(db, { id: scenario.workflowId, status: "paused", resumePhase, controlState: "none" });
     const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
     assert.strictEqual(snapshot.workflow.status, "paused");
-    assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 3 : 4);
+    assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 2 : 3);
   }
 
   for (const resumePhase of ["scanning", "analyzing"]) {
@@ -429,7 +601,7 @@ function testStageMapping() {
     const snapshot = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
     assert.strictEqual(interrupted.resumePhase, resumePhase);
     assert.strictEqual(snapshot.workflow.status, "interrupted");
-    assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 3 : 4);
+    assert.strictEqual(snapshot.progress.stageIndex, resumePhase === "scanning" ? 2 : 3);
   }
 
   const createdInterrupted = seedWorkflow(db, {
@@ -479,7 +651,7 @@ function testStageMapping() {
     getWorkflowProgressSnapshot(db, {
       workflowRunId: resumedThenCommunicationInterrupted.workflowId
     }).progress.stageIndex,
-    5
+    4
   );
 }
 
