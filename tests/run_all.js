@@ -88,6 +88,7 @@ const tests = [
   "boss_message_dom_smoke.js",
   "boss_message_reader_smoke.js",
   "boss_message_detail_reader_smoke.js",
+  "message_discovery_job_context_smoke.js",
   "message_preview_state_smoke.js",
   "message_discovery_smoke.js",
   "message_reply_contract_smoke.js",

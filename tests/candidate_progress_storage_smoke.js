@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { openDb } = require("../src/core/storage");
+const { openDb, createBatch, upsertJob } = require("../src/core/storage");
 const {
   ensureProgressCard,
   recordDiscoveredMessageClassification,
@@ -11,6 +11,8 @@ const {
   correctProgressStage,
   getProgressCardForJob,
   bindProgressCardThread,
+  listMessageDiscoveryCandidates,
+  findMessageDiscoveryJobContext,
   listProgressCardsWithEvents,
   listProgressEvents
 } = require("../src/core/candidate_progress");
@@ -218,6 +220,60 @@ try {
     "the same correction idempotency key must include the expected from stage"
   );
 
+  const contextFixture = createFixture(db, "context", now);
+  ensureProgressCard(db, { ...contextFixture, source: "boss", now });
+  const oldComplete = recordContextObservation(db, contextFixture, {
+    keyword: "message-old-complete",
+    seenAt: "2026-07-23T08:05:00.000Z",
+    description: "OLD_COMPLETE_JD ".repeat(12),
+    analysis: { semanticStatus: "complete", marker: "old-same-observation" },
+    tags: ["old-tag"],
+    qualityTags: ["trusted-detail"]
+  });
+  recordContextObservation(db, contextFixture, {
+    keyword: "message-new-failed",
+    seenAt: "2026-07-23T08:06:00.000Z",
+    description: "NEW_FAILED_JD ".repeat(12),
+    analysis: { semanticStatus: "failed", marker: "must-not-mix" }
+  });
+  const otherPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Other plan', '{}', NULL, 0, ?, ?)`).run(contextFixture.profileId, now, now).lastInsertRowid);
+  recordContextObservation(db, { ...contextFixture, planId: otherPlanId }, {
+    keyword: "message-other-plan",
+    seenAt: "2026-07-23T08:07:00.000Z",
+    description: "OTHER_PLAN_JD ".repeat(12),
+    analysis: { semanticStatus: "complete", marker: "must-not-cross-plan" }
+  });
+  const otherProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Other profile', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
+  recordContextObservation(db, { ...contextFixture, profileId: otherProfileId }, {
+    keyword: "message-other-profile",
+    seenAt: "2026-07-23T08:08:00.000Z",
+    description: "OTHER_PROFILE_JD ".repeat(12),
+    analysis: { semanticStatus: "complete", marker: "must-not-cross-profile" }
+  });
+
+  const contextCandidate = listMessageDiscoveryCandidates(db, { profileId: contextFixture.profileId })
+    .find((item) => item.jobId === contextFixture.jobId);
+  assert.strictEqual(contextCandidate.sourceId, "job-context");
+  assert.strictEqual(contextCandidate.observationId, oldComplete.observationId);
+  assert.strictEqual(contextCandidate.description, "OLD_COMPLETE_JD ".repeat(12));
+  assert.deepStrictEqual(contextCandidate.analysis, { semanticStatus: "complete", marker: "old-same-observation" });
+  assert.deepStrictEqual(contextCandidate.tags, ["old-tag"]);
+  assert.deepStrictEqual(contextCandidate.qualityTags, ["trusted-detail"]);
+  assert.strictEqual(contextCandidate.contextComplete, true);
+  assert.strictEqual(contextCandidate.contextSource, "local_cache");
+  assert.deepStrictEqual(
+    findMessageDiscoveryJobContext(db, {
+      profileId: contextFixture.profileId,
+      planId: contextFixture.planId,
+      sourceId: "job-context"
+    }),
+    contextCandidate
+  );
+
   console.log("candidate_progress_storage_smoke ok");
 } finally {
   try { db?.close(); } catch {}
@@ -235,6 +291,34 @@ function createFixture(database, suffix, now) {
     source, source_id, title, first_seen_at, last_seen_at
   ) VALUES ('boss', ?, ?, ?, ?)`).run(`job-${suffix}`, `Job ${suffix}`, now, now).lastInsertRowid);
   return { profileId, planId, jobId };
+}
+
+function recordContextObservation(database, fixture, overrides = {}) {
+  const batchId = createBatch(database, "boss", overrides.keyword, "message discovery context fixture", {
+    profileId: fixture.profileId,
+    searchPlanId: fixture.planId
+  });
+  upsertJob(database, {
+    source: "boss",
+    sourceId: "job-context",
+    keyword: overrides.keyword,
+    title: "Job context",
+    company: "Context Co",
+    location: "Guangzhou",
+    salary: "20-30K",
+    experience: "3-5年",
+    education: "本科",
+    bossActiveText: "今日活跃",
+    url: "https://www.zhipin.com/job_detail/job-context.html",
+    tags: overrides.tags || [],
+    description: overrides.description,
+    qualityTags: overrides.qualityTags || [],
+    analysis: overrides.analysis
+  }, batchId);
+  const row = database.prepare("SELECT id FROM job_observations WHERE batch_id = ? AND job_id = ?")
+    .get(batchId, fixture.jobId);
+  database.prepare("UPDATE job_observations SET seen_at = ? WHERE id = ?").run(overrides.seenAt, row.id);
+  return { batchId, observationId: Number(row.id) };
 }
 
 function digest(value) {

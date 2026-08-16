@@ -604,18 +604,91 @@ function listMessageDiscoveryCandidates(db, { profileId } = {}) {
       cards.source,
       cards.stage,
       cards.thread_key,
+      jobs.source_id,
       jobs.title,
       jobs.company,
       jobs.salary,
-      jobs.location AS city
+      jobs.location AS city,
+      context.id AS observation_id,
+      context.batch_id AS context_batch_id,
+      context.keyword AS context_keyword,
+      context.experience AS context_experience,
+      context.education AS context_education,
+      context.boss_active_text AS context_boss_active_text,
+      context.url AS context_url,
+      context.tags_json AS context_tags_json,
+      context.description AS context_description,
+      context.quality_tags_json AS context_quality_tags_json,
+      context.analysis_json AS context_analysis_json
     FROM candidate_progress_cards cards
     JOIN jobs ON jobs.id = cards.job_id
+    LEFT JOIN job_observations context ON context.id = (
+      SELECT observations.id
+      FROM job_observations observations
+      JOIN batches context_batches ON context_batches.id = observations.batch_id
+      WHERE observations.job_id = jobs.id
+        AND context_batches.profile_id = cards.profile_id
+        AND context_batches.search_plan_id = cards.plan_id
+        AND length(trim(COALESCE(observations.description, ''))) >= 120
+        AND json_valid(observations.analysis_json) = 1
+        AND json_extract(observations.analysis_json, '$.semanticStatus') = 'complete'
+      ORDER BY observations.seen_at DESC, observations.id DESC
+      LIMIT 1
+    )
     WHERE cards.profile_id = ?
       AND cards.source = 'boss'
       AND cards.stage NOT IN ('rejected', 'closed')
     ORDER BY cards.updated_at DESC, cards.id DESC`)
     .all(positiveInteger(profileId, "profileId"))
     .map(mapDiscoveryCandidate);
+}
+
+function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId } = {}) {
+  const normalizedProfileId = positiveInteger(profileId, "profileId");
+  const normalizedPlanId = positiveInteger(planId, "planId");
+  const normalizedSourceId = shortText(sourceId, 160);
+  if (!normalizedSourceId) {
+    throw progressError("PROGRESS_JOB_SOURCE_ID_REQUIRED", "job source id is required");
+  }
+  const row = db.prepare(`SELECT
+      cards.id AS card_id,
+      context_batches.profile_id,
+      jobs.id AS job_id,
+      context_batches.search_plan_id AS plan_id,
+      'boss' AS source,
+      COALESCE(cards.stage, '') AS stage,
+      COALESCE(cards.thread_key, '') AS thread_key,
+      jobs.source_id,
+      jobs.title,
+      jobs.company,
+      jobs.salary,
+      jobs.location AS city,
+      context.id AS observation_id,
+      context.batch_id AS context_batch_id,
+      context.keyword AS context_keyword,
+      context.experience AS context_experience,
+      context.education AS context_education,
+      context.boss_active_text AS context_boss_active_text,
+      context.url AS context_url,
+      context.tags_json AS context_tags_json,
+      context.description AS context_description,
+      context.quality_tags_json AS context_quality_tags_json,
+      context.analysis_json AS context_analysis_json
+    FROM jobs
+    JOIN job_observations context ON context.job_id = jobs.id
+    JOIN batches context_batches ON context_batches.id = context.batch_id
+    LEFT JOIN candidate_progress_cards cards
+      ON cards.profile_id = context_batches.profile_id AND cards.job_id = jobs.id
+    WHERE jobs.source = 'boss'
+      AND jobs.source_id = ?
+      AND context_batches.profile_id = ?
+      AND context_batches.search_plan_id = ?
+      AND length(trim(COALESCE(context.description, ''))) >= 120
+      AND json_valid(context.analysis_json) = 1
+      AND json_extract(context.analysis_json, '$.semanticStatus') = 'complete'
+    ORDER BY context.seen_at DESC, context.id DESC
+    LIMIT 1`).get(normalizedSourceId, normalizedProfileId, normalizedPlanId);
+  return row ? mapDiscoveryCandidate(row) : null;
 }
 
 function listProgressCardsWithEvents(db, input = {}) {
@@ -770,18 +843,33 @@ function mapEvent(row) {
 }
 
 function mapDiscoveryCandidate(row) {
+  const contextComplete = Number(row.observation_id || 0) > 0;
   return {
-    cardId: Number(row.card_id),
+    cardId: Number(row.card_id || 0) || null,
     profileId: Number(row.profile_id),
     jobId: Number(row.job_id),
     planId: Number(row.plan_id),
     source: row.source,
     stage: row.stage,
     threadKey: row.thread_key || "",
+    sourceId: row.source_id || "",
     title: row.title || "",
     company: row.company || "",
     salary: row.salary || "",
-    city: row.city || ""
+    city: row.city || "",
+    observationId: contextComplete ? Number(row.observation_id) : null,
+    batchId: contextComplete ? Number(row.context_batch_id) : null,
+    keyword: contextComplete ? row.context_keyword || "" : "",
+    experience: contextComplete ? row.context_experience || "" : "",
+    education: contextComplete ? row.context_education || "" : "",
+    bossActiveText: contextComplete ? row.context_boss_active_text || "" : "",
+    url: contextComplete ? row.context_url || "" : "",
+    tags: contextComplete ? parseJson(row.context_tags_json, []) : [],
+    description: contextComplete ? row.context_description || "" : "",
+    qualityTags: contextComplete ? parseJson(row.context_quality_tags_json, []) : [],
+    analysis: contextComplete ? parseJson(row.context_analysis_json, {}) : {},
+    contextComplete,
+    contextSource: contextComplete ? "local_cache" : ""
   };
 }
 
@@ -910,6 +998,7 @@ module.exports = {
   getProgressCardById,
   bindProgressCardThread,
   listMessageDiscoveryCandidates,
+  findMessageDiscoveryJobContext,
   listProgressCards,
   listProgressCardsWithEvents,
   listProgressEvents

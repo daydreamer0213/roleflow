@@ -81,6 +81,35 @@ async function testApplicationBoundary() {
   assert.deepStrictEqual(retriedSingle.analysis.analysisRevision, { fixture: "single-complete", version: "analysis-retry-smoke" });
   assert.strictEqual(getWorkflowRun(db, workflow.id).inventoryCount, listWorkflowInventory(db, { planId: single.planId }).length);
 
+  const messageContext = seedPlan("message-context");
+  const messageJobId = seedFailedJob(messageContext, "message-context-complete");
+  const messageRawDescription = "Message discovery detail must remain attached to the exact analyzed observation, including responsibilities, requirements, delivery boundaries, and production quality evidence. ".repeat(2).trim();
+  const messageRawBatchId = createBatch(db, "boss", "message-discovery-detail", "message discovery raw detail", {
+    profileId: messageContext.profileId,
+    searchPlanId: messageContext.planId,
+    filterSnapshot: { mode: "message-discovery-detail", sourceId: "message-context-complete" }
+  });
+  const messageRawJob = job(db, messageContext.planId, messageJobId);
+  upsertJob(db, {
+    ...messageRawJob,
+    description: messageRawDescription,
+    analysis: {
+      provider: "message-discovery-detail",
+      semanticStatus: "pending",
+      decisionSource: "analysis_pending",
+      recommendation: null
+    }
+  }, messageRawBatchId);
+  const messageRetry = await retryOneJobAnalysis({
+    db,
+    input: { planId: messageContext.planId, jobId: messageJobId },
+    deps: applicationDeps(controlledRunner({ delayMs: 0 }))
+  });
+  const messageAnalysisObservation = db.prepare(`SELECT description, analysis_json
+    FROM job_observations WHERE batch_id = ? AND job_id = ?`).get(messageRetry.batchId, messageJobId);
+  assert.strictEqual(messageAnalysisObservation.description, messageRawDescription);
+  assert.strictEqual(JSON.parse(messageAnalysisObservation.analysis_json).semanticStatus, "complete");
+
   const mixed = seedPlan("mixed");
   const completeId = seedFailedJob(mixed, "bulk-complete");
   const partialId = seedFailedJob(mixed, "bulk-partial");
