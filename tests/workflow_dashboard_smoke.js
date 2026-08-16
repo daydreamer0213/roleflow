@@ -1803,6 +1803,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(cooldownPrimary, /data-cooldown-countdown[^>]*aria-hidden="true"/);
   await assertWorkflowCooldownClient();
   await assertWorkflowLocalProgressClient();
+  await assertWorkflowNonPollingClient();
 
   transitionWorkflowRun(database, {
     id: fixture.workflowId,
@@ -2098,6 +2099,54 @@ async function assertWorkflowLocalProgressClient() {
   windowListeners.get("pageshow")();
   assert.strictEqual(reloads, 1);
   assert.strictEqual(timeouts.size, 0);
+}
+
+async function assertWorkflowNonPollingClient() {
+  const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "workflow.js"), "utf8");
+  let timerId = 0;
+  let fetches = 0;
+  let reloads = 0;
+  const timeouts = new Map();
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const page = {
+    dataset: {
+      pollingKind: "none",
+      workflowRunId: "review-fixture",
+      pollingInterval: "2500",
+      terminalStates: "",
+      workflowStatus: "review_required",
+      workflowPhaseKey: "review"
+    },
+    querySelector() { return null; },
+    querySelectorAll() { return []; }
+  };
+  const document = {
+    hidden: false,
+    querySelector(selector) { return selector === "[data-workflow-page]" ? page : null; },
+    getElementById() { return null; },
+    addEventListener(event, callback) { documentListeners.set(event, callback); }
+  };
+  const context = vm.createContext({
+    document,
+    window: { addEventListener(event, callback) { windowListeners.set(event, callback); } },
+    Date,
+    fetch: async () => { fetches += 1; return { ok: true, json: async () => ({}) }; },
+    setTimeout(callback, delay) { timerId += 1; timeouts.set(timerId, { callback, delay }); return timerId; },
+    clearTimeout(id) { timeouts.delete(id); },
+    setInterval() { throw new Error("non-polling pages must not start a local interval"); },
+    clearInterval() {},
+    encodeURIComponent,
+    location: { reload() { reloads += 1; } }
+  });
+  new vm.Script(script).runInContext(context);
+  windowListeners.get("pageshow")();
+  windowListeners.get("pageshow")();
+  documentListeners.get("visibilitychange")();
+  documentListeners.get("visibilitychange")();
+  assert.strictEqual(timeouts.size, 0, "review pages must never schedule workflow status polling");
+  assert.strictEqual(fetches, 0);
+  assert.strictEqual(reloads, 0);
 }
 
 async function assertWorkflowCooldownClient() {

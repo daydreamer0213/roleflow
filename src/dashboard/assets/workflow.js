@@ -5,6 +5,7 @@
   if (!page) return;
   const panel = page.querySelector("[data-workflow-panel]");
   const pollKind = page.dataset.pollingKind || "none";
+  const pollEnabled = (pollKind === "progress" && Boolean(panel)) || pollKind === "communication";
   const runId = page.dataset.workflowRunId || "";
   const interval = Math.max(2500, Number(page.dataset.pollingInterval) || 2500);
   const terminal = new Set((page.dataset.terminalStates || "").split(",").filter(Boolean));
@@ -226,7 +227,7 @@
 
   function schedule(delay = interval) {
     stopTimer();
-    if (reloadRequested || document.hidden || terminal.has(page.dataset.workflowStatus) || !runId) return;
+    if (!pollEnabled || reloadRequested || document.hidden || terminal.has(page.dataset.workflowStatus) || !runId) return;
     timer = setTimeout(async () => {
       timer = null;
       await poll();
@@ -254,5 +255,5 @@
   window.addEventListener("pagehide", () => { stopTimer(); stopCooldownTimer(); });
   window.addEventListener("pageshow", () => { renderCooldown(); schedule(0); });
   renderCooldown();
-  if ((pollKind === "progress" && panel) || pollKind === "communication") schedule(0);
+  if (pollEnabled) schedule(0);
 })();
