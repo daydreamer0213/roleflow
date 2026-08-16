@@ -334,6 +334,8 @@ let server;
   assert.match(gatedPlanPage.body, /\/api\/browser-readiness/);
   assert.match(gatedPlanPage.body, /5000/);
   assert.match(gatedPlanPage.body, /disabled[^>]*>执行一轮/);
+  assert.match(gatedPlanPage.body, /name="browserMode" value="edge"/);
+  assert.doesNotMatch(gatedPlanPage.body, /value="portable"/);
   const readinessScript = extractBrowserReadinessScript(gatedPlanPage.body);
   await assertBrowserReadinessGate({ readinessScript, status: "login_required", baseDisabled: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: false, expectedDisabled: false });
@@ -341,8 +343,6 @@ let server;
   await assertBrowserReadinessGate({ readinessScript, responseOk: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, fetchError: new Error("fixture readiness request failure"), expectedDisabled: true });
   await assertSerializedSlowBrowserReadinessGate(readinessScript);
-  await assertBrowserReadinessModeSelection(readinessScript);
-  await assertBrowserReadinessModeSwitchRace(readinessScript);
 
   const publicReadiness = {
     status: "login_required",
@@ -386,10 +386,10 @@ let server;
   assert.match(planBefore.body, /<button[^>]*data-browser-readiness-button[^>]*disabled>/);
   assert.match(planBefore.body, /data-browser-readiness-button/);
   assert.match(planBefore.body, /data-browser-base-disabled="false"/);
-  assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
-  assert.match(planBefore.body, /<option value="edge" selected>/);
-  assert.match(planBefore.body, /\u5f53\u524d\u5df2\u767b\u5f55 Edge\uff08\u63a8\u8350\uff09/);
-  assert.match(planBefore.body, /\u9879\u76ee\u4e13\u7528 Edge\uff08\u624b\u52a8\u5907\u7528\uff0c\u9700\u8981\u72ec\u7acb\u767b\u5f55\uff09/);
+  assert.match(planBefore.body, /data-scan-button name="scanKind" value="daily"/);
+  assert.doesNotMatch(planBefore.body, /data-scan-button name="scanKind" value="daily" disabled/);
+  assert.match(planBefore.body, /name="browserMode" value="edge"/);
+  assert.doesNotMatch(planBefore.body, /value="portable"/);
   assert.doesNotMatch(
     planBefore.body,
     /BOSS 暂不支持这些城市：测试未映射城市/,

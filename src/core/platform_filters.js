@@ -109,7 +109,9 @@ function resolveNativeFilterSnapshot({ site, catalog, plan = {}, overrides = {} 
 function resolveFieldOptions(fieldName, field, plan, generated, overrides) {
   const overrideCodes = normalizeCodes(overrides[fieldName]);
   if (overrideCodes.length) return optionsForCodes(field, overrideCodes);
-  if (fieldName === "salary") return selectSalaryOptions(field.options, plan.salary || {}, generated.salaryLanes);
+  if (fieldName === "salary") return generated.salaryLanes.length
+    ? selectSalaryOptions(field.options, plan.salary || {}, generated.salaryLanes)
+    : [];
   if (fieldName === "experience") return selectExperienceOptions(field.options, generated.experience);
   if (fieldName === "jobType") return selectChoiceOptions(field.options, generated.jobTypes);
   if (fieldName === "degree") return selectChoiceOptions(field.options, generated.degrees);

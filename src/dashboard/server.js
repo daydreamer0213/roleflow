@@ -108,7 +108,7 @@ const { matchingCardFromProfile, matchingCardRevision } = require("../core/match
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
-const { generatedPlatformOf } = require("../core/search_plan_schema");
+const { acquisitionModeOf, generatedPlatformOf } = require("../core/search_plan_schema");
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
@@ -384,6 +384,7 @@ function createDashboardServer({
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
+  planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync
 }) {
   const scanRuns = new Map();
@@ -630,7 +631,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, inheritedContextResolver });
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
       if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess });
@@ -1311,25 +1312,30 @@ function resumeVersionFromForm(fields) {
   };
 }
 
-async function handlePlanSave(req, res, db, { root, logger, requestId }) {
+async function handlePlanSave(req, res, db, { root, logger, requestId, rescore = rescorePlanObservations }) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const profileId = Number(params.profileId);
     const profile = getCandidateProfile(db, profileId);
     if (!profile) throw new Error("候选人画像不存在，请重新上传简历。");
-    const experience = splitTerms(params.experience);
     const plan = normalizeSearchPlan({
       name: params.name,
-      cities: splitTerms(params.cities),
+      acquisitionMode: params.acquisitionMode,
+      platform: {
+        site: "boss",
+        generated: {
+          cities: splitTerms(params.cities),
+          salaryLanes: splitTerms(params.platformSalaryLanes),
+          experience: splitTerms(params.experience),
+          jobTypes: splitTerms(params.jobTypes),
+          degrees: splitTerms(params.degrees)
+        }
+      },
       salaryMinK: params.salaryMinK,
       salaryMaxK: params.salaryMaxK,
       salaryMode: params.salaryMode,
-      platform: { site: "boss", salaryLanes: splitTerms(params.platformSalaryLanes) },
-      experience,
-      jobTypes: params.jobTypes === undefined ? ["全职"] : splitTerms(params.jobTypes),
-      degrees: splitTerms(params.degrees),
-      allowExperienceStretch: true,
-      bossActiveDays: PRODUCT_POLICY.searchPlan.defaultBossActiveDays,
+      allowExperienceStretch: params.allowExperienceStretch === "on",
+      bossActiveDays: params.bossActiveDays,
       workSchedulePreference: params.workSchedulePreference,
       directions: splitTerms(params.directions),
       keywords: parseKeywordLines(params.keywords),
@@ -1342,27 +1348,32 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       },
       source: "user-confirmed"
     }, profile.profile);
-    const validation = validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" });
+    const validation = validateSearchPlan(plan, profile.profile);
     if (!validation.valid) throw new Error(validation.errors.join("；"));
     const matchingContext = getCandidateMatchingContext(db, profileId);
     const planId = saveSearchPlan(db, { id: params.planId, profileId, profileVersionId: matchingContext?.profileVersionId || null, plan });
+    const savedPlanRecord = getSearchPlan(db, planId);
     const runtimeConfigs = profileToRuntimeConfigs(
       loadConfigs(root),
       matchingContext?.candidateProfile || profile.profile,
-      plan,
+      savedPlanRecord.plan,
       listMatchingResumeVersions(db, profileId),
       matchingContext?.matchingCard || null
     );
-    const rescore = rescorePlanObservations(db, { planId, configs: runtimeConfigs });
+    const activeWorkflow = buildWorkflowDashboardState(db, savedPlanRecord).activeRun;
+    const rescoreResult = activeWorkflow
+      ? { rescored: 0, deferred: true }
+      : rescore(db, { planId, configs: runtimeConfigs });
     logger.info("search_plan_saved", {
       requestId,
       profileId,
       planId,
       keywordCount: plan.keywords.length,
       cityCount: generatedPlatformOf(plan).cities.length,
-      rescored: rescore.rescored
+      rescored: rescoreResult.rescored,
+      rescoreDeferred: Boolean(rescoreResult.deferred)
     });
-    redirect(res, `/plan?profileId=${profileId}&planId=${planId}&saved=1`);
+    redirect(res, `/plan?profileId=${profileId}&planId=${planId}&saved=1${rescoreResult.deferred ? "&rescoreDeferred=1" : ""}`);
   } catch (error) {
     respondUiError(res, error, "/onboarding", { logger, requestId, event: "search_plan_save_failed", fallbackCode: "SEARCH_PLAN_SAVE_FAILED" });
   }
@@ -1385,7 +1396,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
       plan,
       matchingContext?.candidateProfile || {},
       plan ? getSearchPlanDependency(db, plan.id) : {},
-      { acquisitionMode: "generated" }
+      { acquisitionMode: acquisitionModeOf(plan.plan) }
     );
     assertBossRuntimeAvailable(db);
     const orphaned = interruptOrphanedScanRuns(db, { site: "boss", heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs });
@@ -3919,10 +3930,12 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   const scanBounds = PRODUCT_POLICY.searchPlan.scanBounds;
   const bossCatalog = getPlatformFilterCatalog(db, "boss")?.catalog;
   const bossFilterPreview = bossCatalog ? resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan }) : null;
-  const selectedBossSalaryLanes = plan.platform?.salaryLanes?.length
-    ? plan.platform.salaryLanes
-    : bossFilterPreview?.lanes?.flatMap((lane) => lane.labels?.salary || []) || [];
-  const confirmation = searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和本地筛选方案，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const generated = generatedPlatformOf(plan);
+  const selectedBossSalaryLanes = generated.salaryLanes;
+  const confirmation = searchParams.get("rescoreDeferred")
+    ? "筛选方案已保存。当前任务继续使用启动时的条件；新条件会在下一次创建任务时生效。"
+    : searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和本地筛选方案，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
+  const matchingContext = getCandidateMatchingContext(db, profile.id);
   const viewModel = buildTodayViewModel({
     profile,
     planRecord,
@@ -3934,8 +3947,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     dailyBCardLimit: boss.weightedCardLimit("B", dailyScan.maxCards),
     run: scanStatus(scanRuns, planRecord.id, db),
     resumableBatch: getLatestResumableBatch(db, { planId: planRecord.id, site: "boss" }),
-    validation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "generated" }),
-    inheritedWorkflowValidation: validateSearchPlan(plan, profile.profile, { acquisitionMode: "inherited" }),
+    validation: validateSearchPlan(plan, profile.profile),
     planDependency: getSearchPlanDependency(db, planRecord.id),
     versionDiff: compareProfileVersions(db, profile.id),
     feedback: buildFeedbackSummary(db, { profileId: profile.id }),
@@ -3945,6 +3957,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     bossFilterPreview,
     bossSalaryOptions: bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [],
     selectedBossSalaryLanes,
+    matchingContext,
     confirmation,
     options: {
       cities: PLAN_CITY_OPTIONS,

@@ -1,6 +1,7 @@
 const { formatNativeFilterSummary } = require("../../core/platform_filters");
 const { feedbackReasonLabel } = require("../../core/feedback");
 const { PRODUCT_POLICY } = require("../../core/product_policy");
+const { acquisitionModeOf, generatedPlatformOf } = require("../../core/search_plan_schema");
 
 function buildTodayViewModel(input = {}) {
   const profile = input.profile || {};
@@ -9,17 +10,29 @@ function buildTodayViewModel(input = {}) {
   const workflow = input.workflowState || {};
   const dependency = input.planDependency || {};
   const validation = input.validation || { valid: false, errors: [], warnings: [] };
-  const inheritedValidation = input.inheritedWorkflowValidation || validation;
   const activeRun = workflow.activeRun || null;
   const nextPlan = workflow.nextPlan || null;
   const runtimeBlock = input.bossRuntimeBlock || null;
   const scanBlocked = input.run?.state === "running" || !validation.valid || dependency.stale || dependency.matchingCardRequired || Boolean(runtimeBlock);
-  const startBlocked = !inheritedValidation.valid || dependency.stale || dependency.matchingCardRequired || Boolean(runtimeBlock)
+  const startBlocked = !validation.valid || dependency.stale || dependency.matchingCardRequired || Boolean(runtimeBlock)
     || Boolean(nextPlan?.scanNeeded && input.run?.state === "running");
   const profileId = Number(profile.id || planRecord.profileId || 0);
   const planId = Number(planRecord.id || 0);
   const candidate = profile.profile?.candidate || {};
   const remainingBudget = workflow.remainingBudget || { details: 0, pages: 0 };
+  const mode = acquisitionModeOf(plan);
+  const generated = generatedPlatformOf(plan);
+  const activePlanner = activeRun?.planner || null;
+  const acquisition = {
+    mode,
+    generated,
+    inheritedPreview: input.inheritedPreview || { status: "idle", summary: "读取当前 BOSS 搜索页后显示" },
+    activeSnapshot: activePlanner ? {
+      mode: activePlanner.acquisitionMode,
+      planHash: activePlanner.planHash || "",
+      summary: acquisitionSummary(activePlanner)
+    } : null
+  };
 
   return {
     page: { title: "今日任务", profileId, planId, todayPath: `/plan?profileId=${profileId}&planId=${planId}` },
@@ -44,7 +57,7 @@ function buildTodayViewModel(input = {}) {
     blockers: buildBlockers({
       dependency,
       runtimeBlock,
-      validation: inheritedValidation,
+      validation,
       profileId
     }),
     confirmation: String(input.confirmation || ""),
@@ -62,6 +75,7 @@ function buildTodayViewModel(input = {}) {
     },
     form: {
       plan,
+      acquisition,
       validation: { valid: Boolean(validation.valid), errors: [...(validation.errors || [])], warnings: [...(validation.warnings || [])] },
       options: { ...(input.options || {}), platformSalaryLanes: [...(input.bossSalaryOptions || [])] },
       selectedBossSalaryLanes: [...(input.selectedBossSalaryLanes || [])],
@@ -77,7 +91,11 @@ function buildTodayViewModel(input = {}) {
       projects: (profile.profile?.projects || []).map((item) => item?.name || item).filter(Boolean),
       versionDiff: buildVersionDiff(input.versionDiff),
       feedback: buildFeedback(input.feedback),
-      bossFilter: buildBossFilter(input.bossFilterPreview, input.bossCatalog)
+      bossFilter: buildBossFilter(input.bossFilterPreview, input.bossCatalog),
+      matchingCard: {
+        summary: input.matchingContext?.matchingCard ? "已确认，将用于 JD 证据匹配" : "尚未确认",
+        href: `/match-card?profileId=${profileId}`
+      }
     },
     runtime: { workflowStartDisabled: Boolean(startBlocked) }
   };
@@ -89,7 +107,7 @@ function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, pro
   if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
   if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: "BOSS 安全暂停中", detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
   if (nextPlan?.errorCode) return { type: "notice", label: "今日任务暂不能继续", status: workflowBlockedMessage(nextPlan.errorCode, nextPlan), detail: workflowShortfallLabel(nextPlan.shortfallReason || nextPlan.errorCode) };
-  return { type: "form", label: "执行一轮", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "沿用已保存的关键词、城市和预算；不会自动发送消息或投递。", disabled: Boolean(startBlocked) };
+  return { type: "form", label: "执行一轮", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "使用已保存的采集方式、关键词和预算；不会自动发送消息或投递。", disabled: Boolean(startBlocked) };
 }
 
 function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }) {
@@ -115,6 +133,16 @@ function buildFeedback(feedback = {}) {
 function buildBossFilter(snapshot, catalog) {
   if (!catalog) return { known: false, summary: "BOSS 站内预筛条件会在首次扫描时自动预读，之后按本方案的薪资与经验条件组装 URL。" };
   return { known: true, summary: formatNativeFilterSummary(snapshot) || "未命中可用的 BOSS 预筛档位", discoveredAt: String(catalog.discoveredAt || "").replace("T", " ").slice(0, 16) };
+}
+
+function acquisitionSummary(planner = {}) {
+  if (planner.acquisitionMode === "generated") {
+    const cities = (planner.cityScopes || []).map((item) => item.city || item.cityCode).filter(Boolean);
+    const filters = Object.values(planner.nativeFilters?.labels || {}).flat();
+    return ["通用模式", ...cities, ...filters].join(" · ");
+  }
+  const filters = (planner.platformPolicy?.filterSummary || []).filter(Boolean);
+  return ["继承模式", ...filters].join(" · ");
 }
 
 function scanLabel(run = {}, bossActiveDays = PRODUCT_POLICY.searchPlan.defaultBossActiveDays) {
@@ -148,4 +176,4 @@ function workflowBlockedMessage(code, plan = {}) {
   return { WORKFLOW_DAILY_RUN_LIMIT: "今天的三轮任务都已创建。", WORKFLOW_DAILY_TARGET_REACHED: "今天的目标已完成，无需再创建新一轮。", WORKFLOW_THIRD_SCAN_NOT_NEEDED: "当前候选库存已足够，不需要追加第三轮扫描。", WORKFLOW_SCAN_INTERVAL: plan.nextRunAt ? `两轮扫描至少间隔 2 小时，下次可在 ${new Date(plan.nextRunAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 开始。` : "两轮扫描至少间隔 2 小时。" }[code] || "当前不能创建新一轮。";
 }
 
-module.exports = { buildTodayViewModel, workflowStatusLabel, workflowShortfallLabel, scanLabel };
+module.exports = { buildTodayViewModel, acquisitionSummary, workflowStatusLabel, workflowShortfallLabel, scanLabel };

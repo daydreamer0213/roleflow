@@ -163,14 +163,15 @@ const bossCatalog = parseBossFilterCatalog([
 ]);
 const nativeFilters = resolveNativeFilterSnapshot({ site: "boss", catalog: bossCatalog, plan: {
   salary: { minK: 8, maxK: 12 },
-  experience: ["\u7ecf\u9a8c\u4e0d\u9650", "0-3\u5e74", "1-3\u5e74", "3-5\u5e74\uff08\u53ef\u51b2\uff09"]
+  experience: ["\u7ecf\u9a8c\u4e0d\u9650", "0-3\u5e74", "1-3\u5e74", "3-5\u5e74\uff08\u53ef\u51b2\uff09"],
+  platform: { salaryLanes: ["5-10K"] }
 } });
 assert.deepStrictEqual(nativeFilters.params, { salary: ["404"], experience: ["101", "104", "105"] });
 assert.deepStrictEqual(nativeFilters.labels, { salary: ["5-10K"], experience: ["经验不限", "1-3年", "3-5年"] });
 const tenToTwenty = resolveNativeFilterSnapshot({
   site: "boss",
   catalog: bossCatalog,
-  plan: { salary: { minK: 10, maxK: 20 }, experience: ["1-3\u5e74"] }
+  plan: { salary: { minK: 10, maxK: 20 }, experience: ["1-3\u5e74"], platform: { salaryLanes: ["10-20K"] } }
 });
 assert.deepStrictEqual(tenToTwenty.params, { salary: ["405"], experience: ["104"] });
 const splitSalaryLanes = resolveNativeFilterSnapshot({

@@ -104,6 +104,16 @@ assert.deepStrictEqual(nestedNative.params, {
 });
 assert.deepStrictEqual(nestedNative.unresolvedSelections, []);
 assert.strictEqual(assertGeneratedFilterSelections({}, nestedNative), nestedNative);
+const noPlatformSalary = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog,
+  plan: {
+    acquisitionMode: "generated",
+    salary: { minK: 10, maxK: 20 },
+    platform: { generated: { salaryLanes: [] } }
+  }
+});
+assert.strictEqual(Object.hasOwn(noPlatformSalary.params, "salary"), false, "empty BOSS salary lanes must mean no platform salary limit");
 const ambiguousNative = resolveNativeFilterSnapshot({
   site: "boss",
   catalog: {

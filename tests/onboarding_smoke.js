@@ -384,6 +384,7 @@ const generatedReports = [];
     profileId: String(profileId),
     planId: String(planId),
     name: "广州 AI 筛选计划",
+    acquisitionMode: "generated",
     cities: "广州",
     bossCityCode: "101280100",
     salaryMinK: "9",
@@ -407,8 +408,11 @@ const generatedReports = [];
   assert.strictEqual(saved.status, 303);
   assert.strictEqual(getSearchPlan(db, planId).plan.source, "user-confirmed");
   assert.strictEqual(getSearchPlan(db, planId).plan.schemaVersion, 2);
-  assert.strictEqual(getSearchPlan(db, planId).plan.acquisitionMode, "inherited");
+  assert.strictEqual(getSearchPlan(db, planId).plan.acquisitionMode, "generated");
   assert.deepStrictEqual(getSearchPlan(db, planId).plan.platform.generated.cities, ["广州"]);
+  const storedPlanAfterSave = JSON.parse(db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(planId).plan_json);
+  assert.strictEqual(Object.hasOwn(storedPlanAfterSave, "cities"), false);
+  assert.strictEqual(Object.hasOwn(storedPlanAfterSave.platform, "salaryLanes"), false);
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应绑定当前匹配卡版本");
   assert.strictEqual(getSearchPlan(db, planId).plan.allowExperienceStretch, true);
 
