@@ -389,13 +389,6 @@ function sameText(text, term) {
   return String(text || "").toLowerCase().includes(String(term || "").toLowerCase());
 }
 
-function inferSeniority(text) {
-  if (hasAny(text, ["经验不限", "1-3年", "0-3年"])) return "junior";
-  if (hasAny(text, ["3-5年"])) return "junior_mid";
-  if (hasAny(text, ["5-10年", "专家", "架构"])) return "senior";
-  return "unknown";
-}
-
 MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup({
   profile,
   job,

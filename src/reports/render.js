@@ -135,10 +135,6 @@ function chips(values = [], cls) {
   return values.map((x) => `<span class="chip ${cls}">${escapeHtml(x)}</span>`).join("");
 }
 
-function formatConfidence(value) {
-  return typeof value === "number" ? `${Math.round(value * 100)}%` : "待确认";
-}
-
 function recommendationLabel(value) {
   return {
     primary: "主投",

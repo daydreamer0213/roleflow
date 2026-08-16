@@ -2675,18 +2675,6 @@ function mergeBossJobFacts(existing = {}, incoming = {}) {
   };
 }
 
-function dedupeJobs(jobs) {
-  const byKey = new Map();
-  for (const job of jobs) {
-    const key = bossSourceId(job);
-    const old = byKey.get(key);
-    if (!old || (job.detailRead && !old.detailRead) || (job.description || "").length > (old.description || "").length) {
-      byKey.set(key, { ...job, sourceId: key, url: normalizeBossNavigationUrl(job.url) });
-    }
-  }
-  return [...byKey.values()];
-}
-
 function normalizeBossUrl(url) {
   const value = String(url || "").trim();
   if (!value) return "";
@@ -2874,7 +2862,6 @@ const COMMUNICATION_NETWORK_URL_INCLUDES = Object.freeze([
   "/wapi/zpchat/config/get",
   "/wapi/zpgeek/friend/add.json"
 ]);
-const COMMUNICATION_OUTCOME_STATES = new Set(["accepted", "pending", "platform_rejected", "transport_failed", "ambiguous", "timeout", "no_matching_request"]);
 const COMMUNICATION_OUTCOME_PAGE_STATES = new Set(["request_accepted", "request_rejected", "request_failed", "request_conflict", "request_unparsed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified", "confirmation_dialog"]);
 const COMMUNICATION_OUTCOME_CATEGORIES = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "network_aborted", "response_unparsed"]);
 
@@ -2892,14 +2879,6 @@ function communicationJobId(url) {
   } catch {
     return "";
   }
-}
-
-function sanitizeCommunicationObservation(value = {}) {
-  const state = String(value?.state || "pending").trim().toLowerCase();
-  return {
-    state: COMMUNICATION_OUTCOME_STATES.has(state) ? state : "pending",
-    evidence: communicationOutcomeEvidence(value)
-  };
 }
 
 function classifyBossCommunicationNetworkLog(log = {}) {

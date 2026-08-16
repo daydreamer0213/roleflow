@@ -142,19 +142,6 @@ function normalizeSkill(value) {
   return { name: text(item.name), level: text(item.level || "resume"), evidence: strings(item.evidence, 8) };
 }
 
-function normalizeResumeVersion(value, index) {
-  const item = object(value);
-  const name = text(item.name || `简历版本 ${index + 1}`);
-  return {
-    id: text(item.id || slug(name) || `resume_${index + 1}`),
-    name,
-    summary: text(item.summary),
-    primaryProjects: strings(item.primaryProjects, 4),
-    scenarios: strings(item.scenarios || item.targetRoles, 8),
-    keywords: strings(item.keywords, 12)
-  };
-}
-
 function normalizeRiskMessaging(value) {
   const item = object(value);
   const result = {};
@@ -205,6 +192,4 @@ function text(value) { return String(value || "").trim().slice(0, 1000); }
 function strings(value, limit) { return [...new Set(list(value).map((item) => text(item)).filter(Boolean))].slice(0, limit); }
 function number(value, fallback) { const result = Number(value); return Number.isFinite(result) ? result : fallback; }
 function boundedPolicyValue(value, fallback, [min, max]) { return Math.max(min, Math.min(max, number(value, fallback))); }
-function slug(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
-
 module.exports = { normalizeCandidateProfile, normalizeSearchPlan, inferSalary, normalizeBossActiveDays, normalizeWorkSchedulePreference };

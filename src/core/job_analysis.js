@@ -734,29 +734,6 @@ function candidateProfileForJobMatch(profile) {
   };
 }
 
-function resumeVersionsForJobMatch(resumeVersions = {}) {
-  return {
-    versions: (resumeVersions.versions || []).map((version) => ({
-      id: version.id,
-      name: version.name,
-      summary: withoutSalaryPreference(version.summary),
-      primaryProjects: version.primaryProjects || [],
-      scenarios: version.scenarios || [],
-      keywords: version.keywords || [],
-      resumeFacts: candidateProfileForJobMatch(version.resumeFacts || {}),
-      sourceDocument: version.sourceDocument ? {
-        fileName: version.sourceDocument.fileName || "",
-        format: version.sourceDocument.format || "",
-        textExcerpt: withoutSalaryPreference(version.sourceDocument.textExcerpt)
-      } : null
-    }))
-  };
-}
-
-function withoutSalaryPreference(value) {
-  return String(value || "").replace(/(?:期望薪资|薪资期望|薪酬期望|期望待遇|薪资)\s*[：:]?\s*\d+(?:\.\d+)?\s*[-~—至]\s*\d+(?:\.\d+)?\s*[kK](?:\s*\/\s*月)?/gi, "").trim();
-}
-
 function resumeVersionName(resumeVersions, id) {
   return (resumeVersions?.versions || []).find((version) => version.id === id)?.name || id || "";
 }

@@ -2630,19 +2630,6 @@ function printTop(label, stats) {
   for (const item of rows) console.log(`  - ${item.name}: skipped ${item.skipped}, applied ${item.applied}, no_reply ${item.no_reply || 0}`);
 }
 
-function resolveKeywords(args, configs) {
-  const raw = args.keywords || args.keyword;
-  if (raw) return splitList(raw);
-  return (configs.keywords.keywords || []).map((item) => item.word).filter(Boolean);
-}
-
-function splitList(value) {
-  return String(value || "")
-    .split(/[,，、\n]/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-}
-
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {

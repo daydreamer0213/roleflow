@@ -93,7 +93,7 @@ const {
   listProgressCardsWithEvents
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
-const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel, buildCandidateMatchCard } = require("../core/profile_onboarding");
+const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { inferCandidateDisplayName } = require("../core/resume_privacy");
 const {
@@ -861,26 +861,6 @@ function matchingCardEntryLocation(db, profileId, resumeContentHash) {
     source: "migration"
   });
   return `/match-card?profileId=${profileId}&cardId=${created.id}`;
-}
-
-async function createUploadedMatchingCardDraft(db, { modelConfig, profile, saved, resume, logger, requestId }) {
-  let card;
-  try {
-    card = await buildCandidateMatchCard({ modelConfig, profile, logger });
-  } catch (error) {
-    logger.warn("matching_card_draft_fallback", { requestId, profileId: saved.profileId, error: errorMeta(error) });
-    card = matchingCardFromProfile(profile);
-  }
-  const draft = createMatchingCardDraft(db, {
-    profileId: saved.profileId,
-    profileVersionId: saved.profileVersionId,
-    resumeDocumentId: saved.resumeDocumentId,
-    resumeContentHash: resume.contentHash,
-    card,
-    source: "model"
-  });
-  logger.info("matching_card_draft_created", { requestId, profileId: saved.profileId, cardId: draft.id, source: draft.source });
-  return draft.id;
 }
 
 function renderMatchCardPage({ db, searchParams }) {
@@ -3970,29 +3950,6 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
   return renderPage("今日任务", renderTodayPage(viewModel));
 }
 
-function workflowStatusLabel(status) {
-  return {
-    created: "本轮已建立",
-    scanning: "正在筛选岗位",
-    analyzing: "正在分析岗位",
-    paused: "本轮已暂停",
-    review_required: "等待确认本轮清单",
-    communicating: "正在沟通",
-    interrupted: "本轮已中断，等待继续",
-    completed: "本轮已完成",
-    failed: "本轮未完成",
-    stopped: "本轮已停止"
-  }[status] || "本轮进行中";
-}
-
-function workflowShortfallLabel(code) {
-  return {
-    WORKFLOW_PROJECTED_SUPPLY_SHORTFALL: "预计候选可能不足，不会用明显弱岗位凑数",
-    WORKFLOW_SCAN_BUDGET_EMPTY: "今日安全预算不足",
-    WORKFLOW_NO_KEYWORDS: "没有可用搜索关键词"
-  }[code] || "候选可能不足";
-}
-
 function workflowHealthFailureCode(error) {
   const code = typeof error?.code === "string" ? error.code : "";
   return /^[A-Z0-9_]{1,80}$/.test(code) ? code : "WORKFLOW_HEALTH_FAILED";
@@ -4057,8 +4014,6 @@ function foundationEvidenceLists(analysis = {}) {
   return { covered: rows.filter((item) => ["matched", "transferable"].includes(item.state)).map((item) => item.requirement), unresolved: rows.filter((item) => !["matched", "transferable"].includes(item.state)).map((item) => item.requirement) };
 }
 
-function hardBlockerLabels(analysis = {}) { return (analysis.hardBlockers || []).map((item) => typeof item === "string" ? item : item?.requirement || item?.reason || "").filter(Boolean); }
-
 function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "span") {
   const foundation = foundationEvidenceLists(analysis); const track = analysis.selectedTrackLabel ? `匹配分支：${escapeHtml(analysis.selectedTrackLabel)} · ` : ""; const covered = foundation.covered.filter(Boolean).join("、") || "暂无"; const unresolved = foundation.unresolved.filter(Boolean).join("、") || "暂无";
   return `<${tag} class="${escapeAttr(className)}">${track}岗位主体：${escapeHtml(String(analysis.roleSummary || "岗位主体待确认"))} · 主体匹配：${escapeHtml(roleAlignmentLabel(analysis.roleAlignment))} · 主体依据：${Array.isArray(analysis.roleResumeEvidence) ? analysis.roleResumeEvidence.length : 0} 条 · 已覆盖根基：${escapeHtml(covered)} · 待确认根基：${escapeHtml(unresolved)}</${tag}>`;
@@ -4117,10 +4072,6 @@ function renderPage(title, body) {
 
 function renderLegacyDashboardPage({ title, currentPath, todayPath = "", planId = "", stage, body }) {
   return renderDashboardFramedPage({ title, currentPath, todayPath, planId, stage, brandHref: todayPath || "/plan", content: body });
-}
-
-function keywordLines(keywords = []) {
-  return keywords.map((item) => `${item.word || item} | ${item.priority || "B"} | ${item.reason || "用户确认的搜索关键词"}`).join("\n");
 }
 
 function navLinks({ currentPath = "", todayPath = "", planId = "" } = {}) {

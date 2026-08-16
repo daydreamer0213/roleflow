@@ -4,7 +4,6 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadConfigs } = require("../src/config");
 const { scoreJob, decisionState } = require("../src/core/scoring");
-const { createGreeting } = require("../src/core/llm");
 const { buildKeywordPlan, resolvePlannedKeywords } = require("../src/core/keyword_planner");
 const { explainJobMatch } = require("../src/core/match_explainer");
 const { createLlmAnalyzer } = require("../src/core/llm_analyzer");
@@ -157,7 +156,7 @@ assert.strictEqual(decisionState(trainer), "ready");
 const selfCheckDbPath = path.join(selfCheckDir, `self-check-${Date.now()}.sqlite`);
 const db = openDb(selfCheckDbPath);
 const batchId = createBatch(db, "boss", "self-check");
-const greeting = createGreeting(sample[0], runtimeConfigs.profile);
+const greeting = "您好，我想进一步了解该岗位的职责和团队情况。";
 upsertJob(db, { ...sample[0], ...good, greeting }, batchId);
 assert.strictEqual(listReportJobs(db).length, 1);
 
