@@ -385,6 +385,9 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
   if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
   const platform = String(input.platform || "").trim().toLowerCase();
   const threadKey = safeDigestKey(input.threadKey, "threadKey");
+  const legacyThreadKey = input.legacyThreadKey
+    ? safeDigestKey(input.legacyThreadKey, "legacyThreadKey")
+    : "";
   const messageKeys = normalizedMessageKeys(input.messageKeys);
   const messageGroupKey = safeDigestKey(input.messageGroupKey, "messageGroupKey");
   const messageCategory = String(input.messageCategory || "").trim();
@@ -421,8 +424,8 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
   try {
     const binding = db.prepare(`UPDATE candidate_progress_cards
       SET thread_key = ?, updated_at = ?
-      WHERE id = ? AND thread_key = ''`)
-      .run(threadKey, occurredAt, cardId);
+      WHERE id = ? AND (thread_key = '' OR thread_key = ?)`)
+      .run(threadKey, occurredAt, cardId, legacyThreadKey);
     if (Number(binding.changes) !== 1) {
       const current = getProgressCard(db, cardId);
       if (!current || current.threadKey !== threadKey) {

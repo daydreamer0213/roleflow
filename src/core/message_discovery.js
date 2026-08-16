@@ -16,12 +16,27 @@ const {
 
 const BOSS_MESSAGE_GROUP_LIMIT = 5;
 const BOSS_MESSAGE_GROUP_TEXT_LIMIT = 1000;
+const CONTEXT_TERMINAL_CODES = new Set([
+  "BOSS_LOGIN_REQUIRED",
+  "BOSS_MESSAGE_PAGE_LOST",
+  "BOSS_MESSAGE_STRUCTURE_CHANGED",
+  "BOSS_MESSAGE_TAB_AMBIGUOUS",
+  "BOSS_MESSAGE_TAB_MISSING",
+  "BOSS_MESSAGE_TARGET_MISMATCH",
+  "BOSS_MESSAGE_DETAIL_BASELINE_INVALID",
+  "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED",
+  "BOSS_MESSAGE_DETAIL_BINDING_INVALID",
+  "BOSS_MESSAGE_DETAIL_CLOSE_FAILED",
+  "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND",
+  "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"
+]);
 
 async function runBossMessageDiscovery({
   db,
   profileId,
   reader,
   classifyMessageGroup,
+  resolveJobContext = null,
   logger = null,
   signal = null,
   now = () => new Date().toISOString(),
@@ -95,7 +110,29 @@ async function runBossMessageDiscovery({
       continue;
     }
 
-    const resolved = resolveUniqueCandidate(candidates, selected);
+    let resolved = resolveUniqueCandidate(candidates, selected, target.conversationKey);
+    let contextStopCode = "";
+    const canResolveContext = (resolved.ok && !hasCompleteJobContext(resolved.job))
+      || (!resolved.ok && ["BOSS_MESSAGE_CARD_NOT_FOUND", "BOSS_MESSAGE_CARD_AMBIGUOUS"].includes(resolved.reasonCode));
+    if (canResolveContext && typeof resolveJobContext === "function") {
+      try {
+        const candidate = resolved.ok ? resolved.candidate : null;
+        const context = await resolveJobContext({ target, selected, candidate, signal });
+        if (!validResolvedContext(context, target.conversationKey)) {
+          throw discoveryError("MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", "job context is unavailable");
+        }
+        resolved = { ...context, ok: true };
+      } catch (error) {
+        if (shouldInterrupt(error, signal)) {
+          clearSelectedSnapshot(selected);
+          throw error;
+        }
+        contextStopCode = shouldStopAfterContextFailure(error) ? errorCode(error) : "";
+        resolved = { ok: false, reasonCode: contextFailureReason(error) };
+      }
+    } else if (resolved.ok && !hasCompleteJobContext(resolved.job)) {
+      resolved = { ok: false, reasonCode: "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE" };
+    }
     if (!resolved.ok) {
       const identity = {
         positionTitle: selected?.positionName,
@@ -122,6 +159,9 @@ async function runBossMessageDiscovery({
         reasonCode: retained.reasonCode,
         results
       }), logger, onStatus);
+      if (contextStopCode) {
+        return emitStopped(contextStopCode, queue.length, results, logger, onStatus, retained, processed);
+      }
       await paceBeforeNext({
         queueIndex,
         queueLength: queue.length,
@@ -175,7 +215,8 @@ async function runBossMessageDiscovery({
         card: resolved.card,
         job: resolved.job,
         messages: incoming.messages,
-        facts
+        facts,
+        contextSource: resolved.contextSource || resolved.job.contextSource || ""
       });
     } finally {
       for (const item of incoming.messages) item.text = "";
@@ -186,6 +227,7 @@ async function runBossMessageDiscovery({
       cardId: resolved.cardId,
       platform: "boss",
       threadKey: resolved.threadKey,
+      legacyThreadKey: resolved.legacyThreadKey || "",
       messageKeys: incoming.newMessageKeys,
       messageGroupKey: incoming.messageGroupKey,
       messageCategory: classification.messageCategory,
@@ -242,7 +284,7 @@ async function paceBeforeNext({
   if (openedCount % 10 === 0) await sleepFn(15_000, signal);
 }
 
-function resolveUniqueCandidate(candidates, selected) {
+function resolveUniqueCandidate(candidates, selected, canonicalThreadKey) {
   const title = normalizedText(selected?.positionName);
   const matches = candidates.filter((candidate) => normalizedText(candidate.title) === title);
   if (matches.length === 0) return { ok: false, reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND" };
@@ -257,14 +299,21 @@ function resolveUniqueCandidate(candidates, selected) {
   if (conflicts(candidate.company, selected.companyName)) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_COMPANY_MISMATCH" };
   }
-  const threadKey = safeDigest(["boss", selected.headerText, selected.positionName]);
-  if (candidate.threadKey && candidate.threadKey !== threadKey) {
+  const legacyThreadKey = safeDigest(["boss", selected.headerText, selected.positionName]);
+  if (candidate.threadKey
+    && candidate.threadKey !== canonicalThreadKey
+    && candidate.threadKey !== legacyThreadKey) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_THREAD_MISMATCH" };
   }
   return {
     ok: true,
+    candidate,
     cardId: candidate.cardId,
-    threadKey,
+    threadKey: canonicalThreadKey,
+    legacyThreadKey: candidate.threadKey === legacyThreadKey && legacyThreadKey !== canonicalThreadKey
+      ? legacyThreadKey
+      : "",
+    contextSource: candidate.contextSource || "",
     card: {
       id: candidate.cardId,
       profileId: candidate.profileId,
@@ -276,12 +325,54 @@ function resolveUniqueCandidate(candidates, selected) {
     },
     job: {
       id: candidate.jobId,
+      source: candidate.source,
+      sourceId: candidate.sourceId,
       title: candidate.title,
       company: candidate.company,
       salary: candidate.salary,
-      location: candidate.city
+      location: candidate.city,
+      experience: candidate.experience,
+      education: candidate.education,
+      bossActiveText: candidate.bossActiveText,
+      url: candidate.url,
+      tags: candidate.tags,
+      description: candidate.description,
+      qualityTags: candidate.qualityTags,
+      analysis: candidate.analysis,
+      observationId: candidate.observationId,
+      batchId: candidate.batchId,
+      contextComplete: candidate.contextComplete,
+      contextSource: candidate.contextSource
     }
   };
+}
+
+function hasCompleteJobContext(job) {
+  return String(job?.description || "").trim().length >= 120
+    && job?.analysis?.semanticStatus === "complete";
+}
+
+function validResolvedContext(value, canonicalThreadKey) {
+  return value && typeof value === "object"
+    && Number.isInteger(Number(value.cardId))
+    && Number(value.cardId) > 0
+    && Number(value.card?.id) === Number(value.cardId)
+    && value.threadKey === canonicalThreadKey
+    && hasCompleteJobContext(value.job);
+}
+
+function contextFailureReason(error) {
+  const code = errorCode(error);
+  return [
+    "MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE",
+    "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
+  ].includes(code)
+    ? code
+    : "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE";
+}
+
+function shouldStopAfterContextFailure(error) {
+  return CONTEXT_TERMINAL_CODES.has(errorCode(error));
 }
 
 function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {

@@ -2,9 +2,10 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { openDb } = require("../src/core/storage");
+const { openDb, createBatch, upsertJob } = require("../src/core/storage");
 const {
   ensureProgressCard,
+  listMessageDiscoveryCandidates,
   listProgressEvents,
   transitionProgressCard,
   recordDiscoveredMessageGroupClassification
@@ -42,6 +43,7 @@ async function main() {
   await uniqueCandidateAndPrivacySmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
+  await threadAndContextResolutionSmoke();
   await unmatchedRetentionSmoke();
   inboundLocalActionsSmoke();
   await messageSelectionSmoke();
@@ -261,6 +263,122 @@ async function identityStopsSmoke() {
   assert.strictEqual(modelCalls, 0, "identity failures must not call the model");
 }
 
+async function threadAndContextResolutionSmoke() {
+  const canonical = createFixture({ suffix: "canonical-thread", title: "Canonical Thread Engineer" });
+  const canonicalThreadKey = safeDigest(["conversation", "0"]);
+  db.prepare("UPDATE candidate_progress_cards SET thread_key = ? WHERE id = ?")
+    .run(canonicalThreadKey, canonical.card.id);
+  let classifiedJobId = 0;
+  let summary = await runBossMessageDiscovery({
+    db,
+    profileId: canonical.profileId,
+    reader: fakeReader([selectedConversation({ title: canonical.title, messageId: "123456789012401" })]),
+    classifyMessageGroup: async ({ job }) => {
+      classifiedJobId = job.id;
+      assert.strictEqual(job.description.length >= 120, true);
+      assert.strictEqual(job.analysis.semanticStatus, "complete");
+      return classification();
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed");
+  assert.strictEqual(classifiedJobId, canonical.jobId);
+
+  const legacy = createFixture({ suffix: "legacy-thread", title: "Legacy Thread Engineer" });
+  const legacyThreadKey = safeDigest(["boss", PRIVATE_RECRUITER, legacy.title]);
+  const legacyCanonicalKey = safeDigest(["conversation", "0"]);
+  db.prepare("UPDATE candidate_progress_cards SET thread_key = ? WHERE id = ?")
+    .run(legacyThreadKey, legacy.card.id);
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: legacy.profileId,
+    reader: fakeReader([selectedConversation({ title: legacy.title, messageId: "123456789012402" })]),
+    classifyMessageGroup: async () => classification(),
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed");
+  assert.strictEqual(
+    db.prepare("SELECT thread_key FROM candidate_progress_cards WHERE id = ?").get(legacy.card.id).thread_key,
+    legacyCanonicalKey,
+    "a successfully classified legacy card must migrate to the canonical conversation key"
+  );
+
+  const ambiguous = createFixture({ suffix: "stable-ambiguous-a", title: "Stable Ambiguous Engineer" });
+  const chosen = createFixture({
+    suffix: "stable-ambiguous-b",
+    title: "Stable Ambiguous Engineer",
+    profileId: ambiguous.profileId,
+    planId: ambiguous.planId
+  });
+  const chosenCandidate = listMessageDiscoveryCandidates(db, { profileId: ambiguous.profileId })
+    .find((item) => item.jobId === chosen.jobId);
+  let resolverCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: ambiguous.profileId,
+    reader: fakeReader([selectedConversation({ title: ambiguous.title, messageId: "123456789012403" })]),
+    resolveJobContext: async ({ target, candidate }) => {
+      resolverCalls += 1;
+      assert.strictEqual(candidate, null, "an ambiguous title must defer to the stable job target");
+      return resolvedContext(chosenCandidate, target.conversationKey);
+    },
+    classifyMessageGroup: async ({ job }) => {
+      assert.strictEqual(job.id, chosen.jobId);
+      return classification();
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed");
+  assert.strictEqual(resolverCalls, 1);
+
+  const failed = createFixture({ suffix: "context-failed", title: "Context Failed Engineer" });
+  let modelCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: failed.profileId,
+    reader: fakeReader([selectedConversation({ title: "Unknown Context Engineer", messageId: "123456789012404" })]),
+    resolveJobContext: async () => {
+      throw Object.assign(new Error("analysis incomplete"), { code: "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE" });
+    },
+    classifyMessageGroup: async () => {
+      modelCalls += 1;
+      return classification();
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assertStopped(summary, "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE");
+  assert.strictEqual(summary.unresolved, 1);
+  assert.strictEqual(modelCalls, 0);
+  assert.strictEqual(listPreviewStates(db, { profileId: failed.profileId }).length, 0);
+
+  const unsafeBackground = createFixture({ suffix: "context-not-background", title: "Unsafe Background Engineer" });
+  let unsafeResolverCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: unsafeBackground.profileId,
+    reader: fakeReader([
+      selectedConversation({ title: "Unknown Unsafe Background", messageId: "123456789012405" }),
+      selectedConversation({ title: unsafeBackground.title, messageId: "123456789012406" })
+    ]),
+    resolveJobContext: async () => {
+      unsafeResolverCalls += 1;
+      throw Object.assign(new Error("background proof failed"), { code: "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND" });
+    },
+    classifyMessageGroup: async () => {
+      throw new Error("unsafe background failure must stop before classification");
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assertStopped(summary, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND");
+  assert.strictEqual(summary.unresolved, 1);
+  assert.strictEqual(unsafeResolverCalls, 1, "background proof failure must stop the remaining queue immediately");
+}
+
 async function unmatchedRetentionSmoke() {
   const fixture = createFixture({ suffix: "unmatched-retention", title: "Retained Valid Engineer" });
   const unmatchedTitle = "Retained Missing Engineer";
@@ -411,11 +529,14 @@ function inboundLocalActionsSmoke() {
   assert.strictEqual(created.job.source, "boss");
   assert.strictEqual(created.job.sourceId, `inbound:${createdKey.slice(7)}`);
   assert.strictEqual(created.job.batchId, null);
+  assert.strictEqual(created.settled, false);
   assert.strictEqual(
     db.prepare("SELECT COUNT(*) AS count FROM job_observations WHERE job_id = ?").get(created.job.id).count,
     0
   );
   assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === createdKey), true);
+  assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
     .some((item) => item.conversationKey === createdKey), false);
 
   const linkKey = safeDigest(["conversation", "inbound-link"]);
@@ -449,6 +570,11 @@ function inboundLocalActionsSmoke() {
   assert.strictEqual(linked.job.id, fixture.jobId);
   assert.strictEqual(linked.card.threadKey, linkKey);
   assert.strictEqual(linked.card.stage, "needs_user_action");
+  assert.strictEqual(linked.settled, false);
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === linkKey), true);
+  assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === linkKey), false);
 
   const ignoredKey = safeDigest(["conversation", "inbound-ignore"]);
   const ignoredPreview = safeDigest(["preview", "inbound-ignore"]);
@@ -476,6 +602,9 @@ function inboundLocalActionsSmoke() {
     now: () => NOW
   });
   assert.strictEqual(ignored.action, "ignore");
+  assert.strictEqual(ignored.settled, true);
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId })
+    .some((item) => item.conversationKey === ignoredKey), false);
   assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
     .find((item) => item.conversationKey === ignoredKey).previewDigest, ignoredPreview);
 
@@ -1193,9 +1322,15 @@ async function abortAfterClassificationSmoke() {
 }
 
 async function pacingAndInterruptSmoke() {
-  const pacing = createFixture({ suffix: "pacing", title: "Pacing Engineer" });
-  const conversations = Array.from({ length: 11 }, (_, index) => selectedConversation({
-    title: pacing.title,
+  const pacing = createFixture({ suffix: "pacing", title: "Pacing Engineer 0" });
+  const pacingFixtures = [pacing, ...Array.from({ length: 10 }, (_, index) => createFixture({
+    suffix: `pacing-${index + 1}`,
+    title: `Pacing Engineer ${index + 1}`,
+    profileId: pacing.profileId,
+    planId: pacing.planId
+  }))];
+  const conversations = pacingFixtures.map((fixture, index) => selectedConversation({
+    title: fixture.title,
     messageId: String(100000000000000 + index)
   }));
   const waits = [];
@@ -1214,14 +1349,20 @@ async function pacingAndInterruptSmoke() {
     15000
   ]);
 
-  const mixed = createFixture({ suffix: "mixed-pacing", title: "Mixed Pacing Engineer" });
+  const mixed = createFixture({ suffix: "mixed-pacing", title: "Mixed Pacing Engineer 0" });
+  const mixedFixtures = [mixed, ...Array.from({ length: 9 }, (_, index) => createFixture({
+    suffix: `mixed-pacing-${index + 1}`,
+    title: `Mixed Pacing Engineer ${index + 1}`,
+    profileId: mixed.profileId,
+    planId: mixed.planId
+  }))];
   const duplicateId = "123456789012380";
   const mixedConversations = [
-    selectedConversation({ title: mixed.title, messageId: duplicateId }),
-    selectedConversation({ title: mixed.title, messageId: duplicateId }),
+    selectedConversation({ title: mixedFixtures[0].title, messageId: duplicateId }),
+    selectedConversation({ title: mixedFixtures[1].title, messageId: duplicateId }),
     { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" },
     ...Array.from({ length: 8 }, (_, index) => selectedConversation({
-      title: mixed.title,
+      title: mixedFixtures[index + 2].title,
       messageId: String(300000000000000 + index)
     }))
   ];
@@ -1238,8 +1379,8 @@ async function pacingAndInterruptSmoke() {
     sleepFn: async (ms) => mixedWaits.push(ms),
     randomFn: () => 0
   });
-  assert.strictEqual(mixedSummary.processed, 9);
-  assert.strictEqual(mixedModelCalls, 9);
+  assert.strictEqual(mixedSummary.processed, 10);
+  assert.strictEqual(mixedModelCalls, 10);
   assert.deepStrictEqual(mixedWaits, [
     1500, 1500, 1500, 1500, 1500,
     1500, 1500, 1500, 1500, 1500,
@@ -1267,7 +1408,13 @@ async function pacingAndInterruptSmoke() {
     (error) => error === abortReason
   );
 
-  const leaseFixture = createFixture({ suffix: "lease", title: "Lease Engineer" });
+  const leaseFixture = createFixture({ suffix: "lease", title: "Lease Engineer 0" });
+  const leaseFixtures = [leaseFixture, ...Array.from({ length: 10 }, (_, index) => createFixture({
+    suffix: `lease-${index + 1}`,
+    title: `Lease Engineer ${index + 1}`,
+    profileId: leaseFixture.profileId,
+    planId: leaseFixture.planId
+  }))];
   const leaseController = new AbortController();
   const leaseReason = Object.assign(new Error("lease lost"), { code: "MESSAGE_DISCOVERY_LEASE_LOST" });
   let randomWaits = 0;
@@ -1275,8 +1422,8 @@ async function pacingAndInterruptSmoke() {
     () => runBossMessageDiscovery({
       db,
       profileId: leaseFixture.profileId,
-      reader: fakeReader(Array.from({ length: 11 }, (_, index) => selectedConversation({
-        title: leaseFixture.title,
+      reader: fakeReader(leaseFixtures.map((fixture, index) => selectedConversation({
+        title: fixture.title,
         messageId: String(200000000000000 + index)
       }))),
       classifyMessageGroup: async () => classification(),
@@ -1332,10 +1479,27 @@ function createFixture({
       profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
     ) VALUES (?, ?, '{}', NULL, 1, ?, ?)`).run(profileId, `Plan ${suffix}`, NOW, NOW).lastInsertRowid);
   }
-  const jobId = Number(db.prepare(`INSERT INTO jobs(
-    source, source_id, title, company, location, salary, first_seen_at, last_seen_at
-  ) VALUES ('boss', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(`job-${suffix}`, title, company, city, salary, NOW, NOW).lastInsertRowid);
+  const batchId = createBatch(db, "boss", "message-discovery-fixture", "complete message discovery context", {
+    profileId,
+    searchPlanId: planId
+  });
+  const jobId = upsertJob(db, {
+    source: "boss",
+    sourceId: `job-${suffix}`,
+    keyword: "message-discovery-fixture",
+    title,
+    company,
+    location: city,
+    salary,
+    experience: "3-5年",
+    education: "本科",
+    bossActiveText: "今日活跃",
+    url: `https://www.zhipin.com/job_detail/job-${suffix}.html`,
+    tags: ["Java"],
+    description: "Deliver reliable backend systems with clear ownership, production diagnostics, testing, observability, collaboration, and measurable engineering outcomes. ".repeat(2),
+    qualityTags: [],
+    analysis: { semanticStatus: "complete", recommendation: "primary", marker: suffix }
+  }, batchId);
   const card = ensureProgressCard(db, { profileId, planId, jobId, source: "boss", now: NOW });
   return { profileId, planId, jobId, card, title, salary, city, company };
 }
@@ -1434,6 +1598,34 @@ function classification({
     missingFact: null,
     progressUpdate: { stage, nextAction: "Review before manual send", summary: "sanitized" },
     messages
+  };
+}
+
+function resolvedContext(candidate, threadKey) {
+  return {
+    cardId: candidate.cardId,
+    card: {
+      id: candidate.cardId,
+      profileId: candidate.profileId,
+      planId: candidate.planId,
+      jobId: candidate.jobId,
+      source: candidate.source,
+      stage: candidate.stage,
+      threadKey: candidate.threadKey
+    },
+    job: {
+      id: candidate.jobId,
+      source: candidate.source,
+      sourceId: candidate.sourceId,
+      title: candidate.title,
+      company: candidate.company,
+      salary: candidate.salary,
+      location: candidate.city,
+      description: candidate.description,
+      analysis: candidate.analysis
+    },
+    threadKey,
+    contextSource: "local_cache"
   };
 }
 

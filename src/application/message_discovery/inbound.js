@@ -51,7 +51,7 @@ function resolveInboundOpportunity({ db, input = {}, now = () => new Date().toIS
       db.prepare(`INSERT INTO events(job_id, event_type, payload_json, created_at)
         VALUES (NULL, 'message_inbound_ignored', ?, ?)`)
         .run(JSON.stringify({ profileId, conversationKey, previewDigest }), observedAt);
-      return { profileId, action, unresolved: current };
+      return { profileId, action, unresolved: current, settled: true };
     }
 
     const profile = getCandidateProfile(db, profileId);
@@ -99,8 +99,7 @@ function resolveInboundOpportunity({ db, input = {}, now = () => new Date().toIS
       },
       occurredAt: observedAt
     });
-    settleInbound(db, { profileId, current, conversationKey, previewDigest, observedAt });
-    return { profileId, action, job, card };
+    return { profileId, action, job, card, unresolved: current, settled: false };
   });
 }
 
