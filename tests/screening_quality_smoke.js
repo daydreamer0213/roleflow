@@ -424,9 +424,15 @@ assert.notStrictEqual(decisionState(strictHighSalary), "blocked", "薪资高于�
 assert(!strictHighSalary.qualityTags.includes("salary_out_of_range"));
 assert(strictHighSalary.qualityTags.includes("salary_target_high"), "高于目标上限只保留 salary_target_high 软标记");
 assert.strictEqual(decisionBucket({ ...strictHighSalary, analysis: {} }), "analysis_pending", "未完成语义分析时高薪资软标签不得伪装成产品档位");
-const strictLowSalary = scoreJob(job({ experience: "0-3年", salary: "6-8K" }), scopedConfigs);
-assert.strictEqual(decisionState(strictLowSalary), "blocked", "低于期望下限仍是严格硬边界");
-assert(strictLowSalary.qualityTags.includes("salary_out_of_range"));
+for (const salary of ["5-6K", "5-7K", "6-7K", "6-8K", "7-8K", "8-8K"]) {
+  const strictLowSalary = scoreJob(job({ experience: "0-3年", salary }), scopedConfigs);
+  assert.strictEqual(decisionState(strictLowSalary), "blocked", `${salary} 低于期望下限时必须阻断`);
+  assert(strictLowSalary.qualityTags.includes("salary_out_of_range"), `${salary} 必须保留低薪硬边界标签`);
+  assert(!["primary", "apply", "caution"].includes(decisionBucket({
+    ...strictLowSalary,
+    analysis: completeApplyAnalysis()
+  })), `${salary} 即使语义分析给出 apply 也不得进入候选清单`);
+}
 
 const finalSalaryConfigs = {
   ...scopedConfigs,
