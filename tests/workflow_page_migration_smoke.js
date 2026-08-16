@@ -344,7 +344,25 @@ function assertEvaluatorStrictGate() {
 function validSnapshot(status) {
   return {
     workflow: { status, controlState: "", progressRevision: status === "interrupted" ? 6 : 5, lastActivityAt: new Date().toISOString(), errorCode: "" },
-    progress: { stage: "阶段", stageIndex: 1, stageCount: 3, scanWait: null, eta: { status: "estimating" }, scanTargets: { total: 5, completed: 2, pending: 3, partial: 0, failed: 0 }, details: { collected: 12, read: 5, pending: 7 }, remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取", analysis: { total: 12, succeeded: 3, running: 0, retryPending: 0, detailRequired: 0, failed: 0, skipped: 0, stopped: 0, pending: 9, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0 } },
+    progress: {
+      stage: "采集岗位与完整 JD",
+      stageIndex: 2,
+      stageCount: 4,
+      phaseKey: "acquisition",
+      scan: null,
+      scanWait: null,
+      eta: { status: "estimating" },
+      scanTargets: { total: 5, processed: 2, completed: 2, pending: 3, partial: 0, failed: 0 },
+      details: { collected: 12, required: 12, read: 5, pending: 7, notRequired: 0, growing: false },
+      tracks: {
+        scan: { value: 2, max: 5, indeterminate: false },
+        jd: { value: 5, max: 12, indeterminate: false, growing: false },
+        analysis: { value: 3, max: 12, indeterminate: false },
+        communication: { value: 0, max: 0, indeterminate: false }
+      },
+      remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取",
+      analysis: { total: 12, terminal: 3, succeeded: 3, running: 0, retryPending: 0, detailRequired: 0, failed: 0, skipped: 0, stopped: 0, pending: 9, circuitTimeoutJobs: 0, timeoutPauseThreshold: 10, lifetimeTimeoutJobs: 0, tasks: [] }
+    },
     controls: { canPause: status === "scanning", canResume: status === "paused", canStop: status !== "interrupted", stopConsumesRunSlot: true },
     recentActivity: []
   };

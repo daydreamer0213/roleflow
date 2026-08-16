@@ -1802,7 +1802,7 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(cooldownPrimary, /data-cooldown-retry-time/);
   assert.match(cooldownPrimary, /data-cooldown-countdown[^>]*aria-hidden="true"/);
   await assertWorkflowCooldownClient();
-  await assertWorkflowSummaryAndTimerLifecycleClient();
+  await assertWorkflowLocalProgressClient();
 
   transitionWorkflowRun(database, {
     id: fixture.workflowId,
@@ -1909,133 +1909,209 @@ async function testPerJobWorkflowProgressPanel(baseUrl, database, saved) {
   );
 }
 
-async function assertWorkflowSummaryAndTimerLifecycleClient() {
+async function assertWorkflowLocalProgressClient() {
   const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "workflow.js"), "utf8");
-  let clock = Date.parse("2099-02-01T00:09:57.000Z");
   let timerId = 0;
   let reloads = 0;
-  const timers = new Map();
+  let fetches = 0;
+  let concurrentFetches = 0;
+  let maxConcurrentFetches = 0;
+  const timeouts = new Map();
+  const intervals = new Map();
   const documentListeners = new Map();
   const windowListeners = new Map();
-  const textNode = (textContent) => ({ textContent });
-  const overviewProgress = textNode("stale progress");
-  const overviewAcquisition = textNode("stale acquisition");
-  const overviewJd = textNode("stale jd");
-  const overviewRemaining = textNode("99");
-  const overviewEta = textNode("stale eta");
-  const blockerStable = { textContent: "没有阻塞", hidden: false };
-  const cooldown = { dataset: {}, hidden: true };
-  const cooldownReason = textNode("");
-  const cooldownRetry = { textContent: "", dateTime: "" };
-  const countdown = { dataset: {}, textContent: "" };
-  const panel = { dataset: {} };
+  const element = (textContent = "") => ({
+    textContent,
+    hidden: false,
+    disabled: false,
+    dataset: {},
+    attributes: new Map(),
+    setAttribute(name, value) { this.attributes.set(name, String(value)); },
+    removeAttribute(name) { this.attributes.delete(name); },
+    hasAttribute(name) { return this.attributes.has(name); },
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+  });
+  const scanFraction = element("0 / 5");
+  const jdFraction = element("0 / 7");
+  const analysisFraction = element("0 / 6");
+  const communicationFraction = element("0 / 0");
+  const scanMeter = element();
+  const jdMeter = element();
+  const analysisMeter = element();
+  const communicationMeter = element();
+  const taskStatus = element("分析中");
+  const taskRow = element();
+  taskRow.setAttribute("aria-current", "step");
+  taskRow.querySelector = (selector) => selector === "[data-analysis-task-status]" ? taskStatus : null;
+  const currentActivity = element("旧动作");
+  const errorNode = element("无法读取任务状态");
+  errorNode.hidden = true;
+  const controls = [element(), element()];
+  const panel = element();
+  const nodes = new Map([
+    ['[data-workflow-panel]', panel],
+    ['[data-track-fraction="scan"]', scanFraction],
+    ['[data-track-fraction="jd"]', jdFraction],
+    ['[data-track-fraction="analysis"]', analysisFraction],
+    ['[data-track-fraction="communication"]', communicationFraction],
+    ['[data-track-meter="scan"]', scanMeter],
+    ['[data-track-meter="jd"]', jdMeter],
+    ['[data-track-meter="analysis"]', analysisMeter],
+    ['[data-track-meter="communication"]', communicationMeter],
+    ['[data-current-activity]', currentActivity],
+    ['[data-workflow-error]', errorNode],
+    ['[data-analysis-task-id="11"]', taskRow]
+  ]);
   const page = {
     dataset: {
-      pollingKind: "progress", workflowRunId: "summary-fixture", pollingInterval: "2500",
+      pollingKind: "progress",
+      workflowRunId: "local-progress-fixture",
+      pollingInterval: "2500",
       terminalStates: "review_required,interrupted,completed,failed,stopped",
-      workflowStatus: "scanning", workflowControlState: ""
+      workflowStatus: "analyzing",
+      workflowControlState: "none",
+      workflowPhaseKey: "analysis"
     },
-    querySelector(selector) {
-      return {
-        "[data-workflow-panel]": panel,
-        "[data-overview-progress]": overviewProgress,
-        "[data-overview-acquisition]": overviewAcquisition,
-        "[data-overview-jd]": overviewJd,
-        "[data-overview-remaining]": overviewRemaining,
-        "[data-overview-eta]": overviewEta,
-        "[data-overview-blocker-stable]": blockerStable,
-        "[data-cooldown]": cooldown,
-        "[data-cooldown-reason]": cooldownReason,
-        "[data-cooldown-retry-time]": cooldownRetry,
-        "[data-cooldown-countdown]": countdown
-      }[selector] || null;
-    },
-    querySelectorAll() { return []; }
+    querySelector(selector) { return nodes.get(selector) || null; },
+    querySelectorAll(selector) {
+      if (selector === "[data-workflow-control]") return controls;
+      return [];
+    }
   };
-  const sameStatus = {
-    workflow: { status: "scanning", controlState: "", progressRevision: 2, lastActivityAt: "2099-02-01T00:09:57.000Z" },
+  const snapshot = ({ phaseKey = "analysis", taskStatusValue = "succeeded" } = {}) => ({
+    workflow: {
+      status: phaseKey === "review" ? "review_required" : "analyzing",
+      controlState: "none",
+      progressRevision: 2,
+      lastActivityAt: new Date().toISOString()
+    },
     progress: {
-      stage: "分析岗位", stageIndex: 3, stageCount: 4,
-      scanWait: { action: "detail_open", retryAt: "2099-02-01T00:10:00.000Z" },
-      eta: { status: "available", minSeconds: 60, maxSeconds: 120, sampleSize: 3 },
-      scanTargets: { total: 5, completed: 1, pending: 4 },
-      details: { collected: 12, read: 5, pending: 7 },
-      remainingWorkLabel: "还需完成 4 个搜索目标；7 个岗位详情待读取",
-      analysis: { pending: 2, running: 1, retryPending: 1 }
+      phaseKey,
+      stage: phaseKey === "review" ? "确认清单与执行沟通" : "分析岗位",
+      stageIndex: phaseKey === "review" ? 4 : 3,
+      stageCount: 4,
+      scan: {
+        activity: "reading_detail",
+        targetKey: "target-2",
+        targetLabel: "广州 · RAG",
+        targetPosition: 2,
+        targetTotal: 5,
+        targetDiscovered: 7,
+        detailPosition: 4,
+        detailTotal: 7
+      },
+      scanWait: null,
+      eta: { status: "estimating" },
+      scanTargets: { total: 5, processed: 2, completed: 1, partial: 1, failed: 0, pending: 3 },
+      details: { collected: 9, required: 7, read: 4, pending: 3, notRequired: 2, growing: false },
+      tracks: {
+        scan: { value: 2, max: 5, indeterminate: false },
+        jd: { value: 4, max: 7, indeterminate: false, growing: false },
+        analysis: { value: 3, max: 6, indeterminate: false },
+        communication: { value: 0, max: 0, indeterminate: false }
+      },
+      remainingWorkLabel: "还有 3 个岗位待分析；0 个岗位待补详情",
+      analysis: {
+        total: 6, terminal: 3, pending: 2, running: 0, retryPending: 1,
+        succeeded: 2, skipped: 0, failed: 1, stopped: 0, detailRequired: 0,
+        tasks: [{ id: 11, position: 1, status: taskStatusValue, lastErrorCode: null }]
+      }
     },
-    controls: { canPause: true, canResume: false, canStop: true },
+    controls: { canPause: true, canResume: false, canStop: true, stopConsumesRunSlot: true },
     recentActivity: []
-  };
-  const changedStatus = {
-    ...sameStatus,
-    workflow: { ...sameStatus.workflow, status: "paused", progressRevision: 3 }
-  };
-  const responses = [sameStatus, changedStatus];
-  class ClockDate extends Date {
-    constructor(value) { super(value === undefined ? clock : value); }
-    static now() { return clock; }
-  }
+  });
+  const responses = [
+    { ok: true, json: async () => snapshot() },
+    { ok: true, json: async () => snapshot() },
+    { ok: false, json: async () => ({}) },
+    { ok: true, json: async () => snapshot({ phaseKey: "review" }) }
+  ];
   const document = {
     hidden: false,
     querySelector(selector) { return selector === "[data-workflow-page]" ? page : null; },
     getElementById() { return null; },
     addEventListener(event, callback) { documentListeners.set(event, callback); }
   };
-  const window = {
-    addEventListener(event, callback) { windowListeners.set(event, callback); }
-  };
   const context = vm.createContext({
-    document, window, Date: ClockDate,
-    fetch: async () => ({ ok: true, json: async () => responses.shift() || changedStatus }),
-    setInterval(callback, interval) { assert.strictEqual(interval, 1000); timerId += 1; timers.set(timerId, callback); return timerId; },
-    clearInterval(id) { timers.delete(id); },
+    document,
+    window: { addEventListener(event, callback) { windowListeners.set(event, callback); } },
+    Date,
+    fetch: async () => {
+      fetches += 1;
+      concurrentFetches += 1;
+      maxConcurrentFetches = Math.max(maxConcurrentFetches, concurrentFetches);
+      const response = responses.shift() || { ok: true, json: async () => snapshot({ phaseKey: "review" }) };
+      await Promise.resolve();
+      concurrentFetches -= 1;
+      return response;
+    },
+    setTimeout(callback, delay) { timerId += 1; timeouts.set(timerId, { callback, delay }); return timerId; },
+    clearTimeout(id) { timeouts.delete(id); },
+    setInterval(callback, delay) { timerId += 1; intervals.set(timerId, { callback, delay }); return timerId; },
+    clearInterval(id) { intervals.delete(id); },
     encodeURIComponent,
     location: { reload() { reloads += 1; } }
   });
-  new vm.Script(script).runInContext(context);
-  await flushPromises();
+  const fireTimeout = async () => {
+    const [id, timer] = timeouts.entries().next().value || [];
+    assert(timer, "expected one scheduled polling request");
+    timeouts.delete(id);
+    await timer.callback();
+    await flushPromises();
+  };
 
-  assert.strictEqual(overviewProgress.textContent, "第 3 / 4 阶段", "same-status polling must refresh overview progress");
-  assert.strictEqual(overviewAcquisition.textContent, "搜索目标 1 / 5 · 已获取 12 个岗位");
-  assert.strictEqual(overviewJd.textContent, "已读取 5 / 12 · 待补 7");
-  assert.strictEqual(overviewRemaining.textContent, "还需完成 4 个搜索目标；7 个岗位详情待读取", "same-status polling must reuse the server's stage-specific remaining work");
-  assert.match(overviewEta.textContent, /安全冷却至/, "same-status polling must refresh overview ETA from retryAt");
-  assert.strictEqual(cooldownReason.textContent, "正在读取岗位详情");
-  assert.strictEqual(cooldown.hidden, false);
-  assert.strictEqual(blockerStable.hidden, true);
-  assert.strictEqual(reloads, 0, "a progress revision alone must not reload the page");
-  assert.strictEqual(timers.size, 1, "workflow client must start one timer");
+  new vm.Script(script).runInContext(context);
+  assert.strictEqual(timeouts.size, 1);
+  await fireTimeout();
+  assert.strictEqual(scanFraction.textContent, "2 / 5");
+  assert.strictEqual(jdFraction.textContent, "4 / 7");
+  assert.strictEqual(analysisFraction.textContent, "3 / 6");
+  assert.strictEqual(taskStatus.textContent, "已完成");
+  assert.strictEqual(taskRow.hasAttribute("aria-current"), false);
+  assert.strictEqual(reloads, 0);
+  assert.strictEqual(fetches, 1);
+  assert.strictEqual(timeouts.size, 1);
 
   document.hidden = true;
   documentListeners.get("visibilitychange")();
-  assert.strictEqual(timers.size, 0, "hidden documents must stop the timer");
+  documentListeners.get("visibilitychange")();
+  assert.strictEqual(timeouts.size, 0);
+  const fetchesWhileHidden = fetches;
   document.hidden = false;
   documentListeners.get("visibilitychange")();
   documentListeners.get("visibilitychange")();
-  assert.strictEqual(timers.size, 1, "visible documents must resume with at most one timer");
-  windowListeners.get("pagehide")();
-  assert.strictEqual(timers.size, 0, "pagehide must stop the timer");
-  windowListeners.get("pageshow")();
-  windowListeners.get("pageshow")();
-  assert.strictEqual(timers.size, 1, "pageshow must resume with at most one timer");
+  assert.strictEqual(timeouts.size, 1);
+  await fireTimeout();
+  assert.strictEqual(fetches - fetchesWhileHidden, 1);
+  assert.strictEqual(maxConcurrentFetches, 1);
+  assert.strictEqual(timeouts.size, 1);
 
-  clock += 3000;
-  await [...timers.values()][0]();
-  await flushPromises();
-  assert.strictEqual(reloads, 1, "workflow status changes must reload once for server-rendered phase and action markup");
+  await fireTimeout();
+  assert.strictEqual(errorNode.hidden, false);
+  assert.strictEqual(scanFraction.textContent, "2 / 5");
+  assert(controls.every((control) => control.disabled));
+  assert.strictEqual(timeouts.size, 1);
+
+  await fireTimeout();
+  assert.strictEqual(reloads, 1);
+  assert.strictEqual(timeouts.size, 0);
+  windowListeners.get("pageshow")();
+  assert.strictEqual(reloads, 1);
+  assert.strictEqual(timeouts.size, 0);
 }
 
 async function assertWorkflowCooldownClient() {
   const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "workflow.js"), "utf8");
   let clock = Date.parse("2099-02-01T00:09:57.000Z");
-  let intervalCallback = null;
-  let intervalCount = 0;
+  let timerId = 0;
   let fetches = 0;
+  const timeouts = new Map();
+  const intervals = new Map();
   const countdown = { dataset: { retryAt: "2099-02-01T00:10:00.000Z" }, textContent: "" };
   const cooldown = { dataset: { retryAt: "2099-02-01T00:10:00.000Z" }, hidden: false };
   const panel = { dataset: {} };
   const page = {
-    dataset: { pollingKind: "progress", workflowRunId: "cooldown-fixture", pollingInterval: "2500", terminalStates: "", workflowStatus: "scanning", workflowControlState: "" },
+    dataset: { pollingKind: "progress", workflowRunId: "cooldown-fixture", pollingInterval: "2500", terminalStates: "", workflowStatus: "scanning", workflowControlState: "", workflowPhaseKey: "acquisition" },
     querySelector(selector) {
       return {
         "[data-workflow-panel]": panel,
@@ -2060,27 +2136,57 @@ async function assertWorkflowCooldownClient() {
     window: { addEventListener() {} },
     Date: ClockDate,
     fetch: async () => { fetches += 1; return { ok: true, json: async () => validWorkflowSnapshot() }; },
-    setInterval(callback, interval) { intervalCallback = callback; intervalCount += 1; assert.strictEqual(interval, 1000, "cooldown must reuse one one-second page tick"); return 1; },
-    clearInterval() {},
+    setTimeout(callback, delay) { timerId += 1; timeouts.set(timerId, { callback, delay }); return timerId; },
+    clearTimeout(id) { timeouts.delete(id); },
+    setInterval(callback, interval) { timerId += 1; intervals.set(timerId, { callback, interval }); return timerId; },
+    clearInterval(id) { intervals.delete(id); },
     encodeURIComponent,
     location: { reload() {} }
   });
   new vm.Script(script).runInContext(context);
-  assert.strictEqual(intervalCount, 1, "workflow page must register one interval");
+  assert.strictEqual(intervals.size, 1, "cooldown must use one local one-second interval");
+  assert.strictEqual([...intervals.values()][0].interval, 1000);
+  assert.strictEqual(timeouts.size, 1, "progress polling must use one separate timeout");
+  assert.strictEqual([...timeouts.values()][0].delay, 0, "the first visible status read should start immediately");
   assert.strictEqual(countdown.textContent, "3 秒", "countdown must be calculated from the server retry timestamp");
   clock += 1000;
-  await intervalCallback();
+  [...intervals.values()][0].callback();
   assert.strictEqual(countdown.textContent, "2 秒", "the local tick must progress without a new server timestamp");
   clock += 3000;
-  await intervalCallback();
+  [...intervals.values()][0].callback();
   assert.strictEqual(countdown.textContent, "0 秒", "a completed cooldown must wait for polling rather than trigger an action");
-  assert(fetches >= 1 && fetches <= 2, "cooldown ticks must preserve the existing polling cadence");
+  assert.strictEqual(fetches, 0, "local cooldown ticks must not trigger HTTP requests");
+  const [timeoutId, timeout] = timeouts.entries().next().value;
+  timeouts.delete(timeoutId);
+  await timeout.callback();
+  await flushPromises();
+  assert.strictEqual(fetches, 1, "the scheduled progress poll must remain independent from the countdown");
+  assert.strictEqual(timeouts.size, 1);
+  assert.strictEqual([...timeouts.values()][0].delay, 2500);
 }
 
 function validWorkflowSnapshot() {
   return {
     workflow: { status: "scanning", controlState: "", progressRevision: 1, lastActivityAt: "2099-02-01T00:09:57.000Z" },
-    progress: { scanWait: null, eta: { status: "estimating" }, analysis: {} },
+    progress: {
+      phaseKey: "acquisition",
+      stage: "扫描岗位并读取详情",
+      stageIndex: 2,
+      stageCount: 4,
+      scan: null,
+      scanWait: null,
+      eta: { status: "estimating" },
+      scanTargets: { total: 5, processed: 2, completed: 2, pending: 3, partial: 0, failed: 0 },
+      details: { collected: 12, required: 12, read: 5, pending: 7, notRequired: 0, growing: false },
+      tracks: {
+        scan: { value: 2, max: 5, indeterminate: false },
+        jd: { value: 5, max: 12, indeterminate: false, growing: false },
+        analysis: { value: 0, max: 12, indeterminate: false },
+        communication: { value: 0, max: 0, indeterminate: false }
+      },
+      remainingWorkLabel: "还需完成 3 个搜索目标；7 个岗位详情待读取",
+      analysis: { total: 12, terminal: 0, pending: 12, running: 0, retryPending: 0, succeeded: 0, skipped: 0, failed: 0, stopped: 0, detailRequired: 0, tasks: [] }
+    },
     controls: { canPause: true, canResume: false, canStop: true },
     recentActivity: []
   };
