@@ -32,6 +32,7 @@ const {
   createMessageDiscoveryController,
   createMessageDiscoveryDetailSafety
 } = require("../src/dashboard/message_discovery_controller");
+const { messageDiscoveryReasonText } = require("../src/dashboard/message_discovery_view");
 const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
 const { communicationRuntimeBlock } = require("../src/core/communication_runtime");
 
@@ -124,6 +125,15 @@ async function main() {
       createReader(input) {
         discoveryReaderBrowser = input.browser;
         return reader;
+      },
+      createDetailSafety() {
+        return { beforeOpen: async () => {}, afterIssuedAttempt: async () => {} };
+      },
+      createDetailReader() {
+        return { readSelectedJobDetail: async () => ({}) };
+      },
+      createJobContextResolver() {
+        return async () => ({});
       },
       async runDiscovery(context) {
         const scenario = scenarios.shift();
@@ -303,6 +313,7 @@ async function main() {
   assert.strictEqual(cleanupTimers.latest().delay, 30 * 60 * 1000);
   assert.deepStrictEqual(Object.keys(status).sort(), [
     "expiresAt",
+    "phase",
     "processed",
     "profileId",
     "queued",
@@ -311,7 +322,8 @@ async function main() {
     "startedAt",
     "status",
     "unresolved",
-    "updatedAt"
+    "updatedAt",
+    "waitUntil"
   ]);
   assert.deepStrictEqual(Object.keys(status.results[0]).sort(), [
     "cardId",
@@ -354,11 +366,51 @@ async function main() {
   const cappedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(cappedPage.body.includes("运行额度草稿一"));
   assert(cappedPage.body.includes("运行额度草稿二"));
-  assert(!cappedPage.body.includes("不应返回的第三条"), "all results in one run must share a two-message budget");
+  assert(cappedPage.body.includes("岗位一草稿二"));
+  assert(cappedPage.body.includes("岗位二草稿二"));
+  assert(!cappedPage.body.includes("岗位一草稿三"), "each job must be capped at two drafts");
+  assert(!cappedPage.body.includes("岗位二草稿三"), "each job must be capped at two drafts");
+  assertNoDraftMessagesInJson(status);
   const staleTimerId = cleanupTimers.latest().id;
   await waitForLeaseRelease();
 
-  const secondPending = controlledPendingRun();
+  scenarios.push(jobUnderstandingCompletedRun(fixture));
+  await startAndWait(base, fixture.profileId, "completed");
+  status = await getStatus(base, fixture.profileId);
+  assertNoDraftMessagesInJson(status);
+  const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(understoodPage.body.includes("AI 应用开发工程师"));
+  assert(understoodPage.body.includes("岗位理解"));
+  assert(understoodPage.body.includes("把企业知识转成可追溯的智能问答能力"));
+  assert(understoodPage.body.includes("匹配依据"));
+  assert(understoodPage.body.includes("候选人有 RAG 项目经验"));
+  assert(understoodPage.body.includes("硬性阻断"));
+  assert(understoodPage.body.includes("必须长期驻场"));
+  assert(understoodPage.body.includes("建议核实"));
+  assert(understoodPage.body.includes("面试安排需人工处理"));
+  assert(understoodPage.body.includes("缺少事实，暂不生成草稿"));
+  assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 1);
+  assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 2);
+  assert(!understoodPage.body.includes("PRIVATE_RAW_ANALYSIS"));
+  assert(!understoodPage.body.includes("PRIVATE_NAVIGATION_URL"));
+  assertNoPrivateData(understoodPage.body);
+  await waitForLeaseRelease();
+
+  for (const code of [
+    "BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE",
+    "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND",
+    "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH",
+    "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED",
+    "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
+  ]) {
+    const safeMessage = messageDiscoveryReasonText(code);
+    assert(safeMessage && !safeMessage.includes("诊断"), `${code} must have a specific safe recovery message`);
+  }
+
+  const secondPending = controlledPendingRun({
+    phase: "cooldown",
+    waitUntil: new Date(Date.now() + 8_000).toISOString()
+  });
   scenarios.push(secondPending.run);
   response = await postJson(base, "/api/message-discovery", {
     action: "start",
@@ -368,7 +420,11 @@ async function main() {
   await secondPending.started;
   status = await getStatus(base, fixture.profileId);
   assert.strictEqual(status.status, "running");
+  assert.strictEqual(status.phase, "cooldown");
+  assert(status.waitUntil);
   assert.deepStrictEqual(status.results, [], "a new run must clear old drafts");
+  const cooldownPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(cooldownPage.body.includes("正在按安全节奏冷却，约"));
   assert.strictEqual(cleanupTimers.activeCount(), 0, "a new run must clear the old timer");
   cleanupTimers.fireEvenIfCleared(staleTimerId);
   status = await getStatus(base, fixture.profileId);
@@ -730,8 +786,17 @@ async function inboundResolutionDashboardSmoke({ base, browserCreations, scenari
 
 async function controllerBrowserAuthoritySmoke() {
   const browserSentinel = { kind: "controller-browser-sentinel" };
+  const readerSentinel = { kind: "controller-reader-sentinel" };
+  const detailReaderSentinel = { kind: "controller-detail-reader-sentinel" };
+  const resolverSentinel = async () => ({ kind: "controller-context-sentinel" });
+  const beforeOpen = async () => {};
+  const afterIssuedAttempt = async () => {};
   let factoryCalls = 0;
   let readerBrowser = null;
+  let detailSafetyInput = null;
+  let detailReaderInput = null;
+  let contextResolverInput = null;
+  let runResolver = null;
   let cleanupBrowser = null;
   const controllerDb = {
     prepare() {
@@ -746,16 +811,31 @@ async function controllerBrowserAuthoritySmoke() {
     },
     createReader: ({ browser }) => {
       readerBrowser = browser;
-      return {};
+      return readerSentinel;
+    },
+    createDetailSafety: (input) => {
+      detailSafetyInput = input;
+      return { beforeOpen, afterIssuedAttempt };
+    },
+    createDetailReader: (input) => {
+      detailReaderInput = input;
+      return detailReaderSentinel;
+    },
+    createJobContextResolver: (input) => {
+      contextResolverInput = input;
+      return resolverSentinel;
     },
     createAnalyzer: () => ({}),
-    runDiscovery: async () => ({
-      status: "completed",
-      queued: 0,
-      processed: 0,
-      reasonCode: "",
-      results: []
-    }),
+    runDiscovery: async (input) => {
+      runResolver = input.resolveJobContext;
+      return {
+        status: "completed",
+        queued: 0,
+        processed: 0,
+        reasonCode: "",
+        results: []
+      };
+    },
     modelReady: () => true,
     assertRuntimeAvailable: () => {},
     acquireLease: () => {},
@@ -769,6 +849,15 @@ async function controllerBrowserAuthoritySmoke() {
   await controller.close();
   assert.strictEqual(factoryCalls, 1, "controller must call the supplied browser factory exactly once");
   assert.strictEqual(readerBrowser, browserSentinel, "controller must pass the factory sentinel to the reader");
+  assert.strictEqual(detailSafetyInput.profileId, 1);
+  assert.strictEqual(detailSafetyInput.browser, undefined, "detail pacing must not receive browser authority");
+  assert.strictEqual(detailReaderInput.browser, browserSentinel);
+  assert.strictEqual(detailReaderInput.messageReader, readerSentinel);
+  assert.strictEqual(detailReaderInput.beforeOpen, beforeOpen);
+  assert.strictEqual(detailReaderInput.afterIssuedAttempt, afterIssuedAttempt);
+  assert.strictEqual(contextResolverInput.messageReader, readerSentinel);
+  assert.strictEqual(contextResolverInput.detailReader, detailReaderSentinel);
+  assert.strictEqual(runResolver, resolverSentinel);
   assert.strictEqual(cleanupBrowser, browserSentinel, "controller cleanup must receive the owned adapter");
 }
 
@@ -976,13 +1065,13 @@ function createFixture() {
   return { profileId: saved.profileId, planId: saved.planId, jobId, card };
 }
 
-function controlledPendingRun() {
+function controlledPendingRun({ phase = "", waitUntil = "" } = {}) {
   let markStarted;
   const started = new Promise((resolve) => { markStarted = resolve; });
   return {
     started,
     async run({ reader, signal, onStatus }) {
-      onStatus({ status: "running", queued: 2, processed: 0, reasonCode: "", results: [] });
+      onStatus({ status: "running", queued: 2, processed: 0, reasonCode: "", phase, waitUntil, results: [] });
       const { rows } = await reader.scanConversationRows();
       await reader.openQueuedConversation({ ...rows[0], operation: "unread" }, signal);
       markStarted();
@@ -1095,14 +1184,73 @@ function multiResultCompletedRun(fixture) {
         stage: "reply_ready",
         messageCategory: "qualification",
         missingFactKey: "",
-        messages: ["运行额度草稿一"]
+        messages: ["运行额度草稿一", "岗位一草稿二", "岗位一草稿三"]
       }, {
         cardId: fixture.card.id + 1,
         jobId: fixture.jobId + 1,
         stage: "reply_ready",
         messageCategory: "qualification",
         missingFactKey: "",
-        messages: ["运行额度草稿二", "不应返回的第三条"]
+        messages: ["运行额度草稿二", "岗位二草稿二", "岗位二草稿三"]
+      }]
+    };
+    onStatus(summary);
+    return summary;
+  };
+}
+
+function jobUnderstandingCompletedRun(fixture) {
+  return async ({ onStatus }) => {
+    const job = {
+      title: "AI 应用开发工程师",
+      company: "示例科技",
+      roleSummary: "把企业知识转成可追溯的智能问答能力",
+      fitReasons: ["候选人有 RAG 项目经验"],
+      hardBlockers: ["必须长期驻场"],
+      softGaps: ["行业经验需要进一步确认"],
+      questionsToVerify: ["驻场频率是否可以协商"]
+    };
+    const summary = {
+      status: "completed",
+      queued: 3,
+      processed: 3,
+      unresolved: 0,
+      reasonCode: "",
+      results: [{
+        cardId: fixture.card.id,
+        jobId: fixture.jobId,
+        stage: "reply_ready",
+        messageCategory: "qualification",
+        missingFactKey: "",
+        manualActionReason: "",
+        contextSource: "local_cache",
+        contextComplete: true,
+        job,
+        messages: ["岗位草稿甲", "岗位草稿乙"],
+        analysis: "PRIVATE_RAW_ANALYSIS",
+        navigationUrl: "PRIVATE_NAVIGATION_URL"
+      }, {
+        cardId: fixture.card.id + 1,
+        jobId: fixture.jobId + 1,
+        stage: "contact_started",
+        messageCategory: "interview",
+        missingFactKey: "",
+        manualActionReason: "interview",
+        contextSource: "message_discovery_detail",
+        contextComplete: true,
+        job: { ...job, title: "面试岗位" },
+        messages: []
+      }, {
+        cardId: fixture.card.id + 2,
+        jobId: fixture.jobId + 2,
+        stage: "contact_started",
+        messageCategory: "missing_fact",
+        missingFactKey: "availability",
+        manualActionReason: "missing_fact",
+        contextSource: "message_discovery_detail",
+        contextComplete: true,
+        job: { ...job, title: "待补事实岗位" },
+        messages: []
       }]
     };
     onStatus(summary);

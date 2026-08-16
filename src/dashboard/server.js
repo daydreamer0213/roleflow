@@ -497,6 +497,7 @@ function createDashboardServer({
       : resolveRuntimeBatchBackup({ root, fallbackModelConfig: modelConfig });
   const messageDiscovery = createMessageDiscoveryController({
     db,
+    root,
     logger,
     getModelConfig: () => getRuntimeModel("deep_analysis"),
     modelReady: () => modelReady("deep_analysis"),

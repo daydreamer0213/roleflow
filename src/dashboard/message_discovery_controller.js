@@ -1,6 +1,8 @@
 const { randomUUID } = require("node:crypto");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
+const { createBossMessageDetailReader } = require("../adapters/sites/boss_message_detail_reader");
 const { BossSiteAdapter } = require("../adapters/sites/boss");
+const { createMessageDiscoveryJobContextResolver } = require("../application/message_discovery/job_context");
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
 const {
@@ -22,6 +24,7 @@ const ALLOWED_RUN_STATUSES = new Set(["running", "completed", "needs_user_action
 function createMessageDiscoveryController(deps = {}) {
   const {
     db,
+    root = process.cwd(),
     logger = null,
     getModelConfig = () => ({ provider: "mock", providers: { mock: {} } }),
     modelReady = () => true,
@@ -37,10 +40,16 @@ function createMessageDiscoveryController(deps = {}) {
       else if (browser && typeof browser.cleanup === "function") await browser.cleanup();
     },
     createReader = ({ browser }) => createBossMessageReader({ browser }),
+    createDetailSafety = (options) => createMessageDiscoveryDetailSafety(options),
+    createDetailReader = (options) => createBossMessageDetailReader(options),
+    createJobContextResolver = (options) => createMessageDiscoveryJobContextResolver(options),
     createAnalyzer = ({ modelConfig, logger: analyzerLogger }) => createMessageReplyAnalyzer({
       adapter: createMessageModelAdapter(modelConfig, analyzerLogger)
     }),
     runDiscovery = runBossMessageDiscovery,
+    pacingSleepFn,
+    pacingRandomFn = Math.random,
+    detailSleepFn,
     now = () => new Date(),
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
@@ -103,6 +112,8 @@ function createMessageDiscoveryController(deps = {}) {
       unresolved: 0,
       reasonCode: "",
       results: [],
+      phase: "starting",
+      waitUntil: "",
       startedAt: startedAt.toISOString(),
       updatedAt: startedAt.toISOString(),
       expiresAt: "",
@@ -134,6 +145,33 @@ function createMessageDiscoveryController(deps = {}) {
       }
       browser = createBrowser();
       const reader = createReader({ browser });
+      const detailSafety = createDetailSafety({
+        db,
+        profileId,
+        owner,
+        run,
+        logger,
+        signal: abortController.signal,
+        now,
+        sleepFn: pacingSleepFn,
+        randomFn: pacingRandomFn
+      });
+      const detailReader = createDetailReader({
+        browser,
+        messageReader: reader,
+        beforeOpen: detailSafety.beforeOpen,
+        afterIssuedAttempt: detailSafety.afterIssuedAttempt,
+        sleepFn: detailSleepFn
+      });
+      const resolveJobContext = createJobContextResolver({
+        db,
+        profileId,
+        messageReader: reader,
+        detailReader,
+        modelConfig,
+        root,
+        logger
+      });
       const analyzer = createAnalyzer({
         modelConfig,
         logger
@@ -145,6 +183,7 @@ function createMessageDiscoveryController(deps = {}) {
         signal: abortController.signal,
         logger,
         classifyMessageGroup: analyzer,
+        resolveJobContext,
         onStatus: (status) => updateRun(run, status)
       });
       if (summary?.reasonCode === "BOSS_RISK_CONTROL") {
@@ -293,6 +332,8 @@ function createMessageDiscoveryController(deps = {}) {
     run.processed = Math.max(0, Number(statusValue.processed) || 0);
     run.unresolved = Math.max(0, Number(statusValue.unresolved) || 0);
     run.reasonCode = safeCode(statusValue.reasonCode);
+    if (statusValue.phase !== undefined) run.phase = safePhase(statusValue.phase) || run.phase;
+    if (statusValue.waitUntil !== undefined) run.waitUntil = safeTimestamp(statusValue.waitUntil);
     run.results = sanitizeResults(Array.isArray(statusValue.results)
       ? statusValue.results.filter((item) => !run.clearedCardIds.has(Number(item?.cardId)))
       : []);
@@ -301,6 +342,8 @@ function createMessageDiscoveryController(deps = {}) {
       run.expiresAt = "";
       return;
     }
+    run.phase = run.status;
+    run.waitUntil = "";
     run.closed = true;
     run.expiresAt = new Date(at.getTime() + DEFAULT_CLEANUP_MS).toISOString();
     scheduleCleanup(run);
@@ -308,18 +351,22 @@ function createMessageDiscoveryController(deps = {}) {
 
   function sanitizeResults(results) {
     if (!Array.isArray(results)) return [];
-    let remainingMessages = 2;
     return results.map((item) => {
       const messages = Array.isArray(item?.messages)
-        ? item.messages.slice(0, remainingMessages).map((message) => String(message))
+        ? item.messages.slice(0, 2).map((message) => safeText(message, 4000)).filter(Boolean)
         : [];
-      remainingMessages -= messages.length;
       return {
         cardId: Math.max(0, Number(item?.cardId) || 0),
         jobId: Math.max(0, Number(item?.jobId) || 0),
         stage: String(item?.stage || "").slice(0, 80),
         messageCategory: String(item?.messageCategory || "").slice(0, 80),
         missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
+        manualActionReason: safeText(item?.manualActionReason, 240),
+        contextSource: ["local_cache", "message_discovery_detail"].includes(item?.contextSource)
+          ? item.contextSource
+          : "",
+        contextComplete: item?.contextComplete === true,
+        job: sanitizeJobUnderstanding(item?.job),
         messages
       };
     });
@@ -340,6 +387,8 @@ function createMessageDiscoveryController(deps = {}) {
         messageCategory: item.messageCategory,
         missingFactKey: item.missingFactKey
       })),
+      phase: safePhase(run.phase),
+      waitUntil: safeTimestamp(run.waitUntil),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       expiresAt: run.expiresAt
@@ -355,6 +404,8 @@ function createMessageDiscoveryController(deps = {}) {
       unresolved: run.unresolved,
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results),
+      phase: safePhase(run.phase),
+      waitUntil: safeTimestamp(run.waitUntil),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       expiresAt: run.expiresAt
@@ -370,6 +421,8 @@ function createMessageDiscoveryController(deps = {}) {
       unresolved: 0,
       reasonCode: "",
       results: [],
+      phase: "idle",
+      waitUntil: "",
       startedAt: "",
       updatedAt: "",
       expiresAt: ""
@@ -525,6 +578,59 @@ function messageDiscoveryProfileId(value) {
     throw messageDiscoveryError("MESSAGE_DISCOVERY_PROFILE_INVALID", "profileId must be a positive integer", 400);
   }
   return profileId;
+}
+
+function sanitizeJobUnderstanding(value) {
+  const job = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    title: safeInlineText(job.title, 160),
+    company: safeInlineText(job.company, 160),
+    roleSummary: safeInlineText(job.roleSummary, 300),
+    fitReasons: safeTextList(job.fitReasons, 5, 180),
+    hardBlockers: safeTextList(job.hardBlockers, 5, 180),
+    softGaps: safeTextList(job.softGaps, 5, 180),
+    questionsToVerify: safeTextList(job.questionsToVerify, 5, 180)
+  };
+}
+
+function safeTextList(value, limit, textLimit) {
+  const items = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const text = safeInlineText(item, textLimit);
+    if (text && !items.includes(text)) items.push(text);
+    if (items.length >= limit) break;
+  }
+  return items;
+}
+
+function safeText(value, limit) {
+  return ["string", "number"].includes(typeof value) ? String(value).slice(0, limit) : "";
+}
+
+function safeInlineText(value, limit) {
+  return safeText(value, limit * 2).replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function safePhase(value) {
+  const phase = String(value || "");
+  return new Set([
+    "idle",
+    "starting",
+    "reading_messages",
+    "reading_detail",
+    "cooldown",
+    "analyzing_job",
+    "completed",
+    "needs_user_action",
+    "stopped",
+    "dismissed"
+  ]).has(phase) ? phase : "";
+}
+
+function safeTimestamp(value) {
+  if (!value) return "";
+  const timestamp = new Date(value);
+  return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : "";
 }
 
 function safeCode(value) {
