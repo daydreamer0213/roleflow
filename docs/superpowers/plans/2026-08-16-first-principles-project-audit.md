@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `e8d3eb2` 必须是实施分支的祖先，其父提交是 `d50874166dde550e3fda2fe1b8eb235efecc7677`；允许其上只有本实施计划文档提交。发现其他提交或未提交修改时先停止并核对归属。
+- `e8d3eb2` 必须是实施分支的祖先，其父提交是 `d50874166dde550e3fda2fe1b8eb235efecc7677`；允许其上只有本实施计划及其基线纠正文档提交。发现其他提交或未提交修改时先停止并核对归属。
 - 执行前使用 `using-git-worktrees` 检查或建立独立的 `codex/first-principles-audit` 分支/worktree；不得直接在 `main` 上实施。
 - 不访问真实 BOSS，不读取现有登录页面，不执行任何沟通、发送、申请或其他外部写。
 - 正式岗位详情路径只允许 `trusted_pane`；保留 `search_page_api` 的研究实现、历史快照识别和失败证据，但不修复、不优化、不校准、不进入其适配器分支。
@@ -20,6 +20,7 @@
 - 不降低卡片覆盖、JD 覆盖、召回、推荐质量或恢复语义；不使用旧数据库评价筛选质量。
 - 不删除存储兼容门面、迁移、恢复、发布、安装、诊断、安全或质量基准代码。
 - 不新增依赖、框架、通用抽象层或大文件拆分；只修改本计划列出的文件。
+- 当前机器安装了 360；`tests/startup_scripts_smoke.js` 会动态生成未签名的 `msedge.exe` 测试桩并被安全软件拦截。本轮不得运行、放行或绕过该测试，不得修改其阈值或削弱启动身份校验。执行其余 96 项注册离线检查，并保留更早 beta.4.x 的完整 97 项通过记录作为历史证据；报告中必须明确区分 97 项注册、96 项本轮通过和 1 项安全软件阻断。
 - 每个任务先运行对应离线检查，再提交；不自动推送、合并、发布。
 
 ---
@@ -685,7 +686,7 @@ git diff --check e8d3eb2..HEAD
 git status --short --branch
 ```
 
-Expected: the implementation-plan documentation commit and four implementation commits follow `e8d3eb2`; `git diff --check` is empty; no unrelated working-tree changes exist.
+Expected: the implementation-plan documentation commits and four implementation commits follow `e8d3eb2`; `git diff --check` is empty; no unrelated working-tree changes exist.
 
 - [ ] **Step 2: Syntax-check every JavaScript file**
 
@@ -770,11 +771,37 @@ node tests/workflow_dashboard_smoke.js
 
 Expected: all pass; startup guidance still works once, while background/product paths neither focus BOSS nor pass the research detail mode.
 
-- [ ] **Step 5: Run the full registered offline suite**
+- [ ] **Step 5: Run all 96 checks permitted by the current security environment**
 
-Run: `node tests/run_all.js`
+Run this one-off driver; it reuses the registered list and refuses to continue unless the repository still contains exactly 97 entries and exactly one excluded entry:
 
-Expected final line: `All 97 offline checks passed.` No real BOSS page, real model call, external message, application, push, merge, or release occurs.
+```powershell
+@'
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const root = process.cwd();
+const source = fs.readFileSync(path.join(root, "tests", "run_all.js"), "utf8");
+const registered = [...source.matchAll(/^\s*"([^"]+\.js)",?\s*$/gm)].map((match) => match[1]);
+if (registered.length !== 97) throw new Error(`expected 97 registered checks, got ${registered.length}`);
+const blocked = registered.filter((file) => file === "startup_scripts_smoke.js");
+const permitted = registered.filter((file) => file !== "startup_scripts_smoke.js");
+if (blocked.length !== 1 || permitted.length !== 96) throw new Error("unexpected 360 exclusion set");
+for (const file of permitted) {
+  console.log(`\n> ${file}`);
+  const result = spawnSync(process.execPath, [path.join(root, "tests", file)], {
+    cwd: root,
+    stdio: "inherit",
+    timeout: 180_000
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status || 1);
+}
+console.log("\nAll 96 permitted offline checks passed; startup_scripts_smoke.js not run because 360 blocks its unsigned msedge.exe fixture.");
+'@ | node
+```
+
+Expected final line: `All 96 permitted offline checks passed; startup_scripts_smoke.js not run because 360 blocks its unsigned msedge.exe fixture.` No real BOSS page, real model call, external message, application, push, merge, or release occurs. Do not run `node tests/run_all.js` on this machine and do not claim a fresh 97/97 result.
 
 - [ ] **Step 6: Update the two canonical handoff documents and commit them**
 
@@ -797,7 +824,7 @@ In `docs/NEXT_PHASE.md`, add this status block below topic 1's goal:
 ### 状态
 
 - 详细设计已经确认：`docs/superpowers/specs/2026-08-16-first-principles-project-audit-design.md`。
-- 实施已经完成并通过当前全部 97 项注册离线检查；真实 BOSS 读写为 0。
+- 当前注册 97 项离线检查；本轮通过安全环境允许的 96 项，`startup_scripts_smoke.js` 因 360 拦截其未签名 `msedge.exe` 测试桩而未运行；真实 BOSS 读写为 0。更早 beta.4.x 的完整 97 项通过记录保持为历史证据。
 - 正式扫描只允许 `trusted_pane`；`search_page_api` 的研究实现和历史证据仍保留。
 - 启动期一次性 `Page.bringToFront` 引导保留；后台路径仍为 0 次调用。
 - `scanLabel` 的有效职责已迁入 today view model；其余删除项均完成原用途、接替者和回归证明。
@@ -814,7 +841,7 @@ Verify and commit:
 
 ```powershell
 git diff --check
-rg -n '本地 `main` 基线|课题 1 的详细设计已经确认并完成实施|实施已经完成并通过当前全部 97 项|下一份设计' docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md
+rg -n '本地 `main` 基线|课题 1 的详细设计已经确认并完成实施|本轮通过安全环境允许的 96 项|下一份设计' docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md
 git add -- docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md
 git commit -m "docs: record project audit completion"
 ```
@@ -829,4 +856,4 @@ git log --format='%H %s' e8d3eb2..HEAD
 git status --short --branch
 ```
 
-The phase-end report must state: changed/deleted files, `97` offline checks result, reachability result, startup focus result, `search_page_api` preservation/rejection result, real BOSS read/write count `0`, commit hashes, and that nothing was pushed, merged, or released. Stop after this report; do not continue deleting code to improve a line-count number.
+The phase-end report must state: changed/deleted files, 97 registered / 96 freshly passed / `startup_scripts_smoke.js` blocked by 360, the historical complete-97 evidence, reachability result, startup focus result, `search_page_api` preservation/rejection result, real BOSS read/write count `0`, commit hashes, and that nothing was pushed, merged, or released. Stop after this report; do not continue deleting code to improve a line-count number.
