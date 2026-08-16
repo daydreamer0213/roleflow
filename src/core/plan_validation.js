@@ -1,16 +1,19 @@
 const { cityToBossCode } = require("./search_plan");
 const { PRODUCT_POLICY } = require("./product_policy");
 const { appError } = require("./observability");
+const { acquisitionModeOf, generatedPlatformOf } = require("./search_plan_schema");
 
-function validateSearchPlan(plan = {}, candidateProfile = {}, { acquisitionMode = "generated" } = {}) {
+function validateSearchPlan(plan = {}, candidateProfile = {}, options = {}) {
   const errors = [];
   const warnings = [];
-  const mode = String(acquisitionMode || "").trim().toLowerCase();
-  const cities = plan.cities || [];
+  const mode = options.acquisitionMode
+    ? acquisitionModeOf({ acquisitionMode: options.acquisitionMode })
+    : acquisitionModeOf(plan);
+  const generated = generatedPlatformOf(plan);
+  const cities = generated.cities;
   const keywords = (plan.keywords || []).map((item) => typeof item === "string" ? item : item.word).filter(Boolean);
   const directions = plan.directions || candidateProfile?.candidate?.targetTitles || [];
   const salary = plan.salary || {};
-  if (!["generated", "inherited"].includes(mode)) errors.push("采集模式无效。");
   if (mode === "generated" && !cities.length) errors.push("至少选择一个目标城市。");
   if (mode === "generated" && (plan.platform?.site || "boss") === "boss") {
     const unsupportedCities = cities.filter((city) => !cityToBossCode(city));

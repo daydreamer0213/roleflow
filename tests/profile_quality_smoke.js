@@ -139,11 +139,19 @@ const targetSalaryFilter = resolveNativeFilterSnapshot({
 });
 assert.deepStrictEqual(targetSalaryPlan.salary, { minK: 9, maxK: 14 });
 assert.deepStrictEqual(targetSalaryFilter.params.salary, ["405"]);
-const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile);
+const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile, { acquisitionMode: "generated" });
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));
-assert.throws(() => assertSearchPlanReady({ plan: { ...plan, cities: ["惠州"] } }, profile), /惠州/);
+assert.throws(
+  () => assertSearchPlanReady({ plan: { ...plan, cities: ["惠州"] } }, profile, {}, { acquisitionMode: "generated" }),
+  /惠州/
+);
 const noCityPlan = { ...plan, cities: [] };
+assert.strictEqual(
+  validateSearchPlan(noCityPlan, profile).valid,
+  true,
+  "legacy plans default to inherited acquisition"
+);
 assert.strictEqual(
   validateSearchPlan(noCityPlan, profile, { acquisitionMode: "inherited" }).valid,
   true,
@@ -162,6 +170,26 @@ assert.strictEqual(
   false,
   "inherited acquisition must retain shared keyword safety checks"
 );
+const generatedV2Plan = {
+  ...modePlan,
+  acquisitionMode: "generated",
+  platform: {
+    site: "boss",
+    generated: {
+      cities: ["深圳"],
+      salaryLanes: ["10-20K"],
+      experience: ["3-5年（可冲）"],
+      jobTypes: ["全职"],
+      degrees: ["本科"]
+    }
+  }
+};
+assert.strictEqual(validateSearchPlan(generatedV2Plan, profile).valid, true);
+assert.deepStrictEqual(resolveScanPolicy(generatedV2Plan, "broad").snapshot.platform, {
+  site: "boss",
+  generated: generatedV2Plan.platform.generated
+});
+assert.strictEqual(resolveScanPolicy(generatedV2Plan, "broad").snapshot.acquisitionMode, "generated");
 assert.throws(() => assertSearchPlanReady({ plan }, profile, { stale: true }), /旧画像/);
 assert.strictEqual(assertSearchPlanReady({ plan }, profile).valid, true);
 assert.deepStrictEqual(normalizeSearchPlan({ experience: ["2-3?", "3-5?"] }, profile).experience, ["2-3年", "3-5年（可冲）"]);
@@ -175,12 +203,20 @@ const runtime = profileToRuntimeConfigs({
     risk_rules: [{ word: "模型训练", penalty: 8, risk: "偏训练" }]
   },
   resumeVersions: { versions: [] }
-}, profile, { ...plan, bossActiveDays: 30, allowExperienceStretch: false });
+}, profile, { ...plan, acquisitionMode: "generated", bossActiveDays: 30, allowExperienceStretch: false });
 assert.strictEqual(runtime.scoring.boss_activity.max_active_days, 3);
 assert.strictEqual(runtime.scoring.allowExperienceStretch, false);
 assert(!runtime.scoring.risk_rules.some((item) => item.word === "模型训练"), "通用运行时不应继承单一候选人的硬编码技术排除规则");
 assert.deepStrictEqual(runtime.scoring.experience.selected, ["0-3年", "1-3年"]);
 assert.strictEqual(runtime.scoring.salary.mode, "strict");
+const generatedRuntime = profileToRuntimeConfigs({
+  profile: { location: {} },
+  scoring: {},
+  resumeVersions: { versions: [] }
+}, profile, generatedV2Plan);
+assert.deepStrictEqual(generatedRuntime.profile.location.target_cities, ["深圳"]);
+assert.strictEqual(generatedRuntime.profile.location.default_city, "深圳");
+assert.deepStrictEqual(generatedRuntime.scoring.experience.selected, ["3-5年（可冲）"]);
 
 const adapter = new OpenAICompatibleAdapter({});
 let resumePrompt = "";

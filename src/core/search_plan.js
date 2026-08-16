@@ -6,6 +6,7 @@ const CITY_CODES = {
 };
 const { runtimeAnalysisContext, stableHash } = require("./analysis_revision");
 const { PRODUCT_POLICY_VERSION, PRODUCT_POLICY } = require("./product_policy");
+const { acquisitionModeOf, generatedPlatformOf } = require("./search_plan_schema");
 
 const DAILY_SCAN_LIMITS = PRODUCT_POLICY.dailyScan;
 
@@ -15,6 +16,11 @@ function cityToBossCode(city) {
 
 function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVersionsOverride = null, matchingCard = null) {
   const plan = searchPlan || {};
+  const acquisitionMode = acquisitionModeOf(plan);
+  const generated = generatedPlatformOf(plan);
+  const platformCities = acquisitionMode === "generated" ? generated.cities : [];
+  const platformExperience = acquisitionMode === "generated" ? generated.experience : [];
+  const platformJobTypes = acquisitionMode === "generated" ? generated.jobTypes : [];
   const candidate = candidateProfile?.candidate || {};
   const persistedVersions = Array.isArray(resumeVersionsOverride) ? resumeVersionsOverride
     .filter((item) => item && item.isActive !== false)
@@ -39,7 +45,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
   const positiveKeywords = buildPositiveKeywords(plan, candidateProfile);
   const softExclusions = (plan.excludeWords || []).map((word) => ({ word, penalty: 10, risk: `偏离筛选方向：${word}` }));
   const salary = plan.salary || {};
-  const selectedExperience = normalizeExperienceSelections(plan.experience || []);
+  const selectedExperience = normalizeExperienceSelections(platformExperience);
   return {
     ...configs,
     candidateProfile,
@@ -47,7 +53,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
     matchingCard: matchingCard || null,
     analysisContext: runtimeAnalysisContext(candidateProfile, plan, matchingCard),
     targetPolicy: {
-      jobTypes: plan.jobTypes || ["全职"],
+      jobTypes: platformJobTypes.length ? platformJobTypes : ["全职"],
       directions: plan.directions || candidate.targetTitles || [],
       skills: (candidateProfile?.skills || []).map((item) => typeof item === "string" ? item : item.name).filter(Boolean)
     },
@@ -62,9 +68,9 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
       },
       location: {
         ...configs.profile?.location,
-        target_cities: plan.cities || [candidate.city].filter(Boolean),
-        default_city: plan.cities?.[0] || candidate.city || configs.profile?.location?.default_city || "",
-        boss_city_code: plan.bossCityCode || cityToBossCode(plan.cities?.[0]) || ""
+        target_cities: platformCities.length ? platformCities : [candidate.city].filter(Boolean),
+        default_city: platformCities[0] || candidate.city || configs.profile?.location?.default_city || "",
+        boss_city_code: cityToBossCode(platformCities[0]) || ""
       }
     },
     scoring: {
@@ -120,6 +126,8 @@ function planKeywords(plan) {
 }
 
 function resolveScanPolicy(plan = {}, requestedMode = "daily") {
+  const acquisitionMode = acquisitionModeOf(plan);
+  const generated = generatedPlatformOf(plan);
   const planPolicy = PRODUCT_POLICY.searchPlan;
   const mode = requestedMode === "broad" ? "broad" : "daily";
   const scan = plan.scan || {};
@@ -149,15 +157,15 @@ function resolveScanPolicy(plan = {}, requestedMode = "daily") {
     version: PRODUCT_POLICY_VERSION,
     mode: resolved.mode,
     keywords: resolved.keywordPlan.map(({ word, priority }) => ({ word, priority })),
-    platform: plan.platform || {},
-    cities: plan.cities || [],
+    acquisitionMode,
+    platform: {
+      site: String(plan?.platform?.site || "boss").trim().toLowerCase(),
+      generated
+    },
     directions: plan.directions || [],
     salary: plan.salary || {},
     salaryMode: plan.salaryMode || planPolicy.defaultSalaryMode,
-    experience: plan.experience || [],
     allowExperienceStretch: plan.allowExperienceStretch !== false,
-    jobTypes: plan.jobTypes || [],
-    degrees: plan.degrees || [],
     excludeWords: plan.excludeWords || [],
     hardExcludes: plan.hardExcludes || [],
     bossActiveDays: safeActiveDays(plan.bossActiveDays),

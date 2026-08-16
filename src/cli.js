@@ -20,6 +20,7 @@ const {
   resolveScanPolicy,
   applyScanPolicyToFilters
 } = require("./core/search_plan");
+const { acquisitionModeOf, generatedPlatformOf } = require("./core/search_plan_schema");
 const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("./core/platform_filters");
 const {
   openDb,
@@ -818,6 +819,7 @@ async function scan(
   }
   let acquisitionMode = workflowAcquisitionMode
     || resumeValidation?.acquisitionMode
+    || (planRecord ? acquisitionModeOf(planRecord.plan) : "")
     || (args.input ? "generated" : "");
   if (planRecord) {
     assertSearchPlanReady(
@@ -2350,7 +2352,8 @@ async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes,
 
 function resolveCityScopes(args, planRecord, configs) {
   if (args.city) return [{ city: "", cityCode: String(args.city) }];
-  const cities = planRecord?.plan?.cities?.length ? planRecord.plan.cities : [configs.profile.location?.default_city].filter(Boolean);
+  const generated = planRecord ? generatedPlatformOf(planRecord.plan) : null;
+  const cities = generated?.cities?.length ? generated.cities : [configs.profile.location?.default_city].filter(Boolean);
   const scopes = [];
   const unsupported = [];
   for (const city of cities) {
@@ -2752,5 +2755,6 @@ module.exports = {
   preflightBossScanBrowser,
   runWithBoundBossScanBrowser,
   persistBossRiskControl,
-  executeTrackedScanRun
+  executeTrackedScanRun,
+  resolveCityScopes
 };

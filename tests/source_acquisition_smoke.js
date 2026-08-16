@@ -9,7 +9,7 @@ const {
   buildBossScanTargets,
   parseBossFilterCatalog
 } = require("../src/adapters/sites/boss");
-const { resolveNativeFilterSnapshot } = require("../src/core/platform_filters");
+const { resolveNativeFilterSnapshot, assertGeneratedFilterSelections } = require("../src/core/platform_filters");
 const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
 const { CITY_CODES } = require("../src/core/search_plan");
@@ -74,6 +74,54 @@ assert.deepStrictEqual(native.params, {
   salary: ["405"]
 });
 assert(native.warnings.some((item) => item.code === "salary_labels_remapped"));
+assert.deepStrictEqual(native.unresolvedSelections, [{ field: "salary", label: "旧的10-20K标签" }]);
+assert.throws(
+  () => assertGeneratedFilterSelections({}, native),
+  (error) => error?.code === "GENERATED_FILTER_SELECTION_UNRESOLVED" && /旧的10-20K标签/.test(error.message)
+);
+const nestedNative = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog,
+  plan: {
+    acquisitionMode: "generated",
+    salary: { minK: 10, maxK: 20 },
+    platform: {
+      site: "boss",
+      generated: {
+        salaryLanes: ["10-20K"],
+        experience: ["0-3年"],
+        jobTypes: ["全职"],
+        degrees: ["本科"]
+      }
+    }
+  }
+});
+assert.deepStrictEqual(nestedNative.params, {
+  experience: ["104"],
+  jobType: ["1901"],
+  degree: ["203"],
+  salary: ["405"]
+});
+assert.deepStrictEqual(nestedNative.unresolvedSelections, []);
+assert.strictEqual(assertGeneratedFilterSelections({}, nestedNative), nestedNative);
+const ambiguousNative = resolveNativeFilterSnapshot({
+  site: "boss",
+  catalog: {
+    site: "boss",
+    fields: {
+      jobType: {
+        urlParam: "jobType",
+        selection: "multiple",
+        options: [
+          { code: "1901", label: "全职" },
+          { code: "1999", label: "全职（其他）" }
+        ]
+      }
+    }
+  },
+  plan: { platform: { generated: { jobTypes: ["全职"] } } }
+});
+assert.deepStrictEqual(ambiguousNative.unresolvedSelections, [{ field: "jobType", label: "全职" }]);
 
 (async () => {
   await preflightSmoke();

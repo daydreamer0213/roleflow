@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { generatedPlatformOf } = require("./search_plan_schema");
 
 const DEFAULT_CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -47,14 +48,15 @@ function isCatalogFresh(catalog, now = Date.now(), ttlMs = DEFAULT_CATALOG_TTL_M
 
 function resolveNativeFilterSnapshot({ site, catalog, plan = {}, overrides = {} } = {}) {
   const normalized = normalizePlatformFilterCatalog(catalog);
+  const generated = generatedPlatformOf(plan);
   const sharedParams = {};
   const sharedLabels = {};
   const warnings = [];
   const salaryField = normalized.fields.salary;
   const salaryOptions = salaryField
-    ? resolveFieldOptions("salary", salaryField, plan, overrides)
+    ? resolveFieldOptions("salary", salaryField, plan, generated, overrides)
     : [];
-  const requestedSalaryLabels = normalizeLabels(plan.platform?.salaryLanes);
+  const requestedSalaryLabels = generated.salaryLanes;
   if (requestedSalaryLabels.length && salaryOptions.length
     && !salaryOptions.some((option) => requestedSalaryLabels.includes(option.label))) {
     warnings.push({
@@ -67,7 +69,7 @@ function resolveNativeFilterSnapshot({ site, catalog, plan = {}, overrides = {} 
   for (const fieldName of ["experience", "jobType", "degree"]) {
     const field = normalized.fields[fieldName];
     if (!field) continue;
-    const selected = resolveFieldOptions(fieldName, field, plan, overrides);
+    const selected = resolveFieldOptions(fieldName, field, plan, generated, overrides);
     if (!selected.length) continue;
     sharedParams[field.urlParam] = selected.map((item) => item.code);
     sharedLabels[fieldName] = selected.map((item) => item.label);
@@ -99,18 +101,54 @@ function resolveNativeFilterSnapshot({ site, catalog, plan = {}, overrides = {} 
     params: primary.params,
     labels: primary.labels,
     lanes,
-    warnings
+    warnings,
+    unresolvedSelections: unresolvedGeneratedSelections(normalized, generated)
   };
 }
 
-function resolveFieldOptions(fieldName, field, plan, overrides) {
+function resolveFieldOptions(fieldName, field, plan, generated, overrides) {
   const overrideCodes = normalizeCodes(overrides[fieldName]);
   if (overrideCodes.length) return optionsForCodes(field, overrideCodes);
-  if (fieldName === "salary") return selectSalaryOptions(field.options, plan.salary || {}, plan.platform?.salaryLanes);
-  if (fieldName === "experience") return selectExperienceOptions(field.options, plan.experience || []);
-  if (fieldName === "jobType") return selectChoiceOptions(field.options, plan.jobTypes || plan.jobType || plan.employmentTypes);
-  if (fieldName === "degree") return selectChoiceOptions(field.options, plan.degrees || plan.degree);
+  if (fieldName === "salary") return selectSalaryOptions(field.options, plan.salary || {}, generated.salaryLanes);
+  if (fieldName === "experience") return selectExperienceOptions(field.options, generated.experience);
+  if (fieldName === "jobType") return selectChoiceOptions(field.options, generated.jobTypes);
+  if (fieldName === "degree") return selectChoiceOptions(field.options, generated.degrees);
   return [];
+}
+
+function unresolvedGeneratedSelections(catalog, generated) {
+  const requested = {
+    salary: generated.salaryLanes,
+    experience: generated.experience,
+    jobType: generated.jobTypes,
+    degree: generated.degrees
+  };
+  const unresolved = [];
+  for (const [fieldName, labels] of Object.entries(requested)) {
+    const field = catalog.fields[fieldName];
+    for (const label of labels) {
+      const matches = !field ? [] : fieldName === "salary"
+        ? field.options.filter((option) => option.label === label)
+        : fieldName === "experience"
+          ? selectExperienceOptions(field.options, [label])
+          : selectChoiceOptions(field.options, [label]);
+      if (matches.length !== 1) unresolved.push({ field: fieldName, label });
+    }
+  }
+  return unresolved;
+}
+
+function assertGeneratedFilterSelections(plan, snapshot) {
+  const unresolved = Array.isArray(snapshot?.unresolvedSelections)
+    ? snapshot.unresolvedSelections
+    : [];
+  if (unresolved.length) {
+    const labels = unresolved.map((item) => item.label).filter(Boolean);
+    const error = new Error(`这些 BOSS 筛选条件无法明确解析：${labels.join("、")}。`);
+    error.code = "GENERATED_FILTER_SELECTION_UNRESOLVED";
+    throw error;
+  }
+  return snapshot;
 }
 
 function selectSalaryOptions(options, salary, requestedLabels = []) {
@@ -219,6 +257,7 @@ module.exports = {
   catalogVersion,
   isCatalogFresh,
   resolveNativeFilterSnapshot,
+  assertGeneratedFilterSelections,
   formatNativeFilterSummary,
   salaryRange
 };
