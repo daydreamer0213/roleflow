@@ -1,5 +1,7 @@
 # BOSS Communication Live Acceptance
 
+> **Historical runbook.** This file preserves the pre-v1.0 evidence and the acceptance state that applied at that time. It is not the current status source. The current authoritative policy is `calibration=calibrated`, `acceptance=accepted`, and `executionEnabled=true` in `src/core/product_policy.js`; see `docs/PROJECT_HANDOFF.md`. Historical evidence below remains unchanged and does not authorize a new external write.
+
 ## Current Status
 
 - Implementation: `implemented`

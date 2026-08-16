@@ -1,6 +1,8 @@
 # BOSS 沟通页面校准规程
 
-当前状态：技术校准 `calibrated`；用户端到端验收 `e2e_pending`；`executionEnabled: true`。
+> **历史文档。** 本文记录 v1.0.0 之前的校准过程和当时的 `e2e_pending` 状态，不代表当前产品状态。当前权威状态见 `src/core/product_policy.js` 与 `docs/PROJECT_HANDOFF.md`：`calibration=calibrated`、`acceptance=accepted`、`executionEnabled=true`。历史步骤与证据保持原样，不据此授权新的真实沟通。
+
+当时状态：技术校准 `calibrated`；用户端到端验收 `e2e_pending`；`executionEnabled: true`。
 
 本文是人工校准和用户验收的操作规程，不是实时页面报告。历史记录支持已完成一次简单技术校准和一次受控沟通点击，但没有记录用户完成完整端到端工作流验收。`executionEnabled` 只表示技术执行门已打开，不表示 `accepted`；本文不把历史记录扩写成当前 BOSS 页面事实。
 

@@ -22,11 +22,20 @@
 
 - Keep BOSS access read-only unless the user explicitly approves communication or application actions.
 - Use one logged-in Edge profile with exactly two operator-labeled fixed tabs: `BOSS-SEARCH` for scanning and read-only detail inspection, and `BOSS-COMMUNICATION` for future communication-page inspection. Never create a per-job tab, a second window, or a second BOSS session.
+- Resolve the current fixed-tab IDs from the active browser binding before every browser run. Keep numeric tab IDs numeric; never reuse a historical ID or coerce one to a string.
 - All work is serial: finish the current read-only operation and checkpoint its result before switching fixed tabs or starting the next job. The search tab locates the saved job URL; the communication tab inspects that one URL; return to search only after the item reaches a terminal state or is explicitly stopped.
+- Never call `Page.bringToFront`, activate a BOSS tab/window, or add foreground-focus recovery. Browser work must remain in the background. If the foreground changes, distinguish application/tool focus from product behavior before changing browser code.
 - Preserve random pacing, periodic cooldowns, checkpointing, and immediate stop on login/risk-control/page-loss signals.
-- The first real calibration click requires separate, explicit approval for that one click. After calibration, confirming a communication batch authorizes only the checked jobs in that immutable batch snapshot; execute them serially with per-job identity/result verification, and stop immediately on risk-control, page loss, target mismatch, or ambiguous outcome.
+- BOSS communication is technically and manually accepted in `v1.0.0`, but acceptance is not standing permission for a new external write. Confirming a communication batch authorizes only the checked jobs in that immutable batch snapshot; execute them serially with per-job identity/result verification, and stop immediately on risk-control, page loss, target mismatch, or ambiguous outcome. Never automatically retry an uncertain result or replay a historical batch.
 - An inferred DOM selector, text guess, stale fixture, or tool-reported click success must never enable execution. A page-dependent conclusion requires redacted screenshots and DOM evidence from the actual logged-in page, followed by an immediate identity recheck before any click.
 - Never trade account safety for test speed. Prefer saved DOM fixtures and fake-browser tests after a minimal live sample establishes the real page structure.
+
+## BOSS implementation boundary
+
+- The current production job-detail path is `trusted_pane` only. Do not enable or pass `search_page_api` through calibration, scanning, Gate D, or product workflows.
+- Keep `search_page_api` and its failure evidence for later research. Do not repair, validate, optimize, or delete it as part of current work.
+- Do not use or reintroduce `standalone_detail`.
+- Do not start Wave 5 or a whole-project rewrite. Change only code paths required by an approved current task.
 
 ## Product quality decision boundary
 
