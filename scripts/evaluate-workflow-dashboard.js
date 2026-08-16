@@ -6,25 +6,26 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const VIEWPORTS = [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, { width: 768, height: 1024 }, { width: 375, height: 812 }];
-const STATES = ["scanning", "paused", "review_required", "interrupted"];
+const STATES = ["scanning", "analyzing", "paused", "review_required", "interrupted"];
 
 async function main() {
   const options = parse(process.argv.slice(2));
   if (options.help) return process.stdout.write(usage());
   const { chromium } = require("playwright");
   fs.mkdirSync(options.outputDir, { recursive: true });
-  const result = { schemaVersion: 2, label: options.label, expectPrimary: options.expectPrimary, targetRevision: revision(options.targetRoot), browser: { engine: "msedge", headless: true }, viewports: VIEWPORTS, states: STATES, pages: [], errors: [] };
+  const result = { schemaVersion: 2, label: options.label, expectPrimary: options.expectPrimary, targetRevision: revision(options.targetRoot), browser: { engine: options.browserChannel, headless: true }, viewports: VIEWPORTS, states: STATES, pages: [], errors: [] };
   const storage = require(path.join(options.targetRoot, "src", "core", "storage"));
+  const { initializeWorkflowJobTasks } = require(path.join(options.targetRoot, "src", "core", "workflow_analysis_tasks"));
   const { createDashboardServer } = require(path.join(options.targetRoot, "src", "dashboard", "server"));
   const dbPath = path.join(options.outputDir, `.${options.label}.sqlite`);
   let db; let server; let browser;
   try {
     db = storage.openDb(dbPath);
-    const runs = seed(storage, db);
+    const runs = seed(storage, initializeWorkflowJobTasks, db);
     server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: logger(), browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
-    browser = await chromium.launch({ channel: "msedge", headless: true });
+    browser = await chromium.launch({ channel: options.browserChannel, headless: true });
     for (const state of STATES) for (const viewport of VIEWPORTS) result.pages.push(await audit({ browser, baseUrl, state, runId: runs[state], viewport, outputDir: options.outputDir, label: options.label, expectPrimary: options.expectPrimary }));
   } catch (error) { result.errors.push(String(error?.stack || error)); throw error; } finally {
     if (browser) await browser.close();
@@ -35,12 +36,29 @@ async function main() {
   }
 }
 
-function seed(storage, db) {
+function seed(storage, initializeWorkflowJobTasks, db) {
   const now = new Date().toISOString();
   const profile = { candidate: { name: "Workflow evaluation", city: "上海", targetTitles: ["AI 应用开发工程师"] }, education: [], experiences: [], skills: [{ name: "Python", evidence: ["fixture"] }], projects: [{ name: "RAG fixture", canSay: ["RAG"] }], credentials: [], strengths: [] };
   const saved = storage.saveProfileAnalysis(db, { profile, document: { originalFileName: "workflow-evaluation.txt", format: "text", contentHash: "workflow-evaluation", text: "Python RAG fixture ".repeat(20), diagnostics: {} }, searchPlan: { name: "Workflow evaluation plan", cities: ["上海"], directions: ["AI 应用开发"], keywords: [{ word: "RAG", priority: "A", reason: "fixture" }], experience: ["1-3年"], jobTypes: ["全职"], degrees: [], salary: { minK: 15, maxK: 25 }, bossActiveDays: 3, platform: { site: "boss" } } });
   const batchId = storage.createBatch(db, "boss", "RAG", "workflow evaluation", { profileId: saved.profileId, searchPlanId: saved.planId });
   storage.upsertJob(db, { source: "boss", sourceId: "workflow-evaluation-job", keyword: "RAG", title: "Workflow evaluation role", company: "Fixture Co", salary: "20-25K", experience: "1-3年", url: "https://www.zhipin.com/job_detail/workflow-evaluation.html", description: "Complete Python RAG job description for isolated workflow evaluation. ".repeat(6), qualityTags: [], matches: ["Python", "RAG"], analysis: { recommendation: "primary", semanticStatus: "complete", fitReasons: ["Python RAG"], roleSummary: "RAG 应用开发", roleAlignment: "mostly_aligned", roleResumeEvidence: ["fixture"], selectedTrackLabel: "大模型应用开发", requirementMatches: [{ requirement: "RAG", foundation: true, state: "matched" }] } }, batchId);
+  const progressJobs = Array.from({ length: 6 }, (_, index) => {
+    const jobId = storage.upsertJob(db, {
+      source: "boss",
+      sourceId: `workflow-progress-${index + 1}`,
+      keyword: "RAG",
+      title: `Workflow progress role ${index + 1}`,
+      company: `Fixture Company ${index + 1}`,
+      url: `https://www.zhipin.com/job_detail/workflow-progress-${index + 1}.html`,
+      description: "Complete local-only RAG job description. ".repeat(8),
+      qualityTags: [],
+      analysis: { semanticStatus: "pending", decisionSource: "analysis_pending" }
+    }, batchId);
+    const observationId = Number(db.prepare(`
+      SELECT id FROM job_observations WHERE batch_id = ? AND job_id = ?
+    `).get(batchId, jobId).id);
+    return { jobId, observationId, position: index + 1 };
+  });
   const day = chinaDay();
   const create = (id, localDay) => storage.createWorkflowRun(db, { id, profileId: saved.profileId, planId: saved.planId, localDay, sequence: 1, targetSuccessCount: 35, candidateGap: 35, scanNeeded: true, keywords: [{ word: "RAG", priority: "A" }], budget: { maxDetailTotal: 12, browserPageBudget: 4 }, planner: { browserMode: "edge" }, metrics: {} });
   const scanning = create("workflow-eval-scanning", day);
@@ -48,10 +66,26 @@ function seed(storage, db) {
   storage.transitionWorkflowRun(db, { id: scanning.id, status: "scanning" });
   storage.attachWorkflowScan(db, { id: scanning.id, scanRunId: scan.id, scanBatchId: batchId });
   storage.recordWorkflowScanWait(db, { workflowRunId: scanning.id, runId: scan.id, action: "detail_open", delayMs: 600000, retryAt: new Date(Date.now() + 600000).toISOString(), now });
+  const analyzing = create("workflow-eval-analyzing", "2099-01-05");
+  storage.transitionWorkflowRun(db, { id: analyzing.id, status: "scanning" });
+  db.prepare("UPDATE workflow_runs SET scan_batch_id = ?, status = 'analyzing' WHERE id = ?").run(batchId, analyzing.id);
+  initializeWorkflowJobTasks(db, { workflowRunId: analyzing.id, batchId, jobs: progressJobs, modelConfigRevision: "workflow-progress-eval", now });
+  const statuses = ["pending", "running", "retry_pending", "succeeded", "skipped", "failed"];
+  const tasks = db.prepare("SELECT id FROM workflow_job_tasks WHERE workflow_run_id = ? ORDER BY position").all(analyzing.id);
+  tasks.forEach((task, index) => db.prepare(`
+    UPDATE workflow_job_tasks
+    SET status = ?, last_error_code = ?, finished_at = ?
+    WHERE id = ?
+  `).run(
+    statuses[index],
+    index === 4 ? "DETAIL_REQUIRED" : null,
+    ["succeeded", "skipped", "failed"].includes(statuses[index]) ? now : null,
+    task.id
+  ));
   const paused = create("workflow-eval-paused", "2099-01-02"); storage.transitionWorkflowRun(db, { id: paused.id, status: "scanning" }); storage.transitionWorkflowRun(db, { id: paused.id, status: "paused", errorCode: "SAFE_PAUSE" });
   const review = create("workflow-eval-review", "2099-01-03"); storage.transitionWorkflowRun(db, { id: review.id, status: "scanning" }); db.prepare("UPDATE workflow_runs SET status = 'review_required' WHERE id = ?").run(review.id);
   const interrupted = create("workflow-eval-interrupted", "2099-01-04"); db.prepare("UPDATE workflow_runs SET status = 'interrupted', error_code = 'SAFE_STOP', error_message = 'Fixture interruption' WHERE id = ?").run(interrupted.id);
-  return { scanning: scanning.id, paused: paused.id, review_required: review.id, interrupted: interrupted.id };
+  return { scanning: scanning.id, analyzing: analyzing.id, paused: paused.id, review_required: review.id, interrupted: interrupted.id };
 }
 
 async function audit({ browser, baseUrl, state, runId, viewport, outputDir, label, expectPrimary }) {
@@ -59,7 +93,7 @@ async function audit({ browser, baseUrl, state, runId, viewport, outputDir, labe
   const consoleErrors = []; const pageErrors = []; const requestFailures = []; const externalRequests = [];
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); }); page.on("pageerror", (e) => pageErrors.push(e.message)); page.on("requestfailed", (r) => requestFailures.push({ url: r.url(), error: r.failure()?.errorText || "unknown" })); page.on("request", (r) => { if (!r.url().startsWith(baseUrl)) externalRequests.push(r.url()); });
   try {
-    await page.goto(`${baseUrl}/workflow?runId=${encodeURIComponent(runId)}`, { waitUntil: "networkidle" });
+    await page.goto(`${baseUrl}/workflow?runId=${encodeURIComponent(runId)}`, { waitUntil: "load" });
     const action = page.locator('[data-workflow-primary="true"]');
     if (await action.count()) await focusPrimaryWithKeyboard(page, action);
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -89,7 +123,7 @@ async function audit({ browser, baseUrl, state, runId, viewport, outputDir, labe
         horizontalOverflow: documentElement.scrollWidth > innerWidth
       };
     });
-    const screenshot = `${label}-${state}-${viewport.width}x${viewport.height}.png`; await page.screenshot({ path: path.join(outputDir, screenshot), fullPage: false });
+    const screenshot = `${label}-${state}-${viewport.width}x${viewport.height}.png`; await page.screenshot({ path: path.join(outputDir, screenshot), fullPage: true });
     let interaction = { kind: "none", attempted: false, passed: true, result: {} };
     if (state === "scanning") {
       await page.locator('[data-action="stop-preview"]').first().click();
@@ -125,7 +159,7 @@ async function focusPrimaryWithKeyboard(page, action) {
 function assertStrictPrimary(result) {
   const failures = [];
   const primary = result.audit.primary;
-  const expectedPrimaryCount = result.state === "scanning" ? 0 : 1;
+  const expectedPrimaryCount = ["scanning", "analyzing"].includes(result.state) ? 0 : 1;
   if (result.audit.primaryCount !== expectedPrimaryCount) failures.push(`primaryCount=${result.audit.primaryCount}`);
   if (result.audit.visiblePrimaryCount !== expectedPrimaryCount) failures.push(`visiblePrimaryCount=${result.audit.visiblePrimaryCount}`);
   if (expectedPrimaryCount && !primary?.fullyWithinViewport) failures.push("primary outside viewport");
@@ -147,10 +181,10 @@ function parse(args) {
     if (!key.startsWith("--") || value == null || value.startsWith("--")) throw new Error(`Missing evaluation option value for ${key}`);
     values.set(key, value); index += 1;
   }
-  const targetRoot = path.resolve(values.get("--target-root") || process.cwd()); const outputDir = path.resolve(values.get("--output-dir") || path.join(process.cwd(), ".runtime", "workflow-dashboard-evidence")); const label = values.get("--label") || "current";
-  return { help: false, targetRoot, outputDir, label, expectPrimary };
+  const targetRoot = path.resolve(values.get("--target-root") || process.cwd()); const outputDir = path.resolve(values.get("--output-dir") || path.join(process.cwd(), ".runtime", "workflow-dashboard-evidence")); const label = values.get("--label") || "current"; const browserChannel = values.get("--browser-channel") || "msedge";
+  return { help: false, targetRoot, outputDir, label, expectPrimary, browserChannel };
 }
-function usage() { return ["Usage: node scripts/evaluate-workflow-dashboard.js [options]", "", "Strict prerequisites: NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --expect-primary           Fail on primary-action, overflow, interaction, or error gate violations", "  -h, --help                 Show this help", ""].join("\n"); }
+function usage() { return ["Usage: node scripts/evaluate-workflow-dashboard.js [options]", "", "Strict prerequisites: NODE_PATH containing Playwright.", "", "Options:", "  --target-root <path>       RoleFlow checkout to evaluate", "  --label <name>             Artifact prefix and JSON filename", "  --output-dir <path>        Directory for JSON and viewport PNGs", "  --browser-channel <name>   Playwright browser channel (default: msedge; use chrome on 360-protected hosts)", "  --expect-primary           Fail on primary-action, overflow, interaction, or error gate violations", "  -h, --help                 Show this help", ""].join("\n"); }
 function revision(root) { return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); }
 function logger() { return { info() {}, warn() {}, error() {}, requestId() { return "workflow-dashboard-evaluation"; }, listRecent() { return []; } }; }
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); }

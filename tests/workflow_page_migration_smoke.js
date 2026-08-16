@@ -312,9 +312,9 @@ function assertEvaluatorContracts() {
     assert.strictEqual(result.status, 0, `workflow evaluator must enforce the primary-action gate: ${result.stderr || result.stdout}`);
     const evaluation = JSON.parse(fs.readFileSync(path.join(outputDir, "smoke.json"), "utf8"));
     assert.strictEqual(evaluation.expectPrimary, true, "evaluator output must record strict primary mode");
-    assert.strictEqual(evaluation.pages.length, 16, "evaluator must audit every state and viewport");
+    assert.strictEqual(evaluation.pages.length, 20, "evaluator must audit every state and viewport");
     for (const page of evaluation.pages) {
-      const expectedPrimaryCount = page.state === "scanning" ? 0 : 1;
+      const expectedPrimaryCount = ["scanning", "analyzing"].includes(page.state) ? 0 : 1;
       assert.strictEqual(page.audit.primaryCount, expectedPrimaryCount, `${page.state} ${page.viewport.width}x${page.viewport.height} primary count must match the state contract`);
       assert.strictEqual(page.audit.visiblePrimaryCount, expectedPrimaryCount, `${page.state} ${page.viewport.width}x${page.viewport.height} visible primary count must match the state contract`);
       if (expectedPrimaryCount) {

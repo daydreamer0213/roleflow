@@ -122,6 +122,7 @@ async function assertAccessibleNameRegression() {
 const workflowHelp = spawnSync(process.execPath, [path.join(__dirname, "..", "scripts", "evaluate-workflow-dashboard.js"), "--help"], { encoding: "utf8" });
 assert.equal(workflowHelp.status, 0, `workflow evaluator help must exit cleanly: ${workflowHelp.stderr}`);
 assert.match(workflowHelp.stdout, /Usage: node scripts\/evaluate-workflow-dashboard\.js/, "workflow evaluator help must be useful");
+assert.match(workflowHelp.stdout, /--browser-channel <name>.*default: msedge.*use chrome on 360-protected hosts/, "workflow evaluator must document the explicit safe Chrome override");
 assert.doesNotMatch(workflowHelp.stdout, /\\n/, "workflow evaluator help must use real line breaks");
 
 assertAccessibleNameRegression().then(() => console.log("dashboard_wave2_acceptance_smoke ok")).catch((error) => {
