@@ -345,6 +345,17 @@ async function main() {
     assert.deepStrictEqual(state.edgeRequests.map((request) => request.command), ["list_tabs"]);
 
     reset("ok");
+    await edge.closeTab(928374);
+    assert.deepStrictEqual(state.edgeRequests.map((request) => request.command), ["send_cdp"]);
+    assert.strictEqual(state.edgeRequests[0].args.tabId, 928374);
+    assert.strictEqual(state.edgeRequests[0].args.method, "Page.close");
+    assert.strictEqual(
+      state.edgeRequests.filter((request) => request.args.method === "Page.bringToFront").length,
+      0,
+      "closing a background tab must not focus any Edge tab"
+    );
+
+    reset("ok");
     await edge.bringToFront("edge-tab");
     assert.strictEqual(state.edgeRequests[0].args.method, "Page.bringToFront");
     await edge.clickAt("edge-tab", { x: 120, y: 48 });

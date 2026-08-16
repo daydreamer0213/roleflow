@@ -225,4 +225,33 @@ const BOSS_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
   return window.__bossMessageSnapshot ? window.__bossMessageSnapshot() : { state: "snapshot_helper_missing" };
 })()`;
 
-module.exports = { snapshotBossMessagePage, buildUnreadConversationQueue, safeDigest, messageKey, BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION, BOSS_MESSAGE_SNAPSHOT_EXPRESSION };
+const BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION = String.raw`(() => {
+  const root = document.querySelector(".chat-position-content");
+  const queue = root?.__vue__ ? [root.__vue__] : [];
+  const visited = new Set();
+  for (let index = 0; index < queue.length && index < 80; index += 1) {
+    const component = queue[index];
+    if (!component || visited.has(component)) continue;
+    visited.add(component);
+    if (String(component.$options?.name || "") === "ConversationPositionInfo") {
+      return {
+        state: "ready",
+        jobId: String(component.conversation$?.encryptJobId || ""),
+        securityId: String(component.conversation$?.securityId || "")
+      };
+    }
+    if (component.$parent) queue.push(component.$parent);
+    for (const child of component.$children || []) queue.push(child);
+  }
+  return { state: "unavailable", jobId: "", securityId: "" };
+})()`;
+
+module.exports = {
+  snapshotBossMessagePage,
+  buildUnreadConversationQueue,
+  safeDigest,
+  messageKey,
+  BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION,
+  BOSS_MESSAGE_SNAPSHOT_EXPRESSION,
+  BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION
+};

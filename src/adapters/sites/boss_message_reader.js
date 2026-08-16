@@ -1,5 +1,6 @@
 const {
   BOSS_MESSAGE_SNAPSHOT_EXPRESSION,
+  BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION,
   buildUnreadConversationQueue,
   safeDigest
 } = require("./boss_message_dom");
@@ -224,6 +225,31 @@ function selectedTargetMatches(snapshot, target) {
     && snapshot.messages.every((item) => /^\d{15}$/.test(item.messageId));
 }
 
+function sameSelectedConversation(actual, expected) {
+  const actualRows = actual.rows.filter((row) => row.selected);
+  const expectedRows = expected.rows.filter((row) => row.selected);
+  return actualRows.length === 1
+    && expectedRows.length === 1
+    && actualRows[0].conversationKey === expectedRows[0].conversationKey
+    && actualRows[0].rowIndex === expectedRows[0].rowIndex
+    && actual.positionName === expected.positionName
+    && actual.companyName === expected.companyName;
+}
+
+function trustedMessageJobTarget(raw) {
+  const jobId = String(raw?.jobId || "").trim();
+  const securityId = String(raw?.securityId || "").trim();
+  if (raw?.state !== "ready"
+    || !/^[A-Za-z0-9_-]{6,160}$/.test(jobId)
+    || !/^\S{1,2048}$/.test(securityId)) {
+    throw codedError("BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE", "selected job target is unavailable");
+  }
+  const canonicalUrl = `https://www.zhipin.com/job_detail/${jobId}.html`;
+  const navigation = new URL(canonicalUrl);
+  navigation.searchParams.set("securityId", securityId);
+  return { jobId, navigationUrl: navigation.toString(), canonicalUrl };
+}
+
 function throwIfAborted(signal) {
   if (signal?.aborted) throw signal.reason || codedError("MESSAGE_DISCOVERY_STOPPED", "message discovery stopped");
 }
@@ -249,6 +275,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
   let activeTabId = null;
   let activeRowKeys = new Set();
   let activeUnreadTargets = new Set();
+  let activeSelectedSnapshot = null;
   let readerBusy = false;
   async function runExclusive(operation) {
     if (readerBusy) throw codedError("BOSS_MESSAGE_READER_BUSY", "message reader is busy");
@@ -273,6 +300,30 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
         return { tabId: scan.tabId, queue };
       });
     },
+    async readSelectedJobTarget(selected, signal) {
+      return runExclusive(async () => {
+        if (!activeSelectedSnapshot || selected !== activeSelectedSnapshot || activeTabId === null) {
+          throw codedError("BOSS_MESSAGE_TARGET_INVALID", "selected message target is not active");
+        }
+        throwIfAborted(signal);
+        const before = assertSafeSnapshot(normalizeBrowserSnapshot(
+          await browser.evalValue(activeTabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)
+        ));
+        if (!sameSelectedConversation(before, selected)) {
+          throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
+        }
+        const target = trustedMessageJobTarget(
+          await browser.evalValue(activeTabId, BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION)
+        );
+        const after = assertSafeSnapshot(normalizeBrowserSnapshot(
+          await browser.evalValue(activeTabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)
+        ));
+        if (!sameSelectedConversation(after, selected)) {
+          throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
+        }
+        return target;
+      });
+    },
     async openQueuedConversation(target, signal) {
       return runExclusive(async () => {
         if (target?.tabId !== activeTabId
@@ -290,7 +341,10 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           if (attempt) await sleepFn(250, signal);
           const after = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(target.tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
-          if (selectedTargetMatches(after, target)) return after;
+          if (selectedTargetMatches(after, target)) {
+            activeSelectedSnapshot = after;
+            return after;
+          }
         }
         throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
       });
@@ -313,6 +367,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
     activeTabId = tabId;
     activeRowKeys = new Set(rows.map((row) => `${tabId}:${row.rowIndex}:${row.conversationKey}`));
     activeUnreadTargets = new Set();
+    activeSelectedSnapshot = null;
     return { tabId, path: snapshot.path, rows };
   }
 }

@@ -7,7 +7,8 @@ const {
   safeDigest,
   messageKey,
   BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION,
-  BOSS_MESSAGE_SNAPSHOT_EXPRESSION
+  BOSS_MESSAGE_SNAPSHOT_EXPRESSION,
+  BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION
 } = require("../src/adapters/sites/boss_message_dom");
 const { createBossMessageDomFixture, FixtureElement } = require("./fixtures/boss_message_dom_fixture");
 
@@ -148,6 +149,18 @@ assert.deepStrictEqual({
 assert.match(BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION, /__bossMessageSnapshot/);
 assert.match(BOSS_MESSAGE_SNAPSHOT_EXPRESSION, /snapshot_helper_missing/);
 assert.doesNotMatch(`${BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION}\n${BOSS_MESSAGE_SNAPSHOT_EXPRESSION}`, /click|focus|dispatchEvent|createTab|navigate|bringToFront/i);
+assert.strictEqual(typeof BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION, "string");
+assert.doesNotMatch(BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION, /\.click\(|window\.open|focus|bringToFront|navigate/i);
+const selectedJobTarget = runSelectedJobTarget({
+  $options: { name: "ConversationPositionInfo" },
+  conversation$: { encryptJobId: "abcDEF123", securityId: "secret-token" },
+  $children: []
+});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(selectedJobTarget)), {
+  state: "ready",
+  jobId: "abcDEF123",
+  securityId: "secret-token"
+});
 const browserSnapshot = runBrowserSnapshot(documentLike, "https://www.zhipin.com/web/geek/chat");
 assert.deepStrictEqual(
   Array.from(browserSnapshot.rows, (row) => row.transientSignature),
@@ -167,4 +180,13 @@ function runBrowserSnapshot(documentLike, href) {
   };
   context.window = context;
   return vm.runInNewContext(BOSS_MESSAGE_SNAPSHOT_EXPRESSION, context);
+}
+
+function runSelectedJobTarget(component) {
+  const root = { __vue__: { $options: { name: "Wrapper" }, $children: [component] } };
+  const context = {
+    document: { querySelector: (selector) => selector === ".chat-position-content" ? root : null }
+  };
+  context.window = context;
+  return vm.runInNewContext(BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION, context);
 }

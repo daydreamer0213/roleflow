@@ -128,6 +128,49 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     assert.strictEqual(browser.calls.filter(([name]) => name === forbidden).length, 0);
   }
 
+  const targetBrowser = fakeBrowser({
+    snapshots: [
+      snapshot(),
+      guardedSuccess,
+      snapshot(),
+      snapshot(),
+      { state: "ready", jobId: "abcDEF123", securityId: "secret-token" },
+      snapshot()
+    ]
+  });
+  const targetReader = createBossMessageReader({ browser: targetBrowser, sleepFn: async () => {} });
+  const targetQueue = await targetReader.scanUnread();
+  const targetSelected = await targetReader.openQueuedConversation(targetQueue.queue[0]);
+  assert.deepStrictEqual(await targetReader.readSelectedJobTarget(targetSelected), {
+    jobId: "abcDEF123",
+    navigationUrl: "https://www.zhipin.com/job_detail/abcDEF123.html?securityId=secret-token",
+    canonicalUrl: "https://www.zhipin.com/job_detail/abcDEF123.html"
+  });
+
+  for (const rawTarget of [
+    { state: "unavailable", jobId: "", securityId: "" },
+    { state: "ready", jobId: "../web/geek/chat", securityId: "secret-token" },
+    { state: "ready", jobId: "abcDEF123", securityId: "" }
+  ]) {
+    const invalidBrowser = fakeBrowser({
+      snapshots: [snapshot(), guardedSuccess, snapshot(), snapshot(), rawTarget, snapshot()]
+    });
+    const invalidReader = createBossMessageReader({ browser: invalidBrowser, sleepFn: async () => {} });
+    const invalidQueue = await invalidReader.scanUnread();
+    const invalidSelected = await invalidReader.openQueuedConversation(invalidQueue.queue[0]);
+    const error = await assert.rejects(
+      () => invalidReader.readSelectedJobTarget(invalidSelected),
+      (received) => received.code === "BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE"
+    );
+    assert.doesNotMatch(String(error?.message || ""), /secret-token/);
+  }
+
+  await assert.rejects(
+    () => targetReader.readSelectedJobTarget({ ...targetSelected }),
+    (error) => error.code === "BOSS_MESSAGE_TARGET_INVALID",
+    "only the selected snapshot returned by this reader may resolve a job target"
+  );
+
   const rowsBrowser = fakeBrowser({ snapshots: [snapshot()] });
   const rowsReader = createBossMessageReader({ browser: rowsBrowser, sleepFn: async () => {} });
   const rowsScan = await rowsReader.scanConversationRows();

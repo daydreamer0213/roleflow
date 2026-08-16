@@ -119,6 +119,10 @@ class EdgeControlAdapter {
     return tabId;
   }
 
+  async closeTab(tabId) {
+    return this.cdp(tabId, "Page.close");
+  }
+
   async bringToFront(tabId) {
     return this.cdp(tabId, "Page.bringToFront");
   }
