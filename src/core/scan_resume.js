@@ -3,6 +3,7 @@ const {
   buildScanExecutionSnapshot,
   assertScanSnapshotCompatible
 } = require("./scan_snapshot");
+const { resolveProductDetailMode } = require("./scan_execution");
 
 const RESUMABLE_BATCH_STATUSES = new Set(["partial", "failed", "interrupted"]);
 
@@ -39,6 +40,7 @@ function validateResumeBatch({
   }
   try {
     assertScanSnapshotCompatible(storedSnapshot, storedSnapshot);
+    resolveProductDetailMode(storedSnapshot.detailMode);
     if (storedSnapshot.site !== normalizedSite) {
       throw resumeError(
         "SCAN_RESUME_BATCH_MISMATCH",

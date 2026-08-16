@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const {
   resolveScanKind,
+  resolveDetailMode,
+  resolveProductDetailMode,
   buildScanCliArgs,
   withSiteScanLease
 } = require("../src/core/scan_execution");
@@ -14,11 +16,24 @@ main()
 
 async function main() {
   scanKindSmoke();
+  productDetailModeSmoke();
   cliArgsMatrixSmoke();
   await normalReleaseSmoke();
   await leaseLossSmoke(() => { throw new Error("renew failed"); });
   await leaseLossSmoke(() => ({ owner: "another-owner" }));
   await leaseLossWaitsForCleanupSmoke();
+}
+
+function productDetailModeSmoke() {
+  assert.strictEqual(resolveDetailMode("search_page_api"), "search_page_api", "研究/历史模式标识必须保留");
+  assert.strictEqual(resolveProductDetailMode(undefined), "trusted_pane");
+  assert.strictEqual(resolveProductDetailMode("trusted_pane"), "trusted_pane");
+  assert.throws(
+    () => resolveProductDetailMode("search_page_api"),
+    (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED"
+      && error.statusCode === 409
+      && /trusted_pane/.test(error.message)
+  );
 }
 
 function scanKindSmoke() {
@@ -73,9 +88,9 @@ function cliArgsMatrixSmoke() {
     buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", resumeBatchId: 73 }),
     [...expectedByKind.daily, "--resume-batch", "73", "--browser", "edge"]
   );
-  assert.deepStrictEqual(
-    buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "search_page_api" }),
-    [...expectedByKind.daily, "--detail-mode", "search_page_api", "--browser", "edge"]
+  assert.throws(
+    () => buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "search_page_api" }),
+    (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED" && error.statusCode === 409
   );
   assert.deepStrictEqual(
     buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "trusted_pane" }),

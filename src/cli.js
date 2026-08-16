@@ -97,7 +97,7 @@ const {
   scopeShortId
 } = require("./core/inherited_search_scope");
 const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
-const { resolveScanKind, resolveDetailMode, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
+const { resolveScanKind, resolveProductDetailMode, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const {
   getCommunicationBatch,
   bindCommunicationBatchRuntime,
@@ -758,6 +758,9 @@ async function scan(
   } = {}
 ) {
   assertScanActive(signal);
+  const requestedDetailMode = Object.hasOwn(args, "detail-mode")
+    ? resolveProductDetailMode(args["detail-mode"])
+    : null;
   const createBrowser = injectedCreateBrowser;
   const analysisOnly = args["analysis-only"] === true;
   let scanLogger = execution?.logger || logger;
@@ -906,11 +909,8 @@ async function scan(
     })
     : null;
   const storedExecution = validatedResume?.storedSnapshot || null;
-  const requestedDetailMode = Object.hasOwn(args, "detail-mode")
-    ? resolveDetailMode(args["detail-mode"])
-    : null;
   const detailMode = storedExecution
-    ? resolveDetailMode(storedExecution.detailMode)
+    ? resolveProductDetailMode(storedExecution.detailMode)
     : (requestedDetailMode || "trusted_pane");
   if (requestedDetailMode && requestedDetailMode !== detailMode) {
     throw codedError("SCAN_DETAIL_MODE_MISMATCH", "恢复扫描的详情模式必须与执行快照一致。");

@@ -11,7 +11,17 @@ const DETAIL_MODES = new Set(["trusted_pane", "search_page_api"]);
 function resolveDetailMode(value) {
   const normalized = String(value ?? "trusted_pane").trim().toLowerCase();
   if (DETAIL_MODES.has(normalized)) return normalized;
-  throw scanExecutionError("INVALID_DETAIL_MODE", "detailMode must be trusted_pane or search_page_api");
+  throw scanExecutionError("INVALID_DETAIL_MODE", "detailMode must be trusted_pane or search_page_api", 409);
+}
+
+function resolveProductDetailMode(value) {
+  const normalized = resolveDetailMode(value);
+  if (normalized === "trusted_pane") return normalized;
+  throw scanExecutionError(
+    "PRODUCT_DETAIL_MODE_UNSUPPORTED",
+    "search_page_api 是保留的研究模式，正式扫描不能使用；请新建 trusted_pane 扫描。",
+    409
+  );
 }
 
 function resolveScanKind(command, args = {}) {
@@ -46,7 +56,7 @@ function buildScanCliArgs({
   const normalizedDbPath = requiredText(dbPath, "dbPath");
   const normalizedRunId = requiredText(runId, "runId");
   const normalizedPlanId = Number(planId);
-  const normalizedDetailMode = resolveDetailMode(detailMode);
+  const normalizedDetailMode = resolveProductDetailMode(detailMode);
   if (!Number.isInteger(normalizedPlanId) || normalizedPlanId <= 0) {
     throw scanExecutionError("INVALID_SCAN_INPUT", "planId must be a positive integer");
   }
@@ -238,15 +248,17 @@ function leaseLostError(cause) {
   return error;
 }
 
-function scanExecutionError(code, message) {
+function scanExecutionError(code, message, statusCode = null) {
   const error = new Error(message);
   error.code = code;
+  if (statusCode !== null) error.statusCode = statusCode;
   return error;
 }
 
 module.exports = {
   resolveScanKind,
   resolveDetailMode,
+  resolveProductDetailMode,
   buildScanCliArgs,
   withSiteScanLease
 };

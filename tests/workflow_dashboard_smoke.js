@@ -1333,22 +1333,17 @@ let server;
     workflowControlTimers,
     (value) => { batchModelReady = value; }
   );
+  const spawnCountBeforeControlledApiScan = spawns.length;
   const controlledApiScan = await postForm(baseUrl, "/api/scan", {
     planId: portableScanSaved.planId,
     browserMode: "edge",
     scanKind: "broad",
     detailMode: "search_page_api"
   });
-  assert.strictEqual(controlledApiScan.status, 303);
-  const controlledApiSpawn = spawns.at(-1);
-  assert.deepStrictEqual(
-    controlledApiSpawn.args.slice(
-      controlledApiSpawn.args.indexOf("--detail-mode"),
-      controlledApiSpawn.args.indexOf("--detail-mode") + 2
-    ),
-    ["--detail-mode", "search_page_api"]
-  );
-  controlledApiSpawn.child.emit("error", new Error("controlled API scan fixture"));
+  assert.strictEqual(controlledApiScan.status, 409);
+  assert.match(controlledApiScan.body, /PRODUCT_DETAIL_MODE_UNSUPPORTED/);
+  assert.match(controlledApiScan.body, /trusted_pane/);
+  assert.strictEqual(spawns.length, spawnCountBeforeControlledApiScan, "HTTP 拒绝后不得启动子进程");
 
   await testModelTaskRouting({
     baseUrl,

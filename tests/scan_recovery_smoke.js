@@ -23,6 +23,7 @@ const {
   upsertJob,
   reassessBatchObservations
 } = require("../src/core/storage");
+const { validateResumeBatch } = require("../src/core/scan_resume");
 
 const smokeDir = path.join(__dirname, "..", ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `scan-recovery-${Date.now()}.sqlite`);
@@ -108,6 +109,24 @@ function detailModeSnapshotRecoverySmoke() {
     })),
     (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /detailMode differs/.test(error.message)
   );
+  assert.throws(
+    () => validateResumeBatch({
+      resumeBatchId: 88,
+      resumedBatch: {
+        id: 88,
+        site: "boss",
+        searchPlanId: 77,
+        status: "interrupted",
+        filterSnapshot: { execution: snapshot }
+      },
+      site: "boss",
+      planId: 77
+    }),
+    (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED"
+      && error.statusCode === 409
+      && /新建 trusted_pane 扫描/.test(error.message)
+  );
+  assert.strictEqual(snapshot.detailMode, "search_page_api", "拒绝恢复不得改写历史证据");
 }
 
 function startRun(database, { label, profileId, planId, owner }) {

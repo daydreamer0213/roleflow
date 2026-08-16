@@ -146,7 +146,7 @@ const {
 } = require("../application/analysis");
 const { resolveInboundOpportunity } = require("../application/message_discovery/inbound");
 const { scanRuntimeBlock, communicationRuntimeBlock, assertBossRuntimeAvailable } = require("../core/communication_runtime");
-const { buildScanCliArgs } = require("../core/scan_execution");
+const { buildScanCliArgs, resolveProductDetailMode } = require("../core/scan_execution");
 const { validateResumeBatch } = require("../core/scan_resume");
 const {
   chinaLocalDay,
@@ -1420,11 +1420,9 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
       );
     }
     const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
-    const detailMode = params.detailMode === "search_page_api"
-      ? "search_page_api"
-      : params.detailMode === "trusted_pane" || !params.detailMode
-        ? null
-        : (() => { throw appError("INVALID_DETAIL_MODE", "详情读取模式无效。", { statusCode: 409 }); })();
+    const detailMode = params.detailMode
+      ? resolveProductDetailMode(params.detailMode)
+      : null;
     let scanKind = ["broad", "refresh", "activity"].includes(params.scanKind) ? params.scanKind : "daily";
     if (resumeBatchId) {
       if (!Number.isInteger(resumeBatchId) || resumeBatchId <= 0) throw appError("SCAN_RESUME_BATCH_INVALID", "恢复批次编号无效。");

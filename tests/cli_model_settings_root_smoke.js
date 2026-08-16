@@ -87,6 +87,22 @@ const { saveVerifiedModelTaskProfile } = require("../src/core/model_settings");
     let browserSeamReached = false;
     const stubStatement = { run: () => ({ lastInsertRowid: 1 }) };
     const stubDb = { prepare: () => stubStatement };
+    let unsupportedModeBrowserCalls = 0;
+    await assert.rejects(
+      () => cli.scan(stubDb, {
+        input: "synthetic-input.json",
+        "force-mock": true,
+        keywords: "test-keyword",
+        "detail-mode": "search_page_api"
+      }, {
+        createBrowser() {
+          unsupportedModeBrowserCalls += 1;
+          throw new Error("browser seam must not be reached");
+        }
+      }),
+      (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED" && /trusted_pane/.test(error.message)
+    );
+    assert.strictEqual(unsupportedModeBrowserCalls, 0, "CLI 必须在初始化浏览器前拒绝研究模式");
     const browserSeam = () => {
       browserSeamReached = true;
       const error = new Error("browser seam reached by force-mock scan without model routing");

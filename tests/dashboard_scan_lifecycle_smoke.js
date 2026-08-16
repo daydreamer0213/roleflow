@@ -140,23 +140,21 @@ function commandAndSuccessfulExitSmoke(database) {
   defaultCalls[0].child.emit("close", 0, null);
 
   const controlledCalls = [];
-  startPlanScan(new Map(), {
-    db: database,
-    root,
-    dbPath,
-    planId: 152,
-    scanKind: "daily",
-    detailMode: "search_page_api",
-    logger,
-    requestId: "request-controlled-detail-mode",
-    spawnProcess: spawnHarness(database, 152, controlledCalls)
-  });
-  const controlledArgs = controlledCalls[0].args.slice(2);
-  assert.deepStrictEqual(
-    controlledArgs.slice(controlledArgs.indexOf("--detail-mode"), controlledArgs.indexOf("--detail-mode") + 2),
-    ["--detail-mode", "search_page_api"]
+  assert.throws(
+    () => startPlanScan(new Map(), {
+      db: database,
+      root,
+      dbPath,
+      planId: 152,
+      scanKind: "daily",
+      detailMode: "search_page_api",
+      logger,
+      requestId: "request-controlled-detail-mode",
+      spawnProcess: spawnHarness(database, 152, controlledCalls)
+    }),
+    (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED" && error.statusCode === 409
   );
-  controlledCalls[0].child.emit("close", 0, null);
+  assert.strictEqual(controlledCalls.length, 0, "研究模式不得生成扫描子进程");
 }
 
 function failedAndInterruptedExitSmoke(database) {
