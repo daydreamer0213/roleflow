@@ -193,6 +193,20 @@ async function main() {
     assert.strictEqual(manual.progressUpdate.stage, "needs_user_action");
   }
 
+  const mixedSalary = await analyzer({
+    profile: { id: 1 },
+    job: { id: 2, title: "Java Engineer" },
+    messages: [{
+      messageKey: "sha256:" + "f".repeat(64),
+      text: "薪资范围是多少，什么时候可以到岗？"
+    }],
+    facts: validFacts,
+    now: NOW
+  });
+  assert.strictEqual(mixedSalary.messageCategory, "salary", "any salary question must keep the whole group manual-only");
+  assert.deepStrictEqual(mixedSalary.messages, []);
+  assert.strictEqual(mixedSalary.progressUpdate.stage, "needs_user_action");
+
   const storedShapeAnalyzer = createMessageReplyAnalyzer({ adapter: new MockModelAdapter() });
   const storedMessages = [{ messageKey: "sha256:" + "c".repeat(64), text: "什么时候可以到岗？" }];
   const storedShapeAnalyzed = await storedShapeAnalyzer({

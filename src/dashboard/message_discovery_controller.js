@@ -495,6 +495,12 @@ function createMessageDiscoveryDetailSafety({
 } = {}) {
   let assertActiveBindings = null;
   const onWait = ({ durationMs }) => setDetailWait(run, durationMs, now);
+  const checkpointPacing = async (state) => saveMessageDiscoveryRuntimeState(db, {
+    profileId,
+    platform: "boss",
+    pacing: state,
+    updatedAt: safeNow(now).toISOString()
+  });
   const accessController = createAccessController({
     db,
     auditDb: db,
@@ -518,6 +524,12 @@ function createMessageDiscoveryDetailSafety({
       assertActiveBindings = assertTabBindings;
       setDetailPhase(run, "reading_detail", now);
       try {
+        await pacing.waitForPendingDetailCooldown({
+          signal: operationSignal,
+          assertTabBindings,
+          onWait,
+          onPacingCheckpoint: checkpointPacing
+        });
         await pacing.waitWithPacing("pane_detail_read", {
           signal: operationSignal,
           assertTabBindings,
@@ -536,12 +548,7 @@ function createMessageDiscoveryDetailSafety({
           signal: operationSignal,
           assertTabBindings,
           onWait,
-          onPacingCheckpoint: async (state) => saveMessageDiscoveryRuntimeState(db, {
-            profileId,
-            platform: "boss",
-            pacing: state,
-            updatedAt: safeNow(now).toISOString()
-          })
+          onPacingCheckpoint: checkpointPacing
         });
       } finally {
         if (!operationSignal?.aborted) setDetailPhase(run, "reading_detail", now);

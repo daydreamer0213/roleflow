@@ -629,6 +629,35 @@ async function detailSafetyCompositionSmoke() {
       4,
       "an aborted issued request must still persist its detail pacing count"
     );
+
+    saveMessageDiscoveryRuntimeState(safetyDb, {
+      profileId,
+      platform: "boss",
+      pacing: {
+        pacedActions: 2,
+        nextPacingCooldownAt: 18,
+        detailActions: 6,
+        nextDetailMicroCooldownAt: 6,
+        nextDetailMacroCooldownAt: 16
+      },
+      updatedAt: now
+    });
+    const resumedSleeps = [];
+    const resumed = createMessageDiscoveryDetailSafety({
+      db: safetyDb,
+      profileId,
+      owner: "detail-safety-resumed",
+      run,
+      now: () => new Date(now),
+      sleepFn: async (durationMs) => resumedSleeps.push(durationMs),
+      randomFn: () => 0
+    });
+    await resumed.beforeOpen({ jobId: "resumed-stable-job", assertTabBindings: async () => {} });
+    assert.deepStrictEqual(
+      resumedSleeps.slice(0, 2),
+      [15000, 8000],
+      "a restored due detail cooldown must run before ordinary pre-open pacing"
+    );
   } finally {
     safetyDb.close();
   }

@@ -1038,9 +1038,7 @@ class BossSiteAdapter {
     for (const field of PACING_STATE_FIELDS) this[field] = state[field];
   }
 
-  async waitAfterDetailAction({ signal = null, assertTabBindings = null, onPacingCheckpoint = null, onWait = null } = {}) {
-    this.detailActions += 1;
-    if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
+  async waitForPendingDetailCooldown({ signal = null, assertTabBindings = null, onPacingCheckpoint = null, onWait = null } = {}) {
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
     if (this.detailActions >= this.nextDetailMacroCooldownAt) {
@@ -1064,6 +1062,14 @@ class BossSiteAdapter {
       this.nextDetailMicroCooldownAt += randomBetween(...BOSS_PACING_POLICY.detail.microEvery, this.random);
       if (typeof onPacingCheckpoint === "function") await onPacingCheckpoint(this.pacingState());
     }
+  }
+
+  async waitAfterDetailAction(options = {}) {
+    this.detailActions += 1;
+    if (typeof options.onPacingCheckpoint === "function") {
+      await options.onPacingCheckpoint(this.pacingState());
+    }
+    await this.waitForPendingDetailCooldown(options);
   }
 
   async scanBrowser(options) {

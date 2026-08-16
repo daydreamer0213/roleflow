@@ -25,7 +25,8 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
     };
     try {
       const result = await adapter.draftMessageGroup(input);
-      return validateMessageReply(result, {
+      const manualCategory = manualCategoryForMessages(input.messages);
+      return validateMessageReply(manualCategory ? manualOnlyReply(manualCategory) : result, {
         facts: input.facts,
         now,
         requestedSubjectKeys: input.requestedSubjectKeys
@@ -38,6 +39,27 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
     } finally {
       for (const message of messages || []) message.text = "";
     }
+  };
+}
+
+function manualCategoryForMessages(messages) {
+  const text = (messages || []).map((message) => String(message?.text || "")).join(" ");
+  if (/身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)) return "sensitive";
+  if (/面试|邀约|interview/i.test(text)) return "interview_invitation";
+  if (/薪资|薪酬|工资|月薪|年薪|salary|compensation/i.test(text)) return "salary";
+  if (/哪个岗位|什么岗位|哪个职位|什么职位|岗位不清楚|identity uncertain/i.test(text)) return "identity_uncertain";
+  return "";
+}
+
+function manualOnlyReply(messageCategory) {
+  return {
+    messageCategory,
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    missingFact: null,
+    messages: []
   };
 }
 

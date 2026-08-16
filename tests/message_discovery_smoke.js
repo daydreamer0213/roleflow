@@ -315,6 +315,30 @@ async function threadAndContextResolutionSmoke() {
   assert.strictEqual(summary.status, "completed");
   assert.strictEqual(classifiedJobId, canonical.jobId);
 
+  const verifiedComplete = createFixture({ suffix: "verified-complete", title: "Verified Complete Engineer" });
+  const verifiedCandidate = listMessageDiscoveryCandidates(db, { profileId: verifiedComplete.profileId })
+    .find((item) => item.jobId === verifiedComplete.jobId);
+  let completeResolverCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: verifiedComplete.profileId,
+    reader: fakeReader([selectedConversation({ title: verifiedComplete.title, messageId: "123456789012400" })]),
+    resolveJobContext: async ({ target, candidate }) => {
+      completeResolverCalls += 1;
+      assert.strictEqual(candidate.jobId, verifiedComplete.jobId);
+      assert.strictEqual(candidate.contextComplete, true);
+      return resolvedContext(candidate, target.conversationKey);
+    },
+    classifyMessageGroup: async ({ job }) => {
+      assert.strictEqual(job.sourceId, verifiedCandidate.sourceId);
+      return classification();
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed");
+  assert.strictEqual(completeResolverCalls, 1, "a complete candidate still requires stable job ID verification");
+
   const legacy = createFixture({ suffix: "legacy-thread", title: "Legacy Thread Engineer" });
   const legacyThreadKey = safeDigest(["boss", PRIVATE_RECRUITER, legacy.title]);
   const legacyCanonicalKey = safeDigest(["conversation", "0"]);
@@ -407,6 +431,28 @@ async function threadAndContextResolutionSmoke() {
   assertStopped(summary, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND");
   assert.strictEqual(summary.unresolved, 1);
   assert.strictEqual(unsafeResolverCalls, 1, "background proof failure must stop the remaining queue immediately");
+
+  const browserFailure = createFixture({ suffix: "context-browser-failed", title: "Browser Failed Engineer" });
+  let browserFailureCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: browserFailure.profileId,
+    reader: fakeReader([
+      selectedConversation({ title: "Unknown Browser Failure", messageId: "123456789012407" }),
+      selectedConversation({ title: browserFailure.title, messageId: "123456789012408" })
+    ]),
+    resolveJobContext: async () => {
+      browserFailureCalls += 1;
+      throw Object.assign(new Error("sanitized browser failure"), { code: "BOSS_MESSAGE_DETAIL_BROWSER_FAILED" });
+    },
+    classifyMessageGroup: async () => {
+      throw new Error("browser uncertainty must stop before classification");
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assertStopped(summary, "BOSS_MESSAGE_DETAIL_BROWSER_FAILED");
+  assert.strictEqual(browserFailureCalls, 1, "a detail browser failure must stop the remaining queue immediately");
 }
 
 async function unmatchedRetentionSmoke() {
@@ -1210,6 +1256,31 @@ async function classificationOutcomeSmoke() {
     assert.strictEqual(manualSummary.results[0].contextComplete, true);
     assert(Object.hasOwn(manualSummary.results[0], "job"), "manual-only result must retain safe job context");
   }
+
+  const invalidModel = createFixture({ suffix: "invalid-model", title: "Invalid Model Engineer" });
+  const invalidSummary = await runBossMessageDiscovery({
+    db,
+    profileId: invalidModel.profileId,
+    reader: fakeReader([selectedConversation({
+      title: invalidModel.title,
+      messageId: "123456789012355"
+    })]),
+    classifyMessageGroup: async () => {
+      throw Object.assign(new Error(`invalid provider output ${PRIVATE_BODY}`), { code: "MESSAGE_REPLY_INVALID" });
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(invalidSummary.status, "completed");
+  assert.strictEqual(invalidSummary.processed, 1);
+  assert.strictEqual(invalidSummary.results[0].messageCategory, "other");
+  assert.strictEqual(invalidSummary.results[0].stage, "needs_user_action");
+  assert.strictEqual(
+    invalidSummary.results[0].manualActionReason,
+    "模型结果未通过安全校验，需要人工处理"
+  );
+  assert.deepStrictEqual(invalidSummary.results[0].messages, []);
+  assert(!JSON.stringify(invalidSummary).includes(PRIVATE_BODY));
 }
 
 async function readerStopSmoke() {

@@ -254,10 +254,18 @@ try {
     description: "OTHER_PROFILE_JD ".repeat(12),
     analysis: { semanticStatus: "complete", marker: "must-not-cross-profile" }
   });
+  db.prepare(`UPDATE jobs
+    SET title = 'LATEST_FAILED_TITLE', company = 'Latest Failed Co',
+      location = 'Shenzhen', salary = '99-100K'
+    WHERE id = ?`).run(contextFixture.jobId);
 
   const contextCandidate = listMessageDiscoveryCandidates(db, { profileId: contextFixture.profileId })
     .find((item) => item.jobId === contextFixture.jobId);
   assert.strictEqual(contextCandidate.sourceId, "job-context");
+  assert.strictEqual(contextCandidate.title, "Job context");
+  assert.strictEqual(contextCandidate.company, "Context Co");
+  assert.strictEqual(contextCandidate.city, "Guangzhou");
+  assert.strictEqual(contextCandidate.salary, "20-30K");
   assert.strictEqual(contextCandidate.observationId, oldComplete.observationId);
   assert.strictEqual(contextCandidate.description, "OLD_COMPLETE_JD ".repeat(12));
   assert.deepStrictEqual(contextCandidate.analysis, { semanticStatus: "complete", marker: "old-same-observation" });

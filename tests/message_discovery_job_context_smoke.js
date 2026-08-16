@@ -38,6 +38,10 @@ async function cacheHitSmoke() {
   const fixture = seedProfilePlan("cache");
   const jobId = seedJob(fixture, "cache-job", { complete: true });
   const card = ensureProgressCard(db, { ...fixture, jobId, source: "boss", now: fixture.now });
+  const wrongJobId = seedJob(fixture, "wrong-cache-job", { complete: true });
+  ensureProgressCard(db, { ...fixture, jobId: wrongJobId, source: "boss", now: fixture.now });
+  const wrongCandidate = listMessageDiscoveryCandidates(db, { profileId: fixture.profileId })
+    .find((item) => item.jobId === wrongJobId);
   const calls = [];
   const target = trustedTarget("cache-job");
   const resolver = createMessageDiscoveryJobContextResolver({
@@ -65,7 +69,7 @@ async function cacheHitSmoke() {
   const result = await resolver({
     target: { tabId: 42, conversationKey },
     selected,
-    candidate: null
+    candidate: wrongCandidate
   });
   assert.deepStrictEqual(calls, [["target", selected]]);
   assert.strictEqual(result.cardId, card.id);

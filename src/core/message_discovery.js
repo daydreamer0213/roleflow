@@ -27,6 +27,7 @@ const CONTEXT_TERMINAL_CODES = new Set([
   "BOSS_MESSAGE_DETAIL_BASELINE_INVALID",
   "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED",
   "BOSS_MESSAGE_DETAIL_BINDING_INVALID",
+  "BOSS_MESSAGE_DETAIL_BROWSER_FAILED",
   "BOSS_MESSAGE_DETAIL_CLOSE_FAILED",
   "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND",
   "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"
@@ -113,8 +114,8 @@ async function runBossMessageDiscovery({
 
     let resolved = resolveUniqueCandidate(candidates, selected, target.conversationKey);
     let contextStopCode = "";
-    const canResolveContext = (resolved.ok && !hasCompleteJobContext(resolved.job))
-      || (!resolved.ok && ["BOSS_MESSAGE_CARD_NOT_FOUND", "BOSS_MESSAGE_CARD_AMBIGUOUS"].includes(resolved.reasonCode));
+    const canResolveContext = resolved.ok
+      || ["BOSS_MESSAGE_CARD_NOT_FOUND", "BOSS_MESSAGE_CARD_AMBIGUOUS"].includes(resolved.reasonCode);
     if (canResolveContext && typeof resolveJobContext === "function") {
       try {
         const candidate = resolved.ok ? resolved.candidate : null;
@@ -219,6 +220,15 @@ async function runBossMessageDiscovery({
         facts,
         contextSource: resolved.contextSource || resolved.job.contextSource || ""
       });
+    } catch (error) {
+      if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(String(error?.code || ""))) throw error;
+      classification = {
+        messageCategory: "other",
+        missingFact: null,
+        messages: [],
+        manualActionReason: "model_contract_invalid",
+        progressUpdate: { stage: "needs_user_action" }
+      };
     } finally {
       for (const item of incoming.messages) item.text = "";
       clearSelectedSnapshot(selected);
@@ -494,6 +504,9 @@ function safeResult(card, result, resolvedJob, contextSource) {
 
 function safeManualActionReason(result, missingFactKey, messages) {
   if (missingFactKey) return "需要先确认候选人事实后再回复";
+  if (result.manualActionReason === "model_contract_invalid") {
+    return "模型结果未通过安全校验，需要人工处理";
+  }
   const categoryReason = {
     interview_invitation: "面试邀请需要人工确认时间和安排",
     salary: "薪资问题需要人工确认口径",

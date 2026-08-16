@@ -191,6 +191,7 @@ function messageDiscoveryRecoveryMessages() {
     BOSS_MESSAGE_COMPANY_MISMATCH: verifyIdentity,
     BOSS_MESSAGE_THREAD_MISMATCH: verifyIdentity,
     BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE: "无法确认当前会话对应的岗位入口。该会话已保留，未打开详情，也未生成草稿。",
+    BOSS_MESSAGE_DETAIL_BROWSER_FAILED: "后台岗位详情读取遇到浏览器异常。该会话已保留，本次只读发现已安全停止。",
     BOSS_MESSAGE_DETAIL_NOT_BACKGROUND: "岗位详情未能在后台安全打开。临时页会被关闭，本次只读发现已停止。",
     BOSS_MESSAGE_DETAIL_TARGET_MISMATCH: "后台打开的岗位与当前会话不一致。临时页会被关闭，该会话已保留待处理。",
     BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED: "岗位详情读取后未能确认浏览器已恢复安全状态。本次只读发现已停止，请检查 BOSS 标签页。",

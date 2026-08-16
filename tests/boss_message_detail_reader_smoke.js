@@ -112,12 +112,17 @@ function fakeBrowser({
   return browser;
 }
 
-function makeReader(browser, { identityError = null } = {}) {
+function makeReader(browser, { identityError = null, rejectAbortedIdentitySignal = false } = {}) {
   const hooks = [];
+  const identitySignals = [];
   const messageReader = {
-    async readSelectedJobTarget(received) {
+    async readSelectedJobTarget(received, signal) {
       hooks.push("recheckMessage");
+      identitySignals.push(Boolean(signal?.aborted));
       assert.strictEqual(received, selected);
+      if (rejectAbortedIdentitySignal && signal?.aborted) {
+        throw signal.reason || Object.assign(new Error("stopped"), { code: "MESSAGE_DISCOVERY_STOPPED" });
+      }
       if (identityError) throw identityError;
       return jobTarget;
     }
@@ -137,7 +142,7 @@ function makeReader(browser, { identityError = null } = {}) {
       await assertTabBindings();
     }
   });
-  return { reader, hooks };
+  return { reader, hooks, identitySignals };
 }
 
 async function read(reader, signal = null) {
@@ -195,11 +200,15 @@ async function read(reader, signal = null) {
   }
 
   const uncertainCreate = fakeBrowser({
-    createError: Object.assign(new Error("bridge result was ambiguous"), { code: "BROWSER_COMMAND_FAILED" }),
+    createError: Object.assign(new Error(`bridge echoed securityId=${SECRET}`), { code: "BROWSER_COMMAND_FAILED" }),
     createErrorAfterInsert: true
   });
   const uncertain = makeReader(uncertainCreate);
-  await assert.rejects(() => read(uncertain.reader), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  const uncertainError = await assert.rejects(
+    () => read(uncertain.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
+  );
+  assert.doesNotMatch(String(uncertainError), new RegExp(SECRET));
   assert.deepStrictEqual(uncertainCreate.tabs, baseTabs(), "an ambiguously created matching detail tab must be cleaned up");
   assert.deepStrictEqual(uncertain.hooks, ["beforeOpen", "afterIssuedAttempt"]);
   assert.strictEqual(uncertainCreate.calls.filter((call) => call.name === "createTab").length, 1, "ambiguous create must never retry");
@@ -210,28 +219,74 @@ async function read(reader, signal = null) {
     createErrorAfterInsert: true
   });
   const uncertainWrong = makeReader(uncertainWrongWindow);
-  await assert.rejects(() => read(uncertainWrong.reader), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  await assert.rejects(() => read(uncertainWrong.reader), (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED");
   assert.deepStrictEqual(
     uncertainWrongWindow.tabs,
     baseTabs(),
     "an ambiguously created target detail must be cleaned up even if Edge reports the wrong window"
   );
 
+  const uncertainLoading = fakeBrowser({
+    listedUrl: "about:blank",
+    createError: Object.assign(new Error(`loading securityId=${SECRET}`), { code: "BROWSER_COMMAND_FAILED" }),
+    createErrorAfterInsert: true
+  });
+  const loading = makeReader(uncertainLoading);
+  const loadingError = await assert.rejects(
+    () => read(loading.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED"
+  );
+  assert.doesNotMatch(String(loadingError), new RegExp(SECRET));
+  assert.strictEqual(
+    uncertainLoading.calls.some((call) => call.name === "closeTab"),
+    false,
+    "an unattributed same-window tab must never be guessed and closed"
+  );
+  assert.deepStrictEqual(
+    uncertainLoading.tabs,
+    [...baseTabs(), { id: DETAIL_TAB_ID, windowId: WINDOW_ID, active: false, url: "about:blank" }],
+    "an unattributed tab must remain visible for manual recovery"
+  );
+
   const abortController = new AbortController();
   const abortedBrowser = fakeBrowser({
     onCreate: () => abortController.abort(Object.assign(new Error("stopped"), { code: "MESSAGE_DISCOVERY_STOPPED" }))
   });
-  const aborted = makeReader(abortedBrowser);
+  const aborted = makeReader(abortedBrowser, { rejectAbortedIdentitySignal: true });
   await assert.rejects(
     () => read(aborted.reader, abortController.signal),
     (error) => error.code === "MESSAGE_DISCOVERY_STOPPED"
   );
   assert.deepStrictEqual(abortedBrowser.tabs, baseTabs(), "an aborted read must still close its transient detail tab");
+  assert.deepStrictEqual(aborted.identitySignals, [false], "cleanup identity verification must not inherit the business abort");
+
+  for (const invalidTarget of [{
+    ...jobTarget,
+    navigationUrl: `${jobTarget.navigationUrl}&extra=1`
+  }, {
+    ...jobTarget,
+    navigationUrl: `${jobTarget.navigationUrl}#private`
+  }]) {
+    const strictBrowser = fakeBrowser();
+    const strict = makeReader(strictBrowser);
+    await assert.rejects(
+      () => strict.reader.readSelectedJobDetail({
+        communicationTabId: COMMUNICATION_TAB_ID,
+        selected,
+        jobTarget: invalidTarget
+      }),
+      (error) => error.code === "BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE"
+    );
+    assert.strictEqual(strictBrowser.calls.length, 0, "an inexact trusted URL must stop before browser access");
+  }
 
   const driftError = Object.assign(new Error("selected conversation changed"), { code: "BOSS_MESSAGE_TARGET_MISMATCH" });
   const driftBrowser = fakeBrowser();
   const drift = makeReader(driftBrowser, { identityError: driftError });
-  await assert.rejects(() => read(drift.reader), (error) => error === driftError);
+  await assert.rejects(
+    () => read(drift.reader),
+    (error) => error.code === "BOSS_MESSAGE_TARGET_MISMATCH" && error !== driftError
+  );
   assert.deepStrictEqual(driftBrowser.tabs, baseTabs());
   assert.deepStrictEqual(drift.hooks, ["beforeOpen", "recheckMessage", "afterIssuedAttempt"]);
 

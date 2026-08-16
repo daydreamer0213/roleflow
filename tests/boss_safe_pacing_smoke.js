@@ -30,6 +30,7 @@ async function main() {
   await paneDetailDelaySmoke();
   detailFetchPacingPolicySmoke();
   await pacingRestoreFailClosedSmoke();
+  await pendingDetailCooldownResumeSmoke();
   await pacingWaitVisibilitySmoke();
   await abortedIssuedDetailStillCountsSmoke();
   await productionScanPacingCompositionSmoke();
@@ -153,6 +154,29 @@ async function pacingRestoreFailClosedSmoke() {
   adapter.sleep = async (ms) => sleeps.push(ms);
   await adapter.waitWithPacing("pane_detail_read");
   assert.deepStrictEqual(sleeps, [8000, 4000], "a saved overdue threshold must conservatively cool down first");
+}
+
+async function pendingDetailCooldownResumeSmoke() {
+  const sleeps = [];
+  const checkpoints = [];
+  const adapter = new BossSiteAdapter({
+    sleepFn: async (ms) => sleeps.push(ms),
+    randomFn: () => 0
+  });
+  adapter.restorePacing({
+    pacedActions: 2,
+    nextPacingCooldownAt: 18,
+    detailActions: 6,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  });
+  await adapter.waitForPendingDetailCooldown({
+    onPacingCheckpoint: async (state) => checkpoints.push({ ...state })
+  });
+  assert.deepStrictEqual(sleeps, [15000], "a restored due detail threshold must cool down before another request");
+  assert.strictEqual(checkpoints.length, 1);
+  assert.strictEqual(checkpoints[0].detailActions, 6);
+  assert.strictEqual(checkpoints[0].nextDetailMicroCooldownAt, 12);
 }
 
 async function productionScanPacingCompositionSmoke() {

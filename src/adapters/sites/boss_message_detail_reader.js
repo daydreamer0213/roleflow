@@ -40,6 +40,8 @@ function createBossMessageDetailReader({
       busy = true;
       try {
         return await readSelectedJobDetail(input);
+      } catch (error) {
+        throw sanitizedDetailError(error);
       } finally {
         busy = false;
       }
@@ -97,7 +99,7 @@ function createBossMessageDetailReader({
         try {
           await assertRestoredBaseline(await browser.listTabs(), binding);
           if (createReturned) {
-            const currentTarget = await messageReader.readSelectedJobTarget(selected, signal);
+            const currentTarget = await messageReader.readSelectedJobTarget(selected, null);
             if (currentTarget.jobId !== target.jobId) {
               throw detailError("BOSS_MESSAGE_DETAIL_TARGET_MISMATCH", "message detail identity changed");
             }
@@ -191,6 +193,9 @@ function trustedJobTarget(value) {
     || navigation.pathname !== expectedPath
     || canonical.pathname !== expectedPath
     || !navigation.searchParams.get("securityId")
+    || [...navigation.searchParams.keys()].some((key) => key !== "securityId")
+    || [...navigation.searchParams.keys()].length !== 1
+    || navigation.hash
     || canonical.search
     || canonical.hash
     || navigation.username
@@ -220,7 +225,8 @@ function captureBinding(tabs, communicationTabId) {
     communicationTabId: fixed.communicationTab.id,
     windowId: fixed.windowId,
     activeTabId,
-    bossTabIds: bossTabs.map((tab) => tab.id).sort((a, b) => a - b)
+    bossTabIds: bossTabs.map((tab) => tab.id).sort((a, b) => a - b),
+    tabIds: numericTabIds(tabs)
   };
 }
 
@@ -233,7 +239,8 @@ function assertRestoredBaseline(tabs, binding) {
     || fixed.communicationTab.id !== binding.communicationTabId
     || fixed.windowId !== binding.windowId
     || activeTabIdInWindow(tabs, binding.windowId) !== binding.activeTabId
-    || bossTabIds.some((id, index) => id !== binding.bossTabIds[index])) {
+    || bossTabIds.some((id, index) => id !== binding.bossTabIds[index])
+    || !sameIds(numericTabIds(tabs), binding.tabIds)) {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
   }
   return fixed;
@@ -367,6 +374,31 @@ function isTargetDetailTab(tab, target) {
   } catch {
     return false;
   }
+}
+
+function numericTabIds(tabs) {
+  return tabs.map((tab) => tab.id).filter(Number.isInteger).sort((left, right) => left - right);
+}
+
+function sameIds(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function sanitizedDetailError(error) {
+  const code = String(error?.code || "");
+  const allowed = /^BOSS_MESSAGE_[A-Z0-9_]+$/.test(code)
+    || /^BOSS_ACCESS_[A-Z0-9_]+$/.test(code)
+    || [
+      "BOSS_RISK_CONTROL",
+      "BOSS_LOGIN_REQUIRED",
+      "MESSAGE_DISCOVERY_STOPPED",
+      "SCAN_ABORTED",
+      "WORKFLOW_PAUSE_REQUESTED"
+    ].includes(code);
+  return detailError(
+    allowed ? code : "BOSS_MESSAGE_DETAIL_BROWSER_FAILED",
+    allowed ? `message detail stopped safely (${code})` : "background message detail browser operation failed"
+  );
 }
 
 module.exports = { createBossMessageDetailReader };
