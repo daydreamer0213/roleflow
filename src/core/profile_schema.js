@@ -1,5 +1,5 @@
-const { cityToBossCode } = require("./search_plan");
 const { PRODUCT_POLICY } = require("./product_policy");
+const { canonicalSearchPlanV2 } = require("./search_plan_schema");
 
 function normalizeCandidateProfile(input = {}, meta = {}) {
   const source = object(input.source);
@@ -41,29 +41,35 @@ function normalizeCandidateProfile(input = {}, meta = {}) {
 function normalizeSearchPlan(input = {}, candidateProfile = {}) {
   const policy = PRODUCT_POLICY.searchPlan;
   const candidate = object(candidateProfile.candidate);
-  const city = strings(input.cities || input.city || candidate.city, 5);
+  const platform = object(input.platform);
+  const generated = object(platform.generated);
+  const city = strings(generated.cities ?? input.cities ?? input.city ?? candidate.city, 5);
   const keywordInput = input.keywords || input.includeKeywords || input.searchKeywords;
   const keywords = list(keywordInput).map(normalizeKeyword).filter((item) => item.word).slice(0, 18);
   const fallbackKeywords = keywords.length ? keywords : defaultKeywords(candidateProfile);
   const salary = object(input.salary);
-  const platform = object(input.platform);
   const minK = number(input.salaryMinK ?? salary.minK, inferSalary(candidate.expectedSalary).min);
   const maxK = number(input.salaryMaxK ?? salary.maxK, inferSalary(candidate.expectedSalary).max);
-  return {
+  const experience = generated.experience ?? input.experience;
+  const normalized = {
     name: text(input.name || `${city[0] || "目标城市"}岗位筛选计划`),
+    acquisitionMode: input.acquisitionMode,
     platform: {
       site: normalizePlatformSite(platform.site || input.site || "boss"),
-      salaryLanes: strings(platform.salaryLanes || input.platformSalaryLanes, 4)
+      generated: {
+        cities: city,
+        salaryLanes: strings(generated.salaryLanes ?? platform.salaryLanes ?? input.platformSalaryLanes, 4),
+        experience: experience === undefined
+          ? normalizeExperience(policy.defaultExperience)
+          : normalizeExperience(experience, false),
+        jobTypes: strings(generated.jobTypes ?? input.jobTypes ?? input.jobType ?? policy.defaultJobTypes, 4),
+        degrees: strings(generated.degrees ?? input.degrees ?? input.degree, 8)
+      }
     },
-    cities: city,
-    bossCityCode: text(input.bossCityCode || cityToBossCode(city[0]) || ""),
     salary: { minK, maxK },
     salaryMode: ["wide", "strict"].includes(input.salaryMode)
       ? input.salaryMode
       : policy.defaultSalaryMode,
-    experience: normalizeExperience(input.experience || policy.defaultExperience),
-    jobTypes: strings(input.jobTypes || input.jobType || policy.defaultJobTypes, 4),
-    degrees: strings(input.degrees || input.degree, 8),
     allowExperienceStretch: input.allowExperienceStretch !== false,
     bossActiveDays: normalizeBossActiveDays(input.bossActiveDays),
     workSchedulePreference: normalizeWorkSchedulePreference(input.workSchedulePreference),
@@ -78,6 +84,7 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
     },
     source: text(input.source || "model-recommended")
   };
+  return canonicalSearchPlanV2(normalized);
 }
 
 function normalizeKeyword(value) {
@@ -161,9 +168,9 @@ function inferSalary(value) {
   return { min: numbers[0] || 0, max: numbers[1] || numbers[0] || 0 };
 }
 
-function normalizeExperience(value) {
+function normalizeExperience(value, defaultWhenEmpty = true) {
   const result = [...new Set(strings(value, 8).map(normalizeExperienceValue).filter(Boolean))];
-  return result.length ? result : [...PRODUCT_POLICY.searchPlan.defaultExperience];
+  return result.length || !defaultWhenEmpty ? result : [...PRODUCT_POLICY.searchPlan.defaultExperience];
 }
 
 function normalizeExperienceValue(value) {

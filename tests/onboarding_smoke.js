@@ -406,6 +406,9 @@ const generatedReports = [];
   });
   assert.strictEqual(saved.status, 303);
   assert.strictEqual(getSearchPlan(db, planId).plan.source, "user-confirmed");
+  assert.strictEqual(getSearchPlan(db, planId).plan.schemaVersion, 2);
+  assert.strictEqual(getSearchPlan(db, planId).plan.acquisitionMode, "inherited");
+  assert.deepStrictEqual(getSearchPlan(db, planId).plan.platform.generated.cities, ["广州"]);
   assert.strictEqual(getSearchPlanDependency(db, planId).stale, false, "保存方案后应绑定当前匹配卡版本");
   assert.strictEqual(getSearchPlan(db, planId).plan.allowExperienceStretch, true);
 

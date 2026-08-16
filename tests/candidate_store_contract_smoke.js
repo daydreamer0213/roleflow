@@ -112,6 +112,11 @@ try {
   assert.strictEqual(storage.getCandidateProfile(db, saved.profileId).displayName, "Candidate One");
   assert.strictEqual(storage.listCandidateProfiles(db)[0].activePlanId, saved.planId);
   assert.strictEqual(storage.getSearchPlan(db, saved.planId).profileVersionId, saved.profileVersionId);
+  assert.strictEqual(storage.getSearchPlan(db, saved.planId).plan.schemaVersion, 2);
+  assert.deepStrictEqual(storage.getSearchPlan(db, saved.planId).plan.platform.generated.cities, ["广州"]);
+  const rawSavedPlan = JSON.parse(db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(saved.planId).plan_json);
+  assert.strictEqual(Object.hasOwn(rawSavedPlan, "cities"), false);
+  assert.strictEqual(Object.hasOwn(rawSavedPlan.platform, "salaryLanes"), false);
   assert.strictEqual(storage.getActiveSearchPlan(db, saved.profileId).id, saved.planId);
   assert.strictEqual(storage.listSearchPlans(db, saved.profileId).length, 1);
   assert.strictEqual(storage.listProfileVersions(db, saved.profileId)[0].resumeDocumentId, saved.resumeDocumentId);
@@ -304,10 +309,11 @@ try {
 
   const activePlanBeforePartialFailure = storage.getActiveSearchPlan(db, saved.profileId).id;
   const circularPlan = plan("partial failure");
-  circularPlan.self = circularPlan;
+  circularPlan.salary = {};
+  circularPlan.salary.self = circularPlan.salary;
   assert.throws(() => storage.saveSearchPlan(db, { profileId: saved.profileId, plan: circularPlan }), /circular/i);
-  assert.strictEqual(storage.getActiveSearchPlan(db, saved.profileId), null, "saveSearchPlan must keep its existing non-transaction partial state");
-  assert.strictEqual(storage.getSearchPlan(db, activePlanBeforePartialFailure).isActive, false);
+  assert.strictEqual(storage.getActiveSearchPlan(db, saved.profileId).id, activePlanBeforePartialFailure, "invalid plan serialization must fail before changing the active plan");
+  assert.strictEqual(storage.getSearchPlan(db, activePlanBeforePartialFailure).isActive, true);
 
   console.log("candidate_store_contract_smoke ok");
 } finally {

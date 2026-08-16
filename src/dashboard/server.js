@@ -108,6 +108,7 @@ const { matchingCardFromProfile, matchingCardRevision } = require("../core/match
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
 const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
+const { generatedPlatformOf } = require("../core/search_plan_schema");
 const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
 const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
@@ -1358,7 +1359,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId }) {
       profileId,
       planId,
       keywordCount: plan.keywords.length,
-      cityCount: plan.cities.length,
+      cityCount: generatedPlatformOf(plan).cities.length,
       rescored: rescore.rescored
     });
     redirect(res, `/plan?profileId=${profileId}&planId=${planId}&saved=1`);

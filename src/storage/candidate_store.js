@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const { nowIso, parseJson } = require("./storage_shared");
 const { normalizeMatchingCard, matchingCardRevision } = require("../core/matching_card");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
+const { canonicalSearchPlanV2 } = require("../core/search_plan_schema");
 
 function saveProfileAnalysis(db, {
   profileId = null,
@@ -122,18 +123,19 @@ function stringList(value, limit) {
 }
 
 function saveSearchPlan(db, { id = null, profileId, profileVersionId = null, plan, now = nowIso() }) {
-  const name = String(plan?.name || "岗位筛选计划").trim() || "岗位筛选计划";
+  const persistedPlan = canonicalSearchPlanV2(plan || {});
+  const name = persistedPlan.name;
   const currentId = Number(id || 0);
   const boundProfileVersionId = Number(profileVersionId || getLatestProfileVersionId(db, profileId) || 0) || null;
   db.prepare("UPDATE search_plans SET is_active = 0, updated_at = ? WHERE profile_id = ?").run(now, profileId);
   if (currentId && db.prepare("SELECT id FROM search_plans WHERE id = ? AND profile_id = ?").get(currentId, profileId)) {
     db.prepare("UPDATE search_plans SET name = ?, plan_json = ?, profile_version_id = ?, is_active = 1, updated_at = ? WHERE id = ?")
-      .run(name, JSON.stringify(plan), boundProfileVersionId, now, currentId);
+      .run(name, JSON.stringify(persistedPlan), boundProfileVersionId, now, currentId);
     return currentId;
   }
   return Number(db.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, ?, ?)`)
-    .run(profileId, name, JSON.stringify(plan), boundProfileVersionId, now, now).lastInsertRowid);
+    .run(profileId, name, JSON.stringify(persistedPlan), boundProfileVersionId, now, now).lastInsertRowid);
 }
 
 function getCandidateProfile(db, profileId) {
@@ -554,7 +556,7 @@ function planRow(row) {
     id: Number(row.id),
     profileId: Number(row.profile_id),
     name: row.name,
-    plan: parseJson(row.plan_json, {}),
+    plan: canonicalSearchPlanV2(parseJson(row.plan_json, {})),
     profileVersionId: Number(row.profile_version_id || 0) || null,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,

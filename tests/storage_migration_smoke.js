@@ -3,7 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
-const { openDb, SCHEMA_VERSION } = require("../src/core/storage");
+const { openDb, SCHEMA_VERSION, getSearchPlan, saveSearchPlan } = require("../src/core/storage");
 const MATCHING_CARD_VERSION = 5;
 const DURABLE_WORKFLOW_VERSION = 6;
 const CANDIDATE_PROGRESS_VERSION = 7;
@@ -126,6 +126,43 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_RUNTIME_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  const planNow = "2026-08-16T00:00:00.000Z";
+  const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Plan migration candidate', '{}', NULL, ?, ?)`).run(planNow, planNow).lastInsertRowid);
+  const planProfileVersionId = Number(db.prepare(`INSERT INTO profile_versions(
+    profile_id, resume_document_id, profile_json, created_at
+  ) VALUES (?, NULL, '{}', ?)`).run(planProfileId, planNow).lastInsertRowid);
+  const legacyJson = JSON.stringify({
+    name: "迁移样本",
+    cities: ["广州"],
+    experience: ["1-3年"],
+    jobTypes: ["全职"],
+    degrees: ["本科"],
+    platform: { site: "boss", salaryLanes: ["10-20K"] },
+    directions: ["AI 应用开发"],
+    keywords: [{ word: "RAG", priority: "A" }]
+  });
+  const legacyPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, '迁移样本', ?, ?, 1, ?, ?)`)
+    .run(planProfileId, legacyJson, planProfileVersionId, planNow, planNow).lastInsertRowid);
+  const lazyPlan = getSearchPlan(db, legacyPlanId);
+  assert.strictEqual(lazyPlan.plan.schemaVersion, 2);
+  assert.strictEqual(lazyPlan.plan.acquisitionMode, "inherited");
+  assert.deepStrictEqual(lazyPlan.plan.platform.generated.cities, ["广州"]);
+  assert.strictEqual(db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(legacyPlanId).plan_json, legacyJson);
+  saveSearchPlan(db, {
+    id: legacyPlanId,
+    profileId: planProfileId,
+    profileVersionId: planProfileVersionId,
+    plan: lazyPlan.plan,
+    now: planNow
+  });
+  const storedPlan = JSON.parse(db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(legacyPlanId).plan_json);
+  assert.strictEqual(storedPlan.schemaVersion, 2);
+  assert.strictEqual(Object.hasOwn(storedPlan, "cities"), false);
+  assert.strictEqual(Object.hasOwn(storedPlan.platform, "salaryLanes"), false);
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
 

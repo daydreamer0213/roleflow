@@ -52,8 +52,8 @@ const plan = normalizeSearchPlan({
   directions: ["AI应用开发"]
 }, profile);
 assert.strictEqual(plan.bossActiveDays, 3);
-assert.deepStrictEqual(plan.jobTypes, ["全职"]);
-assert.deepStrictEqual(plan.degrees, []);
+assert.deepStrictEqual(plan.platform.generated.jobTypes, ["全职"]);
+assert.deepStrictEqual(plan.platform.generated.degrees, []);
 assert.strictEqual(plan.scan.maxDetailTotal, 300);
 assert.strictEqual(plan.scan.maxCards, PRODUCT_POLICY.searchPlan.broadScanDefaults.maxCards);
 assert.strictEqual(Object.hasOwn(plan.scan, "detailLimit"), false);
@@ -139,14 +139,21 @@ const targetSalaryFilter = resolveNativeFilterSnapshot({
 });
 assert.deepStrictEqual(targetSalaryPlan.salary, { minK: 9, maxK: 14 });
 assert.deepStrictEqual(targetSalaryFilter.params.salary, ["405"]);
-const unsupportedCity = validateSearchPlan({ ...plan, cities: ["惠州"] }, profile, { acquisitionMode: "generated" });
+const unsupportedCityPlan = {
+  ...plan,
+  platform: { ...plan.platform, generated: { ...plan.platform.generated, cities: ["惠州"] } }
+};
+const unsupportedCity = validateSearchPlan(unsupportedCityPlan, profile, { acquisitionMode: "generated" });
 assert.strictEqual(unsupportedCity.valid, false);
 assert(unsupportedCity.errors.some((item) => item.includes("惠州")));
 assert.throws(
-  () => assertSearchPlanReady({ plan: { ...plan, cities: ["惠州"] } }, profile, {}, { acquisitionMode: "generated" }),
+  () => assertSearchPlanReady({ plan: unsupportedCityPlan }, profile, {}, { acquisitionMode: "generated" }),
   /惠州/
 );
-const noCityPlan = { ...plan, cities: [] };
+const noCityPlan = {
+  ...plan,
+  platform: { ...plan.platform, generated: { ...plan.platform.generated, cities: [] } }
+};
 assert.strictEqual(
   validateSearchPlan(noCityPlan, profile).valid,
   true,
@@ -192,9 +199,9 @@ assert.deepStrictEqual(resolveScanPolicy(generatedV2Plan, "broad").snapshot.plat
 assert.strictEqual(resolveScanPolicy(generatedV2Plan, "broad").snapshot.acquisitionMode, "generated");
 assert.throws(() => assertSearchPlanReady({ plan }, profile, { stale: true }), /旧画像/);
 assert.strictEqual(assertSearchPlanReady({ plan }, profile).valid, true);
-assert.deepStrictEqual(normalizeSearchPlan({ experience: ["2-3?", "3-5?"] }, profile).experience, ["2-3年", "3-5年（可冲）"]);
+assert.deepStrictEqual(normalizeSearchPlan({ experience: ["2-3?", "3-5?"] }, profile).platform.generated.experience, ["2-3年", "3-5年（可冲）"]);
 const locationlessProfile = normalizeCandidateProfile({ candidate: { name: "无地点候选人", targetTitles: ["Python后端"] } });
-assert.deepStrictEqual(normalizeSearchPlan({ keywords: ["Python后端"] }, locationlessProfile).cities, []);
+assert.deepStrictEqual(normalizeSearchPlan({ keywords: ["Python后端"] }, locationlessProfile).platform.generated.cities, []);
 
 const runtime = profileToRuntimeConfigs({
   profile: { location: {} },
