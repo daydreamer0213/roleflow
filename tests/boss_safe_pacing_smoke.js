@@ -27,6 +27,7 @@ main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
 });
 
 async function main() {
+  await catalogRefreshBudgetSmoke();
   await paneDetailDelaySmoke();
   detailFetchPacingPolicySmoke();
   await pacingRestoreFailClosedSmoke();
@@ -45,6 +46,37 @@ async function main() {
   await riskPersistenceFailurePreservesOriginalErrorSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+async function catalogRefreshBudgetSmoke() {
+  for (const failNavigation of [false, true]) {
+    const reservations = [];
+    const adapter = new BossSiteAdapter({
+      browser: {
+        async activeTabId() { return "search"; },
+        async navigate() {
+          if (failNavigation) throw Object.assign(new Error("navigation failed"), { code: "BROWSER_COMMAND_FAILED" });
+        },
+        async evalValue() {
+          return [
+            { options: [{ ka: "sel-job-rec-salary-405", label: "10-20K" }] },
+            { options: [{ ka: "sel-job-rec-exp-104", label: "1-3年" }] }
+          ];
+        }
+      },
+      accessController: { async reserve(action, details) { reservations.push({ action, details }); } },
+      sleepFn: async () => {},
+      randomFn: () => 0
+    });
+    adapter.assertSearchPage = async () => ({ isSearchPage: true });
+    if (failNavigation) {
+      await assert.rejects(() => adapter.discoverFilterCatalog(), (error) => error.code === "BROWSER_COMMAND_FAILED");
+    } else {
+      await adapter.discoverFilterCatalog();
+    }
+    assert.deepStrictEqual(reservations, [{ action: "list_navigation", details: { kind: "catalog" } }]);
+    assert.strictEqual(adapter.listNavigations, failNavigation ? 0 : 1, "a completed catalog navigation must consume the in-run page budget");
+  }
 }
 
 async function pacingWaitVisibilitySmoke() {

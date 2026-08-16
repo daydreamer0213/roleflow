@@ -6,11 +6,15 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     getCandidateMatchingContext,
     getSearchPlanDependency,
     assertSearchPlanReady,
+    getActiveWorkflow,
     buildDashboardState,
     workflowBlockedMessage,
-    resolveNewInheritedBrowser,
-    inheritedContextResolver,
-    assertInheritedAcquisitionScope,
+    resolveNewWorkflowBrowser,
+    acquisitionContextResolver,
+    assertAcquisitionContext,
+    acquisitionModeOf,
+    freezeWorkflowPlan,
+    preparePlanForNewWorkflow,
     scanAvailability,
     workflowModelProfilesSnapshot,
     createWorkflowRun,
@@ -20,18 +24,22 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     logger
   } = deps;
   const planId = Number(input.planId || 0);
-  const browserAuthority = resolveNewInheritedBrowser(input);
+  const browserAuthority = resolveNewWorkflowBrowser(input);
   const plan = getSearchPlan(db, planId);
   if (!plan || !getCandidateProfile(db, plan.profileId)) {
     throw appError("WORKFLOW_PROFILE_NOT_FOUND", "筛选方案对应的候选人画像不存在。", { statusCode: 404 });
   }
   const matchingContext = getCandidateMatchingContext(db, plan.profileId);
+  const frozenPlan = freezeWorkflowPlan(plan.plan);
+  const activeWorkflow = getActiveWorkflow(db, plan);
+  if (activeWorkflow) return { workflow: activeWorkflow, alreadyActive: true };
   assertSearchPlanReady(
     plan,
     matchingContext?.candidateProfile || {},
     getSearchPlanDependency(db, plan.id),
-    { acquisitionMode: "inherited" }
+    { acquisitionMode: acquisitionModeOf(plan.plan) }
   );
+  await preparePlanForNewWorkflow({ db, plan, matchingContext });
   const preliminaryState = buildDashboardState(db, plan);
   if (preliminaryState.activeRun) return { workflow: preliminaryState.activeRun, alreadyActive: true };
   if (preliminaryState.nextPlan?.errorCode) {
@@ -48,102 +56,105 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
       { statusCode: 409 }
     );
   }
-  return Promise.resolve(inheritedContextResolver({
+  const acquisition = await acquisitionContextResolver({
     db,
     plan,
     matchingContext,
     logger,
     browserMode: browserAuthority.browserMode,
     cdpPort: browserAuthority.cdpPort
-  })).then((inheritedContext) => {
-    try {
-      assertInheritedAcquisitionScope(inheritedContext.searchScope);
-    } catch (error) {
-      throw appError(error.code, error.message, { statusCode: 409, cause: error });
-    }
-    const state = buildDashboardState(db, plan, new Date(), inheritedContext);
-    if (state.activeRun) return { workflow: state.activeRun, alreadyActive: true };
-    if (state.nextPlan?.errorCode) {
-      throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
-    }
-    if (state.nextPlan.scanNeeded && !input.modelReady) {
-      throw appError(
-        "MODEL_CONFIGURATION_REQUIRED",
-        "执行新一轮前，请先打开 /settings#model-profile-batch_screening 完成批量筛选模型连接测试。",
-        { statusCode: 409 }
-      );
-    }
-    if (state.nextPlan.scanNeeded) scanAvailability(db, input.scanRuns, plan.id, logger);
-    const modelProfiles = workflowModelProfilesSnapshot(input.modelState, { backupRuntime: input.backupRuntime });
-    let workflow = createWorkflowRun(db, {
-      profileId: plan.profileId,
-      planId: plan.id,
-      localDay: state.localDay,
-      sequence: state.runs.length + 1,
-      targetSuccessCount: state.nextPlan.targetSuccessCount,
-      inventoryCount: state.nextPlan.inventoryCount,
-      candidateGap: state.nextPlan.candidateGap,
-      scanNeeded: state.nextPlan.scanNeeded,
-      keywords: state.nextPlan.selectedKeywords,
-      budget: state.nextPlan.budget,
-      modelConfigRevision: modelProfiles.batch_screening.revision,
-      planner: {
-        ...state.nextPlan,
-        browserMode: browserAuthority.browserMode,
-        cdpPort: browserAuthority.cdpPort,
-        acquisitionMode: inheritedContext.acquisitionMode,
-        searchTemplate: inheritedContext.searchTemplate,
-        searchScope: inheritedContext.searchScope,
-        keywordSource: inheritedContext.keywordSource,
-        platformPolicy: inheritedContext.platformPolicy,
-        modelProfiles
-      },
-      shortfallCode: state.nextPlan.shortfallReason || "",
-      metrics: {
-        planning: {
-          inventory: state.nextPlan.inventoryCount,
-          candidateGap: state.nextPlan.candidateGap,
-          projectedNewCandidates: state.nextPlan.projectedNewCandidates
-        }
-      }
-    });
-    if (workflow.scanNeeded) {
-      try {
-        spawnScan(input.scanRuns, {
-          db,
-          root: input.root,
-          dbPath: input.dbPath,
-          planId: plan.id,
-          cdpPort: browserAuthority.cdpPort,
-          browserMode: browserAuthority.browserMode,
-          scanKind: "daily",
-          workflowRunId: workflow.id,
-          logger,
-          requestId: input.requestId,
-          spawnProcess: input.spawnProcess
-        });
-      } catch (launchError) {
-        settleFailedWorkflowLaunch(db, input.scanRuns, workflow, launchError);
-        throw launchError;
-      }
-    } else {
-      workflow = transitionWorkflowRun(db, {
-        id: workflow.id,
-        status: "review_required",
-        inventoryCount: state.inventory.length,
-        metrics: { ...workflow.metrics, planning: { ...workflow.metrics.planning, scanSkipped: true } }
-      });
-    }
-    logger.info("workflow_run_started", {
-      requestId: input.requestId,
-      workflowRunId: workflow.id,
-      planId: plan.id,
-      sequence: workflow.sequence,
-      targetSuccessCount: workflow.targetSuccessCount,
-      scanNeeded: workflow.scanNeeded
-    });
-    return { workflow };
   });
+  try {
+    assertAcquisitionContext(acquisition, { planId: plan.id });
+  } catch (error) {
+    throw appError(error.code, error.message, { statusCode: 409, cause: error });
+  }
+  const state = buildDashboardState(db, plan, new Date(), acquisition);
+  if (state.activeRun) return { workflow: state.activeRun, alreadyActive: true };
+  if (state.nextPlan?.errorCode) {
+    throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
+  }
+  if (state.nextPlan.scanNeeded && !input.modelReady) {
+    throw appError(
+      "MODEL_CONFIGURATION_REQUIRED",
+      "执行新一轮前，请先打开 /settings#model-profile-batch_screening 完成批量筛选模型连接测试。",
+      { statusCode: 409 }
+    );
+  }
+  if (state.nextPlan.scanNeeded) scanAvailability(db, input.scanRuns, plan.id, logger);
+  const modelProfiles = workflowModelProfilesSnapshot(input.modelState, { backupRuntime: input.backupRuntime });
+  let workflow = createWorkflowRun(db, {
+    profileId: plan.profileId,
+    planId: plan.id,
+    localDay: state.localDay,
+    sequence: state.runs.length + 1,
+    targetSuccessCount: state.nextPlan.targetSuccessCount,
+    inventoryCount: state.nextPlan.inventoryCount,
+    candidateGap: state.nextPlan.candidateGap,
+    scanNeeded: state.nextPlan.scanNeeded,
+    keywords: state.nextPlan.selectedKeywords,
+    budget: state.nextPlan.budget,
+    modelConfigRevision: modelProfiles.batch_screening.revision,
+    planner: {
+      ...state.nextPlan,
+      ...frozenPlan,
+      browserMode: browserAuthority.browserMode,
+      cdpPort: browserAuthority.cdpPort,
+      acquisitionMode: acquisition.acquisitionMode,
+      searchTemplate: acquisition.searchTemplate,
+      searchScope: acquisition.searchScope || {},
+      keywordSource: acquisition.keywordSource,
+      platformPolicy: acquisition.platformPolicy || {},
+      cityScopes: acquisition.cityScopes || [],
+      nativeFilters: acquisition.nativeFilters || {},
+      nativeFilterCatalogRevision: acquisition.nativeFilterCatalogRevision || "",
+      modelProfiles
+    },
+    shortfallCode: state.nextPlan.shortfallReason || "",
+    metrics: {
+      planning: {
+        inventory: state.nextPlan.inventoryCount,
+        candidateGap: state.nextPlan.candidateGap,
+        projectedNewCandidates: state.nextPlan.projectedNewCandidates
+      }
+    }
+  });
+  if (workflow.scanNeeded) {
+    try {
+      spawnScan(input.scanRuns, {
+        db,
+        root: input.root,
+        dbPath: input.dbPath,
+        planId: plan.id,
+        cdpPort: browserAuthority.cdpPort,
+        browserMode: browserAuthority.browserMode,
+        scanKind: "daily",
+        workflowRunId: workflow.id,
+        logger,
+        requestId: input.requestId,
+        spawnProcess: input.spawnProcess
+      });
+    } catch (launchError) {
+      settleFailedWorkflowLaunch(db, input.scanRuns, workflow, launchError);
+      throw launchError;
+    }
+  } else {
+    workflow = transitionWorkflowRun(db, {
+      id: workflow.id,
+      status: "review_required",
+      inventoryCount: state.inventory.length,
+      metrics: { ...workflow.metrics, planning: { ...workflow.metrics.planning, scanSkipped: true } }
+    });
+  }
+  logger.info("workflow_run_started", {
+    requestId: input.requestId,
+    workflowRunId: workflow.id,
+    planId: plan.id,
+    sequence: workflow.sequence,
+    targetSuccessCount: workflow.targetSuccessCount,
+    scanNeeded: workflow.scanNeeded
+  });
+  return { workflow };
 }
 
 async function resumeWorkflow({ db, input = {}, deps = {} }) {
@@ -153,6 +164,8 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     getBatch,
     workflowResumeNeedsBatchModel,
     assertCompleteInheritedContext,
+    assertCompleteGeneratedContext,
+    assertFrozenWorkflowPlan,
     resolveWorkflowResumeBrowserMode,
     normalizeCdpPort,
     portableCdpPort,
@@ -178,6 +191,17 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
   if (!["generated", "inherited"].includes(acquisitionMode)) {
     throw appError("WORKFLOW_ACQUISITION_MODE_INVALID", "本轮任务的采集模式无效，不能安全恢复。", { statusCode: 409 });
   }
+  const hasFrozenPlan = workflow.planner?.planSnapshotVersion === 2;
+  if (hasFrozenPlan) {
+    try {
+      assertFrozenWorkflowPlan(workflow.planner);
+    } catch (error) {
+      throw appError("WORKFLOW_PLAN_SNAPSHOT_INVALID", "本轮任务的筛选方案快照无效，不能安全恢复。", { statusCode: 409, cause: error });
+    }
+    if (workflow.planner?.browserMode !== "edge") {
+      throw appError("WORKFLOW_BROWSER_AUTHORITY_INVALID", "新版本任务只允许使用创建时冻结的当前 Edge。", { statusCode: 409 });
+    }
+  }
   if (acquisitionMode === "inherited") {
     try {
       assertCompleteInheritedContext(workflow.planner, {
@@ -187,6 +211,12 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
       });
     } catch (error) {
       throw appError("WORKFLOW_INHERITED_SNAPSHOT_INVALID", "本轮继承模式快照不完整，不能安全恢复。", { statusCode: 409, cause: error });
+    }
+  } else if (hasFrozenPlan) {
+    try {
+      assertCompleteGeneratedContext(workflow.planner, { planId: workflow.planId });
+    } catch (error) {
+      throw appError("WORKFLOW_GENERATED_SNAPSHOT_INVALID", "本轮通用模式快照不完整，不能安全恢复。", { statusCode: 409, cause: error });
     }
   }
   const browserMode = resolveWorkflowResumeBrowserMode(workflow, input.browserMode);
@@ -207,13 +237,29 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     throw appError("WORKFLOW_RUN_TERMINAL", "本轮任务已经结束，不能继续执行。", { statusCode: 409 });
   }
   const resumesAnalysis = workflow.status === "interrupted" && String(workflow.resumePhase || "") === "analyzing";
+  if (acquisitionMode === "generated" && !hasFrozenPlan) {
+    if (!workflow.scanBatchId) {
+      throw appError("WORKFLOW_GENERATED_SNAPSHOT_INVALID", "历史通用模式任务缺少可验证的扫描快照，不能安全恢复。", { statusCode: 409 });
+    }
+    try {
+      const validation = validateResumeBatch({
+        resumeBatchId: workflow.scanBatchId,
+        resumedBatch: getBatch(db, workflow.scanBatchId),
+        site: "boss",
+        planId: workflow.planId
+      });
+      if (validation.acquisitionMode !== "generated") throw new Error("historical generated snapshot mode mismatch");
+    } catch (error) {
+      throw appError("WORKFLOW_GENERATED_SNAPSHOT_INVALID", "历史通用模式任务的扫描快照无效，不能安全恢复。", { statusCode: 409, cause: error });
+    }
+  }
   if (resumesAnalysis) {
     assertWorkflowAnalysisBatch(db, workflow);
   } else if (workflow.scanNeeded && workflow.scanBatchId) {
     validateResumeBatch({ resumeBatchId: workflow.scanBatchId, resumedBatch: getBatch(db, workflow.scanBatchId), site: "boss", planId: workflow.planId });
   }
   const requiresBrowser = workflowResumeRequiresBrowser(db, workflow);
-  if (acquisitionMode === "inherited" && requiresBrowser) {
+  if (requiresBrowser) {
     const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({ browserMode, cdpPort }));
     assertWorkflowResumeBrowserReady(readiness);
   }

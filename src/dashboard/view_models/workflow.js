@@ -45,12 +45,31 @@ function buildWorkflowViewModel({
 }
 
 function scopeView(planner, workflow) {
+  const source = planner.keywordSource || {};
+  const planHash = String(planner.planHash || "").slice(0, 10);
+  if (planner?.acquisitionMode === "generated") {
+    const labels = planner.nativeFilters?.labels || {};
+    return {
+      visible: true,
+      mode: "通用模式",
+      sourceLabel: "已保存的平台条件",
+      planHash,
+      cities: (planner.cityScopes || []).map((item) => String(item?.city || item?.cityCode || "")).filter(Boolean),
+      filters: Object.entries(labels).flatMap(([name, values]) =>
+        (values || []).map((value) => `${filterName(name)}：${value}`)
+      ),
+      actualKeywords: (workflow?.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
+      candidateKeywordCount: (source.keywords || []).length,
+      sourcePlanId: String(source.searchPlanId || ""),
+      unresolved: []
+    };
+  }
   if (planner?.acquisitionMode !== "inherited") return { visible: false, filters: [], actualKeywords: [], candidateKeywordCount: 0, unresolved: [] };
   const policy = planner.platformPolicy || {};
-  const source = planner.keywordSource || {};
   const region = workRegionLabel(policy);
   return {
-    visible: true, scopeKey: scopeShortId(planner.searchScope?.key) || "未记录", sourcePlanId: String(source.searchPlanId || ""),
+    visible: true, mode: "继承模式", sourceLabel: "BOSS 当前页面", planHash,
+    scopeKey: scopeShortId(planner.searchScope?.key) || "未记录", sourcePlanId: String(source.searchPlanId || ""),
     filters: [region, ...(policy.filterSummary || []).map(String).filter((item) => !String(item).includes("未解析参数"))].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index),
     actualKeywords: (workflow?.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
     candidateKeywordCount: (source.keywords || []).length,
@@ -133,6 +152,10 @@ function progressTrack(track = {}, label, description) {
     label,
     description
   };
+}
+
+function filterName(name) {
+  return { salary: "薪资", experience: "经验", jobType: "职位类型", degree: "学历" }[name] || String(name);
 }
 
 function scanActivityLabel(scan = null, phaseKey = "") {
@@ -243,8 +266,9 @@ function communicationView(communication, runtimeBlock) {
 
 function resumeView(workflow) {
   const inherited = workflow.planner?.acquisitionMode === "inherited";
+  const fixedAuthority = inherited || workflow.planner?.planSnapshotVersion === 2;
   const browserMode = reviewBrowserMode(workflow);
-  return { endpoint: "/api/workflow-run/resume", runId: String(workflow.id || ""), inherited, browserMode, cdpPort: inherited && browserMode === "portable" ? 9222 : null };
+  return { endpoint: "/api/workflow-run/resume", runId: String(workflow.id || ""), inherited, fixedAuthority, browserMode, cdpPort: inherited && browserMode === "portable" ? 9222 : null };
 }
 
 function pollingView(status, workflow, communication, snapshot) {

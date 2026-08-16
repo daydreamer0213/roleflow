@@ -126,7 +126,7 @@ function assertCompleteInheritedContext(context = {}, {
 
 function freezeKeywordSource({ planRecord, matchingCardRevision = "" } = {}) {
   if (!planRecord?.id || !planRecord?.profileVersionId) {
-    throw scopeError("INHERITED_KEYWORD_SOURCE_INVALID", "继承模式缺少已确认的 Search Plan 版本。");
+    throw scopeError("INHERITED_KEYWORD_SOURCE_INVALID", "当前任务缺少已确认的 Search Plan 版本。");
   }
   const keywords = (planRecord.plan?.keywords || []).map((item) => ({
     word: String(typeof item === "string" ? item : item?.word || "").trim(),
@@ -134,7 +134,7 @@ function freezeKeywordSource({ planRecord, matchingCardRevision = "" } = {}) {
     reason: String(item?.reason || "").trim()
   })).filter((item) => item.word);
   if (!keywords.length) {
-    throw scopeError("INHERITED_KEYWORD_SOURCE_EMPTY", "已确认的 Search Plan 没有可用关键词。");
+    throw scopeError("INHERITED_KEYWORD_SOURCE_EMPTY", "当前任务的 Search Plan 没有可用关键词。");
   }
   return {
     searchPlanId: Number(planRecord.id),

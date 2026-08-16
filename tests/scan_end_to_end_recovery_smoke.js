@@ -229,6 +229,52 @@ async function main() {
     assertExit(generatedUnsupported, 1, "generated unsupported Search Plan city rejection");
     assert.match(generatedUnsupported.stderr, /BOSS 暂不支持这些城市：测试未映射城市/);
 
+    db = storage.openDb(dbPath);
+    const frozenGenerated = seedFrozenGeneratedWorkflow(storage, db, {
+      profileId,
+      profileVersionId: saved.profileVersionId
+    });
+    const changedPlan = {
+      ...frozenGenerated.planRecord.plan,
+      platform: {
+        ...frozenGenerated.planRecord.plan.platform,
+        generated: {
+          ...frozenGenerated.planRecord.plan.platform.generated,
+          cities: ["深圳"],
+          experience: ["3-5年"]
+        }
+      }
+    };
+    db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
+      .run(JSON.stringify(changedPlan), frozenGenerated.planRecord.id);
+    db.close();
+    db = null;
+
+    const frozenGeneratedScan = runScan(
+      dbPath,
+      frozenGenerated.planRecord.id,
+      "scan-e2e-frozen-generated",
+      "complete",
+      { workflowRunId: frozenGenerated.workflow.id, keywords: ["RAG", "Agent"] }
+    );
+    assertExit(frozenGeneratedScan, 0, "frozen generated workflow scan");
+    db = storage.openDb(dbPath);
+    const frozenWorkflowAfterScan = storage.getWorkflowRun(db, frozenGenerated.workflow.id);
+    const frozenBatch = storage.getBatch(db, frozenWorkflowAfterScan.scanBatchId);
+    const frozenExecution = frozenBatch.filterSnapshot.execution;
+    assert.strictEqual(frozenExecution.planHash, frozenGenerated.workflow.planner.planHash);
+    assert.strictEqual(frozenExecution.searchTemplate.mode, "generated");
+    assert.deepStrictEqual(frozenExecution.cityScopes, [{ city: "广州", cityCode: "101280100" }]);
+    assert.deepStrictEqual(frozenExecution.nativeFilters, {
+      site: "boss",
+      catalogVersion: "catalog-r1",
+      params: { experience: ["104"] },
+      labels: { experience: ["1-3年"] },
+      lanes: [{ id: "default", rank: 0, params: { experience: ["104"] }, labels: { experience: ["1-3年"] } }]
+    });
+    db.close();
+    db = null;
+
     await workflowPlatformAccessSmoke(storage);
 
     db = storage.openDb(dbPath);
@@ -304,6 +350,73 @@ async function workflowPlatformAccessSmoke(storage) {
   await scenarioFailureBeforeAccess(storage, workflowRunConsumesSlot);
   await scenarioStopAfterFirstTarget(storage, workflowRunConsumesSlot);
   await scenarioRepeatedEntry(storage);
+}
+
+function seedFrozenGeneratedWorkflow(storage, db, { profileId, profileVersionId }) {
+  const { freezeWorkflowPlan, buildGeneratedAcquisitionContext } = require("../src/core/workflow_acquisition");
+  const planId = storage.saveSearchPlan(db, {
+    profileId,
+    profileVersionId,
+    plan: {
+      schemaVersion: 2,
+      name: "Frozen generated scan",
+      acquisitionMode: "generated",
+      platform: {
+        site: "boss",
+        generated: { cities: ["广州"], salaryLanes: [], experience: ["1-3年"], jobTypes: [], degrees: [] }
+      },
+      directions: ["AI应用开发"],
+      keywords: [{ word: "RAG", priority: "A" }, { word: "Agent", priority: "B" }],
+      salary: { minK: 10, maxK: 20 },
+      salaryMode: "wide",
+      bossActiveDays: 3,
+      workSchedulePreference: "prefer_double_weekend",
+      scan: { maxCards: 10, maxDetailTotal: 4, browserPageBudget: 20 }
+    }
+  });
+  const planRecord = storage.getSearchPlan(db, planId);
+  const acquisition = buildGeneratedAcquisitionContext({
+    planRecord,
+    matchingCardRevision: "card-r1",
+    catalog: {
+      version: "catalog-r1",
+      site: "boss",
+      source: "fixture",
+      discoveredAt: new Date().toISOString(),
+      fields: {
+        experience: {
+          urlParam: "experience",
+          selection: "multiple",
+          semantic: "experience",
+          options: [{ code: "104", label: "1-3年" }, { code: "105", label: "3-5年" }]
+        }
+      }
+    }
+  });
+  const workflow = storage.createWorkflowRun(db, {
+    profileId,
+    planId,
+    localDay: "2026-08-17",
+    sequence: 1,
+    targetSuccessCount: 35,
+    inventoryCount: 0,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [
+      { word: "RAG", priority: "A", maxCards: 10, maxDetails: 4 },
+      { word: "Agent", priority: "B", maxCards: 10, maxDetails: 4 }
+    ],
+    budget: { maxDetailTotal: 4, browserPageBudget: 20 },
+    planner: {
+      ...freezeWorkflowPlan(planRecord.plan),
+      ...acquisition,
+      browserMode: "edge",
+      cdpPort: null
+    },
+    modelConfigRevision: "frozen-generated"
+  });
+  storage.transitionWorkflowRun(db, { id: workflow.id, status: "scanning" });
+  return { planRecord, workflow: storage.getWorkflowRun(db, workflow.id) };
 }
 
 async function scenarioProgressCheckpointPersistence(storage) {

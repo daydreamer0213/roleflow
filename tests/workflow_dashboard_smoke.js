@@ -14,6 +14,7 @@ const {
   getScanRun,
   getLatestScanRun,
   createScanRun,
+  beginScanRun,
   finishScanRun,
   attachWorkflowScan,
   createBatch,
@@ -168,7 +169,7 @@ let server;
     checkedAt: "2099-01-01T00:00:00.000Z"
   };
   const browserReadinessInputs = [];
-  const inheritedContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
+  const acquisitionContextResolver = async ({ plan, matchingContext, browserMode, cdpPort }) => {
     inheritedResolutionCount += 1;
     inheritedResolutionInput = { browserMode, cdpPort };
     if (inheritedFailureCode) {
@@ -247,7 +248,8 @@ let server;
       return taskProfile === "batch_screening" ? batchModelReady : taskProfile === "deep_analysis";
     },
     logger,
-    inheritedContextResolver,
+    acquisitionContextResolver,
+    inheritedPreviewResolver: acquisitionContextResolver,
     browserReadinessProbe: async (authority) => {
       browserReadinessInputs.push(authority);
       return { ...browserReadiness };
@@ -321,11 +323,9 @@ let server;
   assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "edge", cdpPort: null });
 
   const portableReadiness = await getJson(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
-  assert.strictEqual(portableReadiness.status, 200);
-  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "portable", cdpPort: 9222 });
-  const invalidPortableReadiness = await getText(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9223");
-  assert.strictEqual(invalidPortableReadiness.status, 409);
-  assert.match(invalidPortableReadiness.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.strictEqual(portableReadiness.status, 409);
+  assert.match(JSON.stringify(portableReadiness.body), /WORKFLOW_EDGE_REQUIRED/);
+  assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "edge", cdpPort: null });
 
   const gatedPlanPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.match(gatedPlanPage.body, /data-browser-readiness-button/);
@@ -336,6 +336,12 @@ let server;
   assert.match(gatedPlanPage.body, /disabled[^>]*>执行一轮/);
   assert.match(gatedPlanPage.body, /name="browserMode" value="edge"/);
   assert.doesNotMatch(gatedPlanPage.body, /value="portable"/);
+  const inheritedPreview = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+  assert.strictEqual(inheritedPreview.status, 200);
+  assert.strictEqual(inheritedPreview.body.mode, "inherited");
+  assert.deepStrictEqual(inheritedPreview.body.filters, ["地点：全国", "薪资：10-20K"]);
+  assert.strictEqual(JSON.stringify(inheritedPreview.body).includes("https://www.zhipin.com"), false);
+  assert.strictEqual(JSON.stringify(inheritedPreview.body).includes("securityId"), false);
   const readinessScript = extractBrowserReadinessScript(gatedPlanPage.body);
   await assertBrowserReadinessGate({ readinessScript, status: "login_required", baseDisabled: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: false, expectedDisabled: false });
@@ -419,8 +425,7 @@ let server;
   const resolutionCountBeforeModelGate = inheritedResolutionCount;
   const modelBlockedStart = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "portable",
-    cdpPort: 9222,
+    browserMode: "edge",
     action: "start"
   });
   assert.strictEqual(modelBlockedStart.status, 409);
@@ -441,8 +446,7 @@ let server;
     inheritedFailureCode = code;
     const rejected = await postForm(baseUrl, "/api/workflow-run", {
       planId: saved.planId,
-      browserMode: "portable",
-      cdpPort: 9222,
+      browserMode: "edge",
       action: "start"
     });
     assert.strictEqual(rejected.status, 409);
@@ -551,7 +555,8 @@ let server;
     "大模型应用开发工程师",
     "Agent开发工程师",
     "方案候选词：6 个",
-    "修改 BOSS 筛选会创建新的统计范围"
+    "方案后续修改不会影响本轮",
+    "方案指纹"
   ]) {
     assert.match(scanningPage.body, new RegExp(text));
   }
@@ -594,24 +599,30 @@ let server;
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
 
   const portableSaved = seedProfile(db);
-  const portableStarted = await postForm(baseUrl, "/api/workflow-run", {
+  const rejectedPortableStart = await postForm(baseUrl, "/api/workflow-run", {
     planId: portableSaved.planId,
     browserMode: "portable",
     cdpPort: 9222,
     action: "start"
   });
+  assert.strictEqual(rejectedPortableStart.status, 409);
+  assert.match(rejectedPortableStart.body, /WORKFLOW_EDGE_REQUIRED/);
+  const portableStarted = await postForm(baseUrl, "/api/workflow-run", {
+    planId: portableSaved.planId,
+    browserMode: "edge",
+    action: "start"
+  });
   assert.strictEqual(portableStarted.status, 303);
-  const portableWorkflow = listWorkflowRuns(db, { planId: portableSaved.planId })[0];
+  let portableWorkflow = listWorkflowRuns(db, { planId: portableSaved.planId })[0];
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?").run(JSON.stringify({
+    ...portableWorkflow.planner,
+    browserMode: "portable",
+    cdpPort: 9222
+  }), portableWorkflow.id);
+  portableWorkflow = getWorkflowRun(db, portableWorkflow.id);
   assert.strictEqual(portableWorkflow.planner.browserMode, "portable");
   assert.strictEqual(portableWorkflow.planner.cdpPort, 9222);
   const portableSpawn = spawns.at(-1);
-  assert.deepStrictEqual(
-    portableSpawn.args.slice(
-      portableSpawn.args.indexOf("--browser"),
-      portableSpawn.args.indexOf("--browser") + 4
-    ),
-    ["--browser", "portable", "--cdp-port", "9222"]
-  );
   portableSpawn.child.emit("error", new Error("portable workflow fixture"));
   const portableInterruptedPage = await getText(baseUrl, portableStarted.location);
   assert.match(portableInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
@@ -711,6 +722,17 @@ let server;
     assert.strictEqual(spawns.length, spawnCountBeforeMalformedResume);
     assert.strictEqual(inheritedResolutionCount, resolutionCountBeforeMalformedResume);
   }
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify(frozenPlanner), workflow.id);
+
+  db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
+    .run(JSON.stringify({ ...frozenPlanner, planHash: "tampered" }), workflow.id);
+  const invalidPlanHashResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "edge"
+  });
+  assert.strictEqual(invalidPlanHashResume.status, 409);
+  assert.match(invalidPlanHashResume.body, /WORKFLOW_PLAN_SNAPSHOT_INVALID/);
   db.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?")
     .run(JSON.stringify(frozenPlanner), workflow.id);
 
@@ -908,6 +930,7 @@ let server;
   assert.strictEqual(spawns.length, spawnCountBeforeLegacyPreflight);
   assert.deepStrictEqual(resumeBrowserProbeInputs.at(-1), { browserMode: "edge", cdpPort: null });
   resumeBrowserReadinessStatus = "ready";
+  transitionWorkflowRun(db, { id: legacyInherited.id, status: "stopped" });
 
   const batchId = validInheritedResumeBatchId;
   attachWorkflowScan(db, { id: workflow.id, scanRunId: resumedScan.id, scanBatchId: batchId });
@@ -1203,6 +1226,12 @@ let server;
   assert.strictEqual(rejectedWhileScanExists.status, 409);
   assert.strictEqual(listWorkflowRuns(db, { planId: saved.planId }).length, 2);
 
+  const {
+    planSnapshotVersion: _legacyPlanSnapshotVersion,
+    planSnapshot: _legacyPlanSnapshot,
+    planHash: _legacyPlanHash,
+    ...legacyFrozenPlanner
+  } = frozenPlanner;
   for (const [index, { label, cdpPort }] of [
     { label: "wrong-port", cdpPort: 9333 },
     { label: "zero-port", cdpPort: 0 },
@@ -1219,7 +1248,7 @@ let server;
       scanNeeded: true,
       keywords: [{ word: "RAG工程师", priority: "A", maxCards: 10 }],
       budget: { maxDetailTotal: 10, browserPageBudget: 2 },
-      planner: { ...frozenPlanner, browserMode: "portable", cdpPort }
+      planner: { ...legacyFrozenPlanner, browserMode: "portable", cdpPort }
     });
     transitionWorkflowRun(db, { id: corruptedPortableInherited.id, status: "scanning" });
     transitionWorkflowRun(db, {
@@ -1264,6 +1293,37 @@ let server;
     errorCode: "INJECTED_GENERATED_INTERRUPTION",
     errorMessage: "generated portable resume fixture"
   });
+  const historicalGeneratedSnapshot = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    detailMode: "trusted_pane",
+    runtimePolicyHash: "historical-generated-policy",
+    searchTemplate: { mode: "generated", url: "", cityCode: "" },
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    keywordPlan: [{ word: "AI应用开发工程师", priority: "A" }],
+    nativeFilters: { site: "boss", params: {}, labels: {}, lanes: [{ id: "default", rank: 0, params: {}, labels: {} }] },
+    limits: { maxCards: 20, maxDetailTotal: 20, browserPageBudget: 5 }
+  });
+  const historicalGeneratedBatchId = createBatch(db, "boss", "AI应用开发工程师", "historical generated resume", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    status: "interrupted",
+    filterSnapshot: { execution: historicalGeneratedSnapshot }
+  });
+  const historicalGeneratedScan = createScanRun(db, {
+    runId: "workflow-generated-portable-scan",
+    site: "boss",
+    command: "daily",
+    planId: saved.planId,
+    batchId: historicalGeneratedBatchId
+  });
+  beginScanRun(db, { runId: historicalGeneratedScan.id, batchId: historicalGeneratedBatchId, processId: process.pid });
+  attachWorkflowScan(db, {
+    id: generatedWorkflow.id,
+    scanRunId: historicalGeneratedScan.id,
+    scanBatchId: historicalGeneratedBatchId
+  });
+  finishScanRun(db, { runId: historicalGeneratedScan.id, status: "interrupted" });
   const generatedInterruptedPage = await getText(baseUrl, `/workflow?runId=${generatedWorkflow.id}`);
   assert.match(generatedInterruptedPage.body, /<select name="browserMode">/);
   assert.match(generatedInterruptedPage.body, /<option value="edge">当前已登录 Edge<\/option>/);
@@ -2476,9 +2536,15 @@ async function testWorkflowControlApi(
     message: "fixture block must not affect interrupted local analysis",
     details: { blockedUntil: "2099-12-31T23:59:59.000Z" }
   });
-  const interruptedAnalysisResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+  const rejectedFrozenPortableResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: interruptedAnalysis.workflowId,
     browserMode: "portable"
+  });
+  assert.strictEqual(rejectedFrozenPortableResume.status, 409);
+  assert.match(rejectedFrozenPortableResume.body, /WORKFLOW_BROWSER_MODE_MISMATCH/);
+  const interruptedAnalysisResume = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: interruptedAnalysis.workflowId,
+    browserMode: "edge"
   });
   assert.strictEqual(interruptedAnalysisResume.status, 303, interruptedAnalysisResume.body);
   assert.strictEqual(
@@ -2591,6 +2657,16 @@ function seedWorkflowApiFixture(database, saved, {
   localDay,
   resumePhase
 }) {
+  const { freezeWorkflowPlan } = require("../src/core/workflow_acquisition");
+  const savedPlan = database.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(saved.planId);
+  const planSnapshot = {
+    ...JSON.parse(savedPlan.plan_json),
+    acquisitionMode: "generated",
+    platform: {
+      site: "boss",
+      generated: { cities: ["广州"], salaryLanes: [], experience: [], jobTypes: [], degrees: [] }
+    }
+  };
   const batchId = createBatch(database, "boss", "workflow-api", "workflow API fixture", {
     profileId: saved.profileId,
     searchPlanId: saved.planId
@@ -2618,9 +2694,28 @@ function seedWorkflowApiFixture(database, saved, {
     budget: { maxDetailTotal: 20, browserPageBudget: 4 },
     modelConfigRevision: "fixture-batch-revision",
     planner: {
+      ...freezeWorkflowPlan(planSnapshot),
       acquisitionMode: "generated",
-      browserMode: "portable",
-      cdpPort: 9222,
+      browserMode: "edge",
+      cdpPort: null,
+      searchTemplate: { mode: "generated", url: "", cityCode: "" },
+      cityScopes: [{ city: "广州", cityCode: "101280100" }],
+      nativeFilters: { site: "boss", catalogVersion: "fixture-catalog", params: {}, labels: {}, lanes: [{ id: "default", rank: 0, params: {}, labels: {} }] },
+      nativeFilterCatalogRevision: "fixture-catalog",
+      keywordSource: {
+        searchPlanId: saved.planId,
+        profileVersionId: saved.profileVersionId,
+        matchingCardRevision: "fixture-card",
+        catalogHash: "fixture-keywords",
+        keywords: [{ word: "workflow-api", priority: "A", reason: "fixture" }]
+      },
+      platformPolicy: {
+        site: "boss",
+        hash: "fixture-generated-policy",
+        filters: { location: { mode: "specific", codes: ["101280100"], cities: ["广州"], districts: [] }, salary: { codes: [], labels: [], ranges: [] }, experience: { codes: [], labels: [] }, degree: { codes: [], labels: [] }, jobType: { codes: [], labels: [] }, acquisitionOnly: {} },
+        unresolvedParams: [],
+        filterSummary: ["地点：广州"]
+      },
       privateSecret: "private-planner-secret",
       modelProfiles: {
         batch_screening: {

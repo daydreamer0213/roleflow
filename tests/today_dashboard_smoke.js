@@ -9,6 +9,8 @@ const {
   confirmMatchingCard,
   createScanRun,
   finishScanRun,
+  acquireSiteScanLease,
+  releaseSiteScanLease,
   createWorkflowRun,
   transitionWorkflowRun
 } = require("../src/core/storage");
@@ -36,6 +38,8 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   });
   const blocked = seedProfile(db, { name: "Blocked Candidate", confirmCard: false });
   let planRescoreCalls = 0;
+  let previewResolutionCount = 0;
+  let previewFailureCode = "";
   const server = createDashboardServer({
     db,
     root,
@@ -43,13 +47,42 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
     forceMock: true,
     logger,
     browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }),
+    inheritedPreviewResolver: async () => {
+      previewResolutionCount += 1;
+      if (previewFailureCode) {
+        throw Object.assign(
+          new Error("bridge failed at https://www.zhipin.com/web/geek/jobs?securityId=private tabId=123456"),
+          { code: previewFailureCode }
+        );
+      }
+      return {
+        acquisitionMode: "inherited",
+        searchTemplate: {
+          mode: "inherited",
+          url: "https://www.zhipin.com/web/geek/jobs?city=101280100&securityId=private",
+          cityCode: "101280100"
+        },
+        tabId: 123456,
+        platformPolicy: {
+          filterSummary: ["城市：广州", "经验：1-3年"],
+          unresolvedParams: [{ param: "private", codes: ["securityId"] }]
+        }
+      };
+    },
     planRescore: () => { planRescoreCalls += 1; return { rescored: 1 }; }
   });
   const baseUrl = await listen(server);
   try {
     await assertConfirmedMatchCardPage(baseUrl, ready, privateFileNameContacts);
     await assertReadyTodayPage(baseUrl, ready, privateFileNameContacts);
+    await assertInheritedPreview(baseUrl, db, ready, {
+      resolutionCount: () => previewResolutionCount,
+      setFailure: (value) => { previewFailureCode = value; }
+    });
     await savePlanAndAssertMode(baseUrl, db, ready, "generated");
+    const generatedPreview = await getJson(baseUrl, `/api/acquisition-preview?planId=${ready.planId}`);
+    assert.strictEqual(generatedPreview.status, 409);
+    assert.strictEqual(previewResolutionCount, 2, "generated plans must not inspect the inherited BOSS page");
     assert.strictEqual(planRescoreCalls, 1, "saving without an active workflow must rescore once");
     const persistedRun = createScanRun(db, {
       runId: "today-persisted-scan",
@@ -172,6 +205,7 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   assert.match(page.body, /name="browserMode" value="edge"/);
   assert.doesNotMatch(page.body, /value="portable"/);
   assert.match(page.body, /data-browser-readiness-button[^>]*disabled/);
+  assert.match(page.body, new RegExp(`/api/acquisition-preview\\?planId=${saved.planId}`));
   assert.match(page.body, /id="browser-readiness-status"/);
   assert.match(page.body, /<details[^>]*>\s*<summary[^>]*><strong>调整筛选条件<\/strong>/);
   assert.match(page.body, /本地筛选方案/);
@@ -193,6 +227,44 @@ async function assertConfirmedMatchCardPage(baseUrl, saved, privateFileNameConta
   }
   assert.match(page.body, /当前扫描使用：简历文件\.txt/);
   assert.match(page.body, /匹配偏好卡 #\d+（已确认）/);
+}
+
+async function assertInheritedPreview(baseUrl, db, saved, { resolutionCount, setFailure }) {
+  const preview = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+  assert.strictEqual(preview.status, 200);
+  assert.strictEqual(preview.body.mode, "inherited");
+  assert.strictEqual(preview.body.status, "partial");
+  assert.deepStrictEqual(preview.body.filters, ["城市：广州", "经验：1-3年"]);
+  assert.deepStrictEqual(preview.body.unresolved, ["某平台参数未能识别"]);
+  assert.strictEqual(JSON.stringify(preview.body).includes("securityId"), false);
+  assert.strictEqual(JSON.stringify(preview.body).includes("https://www.zhipin.com"), false);
+  assert.strictEqual(JSON.stringify(preview.body).includes("123456"), false);
+  assert.strictEqual(resolutionCount(), 1);
+
+  const lease = acquireSiteScanLease(db, {
+    site: "boss",
+    owner: "today-preview-lease",
+    command: "daily",
+    planId: saved.planId
+  });
+  try {
+    const blocked = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+    assert.strictEqual(blocked.status, 409);
+    assert.strictEqual(blocked.body.errorCode, "SCAN_ALREADY_RUNNING");
+    assert.strictEqual(resolutionCount(), 1, "preview must stop before browser inspection while a scan lease is active");
+  } finally {
+    releaseSiteScanLease(db, lease);
+  }
+
+  setFailure("BROWSER_DISCONNECTED");
+  const unavailable = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+  setFailure("");
+  assert.strictEqual(unavailable.status, 409);
+  assert.strictEqual(unavailable.body.errorCode, "BROWSER_DISCONNECTED");
+  assert.strictEqual(JSON.stringify(unavailable.body).includes("securityId"), false);
+  assert.strictEqual(JSON.stringify(unavailable.body).includes("https://www.zhipin.com"), false);
+  assert.strictEqual(JSON.stringify(unavailable.body).includes("123456"), false);
+  assert.strictEqual(resolutionCount(), 2);
 }
 
 async function assertPersistedScanStatusPage(baseUrl, saved) {
@@ -284,7 +356,7 @@ function createActiveWorkflow(db, saved) {
     id: "today-active-workflow",
     profileId: saved.profileId,
     planId: saved.planId,
-    localDay: chinaLocalDay(),
+    localDay: "2026-08-16",
     sequence: 1,
     targetSuccessCount: 35,
     successfulCount: 0,
@@ -327,6 +399,11 @@ async function listen(server) {
 
 async function close(server) {
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+async function getJson(baseUrl, pathname) {
+  const response = await fetch(`${baseUrl}${pathname}`, { headers: { accept: "application/json" } });
+  return { status: response.status, body: await response.json() };
 }
 
 async function getText(baseUrl, pathname) {

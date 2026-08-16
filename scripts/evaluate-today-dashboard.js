@@ -72,6 +72,13 @@ async function main() {
         ready: true,
         message: "fixture ready",
         checkedAt: "2099-01-01T00:00:00.000Z"
+      }),
+      inheritedPreviewResolver: async () => ({
+        acquisitionMode: "inherited",
+        platformPolicy: {
+          filterSummary: ["地点：上海", "经验：1-3年"],
+          unresolvedParams: []
+        }
       })
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

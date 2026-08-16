@@ -98,7 +98,28 @@ function compilePlatformRuntimePolicy({ searchScope, catalog, urlOptions = [], c
   };
 }
 
-function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
+function compileGeneratedPlatformRuntimePolicy({ cityScopes = [], nativeFilters = {} } = {}) {
+  const laneLabels = (nativeFilters.lanes || []).flatMap((lane) => lane.labels?.salary || []);
+  const labels = nativeFilters.labels || {};
+  const salaryLabels = [...new Set([...(labels.salary || []), ...laneLabels])];
+  const filters = {
+    location: {
+      mode: cityScopes.length ? "specific" : "unset",
+      codes: cityScopes.map((item) => item.cityCode),
+      cities: cityScopes.map((item) => item.city).filter(Boolean),
+      districts: []
+    },
+    salary: { codes: [], labels: salaryLabels, ranges: salaryLabels.map(salaryRange).filter(Boolean) },
+    experience: { codes: [], labels: [...(labels.experience || [])] },
+    degree: { codes: [], labels: [...(labels.degree || [])] },
+    jobType: { codes: [], labels: [...(labels.jobType || [])] },
+    acquisitionOnly: {}
+  };
+  const payload = { site: "boss", filters, unresolvedParams: [] };
+  return { ...payload, filterSummary: formatPolicySummary(filters, []), hash: stableHash(payload) };
+}
+
+function applyPlatformRuntimePolicy(configs = {}, policy = {}, { acquisitionMode = "inherited" } = {}) {
   const sourcePlan = configs.searchPlan || {};
   const recommendationPolicy = {
     candidateProfile: configs.candidateProfile || {},
@@ -108,7 +129,7 @@ function applyPlatformRuntimePolicy(configs = {}, policy = {}) {
   };
   const projected = {
     ...configs,
-    acquisitionMode: "inherited",
+    acquisitionMode,
     platformPolicy: policy,
     acquisitionPolicy: policy,
     acquisitionPolicyHash: policy.hash || stableHash(policy),
@@ -315,6 +336,7 @@ function policyError(code, message) {
 
 module.exports = {
   compilePlatformRuntimePolicy,
+  compileGeneratedPlatformRuntimePolicy,
   applyPlatformRuntimePolicy,
   evaluatePlatformBoundaries
 };

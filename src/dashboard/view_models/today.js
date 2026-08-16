@@ -26,7 +26,12 @@ function buildTodayViewModel(input = {}) {
   const acquisition = {
     mode,
     generated,
-    inheritedPreview: input.inheritedPreview || { status: "idle", summary: "读取当前 BOSS 搜索页后显示" },
+    inheritedPreview: {
+      status: "idle",
+      summary: "读取当前 BOSS 搜索页后显示",
+      ...(input.inheritedPreview || {}),
+      endpoint: `/api/acquisition-preview?planId=${encodeURIComponent(planId)}`
+    },
     activeSnapshot: activePlanner ? {
       mode: activePlanner.acquisitionMode,
       planHash: activePlanner.planHash || "",

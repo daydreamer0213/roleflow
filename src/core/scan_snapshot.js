@@ -3,6 +3,7 @@ const { buildBossScanTargets } = require("../adapters/sites/boss");
 
 const SCHEMA_VERSION = 4;
 const PAYLOAD_FIELDS = [
+  "planHash",
   "site",
   "scanKind",
   "detailMode",
@@ -53,6 +54,7 @@ function buildScanExecutionSnapshot(input = {}) {
   const snapshot = {
     schemaVersion: SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
+    ...(String(input.planHash || "").trim() ? { planHash: String(input.planHash).trim() } : {}),
     site: String(input.site || "boss").trim().toLowerCase(),
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     detailMode: normalizeDetailMode(input.detailMode),
@@ -117,6 +119,7 @@ function assertScanSnapshotCompatible(stored, current) {
     }
     for (const field of PAYLOAD_FIELDS) {
       if (field === "recommendationPolicyHash" && (!stored[field] || !current[field])) continue;
+      if (field === "planHash" && !stored[field] && !current[field]) continue;
       if (comparableHash(stored[field]) !== comparableHash(current[field])) differences.push(`${field} differs`);
     }
     const legacyRecommendationField = !stored.recommendationPolicyHash || !current.recommendationPolicyHash;
@@ -211,6 +214,7 @@ function schemaDifferences(snapshot, label) {
   }
   for (const field of PAYLOAD_FIELDS) {
     if (field === "recommendationPolicyHash" && !Object.hasOwn(snapshot, field)) continue;
+    if (field === "planHash" && !Object.hasOwn(snapshot, field)) continue;
     if (!Object.hasOwn(snapshot, field)) differences.push(`${label}.${field} is missing`);
   }
   if (!Object.hasOwn(snapshot, "snapshotHash")) differences.push(`${label}.snapshotHash is missing`);
@@ -241,11 +245,14 @@ function normalizeExecutionFilters(value = {}) {
   const lanes = Array.isArray(value?.lanes) ? value.lanes : [];
   return cloneJson({
     site: String(value?.site || ""),
+    ...(value?.catalogVersion ? { catalogVersion: String(value.catalogVersion) } : {}),
     params: value?.params || {},
+    labels: value?.labels || {},
     lanes: lanes.map((lane, index) => ({
       id: String(lane?.id || `lane-${index + 1}`),
       rank: Number.isFinite(Number(lane?.rank)) ? Number(lane.rank) : index,
-      params: lane?.params || {}
+      params: lane?.params || {},
+      labels: lane?.labels || {}
     }))
   });
 }

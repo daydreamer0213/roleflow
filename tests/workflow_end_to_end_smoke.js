@@ -57,7 +57,7 @@ let server;
     forceMock: true,
     allowOfflineMock: true,
     logger,
-    inheritedContextResolver: resolveOfflineInheritedContext,
+    acquisitionContextResolver: resolveOfflineInheritedContext,
     spawnProcess(_file, args) {
       const child = new EventEmitter();
       child.pid = 8000 + children.length;
@@ -127,8 +127,7 @@ let server;
   );
   const third = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
-    browserMode: "portable",
-    cdpPort: 9222,
+    browserMode: "edge",
     action: "start"
   });
   assert.strictEqual(third.status, 409);
@@ -227,8 +226,7 @@ async function resolveOfflineInheritedContext({ plan, matchingContext }) {
 async function startWorkflow(baseUrl, planId) {
   const response = await postForm(baseUrl, "/api/workflow-run", {
     planId,
-    browserMode: "portable",
-    cdpPort: 9222,
+    browserMode: "edge",
     action: "start"
   });
   assert.strictEqual(response.status, 303, response.body);
@@ -281,7 +279,7 @@ async function confirmAndStart(baseUrl, workflow, review) {
   const confirmed = await postForm(baseUrl, "/api/communication-batch", {
     workflowRunId: workflow.id,
     planId: workflow.planId,
-    browserMode: "portable",
+    browserMode: "edge",
     jobIds: selectedIds
   }, "application/json");
   assert.strictEqual(confirmed.status, 200, confirmed.body);

@@ -107,9 +107,10 @@ const {
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
 const { normalizeCandidateProfile, normalizeSearchPlan } = require("../core/profile_schema");
-const { CITY_CODES, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
+const { CITY_CODES, cityToBossCode, planKeywords, profileToRuntimeConfigs, resolveScanPolicy } = require("../core/search_plan");
 const { acquisitionModeOf, generatedPlatformOf } = require("../core/search_plan_schema");
-const { resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
+const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("../core/platform_filters");
+const { createSiteAccessController } = require("../core/site_access_budget");
 const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
@@ -264,6 +265,13 @@ const {
   scopeShortId
 } = require("../core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../core/platform_runtime_policy");
+const {
+  freezeWorkflowPlan,
+  buildGeneratedAcquisitionContext,
+  assertAcquisitionContext,
+  assertCompleteGeneratedContext,
+  assertFrozenWorkflowPlan
+} = require("../core/workflow_acquisition");
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createMessageDiscoveryController } = require("./message_discovery_controller");
@@ -337,25 +345,16 @@ function publicBrowserReadinessSnapshot(readiness) {
   return { status, ready, message, checkedAt };
 }
 
-function resolveNewInheritedBrowser(input = {}) {
+function resolveNewWorkflowBrowser(input = {}) {
   const browserMode = String(input.browserMode || "edge").trim().toLowerCase();
-  if (!["edge", "portable"].includes(browserMode)) {
+  if (browserMode !== "edge") {
     throw appError(
-      "WORKFLOW_BROWSER_MODE_INVALID",
-      "新的继承模式必须使用项目专用 Edge。",
+      "WORKFLOW_EDGE_REQUIRED",
+      "新任务只使用当前已登录 Edge 的固定 BOSS 标签页。",
       { statusCode: 409 }
     );
   }
-  if (browserMode === "edge") return { browserMode: "edge", cdpPort: null };
-  const cdpPort = normalizeCdpPort(input.cdpPort);
-  if (cdpPort !== PORTABLE_CDP_PORT) {
-    throw appError(
-      "INHERITED_PORTABLE_PORT_REQUIRED",
-      "新的继承模式固定使用项目专用 Edge 的 9222 端口。",
-      { statusCode: 409 }
-    );
-  }
-  return { browserMode, cdpPort };
+  return { browserMode: "edge", cdpPort: null };
 }
 
 function createDashboardServer({
@@ -374,7 +373,8 @@ function createDashboardServer({
   spawnProcess = spawn,
   workflowHealth = {},
   outcomeAnalytics = {},
-  inheritedContextResolver = resolveLiveInheritedContext,
+  acquisitionContextResolver = resolveLiveAcquisitionContext,
+  inheritedPreviewResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
@@ -559,12 +559,21 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
-        const authority = resolveNewInheritedBrowser({
+        const authority = resolveNewWorkflowBrowser({
           browserMode: url.searchParams.get("browserMode"),
           cdpPort: url.searchParams.get("cdpPort")
         });
         const readiness = await resolvedBrowserReadinessProbe(authority);
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
+      }
+      if (req.method === "GET" && url.pathname === "/api/acquisition-preview") {
+        return handleAcquisitionPreview(res, {
+          db,
+          planId: url.searchParams.get("planId"),
+          logger,
+          requestId,
+          inheritedPreviewResolver
+        });
       }
       if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
         recoverStaleOnboardingRuns(db);
@@ -632,7 +641,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, inheritedContextResolver });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
       if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess });
       sendText(res, 404, "Not found");
@@ -1360,7 +1369,10 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
       listMatchingResumeVersions(db, profileId),
       matchingContext?.matchingCard || null
     );
-    const activeWorkflow = buildWorkflowDashboardState(db, savedPlanRecord).activeRun;
+    const activeWorkflow = getActiveWorkflowRun(db, {
+      profileId: savedPlanRecord.profileId,
+      planId: savedPlanRecord.id
+    });
     const rescoreResult = activeWorkflow
       ? { rescored: 0, deferred: true }
       : rescore(db, { planId, configs: runtimeConfigs });
@@ -1456,8 +1468,7 @@ function buildWorkflowDashboardState(
   }).sort((a, b) => a.sequence - b.sequence);
   const activeRun = getActiveWorkflowRun(db, {
     profileId: planRecord.profileId,
-    planId: planRecord.id,
-    localDay
+    planId: planRecord.id
   });
   const successfulToday = runs.reduce((sum, run) => sum + Number(run.successfulCount || 0), 0);
   const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
@@ -1619,7 +1630,7 @@ async function resolveLiveInheritedContext({
       : getPlatformFilterCatalog(db, "boss")?.catalog || {};
     const keywordSource = freezeKeywordSource({
       planRecord: plan,
-      matchingCardRevision: matchingCardRevision(matchingContext.matchingCard)
+      matchingCardRevision: matchingCardRevision(matchingContext?.matchingCard)
     });
     const platformPolicy = compilePlatformRuntimePolicy({
       searchScope,
@@ -1691,6 +1702,226 @@ async function resolveLiveInheritedContext({
   }
 }
 
+async function handleAcquisitionPreview(res, {
+  db,
+  planId,
+  logger,
+  requestId,
+  inheritedPreviewResolver
+}) {
+  const normalizedPlanId = Number(planId || 0);
+  try {
+    const plan = getSearchPlan(db, normalizedPlanId);
+    if (!plan) {
+      throw appError("SEARCH_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
+    }
+    if (acquisitionModeOf(plan.plan) !== "inherited") {
+      throw appError(
+        "ACQUISITION_PREVIEW_INHERITED_REQUIRED",
+        "当前方案不是继承模式，不需要读取 BOSS 搜索页范围。",
+        { statusCode: 409 }
+      );
+    }
+    if (getSiteScanLease(db, "boss")) {
+      throw appError(
+        "SCAN_ALREADY_RUNNING",
+        "BOSS 正在执行其他只读任务，暂不读取搜索页范围。",
+        { statusCode: 409 }
+      );
+    }
+    if (scanRuntimeBlock(db)) {
+      throw appError(
+        "BOSS_RUNTIME_BLOCKED",
+        "BOSS 访问仍处于安全暂停期，暂不读取搜索页范围。",
+        { statusCode: 409 }
+      );
+    }
+    const context = await inheritedPreviewResolver({
+      db,
+      plan,
+      matchingContext: getCandidateMatchingContext(db, plan.profileId),
+      logger,
+      browserMode: "edge",
+      cdpPort: null
+    });
+    return sendJson(res, 200, publicAcquisitionPreview(context));
+  } catch (error) {
+    const issue = publicAcquisitionPreviewError(error);
+    logger.warn("acquisition_preview_failed", {
+      requestId,
+      planId: normalizedPlanId || null,
+      errorCode: issue.errorCode
+    });
+    return sendJson(res, issue.statusCode, {
+      error: issue.error,
+      errorCode: issue.errorCode,
+      requestId
+    });
+  }
+}
+
+function publicAcquisitionPreview(context, checkedAt = new Date().toISOString()) {
+  if (context?.acquisitionMode !== "inherited") {
+    throw appError("ACQUISITION_PREVIEW_CONTEXT_INVALID", "继承范围读取结果无效。", { statusCode: 500 });
+  }
+  const policy = context?.platformPolicy || {};
+  const filters = (Array.isArray(policy.filterSummary) ? policy.filterSummary : [])
+    .map(safeAcquisitionPreviewLabel)
+    .filter(Boolean)
+    .slice(0, 16);
+  const unresolvedCount = Math.min(Array.isArray(policy.unresolvedParams) ? policy.unresolvedParams.length : 0, 20);
+  return {
+    mode: "inherited",
+    status: unresolvedCount ? "partial" : "ready",
+    summary: filters.join("；") || "当前 BOSS 搜索页未识别到额外筛选条件",
+    filters,
+    unresolved: Array.from({ length: unresolvedCount }, () => "某平台参数未能识别"),
+    checkedAt
+  };
+}
+
+function safeAcquisitionPreviewLabel(value) {
+  const label = String(value || "").trim().slice(0, 160);
+  if (!label || /^未解析参数[：:]/.test(label)) return "";
+  if (/https?:\/\/|securityid|cookie|authorization|(?:^|[^a-z])token(?:[^a-z]|$)|tabid/i.test(label)) return "";
+  const match = /^(地点|城市|区域|薪资|经验|学历|求职类型|职位类型|平台条件)[：:]\s*(.+)$/.exec(label);
+  if (match) return `${match[1]}：${match[2].slice(0, 120)}`;
+  const separator = label.indexOf("：");
+  if (separator > 0) return `平台条件：${label.slice(separator + 1, separator + 121)}`;
+  return "";
+}
+
+function publicAcquisitionPreviewError(error) {
+  const code = String(error?.code || "ACQUISITION_PREVIEW_FAILED");
+  const known = {
+    SEARCH_PLAN_NOT_FOUND: [404, "筛选方案不存在。"],
+    ACQUISITION_PREVIEW_INHERITED_REQUIRED: [409, "当前方案不是继承模式，不需要读取 BOSS 搜索页范围。"],
+    SCAN_ALREADY_RUNNING: [409, "BOSS 正在执行其他只读任务，暂不读取搜索页范围。"],
+    BOSS_RUNTIME_BLOCKED: [409, "BOSS 访问仍处于安全暂停期，暂不读取搜索页范围。"],
+    BOSS_RISK_CONTROL: [409, "BOSS 当前出现安全验证，已停止读取搜索页范围。"],
+    BOSS_LOGIN_REQUIRED: [409, "请先在固定 BOSS 页面完成登录。"],
+    BOSS_TAB_REQUIRED: [409, "请先恢复同一 Edge 窗口中的 BOSS 搜索页和沟通页。"],
+    BOSS_OPERATOR_TABS_CHANGED: [409, "BOSS 固定标签页已变化，请恢复后重试。"],
+    BOSS_SEARCH_TAB_CHANGED: [409, "BOSS 搜索页已变化，请恢复后重试。"],
+    BOSS_WINDOW_MISMATCH: [409, "BOSS 搜索页和沟通页需要位于同一 Edge 窗口。"],
+    BOSS_SEARCH_PAGE_INVALID: [409, "请先在固定 BOSS 搜索页打开岗位搜索结果。"],
+    BOSS_SEARCH_PAGE_LOST: [409, "固定 BOSS 搜索页已离开岗位搜索结果。"],
+    BROWSER_DISCONNECTED: [409, "当前已登录 Edge 的只读控制通道未连接。"],
+    BROWSER_UNAVAILABLE: [409, "当前已登录 Edge 的只读控制通道未连接。"]
+  };
+  const [statusCode, message] = known[code] || [500, "暂时无法读取当前 BOSS 搜索范围。"];
+  return { statusCode, error: message, errorCode: known[code] ? code : "ACQUISITION_PREVIEW_FAILED" };
+}
+
+async function resolveLiveGeneratedContext({
+  db,
+  plan,
+  matchingContext,
+  logger,
+  browserMode = "edge",
+  cdpPort = null,
+  browserFactory = createDashboardBrowser,
+  accessControllerFactory = createSiteAccessController
+}) {
+  try {
+    const browser = browserFactory({ browserMode, cdpPort });
+    let adapter = new boss.BossSiteAdapter({ browser, logger });
+    const inspected = await inspectBossOperatorTabs({
+      browser,
+      inspectTab: (tabId) => adapter.preflight({ tabId })
+    });
+    const searchState = inspected.searchState;
+    if (!searchState?.isSearchPage) {
+      throw appError("BOSS_SEARCH_PAGE_INVALID", "请先在当前已登录 Edge 的固定 BOSS 搜索页打开岗位搜索结果。", { statusCode: 409 });
+    }
+    const cached = getPlatformFilterCatalog(db, "boss")?.catalog || null;
+    let catalog = cached;
+    if (!isCatalogFresh(catalog)) {
+      const accessController = accessControllerFactory({
+        db,
+        site: "boss",
+        runId: `workflow-plan:${plan.id}`,
+        logger
+      });
+      adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
+      const generated = generatedPlatformOf(plan.plan);
+      catalog = await adapter.discoverFilterCatalog({
+        cityCode: cityToBossCode(generated.cities[0]),
+        keyword: planKeywords(plan.plan)[0] || "Python",
+        tabId: searchState.tabId
+      });
+      savePlatformFilterCatalog(db, {
+        site: "boss",
+        catalog,
+        source: "live_dom",
+        discoveredAt: catalog.discoveredAt
+      });
+    }
+    const context = buildGeneratedAcquisitionContext({
+      planRecord: plan,
+      catalog,
+      matchingCardRevision: matchingCardRevision(matchingContext?.matchingCard)
+    });
+    logger.info("generated_scope_resolved", {
+      site: "boss",
+      cityCount: context.cityScopes.length,
+      nativeFilterCatalogRevision: context.nativeFilterCatalogRevision,
+      keywordCatalogHash: context.keywordSource.catalogHash,
+      catalogRefreshed: catalog !== cached
+    });
+    return context;
+  } catch (error) {
+    if (error?.code === "BOSS_RISK_CONTROL") {
+      setSiteRuntimeState(db, "boss", {
+        status: "blocked",
+        reasonCode: error.code,
+        message: error.message,
+        details: { phase: "generated_context" }
+      });
+      throw error;
+    }
+    if (error?.code === "BROWSER_DISCONNECTED") {
+      throw appError("BROWSER_UNAVAILABLE", "当前已登录 Edge 的 Edge Control 或桥接未连接，请启动或刷新桥接并确认扩展已连接。", { statusCode: 409, cause: error });
+    }
+    if (error?.code === "BOSS_LOGIN_REQUIRED") {
+      throw appError("BOSS_LOGIN_REQUIRED", "请先在当前已登录 Edge 的固定 BOSS 页面登录。", { statusCode: 409, cause: error });
+    }
+    if ([
+      "BOSS_RISK_CONTROL",
+      "BOSS_LOGIN_REQUIRED",
+      "BOSS_TAB_REQUIRED",
+      "BOSS_SEARCH_PAGE_INVALID",
+      "GENERATED_CITY_UNRESOLVED",
+      "GENERATED_FILTER_SELECTION_UNRESOLVED"
+    ].includes(error?.code) && !error.statusCode) {
+      throw appError(error.code, error.message, { statusCode: 409, cause: error });
+    }
+    throw error;
+  }
+}
+
+async function resolveLiveAcquisitionContext(input) {
+  return acquisitionModeOf(input.plan.plan) === "inherited"
+    ? resolveLiveInheritedContext(input)
+    : resolveLiveGeneratedContext(input);
+}
+
+function preparePlanForNewWorkflow({ db, plan, matchingContext, root, rescore = rescorePlanObservations }) {
+  const active = getActiveWorkflowRun(db, {
+    profileId: plan.profileId,
+    planId: plan.id
+  });
+  if (active) return { rescored: 0, skipped: true };
+  const configs = profileToRuntimeConfigs(
+    loadConfigs(root),
+    matchingContext?.candidateProfile || {},
+    plan.plan,
+    listMatchingResumeVersions(db, plan.profileId),
+    matchingContext?.matchingCard || null
+  );
+  return rescore(db, { planId: plan.id, configs });
+}
+
 async function handleWorkflowRunStart(req, res, {
   db,
   root,
@@ -1702,7 +1933,8 @@ async function handleWorkflowRunStart(req, res, {
   logger,
   requestId,
   spawnProcess,
-  inheritedContextResolver
+  acquisitionContextResolver,
+  planRescore
 }) {
   let planId = 0;
   try {
@@ -1713,8 +1945,12 @@ async function handleWorkflowRunStart(req, res, {
       input: { ...params, root, dbPath, scanRuns, modelReady, modelState, backupRuntime, requestId, spawnProcess },
       deps: {
         appError, getSearchPlan, getCandidateProfile, getCandidateMatchingContext, getSearchPlanDependency,
-        assertSearchPlanReady, buildDashboardState: buildWorkflowDashboardState, workflowBlockedMessage,
-        resolveNewInheritedBrowser, inheritedContextResolver, assertInheritedAcquisitionScope,
+        assertSearchPlanReady,
+        getActiveWorkflow: (database, record) => getActiveWorkflowRun(database, { profileId: record.profileId, planId: record.id }),
+        buildDashboardState: buildWorkflowDashboardState, workflowBlockedMessage,
+        resolveNewWorkflowBrowser, acquisitionContextResolver, assertAcquisitionContext,
+        acquisitionModeOf, freezeWorkflowPlan,
+        preparePlanForNewWorkflow: (context) => preparePlanForNewWorkflow({ ...context, root, rescore: planRescore }),
         scanAvailability: assertWorkflowScanAvailable, workflowModelProfilesSnapshot,
         createWorkflowRun, transitionWorkflowRun, spawnScan: startPlanScan,
         settleFailedWorkflowLaunch, logger
@@ -1768,6 +2004,7 @@ async function handleWorkflowRunResume(req, res, {
       input: { ...params, workflowRunId, root, dbPath, scanRuns, batchModelReady, requestId, spawnProcess },
       deps: {
         appError, getWorkflowRun, getBatch, workflowResumeNeedsBatchModel, assertCompleteInheritedContext,
+        assertCompleteGeneratedContext, assertFrozenWorkflowPlan,
         resolveWorkflowResumeBrowserMode, normalizeCdpPort, portableCdpPort: PORTABLE_CDP_PORT,
         validateResumeBatch, assertWorkflowAnalysisBatch, workflowResumeRequiresBrowser, browserReadinessProbe,
         publicBrowserReadinessSnapshot, assertWorkflowResumeBrowserReady, transitionWorkflowRun,
@@ -1830,7 +2067,7 @@ function assertWorkflowResumeBrowserReady(readiness) {
 function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
   const acquisitionMode = String(workflow?.planner?.acquisitionMode || "").trim();
   const requested = String(requestedMode || "").trim().toLowerCase();
-  if (acquisitionMode === "inherited") {
+  if (acquisitionMode === "inherited" || workflow?.planner?.planSnapshotVersion === 2) {
     const stored = String(workflow?.planner?.browserMode || "edge").trim().toLowerCase();
     if (!["edge", "portable"].includes(stored)) {
       throw appError(
@@ -4671,7 +4908,9 @@ function sendText(res, statusCode, text) {
 module.exports = {
   createDashboardServer,
   buildWorkflowDashboardState,
+  resolveLiveAcquisitionContext,
   resolveLiveInheritedContext,
+  resolveLiveGeneratedContext,
   inspectDashboardBossBrowserReadiness,
   startPlanScan,
   scanStatus,

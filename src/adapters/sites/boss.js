@@ -940,7 +940,7 @@ class BossSiteAdapter {
     if (!this.browser) throw new Error("BOSS 筛选目录预读需要浏览器连接。");
     const targetTabId = tabId || await this.browser.activeTabId();
     const url = buildBossSearchUrl({ keyword, cityCode });
-    await this.navigateWithPacing(targetTabId, url, "catalog", { enforceBudget: false });
+    await this.navigateWithPacing(targetTabId, url, "catalog", { enforceBudget: true });
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await this.assertSearchPage(targetTabId);
       const rawFields = await this.browser.evalValue(targetTabId, `(() => Array.from(document.querySelectorAll(".condition-filter-select")).map((node) => ({
@@ -967,7 +967,7 @@ class BossSiteAdapter {
   async navigateWithPacing(tabId, url, kind, { enforceBudget = true, signal = null, assertTabBindings = null } = {}) {
     throwIfAborted(signal);
     await assertRuntimeTabBindings(assertTabBindings);
-    if (enforceBudget && kind === "list" && this.listNavigations >= this.pageBudget) {
+    if (enforceBudget && ["catalog", "list"].includes(kind) && this.listNavigations >= this.pageBudget) {
       const error = new Error(`BOSS 本批列表页面达到安全上限 ${this.pageBudget}，已停止继续搜索。`);
       error.code = "BOSS_PAGE_BUDGET_REACHED";
       throw error;
@@ -984,7 +984,7 @@ class BossSiteAdapter {
     throwIfAborted(signal);
     await this.browser.navigate(tabId, url);
     this.pageNavigations += 1;
-    if (kind === "list") this.listNavigations += 1;
+    if (["catalog", "list"].includes(kind)) this.listNavigations += 1;
     await this.waitWithPacing(kind, { signal, assertTabBindings });
   }
 

@@ -99,6 +99,10 @@ const {
   scopeShortId
 } = require("./core/inherited_search_scope");
 const { compilePlatformRuntimePolicy, applyPlatformRuntimePolicy } = require("./core/platform_runtime_policy");
+const {
+  assertCompleteGeneratedContext,
+  assertFrozenWorkflowPlan
+} = require("./core/workflow_acquisition");
 const { resolveScanKind, resolveProductDetailMode, withSiteScanLease: runWithSiteScanLease } = require("./core/scan_execution");
 const {
   getCommunicationBatch,
@@ -808,9 +812,20 @@ async function scan(
     matchingContext = getCandidateMatchingContext(db, planRecord.profileId);
   }
   const workflowRun = resolveWorkflowScanContext(db, args, planRecord);
+  let runtimePlanRecord = planRecord;
+  if (workflowRun?.planner?.planSnapshotVersion === 2) {
+    assertFrozenWorkflowPlan(workflowRun.planner);
+    runtimePlanRecord = { ...planRecord, plan: workflowRun.planner.planSnapshot };
+  }
+  const runtimePlan = runtimePlanRecord?.plan || {};
   const workflowAcquisitionMode = workflowRun
     ? String(workflowRun.planner?.acquisitionMode || "").trim()
     : "";
+  const historicalGeneratedExecution = workflowAcquisitionMode === "generated"
+    && workflowRun?.planner?.planSnapshotVersion !== 2
+    && resumeValidation?.acquisitionMode === "generated"
+    ? resumeValidation.storedSnapshot
+    : null;
   if (workflowRun && !analysisOnly && !["generated", "inherited"].includes(workflowAcquisitionMode)) {
     throw codedError(
       "WORKFLOW_ACQUISITION_MODE_INVALID",
@@ -819,28 +834,36 @@ async function scan(
   }
   let acquisitionMode = workflowAcquisitionMode
     || resumeValidation?.acquisitionMode
-    || (planRecord ? acquisitionModeOf(planRecord.plan) : "")
+    || (runtimePlanRecord ? acquisitionModeOf(runtimePlan) : "")
     || (args.input ? "generated" : "");
-  if (planRecord) {
-    assertSearchPlanReady(
-      planRecord,
-      matchingContext?.candidateProfile || {},
-      getSearchPlanDependency(db, planRecord.id),
-      { acquisitionMode: acquisitionMode || "inherited" }
-    );
+  if (runtimePlanRecord) {
+    if (!historicalGeneratedExecution) {
+      assertSearchPlanReady(
+        runtimePlanRecord,
+        matchingContext?.candidateProfile || {},
+        workflowRun?.planner?.planSnapshotVersion === 2 ? {} : getSearchPlanDependency(db, runtimePlanRecord.id),
+        { acquisitionMode: acquisitionMode || "inherited" }
+      );
+    } else {
+      scanLogger.warn("historical_generated_workflow_snapshot_used", {
+        workflowRunId: workflowRun.id,
+        planId: runtimePlanRecord.id,
+        snapshotHash: historicalGeneratedExecution.snapshotHash
+      });
+    }
     if (!matchingContext) throw new Error(`Search Plan #${args.plan} 缺少已确认匹配偏好卡对应的画像版本。`);
     configs = profileToRuntimeConfigs(
       configs,
       matchingContext.candidateProfile,
-      planRecord.plan,
-      listMatchingResumeVersions(db, planRecord.profileId),
+      runtimePlan,
+      listMatchingResumeVersions(db, runtimePlanRecord.profileId),
       matchingContext.matchingCard
     );
   }
   if (analysisOnly) {
     return resumeWorkflowAnalysisOnly(db, {
       workflowRun,
-      planRecord,
+      planRecord: runtimePlanRecord,
       configs,
       primaryState,
       backupState,
@@ -865,11 +888,15 @@ async function scan(
       platformPolicy: workflowRun.planner.platformPolicy
     }
     : null;
+  const frozenGenerated = workflowAcquisitionMode === "generated"
+    && workflowRun.planner?.planSnapshotVersion === 2
+    ? assertCompleteGeneratedContext(workflowRun.planner, { planId: runtimePlanRecord?.id })
+    : null;
   if (frozenInherited) {
     assertCompleteInheritedContext(frozenInherited, {
       code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
       message: "本轮继承模式快照不完整，不能安全扫描或恢复。",
-      planId: planRecord?.id
+      planId: runtimePlanRecord?.id
     });
   }
   const planned = workflowRun
@@ -878,10 +905,10 @@ async function scan(
       keywordPlan: workflowRun.keywords.map((item) => ({ ...item })),
       source: `workflow-run:${workflowRun.id}`
     }
-    : planRecord && !args.keywords && !args.keyword
+    : runtimePlanRecord && !args.keywords && !args.keyword
     ? (() => {
-      const keywordPlan = (planRecord.plan.keywords || []).map((item) => ({ ...item }));
-      return { keywords: keywordPlan.map((item) => item.word), keywordPlan, source: `search-plan:${planRecord.id}` };
+      const keywordPlan = (runtimePlan.keywords || []).map((item) => ({ ...item }));
+      return { keywords: keywordPlan.map((item) => item.word), keywordPlan, source: `search-plan:${runtimePlanRecord.id}` };
     })()
     : resolvePlannedKeywords(args, configs);
   if (!planned.keywords.length) throw new Error("Search Plan 没有可用关键词，请先在页面补充后再扫描。");
@@ -890,17 +917,17 @@ async function scan(
     ? "broad"
     : requestedScanMode === "daily"
       ? "daily"
-      : (planRecord && !args.input ? "daily" : "broad");
+      : (runtimePlanRecord && !args.input ? "daily" : "broad");
   const scanPolicy = resolveScanPolicy({
-    ...(planRecord?.plan || {}),
+    ...runtimePlan,
     keywords: planned.keywordPlan
   }, scanMode);
-  const keywordPlan = scanPolicy.keywordPlan;
-  const keywords = keywordPlan.map((item) => item.word);
+  let keywordPlan = historicalGeneratedExecution?.keywordPlan || scanPolicy.keywordPlan;
+  let keywords = keywordPlan.map((item) => item.word);
   const source = `${planned.source}:${scanMode}`;
   if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
   const analysisConcurrency = resolveAnalysisConcurrency(args, primaryState.concurrency);
-  const site = String(args.site || planRecord?.plan?.platform?.site || "boss").trim().toLowerCase();
+  const site = String(args.site || runtimePlan?.platform?.site || "boss").trim().toLowerCase();
   const resumeBatchId = resumeValidation?.resumeBatchId
     || parseOptionalPositiveIntegerArg(args, "resume-batch");
   if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");
@@ -908,7 +935,7 @@ async function scan(
     ? resumeValidation || validateResumeBatchPreflight(db, {
       resumeBatchId,
       site,
-      planId: planRecord?.id
+      planId: runtimePlanRecord?.id
     })
     : null;
   const storedExecution = validatedResume?.storedSnapshot || null;
@@ -975,8 +1002,12 @@ async function scan(
       }
     });
   };
-  let plannedCityScopes = acquisitionMode === "generated"
-    ? resolveCityScopes(args, planRecord, configs)
+  let plannedCityScopes = frozenGenerated
+    ? frozenGenerated.cityScopes
+    : historicalGeneratedExecution
+      ? historicalGeneratedExecution.cityScopes
+    : acquisitionMode === "generated"
+      ? resolveCityScopes(args, runtimePlanRecord, configs)
     : null;
   if (!args.input) {
     browserState = await preflightBrowser();
@@ -998,12 +1029,12 @@ async function scan(
   }
   if (acquisitionMode === "generated" && !plannedCityScopes) {
     assertSearchPlanReady(
-      planRecord,
+      runtimePlanRecord,
       matchingContext?.candidateProfile || {},
-      getSearchPlanDependency(db, planRecord.id),
+      getSearchPlanDependency(db, runtimePlanRecord.id),
       { acquisitionMode: "generated" }
     );
-    plannedCityScopes = resolveCityScopes(args, planRecord, configs);
+    plannedCityScopes = resolveCityScopes(args, runtimePlanRecord, configs);
     if (directSearchContext) {
       directSearchContext = resolveBossSearchContext({
         currentUrl: browserState?.url || browserState?.tab?.url || "",
@@ -1017,6 +1048,7 @@ async function scan(
   let searchScope = {};
   let keywordSource = {};
   let platformPolicy = {};
+  let nativeFilterSnapshot = null;
   if (frozenInherited) {
     configs = applyPlatformRuntimePolicy(configs, frozenInherited.platformPolicy);
     searchTemplate = frozenInherited.searchTemplate;
@@ -1027,6 +1059,23 @@ async function scan(
       city: platformPolicy.filters?.location?.cities?.[0] || "",
       cityCode: searchTemplate.cityCode || "platform-default"
     }];
+  } else if (frozenGenerated) {
+    configs = applyPlatformRuntimePolicy(configs, frozenGenerated.platformPolicy, { acquisitionMode: "generated" });
+    searchTemplate = frozenGenerated.searchTemplate;
+    keywordSource = frozenGenerated.keywordSource;
+    platformPolicy = frozenGenerated.platformPolicy;
+    cityScopes = frozenGenerated.cityScopes;
+    nativeFilterSnapshot = frozenGenerated.nativeFilters;
+  } else if (historicalGeneratedExecution) {
+    searchTemplate = historicalGeneratedExecution.searchTemplate;
+    searchScope = historicalGeneratedExecution.searchScope || {};
+    keywordSource = historicalGeneratedExecution.keywordSource || {};
+    platformPolicy = historicalGeneratedExecution.platformPolicy || {};
+    cityScopes = historicalGeneratedExecution.cityScopes;
+    nativeFilterSnapshot = historicalGeneratedExecution.nativeFilters;
+    if (platformPolicy.hash) {
+      configs = applyPlatformRuntimePolicy(configs, platformPolicy, { acquisitionMode: "generated" });
+    }
   } else if (workflowAcquisitionMode === "generated") {
     searchTemplate = { mode: "generated", url: "", cityCode: "" };
     cityScopes = plannedCityScopes;
@@ -1051,7 +1100,7 @@ async function scan(
           adapter.inspectInheritedSearchPage({ tabId: state.tabId })
         );
         ({ searchTemplate, searchScope } = buildInheritedSearchScope({
-          profileId: planRecord.profileId,
+          profileId: runtimePlanRecord.profileId,
           rawUrl: inspected.url
         }));
         const inspectedFieldCount = Object.keys(inspected.catalog?.fields || {}).length;
@@ -1067,7 +1116,7 @@ async function scan(
           ? inspected.catalog
           : getPlatformFilterCatalog(db, "boss")?.catalog || {};
         keywordSource = freezeKeywordSource({
-          planRecord,
+          planRecord: runtimePlanRecord,
           matchingCardRevision: matchingCardRevision(matchingContext.matchingCard)
         });
         platformPolicy = compilePlatformRuntimePolicy({
@@ -1085,18 +1134,16 @@ async function scan(
     }
   }
   const generatedFilterCatalog = !args.input && searchTemplate.mode !== "inherited"
+    && !frozenGenerated && !historicalGeneratedExecution
     ? await runWithBoundFixedBossSearchAction((state) =>
-      resolveBossPlatformFilters({ db, adapter, args, plan: planRecord?.plan, cityScopes, keyword: keywords[0], tabId: state.tabId, logger: scanLogger })
+      resolveBossPlatformFilters({ db, adapter, args, plan: runtimePlan, cityScopes, keyword: keywords[0], tabId: state.tabId, logger: scanLogger })
     )
     : null;
-  const nativeFilterSnapshot = args.input
+  nativeFilterSnapshot ||= args.input
     ? { site, scanMode, params: {}, labels: {}, lanes: [] }
     : searchTemplate.mode === "inherited"
       ? { site, scanMode, source: "search_template", params: {}, labels: {}, lanes: [] }
-      : applyScanPolicyToFilters(
-        generatedFilterCatalog,
-        scanPolicy
-      );
+      : applyScanPolicyToFilters(generatedFilterCatalog, scanPolicy);
   if (!args.input) {
     console.error(searchTemplate.mode === "inherited"
       ? `[platform] BOSS 预筛：继承当前搜索页（仅替换关键词）`
@@ -1116,7 +1163,7 @@ async function scan(
   const workflowMaxCards = workflowRun
     ? Math.max(...workflowRun.keywords.map((item) => Number(item.maxCards) || 0))
     : 0;
-  const scanLimits = {
+  const scanLimits = historicalGeneratedExecution?.limits || {
     maxCards: workflowRun ? workflowMaxCards
       : resolveScanLimit(args, "max-cards", scanPolicy.maxCards, scanPolicy.maxCards, "maxCards"),
     maxDetailTotal: workflowRun ? Number(workflowRun.budget.maxDetailTotal)
@@ -1128,19 +1175,20 @@ async function scan(
     supplementalSalaryLaneCardLimit: scanPolicy.supplementalSalaryLaneCardLimit,
     supplementalSalaryLaneDetailLimit: scanPolicy.supplementalSalaryLaneDetailLimit
   };
-  const runtimePolicyHash = searchTemplate.mode === "inherited"
+  const runtimePolicyHash = historicalGeneratedExecution?.runtimePolicyHash || (searchTemplate.mode === "inherited"
     ? stableHash({
       productPolicyVersion: scanPolicy.policyVersion,
       scanMode,
       platformPolicyHash: platformPolicy.hash
     })
-    : scanPolicy.policyHash;
+    : scanPolicy.policyHash);
   const executionSnapshot = args.input ? null : buildScanExecutionSnapshot({
+    planHash: workflowRun?.planner?.planHash || historicalGeneratedExecution?.planHash || "",
     site,
     scanKind: scanMode,
     detailMode,
     runtimePolicyHash,
-    recommendationPolicyHash: configs.recommendationPolicyHash || "",
+    recommendationPolicyHash: historicalGeneratedExecution?.recommendationPolicyHash || configs.recommendationPolicyHash || "",
     searchTemplate,
     searchScope,
     keywordSource,

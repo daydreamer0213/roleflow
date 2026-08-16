@@ -2192,7 +2192,7 @@ function genericPolicySmoke() {
   }), algorithmConfigs);
   assert(!algorithmScore.qualityTags.includes("algorithm_role"));
 
-  const internPlan = { ...plan(["Python开发工程师"]), jobTypes: ["实习"] };
+  const internPlan = { ...plan(["Python开发工程师"]), acquisitionMode: "generated", jobTypes: ["实习"] };
   const internConfigs = profileToRuntimeConfigs(base, profile(["Python"], ["Python开发工程师"]), internPlan, []);
   const internScore = scoreJob(completeJob("intern-generic", { title: "Python开发实习生" }), internConfigs);
   assert(!internScore.qualityTags.includes("internship_role"));

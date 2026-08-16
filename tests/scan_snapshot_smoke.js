@@ -10,6 +10,7 @@ const input = {
   site: "boss",
   scanKind: "daily",
   detailMode: "trusted_pane",
+  planHash: "plan-v1",
   runtimePolicyHash: "policy-v1",
   recommendationPolicyHash: "recommendation-policy-v1",
   searchTemplate: {
@@ -54,9 +55,13 @@ const input = {
     { word: "RAG", priority: "A" }
   ],
   nativeFilters: {
+    site: "boss",
+    catalogVersion: "catalog-v1",
+    params: { salary: ["404"], experience: ["101"] },
+    labels: { salary: ["10-20K"], experience: ["经验不限"] },
     lanes: [
-      { id: "main", rank: 0, params: { salary: ["404"], experience: ["101"] } },
-      { id: "stretch", rank: 1, params: { salary: ["405"], experience: ["104"] } }
+      { id: "main", rank: 0, params: { salary: ["404"], experience: ["101"] }, labels: { salary: ["10-20K"], experience: ["经验不限"] } },
+      { id: "stretch", rank: 1, params: { salary: ["405"], experience: ["104"] }, labels: { salary: ["20-30K"], experience: ["1-3年"] } }
     ]
   },
   limits: {
@@ -73,6 +78,10 @@ const input = {
 const snapshot = buildScanExecutionSnapshot(input);
 assert.strictEqual(snapshot.schemaVersion, 4);
 assert.strictEqual(snapshot.detailMode, "trusted_pane");
+assert.strictEqual(snapshot.planHash, "plan-v1");
+assert.strictEqual(snapshot.nativeFilters.catalogVersion, "catalog-v1");
+assert.deepStrictEqual(snapshot.nativeFilters.labels.experience, ["经验不限"]);
+assert.deepStrictEqual(snapshot.nativeFilters.lanes[1].labels.experience, ["1-3年"]);
 assert.match(snapshot.createdAt, /^\d{4}-\d{2}-\d{2}T/);
 assert.match(snapshot.snapshotHash, /^[a-f0-9]{64}$/);
 assert.deepStrictEqual(snapshot.targets[0], {
@@ -103,9 +112,13 @@ const reordered = buildScanExecutionSnapshot({
     supplementalSalaryLaneDetailLimit: 10
   },
   nativeFilters: {
+    site: "boss",
+    catalogVersion: "catalog-v1",
+    params: { experience: ["101"], salary: ["404"] },
+    labels: { experience: ["经验不限"], salary: ["10-20K"] },
     lanes: [
-      { params: { experience: ["101"], salary: ["404"] }, rank: 0, id: "main" },
-      { params: { experience: ["104"], salary: ["405"] }, rank: 1, id: "stretch" }
+      { labels: { experience: ["经验不限"], salary: ["10-20K"] }, params: { experience: ["101"], salary: ["404"] }, rank: 0, id: "main" },
+      { labels: { experience: ["1-3年"], salary: ["20-30K"] }, params: { experience: ["104"], salary: ["405"] }, rank: 1, id: "stretch" }
     ]
   },
   keywordPlan: [
@@ -117,6 +130,7 @@ const reordered = buildScanExecutionSnapshot({
     { cityCode: "101280600", city: "Shenzhen" }
   ],
   runtimePolicyHash: "policy-v1",
+  planHash: "plan-v1",
   recommendationPolicyHash: "recommendation-policy-v1",
   searchTemplate: input.searchTemplate,
   searchScope: input.searchScope,
@@ -176,7 +190,15 @@ const volatileMetadata = buildScanExecutionSnapshot({
     lanes: input.nativeFilters.lanes.map((lane) => ({ ...lane, labels: { salary: ["renamed"] } }))
   }
 });
-assert.strictEqual(volatileMetadata.snapshotHash, snapshot.snapshotHash);
+assert.notStrictEqual(volatileMetadata.snapshotHash, snapshot.snapshotHash);
+const legacyPlanInput = { ...input };
+delete legacyPlanInput.planHash;
+const legacyPlanSnapshot = buildScanExecutionSnapshot(legacyPlanInput);
+assertScanSnapshotCompatible(legacyPlanSnapshot, buildScanExecutionSnapshot(legacyPlanInput));
+assert.throws(
+  () => assertScanSnapshotCompatible(legacyPlanSnapshot, snapshot),
+  (error) => error.code === "SCAN_SNAPSHOT_MISMATCH" && /planHash/.test(error.message)
+);
 
 for (const mutate of [
   (value) => { value.searchScope.key = "boss:7:scope-v2"; },

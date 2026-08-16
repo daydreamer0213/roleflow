@@ -1,5 +1,7 @@
 const assert = require("node:assert");
 const { appError } = require("../src/core/observability");
+const { acquisitionModeOf } = require("../src/core/search_plan_schema");
+const { freezeWorkflowPlan } = require("../src/core/workflow_acquisition");
 const {
   startWorkflow,
   resumeWorkflow,
@@ -10,6 +12,7 @@ const {
 async function main() {
   exportsAndPlainData();
   await validationPrecedesPersistenceAndLaunch();
+  await activeWorkflowSkipsPreparation();
   await directApplicationContract();
   await resumeControlAndStatusContracts();
   console.log("workflow application smoke passed");
@@ -51,23 +54,25 @@ async function validationPrecedesPersistenceAndLaunch() {
 async function directApplicationContract() {
   const events = [];
   let launch = null;
+  let persistedPlanner = null;
   const result = await startWorkflow({
     db: {},
     input: {
       planId: 41,
-      browserMode: "portable",
-      cdpPort: 9222,
+      browserMode: "edge",
       modelReady: true,
       modelState: modelState(),
       requestId: "request-1"
     },
-    deps: startDeps(events, (value) => { launch = value; })
+    deps: startDeps(events, (value) => { launch = value; }, (value) => { persistedPlanner = value; })
   });
 
   assert.deepStrictEqual(events, [
-    "validation",
-    "inherited-context",
-    "inherited-validation",
+    "plan-load",
+    "active-check",
+    "rescore",
+    "planning",
+    "acquisition-resolve",
     "scan-availability",
     "workflow-persistence",
     "launcher"
@@ -80,12 +85,36 @@ async function directApplicationContract() {
   assert.notStrictEqual(launch.runId, String(launch.batchId));
   assert.deepStrictEqual(launch.input, {
     planId: 41,
-    browserMode: "portable",
-    cdpPort: 9222,
+    browserMode: "edge",
+    cdpPort: null,
     scanKind: "daily",
     workflowRunId: "workflow-1"
   });
+  assert.strictEqual(persistedPlanner.planSnapshotVersion, 2);
+  assert.strictEqual(persistedPlanner.planSnapshot.acquisitionMode, "generated");
+  assert.deepStrictEqual(persistedPlanner.planSnapshot.directions, ["AI 应用开发"]);
+  assert.deepStrictEqual(persistedPlanner.cityScopes, [{ city: "广州", cityCode: "101280100" }]);
+  assert.deepStrictEqual(persistedPlanner.nativeFilters.labels, { experience: ["1-3年"] });
+  assert.strictEqual(result.workflow.planner.planHash, persistedPlanner.planHash);
+  assert.deepStrictEqual(result.workflow.planner.planSnapshot.directions, ["AI 应用开发"]);
   assertPlain(result);
+}
+
+async function activeWorkflowSkipsPreparation() {
+  const events = [];
+  const deps = startDeps(events);
+  deps.getActiveWorkflow = () => {
+    events.push("active-check");
+    return { id: "already-running", planner: {} };
+  };
+  const result = await startWorkflow({
+    db: {},
+    input: { planId: 41, browserMode: "edge", modelReady: true, modelState: modelState() },
+    deps
+  });
+  assert.strictEqual(result.alreadyActive, true);
+  assert.strictEqual(result.workflow.id, "already-running");
+  assert.deepStrictEqual(events, ["plan-load", "active-check"]);
 }
 
 async function resumeControlAndStatusContracts() {
@@ -124,38 +153,53 @@ async function resumeControlAndStatusContracts() {
   assertPlain(status);
 }
 
-function startDeps(events, captureLaunch = () => {}) {
+function startDeps(events, captureLaunch = () => {}, capturePlanner = () => {}) {
   const plan = planFixture();
+  let dashboardReads = 0;
   return {
     appError,
-    resolveNewInheritedBrowser: (input) => ({ browserMode: input.browserMode || "edge", cdpPort: input.cdpPort || null }),
+    resolveNewWorkflowBrowser: () => ({ browserMode: "edge", cdpPort: null }),
     getSearchPlan() {
-      events.push("validation");
+      events.push("plan-load");
       return plan;
     },
     getCandidateProfile: () => ({ id: plan.profileId }),
     getCandidateMatchingContext: () => ({ candidateProfile: {} }),
     getSearchPlanDependency: () => ({}),
-    assertSearchPlanReady: () => {},
-    buildDashboardState: (_db, _plan, _now, inherited) => inherited
-      ? dashboardState()
-      : dashboardState(),
-    inheritedContextResolver: () => {
-      events.push("inherited-context");
+    assertSearchPlanReady: (_plan, _profile, _dependency, options) => assert.strictEqual(options.acquisitionMode, "generated"),
+    acquisitionModeOf,
+    freezeWorkflowPlan,
+    getActiveWorkflow: () => {
+      events.push("active-check");
+      return null;
+    },
+    buildDashboardState: () => {
+      dashboardReads += 1;
+      if (dashboardReads === 1) events.push("planning");
+      return dashboardState();
+    },
+    preparePlanForNewWorkflow: () => events.push("rescore"),
+    acquisitionContextResolver: () => {
+      events.push("acquisition-resolve");
       return {
         acquisitionMode: "generated",
-        searchTemplate: {},
+        searchTemplate: { mode: "generated", url: "", cityCode: "" },
         searchScope: {},
-        keywordSource: {},
-        platformPolicy: {}
+        keywordSource: { searchPlanId: 41 },
+        platformPolicy: { hash: "generated-policy" },
+        cityScopes: [{ city: "广州", cityCode: "101280100" }],
+        nativeFilters: { site: "boss", labels: { experience: ["1-3年"] }, lanes: [] },
+        nativeFilterCatalogRevision: "catalog-r1"
       };
     },
-    assertInheritedAcquisitionScope: () => events.push("inherited-validation"),
+    assertAcquisitionContext: (value) => value,
     scanAvailability: () => events.push("scan-availability"),
     workflowModelProfilesSnapshot: () => ({ batch_screening: { revision: "revision-1" } }),
     createWorkflowRun(_db, input) {
       events.push("workflow-persistence");
-      return { id: "workflow-1", sequence: 1, scanNeeded: true, metrics: input.metrics };
+      capturePlanner(input.planner);
+      plan.plan.directions = ["后端开发"];
+      return { id: "workflow-1", sequence: 1, scanNeeded: true, metrics: input.metrics, planner: input.planner };
     },
     spawnScan(_scanRuns, input) {
       events.push("launcher");
@@ -177,12 +221,14 @@ function resumeDeps(events) {
     resumePhase: "analyzing",
     scanNeeded: true,
     scanBatchId: 91,
-    planner: { acquisitionMode: "generated" }
+    planner: { acquisitionMode: "generated", planSnapshotVersion: 2, browserMode: "edge" }
   };
   return {
     appError,
     getWorkflowRun: () => workflow,
     workflowResumeNeedsBatchModel: () => false,
+    assertFrozenWorkflowPlan: (value) => value,
+    assertCompleteGeneratedContext: (value) => value,
     resolveWorkflowResumeBrowserMode: () => "edge",
     workflowResumeRequiresBrowser: () => false,
     assertWorkflowAnalysisBatch: () => events.push("analysis-batch"),
@@ -252,7 +298,25 @@ function dashboardState() {
   };
 }
 
-function planFixture() { return { id: 41, profileId: 9, plan: {} }; }
+function planFixture() {
+  return {
+    id: 41,
+    profileId: 9,
+    profileVersionId: 3,
+    plan: {
+      schemaVersion: 2,
+      acquisitionMode: "generated",
+      platform: { site: "boss", generated: { cities: ["广州"], salaryLanes: [], experience: ["1-3年"], jobTypes: [], degrees: [] } },
+      directions: ["AI 应用开发"],
+      keywords: [{ word: "RAG", priority: "A", reason: "核心" }],
+      salary: { minK: 12, maxK: 20 },
+      salaryMode: "wide",
+      bossActiveDays: 7,
+      workSchedulePreference: "prefer_double_weekend",
+      scan: { maxCards: 60, maxDetailTotal: 300, browserPageBudget: 90 }
+    }
+  };
+}
 function modelState() { return { settings: { taskProfiles: { batch_screening: { revision: "revision-1" } } } }; }
 function controlWorkflowFixture() { return { id: "workflow-3", planId: 41, status: "scanning", controlState: "none", progressRevision: 0 }; }
 function silentLogger() { return { info: (...args) => { if (args[0] === "inherited-context") return; }, warn() {}, error() {} }; }

@@ -19,6 +19,24 @@ const stylesheet = path.join(root, "src", "dashboard", "assets", "roleflow.css")
   assert.deepStrictEqual(JSON.parse(JSON.stringify(vm)), vm, "workflow VM must be plain display data without DB or browser dependencies");
   assert.deepStrictEqual(vm.scope.actualKeywords, ["AI应用开发", "RAG", "Agent开发"]);
   assert.strictEqual(vm.scope.candidateKeywordCount, 14);
+  const generatedVm = buildWorkflowViewModel(fixture({ workflow: {
+    planner: {
+      acquisitionMode: "generated",
+      planHash: "1234567890abcdef",
+      cityScopes: [{ city: "广州", cityCode: "101280100" }],
+      nativeFilters: { labels: { experience: ["1-3年"], salary: ["10-20K"] } },
+      keywordSource: { searchPlanId: 17, keywords: [{ word: "RAG" }] }
+    }
+  } }));
+  assert.strictEqual(generatedVm.scope.visible, true);
+  assert.strictEqual(generatedVm.scope.mode, "通用模式");
+  assert.deepStrictEqual(generatedVm.scope.cities, ["广州"]);
+  const generatedHtml = renderWorkflowPage(generatedVm);
+  assert.match(generatedHtml, /通用模式 · 筛选来源：已保存的平台条件/);
+  assert.match(generatedHtml, /城市：广州/);
+  assert.match(generatedHtml, /经验：1-3年/);
+  assert.match(generatedHtml, /方案指纹：1234567890/);
+  assert.match(generatedHtml, /方案后续修改不会影响本轮/);
   assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 4 / 5 · 已获取 12 个岗位");
   assert.strictEqual(vm.overview.jdProgress, "已读取 5 / 12 · 待补 7");
   assertRendererContracts(vm);
