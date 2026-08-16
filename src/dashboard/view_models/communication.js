@@ -3,7 +3,8 @@
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 const { isBossJobUrl } = require("../../core/scoring");
 
-const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "failed"]);
+const COMPLETED_BATCH_STATUSES = new Set(["completed", "stopped", "failed"]);
+const POLLING_TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const VERIFIED_OUTCOMES = new Set(["succeeded", "already_communicated"]);
 
 function buildCommunicationViewModel({
@@ -50,6 +51,12 @@ function buildCommunicationViewModel({
       && !executionControlVisible,
     recoveryHref: `/communication?batchId=${encodeURIComponent(number(batch.id))}#communication-recovery`
   };
+  const polling = number(batch.id) && !ambiguity.blocked && !POLLING_TERMINAL_BATCH_STATUSES.has(text(batch.status)) ? {
+    batchId: number(batch.id),
+    batchStatus: text(batch.status),
+    intervalMs: 2500,
+    itemIds: items.map((item) => number(item.id)).sort((left, right) => left - right)
+  } : null;
   return {
     page,
     source: directBatch ? "direct_orphan" : "workflow_history",
@@ -62,17 +69,18 @@ function buildCommunicationViewModel({
     runtimeBlock: current.runtimeBlock ? { reasonCode: text(current.runtimeBlock.reasonCode), blockedUntil: text(current.runtimeBlock.blockedUntil) } : null,
     ambiguity: { blocked: ambiguity.blocked, countsMismatch: ambiguity.countsMismatch, firstItemId: number(ambiguity.firstItemId) || null },
     controls,
+    polling,
     history: directBatch ? [] : (history || []).map(historyView),
     discoveredBatchIds
   };
 }
 
 function blockedView({ page, integrityIssue, discoveredBatchIds }) {
-  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: emptyControls("/diagnostics"), history: [], discoveredBatchIds };
+  return { page, source: "integrity_blocked", state: "integrity_blocked", integrityIssue: text(integrityIssue), batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: true, countsMismatch: true, firstItemId: null }, controls: emptyControls("/diagnostics"), polling: null, history: [], discoveredBatchIds };
 }
 
 function emptyView({ page, discoveredBatchIds }) {
-  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: emptyControls("/diagnostics"), history: [], discoveredBatchIds };
+  return { page, source: "workflow_history", state: "no_batch", batch: null, items: [], quota: quotaView(), outcomes: outcomeView(), calibration: calibrationView(), runtimeBlock: null, ambiguity: { blocked: false, countsMismatch: false, firstItemId: null }, controls: emptyControls("/diagnostics"), polling: null, history: [], discoveredBatchIds };
 }
 
 function emptyControls(recoveryHref) {
@@ -80,7 +88,7 @@ function emptyControls(recoveryHref) {
 }
 
 function stateFor(batch, summary) {
-  if (TERMINAL_BATCH_STATUSES.has(text(batch.status)) || number(summary.remaining) === 0 && number(summary.total) > 0) return "completed";
+  if (COMPLETED_BATCH_STATUSES.has(text(batch.status)) || number(summary.remaining) === 0 && number(summary.total) > 0) return "completed";
   if (batch.status === "running" || batch.status === "stopping") return "running";
   return "pending_review";
 }

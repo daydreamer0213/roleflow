@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const {
   openDb,
   createBatch,
@@ -59,6 +60,23 @@ function assertCommunicationViewModel() {
   assert.equal(pending.controls.visible, true);
   assert.equal(pending.quota.used, 4);
   assert.equal(pending.outcomes.succeeded, 0);
+  assert.deepEqual(pending.polling, {
+    batchId: 41,
+    batchStatus: "confirmed",
+    intervalMs: 2500,
+    itemIds: [1]
+  });
+  const pendingHtml = renderCommunicationPage(pending);
+  assert.match(pendingHtml, /data-communication-page/);
+  assert.match(pendingHtml, /data-communication-batch-id="41"/);
+  assert.match(pendingHtml, /data-communication-item-ids="1"/);
+  assert.match(pendingHtml, /<progress[^>]+data-communication-meter/);
+  assert.match(pendingHtml, /data-communication-terminal/);
+  assert.match(pendingHtml, /data-communication-success/);
+  assert.match(pendingHtml, /data-communication-remaining/);
+  assert.match(pendingHtml, /data-communication-item-id="1"/);
+  assert.match(pendingHtml, /data-communication-item-status/);
+  assert.match(pendingHtml, /<script src="\/assets\/communication\.js"><\/script>/);
 
   const running = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "running" }, { batchStatus: "running" }) });
   assert.equal(running.state, "running");
@@ -76,6 +94,8 @@ function assertCommunicationViewModel() {
   assert.equal(needsResolution.controls.visible, false);
   assert.equal(needsResolution.controls.rebindVisible, false);
   assert.equal(needsResolution.items[0].resolution.evidenceRequired, true);
+  assert.equal(needsResolution.polling, null, "an already-visible resolution form must not enter a reload loop");
+  assert.doesNotMatch(renderCommunicationPage(needsResolution), /assets\/communication\.js/);
 
   const rebindable = buildCommunicationViewModel({
     scope: { profile: { id: 7 }, plan: { id: 11 } },
@@ -87,10 +107,12 @@ function assertCommunicationViewModel() {
   });
   assert.equal(rebindable.controls.rebindVisible, true);
   assert.match(renderCommunicationPage(rebindable), /重新检查浏览器页面/);
+  assert.equal(rebindable.polling, null, "interrupted batches must wait for a deliberate resume instead of polling");
 
   const completed = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "completed" }, { batchStatus: "completed", total: 2, terminal: 2, remaining: 0, statusCounts: { succeeded: 1, stopped: 1 } }, [{ id: 1, status: "succeeded" }, { id: 2, status: "stopped" }]) });
   assert.equal(completed.state, "completed");
   assert.equal(completed.outcomes.succeeded, 1);
+  assert.equal(completed.polling, null);
 
   const history = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus(), history: [communicationStatus({ id: 40, status: "stopped" }, { batchId: 40, batchStatus: "stopped", total: 1, terminal: 1, remaining: 0, statusCounts: { stopped: 1 } })] });
   assert.equal(history.history.length, 1);
@@ -99,6 +121,9 @@ function assertCommunicationViewModel() {
   const noBatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } } });
   assert.equal(noBatch.state, "no_batch");
   assert.equal(noBatch.controls.visible, false);
+  assert.equal(noBatch.polling, null);
+  assert.doesNotMatch(renderCommunicationPage(noBatch), /data-communication-batch-id=/);
+  assert.doesNotMatch(renderCommunicationPage(noBatch), /assets\/communication\.js/);
 
   const planIsolation = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus(), discoveredWorkflowRuns: [{ planId: 11, communicationBatchId: 41 }, { planId: 12, communicationBatchId: 99 }] });
   assert.deepEqual(planIsolation.discoveredBatchIds, [41]);
@@ -110,6 +135,9 @@ function assertCommunicationViewModel() {
   const mismatch = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ planId: 12 }), integrityIssue: "batch_plan_mismatch" });
   assert.equal(mismatch.state, "integrity_blocked");
   assert.equal(mismatch.controls.visible, false);
+  assert.equal(mismatch.polling, null);
+  assert.doesNotMatch(renderCommunicationPage(mismatch), /data-communication-batch-id=/);
+  assert.doesNotMatch(renderCommunicationPage(mismatch), /assets\/communication\.js/);
 
   const unknownStatusHtml = renderCommunicationPage(buildCommunicationViewModel({
     scope: { profile: { id: 7 }, plan: { id: 11 } },
@@ -133,8 +161,190 @@ function assertCommunicationViewModel() {
 
 assertCommunicationViewModel();
 
+async function assertCommunicationClient() {
+  const script = fs.readFileSync(path.join(root, "src", "dashboard", "assets", "communication.js"), "utf8");
+  const itemIds = [11, 12, 13, 14];
+  const response = (overrides = {}) => ({
+    batch: { id: 41, status: "running", ...(overrides.batch || {}) },
+    summary: {
+      batchId: 41,
+      batchStatus: "running",
+      total: 4,
+      terminal: 2,
+      remaining: 2,
+      statusCounts: { succeeded: 1, stopped: 1 },
+      ...(overrides.summary || {})
+    },
+    items: overrides.items || [
+      { id: 11, status: "verified" },
+      { id: 12, status: "succeeded" },
+      { id: 13, status: "stopped" },
+      { id: 14, status: "pending" }
+    ]
+  });
+
+  function harness(responses) {
+    let timerId = 0;
+    let reloads = 0;
+    let fetches = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const timeouts = new Map();
+    const documentListeners = new Map();
+    const windowListeners = new Map();
+    const element = (textContent = "") => ({
+      textContent,
+      hidden: false,
+      disabled: false,
+      value: 0,
+      max: 1,
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, String(value)); },
+      removeAttribute(name) { this.attributes.delete(name); },
+      getAttribute(name) { return this.attributes.get(name) ?? null; }
+    });
+    const terminalNode = element("0");
+    const successNode = element("0");
+    const remainingNode = element("4");
+    const meter = element();
+    const errorNode = element("无法读取沟通状态");
+    errorNode.hidden = true;
+    const controls = [element(), element()];
+    const rows = new Map(itemIds.map((id) => {
+      const row = element();
+      const status = element("待执行");
+      row.querySelector = (selector) => selector === "[data-communication-item-status]" ? status : null;
+      return [id, { row, status }];
+    }));
+    const page = {
+      dataset: {
+        communicationBatchId: "41",
+        communicationItemIds: itemIds.join(","),
+        communicationBatchStatus: "confirmed",
+        communicationPollingInterval: "2500"
+      },
+      querySelector(selector) {
+        if (selector === "[data-communication-terminal]") return terminalNode;
+        if (selector === "[data-communication-success]") return successNode;
+        if (selector === "[data-communication-remaining]") return remainingNode;
+        if (selector === "[data-communication-meter]") return meter;
+        if (selector === "[data-communication-error]") return errorNode;
+        const match = selector.match(/^\[data-communication-item-id="(\d+)"\]$/);
+        return match ? rows.get(Number(match[1]))?.row || null : null;
+      },
+      querySelectorAll(selector) {
+        if (selector === "[data-communication-control]") return controls;
+        return [];
+      }
+    };
+    const document = {
+      hidden: false,
+      querySelector(selector) { return selector === "[data-communication-page]" ? page : null; },
+      addEventListener(event, callback) { documentListeners.set(event, callback); }
+    };
+    const context = vm.createContext({
+      document,
+      window: { addEventListener(event, callback) { windowListeners.set(event, callback); } },
+      fetch: async () => {
+        fetches += 1;
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const next = responses.shift() || response();
+        await Promise.resolve();
+        inFlight -= 1;
+        if (next.httpError) return { ok: false, json: async () => ({}) };
+        return { ok: true, json: async () => next };
+      },
+      setTimeout(callback, delay) { timerId += 1; timeouts.set(timerId, { callback, delay }); return timerId; },
+      clearTimeout(id) { timeouts.delete(id); },
+      encodeURIComponent,
+      location: { reload() { reloads += 1; } }
+    });
+    new vm.Script(script).runInContext(context);
+    return {
+      document,
+      documentListeners,
+      windowListeners,
+      timeouts,
+      rows,
+      controls,
+      terminalNode,
+      successNode,
+      remainingNode,
+      meter,
+      errorNode,
+      async fire() {
+        const [id, timer] = timeouts.entries().next().value || [];
+        assert(timer, "expected one scheduled communication status request");
+        timeouts.delete(id);
+        await timer.callback();
+      },
+      counts() { return { reloads, fetches, maxInFlight }; }
+    };
+  }
+
+  const active = harness([
+    response(),
+    { httpError: true },
+    response({
+      summary: { terminal: 1, remaining: 3, statusCounts: { ambiguous: 1 } },
+      items: [
+        { id: 11, status: "ambiguous" },
+        { id: 12, status: "pending" },
+        { id: 13, status: "pending" },
+        { id: 14, status: "pending" }
+      ]
+    })
+  ]);
+  assert.strictEqual(active.timeouts.size, 1);
+  await active.fire();
+  assert.strictEqual(active.terminalNode.textContent, "2");
+  assert.strictEqual(active.successNode.textContent, "1");
+  assert.strictEqual(active.remainingNode.textContent, "2");
+  assert.strictEqual(active.rows.get(11).status.textContent, "身份已核验");
+  assert.strictEqual(active.rows.get(11).row.getAttribute("aria-current"), "step");
+  assert.strictEqual(active.counts().reloads, 0);
+  assert.strictEqual(active.timeouts.size, 1);
+
+  active.document.hidden = true;
+  active.documentListeners.get("visibilitychange")();
+  active.documentListeners.get("visibilitychange")();
+  assert.strictEqual(active.timeouts.size, 0);
+  const hiddenFetches = active.counts().fetches;
+  active.document.hidden = false;
+  active.documentListeners.get("visibilitychange")();
+  active.documentListeners.get("visibilitychange")();
+  assert.strictEqual(active.timeouts.size, 1);
+  await active.fire();
+  assert.strictEqual(active.counts().fetches - hiddenFetches, 1);
+  assert.strictEqual(active.counts().maxInFlight, 1);
+  assert.strictEqual(active.errorNode.hidden, false);
+  assert.strictEqual(active.terminalNode.textContent, "2");
+  assert(active.controls.every((control) => control.disabled));
+  assert.strictEqual(active.timeouts.size, 1);
+
+  await active.fire();
+  assert.strictEqual(active.counts().reloads, 1);
+  assert.strictEqual(active.timeouts.size, 0);
+  active.windowListeners.get("pageshow")();
+  active.windowListeners.get("pageshow")();
+  assert.strictEqual(active.counts().reloads, 1);
+  assert.strictEqual(active.timeouts.size, 0);
+
+  const drift = harness([response({ items: [{ id: 11, status: "pending" }] })]);
+  await drift.fire();
+  assert.strictEqual(drift.counts().reloads, 1, "an immutable item-set drift must reload once");
+  const batchDrift = harness([response({ batch: { id: 42 } })]);
+  await batchDrift.fire();
+  assert.strictEqual(batchDrift.counts().reloads, 1, "a batch identity drift must reload once");
+  const terminal = harness([response({ batch: { status: "completed" } })]);
+  await terminal.fire();
+  assert.strictEqual(terminal.counts().reloads, 1, "a terminal batch must reload once");
+}
+
 (async () => {
   fs.mkdirSync(smokeDir, { recursive: true });
+  await assertCommunicationClient();
   db = openDb(dbPath);
   const fixture = seed(db);
   const spawns = [];
@@ -479,6 +689,9 @@ assertCommunicationViewModel();
   assert.match(review.body, /name="action" value="start"/);
   assert.doesNotMatch(review.body, /验收这个岗位并自动暂停/);
   assert.match(review.body, /class="communication-discard" name="action" value="discard"/);
+  const communicationAsset = await getText(baseUrl, "/assets/communication.js");
+  assert.strictEqual(communicationAsset.status, 200);
+  assert.match(communicationAsset.body, /api\/communication-status/);
   const status = await getJson(baseUrl, `/api/communication-status?batchId=${batchId}`);
   assert.deepStrictEqual(Object.keys(status.body).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
   assert.deepStrictEqual(status.body.calibration, {

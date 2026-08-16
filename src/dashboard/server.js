@@ -197,6 +197,10 @@ const DASHBOARD_ASSETS = Object.freeze({
   "/assets/workflow.js": {
     contentType: "application/javascript; charset=utf-8",
     file: path.join(__dirname, "assets", "workflow.js")
+  },
+  "/assets/communication.js": {
+    contentType: "application/javascript; charset=utf-8",
+    file: path.join(__dirname, "assets", "communication.js")
   }
 });
 
