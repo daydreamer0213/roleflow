@@ -1371,7 +1371,10 @@ server.listen(0, "127.0.0.1", async () => {
       "Treat ordered messages as one recruiter turn.",
       "Do not confirm interview times.",
       "Do not claim resume submission.",
-      "Return at most two complete alternative drafts."
+      "Return at most two complete alternative drafts.",
+      "project_fact/qualification/salary/availability/interview_invitation/sensitive/other/identity_uncertain",
+      "salary、interview_invitation、sensitive、identity_uncertain 必须返回 messages: []",
+      "supplied job.description"
     ]) {
       assert(replyPrompt.includes(phrase), `draftMessageGroup prompt must include ${phrase}`);
     }

@@ -71,6 +71,12 @@ async function main() {
     () => validateMessageReply(safeReply({ messageCategory: "interview_invitation", messages: ["draft"] }), { facts: validFacts, now: NOW }),
     (error) => error.code === "MESSAGE_REPLY_INTERVIEW_NO_DRAFT"
   );
+  for (const messageCategory of ["salary", "sensitive", "identity_uncertain"]) {
+    assert.throws(
+      () => validateMessageReply(safeReply({ messageCategory, messages: ["must not escape"] }), { facts: validFacts, now: NOW }),
+      (error) => error.code === "MESSAGE_REPLY_MANUAL_ONLY"
+    );
+  }
 
   const expired = [
     { key: "employment_status", value: "在职", updatedAt: "2026-07-01T00:00:00.000Z" },
@@ -169,6 +175,23 @@ async function main() {
   assert.strictEqual(analyzed.messageCategory, "availability");
   assert.strictEqual(analyzed.progressUpdate.stage, "reply_ready");
   assert.strictEqual(messages[0].text, "", "analyzer must clear ephemeral message text");
+
+  for (const [text, messageCategory] of [
+    ["薪资还可以再谈吗？", "salary"],
+    ["请提供身份证和家庭情况", "sensitive"],
+    ["这是哪个岗位？", "identity_uncertain"]
+  ]) {
+    const manual = await analyzer({
+      profile: { id: 1 },
+      job: { id: 2, title: "Java Engineer" },
+      messages: [{ messageKey: "sha256:" + "b".repeat(64), text }],
+      facts: validFacts,
+      now: NOW
+    });
+    assert.strictEqual(manual.messageCategory, messageCategory);
+    assert.deepStrictEqual(manual.messages, []);
+    assert.strictEqual(manual.progressUpdate.stage, "needs_user_action");
+  }
 
   const storedShapeAnalyzer = createMessageReplyAnalyzer({ adapter: new MockModelAdapter() });
   const storedMessages = [{ messageKey: "sha256:" + "c".repeat(64), text: "什么时候可以到岗？" }];

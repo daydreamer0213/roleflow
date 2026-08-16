@@ -4,6 +4,7 @@ const {
 } = require("./candidate_progress");
 const { getCandidateProfile, listCandidateFacts } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
+const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
 const {
   listPreviewStates,
   recordPreviewState,
@@ -244,7 +245,12 @@ async function runBossMessageDiscovery({
     retained = unresolvedSummary(db, profileId);
     results = results.filter((item) => item.cardId !== card.id);
     processed += 1;
-    results.push(safeResult(card, classification));
+    results.push(safeResult(
+      card,
+      classification,
+      resolved.job,
+      resolved.contextSource || resolved.job.contextSource || ""
+    ));
     emitStatus(
       safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode }),
       logger,
@@ -465,9 +471,9 @@ function clearMessageSources(messages) {
   }
 }
 
-function safeResult(card, result) {
+function safeResult(card, result, resolvedJob, contextSource) {
   const missingFactKey = String(result.missingFact?.key || "").trim().slice(0, 80);
-  const messages = result.messageCategory === "interview_invitation" || missingFactKey
+  const messages = MANUAL_ONLY_CATEGORIES.has(result.messageCategory) || missingFactKey
     ? []
     : Array.isArray(result.messages)
       ? result.messages.slice(0, 2).map((item) => String(item))
@@ -478,8 +484,54 @@ function safeResult(card, result) {
     stage: card.stage,
     messageCategory: String(result.messageCategory || ""),
     missingFactKey,
+    manualActionReason: safeManualActionReason(result, missingFactKey, messages),
+    contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
+    contextComplete: hasCompleteJobContext(resolvedJob),
+    job: safeJobUnderstanding(resolvedJob),
     messages
   };
+}
+
+function safeManualActionReason(result, missingFactKey, messages) {
+  if (missingFactKey) return "需要先确认候选人事实后再回复";
+  const categoryReason = {
+    interview_invitation: "面试邀请需要人工确认时间和安排",
+    salary: "薪资问题需要人工确认口径",
+    sensitive: "消息涉及敏感信息，需要人工处理",
+    identity_uncertain: "岗位或会话身份仍需人工核对"
+  }[String(result.messageCategory || "")];
+  if (categoryReason) return categoryReason;
+  return messages.length ? "" : "当前结果需要人工处理";
+}
+
+function safeJobUnderstanding(job = {}) {
+  const analysis = job.analysis && typeof job.analysis === "object" && !Array.isArray(job.analysis)
+    ? job.analysis
+    : {};
+  return {
+    title: safeProjectionText(job.title, 160),
+    company: safeProjectionText(job.company, 160),
+    roleSummary: safeProjectionText(analysis.roleSummary, 300),
+    fitReasons: safeProjectionList(analysis.fitReasons, 5, 180),
+    hardBlockers: safeProjectionList(analysis.hardBlockers, 5, 180, (item) => item?.requirement),
+    softGaps: safeProjectionList(analysis.softGaps, 5, 180),
+    questionsToVerify: safeProjectionList(analysis.questionsToVerify, 5, 180)
+  };
+}
+
+function safeProjectionList(value, limit, textLimit, select = (item) => item) {
+  const projected = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const text = safeProjectionText(select(item), textLimit);
+    if (text && !projected.includes(text)) projected.push(text);
+    if (projected.length >= limit) break;
+  }
+  return projected;
+}
+
+function safeProjectionText(value, limit) {
+  if (!["string", "number"].includes(typeof value)) return "";
+  return String(value).replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
 function randomBetween(min, max, randomFn) {

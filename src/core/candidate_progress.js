@@ -15,6 +15,7 @@ const MESSAGE_CATEGORIES = new Set([
   "salary",
   "availability",
   "interview_invitation",
+  "sensitive",
   "other",
   "identity_uncertain"
 ]);
@@ -554,6 +555,7 @@ function sanitizedMessageSummary(messageCategory, { missingFactKey = "" } = {}) 
     salary: "薪资问题确认",
     availability: "到岗时间确认",
     interview_invitation: "收到面试邀约",
+    sensitive: "敏感信息人工处理",
     identity_uncertain: "岗位或线程关联待确认",
     other: missingFactKey ? "需要补充用户确认事实" : "招聘方问题已分类"
   }[category] || "招聘方问题已分类";

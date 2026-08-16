@@ -6,7 +6,14 @@ const MESSAGE_CATEGORIES = new Set([
   "salary",
   "availability",
   "interview_invitation",
+  "sensitive",
   "other",
+  "identity_uncertain"
+]);
+const MANUAL_ONLY_CATEGORIES = new Set([
+  "interview_invitation",
+  "salary",
+  "sensitive",
   "identity_uncertain"
 ]);
 const STABLE_FACT_PREFIXES = ["gap.", "leaving_reason.", "short_project."];
@@ -20,7 +27,7 @@ function validateMessageReply(value, context = {}) {
   assertKnownFactKeys(normalized);
   assertCoverageComplete(normalized);
   assertDraftLimit(normalized.messages, MAX_DRAFTS);
-  assertInterviewHasNoDraft(normalized);
+  assertManualOnlyHasNoDraft(normalized);
   for (const key of normalized.usedFactKeys) {
     const fact = validFacts.get(key);
     if (!fact) {
@@ -144,10 +151,12 @@ function assertDraftLimit(messages, limit) {
   }
 }
 
-function assertInterviewHasNoDraft(normalized) {
-  if (normalized.messageCategory === "interview_invitation" && normalized.messages.length) {
+function assertManualOnlyHasNoDraft(normalized) {
+  if (!MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory) || !normalized.messages.length) return;
+  if (normalized.messageCategory === "interview_invitation") {
     throw contractError("MESSAGE_REPLY_INTERVIEW_NO_DRAFT", "interview invitations must not generate drafts");
   }
+  throw contractError("MESSAGE_REPLY_MANUAL_ONLY", "this message category requires manual handling");
 }
 
 function safeReplyStage(normalized) {
@@ -211,6 +220,7 @@ function contractError(code, message) {
 
 module.exports = {
   MESSAGE_CATEGORIES,
+  MANUAL_ONLY_CATEGORIES,
   MAX_DRAFTS,
   validateMessageReply
 };

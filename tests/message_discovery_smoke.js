@@ -67,7 +67,23 @@ function factPolicySmoke() {
 }
 
 async function uniqueCandidateAndPrivacySmoke() {
-  const fixture = createFixture({ suffix: "unique", title: "Java Engineer" });
+  const fixture = createFixture({
+    suffix: "unique",
+    title: "Java Engineer",
+    analysis: {
+      roleSummary: "负责企业 Java 服务交付",
+      fitReasons: ["Spring 项目证据匹配"],
+      hardBlockers: [{
+        requirement: "必须具备支付行业经验",
+        jdEvidence: "JD evidence",
+        resumeEvidence: PRIVATE_BODY
+      }],
+      softGaps: ["行业经验待确认"],
+      questionsToVerify: ["确认团队技术栈"],
+      recruiterPrivateText: PRIVATE_BODY,
+      description: PRIVATE_BODY
+    }
+  });
   const selected = selectedConversation({ title: fixture.title });
   const logs = [];
   let modelCalls = 0;
@@ -107,6 +123,20 @@ async function uniqueCandidateAndPrivacySmoke() {
   assert.strictEqual(summary.processed, 1);
   assert.deepStrictEqual(summary.results[0].messages, [PRIVATE_DRAFT]);
   assert.strictEqual(summary.results[0].stage, "reply_ready");
+  assert.deepStrictEqual(summary.results[0].job, {
+    title: "Java Engineer",
+    company: "Fixture Company",
+    roleSummary: "负责企业 Java 服务交付",
+    fitReasons: ["Spring 项目证据匹配"],
+    hardBlockers: ["必须具备支付行业经验"],
+    softGaps: ["行业经验待确认"],
+    questionsToVerify: ["确认团队技术栈"]
+  });
+  assert.strictEqual(summary.results[0].contextSource, "local_cache");
+  assert.strictEqual(summary.results[0].contextComplete, true);
+  assert.strictEqual(summary.results[0].manualActionReason, "");
+  assert.strictEqual(Object.hasOwn(summary.results[0].job, "description"), false);
+  assert.strictEqual(JSON.stringify(summary.results[0].job).includes(PRIVATE_BODY), false);
   assert.strictEqual(
     db.prepare("SELECT next_action FROM candidate_progress_cards WHERE id = ?").get(fixture.card.id).next_action,
     "Review draft before manual send"
@@ -1151,6 +1181,35 @@ async function classificationOutcomeSmoke() {
   });
   assert.strictEqual(summary.results[0].stage, "interview_invited");
   assert.deepStrictEqual(summary.results[0].messages, []);
+
+  for (const [suffix, messageCategory, reason] of [
+    ["salary-manual", "salary", "薪资问题需要人工确认口径"],
+    ["sensitive-manual", "sensitive", "消息涉及敏感信息，需要人工处理"],
+    ["identity-manual", "identity_uncertain", "岗位或会话身份仍需人工核对"]
+  ]) {
+    const manual = createFixture({ suffix, title: `${suffix} Engineer` });
+    const manualSummary = await runBossMessageDiscovery({
+      db,
+      profileId: manual.profileId,
+      reader: fakeReader([selectedConversation({
+        title: manual.title,
+        messageId: suffix === "salary-manual" ? "123456789012352"
+          : suffix === "sensitive-manual" ? "123456789012353"
+            : "123456789012354"
+      })]),
+      classifyMessageGroup: async () => classification({
+        messageCategory,
+        stage: "needs_user_action",
+        messages: ["must not escape"]
+      }),
+      now: () => NOW,
+      sleepFn: async () => {}
+    });
+    assert.deepStrictEqual(manualSummary.results[0].messages, []);
+    assert.strictEqual(manualSummary.results[0].manualActionReason, reason);
+    assert.strictEqual(manualSummary.results[0].contextComplete, true);
+    assert(Object.hasOwn(manualSummary.results[0], "job"), "manual-only result must retain safe job context");
+  }
 }
 
 async function readerStopSmoke() {
@@ -1450,7 +1509,8 @@ function createFixture({
   title,
   salary = "20-30K",
   city = "Guangzhou",
-  company = "Fixture Company"
+  company = "Fixture Company",
+  analysis = {}
 }) {
   if (!profileId) {
     const profile = {
@@ -1498,7 +1558,7 @@ function createFixture({
     tags: ["Java"],
     description: "Deliver reliable backend systems with clear ownership, production diagnostics, testing, observability, collaboration, and measurable engineering outcomes. ".repeat(2),
     qualityTags: [],
-    analysis: { semanticStatus: "complete", recommendation: "primary", marker: suffix }
+    analysis: { semanticStatus: "complete", recommendation: "primary", marker: suffix, ...analysis }
   }, batchId);
   const card = ensureProgressCard(db, { profileId, planId, jobId, source: "boss", now: NOW });
   return { profileId, planId, jobId, card, title, salary, city, company };

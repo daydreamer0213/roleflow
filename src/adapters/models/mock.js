@@ -398,16 +398,21 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   const text = messages.map((message) => String(message.text || "")).join(" ");
   const messageCategory = /面试|邀约|interview/i.test(text)
     ? "interview_invitation"
-    : /到岗|入职|什么时候|availability/i.test(text)
-      ? "availability"
-      : /薪资|salary|期望/i.test(text)
-        ? "salary"
-        : "qualification";
+    : /身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)
+      ? "sensitive"
+      : /哪个岗位|什么岗位|哪个职位|什么职位|岗位不清楚|identity uncertain/i.test(text)
+        ? "identity_uncertain"
+        : /到岗|入职|什么时候|availability/i.test(text)
+          ? "availability"
+          : /薪资|salary|期望/i.test(text)
+            ? "salary"
+            : "qualification";
   const factMap = new Map((facts || []).map((fact) => [String(fact.key || ""), fact]));
   const required = messageCategory === "availability"
     ? ["employment_status", "availability_date"]
     : [];
   const missing = required.find((key) => !factMap.has(key));
+  const manualOnly = ["interview_invitation", "salary", "sensitive", "identity_uncertain"].includes(messageCategory);
   return {
     messageCategory,
     requiredFactKeys: required,
@@ -415,9 +420,9 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
     responseItems: required.map((id) => ({ id, kind: "question", required: true })),
     coverage: required.map((id) => ({ responseItemId: id, covered: factMap.has(id) })),
     missingFact: missing ? { key: missing, question: "请确认到岗相关事实" } : null,
-    messages: messageCategory === "interview_invitation" || missing ? [] : ["mock message reply draft"],
+    messages: manualOnly || missing ? [] : ["mock message reply draft"],
     progressUpdate: {
-      stage: messageCategory === "interview_invitation" || missing ? "needs_user_action" : "reply_ready",
+      stage: manualOnly || missing ? "needs_user_action" : "reply_ready",
       nextAction: "ignored provider text"
     }
   };
