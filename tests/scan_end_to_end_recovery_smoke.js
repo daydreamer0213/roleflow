@@ -47,6 +47,24 @@ async function main() {
         cities: ["测试未映射城市"]
       }
     });
+    const directGeneratedPlanId = storage.saveSearchPlan(db, {
+      profileId,
+      plan: {
+        ...fixturePlan(),
+        name: "Direct generated Search Plan",
+        acquisitionMode: "generated",
+        platform: {
+          site: "boss",
+          generated: {
+            cities: ["广州"],
+            salaryLanes: [],
+            experience: [],
+            jobTypes: [],
+            degrees: []
+          }
+        }
+      }
+    });
     const generatedUnsupportedWorkflow = seedWorkflowRun(storage, db, {
       profileId,
       planId: unsupportedPlanId,
@@ -185,6 +203,24 @@ async function main() {
     assert.deepStrictEqual(storage.listLatestScanTargetResults(db, batchId).map((item) => item.status),
       snapshot.targets.map(() => "completed"));
 
+    db.close();
+    db = null;
+
+    const directGenerated = runScan(
+      dbPath,
+      directGeneratedPlanId,
+      "scan-e2e-direct-generated",
+      "complete"
+    );
+    assertExit(directGenerated, 0, "direct generated Search Plan scan");
+    db = storage.openDb(dbPath);
+    const directGeneratedRun = storage.getScanRun(db, "scan-e2e-direct-generated");
+    const directGeneratedBatch = storage.getBatch(db, directGeneratedRun.batchId);
+    assert.strictEqual(directGeneratedBatch.filterSnapshot.execution.searchTemplate.mode, "generated");
+    assert.deepStrictEqual(
+      directGeneratedBatch.filterSnapshot.execution.cityScopes,
+      [{ city: "广州", cityCode: "101280100" }]
+    );
     db.close();
     db = null;
 
@@ -887,7 +923,25 @@ function installOfflineBoundaries() {
         assertWorkflowPrebound();
         await this.accessController?.reserve("list_navigation", { kind: "filter_catalog" });
       }
-      return { site: "boss", source: "offline-smoke", discoveredAt: new Date().toISOString(), fields: {} };
+      return {
+        site: "boss",
+        source: "offline-smoke",
+        discoveredAt: new Date().toISOString(),
+        fields: {
+          experience: {
+            urlParam: "experience",
+            selection: "multiple",
+            semantic: "experience",
+            options: [{ code: "104", label: "1-3年" }]
+          },
+          jobType: {
+            urlParam: "jobType",
+            selection: "multiple",
+            semantic: "choice",
+            options: [{ code: "1901", label: "全职" }]
+          }
+        }
+      };
     }
 
     async scan(options) {

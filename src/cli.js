@@ -21,7 +21,12 @@ const {
   applyScanPolicyToFilters
 } = require("./core/search_plan");
 const { acquisitionModeOf, generatedPlatformOf } = require("./core/search_plan_schema");
-const { isCatalogFresh, resolveNativeFilterSnapshot, formatNativeFilterSummary } = require("./core/platform_filters");
+const {
+  isCatalogFresh,
+  resolveNativeFilterSnapshot,
+  assertGeneratedFilterSelections,
+  formatNativeFilterSummary
+} = require("./core/platform_filters");
 const {
   openDb,
   getWorkflowRun,
@@ -1022,7 +1027,9 @@ async function scan(
   if (!workflowRun && !args.input) {
     directSearchContext = resolveBossSearchContext({
       currentUrl: browserState?.url || browserState?.tab?.url || "",
-      storedTemplate: storedExecution?.searchTemplate,
+      storedTemplate: acquisitionMode === "generated"
+        ? { mode: "generated", url: "", cityCode: "" }
+        : storedExecution?.searchTemplate,
       cityScopes: plannedCityScopes || []
     });
     if (!acquisitionMode) acquisitionMode = directSearchContext.searchTemplate.mode;
@@ -2378,7 +2385,7 @@ async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes,
       discoveredAt: catalog.discoveredAt
     });
   }
-  const snapshot = resolveNativeFilterSnapshot({
+  const snapshot = assertGeneratedFilterSelections(plan, resolveNativeFilterSnapshot({
     site: "boss",
     catalog,
     plan,
@@ -2386,7 +2393,7 @@ async function resolveBossPlatformFilters({ db, adapter, args, plan, cityScopes,
       salary: args["boss-salary"],
       experience: args["boss-experience"]
     }
-  });
+  }));
   scopedLogger.info("platform_filters_resolved", {
     site: "boss",
     refreshed: shouldRefresh,
