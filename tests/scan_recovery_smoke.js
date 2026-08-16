@@ -51,6 +51,7 @@ let db;
   observationFailureRollsBack(db, { profileId, planId, owner });
   targetFailureRollsBack(db, { profileId, planId, owner });
   jobOnlyCheckpointPersistsDetailWithoutTargetResult(db, { profileId, planId, owner });
+  boundedScanProgressIsMergedAndValidated(db, { profileId, planId, owner });
   lifecycleAndIdempotency(db, { profileId, planId, owner });
   processExitAndOrphanRecovery(db, { profileId, planId, owner });
   detailModeSnapshotRecoverySmoke();
@@ -129,21 +130,110 @@ function detailModeSnapshotRecoverySmoke() {
   assert.strictEqual(snapshot.detailMode, "search_page_api", "拒绝恢复不得改写历史证据");
 }
 
-function startRun(database, { label, profileId, planId, owner }) {
+function startRun(database, { label, profileId, planId, owner, filterSnapshot = null }) {
   const batchId = createBatch(database, "boss", label, `scan-recovery:${label}`, {
     profileId,
     searchPlanId: planId,
-    filterSnapshot: { label }
+    filterSnapshot: filterSnapshot || { label }
   });
   const created = createScanRun(database, { runId: `run-${label}`, site: "boss", command: "scan", planId });
   const batch = getBatch(database, batchId);
   assert.strictEqual(batch.searchPlanId, planId);
-  assert.deepStrictEqual(batch.filterSnapshot, { label });
+  assert.deepStrictEqual(batch.filterSnapshot, filterSnapshot || { label });
   assert.strictEqual(getScanRun(database, created.id).status, "running");
   const run = beginScanRun(database, { runId: created.id, batchId, leaseOwner: owner, processId: process.pid });
   assert.strictEqual(run.batchId, batchId);
   assert.strictEqual(run.leaseOwner, owner);
   return { runId: run.id, batchId };
+}
+
+function boundedScanProgressIsMergedAndValidated(database, context) {
+  const targetKey = "101280100|RAG|default";
+  const filterSnapshot = {
+    execution: {
+      targets: [{
+        targetKey,
+        cityCode: "101280100",
+        keyword: "RAG",
+        priority: "A",
+        laneId: "default",
+        cardLimit: 6
+      }]
+    }
+  };
+  const { runId, batchId } = startRun(database, {
+    ...context,
+    label: "bounded-scan-progress",
+    filterSnapshot
+  });
+  checkpointScanProgress(database, {
+    runId,
+    batchId,
+    leaseOwner: context.owner,
+    jobs: [],
+    runtime: { bossPacing: { accessCount: 3 } }
+  });
+  checkpointScanProgress(database, {
+    runId,
+    batchId,
+    leaseOwner: context.owner,
+    jobs: [],
+    runtime: {
+      scanProgress: {
+        version: 1,
+        activity: "reading_detail",
+        targetKey,
+        targetPosition: 1,
+        targetTotal: 1,
+        targetDiscovered: 6,
+        detailPosition: 2,
+        detailTotal: 4,
+        updatedAt: "2099-01-01T00:00:00.000Z"
+      }
+    }
+  });
+  const runtime = getBatch(database, batchId).filterSnapshot.runtime;
+  assert.deepStrictEqual(runtime.bossPacing, { accessCount: 3 });
+  assert.strictEqual(runtime.scanProgress.targetDiscovered, 6);
+
+  const before = getBatch(database, batchId).filterSnapshot;
+  assert.throws(() => checkpointScanProgress(database, {
+    runId,
+    batchId,
+    leaseOwner: context.owner,
+    jobs: [job("must-roll-back", "Must Roll Back")],
+    runtime: {
+      scanProgress: {
+        version: 1,
+        activity: "searching",
+        targetKey: "unknown",
+        targetPosition: 1,
+        targetTotal: 1,
+        targetDiscovered: 0,
+        detailPosition: 0,
+        detailTotal: 0,
+        updatedAt: "2099-01-01T00:00:00.000Z"
+      }
+    }
+  }), (error) => error.code === "SCAN_PROGRESS_INVALID");
+  assert.deepStrictEqual(getBatch(database, batchId).filterSnapshot, before);
+  assert.strictEqual(count(database, "SELECT COUNT(*) AS count FROM jobs WHERE source_id = 'must-roll-back'"), 0);
+
+  for (const scanProgress of [
+    { ...runtime.scanProgress, targetDiscovered: 7 },
+    { ...runtime.scanProgress, detailPosition: 5, detailTotal: 4 },
+    { ...runtime.scanProgress, updatedAt: "not-a-date" }
+  ]) {
+    assert.throws(() => checkpointScanProgress(database, {
+      runId,
+      batchId,
+      leaseOwner: context.owner,
+      jobs: [],
+      runtime: { scanProgress }
+    }), (error) => error.code === "SCAN_PROGRESS_INVALID");
+  }
+  assert.deepStrictEqual(getBatch(database, batchId).filterSnapshot, before);
+  finishScanRun(database, { runId, leaseOwner: context.owner, status: "completed" });
 }
 
 function observationFailureRollsBack(database, context) {

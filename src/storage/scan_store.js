@@ -5,6 +5,7 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 
 const SCAN_RUN_STATUSES = ["running", "completed", "partial", "failed", "interrupted"];
 const TERMINAL_SCAN_RUN_STATUSES = new Set(SCAN_RUN_STATUSES.slice(1));
+const SCAN_PROGRESS_ACTIVITIES = new Set(["searching", "reading_detail", "target_complete"]);
 const scanRunError = storageError;
 
 function recordSiteAccessEvent(db, {
@@ -535,8 +536,54 @@ function updateBatchRuntimeSnapshot(db, batch, runtime) {
   const previousRuntime = current.runtime && typeof current.runtime === "object" && !Array.isArray(current.runtime)
     ? current.runtime
     : {};
+  const nextRuntime = { ...previousRuntime, ...runtime };
+  if (Object.hasOwn(runtime, "scanProgress")) {
+    nextRuntime.scanProgress = normalizeScanProgress(runtime.scanProgress, current.execution);
+  }
   db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?")
-    .run(JSON.stringify({ ...current, runtime: { ...previousRuntime, ...runtime } }), batch.id);
+    .run(JSON.stringify({ ...current, runtime: nextRuntime }), batch.id);
+}
+
+function normalizeScanProgress(value, execution) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw scanRunError("SCAN_PROGRESS_INVALID", "scan progress must be an object");
+  }
+  const targetKey = String(value.targetKey || "").trim();
+  const targets = Array.isArray(execution?.targets) ? execution.targets : [];
+  const target = targets.find((entry) => String(entry?.targetKey || "") === targetKey);
+  const activity = String(value.activity || "");
+  if (!target || Number(value.version) !== 1 || !SCAN_PROGRESS_ACTIVITIES.has(activity)) {
+    throw scanRunError("SCAN_PROGRESS_INVALID", "scan progress does not match the frozen execution target");
+  }
+  const integer = (input) => Math.max(0, Math.floor(Number(input) || 0));
+  const updatedAt = String(value.updatedAt || "");
+  if (!Number.isFinite(Date.parse(updatedAt))) {
+    throw scanRunError("SCAN_PROGRESS_INVALID", "scan progress updatedAt must be ISO time");
+  }
+  const targetPosition = integer(value.targetPosition);
+  const targetTotal = integer(value.targetTotal);
+  const targetDiscovered = integer(value.targetDiscovered);
+  const detailPosition = integer(value.detailPosition);
+  const detailTotal = integer(value.detailTotal);
+  const frozenPosition = targets.findIndex((entry) => String(entry?.targetKey || "") === targetKey) + 1;
+  if (targetPosition !== frozenPosition
+    || targetTotal !== targets.length
+    || targetDiscovered > Number(target.cardLimit || 0)
+    || detailPosition > detailTotal
+    || detailTotal > targetDiscovered) {
+    throw scanRunError("SCAN_PROGRESS_INVALID", "scan progress counters exceed the frozen target bounds");
+  }
+  return {
+    version: 1,
+    activity,
+    targetKey,
+    targetPosition,
+    targetTotal,
+    targetDiscovered,
+    detailPosition,
+    detailTotal,
+    updatedAt
+  };
 }
 
 function recordScanTargetResult(db, input = {}) {
