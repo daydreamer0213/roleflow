@@ -1,6 +1,6 @@
 {
   "name": "roleflow",
-  "version": "0.1.0-beta.4.6",
+  "version": "1.0.0",
   "private": true,
   "description": "简历驱动的本地岗位筛选与投递工作流。",
   "license": "AGPL-3.0-only",

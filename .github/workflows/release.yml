@@ -97,7 +97,7 @@ jobs:
             -OutputDir (Join-Path $PWD "dist") `
             -PortableNodeRoot $nodeRoot `
             -SkipTests
-      - name: Create prerelease and upload packages
+      - name: Create release and upload packages
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,13 +107,15 @@ jobs:
             Authorization = "Bearer $env:GITHUB_TOKEN"
             "X-GitHub-Api-Version" = "2022-11-28"
           }
+          $package = Get-Content -LiteralPath "package.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          $isPrerelease = $package.version -match "-"
           $notes = Get-Content -LiteralPath "docs/releases/$env:GITHUB_REF_NAME.md" -Raw -Encoding utf8
           $payload = @{
             tag_name = $env:GITHUB_REF_NAME
             name = "RoleFlow $env:GITHUB_REF_NAME"
             body = $notes
             draft = $true
-            prerelease = $true
+            prerelease = $isPrerelease
           } | ConvertTo-Json
           $releases = @(
             Invoke-RestMethod `
@@ -146,7 +148,6 @@ jobs:
               -ContentType "application/json" `
               -Body $payload
           }
-          $package = Get-Content -LiteralPath "package.json" -Raw -Encoding utf8 | ConvertFrom-Json
           $assetPaths = @(
             "dist/RoleFlow-$env:GITHUB_REF_NAME-portable.zip",
             "dist/RoleFlow-Setup-$($package.version).exe",
@@ -174,7 +175,7 @@ jobs:
           }
           $publishPayload = @{
             draft = $false
-            prerelease = $true
+            prerelease = $isPrerelease
           } | ConvertTo-Json
           Invoke-RestMethod `
             -Method Patch `
