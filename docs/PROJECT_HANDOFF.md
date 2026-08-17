@@ -5,10 +5,10 @@
 ## 1. 当前基线
 
 - 正式版本：`v1.0.0`。
-- 本地 `main`：`d50874166dde550e3fda2fe1b8eb235efecc7677`；`origin/main`：`940ca721efdc8e2d29e107ceb9822ff33cb49263`（已发布 `v1.0.0`）。课题 1、课题 4、课题 2 的设计和自动化实现，以及课题 3 的设计、实现和双模式验收位于本地分支 `codex/first-principles-audit`，尚未合并。
+- 本地 `main`：`d50874166dde550e3fda2fe1b8eb235efecc7677`；`origin/main`：`940ca721efdc8e2d29e107ceb9822ff33cb49263`（已发布 `v1.0.0`）。四个独立课题的设计、实现、自动回归和必要人工验收均已在本地分支 `codex/first-principles-audit` 完成，尚未合并。
 - `package.json` 与 `package-lock.json`：`1.0.0`。
 - 正式安装器：GitHub Release `v1.0.0` 中的 `RoleFlow-Setup-1.0.0.exe`。
-- `tests/run_all.js` 当前注册 101 项离线检查。课题 3 收尾后，明确排除 `startup_scripts_smoke.js` 的其余 100 项全部重新通过；该脚本会临时生成未签名的 `msedge.exe` 测试桩并被 360 拦截。课题 2 消息发现直接相关的 14 项回归仍通过，课题 4 阶段的 212 个 JavaScript 文件语法检查也保留通过记录。
+- `tests/run_all.js` 当前注册 101 项离线检查。课题 2 最终修复后，明确排除 `startup_scripts_smoke.js` 的其余 100 项已在最终代码树上全部重新通过；该脚本会临时生成未签名的 `msedge.exe` 测试桩并被 360 拦截。课题 4 阶段的 212 个 JavaScript 文件语法检查也保留通过记录。
 - 真正新用户路径的人工验收已经覆盖模型设置、简历和方案、扫描与分析、清单确认、连续批量沟通和只读消息发现，主流程完整跑通。
 - BOSS 沟通策略当前为 `implementation=implemented`、`calibration=calibrated`、`acceptance=accepted`、`executionEnabled=true`。这只表示产品门已通过，不代表任何新批次已获得外部写授权。
 
@@ -35,16 +35,16 @@
 - 筛选规则实质变化后必须使用全新空 operational baseline；失败或中断数据库不参与质量评测。
 - 不启动 Wave 5，不做全面重构，不修现实路径不可触发的理论问题。
 
-## 4. 下一阶段的四个独立课题
+## 4. 四个独立课题完成状态
 
 四个课题彼此独立，不能把第一个课题当成其余三个的统一改造方法。范围和初步证据见 `NEXT_PHASE.md`。
 
 1. 课题 1 · 第一性原则审计与精简：`██████████ 100%`，已完成设计、实施和离线验证，尚未合并。
-2. 课题 2 · 消息发现的岗位理解与回复草稿：`█████████░ 90%`，设计、实现、安全复审和 14 项自动回归已完成；真实后台读取人工验收待当前分支运行环境。
+2. 课题 2 · 消息发现的岗位理解与回复草稿：`██████████ 100%`，已完成设计、实现、安全复审、全量离线回归和当前分支真实后台只读验收；最终修复提交为 `15a3dab`。
 3. 课题 3 · 通用模式与继承模式：`██████████ 100%`，已完成设计、实现、100 项离线验证和双模式真实后台只读验收；默认仍为继承模式。
 4. 课题 4 · 逐岗位进度与明确进度条：`██████████ 100%`，已完成设计、实施、Chrome 隔离验收和离线验证，尚未合并。
 
-下一安全动作是等待 BOSS 近 24 小时列表跳转额度从 `16/16` 恢复，再在当前分支 Dashboard 运行课题 2 的单个真实、后台、只读消息样本验收；不包含回复或外部写。课题 3 本次通用模式相对召回为 79.3%，低于继承模式的 93.1%，因此不能据单次样本改默认模式；完整证据见 `docs/superpowers/reports/2026-08-16-generic-inherited-screening-modes-acceptance.md`。
+四个课题没有剩余实现或验收待办。下一步仅是由用户决定是否把当前发展分支整合到 `main`，以及是否规划新版本、推送或发布；这些动作均不自动执行。课题 3 本次通用模式相对召回为 79.3%，低于继承模式的 93.1%，因此不能据单次样本改默认模式；完整证据见 `docs/superpowers/reports/2026-08-16-generic-inherited-screening-modes-acceptance.md`。课题 2 最终验收见 `docs/superpowers/reports/2026-08-17-message-discovery-job-understanding-reply-drafts-acceptance.md`。
 
 ## 5. 架构方向
 
