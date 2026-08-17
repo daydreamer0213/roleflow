@@ -17,7 +17,8 @@ const SCAN_OPERATIONS = [
   "heartbeatScanRun", "finishScanRun", "recordScanRunProcessExit", "interruptOrphanedScanRuns",
   "checkpointScanProgress", "checkpointScanTarget", "recordScanTargetResult", "listScanTargetResults",
   "listLatestScanTargetResults", "summarizeScanTargets", "getSiteRuntimeState", "setSiteRuntimeState",
-  "clearSiteRuntimeState", "recordSiteAccessEvent", "listSiteAccessEvents", "acquireSiteScanLease",
+  "clearSiteRuntimeState", "getSitePacingState", "setSitePacingState", "mergeBossPacingStates",
+  "recordSiteAccessEvent", "listSiteAccessEvents", "acquireSiteScanLease",
   "renewSiteScanLease", "releaseSiteScanLease", "getSiteScanLease", "listReusableJobDetails",
   "recordJobRefreshAttempt", "listJobRefreshAttempts", "getLatestJobRefreshAttempt",
   "getPlatformFilterCatalog", "savePlatformFilterCatalog"
@@ -44,10 +45,10 @@ try {
 }
 
 function contract01ExportsAndReferences() {
-  assert.equal(Object.keys(storage).length, 136);
+  assert.equal(Object.keys(storage).length, 139);
   assert.equal(Object.keys(candidateStore).length, 29);
   assert.equal(Object.keys(jobStore).length, 26);
-  assert.deepEqual(Object.keys(scanStore).sort(), [...SCAN_OPERATIONS, "SCAN_RUN_STATUSES"].sort());
+  assert.deepEqual(Object.keys(scanStore).sort(), [...SCAN_OPERATIONS, "SCAN_RUN_STATUSES", "normalizeBossPacing"].sort());
   assert.equal(storage.SCAN_RUN_STATUSES, scanStore.SCAN_RUN_STATUSES);
   for (const name of SCAN_OPERATIONS) assert.equal(storage[name], scanStore[name]);
   for (const name of Object.keys(candidateStore)) assert.equal(storage[name], candidateStore[name]);
