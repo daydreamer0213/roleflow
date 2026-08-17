@@ -110,6 +110,22 @@ async function testApplicationBoundary() {
   assert.strictEqual(messageAnalysisObservation.description, messageRawDescription);
   assert.strictEqual(JSON.parse(messageAnalysisObservation.analysis_json).semanticStatus, "complete");
 
+  const blockedMessageContext = seedPlan("message-context-blocked");
+  const blockedMessageJobId = seedFailedJob(blockedMessageContext, "message-context-inactive", {
+    bossActiveText: "近半年活跃",
+    bossActiveDays: 180
+  });
+  const blockedMessageRunner = controlledRunner({ delayMs: 0 });
+  const blockedMessageRetry = await retryOneJobAnalysis({
+    db,
+    input: { planId: blockedMessageContext.planId, jobId: blockedMessageJobId },
+    deps: applicationDeps(blockedMessageRunner, { messageContextAnalysis: true })
+  });
+  assert.strictEqual(blockedMessageRetry.completed, 1);
+  assert.strictEqual(blockedMessageRetry.sourcePending, 0);
+  assert.deepStrictEqual(blockedMessageRunner.calls, ["message-context-inactive"]);
+  assert.strictEqual(job(db, blockedMessageContext.planId, blockedMessageJobId).analysis.semanticStatus, "complete");
+
   const mixed = seedPlan("mixed");
   const completeId = seedFailedJob(mixed, "bulk-complete");
   const partialId = seedFailedJob(mixed, "bulk-partial");
@@ -218,6 +234,21 @@ async function testDashboardContract() {
   assert(singleFailedHtml.includes(`href="/queue?planId=${http.planId}&amp;pool=analysis_pending"`));
   assert(requests.some((entry) => entry.taskProfile === "batch_screening"), "retry routes must resolve the batch_screening task profile");
   assert(httpRunner.configs.every((configs) => configs.model === runtimeModelConfig), "runner seam must receive the route's batch_screening model config without replacing it");
+
+  const guardedHttp = seedPlan("http-guarded");
+  const guardedHttpJobId = seedFailedJob(guardedHttp, "http-purpose-bypass", {
+    bossActiveText: "近半年活跃",
+    bossActiveDays: 180
+  });
+  const guardedResponse = await post(base, "/api/analyze-job", {
+    planId: guardedHttp.planId,
+    jobId: guardedHttpJobId,
+    purpose: "message_discovery_context"
+  });
+  assert.strictEqual(guardedResponse.status, 303);
+  assert.strictEqual(guardedResponse.headers.get("location"), `/queue?planId=${guardedHttp.planId}&pool=analysis_pending`);
+  assert(!httpRunner.calls.includes("http-purpose-bypass"),
+    "HTTP form fields must not grant the internal message-context analysis capability");
 
   const bulkMixed = await post(base, "/api/analyze-jobs", { planId: bulk.planId });
   assert.strictEqual(bulkMixed.status, 303);

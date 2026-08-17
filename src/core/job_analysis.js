@@ -517,7 +517,8 @@ function applyRuleGuard(analysis, job) {
 
   // 一、本地已确认的基础边界不依赖模型语义，可直接排除。
   if (gate === "blocked") {
-    return addGuard(analysis, "not_recommended", "no_fit", "已确认的基础条件不满足。", "blocked", "hard_boundary");
+    const semanticStatus = analysis.semanticStatus === "complete" ? "complete" : "blocked";
+    return addGuard(analysis, "not_recommended", "no_fit", "已确认的基础条件不满足。", semanticStatus, "hard_boundary");
   }
 
   // 二、技术失败和证据未完成不伪装成四档建议。模型 hardBlocker 与岗位风险

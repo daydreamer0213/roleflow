@@ -7,6 +7,9 @@ const {
 
 const CHAT_PATH = "/web/geek/chat";
 const GUARDED_OPERATION = "__bossGuardedMessageConversationClick";
+const SELECTED_IDENTITY_ATTEMPTS = 3;
+const SELECTED_CONTENT_ATTEMPTS = 21;
+const SELECTED_CONTENT_INTERVAL_MS = 250;
 const GUARDED_REASONS = new Set([
   "page_lost",
   "snapshot_helper_missing",
@@ -212,17 +215,22 @@ function guardedResultError(reason) {
 }
 
 function selectedTargetMatches(snapshot, target) {
-  const selected = snapshot.rows.filter((row) => row.selected);
-  return selected.length === 1
-    && selected[0].rowIndex === target.rowIndex
-    && selected[0].conversationKey === target.conversationKey
-    && (target.operation === "preview_changed"
-      ? selected[0].transientSignature === target.transientSignature
-      : conversationSignature({ ...selected[0], unread: true }) === target.transientSignature)
+  return selectedTargetIdentityMatches(snapshot, target)
     && Boolean(snapshot.headerText)
     && Boolean(snapshot.positionName)
     && snapshot.messages.length > 0
     && snapshot.messages.every((item) => /^\d{15}$/.test(item.messageId));
+}
+
+function selectedTargetIdentityMatches(snapshot, target) {
+  const selected = snapshot.rows.filter((row) => row.selected);
+  const operation = target.operation || "unread";
+  return selected.length === 1
+    && selected[0].rowIndex === target.rowIndex
+    && selected[0].conversationKey === target.conversationKey
+    && (operation !== "unread"
+      ? selected[0].transientSignature === target.transientSignature
+      : conversationSignature({ ...selected[0], unread: true }) === target.transientSignature);
 }
 
 function sameSelectedConversation(actual, expected) {
@@ -338,13 +346,15 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
           throw guardedResultError(guarded.reason);
         }
         if (guarded.rowIndex !== target.rowIndex) throw codedError("BOSS_MESSAGE_GUARD_RESULT_INVALID", "message selection guard returned an invalid result");
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          if (attempt) await sleepFn(250, signal);
+        for (let attempt = 0; attempt < SELECTED_CONTENT_ATTEMPTS; attempt += 1) {
+          if (attempt) await sleepFn(SELECTED_CONTENT_INTERVAL_MS, signal);
           const after = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(target.tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
           if (selectedTargetMatches(after, target)) {
             activeSelectedSnapshot = after;
             return after;
           }
+          if (!selectedTargetIdentityMatches(after, target)
+            && attempt + 1 >= SELECTED_IDENTITY_ATTEMPTS) break;
         }
         throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
       });

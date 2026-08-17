@@ -312,6 +312,26 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const readAfterClickSelected = await readAfterClick.reader.openQueuedConversation(readAfterClick.scan.queue[0]);
   assert.strictEqual(readAfterClickSelected.rows[0].unread, false, "reading the selected row must not invalidate its identity");
 
+  const durableRow = row(0, { unread: false });
+  const durableBrowser = fakeBrowser({
+    snapshots: [
+      snapshot({ rows: [durableRow, row(1)] }),
+      guardedSuccess,
+      snapshot({ rows: [durableRow, row(1)] }),
+      snapshot({ rows: [durableRow, row(1)] }),
+      snapshot({ rows: [durableRow, row(1)] })
+    ]
+  });
+  const durableReader = createBossMessageReader({ browser: durableBrowser, sleepFn: async () => {} });
+  const durableScan = await durableReader.scanConversationRows();
+  const durableSelected = await durableReader.openQueuedConversation({
+    ...durableScan.rows[0],
+    tabId: durableScan.tabId,
+    operation: "durable_unresolved"
+  });
+  assert.strictEqual(durableSelected.rows[0].unread, false,
+    "a durable unresolved item must keep the exact already-read conversation identity");
+
   const messageLoadWaits = [];
   const messageLoadBrowser = fakeBrowser({
     snapshots: [
@@ -329,13 +349,32 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   await messageLoadReader.openQueuedConversation(messageLoadQueue.queue[0]);
   assert.deepStrictEqual(messageLoadWaits, [250], "an empty first snapshot must wait for message loading");
 
-  const emptyMessagesBrowser = fakeBrowser({
+  const slowMessageLoadWaits = [];
+  const slowMessageLoadBrowser = fakeBrowser({
     snapshots: [
       snapshot(),
       guardedSuccess,
       snapshot({ messages: [] }),
       snapshot({ messages: [] }),
-      snapshot({ messages: [] })
+      snapshot({ messages: [] }),
+      snapshot({ messages: [] }),
+      snapshot()
+    ]
+  });
+  const slowMessageLoadReader = createBossMessageReader({
+    browser: slowMessageLoadBrowser,
+    sleepFn: async (ms) => slowMessageLoadWaits.push(ms)
+  });
+  const slowMessageLoadQueue = await slowMessageLoadReader.scanUnread();
+  await slowMessageLoadReader.openQueuedConversation(slowMessageLoadQueue.queue[0]);
+  assert.deepStrictEqual(slowMessageLoadWaits, [250, 250, 250, 250],
+    "a selected conversation may need more than 500ms before its messages become ready");
+
+  const emptyMessagesBrowser = fakeBrowser({
+    snapshots: [
+      snapshot(),
+      guardedSuccess,
+      ...Array.from({ length: 21 }, () => snapshot({ messages: [] }))
     ]
   });
   const emptyMessages = await scan(emptyMessagesBrowser);

@@ -3,6 +3,28 @@ const { assertBossOperatorTabs } = require("../../core/workspace_tabs");
 
 const DETAIL_READY_ATTEMPTS = 60;
 const DETAIL_READY_DELAY_MS = 250;
+const MESSAGE_DETAIL_SNAPSHOT_EXPRESSION = `(function __bossMessageDetailSnapshot() {
+  const decode = window.__bossDecode || ((value) => String(value || "").replace(/\\s+/g, " ").trim());
+  const roots = Array.from(document.querySelectorAll(".job-box > .inner.home-inner > .job-detail"));
+  const root = roots.length === 1 ? roots[0] : null;
+  const header = document.querySelector(".job-banner .job-primary.detail-box");
+  const description = root?.querySelector(".job-sec-text")
+    || root?.querySelector(".job-detail-body .desc")
+    || root?.querySelector("p.desc")
+    || root?.querySelector(".job-detail-section .text")
+    || root?.querySelector("[class*='job-sec-text']");
+  const metadata = (window.__bossJobMetadata || (() => ({})))(decode(header?.innerText || ""));
+  return {
+    currentJobId: (location.pathname.match(/\\/job_detail\\/([^/?#]+)\\.html/i) || [])[1] || "",
+    rootCount: roots.length,
+    hasRoot: Boolean(root),
+    title: decode(header?.querySelector("h1")?.innerText || ""),
+    company: decode(document.querySelector(".sider-company .company-info")?.innerText || ""),
+    description: decode(description?.innerText || "").slice(0, 12000),
+    bossActiveText: decode(document.querySelector(".job-boss-info .boss-active-time")?.innerText || ""),
+    ...metadata
+  };
+})()`;
 
 function detailError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -69,10 +91,14 @@ function createBossMessageDetailReader({
       const returnedTabId = await browser.createTab(communicationTabId, target.navigationUrl);
       createReturned = true;
       if (Number.isInteger(returnedTabId)) detailTabId = returnedTabId;
-      const afterCreate = await browser.listTabs();
-      const created = findCreatedTargetTab(beforeTabs, afterCreate, binding, target);
+      const created = await waitForCreatedTargetTab({
+        beforeTabs,
+        binding,
+        returnedTabId,
+        target,
+        signal
+      });
       detailTabId = created.id;
-      assertBackgroundCreation({ returnedTabId, created, beforeTabs, afterCreate, binding, target });
       await browser.evalValue(detailTabId, PAGE_HELPERS);
       result = await readReadyDetail(detailTabId, selected, target, signal);
       assertLiveDetailBinding(await browser.listTabs(), binding, detailTabId, target);
@@ -128,24 +154,24 @@ function createBossMessageDetailReader({
       const communication = await browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
       if (communication?.risk) throw detailError("BOSS_RISK_CONTROL", "BOSS requires security verification");
       if (communication?.login) throw detailError("BOSS_LOGIN_REQUIRED", "BOSS login is required");
-      const pane = await browser.evalValue(tabId, "(() => window.__bossPaneState())()");
-      if (communication?.documentReadyState === "complete" && communication?.pageReady && pane?.hasRoot) {
+      const detail = await browser.evalValue(tabId, MESSAGE_DETAIL_SNAPSHOT_EXPRESSION);
+      if (communication?.documentReadyState === "complete" && communication?.pageReady && detail?.currentJobId) {
         sawPage = true;
-        assertDetailIdentity(communication, pane, selected, target);
-        const description = normalizedText(pane.description).slice(0, 12000);
-        if (description.length >= 120 && pane.jobDetailLoading !== true) {
-          const experience = normalizedText(pane.experience);
-          const education = normalizedText(pane.education);
+        assertDetailIdentity(communication, detail, selected, target);
+        const description = normalizedText(detail.description).slice(0, 12000);
+        if (description.length >= 120) {
+          const experience = normalizedText(detail.experience);
+          const education = normalizedText(detail.education);
           return {
             sourceId: target.jobId,
             canonicalUrl: target.canonicalUrl,
-            title: normalizedText(communication.title || pane.title),
+            title: normalizedText(communication.title || detail.title),
             company: normalizedText(communication.company),
             location: normalizedText(selected?.city),
-            salary: normalizedText(pane.salary || communication.salary || selected?.salary),
+            salary: normalizedText(detail.salary || communication.salary || selected?.salary),
             experience,
             education,
-            bossActiveText: normalizedText(pane.bossActiveText || communication.bossActiveText),
+            bossActiveText: normalizedText(detail.bossActiveText || communication.bossActiveText),
             tags: [...new Set([experience, education].filter(Boolean))],
             description
           };
@@ -157,6 +183,25 @@ function createBossMessageDetailReader({
       sawPage ? "BOSS_MESSAGE_DETAIL_INCOMPLETE" : "BOSS_MESSAGE_DETAIL_READ_TIMEOUT",
       sawPage ? "background job detail is incomplete" : "background job detail did not become ready"
     );
+  }
+
+  async function waitForCreatedTargetTab({ beforeTabs, binding, returnedTabId, target, signal }) {
+    for (let attempt = 0; attempt < DETAIL_READY_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      const afterCreate = await browser.listTabs();
+      const created = assertBackgroundCreation({
+        returnedTabId,
+        beforeTabs,
+        afterCreate,
+        binding
+      });
+      if (isTargetDetailTab(created, target)) return created;
+      if (!isPendingTabUrl(created) || attempt + 1 >= DETAIL_READY_ATTEMPTS) {
+        throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab target could not be proven");
+      }
+      await sleepFn(DETAIL_READY_DELAY_MS, signal);
+    }
+    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab target could not be proven");
   }
 }
 
@@ -246,14 +291,6 @@ function assertRestoredBaseline(tabs, binding) {
   return fixed;
 }
 
-function findCreatedTargetTab(before, after, binding, target) {
-  const candidates = createdTargetTabs(before, after, binding, target);
-  if (candidates.length !== 1) {
-    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "a unique background detail tab was not created");
-  }
-  return candidates[0];
-}
-
 function optionalCreatedTargetTab(before, after, target) {
   const beforeIds = new Set(before.map((tab) => tab.id));
   const candidates = after.filter((tab) => !beforeIds.has(tab.id)
@@ -265,27 +302,21 @@ function optionalCreatedTargetTab(before, after, target) {
   return candidates[0] || null;
 }
 
-function createdTargetTabs(before, after, binding, target) {
-  const beforeIds = new Set(before.map((tab) => tab.id));
-  return after.filter((tab) => !beforeIds.has(tab.id)
-    && tab.windowId === binding.windowId
-    && isTargetDetailTab(tab, target));
-}
-
-function assertBackgroundCreation({ returnedTabId, created, beforeTabs, afterCreate, binding, target }) {
+function assertBackgroundCreation({ returnedTabId, beforeTabs, afterCreate, binding }) {
   const beforeIds = new Set(beforeTabs.map((tab) => tab.id));
   const newTabs = afterCreate.filter((tab) => !beforeIds.has(tab.id));
+  const created = newTabs[0];
   if (!Number.isInteger(returnedTabId)
-    || !Number.isInteger(created.id)
-    || returnedTabId !== created.id
     || newTabs.length !== 1
+    || !Number.isInteger(created?.id)
+    || returnedTabId !== created.id
     || created.windowId !== binding.windowId
     || created.active === true
-    || !isTargetDetailTab(created, target)
     || activeTabIdInWindow(afterCreate, binding.windowId) !== binding.activeTabId) {
     throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab safety could not be proven");
   }
   assertFixedTabsPresent(afterCreate, binding);
+  return created;
 }
 
 function assertLiveDetailBinding(tabs, binding, detailTabId, target) {
@@ -320,15 +351,15 @@ function activeTabIdInWindow(tabs, windowId) {
   return active[0].id;
 }
 
-function assertDetailIdentity(communication, pane, selected, target) {
-  const paneIds = [pane.currentJobId, pane.paneJobId, pane.componentCurrentJobId]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
+function assertDetailIdentity(communication, detail, selected, target) {
   if (String(communication.jobId || "").trim() !== target.jobId
-    || paneIds.some((jobId) => jobId !== target.jobId)
-    || !sameText(communication.title || pane.title, selected?.positionName)
-    || !sameText(pane.title || communication.title, selected?.positionName)
-    || !compatibleCompany(communication.company, selected?.companyName)) {
+    || String(detail.currentJobId || "").trim() !== target.jobId
+    || Number(detail.rootCount) !== 1
+    || detail.hasRoot !== true
+    || !sameText(communication.title || detail.title, selected?.positionName)
+    || !sameText(detail.title || communication.title, selected?.positionName)
+    || !compatibleCompany(communication.company, selected?.companyName)
+    || !compatibleCompany(detail.company, selected?.companyName)) {
     throw detailError("BOSS_MESSAGE_DETAIL_TARGET_MISMATCH", "background job detail identity did not match");
   }
 }
@@ -374,6 +405,11 @@ function isTargetDetailTab(tab, target) {
   } catch {
     return false;
   }
+}
+
+function isPendingTabUrl(tab) {
+  const value = String(tab?.url || "").trim();
+  return value === "" || value === "about:blank";
 }
 
 function numericTabIds(tabs) {

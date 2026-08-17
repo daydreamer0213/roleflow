@@ -63,9 +63,12 @@ async function retryJobAnalyses({ db, input, deps, bulk }) {
     filterSnapshot: { mode: bulk ? "analysis-retry-bulk" : "analysis-retry", jobIds: jobs.map((job) => job.id) }
   });
   const concurrency = bulk ? PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency : 1;
+  const needsMessageContext = !bulk && deps.messageContextAnalysis === true;
   const results = await mapWithConcurrency(jobs, concurrency, async (job) => {
     const scored = scoreJob(job, configs);
-    if (decisionState(scored) !== "ready") return { job, scored, sourcePending: true, analysis: job.analysis };
+    if (decisionState(scored) !== "ready" && !needsMessageContext) {
+      return { job, scored, sourcePending: true, analysis: job.analysis };
+    }
     const analysis = await analyze({ ...job, ...scored, greeting: job.greeting || "" });
     return { job, scored, sourcePending: false, analysis };
   });

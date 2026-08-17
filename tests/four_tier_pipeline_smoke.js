@@ -146,6 +146,19 @@ assert.equal(blocked.recommendation, "not_recommended");
 assert.equal(blocked.decisionSource, "hard_blocker_guard",
   "a hard blocker must win before alignment consistency normalization");
 
+const locallyBlockedComplete = applyRuleGuard(analysis(), {
+  qualityTags: ["inactive_boss"]
+});
+assert.equal(locallyBlockedComplete.semanticStatus, "complete",
+  "a completed semantic analysis must remain complete when a local hard boundary changes only the recommendation");
+assert.equal(locallyBlockedComplete.recommendation, "not_recommended");
+assert.equal(locallyBlockedComplete.decisionSource, "hard_boundary");
+const locallyBlockedFailed = applyRuleGuard(analysis({ semanticStatus: "failed" }), {
+  qualityTags: ["inactive_boss"]
+});
+assert.equal(locallyBlockedFailed.semanticStatus, "blocked",
+  "a local hard boundary must not turn a failed semantic analysis into a completed result");
+
 for (const semanticStatus of ["failed", "stale", "pending", "partial"]) {
   const technical = applyRuleGuard(analysis({ semanticStatus }), {});
   assert.equal(technical.recommendation, null,

@@ -60,24 +60,48 @@ function pane(overrides = {}) {
   };
 }
 
+function messageDetail(overrides = {}) {
+  return {
+    currentJobId: jobTarget.jobId,
+    rootCount: 1,
+    hasRoot: true,
+    title: selected.positionName,
+    company: selected.companyName,
+    description: pane().description,
+    bossActiveText: "今日活跃",
+    salary: "20-30K",
+    experience: "3-5年",
+    education: "本科及以上",
+    ...overrides
+  };
+}
+
 function fakeBrowser({
   newTabActive = false,
   detailWindowId = WINDOW_ID,
   returnedTabId = DETAIL_TAB_ID,
   listedUrl = null,
+  listedUrlSequence = null,
   createError = null,
   createErrorAfterInsert = false,
   onCreate = null,
   closeNoop = false,
   communicationSnapshot = communication(),
-  paneSnapshot = pane()
+  paneSnapshot = pane(),
+  detailSnapshot = messageDetail()
 } = {}) {
   const browser = {
     tabs: baseTabs(),
     calls: [],
+    detailListIndex: 0,
     async listTabs() {
       this.calls.push({ name: "listTabs" });
-      return this.tabs.map((tab) => ({ ...tab }));
+      return this.tabs.map((tab) => ({
+        ...tab,
+        ...(tab.id === DETAIL_TAB_ID && Array.isArray(listedUrlSequence)
+          ? { url: listedUrlSequence[Math.min(this.detailListIndex++, listedUrlSequence.length - 1)] }
+          : {})
+      }));
     },
     async createTab(openerTabId, url) {
       this.calls.push({ name: "createTab", openerTabId, url });
@@ -93,6 +117,7 @@ function fakeBrowser({
     async evalValue(tabId, expression) {
       this.calls.push({ name: "evalValue", tabId, expression });
       if (expression.includes("__bossCommunicationSnapshot")) return { ...communicationSnapshot };
+      if (expression.includes("__bossMessageDetailSnapshot")) return { ...detailSnapshot };
       if (expression.includes("__bossPaneState")) return { ...paneSnapshot };
       return true;
     },
@@ -178,6 +203,44 @@ async function read(reader, signal = null) {
   assert.strictEqual(browser.calls.filter((call) => call.name === "closeTab").length, 1);
   assert.strictEqual(browser.calls.some((call) => /bringToFront|focus/i.test(call.name)), false);
 
+  const delayedUrlBrowser = fakeBrowser({
+    listedUrlSequence: ["", jobTarget.navigationUrl]
+  });
+  const delayedUrl = makeReader(delayedUrlBrowser);
+  const delayedDetail = await read(delayedUrl.reader);
+  assert.strictEqual(delayedDetail.sourceId, jobTarget.jobId);
+  assert.deepStrictEqual(
+    delayedUrlBrowser.tabs,
+    baseTabs(),
+    "a background detail tab whose URL appears on the next read must complete and restore the baseline"
+  );
+
+  const delayedBlankBrowser = fakeBrowser({
+    listedUrlSequence: ["about:blank", jobTarget.navigationUrl]
+  });
+  const delayedBlank = makeReader(delayedBlankBrowser);
+  const delayedBlankDetail = await read(delayedBlank.reader);
+  assert.strictEqual(delayedBlankDetail.sourceId, jobTarget.jobId);
+  assert.deepStrictEqual(delayedBlankBrowser.tabs, baseTabs(),
+    "an attributable about:blank tab may wait for its exact target URL and must then restore the baseline");
+
+  const standaloneBrowser = fakeBrowser({
+    paneSnapshot: pane({
+      currentJobId: "different-pane-job",
+      paneJobId: "different-pane-job",
+      componentCurrentJobId: "different-pane-job",
+      title: "Different pane job"
+    })
+  });
+  const standalone = makeReader(standaloneBrowser);
+  const standaloneDetail = await read(standalone.reader);
+  assert.strictEqual(standaloneDetail.sourceId, jobTarget.jobId);
+  assert.deepStrictEqual(
+    standaloneBrowser.tabs,
+    baseTabs(),
+    "standalone message detail identity must come from the page path and header, not pane-only fields"
+  );
+
   for (const [options, code] of [
     [{ newTabActive: true }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
     [{ detailWindowId: WINDOW_ID + 1 }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
@@ -186,7 +249,10 @@ async function read(reader, signal = null) {
     [{ communicationSnapshot: communication({ title: "Different job" }) }, "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"],
     [{ communicationSnapshot: communication({ risk: true }) }, "BOSS_RISK_CONTROL"],
     [{ communicationSnapshot: communication({ login: true }) }, "BOSS_LOGIN_REQUIRED"],
-    [{ paneSnapshot: pane({ description: "too short" }) }, "BOSS_MESSAGE_DETAIL_INCOMPLETE"],
+    [{ detailSnapshot: messageDetail({ description: "too short" }) }, "BOSS_MESSAGE_DETAIL_INCOMPLETE"],
+    [{ detailSnapshot: messageDetail({ currentJobId: "different-job" }) }, "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"],
+    [{ detailSnapshot: messageDetail({ rootCount: 2, hasRoot: false }) }, "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"],
+    [{ listedUrl: "about:blank" }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
     [{ closeNoop: true }, "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED"]
   ]) {
     const failingBrowser = fakeBrowser(options);

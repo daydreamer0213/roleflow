@@ -272,17 +272,21 @@ function trustedTarget(jobId, securityId = "fixture-secret") {
 }
 
 function completeAnalysisAdapter(calls) {
-  return async ({ input }) => {
+  return async ({ input, deps }) => {
     calls.push("analyze");
     assertDatabaseIdle();
+    assert.strictEqual(input.purpose, undefined);
+    assert.strictEqual(deps.messageContextAnalysis, true);
     persistAnalysis(input, { semanticStatus: "complete", recommendation: "primary", marker: "fresh" });
   };
 }
 
 function partialAnalysisAdapter(calls) {
-  return async ({ input }) => {
+  return async ({ input, deps }) => {
     calls.push("analyze");
     assertDatabaseIdle();
+    assert.strictEqual(input.purpose, undefined);
+    assert.strictEqual(deps.messageContextAnalysis, true);
     persistAnalysis(input, { semanticStatus: "partial", recommendation: "review" });
   };
 }
