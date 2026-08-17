@@ -282,13 +282,6 @@ function createMessageDiscoveryController(deps = {}) {
     const cardId = Number(cardIdValue);
     const run = runs.get(profileId);
     if (!run) return;
-    if (run.results.length === 0) {
-      clearRunTimer(run);
-      run.expiresAt = "";
-      run.closed = true;
-      runs.delete(profileId);
-      return;
-    }
     const result = run.results.find((item) => Number(item.cardId) === cardId);
     if (!result) return;
     run.clearedCardIds.add(cardId);

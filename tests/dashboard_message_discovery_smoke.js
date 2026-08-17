@@ -219,6 +219,23 @@ async function main() {
       INSERT INTO lease_renew_audit(value) VALUES (1);
     END
   `);
+  const unrelatedJobId = upsertJob(db, {
+    source: "boss",
+    sourceId: "unrelated-manual-draft",
+    title: "无关的历史草稿岗位"
+  });
+  const unrelatedCard = ensureProgressCard(db, {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    jobId: unrelatedJobId,
+    source: "boss"
+  });
+  transitionProgressCard(db, {
+    cardId: unrelatedCard.id,
+    expectedStage: "contact_started",
+    stage: "reply_ready",
+    nextAction: "等待用户手动发送"
+  });
   const firstPending = controlledPendingRun();
   scenarios.push(firstPending.run);
   response = await postJson(base, "/api/message-discovery", {
@@ -242,6 +259,15 @@ async function main() {
     "discover-messages"
   );
   await waitFor(() => db.prepare("SELECT COUNT(*) AS count FROM lease_renew_audit").get().count > 0);
+
+  response = await postForm(base, "/api/progress", {
+    cardId: unrelatedCard.id,
+    idempotencyKey: requestKey(900),
+    action: "reply_confirmed_sent"
+  });
+  assert.strictEqual(response.status, 303);
+  let runningStatus = await getStatus(base, fixture.profileId);
+  assert.strictEqual(runningStatus.status, "running", "confirming an unrelated old draft must not unregister the active discovery run");
 
   response = await postJson(base, "/api/message-discovery", {
     action: "start",
