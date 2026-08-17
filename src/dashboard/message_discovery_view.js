@@ -90,7 +90,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
   const controls = `<section class="message-controls" aria-label="消息发现操作">
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button data-page-primary="true"${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
-    <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status !== "running" && status.results.some((item) => item.messages.length) ? "" : " disabled"}>放弃本次草稿</button></form>
+    <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status !== "running" && status.results.length ? "" : " disabled"}>清除本次结果</button></form>
   </section>`;
   const unresolvedSections = durableUnresolved.map((item) =>
     renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })

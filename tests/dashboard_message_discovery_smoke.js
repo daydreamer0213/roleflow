@@ -482,14 +482,32 @@ async function main() {
   assert.strictEqual(status.status, "idle");
   assert.deepStrictEqual(status.results, []);
 
-  scenarios.push(completedRun({ fixture, drafts: ["待手动发送草稿"] }));
+  scenarios.push(completedRun({
+    fixture,
+    drafts: ["待手动发送草稿"],
+    stage: "interview_invited",
+    messageCategory: "interview_invitation",
+    messageSummary: "PRIMARY_RESULT_SUMMARY",
+    additionalResults: [{
+      cardId: fixture.card.id + 1000,
+      jobId: fixture.jobId + 1000,
+      stage: "needs_user_action",
+      messageCategory: "salary",
+      messageSummary: "SECONDARY_RESULT_SUMMARY",
+      missingFactKey: "",
+      messages: []
+    }]
+  }));
   await startAndWait(base, fixture.profileId, "completed");
   await waitForLeaseRelease();
+  status = await getStatus(base, fixture.profileId);
+  const manualResultExpiresAt = status.expiresAt;
+  const manualResultTimerId = cleanupTimers.latest().id;
   transitionProgressCard(db, {
     cardId: fixture.card.id,
     expectedStage: "contact_started",
-    stage: "reply_ready",
-    nextAction: "请用户复制后手动发送"
+    stage: "interview_invited",
+    nextAction: "KEEP_INTERVIEW_NEXT_ACTION"
   });
   response = await postForm(base, "/api/progress", {
     cardId: fixture.card.id,
@@ -498,8 +516,24 @@ async function main() {
   });
   assert.strictEqual(response.status, 303);
   status = await getStatus(base, fixture.profileId);
-  assert.deepStrictEqual(status.results, [], "manual sent progress must clear the matching draft");
-  assert.strictEqual(cleanupTimers.activeCount(), 0, "manual sent must clear the cleanup timer");
+  assert.strictEqual(status.results.length, 2, "manual sent must retain every message result summary");
+  assert.strictEqual(status.expiresAt, manualResultExpiresAt, "clearing a draft must not extend or remove the result expiry");
+  assert.strictEqual(cleanupTimers.activeCount(), 1, "remaining page results must keep their cleanup timer");
+  assert.strictEqual(cleanupTimers.latest().id, manualResultTimerId, "clearing a draft must preserve the original timer");
+  const progress = listProgressCardsWithEvents(db, { profileId: fixture.profileId })
+    .find((item) => item.id === fixture.card.id);
+  assert.strictEqual(progress.stage, "interview_invited");
+  assert.strictEqual(progress.nextAction, "KEEP_INTERVIEW_NEXT_ACTION");
+  assert.strictEqual(progress.events.at(-1).type, "reply_confirmed_sent");
+  const confirmedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(confirmedPage.body.includes("PRIMARY_RESULT_SUMMARY"), "the confirmed message result must remain visible");
+  assert(confirmedPage.body.includes("SECONDARY_RESULT_SUMMARY"), "other result summaries must remain visible");
+  assert(!confirmedPage.body.includes("待手动发送草稿"), "the short-lived draft must be cleared");
+  assert(/action="\/api\/message-discovery"[^>]*>[\s\S]*?value="dismiss"[\s\S]*?<button class="secondary">清除本次结果<\/button>/.test(confirmedPage.body), "results without drafts must retain an explicit clear action");
+  cleanupTimers.fire(manualResultTimerId);
+  status = await getStatus(base, fixture.profileId);
+  assert.strictEqual(status.status, "idle");
+  assert.deepStrictEqual(status.results, []);
 
   response = await postForm(base, "/api/communication", {
     mode: "hr_reply",
@@ -1186,11 +1220,19 @@ function unmatchedRun() {
   };
 }
 
-function completedRun({ fixture, drafts, callModel = false }) {
+function completedRun({
+  fixture,
+  drafts,
+  callModel = false,
+  stage = "reply_ready",
+  messageCategory = "qualification",
+  messageSummary = "对方正在确认候选人的任职资格。",
+  additionalResults = []
+}) {
   return async ({ classifyMessageGroup, onStatus }) => {
     onStatus({
       status: "running",
-      queued: 1,
+      queued: 1 + additionalResults.length,
       processed: 0,
       reasonCode: "",
       results: []
@@ -1214,22 +1256,23 @@ function completedRun({ fixture, drafts, callModel = false }) {
     }
     const summary = {
       status: "completed",
-      queued: 1,
-      processed: 1,
+      queued: 1 + additionalResults.length,
+      processed: 1 + additionalResults.length,
       reasonCode: "",
       privateBody: PRIVATE_BODY,
       results: [{
         cardId: fixture.card.id,
         jobId: fixture.jobId,
-        stage: "reply_ready",
-        messageCategory: "qualification",
+        stage,
+        messageCategory,
+        messageSummary,
         missingFactKey: "",
         messages: drafts,
         hrMessage: PRIVATE_BODY,
         previewText: PRIVATE_PREVIEW,
         recruiterLabel: PRIVATE_RECRUITER,
         url: "https://www.zhipin.com/web/geek/chat"
-      }]
+      }, ...additionalResults]
     };
     onStatus(summary);
     return summary;

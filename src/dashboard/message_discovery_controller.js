@@ -282,16 +282,19 @@ function createMessageDiscoveryController(deps = {}) {
     const cardId = Number(cardIdValue);
     const run = runs.get(profileId);
     if (!run) return;
-    const before = run.results.length;
-    run.clearedCardIds.add(cardId);
-    run.results = run.results.filter((item) => Number(item.cardId) !== cardId);
-    if (run.results.length === before) return;
-    clearRunTimer(run);
-    if (!run.results.some((item) => item.messages.length)) {
+    if (run.results.length === 0) {
+      clearRunTimer(run);
       run.expiresAt = "";
+      run.closed = true;
+      runs.delete(profileId);
       return;
     }
-    scheduleCleanup(run);
+    const result = run.results.find((item) => Number(item.cardId) === cardId);
+    if (!result) return;
+    run.clearedCardIds.add(cardId);
+    run.results = run.results.map((item) => Number(item.cardId) === cardId
+      ? { ...item, messages: [] }
+      : item);
   }
 
   function close() {
@@ -334,9 +337,10 @@ function createMessageDiscoveryController(deps = {}) {
     run.reasonCode = safeCode(statusValue.reasonCode);
     if (statusValue.phase !== undefined) run.phase = safePhase(statusValue.phase) || run.phase;
     if (statusValue.waitUntil !== undefined) run.waitUntil = safeTimestamp(statusValue.waitUntil);
-    run.results = sanitizeResults(Array.isArray(statusValue.results)
-      ? statusValue.results.filter((item) => !run.clearedCardIds.has(Number(item?.cardId)))
-      : []);
+    run.results = sanitizeResults(Array.isArray(statusValue.results) ? statusValue.results : [])
+      .map((item) => run.clearedCardIds.has(Number(item.cardId))
+        ? { ...item, messages: [] }
+        : item);
     run.updatedAt = at.toISOString();
     if (run.status === "running") {
       run.expiresAt = "";
