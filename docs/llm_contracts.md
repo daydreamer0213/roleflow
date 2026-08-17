@@ -170,14 +170,14 @@
 
 输入：`profile`、`job`、`messages[{messageKey,text}]`、`facts[{key,value,subjectKey,updatedAt}]`、`requestedSubjectKeys`。
 
-输出 JSON：`messageCategory`、`requiredFactKeys`、`usedFactKeys`、`responseItems[{id,kind,required}]`、`coverage[{responseItemId,covered}]`、`missingFact`、`messages`（最多 2 条）、`progressUpdate`。
+输出 JSON：`messageCategory`、`messageSummary`、`requiredFactKeys`、`usedFactKeys`、`responseItems[{id,kind,required}]`、`coverage[{responseItemId,covered}]`、`missingFact`、`messages`（最多 2 条）、`progressUpdate`。
 
 规则：
 
 - 有序消息视为同一轮 HR 问题，必须全部覆盖。
 - 只使用传入的已确认事实；缺失或过期事实时不输出草稿。
 - 不确认面试时间、不声称已投递简历。
-- 面试邀约不输出草稿。
+- 面试邀约保留同一次模型调用给出的类别和摘要，但展示给用户的回复固定替换为本地非承诺草稿；不得确认具体时间、形式或候选人可用性。
 - GAP、离职原因、短期项目解释必须有匹配 subjectKey 的稳定作用域事实。
 - `requestedSubjectKeys` 只包含当前消息正文能够明确定位的稳定事实作用域；不匹配的稳定事实会在模型调用前移除。作用域为空或无法确认时，不允许模型使用稳定事实生成草稿。
 - 提供商的 `nextAction` 不持久化，统一替换为安全提示。

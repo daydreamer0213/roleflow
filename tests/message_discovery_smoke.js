@@ -1445,11 +1445,12 @@ async function classificationOutcomeSmoke() {
       preservedCard.scheduledAt,
       existingStage === "interview_scheduled" ? "2026-08-20T07:00:00.000Z" : null
     );
-    assert.strictEqual(
-      listProgressEvents(db, followUp.card.id).filter((event) => event.type === "message_group_classified").length,
-      1,
-      "a follow-up message result must persist without downgrading the opportunity stage"
-    );
+    const classificationEvent = listProgressEvents(db, followUp.card.id)
+      .find((event) => event.type === "message_group_classified");
+    assert(classificationEvent, "a follow-up message result must persist without downgrading the opportunity stage");
+    assert.strictEqual(classificationEvent.metadata.messageCategory, "availability");
+    assert.strictEqual(classificationEvent.metadata.stage, "reply_ready",
+      "the message outcome must remain distinct from the preserved opportunity stage");
   }
 
   for (const [suffix, messageCategory, reason] of [
