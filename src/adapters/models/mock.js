@@ -397,7 +397,7 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
 } = {}) {
   const text = messages.map((message) => String(message.text || "")).join(" ");
   const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
-  const interviewInvitation = !descriptiveInterviewContext && (
+  const interviewInvitation = (
     /(?:邀请|安排|参加).{0,12}面试/i.test(text)
     || /面试.{0,12}(?:时间|安排|方便|参加)/i.test(text)
   );

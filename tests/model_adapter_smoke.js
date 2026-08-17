@@ -1354,6 +1354,17 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(realInvitation.messageCategory, "interview_invitation");
     assert.deepStrictEqual(realInvitation.messages, ["mock message reply draft"]);
 
+    const mixedInterviewTurn = await mockReplyAdapter.draftMessageGroup({
+      messages: [{
+        messageKey: "sha256:" + "e".repeat(64),
+        text: "我们平台有线上面试管理功能，想邀请你参加面试，请问方便吗？"
+      }],
+      facts: []
+    });
+    assert.strictEqual(mixedInterviewTurn.messageCategory, "interview_invitation");
+    assert(mixedInterviewTurn.messageSummary.includes("面试"));
+    assert.deepStrictEqual(mixedInterviewTurn.messages, ["mock message reply draft"]);
+
     const openAiReplyAdapter = new OpenAICompatibleAdapter({
       baseUrl,
       apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
