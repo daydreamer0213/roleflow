@@ -57,10 +57,10 @@ console.log("workflow_store_contract_smoke ok (5 owner contracts)");
 
 function contract01ExportsAndFacadeIdentity() {
   assert.deepEqual(Object.keys(workflowStore).sort(), WORKFLOW_EXPORTS);
-  assert.equal(Object.keys(storage).length, 136);
+  assert.equal(Object.keys(storage).length, 139);
   assert.equal(Object.keys(candidateStore).length, 29);
   assert.equal(Object.keys(jobStore).length, 26);
-  assert.equal(Object.keys(scanStore).length, 35);
+  assert.equal(Object.keys(scanStore).length, 39);
   assert.equal(Object.keys(communicationStore).length, 16);
   assert.equal(Object.keys(sharedStore).length, 9);
   for (const name of WORKFLOW_EXPORTS) assert.strictEqual(storage[name], workflowStore[name], `${name} must retain its owner reference`);
