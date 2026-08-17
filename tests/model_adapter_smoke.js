@@ -1374,6 +1374,15 @@ server.listen(0, "127.0.0.1", async () => {
     });
     assert.strictEqual(interviewTrainingMention.messageCategory, "other");
 
+    const convenientInterviewTrainingMention = await mockReplyAdapter.draftMessageGroup({
+      messages: [{
+        messageKey: "sha256:" + "h".repeat(64),
+        text: "平台提供方便参加面试的培训功能。"
+      }],
+      facts: []
+    });
+    assert.strictEqual(convenientInterviewTrainingMention.messageCategory, "other");
+
     const convenientInterviewInvitation = await mockReplyAdapter.draftMessageGroup({
       messages: [{
         messageKey: "sha256:" + "g".repeat(64),

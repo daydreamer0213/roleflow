@@ -399,8 +399,8 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
   const interviewInvitation = (
     /(?:邀请|安排).{0,12}面试/i.test(text)
-    || /面试.{0,12}(?:时间|安排|方便)/i.test(text)
-    || /(?:方便|愿意).{0,12}参加面试/i.test(text)
+    || /(?:请问|请|您|你).{0,12}(?:方便|愿意|能否|是否).{0,12}参加面试/i.test(text)
+    || /面试.{0,12}(?:时间|安排)/i.test(text)
   );
   const messageCategory = interviewInvitation
     ? "interview_invitation"
