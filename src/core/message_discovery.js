@@ -497,7 +497,7 @@ function safeResult(card, result, resolvedJob, contextSource) {
     manualActionReason: safeManualActionReason(result, missingFactKey, messages),
     contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
     contextComplete: hasCompleteJobContext(resolvedJob),
-    job: safeJobUnderstanding(resolvedJob),
+    job: projectMessageDecisionCard(resolvedJob),
     messages
   };
 }
@@ -517,19 +517,72 @@ function safeManualActionReason(result, missingFactKey, messages) {
   return messages.length ? "" : "当前结果需要人工处理";
 }
 
-function safeJobUnderstanding(job = {}) {
+function projectMessageDecisionCard(job = {}) {
   const analysis = job.analysis && typeof job.analysis === "object" && !Array.isArray(job.analysis)
     ? job.analysis
     : {};
+  const fitLabel = decisionFitLabel(analysis.fitLevel);
+  const fitSummary = decisionFitSummary(analysis, fitLabel);
   return {
     title: safeProjectionText(job.title, 160),
     company: safeProjectionText(job.company, 160),
     roleSummary: safeProjectionText(analysis.roleSummary, 300),
-    fitReasons: safeProjectionList(analysis.fitReasons, 5, 180),
-    hardBlockers: safeProjectionList(analysis.hardBlockers, 5, 180, (item) => item?.requirement),
-    softGaps: safeProjectionList(analysis.softGaps, 5, 180),
-    questionsToVerify: safeProjectionList(analysis.questionsToVerify, 5, 180)
+    ...companyDecisionSummary(analysis),
+    fitLabel,
+    fitSummary,
+    salary: safeProjectionText(job.salary, 80),
+    opportunityVerdict: opportunityVerdict(analysis.recommendation),
+    opportunitySummary: fitSummary
   };
+}
+
+function companyDecisionSummary(analysis) {
+  const scenario = meaningfulAnalysisText(analysis.businessScenario, 180);
+  if (scenario) return {
+    companyBusiness: `JD 显示该岗位服务于${scenario}。`,
+    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。"
+  };
+  const industry = meaningfulAnalysisText(analysis.industryContext, 120);
+  if (industry) return {
+    companyBusiness: `JD 显示该岗位属于${industry}相关业务场景。`,
+    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。"
+  };
+  return {
+    companyBusiness: "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。",
+    companyScope: "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。"
+  };
+}
+
+function meaningfulAnalysisText(value, limit) {
+  const text = safeProjectionText(value, limit);
+  return ["", "未明确", "未知", "无", "暂无", "不明确"].includes(text) ? "" : text;
+}
+
+function decisionFitLabel(value) {
+  const level = String(value || "").trim();
+  if (["fit", "A"].includes(level)) return "高";
+  if (["mostly_fit", "partial_fit", "B", "C"].includes(level)) return "中";
+  if (["no_fit", "D"].includes(level)) return "低";
+  return "待确认";
+}
+
+function decisionFitSummary(analysis, fitLabel) {
+  const positive = safeProjectionList(analysis.fitReasons, 1, 180)[0] || "";
+  const gap = safeProjectionList(analysis.roleGaps?.length ? analysis.roleGaps : analysis.softGaps, 1, 180)[0] || "";
+  const blocker = safeProjectionList(analysis.hardBlockers, 1, 180, (item) => item?.requirement ?? item)[0] || "";
+  if (fitLabel === "高") return positive;
+  if (fitLabel === "中") return [positive, gap].filter(Boolean).join("；");
+  if (fitLabel === "低") return positive || blocker || gap;
+  return "";
+}
+
+function opportunityVerdict(value) {
+  return {
+    primary: "值得继续聊",
+    apply: "值得继续聊",
+    caution: "可以了解，但要先确认关键问题",
+    not_recommended: "不建议优先投入时间"
+  }[String(value || "")] || "信息不足，暂时无法判断";
 }
 
 function safeProjectionList(value, limit, textLimit, select = (item) => item) {
@@ -721,6 +774,7 @@ function profileText(value) {
 
 module.exports = {
   runBossMessageDiscovery,
+  projectMessageDecisionCard,
   selectUnprocessedFriendMessageGroup,
   abortableSleep,
   randomBetween

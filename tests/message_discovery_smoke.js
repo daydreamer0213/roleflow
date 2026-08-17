@@ -11,7 +11,10 @@ const {
   recordDiscoveredMessageGroupClassification
 } = require("../src/core/candidate_progress");
 const { safeDigest, messageKey } = require("../src/adapters/sites/boss_message_dom");
-const { runBossMessageDiscovery } = require("../src/core/message_discovery");
+const {
+  runBossMessageDiscovery,
+  projectMessageDecisionCard
+} = require("../src/core/message_discovery");
 const { resolveInboundOpportunity } = require("../src/application/message_discovery/inbound");
 const { factStatus } = require("../src/core/candidate_fact_policy");
 const {
@@ -40,6 +43,7 @@ main().catch((error) => {
 async function main() {
   db = openDb(path.join(root, "message-discovery.sqlite"));
   factPolicySmoke();
+  decisionCardProjectionSmoke();
   await uniqueCandidateAndPrivacySmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
@@ -66,13 +70,97 @@ function factPolicySmoke() {
   assert.strictEqual(factStatus(NOW, fact("short_project.project-9", 400)).status, "valid");
 }
 
+function decisionCardProjectionSmoke() {
+  const base = {
+    title: "AI 应用开发工程师",
+    company: "示例科技",
+    salary: "15-25K·13薪",
+    analysis: {
+      roleSummary: "为企业知识库构建可追溯的智能问答系统",
+      fitReasons: ["岗位方向与候选人的 RAG 项目经历一致"],
+      roleGaps: ["生产环境运维经验仍需确认"],
+      jobQuality: { level: "normal", concerns: [] }
+    }
+  };
+
+  assert.deepStrictEqual(projectMessageDecisionCard({
+    ...base,
+    analysis: {
+      ...base.analysis,
+      businessScenario: "企业知识管理",
+      industryContext: "企业软件",
+      fitLevel: "A",
+      recommendation: "apply"
+    }
+  }), {
+    title: "AI 应用开发工程师",
+    company: "示例科技",
+    roleSummary: "为企业知识库构建可追溯的智能问答系统",
+    companyBusiness: "JD 显示该岗位服务于企业知识管理。",
+    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
+    fitLabel: "高",
+    fitSummary: "岗位方向与候选人的 RAG 项目经历一致",
+    salary: "15-25K·13薪",
+    opportunityVerdict: "值得继续聊",
+    opportunitySummary: "岗位方向与候选人的 RAG 项目经历一致"
+  });
+
+  const unknownCompany = projectMessageDecisionCard({
+    ...base,
+    salary: "",
+    analysis: {
+      ...base.analysis,
+      businessScenario: "",
+      industryContext: "未明确",
+      fitLevel: "no_fit",
+      recommendation: "not_recommended"
+    }
+  });
+  assert.strictEqual(unknownCompany.companyBusiness, "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。");
+  assert.strictEqual(unknownCompany.companyScope, "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。");
+  assert.strictEqual(unknownCompany.fitLabel, "低");
+  assert.strictEqual(unknownCompany.salary, "");
+  assert.strictEqual(unknownCompany.opportunityVerdict, "不建议优先投入时间");
+
+  for (const [fitLevel, expected] of [
+    ["fit", "高"], ["A", "高"],
+    ["mostly_fit", "中"], ["partial_fit", "中"], ["B", "中"], ["C", "中"],
+    ["no_fit", "低"], ["D", "低"],
+    ["", "待确认"], ["unexpected", "待确认"]
+  ]) {
+    assert.strictEqual(projectMessageDecisionCard({
+      ...base,
+      analysis: { ...base.analysis, fitLevel, recommendation: "review" }
+    }).fitLabel, expected);
+  }
+
+  for (const [recommendation, expected] of [
+    ["primary", "值得继续聊"],
+    ["apply", "值得继续聊"],
+    ["caution", "可以了解，但要先确认关键问题"],
+    ["not_recommended", "不建议优先投入时间"],
+    ["analysis_pending", "信息不足，暂时无法判断"],
+    ["unexpected", "信息不足，暂时无法判断"]
+  ]) {
+    assert.strictEqual(projectMessageDecisionCard({
+      ...base,
+      analysis: { ...base.analysis, fitLevel: "C", recommendation }
+    }).opportunityVerdict, expected);
+  }
+}
+
 async function uniqueCandidateAndPrivacySmoke() {
   const fixture = createFixture({
     suffix: "unique",
     title: "Java Engineer",
     analysis: {
       roleSummary: "负责企业 Java 服务交付",
+      businessScenario: "企业交易系统交付",
+      industryContext: "企业软件",
+      fitLevel: "mostly_fit",
+      recommendation: "caution",
       fitReasons: ["Spring 项目证据匹配"],
+      roleGaps: ["生产值班经验待确认"],
       hardBlockers: [{
         requirement: "必须具备支付行业经验",
         jdEvidence: "JD evidence",
@@ -127,15 +215,25 @@ async function uniqueCandidateAndPrivacySmoke() {
     title: "Java Engineer",
     company: "Fixture Company",
     roleSummary: "负责企业 Java 服务交付",
-    fitReasons: ["Spring 项目证据匹配"],
-    hardBlockers: ["必须具备支付行业经验"],
-    softGaps: ["行业经验待确认"],
-    questionsToVerify: ["确认团队技术栈"]
+    companyBusiness: "JD 显示该岗位服务于企业交易系统交付。",
+    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
+    fitLabel: "中",
+    fitSummary: "Spring 项目证据匹配；生产值班经验待确认",
+    salary: "20-30K",
+    opportunityVerdict: "可以了解，但要先确认关键问题",
+    opportunitySummary: "Spring 项目证据匹配；生产值班经验待确认"
   });
   assert.strictEqual(summary.results[0].contextSource, "local_cache");
   assert.strictEqual(summary.results[0].contextComplete, true);
   assert.strictEqual(summary.results[0].manualActionReason, "");
-  assert.strictEqual(Object.hasOwn(summary.results[0].job, "description"), false);
+  for (const privateField of [
+    "fitReasons",
+    "hardBlockers",
+    "softGaps",
+    "questionsToVerify",
+    "description",
+    "recruiterPrivateText"
+  ]) assert.strictEqual(Object.hasOwn(summary.results[0].job, privateField), false);
   assert.strictEqual(JSON.stringify(summary.results[0].job).includes(PRIVATE_BODY), false);
   assert.strictEqual(
     db.prepare("SELECT next_action FROM candidate_progress_cards WHERE id = ?").get(fixture.card.id).next_action,
