@@ -59,16 +59,17 @@
 - 临时详情读取严格串行，复用现有详情随机节奏、微冷却、阶段冷却、访问预算和恢复检查点；任何已发出的尝试都计数，失败结果不自动重试。
 - 岗位基本字段、完整 JD 和分析来自同一条完整观察，避免新旧记录拼接成不存在的岗位上下文。
 - 已完成分析通过十字段安全投影生成五项用户决策：岗位职责、JD 可证明的公司业务、匹配度、原始薪资和是否值得继续聊。低匹配与不推荐优先解释规则保护结论、硬性缺口或岗位质量风险；详细证据仍留在岗位库，不在消息卡展开。
-- 面试邀约、薪资、隐私、缺失事实、身份不明或模型结构不合法时仍显示消息结果，但不生成草稿；普通安全沟通每个岗位最多两份草稿。
+- 薪资、隐私、缺失事实、身份不明或模型结构不合法时仍显示消息结果，但不生成草稿；真正的面试邀约生成固定的本地非承诺询问草稿，不确认具体时间、形式或候选人可用性。普通安全沟通每个岗位最多两份草稿。
 - 消息正文处理后清空，`securityId` 不进入数据库、日志、状态接口或错误消息；页面只有复制和本地状态记录，没有填写、发送、沟通或投递动作。
 - 安全复审修正了稳定 ID 绕过、失败标签清理归因、错误泄密、中止后身份复核、恢复冷却、同观察一致性、混合敏感问题和非法模型结果不可见等问题。无法证明归属的新标签页不会被猜测关闭，而会停止并要求人工恢复基线。
 - 真实验收又修正了临时标签初始空白地址等待、独立详情页 DOM 身份读取、硬边界岗位的消息上下文分析，以及消息已读后的可恢复身份核验。普通网页请求不能伪造内部分析能力。
+- 最终整分支审查又关闭了面试阶段被后续消息回退、模型事实键不可信、终态模型结构错误不可见、结果过早清理、固定标签绑定校验不完整和跨流程冷却不共享等六项问题；随后修正了确认无关旧草稿会注销当前发现运行的回归。原审查者逐项复核后给出 Ready，未留 Critical 或 Important。
 
 ### 已确认设计
 
 - 权威规格：`docs/superpowers/specs/2026-08-16-message-discovery-job-understanding-reply-drafts-design.md`。
 - 用户决策卡规格：`docs/superpowers/specs/2026-08-17-message-discovery-decision-card-content-design.md`；实施计划：`docs/superpowers/plans/2026-08-17-message-discovery-decision-card-content.md`。
-- 用户决策与消息语义修正规格：`docs/superpowers/specs/2026-08-17-message-discovery-user-decision-semantics-fix-design.md`（设计/计划 `c3c9108`，实现 `f1a7260` 至 `a2ce0c4`）。
+- 用户决策与消息语义修正规格：`docs/superpowers/specs/2026-08-17-message-discovery-user-decision-semantics-fix-design.md`（设计/计划 `c3c9108`，实现 `f1a7260` 至 `a2ce0c4`，最终安全闭环 `c58a63f` 至 `ed0b27d`）。
 - 初始实现提交范围：`c11f38a` 至 `73ae57b`；真实岗位读取最终修复：`15a3dab`；决策卡实现与解释修复：`daf5f89`、`6a3c79f`、`e74ba61`。
 - 当前普通 JD 主线仍只有 `trusted_pane`；消息发现临时详情是唯一获批的低频 `standalone_detail` 例外，`search_page_api` 未启用、未修复、未验证。
 
@@ -77,7 +78,7 @@
 - 设计前的最小只读 DOM 校准已经完成，并确认稳定岗位 ID 与 `securityId` 入口存在。
 - 当前分支 Dashboard 使用隔离验收数据库处理一个真实新沟通样本：本地缺少完整 JD 时只创建一张同窗口、`active: false` 的临时详情页，Dashboard 始终保持活动标签，详情身份和完整 JD 核验成功后临时页关闭，最终恢复为两张固定 BOSS 标签和一张 Dashboard。
 - 后续用户决策与消息语义修正验收使用新的隔离数据库，完成排队 1、处理 1、未解决 0、结果 1。结果按“建议、对方说了什么、岗位概况、公司及业务、匹配情况、薪资、下一步”显示；真实样本被正确标为“其他沟通”而非面试邀请，摘要以脱敏方式说明招聘方未要求候选人行动。旧问句标题和公司免责声明均未出现，本样本没有草稿。
-- 全程没有调用 `Page.bringToFront`，没有填写输入框、发送回复、发起沟通或投递。验收开始和结束保持两张固定 BOSS 标签、零详情标签和不变的无关活动前台标签；生产数据库、源证据数据库和模型设置未修改。100 项允许离线检查全部通过，`startup_scripts_smoke.js` 因 360 防护继续排除；详细证据见 `docs/superpowers/reports/2026-08-17-message-discovery-job-understanding-reply-drafts-acceptance.md`。
+- 全程没有调用 `Page.bringToFront`，没有填写输入框、发送回复、发起沟通或投递。验收开始和结束保持两张固定 BOSS 标签、零详情标签和不变的无关活动前台标签；生产数据库、源证据数据库和模型设置未修改。真实验收后的整分支修复没有再次访问 BOSS、Edge 或生产数据库；最终代码树的 100 项允许离线检查全部通过，`startup_scripts_smoke.js` 因 360 防护继续排除；详细证据见 `docs/superpowers/reports/2026-08-17-message-discovery-job-understanding-reply-drafts-acceptance.md`。
 
 ## 课题 3：通用模式与继承模式
 
