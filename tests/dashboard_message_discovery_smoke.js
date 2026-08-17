@@ -383,29 +383,50 @@ async function main() {
   const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(understoodPage.body.includes("AI 应用开发工程师"));
   for (const expected of [
-    "这个岗位是做什么的",
+    "建议",
+    "可以了解，但要先确认关键问题",
+    "对方说了什么",
+    "对方正在确认候选人的任职资格。",
+    "岗位概况",
     "把企业知识转成可追溯的智能问答能力",
     "公司及业务",
     "JD 显示该岗位服务于企业知识管理。",
-    "你的匹配度",
+    "匹配情况",
     "中",
-    "薪资范围",
+    "薪资",
     "15-25K·13薪",
     "薪资未说明",
-    "这份机会值不值得继续聊",
-    "可以了解，但要先确认关键问题",
-    "消息与下一步",
-    "任职资格确认",
-    "面试邀请",
-    "信息待补"
-  ]) assert(understoodPage.body.includes(expected), `missing decision-card content: ${expected}`);
-  for (const removed of ["匹配依据", "硬性阻断", "待补信息", "建议核实", "interview_invitation"]) {
+    "下一步",
+    "推荐回复",
+    "您好，感谢邀请，请问面试时间和形式如何安排？",
+    "JD 暂未说明公司的具体业务。"
+  ]) assert(understoodPage.body.includes(expected), `missing user decision content: ${expected}`);
+  for (const removed of [
+    "这个岗位是做什么的",
+    "公司资料不足，当前结论只针对这份岗位机会",
+    "不能评价公司本身是否值得加入",
+    "以上信息只代表 JD 中的岗位业务场景",
+    "匹配依据",
+    "硬性阻断",
+    "建议核实",
+    "interview_invitation"
+  ]) {
     assert(!understoodPage.body.includes(removed), `message result must not render analysis/internal label: ${removed}`);
   }
-  assert(understoodPage.body.includes("面试安排需人工处理"));
+  const sectionPositions = [
+    "<h3>建议</h3>",
+    "<h3>对方说了什么</h3>",
+    "<h3>岗位概况</h3>",
+    "<h3>公司及业务</h3>",
+    "<h3>匹配情况</h3>",
+    "<h3>薪资</h3>",
+    "<h3>下一步</h3>"
+  ].map((heading) => understoodPage.body.indexOf(heading));
+  assert(sectionPositions.every((position) => position >= 0));
+  assert.deepStrictEqual([...sectionPositions].sort((a, b) => a - b), sectionPositions);
   assert(understoodPage.body.includes("缺少事实，暂不生成草稿"));
-  assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 1);
-  assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 2);
+  assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 2);
+  assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 3);
   assert(!understoodPage.body.includes("PRIVATE_RAW_ANALYSIS"));
   assert(!understoodPage.body.includes("PRIVATE_NAVIGATION_URL"));
   assertNoPrivateData(understoodPage.body);
@@ -1250,7 +1271,6 @@ function jobUnderstandingCompletedRun(fixture) {
       company: "示例科技",
       roleSummary: "把企业知识转成可追溯的智能问答能力",
       companyBusiness: "JD 显示该岗位服务于企业知识管理。",
-      companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
       fitLabel: "中",
       fitSummary: "候选人有 RAG 项目经验；生产运维经验仍需确认",
       salary: "15-25K·13薪",
@@ -1268,7 +1288,7 @@ function jobUnderstandingCompletedRun(fixture) {
         jobId: fixture.jobId,
         stage: "reply_ready",
         messageCategory: "qualification",
-        messageSummary: "PRIVATE_MESSAGE_SUMMARY",
+        messageSummary: "对方正在确认候选人的任职资格。",
         missingFactKey: "",
         manualActionReason: "",
         contextSource: "local_cache",
@@ -1280,24 +1300,26 @@ function jobUnderstandingCompletedRun(fixture) {
       }, {
         cardId: fixture.card.id + 1,
         jobId: fixture.jobId + 1,
-        stage: "contact_started",
+        stage: "interview_invited",
         messageCategory: "interview_invitation",
+        messageSummary: "对方邀请候选人参加面试。",
         missingFactKey: "",
-        manualActionReason: "interview",
+        manualActionReason: "",
         contextSource: "message_discovery_detail",
         contextComplete: true,
         job: { ...job, title: "面试岗位" },
-        messages: []
+        messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
       }, {
         cardId: fixture.card.id + 2,
         jobId: fixture.jobId + 2,
         stage: "contact_started",
         messageCategory: "missing_fact",
+        messageSummary: "对方需要补充关键信息。",
         missingFactKey: "availability",
         manualActionReason: "missing_fact",
         contextSource: "message_discovery_detail",
         contextComplete: true,
-        job: { ...job, title: "待补事实岗位", salary: "" },
+        job: { ...job, title: "待补事实岗位", salary: "", companyBusiness: "" },
         messages: []
       }]
     };

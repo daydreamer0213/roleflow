@@ -61,20 +61,21 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
       return `<div class="message-draft"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}" readonly>${escapeHtml(message)}</textarea><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button></div>`;
     }).join("");
     const decisionCard = `<div class="message-job-understanding">
-      <h3>这个岗位是做什么的</h3>
+      <h3>建议</h3>
+      <p class="line"><strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}</strong>${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
+      <h3>对方说了什么</h3>
+      <p class="line">${escapeHtml(result.messageSummary || "这条消息需要人工确认")}</p>
+      <h3>岗位概况</h3>
       <p class="line">${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
       <h3>公司及业务</h3>
-      <p class="line">${escapeHtml(job.companyBusiness || "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。")}</p>
-      <p class="line">${escapeHtml(job.companyScope || "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。")}</p>
-      <h3>你的匹配度</h3>
+      <p class="line">${escapeHtml(job.companyBusiness || "JD 暂未说明公司的具体业务。")}</p>
+      <h3>匹配情况</h3>
       <p class="line"><strong>${escapeHtml(job.fitLabel || "待确认")}</strong>${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""}</p>
-      <h3>薪资范围</h3>
+      <h3>薪资</h3>
       <p class="line">${escapeHtml(job.salary || "薪资未说明")}</p>
-      <h3>这份机会值不值得继续聊</h3>
-      <p class="line"><strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}</strong>${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
     </div>`;
     const draftSection = drafts
-      ? `<h3>推荐回复草稿</h3>${drafts}`
+      ? `<h4>推荐回复</h4>${drafts}`
       : `<p class="risk-text">${escapeHtml(messageDiscoveryManualActionText(result))}</p>`;
     const sentForm = drafts
       ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
@@ -84,7 +85,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
       : result.contextSource === "message_discovery_detail"
         ? "本次后台只读岗位详情"
         : "岗位资料来源待确认";
-    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))} · 消息：${escapeHtml(messageCategoryLabel(result.messageCategory))}</p><p class="line">岗位资料来源：${escapeHtml(source)}</p>${decisionCard}<h3>消息与下一步</h3>${draftSection}${sentForm}</section>`;
+    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))} · 消息：${escapeHtml(messageCategoryLabel(result.messageCategory))}</p><p class="line">岗位资料来源：${escapeHtml(source)}</p>${decisionCard}<h3>下一步</h3>${draftSection}${sentForm}</section>`;
   }).join("");
   const controls = `<section class="message-controls" aria-label="消息发现操作">
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button data-page-primary="true"${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
