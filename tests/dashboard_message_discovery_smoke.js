@@ -332,6 +332,8 @@ async function main() {
     "missingFactKey",
     "stage"
   ]);
+  assert(!Object.hasOwn(status.results[0], "messageSummary"));
+  assert(!JSON.stringify(status).includes("PRIVATE_MESSAGE_SUMMARY"));
   assertNoPrivateData(status);
   await waitForLeaseRelease();
   assert.strictEqual(browsers.at(-1).cleanupCalls, 1, "successful discovery must clean up its browser exactly once");
@@ -1266,6 +1268,7 @@ function jobUnderstandingCompletedRun(fixture) {
         jobId: fixture.jobId,
         stage: "reply_ready",
         messageCategory: "qualification",
+        messageSummary: "PRIVATE_MESSAGE_SUMMARY",
         missingFactKey: "",
         manualActionReason: "",
         contextSource: "local_cache",

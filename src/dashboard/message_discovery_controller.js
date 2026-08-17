@@ -360,6 +360,7 @@ function createMessageDiscoveryController(deps = {}) {
         jobId: Math.max(0, Number(item?.jobId) || 0),
         stage: String(item?.stage || "").slice(0, 80),
         messageCategory: String(item?.messageCategory || "").slice(0, 80),
+        messageSummary: safeInlineText(item?.messageSummary, 160),
         missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
         manualActionReason: safeText(item?.manualActionReason, 240),
         contextSource: ["local_cache", "message_discovery_detail"].includes(item?.contextSource)
@@ -594,7 +595,6 @@ function sanitizeJobUnderstanding(value) {
     company: safeInlineText(job.company, 160),
     roleSummary: safeInlineText(job.roleSummary, 300),
     companyBusiness: safeInlineText(job.companyBusiness, 300),
-    companyScope: safeInlineText(job.companyScope, 240),
     fitLabel: safeInlineText(job.fitLabel, 20),
     fitSummary: safeInlineText(job.fitSummary, 180),
     salary: safeInlineText(job.salary, 80),

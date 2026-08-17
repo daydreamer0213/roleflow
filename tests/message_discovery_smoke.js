@@ -97,7 +97,6 @@ function decisionCardProjectionSmoke() {
     company: "示例科技",
     roleSummary: "为企业知识库构建可追溯的智能问答系统",
     companyBusiness: "JD 显示该岗位服务于企业知识管理。",
-    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
     fitLabel: "高",
     fitSummary: "岗位方向与候选人的 RAG 项目经历一致",
     salary: "15-25K·13薪",
@@ -116,8 +115,8 @@ function decisionCardProjectionSmoke() {
       recommendation: "not_recommended"
     }
   });
-  assert.strictEqual(unknownCompany.companyBusiness, "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。");
-  assert.strictEqual(unknownCompany.companyScope, "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。");
+  assert.strictEqual(unknownCompany.companyBusiness, "JD 暂未说明公司的具体业务。");
+  assert(!Object.hasOwn(unknownCompany, "companyScope"));
   assert.strictEqual(unknownCompany.fitLabel, "低");
   assert.strictEqual(unknownCompany.fitSummary, "生产环境运维经验仍需确认");
   assert.strictEqual(unknownCompany.salary, "");
@@ -260,7 +259,6 @@ async function uniqueCandidateAndPrivacySmoke() {
     company: "Fixture Company",
     roleSummary: "负责企业 Java 服务交付",
     companyBusiness: "JD 显示该岗位服务于企业交易系统交付。",
-    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
     fitLabel: "中",
     fitSummary: "Spring 项目证据匹配；生产值班经验待确认",
     salary: "20-30K",
@@ -1363,12 +1361,15 @@ async function classificationOutcomeSmoke() {
     reader: fakeReader([selectedConversation({ title: interview.title, messageId: "123456789012351" })]),
     classifyMessageGroup: async () => classification({
       messageCategory: "interview_invitation",
+      messageSummary: "对方邀请候选人参加面试。",
       stage: "interview_invited",
-      messages: [PRIVATE_DRAFT]
+      messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
     })
   });
   assert.strictEqual(summary.results[0].stage, "interview_invited");
-  assert.deepStrictEqual(summary.results[0].messages, []);
+  assert.strictEqual(summary.results[0].messageSummary, "对方邀请候选人参加面试。");
+  assert.deepStrictEqual(summary.results[0].messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
+  assert.strictEqual(summary.results[0].manualActionReason, "");
 
   for (const [suffix, messageCategory, reason] of [
     ["salary-manual", "salary", "薪资问题需要人工确认口径"],
@@ -1862,12 +1863,14 @@ function messageRow(rowIndex, unread, conversationKey, previewDigest) {
 
 function classification({
   messageCategory = "qualification",
+  messageSummary = "对方正在确认候选人的任职资格。",
   stage = "reply_ready",
   messages = ["safe draft"]
 } = {}) {
   return {
     kind: "hr_reply",
     messageCategory,
+    messageSummary,
     missingFact: null,
     progressUpdate: { stage, nextAction: "Review before manual send", summary: "sanitized" },
     messages

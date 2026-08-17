@@ -493,6 +493,7 @@ function safeResult(card, result, resolvedJob, contextSource) {
     jobId: card.jobId,
     stage: card.stage,
     messageCategory: String(result.messageCategory || ""),
+    messageSummary: safeProjectionText(result.messageSummary, 160),
     missingFactKey,
     manualActionReason: safeManualActionReason(result, missingFactKey, messages),
     contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
@@ -507,14 +508,14 @@ function safeManualActionReason(result, missingFactKey, messages) {
   if (result.manualActionReason === "model_contract_invalid") {
     return "模型结果未通过安全校验，需要人工处理";
   }
+  if (messages.length) return "";
   const categoryReason = {
     interview_invitation: "面试邀请需要人工确认时间和安排",
     salary: "薪资问题需要人工确认口径",
     sensitive: "消息涉及敏感信息，需要人工处理",
     identity_uncertain: "岗位或会话身份仍需人工核对"
   }[String(result.messageCategory || "")];
-  if (categoryReason) return categoryReason;
-  return messages.length ? "" : "当前结果需要人工处理";
+  return categoryReason || "当前结果需要人工处理";
 }
 
 function projectMessageDecisionCard(job = {}) {
@@ -539,19 +540,10 @@ function projectMessageDecisionCard(job = {}) {
 
 function companyDecisionSummary(analysis) {
   const scenario = meaningfulAnalysisText(analysis.businessScenario, 180);
-  if (scenario) return {
-    companyBusiness: `JD 显示该岗位服务于${scenario}。`,
-    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。"
-  };
+  if (scenario) return { companyBusiness: `JD 显示该岗位服务于${scenario}。` };
   const industry = meaningfulAnalysisText(analysis.industryContext, 120);
-  if (industry) return {
-    companyBusiness: `JD 显示该岗位属于${industry}相关业务场景。`,
-    companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。"
-  };
-  return {
-    companyBusiness: "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。",
-    companyScope: "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。"
-  };
+  if (industry) return { companyBusiness: `JD 显示该岗位属于${industry}相关业务场景。` };
+  return { companyBusiness: "JD 暂未说明公司的具体业务。" };
 }
 
 function meaningfulAnalysisText(value, limit) {
