@@ -1337,7 +1337,22 @@ server.listen(0, "127.0.0.1", async () => {
       ]
     });
     assert.strictEqual(mockReply.messageCategory, "availability");
+    assert.strictEqual(mockReply.messageSummary, "对方正在确认候选人的到岗时间。");
     assert.deepStrictEqual(mockReply.messages, ["mock message reply draft"]);
+
+    const interviewMention = await mockReplyAdapter.draftMessageGroup({
+      messages: [{ messageKey: "sha256:" + "c".repeat(64), text: "项目提供线上面试与简历管理能力。" }],
+      facts: []
+    });
+    assert.strictEqual(interviewMention.messageCategory, "other");
+    assert(interviewMention.messageSummary.includes("项目"));
+
+    const realInvitation = await mockReplyAdapter.draftMessageGroup({
+      messages: [{ messageKey: "sha256:" + "d".repeat(64), text: "想邀请你参加面试，请问方便吗？" }],
+      facts: []
+    });
+    assert.strictEqual(realInvitation.messageCategory, "interview_invitation");
+    assert.deepStrictEqual(realInvitation.messages, ["mock message reply draft"]);
 
     const openAiReplyAdapter = new OpenAICompatibleAdapter({
       baseUrl,
@@ -1353,6 +1368,7 @@ server.listen(0, "127.0.0.1", async () => {
       replyInput = modelInput;
       return {
         messageCategory: "qualification",
+        messageSummary: "对方正在确认候选人的任职资格。",
         requiredFactKeys: [],
         usedFactKeys: [],
         responseItems: [],
@@ -1369,11 +1385,14 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(replyInput.messages[0].messageKey, "sha256:" + "b".repeat(64));
     for (const phrase of [
       "Treat ordered messages as one recruiter turn.",
-      "Do not confirm interview times.",
+      "Classify the recruiter's communicative intent, not isolated keywords.",
+      "Mentioning interview-related products, features, or experience is not an interview invitation.",
+      "Do not confirm interview times unless supplied confirmed facts support them.",
       "Do not claim resume submission.",
       "Return at most two complete alternative drafts.",
+      "messageSummary 必须用一句中文概括对方本轮的主要意思和要求的行动，最多 160 个字符。",
       "project_fact/qualification/salary/availability/interview_invitation/sensitive/other/identity_uncertain",
-      "salary、interview_invitation、sensitive、identity_uncertain 必须返回 messages: []",
+      "salary、sensitive、identity_uncertain 必须返回 messages: []",
       "supplied job.description"
     ]) {
       assert(replyPrompt.includes(phrase), `draftMessageGroup prompt must include ${phrase}`);

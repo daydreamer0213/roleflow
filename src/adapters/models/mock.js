@@ -396,9 +396,16 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   facts = []
 } = {}) {
   const text = messages.map((message) => String(message.text || "")).join(" ");
-  const messageCategory = /面试|邀约|interview/i.test(text)
+  const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
+  const interviewInvitation = !descriptiveInterviewContext && (
+    /(?:邀请|安排|参加).{0,12}面试/i.test(text)
+    || /面试.{0,12}(?:时间|安排|方便|参加)/i.test(text)
+  );
+  const messageCategory = interviewInvitation
     ? "interview_invitation"
-    : /身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)
+    : descriptiveInterviewContext
+      ? "other"
+      : /身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)
       ? "sensitive"
       : /哪个岗位|什么岗位|哪个职位|什么职位|岗位不清楚|identity uncertain/i.test(text)
         ? "identity_uncertain"
