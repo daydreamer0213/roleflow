@@ -400,6 +400,7 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   const interviewInvitation = (
     /(?:邀请|安排).{0,12}面试/i.test(text)
     || /面试.{0,12}(?:时间|安排|方便)/i.test(text)
+    || /(?:方便|愿意).{0,12}参加面试/i.test(text)
   );
   const messageCategory = interviewInvitation
     ? "interview_invitation"

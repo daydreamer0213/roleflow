@@ -1374,6 +1374,17 @@ server.listen(0, "127.0.0.1", async () => {
     });
     assert.strictEqual(interviewTrainingMention.messageCategory, "other");
 
+    const convenientInterviewInvitation = await mockReplyAdapter.draftMessageGroup({
+      messages: [{
+        messageKey: "sha256:" + "g".repeat(64),
+        text: "请问您方便参加面试吗？"
+      }],
+      facts: []
+    });
+    assert.strictEqual(convenientInterviewInvitation.messageCategory, "interview_invitation");
+    assert(convenientInterviewInvitation.messageSummary.includes("面试"));
+    assert.deepStrictEqual(convenientInterviewInvitation.messages, ["mock message reply draft"]);
+
     const openAiReplyAdapter = new OpenAICompatibleAdapter({
       baseUrl,
       apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
