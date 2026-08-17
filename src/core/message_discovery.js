@@ -523,6 +523,7 @@ function projectMessageDecisionCard(job = {}) {
     : {};
   const fitLabel = decisionFitLabel(analysis.fitLevel);
   const fitSummary = decisionFitSummary(analysis, fitLabel);
+  const opportunitySummary = decisionOpportunitySummary(analysis, fitSummary);
   return {
     title: safeProjectionText(job.title, 160),
     company: safeProjectionText(job.company, 160),
@@ -532,7 +533,7 @@ function projectMessageDecisionCard(job = {}) {
     fitSummary,
     salary: safeProjectionText(job.salary, 80),
     opportunityVerdict: opportunityVerdict(analysis.recommendation),
-    opportunitySummary: fitSummary
+    opportunitySummary
   };
 }
 
@@ -567,13 +568,35 @@ function decisionFitLabel(value) {
 }
 
 function decisionFitSummary(analysis, fitLabel) {
-  const positive = safeProjectionList(analysis.fitReasons, 1, 180)[0] || "";
-  const gap = safeProjectionList(analysis.roleGaps?.length ? analysis.roleGaps : analysis.softGaps, 1, 180)[0] || "";
-  const blocker = safeProjectionList(analysis.hardBlockers, 1, 180, (item) => item?.requirement ?? item)[0] || "";
-  if (fitLabel === "高") return positive;
-  if (fitLabel === "中") return [positive, gap].filter(Boolean).join("；");
-  if (fitLabel === "低") return positive || blocker || gap;
+  if (fitLabel === "高") return safeProjectionList(analysis.fitReasons, 1, 180)[0] || "";
+  if (fitLabel === "中") {
+    const positive = safeProjectionList(analysis.fitReasons, 1, 89)[0] || "";
+    const gap = safeProjectionList(analysis.roleGaps?.length ? analysis.roleGaps : analysis.softGaps, 1, 89)[0] || "";
+    return [positive, gap].filter(Boolean).join("；");
+  }
+  if (fitLabel === "低") {
+    const ruleReason = analysis.ruleAdjusted === true
+      ? safeProjectionList(analysis.fitReasons, 1, 180)[0] || ""
+      : "";
+    const blocker = safeProjectionList(analysis.hardBlockers, 1, 180, (item) => item?.requirement ?? item)[0] || "";
+    const gap = safeProjectionList(analysis.roleGaps?.length ? analysis.roleGaps : analysis.softGaps, 1, 180)[0] || "";
+    const positive = safeProjectionList(analysis.fitReasons, 1, 180)[0] || "";
+    return ruleReason || blocker || gap || positive;
+  }
   return "";
+}
+
+function decisionOpportunitySummary(analysis, fitSummary) {
+  const ruleReason = analysis.ruleAdjusted === true
+    ? safeProjectionList(analysis.fitReasons, 1, 180)[0] || ""
+    : "";
+  const qualityRisk = safeProjectionList(
+    analysis.jobQuality?.concerns,
+    1,
+    180,
+    (item) => item?.evidence ?? item
+  )[0] || "";
+  return ruleReason || qualityRisk || fitSummary;
 }
 
 function opportunityVerdict(value) {

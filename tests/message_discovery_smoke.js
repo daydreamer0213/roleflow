@@ -119,8 +119,52 @@ function decisionCardProjectionSmoke() {
   assert.strictEqual(unknownCompany.companyBusiness, "JD 未说明公司具体业务，建议面试时确认业务线、产品和盈利模式。");
   assert.strictEqual(unknownCompany.companyScope, "公司资料不足，当前结论只针对这份岗位机会，不能评价公司本身是否值得加入。");
   assert.strictEqual(unknownCompany.fitLabel, "低");
+  assert.strictEqual(unknownCompany.fitSummary, "生产环境运维经验仍需确认");
   assert.strictEqual(unknownCompany.salary, "");
   assert.strictEqual(unknownCompany.opportunityVerdict, "不建议优先投入时间");
+  assert.strictEqual(unknownCompany.opportunitySummary, "生产环境运维经验仍需确认");
+
+  const guarded = projectMessageDecisionCard({
+    ...base,
+    analysis: {
+      ...base.analysis,
+      fitLevel: "no_fit",
+      recommendation: "not_recommended",
+      ruleAdjusted: true,
+      fitReasons: ["存在不可沟通的硬性缺口：必须具备行业资质", "具备一项次要技能"],
+      hardBlockers: [{ requirement: "必须具备行业资质" }]
+    }
+  });
+  assert.strictEqual(guarded.fitSummary, "存在不可沟通的硬性缺口：必须具备行业资质");
+  assert.strictEqual(guarded.opportunitySummary, "存在不可沟通的硬性缺口：必须具备行业资质");
+
+  const qualityRisk = projectMessageDecisionCard({
+    ...base,
+    analysis: {
+      ...base.analysis,
+      fitLevel: "C",
+      recommendation: "caution",
+      jobQuality: {
+        level: "caution",
+        concerns: [{ type: "responsibility_sprawl", evidence: "JD 同时要求研发、销售和全天候运维" }]
+      }
+    }
+  });
+  assert.strictEqual(qualityRisk.opportunitySummary, "JD 同时要求研发、销售和全天候运维");
+
+  const longMedium = projectMessageDecisionCard({
+    ...base,
+    analysis: {
+      ...base.analysis,
+      fitLevel: "C",
+      recommendation: "caution",
+      fitReasons: [`主要匹配方向${"甲".repeat(100)}`],
+      roleGaps: [`关键缺口${"乙".repeat(100)}`]
+    }
+  }).fitSummary;
+  assert(longMedium.includes("主要匹配方向"));
+  assert(longMedium.includes("关键缺口"));
+  assert(longMedium.length <= 180);
 
   for (const [fitLevel, expected] of [
     ["fit", "高"], ["A", "高"],
