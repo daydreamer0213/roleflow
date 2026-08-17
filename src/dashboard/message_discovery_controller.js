@@ -593,21 +593,14 @@ function sanitizeJobUnderstanding(value) {
     title: safeInlineText(job.title, 160),
     company: safeInlineText(job.company, 160),
     roleSummary: safeInlineText(job.roleSummary, 300),
-    fitReasons: safeTextList(job.fitReasons, 5, 180),
-    hardBlockers: safeTextList(job.hardBlockers, 5, 180),
-    softGaps: safeTextList(job.softGaps, 5, 180),
-    questionsToVerify: safeTextList(job.questionsToVerify, 5, 180)
+    companyBusiness: safeInlineText(job.companyBusiness, 300),
+    companyScope: safeInlineText(job.companyScope, 240),
+    fitLabel: safeInlineText(job.fitLabel, 20),
+    fitSummary: safeInlineText(job.fitSummary, 180),
+    salary: safeInlineText(job.salary, 80),
+    opportunityVerdict: safeInlineText(job.opportunityVerdict, 80),
+    opportunitySummary: safeInlineText(job.opportunitySummary, 180)
   };
-}
-
-function safeTextList(value, limit, textLimit) {
-  const items = [];
-  for (const item of Array.isArray(value) ? value : []) {
-    const text = safeInlineText(item, textLimit);
-    if (text && !items.includes(text)) items.push(text);
-    if (items.length >= limit) break;
-  }
-  return items;
 }
 
 function safeText(value, limit) {

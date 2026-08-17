@@ -380,13 +380,26 @@ async function main() {
   assertNoDraftMessagesInJson(status);
   const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(understoodPage.body.includes("AI 应用开发工程师"));
-  assert(understoodPage.body.includes("岗位理解"));
-  assert(understoodPage.body.includes("把企业知识转成可追溯的智能问答能力"));
-  assert(understoodPage.body.includes("匹配依据"));
-  assert(understoodPage.body.includes("候选人有 RAG 项目经验"));
-  assert(understoodPage.body.includes("硬性阻断"));
-  assert(understoodPage.body.includes("必须长期驻场"));
-  assert(understoodPage.body.includes("建议核实"));
+  for (const expected of [
+    "这个岗位是做什么的",
+    "把企业知识转成可追溯的智能问答能力",
+    "公司及业务",
+    "JD 显示该岗位服务于企业知识管理。",
+    "你的匹配度",
+    "中",
+    "薪资范围",
+    "15-25K·13薪",
+    "薪资未说明",
+    "这份机会值不值得继续聊",
+    "可以了解，但要先确认关键问题",
+    "消息与下一步",
+    "任职资格确认",
+    "面试邀请",
+    "信息待补"
+  ]) assert(understoodPage.body.includes(expected), `missing decision-card content: ${expected}`);
+  for (const removed of ["匹配依据", "硬性阻断", "待补信息", "建议核实", "interview_invitation"]) {
+    assert(!understoodPage.body.includes(removed), `message result must not render analysis/internal label: ${removed}`);
+  }
   assert(understoodPage.body.includes("面试安排需人工处理"));
   assert(understoodPage.body.includes("缺少事实，暂不生成草稿"));
   assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 1);
@@ -1234,10 +1247,13 @@ function jobUnderstandingCompletedRun(fixture) {
       title: "AI 应用开发工程师",
       company: "示例科技",
       roleSummary: "把企业知识转成可追溯的智能问答能力",
-      fitReasons: ["候选人有 RAG 项目经验"],
-      hardBlockers: ["必须长期驻场"],
-      softGaps: ["行业经验需要进一步确认"],
-      questionsToVerify: ["驻场频率是否可以协商"]
+      companyBusiness: "JD 显示该岗位服务于企业知识管理。",
+      companyScope: "以上信息只代表 JD 中的岗位业务场景，不能代表公司整体经营情况。",
+      fitLabel: "中",
+      fitSummary: "候选人有 RAG 项目经验；生产运维经验仍需确认",
+      salary: "15-25K·13薪",
+      opportunityVerdict: "可以了解，但要先确认关键问题",
+      opportunitySummary: "候选人有 RAG 项目经验；生产运维经验仍需确认"
     };
     const summary = {
       status: "completed",
@@ -1262,7 +1278,7 @@ function jobUnderstandingCompletedRun(fixture) {
         cardId: fixture.card.id + 1,
         jobId: fixture.jobId + 1,
         stage: "contact_started",
-        messageCategory: "interview",
+        messageCategory: "interview_invitation",
         missingFactKey: "",
         manualActionReason: "interview",
         contextSource: "message_discovery_detail",
@@ -1278,7 +1294,7 @@ function jobUnderstandingCompletedRun(fixture) {
         manualActionReason: "missing_fact",
         contextSource: "message_discovery_detail",
         contextComplete: true,
-        job: { ...job, title: "待补事实岗位" },
+        job: { ...job, title: "待补事实岗位", salary: "" },
         messages: []
       }]
     };
