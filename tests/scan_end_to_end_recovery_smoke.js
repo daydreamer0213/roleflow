@@ -203,8 +203,25 @@ async function main() {
     assert.deepStrictEqual(storage.listLatestScanTargetResults(db, batchId).map((item) => item.status),
       snapshot.targets.map(() => "completed"));
 
+    const sharedPacing = {
+      pacedActions: 18,
+      nextPacingCooldownAt: 18,
+      detailActions: 6,
+      nextDetailMicroCooldownAt: 6,
+      nextDetailMacroCooldownAt: 16
+    };
+    require("../src/core/message_preview_state").saveMessageDiscoveryRuntimeState(db, {
+      profileId,
+      platform: "boss",
+      pacing: sharedPacing,
+      updatedAt: "2026-08-16T08:00:00.000Z"
+    });
+
     db.close();
     db = null;
+
+    const sharedPacingScan = runScan(dbPath, planId, "scan-e2e-shared-pacing", "assert-shared-pacing");
+    assertExit(sharedPacingScan, 0, "message discovery pacing shared with a new scan");
 
     const directGenerated = runScan(
       dbPath,
@@ -945,6 +962,15 @@ function installOfflineBoundaries() {
     }
 
     async scan(options) {
+      if (process.env.ROLEFLOW_SCAN_E2E_MODE === "assert-shared-pacing") {
+        assert.deepStrictEqual(options.pacingState, {
+          pacedActions: 18,
+          nextPacingCooldownAt: 18,
+          detailActions: 6,
+          nextDetailMicroCooldownAt: 6,
+          nextDetailMacroCooldownAt: 16
+        });
+      }
       if (process.env.ROLEFLOW_SCAN_E2E_MODE === "fail-before-access") {
         const error = new Error("injected failure before first access reservation");
         error.code = "BROWSER_TIMEOUT";

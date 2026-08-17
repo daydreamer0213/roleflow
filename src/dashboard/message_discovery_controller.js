@@ -6,14 +6,14 @@ const { createMessageDiscoveryJobContextResolver } = require("../application/mes
 const { runBossMessageDiscovery } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
 const {
-  listUnresolvedMessageDiscoveryItems,
-  getMessageDiscoveryRuntimeState,
-  saveMessageDiscoveryRuntimeState
+  listUnresolvedMessageDiscoveryItems
 } = require("../core/message_preview_state");
 const { createSiteAccessController } = require("../core/site_access_budget");
 const { communicationRuntimeBlock } = require("../core/communication_runtime");
 const { resolveBossRiskWindow } = require("../core/boss_risk_window");
 const {
+  getSitePacingState,
+  setSitePacingState,
   setSiteRuntimeState,
   recordSiteAccessEvent
 } = require("../core/storage");
@@ -500,9 +500,8 @@ function createMessageDiscoveryDetailSafety({
 } = {}) {
   let assertActiveBindings = null;
   const onWait = ({ durationMs }) => setDetailWait(run, durationMs, now);
-  const checkpointPacing = async (state) => saveMessageDiscoveryRuntimeState(db, {
-    profileId,
-    platform: "boss",
+  const checkpointPacing = async (state) => setSitePacingState(db, {
+    site: "boss",
     pacing: state,
     updatedAt: safeNow(now).toISOString()
   });
@@ -521,7 +520,7 @@ function createMessageDiscoveryDetailSafety({
     }
   });
   const pacing = createPacingAdapter({ logger, sleepFn, randomFn, accessController });
-  pacing.restorePacing(getMessageDiscoveryRuntimeState(db, { profileId, platform: "boss" }).pacing);
+  pacing.restorePacing(getSitePacingState(db, "boss").pacing);
 
   return {
     pacing,

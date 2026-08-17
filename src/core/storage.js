@@ -709,6 +709,14 @@ CREATE TABLE IF NOT EXISTS message_discovery_runtime_states (
 );
 `;
 
+const SHARED_SITE_PACING_STATES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_discovery_runtime_states (
+  platform TEXT PRIMARY KEY,
+  pacing_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+`;
+
 const ONBOARDING_RUN_SCHEMA = `
 CREATE TABLE IF NOT EXISTS onboarding_runs (
   id TEXT PRIMARY KEY,
@@ -895,8 +903,52 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(MESSAGE_DISCOVERY_RUNTIME_STATES_SCHEMA);
     }
+  },
+  {
+    version: 16,
+    name: "shared_boss_pacing_v1",
+    apply(db) {
+      migrateSharedSitePacingStates(db);
+    }
   }
 ];
+
+function migrateSharedSitePacingStates(db) {
+  const bySite = new Map();
+  const add = (siteValue, pacingValue, updatedAtValue) => {
+    const site = String(siteValue || "").trim().toLowerCase();
+    const pacing = scanStore.normalizeBossPacing(pacingValue);
+    if (!site || !pacing) return;
+    const entries = bySite.get(site) || [];
+    entries.push(pacing);
+    bySite.set(site, entries);
+    const timestamp = String(updatedAtValue || "");
+    if (Number.isFinite(Date.parse(timestamp))) {
+      const previous = bySite.get(`${site}:updatedAt`) || "";
+      if (!previous || Date.parse(timestamp) > Date.parse(previous)) bySite.set(`${site}:updatedAt`, timestamp);
+    }
+  };
+  for (const row of db.prepare(`SELECT platform, pacing_json, updated_at
+    FROM message_discovery_runtime_states`).all()) {
+    add(row.platform, parseJson(row.pacing_json, null), row.updated_at);
+  }
+  for (const row of db.prepare(`SELECT site, filter_snapshot_json, COALESCE(finished_at, started_at) AS updated_at
+    FROM batches WHERE lower(site) = 'boss'`).all()) {
+    add(row.site, parseJson(row.filter_snapshot_json, {})?.runtime?.bossPacing, row.updated_at);
+  }
+  db.exec(`
+    ALTER TABLE message_discovery_runtime_states RENAME TO message_discovery_runtime_states_v15;
+    ${SHARED_SITE_PACING_STATES_SCHEMA}
+  `);
+  const insert = db.prepare(`INSERT INTO message_discovery_runtime_states(platform, pacing_json, updated_at)
+    VALUES (?, ?, ?)`);
+  for (const [site, states] of bySite) {
+    if (site.endsWith(":updatedAt")) continue;
+    const pacing = scanStore.mergeBossPacingStates(...states);
+    if (pacing) insert.run(site, JSON.stringify(pacing), bySite.get(`${site}:updatedAt`) || nowIso());
+  }
+  db.exec("DROP TABLE message_discovery_runtime_states_v15");
+}
 const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
 function openDb(dbPath) {
@@ -1529,6 +1581,9 @@ module.exports = {
   recordScanRunProcessExit: scanStore.recordScanRunProcessExit,
   interruptOrphanedScanRuns: scanStore.interruptOrphanedScanRuns,
   checkpointScanProgress: scanStore.checkpointScanProgress,
+  getSitePacingState: scanStore.getSitePacingState,
+  setSitePacingState: scanStore.setSitePacingState,
+  mergeBossPacingStates: scanStore.mergeBossPacingStates,
   checkpointScanTarget: scanStore.checkpointScanTarget,
   recordScanTargetResult: scanStore.recordScanTargetResult,
   listScanTargetResults: scanStore.listScanTargetResults,

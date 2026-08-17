@@ -1,4 +1,8 @@
 const crypto = require("node:crypto");
+const {
+  getSitePacingState,
+  setSitePacingState
+} = require("../storage/scan_store");
 
 const PREVIEW_KINDS = new Set([
   "self_delivered",
@@ -19,14 +23,6 @@ const UNRESOLVED_REASON_CODES = new Set([
   "MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE",
   "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
 ]);
-const PACING_FIELDS = Object.freeze([
-  "pacedActions",
-  "nextPacingCooldownAt",
-  "detailActions",
-  "nextDetailMicroCooldownAt",
-  "nextDetailMacroCooldownAt"
-]);
-
 function listPreviewStates(db, { profileId } = {}) {
   const id = positiveInteger(profileId, "profileId");
   return db.prepare(`SELECT * FROM message_preview_states
@@ -126,14 +122,12 @@ function getMessageDiscoveryRuntimeState(db, { profileId, platform } = {}) {
   const id = positiveInteger(profileId, "profileId");
   const normalizedPlatform = shortText(platform, 40);
   if (!normalizedPlatform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
-  const row = db.prepare(`SELECT pacing_json, updated_at
-    FROM message_discovery_runtime_states
-    WHERE profile_id = ? AND platform = ?`).get(id, normalizedPlatform);
+  const state = getSitePacingState(db, normalizedPlatform);
   return {
     profileId: id,
     platform: normalizedPlatform,
-    pacing: row ? parsePacing(row.pacing_json) : null,
-    updatedAt: row?.updated_at || ""
+    pacing: state.pacing,
+    updatedAt: state.updatedAt
   };
 }
 
@@ -142,13 +136,7 @@ function saveMessageDiscoveryRuntimeState(db, input = {}) {
   const platform = shortText(input.platform, 40);
   const updatedAt = isoText(input.updatedAt);
   if (!platform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
-  const pacing = safePacing(input.pacing);
-  db.prepare(`INSERT INTO message_discovery_runtime_states(profile_id, platform, pacing_json, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(profile_id, platform) DO UPDATE SET
-      pacing_json = excluded.pacing_json,
-      updated_at = excluded.updated_at`)
-    .run(profileId, platform, JSON.stringify(pacing || {}), updatedAt);
+  setSitePacingState(db, { site: platform, pacing: input.pacing, updatedAt });
   return getMessageDiscoveryRuntimeState(db, { profileId, platform });
 }
 
@@ -314,24 +302,6 @@ function safeUnresolvedIdentity(value = {}) {
 
 function isDigest(value) {
   return /^sha256:[a-f0-9]{64}$/.test(String(value || "").trim().toLowerCase());
-}
-
-function parsePacing(value) {
-  try {
-    return safePacing(JSON.parse(String(value || "{}")));
-  } catch {
-    return null;
-  }
-}
-
-function safePacing(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const pacing = {};
-  for (const field of PACING_FIELDS) {
-    if (!Number.isSafeInteger(value[field]) || value[field] < 0) return null;
-    pacing[field] = value[field];
-  }
-  return pacing;
 }
 
 function safeReasonCode(value) {

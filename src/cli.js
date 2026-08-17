@@ -44,6 +44,8 @@ const {
   checkpointScanProgress,
   checkpointScanTarget,
   listLatestScanTargetResults,
+  getSitePacingState,
+  mergeBossPacingStates,
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
@@ -1366,6 +1368,12 @@ async function scan(
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
+  const restoredPacingState = args.input || site !== "boss"
+    ? validatedResume?.runtime?.bossPacing || null
+    : mergeBossPacingStates(
+      getSitePacingState(db, "boss").pacing,
+      validatedResume?.runtime?.bossPacing
+    );
   const rawJobs = await runWithBoundFixedBossSearchAction((state) => adapter.scan({
     input: args.input,
     tabId: state?.tabId,
@@ -1384,7 +1392,7 @@ async function scan(
     supplementalSalaryLaneCardLimit: scanLimits.supplementalSalaryLaneCardLimit,
     supplementalSalaryLaneDetailLimit: scanLimits.supplementalSalaryLaneDetailLimit,
     targetKeys: resumeTargetKeys,
-    pacingState: validatedResume?.runtime?.bossPacing || null,
+    pacingState: restoredPacingState,
     scoreQuick: (job) => scoreJob(job, configs).score,
     shouldReadDetail: (job) => decisionState(scoreJob({ ...job, detailRequired: true }, configs)) !== "blocked",
     getReusableDetail: (job) => reusableDetails.get(job.sourceId),

@@ -6,7 +6,89 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 const SCAN_RUN_STATUSES = ["running", "completed", "partial", "failed", "interrupted"];
 const TERMINAL_SCAN_RUN_STATUSES = new Set(SCAN_RUN_STATUSES.slice(1));
 const SCAN_PROGRESS_ACTIVITIES = new Set(["searching", "reading_detail", "target_complete"]);
+const BOSS_PACING_FIELDS = Object.freeze([
+  "pacedActions",
+  "nextPacingCooldownAt",
+  "detailActions",
+  "nextDetailMicroCooldownAt",
+  "nextDetailMacroCooldownAt"
+]);
 const scanRunError = storageError;
+
+function getSitePacingState(db, site = "boss") {
+  const normalizedSite = normalizedPacingSite(site);
+  const row = db.prepare(`SELECT pacing_json, updated_at
+    FROM message_discovery_runtime_states
+    WHERE platform = ?`).get(normalizedSite);
+  return {
+    site: normalizedSite,
+    pacing: row ? parseBossPacing(row.pacing_json) : null,
+    updatedAt: row?.updated_at || ""
+  };
+}
+
+function setSitePacingState(db, { site = "boss", pacing, updatedAt = nowIso() } = {}) {
+  const normalizedSite = normalizedPacingSite(site);
+  const normalizedPacing = normalizeBossPacing(pacing);
+  const timestamp = String(updatedAt || "").trim();
+  if (!Number.isFinite(Date.parse(timestamp))) throw new TypeError("site pacing updatedAt must be ISO time");
+  db.prepare(`INSERT INTO message_discovery_runtime_states(platform, pacing_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(platform) DO UPDATE SET
+      pacing_json = excluded.pacing_json,
+      updated_at = excluded.updated_at`)
+    .run(normalizedSite, JSON.stringify(normalizedPacing || {}), timestamp);
+  return getSitePacingState(db, normalizedSite);
+}
+
+function mergeBossPacingStates(...states) {
+  const valid = states.map(normalizeBossPacing).filter(Boolean);
+  if (valid.length === 0) return null;
+  const pacedActions = Math.max(...valid.map((state) => state.pacedActions));
+  const detailActions = Math.max(...valid.map((state) => state.detailActions));
+  return {
+    pacedActions,
+    nextPacingCooldownAt: mergedThreshold(valid, "pacedActions", "nextPacingCooldownAt", pacedActions),
+    detailActions,
+    nextDetailMicroCooldownAt: mergedThreshold(valid, "detailActions", "nextDetailMicroCooldownAt", detailActions),
+    nextDetailMacroCooldownAt: mergedThreshold(valid, "detailActions", "nextDetailMacroCooldownAt", detailActions)
+  };
+}
+
+function normalizeBossPacing(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const pacing = {};
+  for (const field of BOSS_PACING_FIELDS) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) return null;
+    pacing[field] = value[field];
+  }
+  const policy = PRODUCT_POLICY.operations.bossPacing;
+  if (pacing.nextPacingCooldownAt > pacing.pacedActions + Math.max(...policy.periodicEvery)
+    || pacing.nextDetailMicroCooldownAt > pacing.detailActions + Math.max(...policy.detail.microEvery)
+    || pacing.nextDetailMacroCooldownAt > pacing.detailActions + Math.max(...policy.detail.macroEvery)) {
+    return null;
+  }
+  return pacing;
+}
+
+function parseBossPacing(value) {
+  try {
+    return normalizeBossPacing(JSON.parse(String(value || "{}")));
+  } catch {
+    return null;
+  }
+}
+
+function mergedThreshold(states, countField, thresholdField, mergedCount) {
+  const remaining = Math.min(...states.map((state) => state[thresholdField] - state[countField]));
+  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, mergedCount + remaining));
+}
+
+function normalizedPacingSite(value) {
+  const site = String(value || "").trim().toLowerCase();
+  if (!site) throw new TypeError("site pacing state requires a site");
+  return site;
+}
 
 function recordSiteAccessEvent(db, {
   site,
@@ -471,6 +553,7 @@ function checkpointScanTarget(db, input = {}) {
     }
     const jobIds = input.jobs.map((job) => jobStore.upsertJob(db, job, batchId));
     updateBatchRuntimeSnapshot(db, batch, input.runtime);
+    checkpointSharedPacing(db, run.site, input.runtime, checkpointedAt);
     const target = input.target && typeof input.target === "object" ? { ...input.target, ...input } : input;
     db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
     const attemptNumber = recordScanTargetResult(db, {
@@ -521,6 +604,7 @@ function checkpointScanProgress(db, input = {}) {
     }
     const jobIds = input.jobs.map((job) => jobStore.upsertJob(db, job, batchId));
     updateBatchRuntimeSnapshot(db, batch, input.runtime);
+    checkpointSharedPacing(db, run.site, input.runtime, checkpointedAt);
     db.prepare("UPDATE scan_runs SET heartbeat_at = ? WHERE id = ?").run(checkpointedAt, runId);
     db.exec("COMMIT");
     return { runId, batchId, jobCount: input.jobs.length, jobIds };
@@ -542,6 +626,15 @@ function updateBatchRuntimeSnapshot(db, batch, runtime) {
   }
   db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?")
     .run(JSON.stringify({ ...current, runtime: nextRuntime }), batch.id);
+}
+
+function checkpointSharedPacing(db, site, runtime, updatedAt) {
+  if (String(site || "").toLowerCase() !== "boss"
+    || !runtime
+    || typeof runtime !== "object"
+    || Array.isArray(runtime)
+    || !Object.hasOwn(runtime, "bossPacing")) return;
+  setSitePacingState(db, { site: "boss", pacing: runtime.bossPacing, updatedAt });
 }
 
 function normalizeScanProgress(value, execution) {
@@ -971,6 +1064,10 @@ function savePlatformFilterCatalog(db, { site, catalog, source = "live_dom", dis
 
 module.exports = {
   SCAN_RUN_STATUSES,
+  getSitePacingState,
+  setSitePacingState,
+  mergeBossPacingStates,
+  normalizeBossPacing,
   createBatch,
   createAndBindScanBatch,
   getBatch,

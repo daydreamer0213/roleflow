@@ -8,9 +8,12 @@ const {
   checkpointScanProgress,
   finishScanRun,
   getBatch,
+  getSitePacingState,
   getSiteRuntimeState,
   listSiteAccessEvents,
-  recordSiteAccessEvent
+  mergeBossPacingStates,
+  recordSiteAccessEvent,
+  setSitePacingState
 } = require("../src/core/storage");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
 const { BossSiteAdapter } = require("../src/adapters/sites/boss");
@@ -35,6 +38,7 @@ async function main() {
   await pacingWaitVisibilitySmoke();
   await abortedIssuedDetailStillCountsSmoke();
   await productionScanPacingCompositionSmoke();
+  sharedPacingPersistenceSmoke();
   await sqliteCheckpointResumeChainSmoke();
   await threeMinuteBudgetSmoke();
   sharedBossRiskWindowSmoke();
@@ -46,6 +50,49 @@ async function main() {
   await riskPersistenceFailurePreservesOriginalErrorSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+function sharedPacingPersistenceSmoke() {
+  const db = openDb(":memory:");
+  const scanPacing = {
+    pacedActions: 10,
+    nextPacingCooldownAt: 20,
+    detailActions: 6,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 16
+  };
+  const discoveryPacing = {
+    pacedActions: 18,
+    nextPacingCooldownAt: 18,
+    detailActions: 3,
+    nextDetailMicroCooldownAt: 9,
+    nextDetailMacroCooldownAt: 12
+  };
+  assert.deepStrictEqual(mergeBossPacingStates(scanPacing, discoveryPacing), {
+    pacedActions: 18,
+    nextPacingCooldownAt: 18,
+    detailActions: 6,
+    nextDetailMicroCooldownAt: 6,
+    nextDetailMacroCooldownAt: 15
+  }, "merging workflows must preserve any already-due cooldown");
+  setSitePacingState(db, {
+    site: "boss",
+    pacing: scanPacing,
+    updatedAt: "2026-08-16T08:00:00.000Z"
+  });
+  assert.deepStrictEqual(getSitePacingState(db, "boss").pacing, scanPacing);
+  setSitePacingState(db, {
+    site: "boss",
+    pacing: discoveryPacing,
+    updatedAt: "2026-08-16T08:00:01.000Z"
+  });
+  assert.deepStrictEqual(getSitePacingState(db, "boss").pacing, discoveryPacing,
+    "normal checkpoints must advance the shared state instead of repeatedly merging old thresholds");
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM message_discovery_runtime_states WHERE platform = 'boss'").get().n,
+    1
+  );
+  db.close();
 }
 
 async function catalogRefreshBudgetSmoke() {
@@ -552,7 +599,30 @@ function checkpointResumeSmoke() {
   checkpointScanProgress(db, { runId: run.id, batchId, leaseOwner: "pacing-owner", jobs: [], runtime: { bossPacing: pacing } });
   const checkpointed = getBatch(db, batchId);
   assert.deepStrictEqual(checkpointed.filterSnapshot.runtime.bossPacing, pacing);
+  assert.deepStrictEqual(getSitePacingState(db, "boss").pacing, pacing,
+    "a normal scan checkpoint must update the shared BOSS pacing row");
   assert.strictEqual(checkpointed.filterSnapshot.execution.snapshotHash, snapshot.snapshotHash);
+
+  db.exec(`CREATE TRIGGER fail_shared_pacing_checkpoint
+    BEFORE INSERT ON message_discovery_runtime_states
+    BEGIN
+      SELECT RAISE(ABORT, 'forced shared pacing failure');
+    END`);
+  const rejectedPacing = { ...pacing, detailActions: 8 };
+  assert.throws(
+    () => checkpointScanProgress(db, {
+      runId: run.id,
+      batchId,
+      leaseOwner: "pacing-owner",
+      jobs: [],
+      runtime: { bossPacing: rejectedPacing }
+    }),
+    /forced shared pacing failure/
+  );
+  db.exec("DROP TRIGGER fail_shared_pacing_checkpoint");
+  assert.deepStrictEqual(getBatch(db, batchId).filterSnapshot.runtime.bossPacing, pacing,
+    "a failed shared pacing write must roll back the batch runtime checkpoint");
+  assert.deepStrictEqual(getSitePacingState(db, "boss").pacing, pacing);
   finishScanRun(db, { runId: run.id, leaseOwner: "pacing-owner", status: "interrupted" });
   const resumed = validateResumeBatch({ resumeBatchId: batchId, resumedBatch: getBatch(db, batchId), site: "boss", planId: 2 });
   assert.deepStrictEqual(resumed.runtime.bossPacing, pacing);

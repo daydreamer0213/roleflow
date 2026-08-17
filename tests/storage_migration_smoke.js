@@ -15,6 +15,7 @@ const COMMUNICATION_RUNTIME_BINDING_VERSION = 12;
 const MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION = 13;
 const ONBOARDING_RUN_VERSION = 14;
 const MESSAGE_DISCOVERY_RUNTIME_VERSION = 15;
+const SHARED_BOSS_PACING_VERSION = 16;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -41,10 +42,11 @@ try {
       { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1", backup_path: null },
       { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1", backup_path: null },
       { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1", backup_path: null },
-      { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1", backup_path: null }
+      { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1", backup_path: null },
+      { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_discovery_runtime_states_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "shared_boss_pacing_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -102,7 +104,7 @@ try {
   );
   assert.deepStrictEqual(
     db.prepare("PRAGMA table_info(message_discovery_runtime_states)").all().map((column) => column.name),
-    ["profile_id", "platform", "pacing_json", "updated_at"]
+    ["platform", "pacing_json", "updated_at"]
   );
   assert.deepStrictEqual(
     db.prepare("PRAGMA table_info(message_discovery_unresolved_items)").all().map((column) => column.name),
@@ -124,7 +126,7 @@ try {
     "unresolved storage must retain only approved job identity fields"
   );
   assert(SCHEMA_VERSION >= 3);
-  assert.strictEqual(SCHEMA_VERSION, MESSAGE_DISCOVERY_RUNTIME_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, SHARED_BOSS_PACING_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -318,7 +320,8 @@ try {
       { version: COMMUNICATION_RUNTIME_BINDING_VERSION, name: "communication_runtime_binding_v1" },
       { version: MESSAGE_DISCOVERY_SAFE_IDENTITY_VERSION, name: "message_discovery_safe_identity_v1" },
       { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1" },
-      { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1" }
+      { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1" },
+      { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -953,6 +956,75 @@ try {
     "v6 迁移失败必须回滚新表"
   );
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
+  db.close();
+
+  const sharedPacingPath = path.join(root, "shared-pacing-v15.sqlite");
+  db = openDb(sharedPacingPath);
+  db.exec(`
+    DROP TABLE message_discovery_runtime_states;
+    CREATE TABLE message_discovery_runtime_states (
+      profile_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      pacing_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(profile_id, platform),
+      FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+    );
+  `);
+  const pacingNow = "2026-08-16T08:00:00.000Z";
+  const pacingProfileA = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Pacing A', '{}', NULL, ?, ?)`).run(pacingNow, pacingNow).lastInsertRowid);
+  const pacingProfileB = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Pacing B', '{}', NULL, ?, ?)`).run(pacingNow, pacingNow).lastInsertRowid);
+  db.prepare(`INSERT INTO message_discovery_runtime_states(profile_id, platform, pacing_json, updated_at)
+    VALUES (?, 'boss', ?, ?), (?, 'boss', ?, ?)`)
+    .run(
+      pacingProfileA,
+      JSON.stringify({ pacedActions: 10, nextPacingCooldownAt: 20, detailActions: 6, nextDetailMicroCooldownAt: 6, nextDetailMacroCooldownAt: 16 }),
+      pacingNow,
+      pacingProfileB,
+      JSON.stringify({ pacedActions: 18, nextPacingCooldownAt: 18, detailActions: 3, nextDetailMicroCooldownAt: 9, nextDetailMacroCooldownAt: 12 }),
+      "2026-08-16T08:00:01.000Z"
+    );
+  db.prepare(`INSERT INTO batches(site, keyword, started_at, note, profile_id, filter_snapshot_json)
+    VALUES ('boss', 'pacing-migration', ?, '', ?, ?)`)
+    .run("2026-08-16T08:00:02.000Z", pacingProfileA, JSON.stringify({
+      runtime: {
+        bossPacing: {
+          pacedActions: 12,
+          nextPacingCooldownAt: 30,
+          detailActions: 10,
+          nextDetailMicroCooldownAt: 18,
+          nextDetailMacroCooldownAt: 10
+        }
+      }
+    }));
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version > 15;
+    PRAGMA user_version = 15;
+  `);
+  db.close();
+  db = openDb(sharedPacingPath);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS n FROM message_discovery_runtime_states WHERE platform = 'boss'").get().n,
+    1,
+    "v15 profile pacing rows must migrate to one shared BOSS row"
+  );
+  assert.deepStrictEqual(
+    JSON.parse(db.prepare("SELECT pacing_json FROM message_discovery_runtime_states WHERE platform = 'boss'").get().pacing_json),
+    {
+      pacedActions: 18,
+      nextPacingCooldownAt: 18,
+      detailActions: 10,
+      nextDetailMicroCooldownAt: 10,
+      nextDetailMacroCooldownAt: 10
+    },
+    "migration must keep every already-due cooldown due"
+  );
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 2);
+  assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM batches").get().n, 1);
   db.close();
 
   const futurePath = path.join(root, "future.sqlite");

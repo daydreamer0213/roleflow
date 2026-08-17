@@ -25,6 +25,9 @@ try {
   const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES ('Preview Candidate', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
+  const secondProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Second Preview Candidate', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
   const platform = "boss";
   const pacing = {
     pacedActions: 19,
@@ -49,8 +52,14 @@ try {
     pacing,
     updatedAt: now
   });
+  assert.deepStrictEqual(getMessageDiscoveryRuntimeState(db, { profileId: secondProfileId, platform }), {
+    profileId: secondProfileId,
+    platform,
+    pacing,
+    updatedAt: now
+  }, "BOSS pacing must be shared across candidate profiles");
   assert.doesNotMatch(
-    db.prepare("SELECT pacing_json FROM message_discovery_runtime_states WHERE profile_id = ? AND platform = ?").get(profileId, platform).pacing_json,
+    db.prepare("SELECT pacing_json FROM message_discovery_runtime_states WHERE platform = ?").get(platform).pacing_json,
     /securityId|must-not-persist/
   );
   saveMessageDiscoveryRuntimeState(db, {
@@ -61,9 +70,9 @@ try {
   });
   assert.strictEqual(getMessageDiscoveryRuntimeState(db, { profileId, platform }).pacing, null);
   assert.strictEqual(
-    db.prepare("SELECT COUNT(*) AS n FROM message_discovery_runtime_states WHERE profile_id = ? AND platform = ?").get(profileId, platform).n,
+    db.prepare("SELECT COUNT(*) AS n FROM message_discovery_runtime_states WHERE platform = ?").get(platform).n,
     1,
-    "runtime checkpoints must upsert one row per profile and platform"
+    "runtime checkpoints must upsert one row per platform"
   );
   db.prepare("UPDATE message_discovery_runtime_states SET pacing_json = '{broken'").run();
   assert.strictEqual(getMessageDiscoveryRuntimeState(db, { profileId, platform }).pacing, null);

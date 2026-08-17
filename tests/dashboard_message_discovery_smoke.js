@@ -8,6 +8,10 @@ const {
   openDb,
   saveProfileAnalysis,
   createBatch,
+  createScanRun,
+  beginScanRun,
+  checkpointScanProgress,
+  finishScanRun,
   upsertJob,
   acquireSiteScanLease,
   releaseSiteScanLease,
@@ -638,23 +642,49 @@ async function detailSafetyCompositionSmoke() {
     const profileId = Number(safetyDb.prepare(`INSERT INTO candidate_profiles(
       display_name, profile_json, source_hash, created_at, updated_at
     ) VALUES ('Detail Safety', '{}', 'detail-safety', ?, ?)`).run(now, now).lastInsertRowid);
-    saveMessageDiscoveryRuntimeState(safetyDb, {
+    const secondProfileId = Number(safetyDb.prepare(`INSERT INTO candidate_profiles(
+      display_name, profile_json, source_hash, created_at, updated_at
+    ) VALUES ('Second Detail Safety', '{}', 'detail-safety-2', ?, ?)`).run(now, now).lastInsertRowid);
+    const scanBatchId = createBatch(safetyDb, "boss", "detail-safety", "shared pacing test", {
+      status: "running",
       profileId,
-      platform: "boss",
-      pacing: {
+      filterSnapshot: {}
+    });
+    const scanRun = createScanRun(safetyDb, {
+      runId: "detail-safety-scan",
+      site: "boss",
+      command: "scan"
+    });
+    acquireSiteScanLease(safetyDb, { site: "boss", owner: "detail-safety-owner" });
+    beginScanRun(safetyDb, {
+      runId: scanRun.id,
+      batchId: scanBatchId,
+      leaseOwner: "detail-safety-owner"
+    });
+    checkpointScanProgress(safetyDb, {
+      runId: scanRun.id,
+      batchId: scanBatchId,
+      leaseOwner: "detail-safety-owner",
+      jobs: [],
+      runtime: { bossPacing: {
         pacedActions: 2,
         nextPacingCooldownAt: 18,
-        detailActions: 2,
+        detailActions: 6,
         nextDetailMicroCooldownAt: 6,
         nextDetailMacroCooldownAt: 16
-      },
-      updatedAt: now
+      } }
     });
+    finishScanRun(safetyDb, {
+      runId: scanRun.id,
+      leaseOwner: "detail-safety-owner",
+      status: "interrupted"
+    });
+    releaseSiteScanLease(safetyDb, { site: "boss", owner: "detail-safety-owner" });
     const run = { phase: "starting", waitUntil: "", updatedAt: now };
     const sleeps = [];
     const safety = createMessageDiscoveryDetailSafety({
       db: safetyDb,
-      profileId,
+      profileId: secondProfileId,
       owner: "detail-safety-run",
       run,
       now: () => new Date(now),
@@ -664,7 +694,7 @@ async function detailSafetyCompositionSmoke() {
     assert.deepStrictEqual(safety.pacing.pacingState(), {
       pacedActions: 2,
       nextPacingCooldownAt: 18,
-      detailActions: 2,
+      detailActions: 6,
       nextDetailMicroCooldownAt: 6,
       nextDetailMacroCooldownAt: 16
     });
@@ -673,15 +703,16 @@ async function detailSafetyCompositionSmoke() {
       listSiteAccessEvents(safetyDb, { site: "boss" }).map((event) => event.action),
       ["pane_detail_read", "detail_open"]
     );
-    assert.strictEqual(sleeps[0].durationMs, 8000);
+    assert.deepStrictEqual(sleeps.map((item) => item.durationMs), [15000, 8000],
+      "message discovery must honor a due cooldown inherited from a normal scan");
     assert.strictEqual(sleeps[0].phase, "cooldown");
-    assert.match(sleeps[0].waitUntil, /^2026-08-16T08:00:08\.000Z$/);
+    assert.match(sleeps[0].waitUntil, /^2026-08-16T08:00:15\.000Z$/);
     assert.strictEqual(run.phase, "reading_detail");
 
     await safety.afterIssuedAttempt({ jobId: "stable-job-id", assertTabBindings: async () => {} });
     assert.strictEqual(
-      getMessageDiscoveryRuntimeState(safetyDb, { profileId, platform: "boss" }).pacing.detailActions,
-      3
+      getMessageDiscoveryRuntimeState(safetyDb, { profileId: secondProfileId, platform: "boss" }).pacing.detailActions,
+      7
     );
 
     const stop = new AbortController();
@@ -695,8 +726,8 @@ async function detailSafetyCompositionSmoke() {
       (error) => error.code === "MESSAGE_DISCOVERY_STOPPED"
     );
     assert.strictEqual(
-      getMessageDiscoveryRuntimeState(safetyDb, { profileId, platform: "boss" }).pacing.detailActions,
-      4,
+      getMessageDiscoveryRuntimeState(safetyDb, { profileId: secondProfileId, platform: "boss" }).pacing.detailActions,
+      8,
       "an aborted issued request must still persist its detail pacing count"
     );
 
@@ -715,7 +746,7 @@ async function detailSafetyCompositionSmoke() {
     const resumedSleeps = [];
     const resumed = createMessageDiscoveryDetailSafety({
       db: safetyDb,
-      profileId,
+      profileId: secondProfileId,
       owner: "detail-safety-resumed",
       run,
       now: () => new Date(now),
