@@ -17,6 +17,12 @@ const {
 
 const BOSS_MESSAGE_GROUP_LIMIT = 5;
 const BOSS_MESSAGE_GROUP_TEXT_LIMIT = 1000;
+const TERMINAL_MODEL_OUTPUT_CODES = new Set([
+  "MODEL_EMPTY_RESPONSE",
+  "MODEL_INVALID_RESPONSE",
+  "MODEL_OUTPUT_TRUNCATED",
+  "MODEL_INVALID_JSON"
+]);
 const CONTEXT_TERMINAL_CODES = new Set([
   "BOSS_LOGIN_REQUIRED",
   "BOSS_MESSAGE_PAGE_LOST",
@@ -221,7 +227,9 @@ async function runBossMessageDiscovery({
         contextSource: resolved.contextSource || resolved.job.contextSource || ""
       });
     } catch (error) {
-      if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(String(error?.code || ""))) throw error;
+      const errorCode = String(error?.code || "");
+      if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(errorCode)
+        && !TERMINAL_MODEL_OUTPUT_CODES.has(errorCode)) throw error;
       classification = {
         messageCategory: "other",
         missingFact: null,

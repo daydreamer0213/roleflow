@@ -1459,30 +1459,62 @@ async function classificationOutcomeSmoke() {
     assert(Object.hasOwn(manualSummary.results[0], "job"), "manual-only result must retain safe job context");
   }
 
-  const invalidModel = createFixture({ suffix: "invalid-model", title: "Invalid Model Engineer" });
-  const invalidSummary = await runBossMessageDiscovery({
-    db,
-    profileId: invalidModel.profileId,
-    reader: fakeReader([selectedConversation({
-      title: invalidModel.title,
-      messageId: "123456789012355"
-    })]),
-    classifyMessageGroup: async () => {
-      throw Object.assign(new Error(`invalid provider output ${PRIVATE_BODY}`), { code: "MESSAGE_REPLY_INVALID" });
-    },
-    now: () => NOW,
-    sleepFn: async () => {}
-  });
-  assert.strictEqual(invalidSummary.status, "completed");
-  assert.strictEqual(invalidSummary.processed, 1);
-  assert.strictEqual(invalidSummary.results[0].messageCategory, "other");
-  assert.strictEqual(invalidSummary.results[0].stage, "needs_user_action");
-  assert.strictEqual(
-    invalidSummary.results[0].manualActionReason,
-    "模型结果未通过安全校验，需要人工处理"
-  );
-  assert.deepStrictEqual(invalidSummary.results[0].messages, []);
-  assert(!JSON.stringify(invalidSummary).includes(PRIVATE_BODY));
+  for (const [index, code] of [
+    "MESSAGE_REPLY_INVALID",
+    "MODEL_EMPTY_RESPONSE",
+    "MODEL_INVALID_RESPONSE",
+    "MODEL_OUTPUT_TRUNCATED",
+    "MODEL_INVALID_JSON"
+  ].entries()) {
+    const invalidModel = createFixture({ suffix: `invalid-model-${index}`, title: `Invalid Model ${index} Engineer` });
+    const invalidSummary = await runBossMessageDiscovery({
+      db,
+      profileId: invalidModel.profileId,
+      reader: fakeReader([selectedConversation({
+        title: invalidModel.title,
+        messageId: String(123456789012360 + index)
+      })]),
+      classifyMessageGroup: async () => {
+        throw Object.assign(new Error(`invalid provider output ${PRIVATE_BODY}`), { code });
+      },
+      now: () => NOW,
+      sleepFn: async () => {}
+    });
+    assert.strictEqual(invalidSummary.status, "completed");
+    assert.strictEqual(invalidSummary.processed, 1);
+    assert.strictEqual(invalidSummary.results[0].messageCategory, "other");
+    assert.strictEqual(invalidSummary.results[0].stage, "needs_user_action");
+    assert.strictEqual(
+      invalidSummary.results[0].manualActionReason,
+      "模型结果未通过安全校验，需要人工处理"
+    );
+    assert.deepStrictEqual(invalidSummary.results[0].messages, []);
+    assert(!JSON.stringify(invalidSummary).includes(PRIVATE_BODY));
+  }
+
+  for (const [index, code] of ["MODEL_AUTH_FAILED", "MODEL_TIMEOUT"].entries()) {
+    const infrastructureFailure = createFixture({
+      suffix: `model-infrastructure-${index}`,
+      title: `Model Infrastructure ${index} Engineer`
+    });
+    await assert.rejects(
+      () => runBossMessageDiscovery({
+        db,
+        profileId: infrastructureFailure.profileId,
+        reader: fakeReader([selectedConversation({
+          title: infrastructureFailure.title,
+          messageId: String(123456789012370 + index)
+        })]),
+        classifyMessageGroup: async () => {
+          throw Object.assign(new Error("model infrastructure failed"), { code });
+        },
+        now: () => NOW,
+        sleepFn: async () => {}
+      }),
+      (error) => error.code === code,
+      `${code} must stop instead of being downgraded to a result card`
+    );
+  }
 }
 
 async function readerStopSmoke() {
