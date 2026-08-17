@@ -21,6 +21,7 @@ const MESSAGE_CATEGORIES = new Set([
 ]);
 
 const TERMINAL_PROGRESS_STAGES = new Set(["rejected", "closed"]);
+const INTERVIEW_PROGRESS_STAGES = new Set(["interview_invited", "interview_scheduled"]);
 const FORBIDDEN_METADATA_KEYS = new Set(["message", "body", "text", "html", "draft", "screenshot"]);
 const ALLOWED_METADATA_KEYS = new Set([
   "batchId",
@@ -365,13 +366,15 @@ function recordDiscoveredMessageClassification(db, input = {}) {
       db.exec("COMMIT");
       return getProgressCard(db, cardId);
     }
-    transitionProgressCard(db, {
-      cardId,
-      expectedStage: card.stage,
-      stage,
-      nextAction: safeDiscoveredNextAction(stage),
-      now: occurredAt
-    });
+    if (!INTERVIEW_PROGRESS_STAGES.has(card.stage)) {
+      transitionProgressCard(db, {
+        cardId,
+        expectedStage: card.stage,
+        stage,
+        nextAction: safeDiscoveredNextAction(stage),
+        now: occurredAt
+      });
+    }
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
@@ -462,13 +465,15 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
       metadata: classificationMetadata,
       occurredAt
     }, { keyKind: "message-group" });
-    transitionProgressCard(db, {
-      cardId,
-      expectedStage: card.stage,
-      stage,
-      nextAction: safeDiscoveredNextAction(stage),
-      now: occurredAt
-    });
+    if (!INTERVIEW_PROGRESS_STAGES.has(card.stage)) {
+      transitionProgressCard(db, {
+        cardId,
+        expectedStage: card.stage,
+        stage,
+        nextAction: safeDiscoveredNextAction(stage),
+        now: occurredAt
+      });
+    }
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}

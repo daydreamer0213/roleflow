@@ -7,6 +7,7 @@ const {
   ensureProgressCard,
   listMessageDiscoveryCandidates,
   listProgressEvents,
+  getProgressCardForJob,
   transitionProgressCard,
   recordDiscoveredMessageGroupClassification
 } = require("../src/core/candidate_progress");
@@ -1370,6 +1371,64 @@ async function classificationOutcomeSmoke() {
   assert.strictEqual(summary.results[0].messageSummary, "对方邀请候选人参加面试。");
   assert.deepStrictEqual(summary.results[0].messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
   assert.strictEqual(summary.results[0].manualActionReason, "");
+
+  for (const [suffix, existingStage, messageId] of [
+    ["after-interview-invited", "interview_invited", "123456789012356"],
+    ["after-interview-scheduled", "interview_scheduled", "123456789012357"]
+  ]) {
+    const followUp = createFixture({ suffix, title: `${suffix} Engineer` });
+    transitionProgressCard(db, {
+      cardId: followUp.card.id,
+      expectedStage: "contact_started",
+      stage: "interview_invited",
+      nextAction: "KEEP_INVITED_NEXT_ACTION",
+      now: NOW
+    });
+    if (existingStage === "interview_scheduled") {
+      transitionProgressCard(db, {
+        cardId: followUp.card.id,
+        expectedStage: "interview_invited",
+        stage: "interview_scheduled",
+        nextAction: "KEEP_SCHEDULED_NEXT_ACTION",
+        scheduledAt: "2026-08-20T07:00:00.000Z",
+        now: NOW
+      });
+    }
+    const followUpSummary = await runBossMessageDiscovery({
+      db,
+      profileId: followUp.profileId,
+      reader: fakeReader([selectedConversation({ title: followUp.title, messageId })]),
+      classifyMessageGroup: async () => classification({
+        messageCategory: "availability",
+        messageSummary: "对方正在确认候选人的到岗时间。",
+        stage: "reply_ready",
+        messages: ["您好，我可以在确认安排后尽快回复到岗时间。"]
+      }),
+      now: () => NOW,
+      sleepFn: async () => {}
+    });
+    assert.strictEqual(followUpSummary.status, "completed");
+    assert.strictEqual(followUpSummary.processed, 1);
+    assert.strictEqual(followUpSummary.results[0].stage, existingStage);
+    assert.deepStrictEqual(followUpSummary.results[0].messages, ["您好，我可以在确认安排后尽快回复到岗时间。"]);
+    const preservedCard = getProgressCardForJob(db, {
+      profileId: followUp.profileId,
+      jobId: followUp.jobId
+    });
+    assert.strictEqual(
+      preservedCard.nextAction,
+      existingStage === "interview_scheduled" ? "KEEP_SCHEDULED_NEXT_ACTION" : "KEEP_INVITED_NEXT_ACTION"
+    );
+    assert.strictEqual(
+      preservedCard.scheduledAt,
+      existingStage === "interview_scheduled" ? "2026-08-20T07:00:00.000Z" : null
+    );
+    assert.strictEqual(
+      listProgressEvents(db, followUp.card.id).filter((event) => event.type === "message_group_classified").length,
+      1,
+      "a follow-up message result must persist without downgrading the opportunity stage"
+    );
+  }
 
   for (const [suffix, messageCategory, reason] of [
     ["salary-manual", "salary", "薪资问题需要人工确认口径"],

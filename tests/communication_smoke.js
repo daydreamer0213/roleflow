@@ -124,6 +124,18 @@ let server;
       action: "mark_interview_invited"
     });
     assert.strictEqual(invited.status, 303);
+    const interviewDraftSent = await post(base, "/api/progress", {
+      cardId: progressCard.id,
+      idempotencyKey: requestKey(20),
+      action: "reply_confirmed_sent"
+    });
+    assert.strictEqual(interviewDraftSent.status, 303);
+    assert.strictEqual(
+      getProgressCardForJob(db, { profileId: saved.profileId, jobId }).stage,
+      "interview_invited",
+      "confirming a manually sent interview draft must not downgrade the opportunity"
+    );
+    assert.strictEqual(listProgressEvents(db, progressCard.id).at(-1).type, "reply_confirmed_sent");
     const missingScheduleSummary = await post(base, "/api/progress", {
       cardId: progressCard.id,
       idempotencyKey: requestKey(3),

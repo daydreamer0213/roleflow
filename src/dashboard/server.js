@@ -89,6 +89,7 @@ const {
   correctProgressStage,
   getProgressCardForJob,
   getProgressCardById,
+  recordProgressEvent,
   recordManualProgressAction,
   listProgressCardsWithEvents
 } = require("../core/candidate_progress");
@@ -3117,15 +3118,27 @@ async function handleProgress(req, res, db, messageDiscovery = null) {
         }
         scheduledAt = new Date(scheduledAt).toISOString();
       }
-      recordManualProgressAction(db, {
-        cardId: card.id,
-        idempotencyKey: params.idempotencyKey,
-        stage: definition.stage,
-        eventType: definition.eventType,
-        summary: enteredSummary || definition.summary,
-        nextAction: definition.nextAction,
-        scheduledAt
-      });
+      const preserveInterviewStage = action === "reply_confirmed_sent"
+        && ["interview_invited", "interview_scheduled"].includes(card.stage);
+      if (preserveInterviewStage) {
+        recordProgressEvent(db, {
+          cardId: card.id,
+          idempotencyKey: params.idempotencyKey,
+          type: definition.eventType,
+          actor: "user",
+          summary: enteredSummary || definition.summary
+        });
+      } else {
+        recordManualProgressAction(db, {
+          cardId: card.id,
+          idempotencyKey: params.idempotencyKey,
+          stage: definition.stage,
+          eventType: definition.eventType,
+          summary: enteredSummary || definition.summary,
+          nextAction: definition.nextAction,
+          scheduledAt
+        });
+      }
       if (action === "reply_confirmed_sent" && messageDiscovery) {
         messageDiscovery.clearDraftForCard(card.profileId, card.id);
       }
