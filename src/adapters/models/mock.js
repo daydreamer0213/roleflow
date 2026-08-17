@@ -402,19 +402,30 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
       ? "sensitive"
       : /哪个岗位|什么岗位|哪个职位|什么职位|岗位不清楚|identity uncertain/i.test(text)
         ? "identity_uncertain"
-        : /到岗|入职|什么时候|availability/i.test(text)
-          ? "availability"
-          : /薪资|salary|期望/i.test(text)
-            ? "salary"
+        : /薪资|salary|期望/i.test(text)
+          ? "salary"
+          : /到岗|入职|什么时候|availability/i.test(text)
+            ? "availability"
             : "qualification";
   const factMap = new Map((facts || []).map((fact) => [String(fact.key || ""), fact]));
   const required = messageCategory === "availability"
     ? ["employment_status", "availability_date"]
     : [];
   const missing = required.find((key) => !factMap.has(key));
-  const manualOnly = ["interview_invitation", "salary", "sensitive", "identity_uncertain"].includes(messageCategory);
+  const messageSummary = {
+    project_fact: "对方正在确认候选人的项目经历。",
+    qualification: "对方正在确认候选人的任职资格。",
+    salary: "对方正在沟通薪资信息。",
+    availability: "对方正在确认候选人的到岗时间。",
+    interview_invitation: "对方邀请候选人参加面试。",
+    sensitive: "对方正在询问敏感个人信息。",
+    other: "对方正在介绍当前岗位或项目情况。",
+    identity_uncertain: "当前消息对应的岗位身份仍不明确。"
+  }[messageCategory];
+  const manualOnly = ["salary", "sensitive", "identity_uncertain"].includes(messageCategory);
   return {
     messageCategory,
+    messageSummary,
     requiredFactKeys: required,
     usedFactKeys: required.filter((key) => factMap.has(key)),
     responseItems: required.map((id) => ({ id, kind: "question", required: true })),

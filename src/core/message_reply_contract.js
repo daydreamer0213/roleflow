@@ -11,7 +11,6 @@ const MESSAGE_CATEGORIES = new Set([
   "identity_uncertain"
 ]);
 const MANUAL_ONLY_CATEGORIES = new Set([
-  "interview_invitation",
   "salary",
   "sensitive",
   "identity_uncertain"
@@ -74,6 +73,7 @@ function normalizeReply(value) {
   if (!MESSAGE_CATEGORIES.has(messageCategory)) {
     throw contractError("MESSAGE_REPLY_CATEGORY_INVALID", "message category is invalid");
   }
+  const messageSummary = normalizedMessageSummary(value.messageSummary);
   const requiredFactKeys = stringArray(value.requiredFactKeys, "requiredFactKeys");
   const usedFactKeys = stringArray(value.usedFactKeys, "usedFactKeys");
   const responseItems = arrayValue(value.responseItems, "responseItems").map((item, index) => {
@@ -107,6 +107,7 @@ function normalizeReply(value) {
   }
   return {
     messageCategory,
+    messageSummary,
     requiredFactKeys,
     usedFactKeys,
     responseItems,
@@ -114,6 +115,17 @@ function normalizeReply(value) {
     missingFact,
     messages
   };
+}
+
+function normalizedMessageSummary(value) {
+  if (typeof value !== "string") {
+    throw contractError("MESSAGE_REPLY_SUMMARY_INVALID", "messageSummary must be a string");
+  }
+  const summary = value.replace(/\s+/g, " ").trim();
+  if (!summary || summary.length > 160) {
+    throw contractError("MESSAGE_REPLY_SUMMARY_INVALID", "messageSummary must contain 1 to 160 characters");
+  }
+  return summary;
 }
 
 function assertKnownFactKeys(normalized) {
@@ -153,9 +165,6 @@ function assertDraftLimit(messages, limit) {
 
 function assertManualOnlyHasNoDraft(normalized) {
   if (!MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory) || !normalized.messages.length) return;
-  if (normalized.messageCategory === "interview_invitation") {
-    throw contractError("MESSAGE_REPLY_INTERVIEW_NO_DRAFT", "interview invitations must not generate drafts");
-  }
   throw contractError("MESSAGE_REPLY_MANUAL_ONLY", "this message category requires manual handling");
 }
 

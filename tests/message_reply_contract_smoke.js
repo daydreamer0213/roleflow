@@ -16,6 +16,7 @@ const validFacts = [
 function safeReply(overrides = {}) {
   return {
     messageCategory: "availability",
+    messageSummary: "对方正在确认候选人的到岗时间。",
     requiredFactKeys: ["employment_status", "availability_date"],
     usedFactKeys: ["employment_status", "availability_date"],
     responseItems: [
@@ -67,10 +68,23 @@ async function main() {
     () => validateMessageReply(safeReply({ messages: ["one", "two", "three"] }), { facts: validFacts, now: NOW }),
     (error) => error.code === "MESSAGE_REPLY_DRAFT_LIMIT"
   );
-  assert.throws(
-    () => validateMessageReply(safeReply({ messageCategory: "interview_invitation", messages: ["draft"] }), { facts: validFacts, now: NOW }),
-    (error) => error.code === "MESSAGE_REPLY_INTERVIEW_NO_DRAFT"
-  );
+  const interview = validateMessageReply(safeReply({
+    messageCategory: "interview_invitation",
+    messageSummary: "对方邀请候选人参加面试。",
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
+  }), { facts: validFacts, now: NOW });
+  assert.deepStrictEqual(interview.messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
+  assert.strictEqual(interview.progressUpdate.stage, "interview_invited");
+  for (const messageSummary of [undefined, "", " ", "x".repeat(161), 42]) {
+    assert.throws(
+      () => validateMessageReply(safeReply({ messageSummary }), { facts: validFacts, now: NOW }),
+      (error) => error.code === "MESSAGE_REPLY_SUMMARY_INVALID"
+    );
+  }
   for (const messageCategory of ["salary", "sensitive", "identity_uncertain"]) {
     assert.throws(
       () => validateMessageReply(safeReply({ messageCategory, messages: ["must not escape"] }), { facts: validFacts, now: NOW }),
@@ -99,6 +113,7 @@ async function main() {
   ];
   const stablePass = validateMessageReply({
     messageCategory: "qualification",
+    messageSummary: "对方正在确认候选人的任职资格。",
     requiredFactKeys: ["gap.2024-03_2024-08"],
     usedFactKeys: ["gap.2024-03_2024-08"],
     responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
@@ -110,6 +125,7 @@ async function main() {
   assert.throws(
     () => validateMessageReply({
       messageCategory: "qualification",
+      messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: [],
       usedFactKeys: ["gap.2024-03_2024-08"],
       responseItems: [],
@@ -127,6 +143,7 @@ async function main() {
   assert.throws(
     () => validateMessageReply({
       messageCategory: "qualification",
+      messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2024-03_2024-08"],
       usedFactKeys: ["gap.2024-03_2024-08"],
       responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
@@ -140,6 +157,7 @@ async function main() {
   assert.throws(
     () => validateMessageReply({
       messageCategory: "qualification",
+      messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2024-03_2024-08"],
       usedFactKeys: ["gap.2024-03_2024-08"],
       responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
@@ -152,6 +170,7 @@ async function main() {
   assert.throws(
     () => validateMessageReply({
       messageCategory: "qualification",
+      messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2025-01_2025-06"],
       usedFactKeys: ["gap.2025-01_2025-06"],
       responseItems: [{ id: "gap.2025-01_2025-06", kind: "statement", required: true }],
@@ -175,6 +194,38 @@ async function main() {
   assert.strictEqual(analyzed.messageCategory, "availability");
   assert.strictEqual(analyzed.progressUpdate.stage, "reply_ready");
   assert.strictEqual(messages[0].text, "", "analyzer must clear ephemeral message text");
+
+  const semanticAnalyzer = createMessageReplyAnalyzer({
+    adapter: {
+      async draftMessageGroup() {
+        return {
+          messageCategory: "other",
+          messageSummary: "对方在介绍项目提供的线上面试和简历管理能力。",
+          requiredFactKeys: [],
+          usedFactKeys: [],
+          responseItems: [],
+          coverage: [],
+          missingFact: null,
+          messages: ["了解了，这部分业务与我的项目方向有一定关联。"]
+        };
+      }
+    }
+  });
+  const semanticMessages = [{
+    messageKey: "sha256:" + "9".repeat(64),
+    text: "项目提供线上面试与简历管理能力。"
+  }];
+  const semantic = await semanticAnalyzer({
+    profile: { id: 1 },
+    job: { id: 2, title: "Java Engineer" },
+    messages: semanticMessages,
+    facts: [],
+    now: NOW
+  });
+  assert.strictEqual(semantic.messageCategory, "other");
+  assert.strictEqual(semantic.messageSummary, "对方在介绍项目提供的线上面试和简历管理能力。");
+  assert.deepStrictEqual(semantic.messages, ["了解了，这部分业务与我的项目方向有一定关联。"]);
+  assert.strictEqual(semanticMessages[0].text, "");
 
   for (const [text, messageCategory] of [
     ["薪资还可以再谈吗？", "salary"],
@@ -231,6 +282,7 @@ async function main() {
       stableAdapterInput = input;
       return {
         messageCategory: "qualification",
+        messageSummary: "对方正在确认候选人的任职资格。",
         requiredFactKeys: ["gap.2024-03_2024-08"],
         usedFactKeys: ["gap.2024-03_2024-08"],
         responseItems: [{ id: "gap.2024-03_2024-08", kind: "statement", required: true }],
