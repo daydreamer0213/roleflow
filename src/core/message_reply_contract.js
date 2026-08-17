@@ -17,6 +17,7 @@ const MANUAL_ONLY_CATEGORIES = new Set([
 ]);
 const STABLE_FACT_PREFIXES = ["gap.", "leaving_reason.", "short_project."];
 const MAX_DRAFTS = 2;
+const SAFE_INTERVIEW_DRAFT = "您好，感谢邀请，请问面试时间和形式如何安排？";
 
 function validateMessageReply(value, context = {}) {
   const normalized = normalizeReply(value);
@@ -56,8 +57,12 @@ function validateMessageReply(value, context = {}) {
     throw contractError("MESSAGE_REPLY_FACT_UNVERIFIED", "cannot draft while a required fact is missing or expired");
   }
   const safeStage = safeReplyStage(normalized);
+  const messages = normalized.messageCategory === "interview_invitation"
+    ? [SAFE_INTERVIEW_DRAFT]
+    : normalized.messages;
   return {
     ...normalized,
+    messages,
     progressUpdate: {
       stage: safeStage,
       nextAction: safeReplyNextAction(safeStage)

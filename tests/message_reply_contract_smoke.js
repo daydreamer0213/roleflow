@@ -75,10 +75,24 @@ async function main() {
     usedFactKeys: [],
     responseItems: [],
     coverage: [],
-    messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
+    messages: ["您好，我确认明天下午三点参加视频面试。"]
   }), { facts: validFacts, now: NOW });
   assert.deepStrictEqual(interview.messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
   assert.strictEqual(interview.progressUpdate.stage, "interview_invited");
+  const interviewWithoutProviderDraft = validateMessageReply(safeReply({
+    messageCategory: "interview_invitation",
+    messageSummary: "对方邀请候选人参加面试。",
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    messages: []
+  }), { facts: validFacts, now: NOW });
+  assert.deepStrictEqual(
+    interviewWithoutProviderDraft.messages,
+    ["您好，感谢邀请，请问面试时间和形式如何安排？"],
+    "a valid interview result must always receive the deterministic local non-committal draft"
+  );
   for (const messageSummary of [undefined, "", " ", "x".repeat(161), 42]) {
     assert.throws(
       () => validateMessageReply(safeReply({ messageSummary }), { facts: validFacts, now: NOW }),
