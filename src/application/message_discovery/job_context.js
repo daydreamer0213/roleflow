@@ -29,6 +29,9 @@ function createMessageDiscoveryJobContextResolver({
   if (typeof messageReader?.readSelectedJobTarget !== "function") {
     throw new TypeError("messageReader.readSelectedJobTarget is required");
   }
+  if (typeof messageReader?.assertActiveBindings !== "function") {
+    throw new TypeError("messageReader.assertActiveBindings is required");
+  }
   if (typeof detailReader?.readSelectedJobDetail !== "function") {
     throw new TypeError("detailReader.readSelectedJobDetail is required");
   }
@@ -40,6 +43,7 @@ function createMessageDiscoveryJobContextResolver({
       throw contextError("MESSAGE_DISCOVERY_ACTIVE_PLAN_REQUIRED", "an active search plan is required");
     }
     const jobTarget = trustedJobTarget(await messageReader.readSelectedJobTarget(selected, signal));
+    await messageReader.assertActiveBindings();
     const known = candidateMatches(candidate, {
       profileId: normalizedProfileId,
       planId: plan.id,

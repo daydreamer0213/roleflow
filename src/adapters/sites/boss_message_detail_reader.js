@@ -254,10 +254,13 @@ function trustedJobTarget(value) {
 
 function captureBinding(tabs, communicationTabId) {
   const fixed = assertBossOperatorTabs(tabs);
-  if (!Number.isInteger(communicationTabId)
+  const expectedCommunicationTabId = communicationTabId === undefined
+    ? fixed.communicationTab.id
+    : communicationTabId;
+  if (!Number.isInteger(expectedCommunicationTabId)
     || !Number.isInteger(fixed.searchTab.id)
     || !Number.isInteger(fixed.communicationTab.id)
-    || fixed.communicationTab.id !== communicationTabId) {
+    || fixed.communicationTab.id !== expectedCommunicationTabId) {
     throw detailError("BOSS_MESSAGE_DETAIL_BINDING_INVALID", "numeric fixed BOSS tab binding is required");
   }
   const bossTabs = tabs.filter(isBossTab);
@@ -437,4 +440,8 @@ function sanitizedDetailError(error) {
   );
 }
 
-module.exports = { createBossMessageDetailReader };
+module.exports = {
+  assertRestoredBaseline,
+  captureBinding,
+  createBossMessageDetailReader
+};

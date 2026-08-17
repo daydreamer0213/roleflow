@@ -4,6 +4,10 @@ const {
   buildUnreadConversationQueue,
   safeDigest
 } = require("./boss_message_dom");
+const {
+  assertRestoredBaseline,
+  captureBinding
+} = require("./boss_message_detail_reader");
 
 const CHAT_PATH = "/web/geek/chat";
 const GUARDED_OPERATION = "__bossGuardedMessageConversationClick";
@@ -284,6 +288,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
   let activeRowKeys = new Set();
   let activeUnreadTargets = new Set();
   let activeSelectedSnapshot = null;
+  let activeBinding = null;
   let readerBusy = false;
   async function runExclusive(operation) {
     if (readerBusy) throw codedError("BOSS_MESSAGE_READER_BUSY", "message reader is busy");
@@ -308,27 +313,34 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
         return { tabId: scan.tabId, queue };
       });
     },
+    async assertActiveBindings() {
+      return runExclusive(assertCurrentBinding);
+    },
     async readSelectedJobTarget(selected, signal) {
       return runExclusive(async () => {
         if (!activeSelectedSnapshot || selected !== activeSelectedSnapshot || activeTabId === null) {
           throw codedError("BOSS_MESSAGE_TARGET_INVALID", "selected message target is not active");
         }
         throwIfAborted(signal);
+        await assertCurrentBinding();
         const before = assertSafeSnapshot(normalizeBrowserSnapshot(
           await browser.evalValue(activeTabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)
         ));
         if (!sameSelectedConversation(before, selected)) {
           throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
         }
+        await assertCurrentBinding();
         const target = trustedMessageJobTarget(
           await browser.evalValue(activeTabId, BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION)
         );
+        await assertCurrentBinding();
         const after = assertSafeSnapshot(normalizeBrowserSnapshot(
           await browser.evalValue(activeTabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)
         ));
         if (!sameSelectedConversation(after, selected)) {
           throw codedError("BOSS_MESSAGE_TARGET_MISMATCH", "selected conversation identity did not match");
         }
+        await assertCurrentBinding();
         return target;
       });
     },
@@ -340,6 +352,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
           throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active conversation scan");
         }
         throwIfAborted(signal);
+        await assertCurrentBinding();
         const guarded = normalizeGuardedClickResult(await browser.evalValue(target.tabId, buildGuardedConversationClickExpression(target)));
         if (!guarded.clicked) {
           if (guarded.reason === "no_longer_unread") return { skipped: true, reasonCode: "BOSS_MESSAGE_NO_LONGER_UNREAD" };
@@ -348,8 +361,10 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
         if (guarded.rowIndex !== target.rowIndex) throw codedError("BOSS_MESSAGE_GUARD_RESULT_INVALID", "message selection guard returned an invalid result");
         for (let attempt = 0; attempt < SELECTED_CONTENT_ATTEMPTS; attempt += 1) {
           if (attempt) await sleepFn(SELECTED_CONTENT_INTERVAL_MS, signal);
+          await assertCurrentBinding();
           const after = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(target.tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
           if (selectedTargetMatches(after, target)) {
+            await assertCurrentBinding();
             activeSelectedSnapshot = after;
             return after;
           }
@@ -362,23 +377,30 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
   };
 
   async function scanRows() {
-    const tabs = (await browser.listTabs()).filter((tab) => {
-      try {
-        return new URL(String(tab.url || "")).pathname === CHAT_PATH;
-      } catch {
-        return false;
-      }
-    });
-    if (tabs.length === 0) throw codedError("BOSS_MESSAGE_TAB_MISSING", "open the fixed BOSS message page");
-    if (tabs.length !== 1) throw codedError("BOSS_MESSAGE_TAB_AMBIGUOUS", "exactly one BOSS message tab is required");
-    const tabId = tabs[0].id;
+    activeTabId = null;
+    activeBinding = null;
+    activeRowKeys = new Set();
+    activeUnreadTargets = new Set();
+    activeSelectedSnapshot = null;
+    const tabs = await browser.listTabs();
+    const binding = captureBinding(tabs);
+    const tabId = binding.communicationTabId;
     const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
+    assertRestoredBaseline(await browser.listTabs(), binding);
     const rows = Object.freeze(snapshot.rows.map((row) => Object.freeze({ ...row })));
     activeTabId = tabId;
+    activeBinding = binding;
     activeRowKeys = new Set(rows.map((row) => `${tabId}:${row.rowIndex}:${row.conversationKey}`));
     activeUnreadTargets = new Set();
     activeSelectedSnapshot = null;
     return { tabId, path: snapshot.path, rows };
+  }
+
+  async function assertCurrentBinding() {
+    if (!activeBinding || activeTabId === null) {
+      throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message tab binding is not active");
+    }
+    return assertRestoredBaseline(await browser.listTabs(), activeBinding);
   }
 }
 

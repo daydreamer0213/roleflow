@@ -594,6 +594,28 @@ async function threadAndContextResolutionSmoke() {
   });
   assertStopped(summary, "BOSS_MESSAGE_DETAIL_BROWSER_FAILED");
   assert.strictEqual(browserFailureCalls, 1, "a detail browser failure must stop the remaining queue immediately");
+
+  const bindingFailure = createFixture({ suffix: "context-binding-failed", title: "Binding Failed Engineer" });
+  let bindingFailureCalls = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: bindingFailure.profileId,
+    reader: fakeReader([
+      selectedConversation({ title: "Unknown Binding Failure", messageId: "123456789012409" }),
+      selectedConversation({ title: bindingFailure.title, messageId: "123456789012419" })
+    ]),
+    resolveJobContext: async () => {
+      bindingFailureCalls += 1;
+      throw Object.assign(new Error("fixed tabs changed"), { code: "BOSS_TAB_REQUIRED" });
+    },
+    classifyMessageGroup: async () => {
+      throw new Error("fixed-tab binding failure must stop before classification");
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assertStopped(summary, "BOSS_TAB_REQUIRED");
+  assert.strictEqual(bindingFailureCalls, 1, "fixed-tab binding failure must stop the remaining queue immediately");
 }
 
 async function unmatchedRetentionSmoke() {

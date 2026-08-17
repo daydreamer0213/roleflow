@@ -7,6 +7,19 @@ const {
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 
 const chatUrl = "https://www.zhipin.com/web/geek/chat";
+const searchUrl = "https://www.zhipin.com/web/geek/jobs";
+const SEARCH_TAB_ID = 101;
+const COMMUNICATION_TAB_ID = 102;
+const DASHBOARD_TAB_ID = 103;
+const WINDOW_ID = 7;
+
+function operatorTabs() {
+  return [
+    { id: SEARCH_TAB_ID, windowId: WINDOW_ID, active: false, url: searchUrl },
+    { id: COMMUNICATION_TAB_ID, windowId: WINDOW_ID, active: false, url: chatUrl },
+    { id: DASHBOARD_TAB_ID, windowId: WINDOW_ID, active: true, url: "http://127.0.0.1:3000/messages" }
+  ];
+}
 
 function row(rowIndex, { unread = false, selected = false, recruiterLabel, previewText } = {}) {
   const value = {
@@ -42,7 +55,7 @@ function snapshot({ rows = [row(0, { unread: true }), row(1)], selectedRowIndex 
   };
 }
 
-function fakeBrowser({ tabs = [{ id: "chat-tab", url: chatUrl }], snapshots = [] } = {}) {
+function fakeBrowser({ tabs = operatorTabs(), snapshots = [] } = {}) {
   return {
     calls: [],
     snapshots: [...snapshots],
@@ -117,10 +130,10 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const selectedSnapshot = snapshot();
   const browser = fakeBrowser({ snapshots: [initialSnapshot, guardedSuccess, selectedSnapshot] });
   const { reader, scan: unread } = await scan(browser);
-  assert.strictEqual(unread.tabId, "chat-tab");
+  assert.strictEqual(unread.tabId, COMMUNICATION_TAB_ID);
   assert(Object.isFrozen(unread.queue));
   assert(Object.isFrozen(unread.queue[0]));
-  assert.strictEqual(unread.queue[0].tabId, "chat-tab");
+  assert.strictEqual(unread.queue[0].tabId, COMMUNICATION_TAB_ID);
   const selected = await reader.openQueuedConversation(unread.queue[0]);
   assert.strictEqual(selected.positionName, "Java Engineer");
   assert.strictEqual(browser.guardedDomClicks, 1);
@@ -174,7 +187,7 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const rowsBrowser = fakeBrowser({ snapshots: [snapshot()] });
   const rowsReader = createBossMessageReader({ browser: rowsBrowser, sleepFn: async () => {} });
   const rowsScan = await rowsReader.scanConversationRows();
-  assert.strictEqual(rowsScan.tabId, "chat-tab");
+  assert.strictEqual(rowsScan.tabId, COMMUNICATION_TAB_ID);
   assert.strictEqual(rowsScan.path, "/web/geek/chat");
   assert.strictEqual(rowsScan.rows[0].conversationKey, initialSnapshot.rows[0].conversationKey);
 
@@ -216,14 +229,58 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(previewDriftBrowser.guardedDomClicks, 0);
 
   for (const [tabs, code] of [
-    [[], "BOSS_MESSAGE_TAB_MISSING"],
-    [[{ id: "one", url: chatUrl }, { id: "two", url: chatUrl }], "BOSS_MESSAGE_TAB_AMBIGUOUS"]
+    [[], "BOSS_TAB_REQUIRED"],
+    [[{ id: "one", url: chatUrl }, { id: "two", url: chatUrl }], "BOSS_TAB_REQUIRED"]
   ]) {
     await assert.rejects(
       () => createBossMessageReader({ browser: fakeBrowser({ tabs }), sleepFn: async () => {} }).scanUnread(),
       (error) => error.code === code
     );
   }
+
+  for (const tabs of [
+    operatorTabs().filter((tab) => tab.id !== SEARCH_TAB_ID),
+    operatorTabs().map((tab) => tab.id === COMMUNICATION_TAB_ID ? { ...tab, windowId: WINDOW_ID + 1 } : tab),
+    [...operatorTabs(), { id: 104, windowId: WINDOW_ID, active: false, url: "https://www.zhipin.com/job_detail/abcDEF123.html" }],
+    operatorTabs().map((tab) => [SEARCH_TAB_ID, COMMUNICATION_TAB_ID].includes(tab.id) ? { ...tab, id: String(tab.id) } : tab)
+  ]) {
+    const invalidBindingBrowser = fakeBrowser({ tabs, snapshots: [snapshot()] });
+    await assert.rejects(
+      () => createBossMessageReader({ browser: invalidBindingBrowser, sleepFn: async () => {} }).scanUnread()
+    );
+    assert.strictEqual(
+      invalidBindingBrowser.calls.filter(([name]) => name === "evalValue").length,
+      0,
+      "an invalid fixed-tab baseline must stop before reading the message DOM"
+    );
+  }
+
+  const driftTabs = operatorTabs();
+  const bindingDriftBrowser = fakeBrowser({ tabs: driftTabs, snapshots: [snapshot(), guardedSuccess, snapshot()] });
+  const bindingDriftReader = createBossMessageReader({ browser: bindingDriftBrowser, sleepFn: async () => {} });
+  const bindingDriftQueue = await bindingDriftReader.scanUnread();
+  driftTabs.find((tab) => tab.id === COMMUNICATION_TAB_ID).id = 202;
+  await assert.rejects(
+    () => bindingDriftReader.openQueuedConversation(bindingDriftQueue.queue[0])
+  );
+  assert.strictEqual(bindingDriftBrowser.guardedDomClicks, 0, "binding drift must stop before the guarded click");
+
+  const targetDriftTabs = operatorTabs();
+  const targetDriftBrowser = fakeBrowser({
+    tabs: targetDriftTabs,
+    snapshots: [snapshot(), guardedSuccess, snapshot()]
+  });
+  const targetDriftReader = createBossMessageReader({ browser: targetDriftBrowser, sleepFn: async () => {} });
+  const targetDriftQueue = await targetDriftReader.scanUnread();
+  const targetDriftSelected = await targetDriftReader.openQueuedConversation(targetDriftQueue.queue[0]);
+  targetDriftTabs.find((tab) => tab.id === SEARCH_TAB_ID).id = 201;
+  const targetEvalCalls = targetDriftBrowser.calls.filter(([name]) => name === "evalValue").length;
+  await assert.rejects(() => targetDriftReader.readSelectedJobTarget(targetDriftSelected));
+  assert.strictEqual(
+    targetDriftBrowser.calls.filter(([name]) => name === "evalValue").length,
+    targetEvalCalls,
+    "job-target DOM must not be read after a fixed-tab binding drift"
+  );
 
   const expression = buildGuardedConversationClickExpression({ rowIndex: 0, transientSignature: initialSnapshot.rows[0].transientSignature, conversationKey: initialSnapshot.rows[0].conversationKey });
   for (const expected of [
@@ -428,9 +485,8 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const scanScanBrowser = fakeBrowser({ snapshots: [snapshot()] });
   scanScanBrowser.listTabs = async function() {
     this.calls.push(["listTabs"]);
-    if (this.calls.filter(([name]) => name === "listTabs").length > 1) throw new Error("second scan must not list tabs");
     await scanScanGate.promise;
-    return [{ id: "chat-tab", url: chatUrl }];
+    return operatorTabs();
   };
   const scanScanReader = createBossMessageReader({ browser: scanScanBrowser, sleepFn: async () => {} });
   const firstScan = scanScanReader.scanUnread();
@@ -447,7 +503,7 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   scanOpenBrowser.listTabs = async function() {
     this.calls.push(["listTabs"]);
     await scanOpenGate.promise;
-    return [{ id: "chat-tab", url: chatUrl }];
+    return operatorTabs();
   };
   const heldScan = scanOpenReader.scanUnread();
   await assert.rejects(

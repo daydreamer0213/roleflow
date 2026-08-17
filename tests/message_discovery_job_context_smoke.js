@@ -22,6 +22,7 @@ let db;
   try {
     db = openDb(path.join(root, "context.sqlite"));
     await cacheHitSmoke();
+    await cacheBindingFailureSmoke();
     await fetchedContextSmoke();
     await incompleteContextSmoke();
     console.log("message_discovery_job_context_smoke ok");
@@ -51,6 +52,9 @@ async function cacheHitSmoke() {
       async readSelectedJobTarget(selected) {
         calls.push(["target", selected]);
         return target;
+      },
+      async assertActiveBindings() {
+        calls.push(["binding"]);
       }
     },
     detailReader: {
@@ -71,13 +75,59 @@ async function cacheHitSmoke() {
     selected,
     candidate: wrongCandidate
   });
-  assert.deepStrictEqual(calls, [["target", selected]]);
+  assert.deepStrictEqual(calls, [["target", selected], ["binding"]]);
   assert.strictEqual(result.cardId, card.id);
   assert.strictEqual(result.card.threadKey, conversationKey);
   assert.strictEqual(result.job.sourceId, "cache-job");
   assert.strictEqual(result.job.analysis.semanticStatus, "complete");
   assert.strictEqual(result.threadKey, conversationKey);
   assert.strictEqual(result.contextSource, "local_cache");
+}
+
+async function cacheBindingFailureSmoke() {
+  const fixture = seedProfilePlan("cache-binding-failure");
+  const jobId = seedJob(fixture, "cache-binding-failure-job", { complete: true });
+  const card = ensureProgressCard(db, { ...fixture, jobId, source: "boss", now: fixture.now });
+  let detailCalls = 0;
+  const bindingError = Object.assign(new Error("fixed tabs changed"), {
+    code: "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED"
+  });
+  const resolver = createMessageDiscoveryJobContextResolver({
+    db,
+    profileId: fixture.profileId,
+    messageReader: {
+      async readSelectedJobTarget() {
+        return trustedTarget("cache-binding-failure-job");
+      },
+      async assertActiveBindings() {
+        throw bindingError;
+      }
+    },
+    detailReader: {
+      async readSelectedJobDetail() {
+        detailCalls += 1;
+        throw new Error("cache hit must not read BOSS detail");
+      }
+    },
+    async analyzeJob() {
+      throw new Error("cache hit must not invoke analysis");
+    }
+  });
+  await assert.rejects(
+    () => resolver({
+      target: { tabId: 42, conversationKey: digest("cache-binding-failure-thread") },
+      selected: { marker: "selected-cache-binding-failure" }
+    }),
+    (error) => error === bindingError
+  );
+  assert.strictEqual(detailCalls, 0);
+  assert.strictEqual(
+    listMessageDiscoveryCandidates(db, { profileId: fixture.profileId })
+      .find((item) => item.jobId === jobId).threadKey,
+    "",
+    "a failed cache binding check must not bind the conversation to the progress card"
+  );
+  assert.strictEqual(card.threadKey, "");
 }
 
 async function fetchedContextSmoke() {
@@ -96,6 +146,10 @@ async function fetchedContextSmoke() {
         calls.push("target");
         assertDatabaseIdle();
         return target;
+      },
+      async assertActiveBindings() {
+        calls.push("binding");
+        assertDatabaseIdle();
       }
     },
     detailReader: {
@@ -121,7 +175,7 @@ async function fetchedContextSmoke() {
     selected: { marker: "selected-fetched" },
     candidate
   });
-  assert.deepStrictEqual(calls, ["target", "detail", "analyze"]);
+  assert.deepStrictEqual(calls, ["target", "binding", "detail", "analyze"]);
   assert.strictEqual(result.cardId, card.id);
   assert.strictEqual(result.card.threadKey, conversationKey);
   assert.strictEqual(result.job.description, detail("fetched-job").description.trim());
@@ -148,7 +202,10 @@ async function incompleteContextSmoke() {
   const resolver = createMessageDiscoveryJobContextResolver({
     db,
     profileId: fixture.profileId,
-    messageReader: { async readSelectedJobTarget() { return trustedTarget("incomplete-job"); } },
+    messageReader: {
+      async readSelectedJobTarget() { return trustedTarget("incomplete-job"); },
+      async assertActiveBindings() {}
+    },
     detailReader: { async readSelectedJobDetail() { calls.push("detail"); return detail("incomplete-job"); } },
     analyzeJob: partialAnalysisAdapter(calls)
   });
@@ -168,7 +225,10 @@ async function incompleteContextSmoke() {
   const shortResolver = createMessageDiscoveryJobContextResolver({
     db,
     profileId: shortFixture.profileId,
-    messageReader: { async readSelectedJobTarget() { return trustedTarget("short-job"); } },
+    messageReader: {
+      async readSelectedJobTarget() { return trustedTarget("short-job"); },
+      async assertActiveBindings() {}
+    },
     detailReader: { async readSelectedJobDetail() { return { ...detail("short-job"), description: "too short" }; } },
     async analyzeJob() { analyzed = true; }
   });
@@ -190,7 +250,10 @@ async function incompleteContextSmoke() {
   const secretResolver = createMessageDiscoveryJobContextResolver({
     db,
     profileId: secretFixture.profileId,
-    messageReader: { async readSelectedJobTarget() { return trustedTarget("secret-job", secret); } },
+    messageReader: {
+      async readSelectedJobTarget() { return trustedTarget("secret-job", secret); },
+      async assertActiveBindings() {}
+    },
     detailReader: {
       async readSelectedJobDetail() {
         return { ...detail("secret-job"), canonicalUrl: `https://www.zhipin.com/job_detail/secret-job.html?securityId=${secret}` };
