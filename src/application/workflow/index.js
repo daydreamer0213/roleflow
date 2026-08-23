@@ -198,8 +198,12 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     } catch (error) {
       throw appError("WORKFLOW_PLAN_SNAPSHOT_INVALID", "本轮任务的筛选方案快照无效，不能安全恢复。", { statusCode: 409, cause: error });
     }
-    if (workflow.planner?.browserMode !== "edge") {
-      throw appError("WORKFLOW_BROWSER_AUTHORITY_INVALID", "新版本任务只允许使用创建时冻结的当前 Edge。", { statusCode: 409 });
+    const frozenMode = String(workflow.planner?.browserMode || "").trim().toLowerCase();
+    const frozenPort = Number(workflow.planner?.cdpPort);
+    if (!['edge', 'portable'].includes(frozenMode)
+      || (frozenMode === 'portable' && frozenPort !== 9222)
+      || (frozenMode === 'edge' && workflow.planner?.cdpPort != null)) {
+      throw appError("WORKFLOW_BROWSER_AUTHORITY_INVALID", "本轮保存的浏览器身份无效。", { statusCode: 409 });
     }
   }
   if (acquisitionMode === "inherited") {
@@ -310,7 +314,6 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
     spawnScan,
     settleFailedWorkflowLaunch,
     transitionWorkflowRun,
-    portableCdpPort,
     logger
   } = deps;
   const workflowRunId = String(input.workflowRunId || input.runId || "").trim();
@@ -379,14 +382,14 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
     scanAvailability(db, input.scanRuns, workflow.planId, logger);
   } else if (shouldLaunch && targetPhase === "analyzing") {
     assertWorkflowAnalysisBatch(db, workflow);
+    authority = resolveWorkflowControlBrowserAuthority(workflow, input);
   }
   const modelEvidence = workflowBatchResumeEvidence(getBatchModelState(), { ready: readyForResume });
   workflow = resumeWorkflowRun(db, { workflowRunId, ...modelEvidence, now });
   if (shouldLaunch) {
     if (workflow.scanNeeded) {
-      const launchAuthority = requiresBrowser ? authority : { browserMode: "portable", cdpPort: portableCdpPort };
       try {
-        spawnScan(input.scanRuns, { db, root: input.root, dbPath: input.dbPath, planId: workflow.planId, cdpPort: launchAuthority.cdpPort, browserMode: launchAuthority.browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
+        spawnScan(input.scanRuns, { db, root: input.root, dbPath: input.dbPath, planId: workflow.planId, cdpPort: authority.cdpPort, browserMode: authority.browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } catch (launchError) {
         settleFailedWorkflowLaunch(db, input.scanRuns, workflow, launchError);
         throw launchError;

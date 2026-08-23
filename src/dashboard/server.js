@@ -366,16 +366,21 @@ function publicBrowserReadinessSnapshot(readiness) {
   return { status, ready, message, checkedAt };
 }
 
-function resolveNewWorkflowBrowser(input = {}) {
-  const browserMode = String(input.browserMode || "edge").trim().toLowerCase();
-  if (browserMode !== "edge") {
+function resolveNewWorkflowBrowser(input = {}, frozenAuthority) {
+  const authority = normalizeDashboardBrowserAuthority(frozenAuthority);
+  const requestedMode = String(input.browserMode ?? "").trim().toLowerCase();
+  const requestedPort = input.cdpPort;
+  if ((requestedMode && requestedMode !== authority.browserMode)
+    || (authority.browserMode === "portable"
+      ? requestedPort != null && Number(requestedPort) !== authority.cdpPort
+      : requestedPort != null)) {
     throw appError(
-      "WORKFLOW_EDGE_REQUIRED",
-      "新任务只使用当前已登录 Edge 的固定 BOSS 标签页。",
+      "DASHBOARD_BROWSER_AUTHORITY_MISMATCH",
+      "浏览器身份由 Dashboard 启动时固定，不能由请求切换。",
       { statusCode: 409 }
     );
   }
-  return { browserMode: "edge", cdpPort: null };
+  return { browserMode: authority.browserMode, cdpPort: authority.cdpPort };
 }
 
 function createDashboardServer({
@@ -410,6 +415,7 @@ function createDashboardServer({
   assetReader = fs.readFileSync
 }) {
   const frozenBrowserAuthority = normalizeDashboardBrowserAuthority(browserAuthority);
+  const resolveDashboardWorkflowBrowser = (input) => resolveNewWorkflowBrowser(input, frozenBrowserAuthority);
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
     || createDashboardBrowserReadinessProbe({ logger });
@@ -559,7 +565,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
-      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns }));
+      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
@@ -583,7 +589,7 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
-        const authority = resolveNewWorkflowBrowser({
+        const authority = resolveDashboardWorkflowBrowser({
           browserMode: url.searchParams.get("browserMode"),
           cdpPort: url.searchParams.get("cdpPort")
         });
@@ -591,12 +597,17 @@ function createDashboardServer({
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
       }
       if (req.method === "GET" && url.pathname === "/api/acquisition-preview") {
+        const authority = resolveDashboardWorkflowBrowser({
+          browserMode: url.searchParams.get("browserMode"),
+          cdpPort: url.searchParams.get("cdpPort")
+        });
         return handleAcquisitionPreview(res, {
           db,
           planId: url.searchParams.get("planId"),
           logger,
           requestId,
-          inheritedPreviewResolver
+          inheritedPreviewResolver,
+          browserAuthority: authority
         });
       }
       if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
@@ -620,7 +631,8 @@ function createDashboardServer({
           getBatchModelState: () => getRuntimeModelState("batch_screening"),
           batchModelReady: () => modelReady("batch_screening"),
           workflowControlSchedule,
-          workflowControlGraceMs
+          workflowControlGraceMs,
+          resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser
         });
       }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
@@ -665,9 +677,9 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe });
-      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       sendText(res, 404, "Not found");
     } catch (error) {
       logger.error("http_unhandled_error", { requestId, method: req.method, path: url?.pathname || req.url, error: errorMeta(error) });
@@ -1415,8 +1427,10 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
   }
 }
 
-async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady, logger, requestId, spawnProcess }) {
+async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady, logger, requestId, spawnProcess, resolveNewWorkflowBrowser }) {
   try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const browserAuthority = resolveNewWorkflowBrowser(params);
     if (!modelReady) {
       throw appError(
         "MODEL_CONFIGURATION_REQUIRED",
@@ -1424,7 +1438,6 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
         { statusCode: 409 }
       );
     }
-    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const plan = getSearchPlan(db, params.planId);
     if (plan && !getCandidateProfile(db, plan.profileId)) throw new Error("Search Plan 对应的候选人画像不存在，请重新选择画像。");
     const matchingContext = plan ? getCandidateMatchingContext(db, plan.profileId) : null;
@@ -1443,15 +1456,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
     }
     const activeLease = getSiteScanLease(db, "boss");
     if (activeLease) throw new Error(`BOSS 已有扫描任务运行中（${activeLease.command}，开始于 ${activeLease.acquiredAt}）。`);
-    const browserMode = params.browserMode === "portable" ? "portable" : "edge";
-    const cdpPort = browserMode === "portable" ? normalizeCdpPort(params.cdpPort) : null;
-    if (browserMode === "portable" && cdpPort !== PORTABLE_CDP_PORT) {
-      throw appError(
-        "INHERITED_PORTABLE_PORT_REQUIRED",
-        "项目专用 Edge 固定使用 9222 端口。",
-        { statusCode: 409 }
-      );
-    }
+    const { browserMode, cdpPort } = browserAuthority;
     const resumeBatchId = params.resumeBatchId ? Number(params.resumeBatchId) : null;
     const detailMode = params.detailMode
       ? resolveProductDetailMode(params.detailMode)
@@ -1726,7 +1731,8 @@ async function handleAcquisitionPreview(res, {
   planId,
   logger,
   requestId,
-  inheritedPreviewResolver
+  inheritedPreviewResolver,
+  browserAuthority
 }) {
   const normalizedPlanId = Number(planId || 0);
   try {
@@ -1760,8 +1766,8 @@ async function handleAcquisitionPreview(res, {
       plan,
       matchingContext: getCandidateMatchingContext(db, plan.profileId),
       logger,
-      browserMode: "edge",
-      cdpPort: null
+      browserMode: browserAuthority.browserMode,
+      cdpPort: browserAuthority.cdpPort
     });
     return sendJson(res, 200, publicAcquisitionPreview(context));
   } catch (error) {
@@ -1953,21 +1959,23 @@ async function handleWorkflowRunStart(req, res, {
   requestId,
   spawnProcess,
   acquisitionContextResolver,
-  planRescore
+  planRescore,
+  resolveNewWorkflowBrowser
 }) {
   let planId = 0;
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     planId = Number(params.planId || 0);
+    const browserAuthority = resolveNewWorkflowBrowser(params);
     const result = await startWorkflow({
       db,
-      input: { ...params, root, dbPath, scanRuns, modelReady, modelState, backupRuntime, requestId, spawnProcess },
+      input: { ...params, ...browserAuthority, root, dbPath, scanRuns, modelReady, modelState, backupRuntime, requestId, spawnProcess },
       deps: {
         appError, getSearchPlan, getCandidateProfile, getCandidateMatchingContext, getSearchPlanDependency,
         assertSearchPlanReady,
         getActiveWorkflow: (database, record) => getActiveWorkflowRun(database, { profileId: record.profileId, planId: record.id }),
         buildDashboardState: buildWorkflowDashboardState, workflowBlockedMessage,
-        resolveNewWorkflowBrowser, acquisitionContextResolver, assertAcquisitionContext,
+        resolveNewWorkflowBrowser: () => browserAuthority, acquisitionContextResolver, assertAcquisitionContext,
         acquisitionModeOf, freezeWorkflowPlan,
         preparePlanForNewWorkflow: (context) => preparePlanForNewWorkflow({ ...context, root, rescore: planRescore }),
         scanAvailability: assertWorkflowScanAvailable, workflowModelProfilesSnapshot,
@@ -2012,15 +2020,17 @@ async function handleWorkflowRunResume(req, res, {
   logger,
   requestId,
   spawnProcess,
-  browserReadinessProbe
+  browserReadinessProbe,
+  resolveNewWorkflowBrowser
 }) {
   let workflowRunId = "";
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     workflowRunId = String(params.workflowRunId || params.runId || "").trim();
+    const browserAuthority = resolveNewWorkflowBrowser(params);
     const result = await resumeWorkflow({
       db,
-      input: { ...params, workflowRunId, root, dbPath, scanRuns, batchModelReady, requestId, spawnProcess },
+      input: { ...params, ...browserAuthority, workflowRunId, root, dbPath, scanRuns, batchModelReady, requestId, spawnProcess },
       deps: {
         appError, getWorkflowRun, getBatch, workflowResumeNeedsBatchModel, assertCompleteInheritedContext,
         assertCompleteGeneratedContext, assertFrozenWorkflowPlan,
@@ -2149,18 +2159,21 @@ async function handleWorkflowControl(req, res, {
   getBatchModelState,
   batchModelReady,
   workflowControlSchedule,
-  workflowControlGraceMs
+  workflowControlGraceMs,
+  resolveNewWorkflowBrowser
 }) {
   let workflowRunId = "";
   let action = "";
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const browserAuthority = resolveNewWorkflowBrowser(params);
     workflowRunId = String(params.workflowRunId || params.runId || "").trim();
     action = String(params.action || "").trim().toLowerCase();
     await controlWorkflow({
       db,
       input: {
         ...params,
+        ...browserAuthority,
         workflowRunId,
         action,
         root,
@@ -2428,8 +2441,16 @@ function resolveWorkflowControlBrowserAuthority(workflow, params = {}) {
     }
   }
   const browserMode = resolveWorkflowResumeBrowserMode(workflow, params.browserMode);
-  if (browserMode === "edge") return { browserMode: "edge", cdpPort: null };
+  if (browserMode === "edge") {
+    if (workflow?.planner?.planSnapshotVersion === 2 && workflow.planner?.cdpPort != null) {
+      throw appError("WORKFLOW_BROWSER_AUTHORITY_INVALID", "本轮保存的浏览器身份无效。", { statusCode: 409 });
+    }
+    return { browserMode: "edge", cdpPort: null };
+  }
   const storedCdpPort = Number(workflow?.planner?.cdpPort);
+  if (workflow?.planner?.planSnapshotVersion === 2 && storedCdpPort !== PORTABLE_CDP_PORT) {
+    throw appError("WORKFLOW_BROWSER_AUTHORITY_INVALID", "本轮保存的浏览器身份无效。", { statusCode: 409 });
+  }
   const cdpPort = normalizeCdpPort(
     params.cdpPort || (Number.isInteger(storedCdpPort) ? storedCdpPort : PORTABLE_CDP_PORT)
   );
@@ -4183,7 +4204,7 @@ const PLAN_EXPERIENCE_OPTIONS = PRODUCT_POLICY.searchPlan.experienceOptions;
 const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
 const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
-function renderPlanPage({ db, searchParams, scanRuns }) {
+function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { browserMode: "edge", cdpPort: null } }) {
   const profiles = listCandidateProfiles(db);
   const requestedPlan = getSearchPlan(db, searchParams.get("planId"));
   const profileId = Number(searchParams.get("profileId") || requestedPlan?.profileId || profiles[0]?.id || 0);
@@ -4227,6 +4248,7 @@ function renderPlanPage({ db, searchParams, scanRuns }) {
     selectedBossSalaryLanes,
     matchingContext,
     confirmation,
+    runtime: browserAuthority,
     options: {
       cities: PLAN_CITY_OPTIONS,
       experience: PLAN_EXPERIENCE_OPTIONS,
@@ -4939,6 +4961,7 @@ function sendText(res, statusCode, text) {
 module.exports = {
   createDashboardServer,
   normalizeDashboardBrowserAuthority,
+  resolveNewWorkflowBrowser,
   buildWorkflowDashboardState,
   resolveLiveAcquisitionContext,
   resolveLiveInheritedContext,

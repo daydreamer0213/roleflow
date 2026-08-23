@@ -325,7 +325,7 @@ let server;
 
   const portableReadiness = await getJson(baseUrl, "/api/browser-readiness?browserMode=portable&cdpPort=9222");
   assert.strictEqual(portableReadiness.status, 409);
-  assert.match(JSON.stringify(portableReadiness.body), /WORKFLOW_EDGE_REQUIRED/);
+  assert.match(JSON.stringify(portableReadiness.body), /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.deepStrictEqual(browserReadinessInputs.at(-1), { browserMode: "edge", cdpPort: null });
 
   const gatedPlanPage = await getText(baseUrl, `/plan?planId=${saved.planId}`);
@@ -343,6 +343,11 @@ let server;
   assert.deepStrictEqual(inheritedPreview.body.filters, ["地点：全国", "薪资：10-20K"]);
   assert.strictEqual(JSON.stringify(inheritedPreview.body).includes("https://www.zhipin.com"), false);
   assert.strictEqual(JSON.stringify(inheritedPreview.body).includes("securityId"), false);
+  const previewCallsBeforeDrift = inheritedResolutionCount;
+  const driftedPreview = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}&browserMode=portable&cdpPort=9222`);
+  assert.strictEqual(driftedPreview.status, 409);
+  assert.match(JSON.stringify(driftedPreview.body), /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
+  assert.strictEqual(inheritedResolutionCount, previewCallsBeforeDrift, "preview drift must fail before BOSS access");
   const readinessScript = extractBrowserReadinessScript(gatedPlanPage.body);
   await assertBrowserReadinessGate({ readinessScript, status: "login_required", baseDisabled: false, expectedDisabled: true });
   await assertBrowserReadinessGate({ readinessScript, status: "ready", baseDisabled: false, expectedDisabled: false });
@@ -419,7 +424,7 @@ let server;
     scanKind: "daily"
   });
   assert.strictEqual(invalidPortableScan.status, 409);
-  assert.match(invalidPortableScan.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.match(invalidPortableScan.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.strictEqual(spawns.length, scanSpawnCountBeforeInvalidPortable);
 
   batchModelReady = false;
@@ -607,7 +612,7 @@ let server;
     action: "start"
   });
   assert.strictEqual(rejectedPortableStart.status, 409);
-  assert.match(rejectedPortableStart.body, /WORKFLOW_EDGE_REQUIRED/);
+  assert.match(rejectedPortableStart.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   const portableStarted = await postForm(baseUrl, "/api/workflow-run", {
     planId: portableSaved.planId,
     browserMode: "edge",
@@ -631,7 +636,7 @@ let server;
 
   const inheritedInterruptedPage = await getText(baseUrl, started.location);
   assert.match(inheritedInterruptedPage.body, /<input type="hidden" name="browserMode" value="edge">/);
-  assert.match(inheritedInterruptedPage.body, /当前已登录 Edge/);
+  assert.match(inheritedInterruptedPage.body, /当前 Edge（高级）/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<input type="hidden" name="cdpPort" value="9222">/);
   assert.doesNotMatch(inheritedInterruptedPage.body, /<select name="browserMode">/);
 
@@ -919,7 +924,7 @@ let server;
   });
   const legacyPage = await getText(baseUrl, `/workflow?runId=${legacyInherited.id}`);
   assert.match(legacyPage.body, /name="browserMode" value="edge"/);
-  assert.match(legacyPage.body, /当前已登录 Edge/);
+  assert.match(legacyPage.body, /当前 Edge（高级）/);
   resumeBrowserReadinessStatus = "login_required";
   const spawnCountBeforeLegacyPreflight = spawns.length;
   const rejectedLegacyResume = await postForm(baseUrl, "/api/workflow-run/resume", {
@@ -1266,7 +1271,7 @@ let server;
       cdpPort: 9222
     });
     assert.strictEqual(wrongPortResume.status, 409);
-    assert.match(wrongPortResume.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+    assert.match(wrongPortResume.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
     assert.strictEqual(spawns.length, spawnCountBeforeWrongPortResume);
     assert.strictEqual(getWorkflowRun(db, corruptedPortableInherited.id).status, "interrupted");
   }
@@ -1340,7 +1345,7 @@ let server;
     cdpPort: 9333
   });
   assert.strictEqual(invalidGeneratedMode.status, 409);
-  assert.match(invalidGeneratedMode.body, /WORKFLOW_BROWSER_MODE_INVALID/);
+  assert.match(invalidGeneratedMode.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
   assert.deepStrictEqual(getWorkflowRun(db, generatedWorkflow.id), generatedBeforeInvalidMode);
 
@@ -1352,7 +1357,7 @@ let server;
     cdpPort: 9333
   });
   assert.strictEqual(modelBlockedResume.status, 409);
-  assert.match(modelBlockedResume.body, /href="\/settings#model-profile-batch_screening"/);
+  assert.match(modelBlockedResume.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.strictEqual(resumeBrowserProbeInputs.length, browserProbeCountBeforeModelBlockedResume);
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
@@ -1364,7 +1369,7 @@ let server;
     cdpPort: 9333
   });
   assert.strictEqual(rejectedGeneratedPortablePort.status, 409);
-  assert.match(rejectedGeneratedPortablePort.body, /INHERITED_PORTABLE_PORT_REQUIRED/);
+  assert.match(rejectedGeneratedPortablePort.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
 
@@ -1373,14 +1378,10 @@ let server;
     browserMode: "portable",
     cdpPort: 9222
   });
-  assert.strictEqual(generatedPortableResume.status, 303);
-  assert.strictEqual(generatedPortableResume.location, `/workflow?runId=${generatedWorkflow.id}`);
-  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode + 1);
-  assert.deepStrictEqual(
-    spawns.at(-1).args.slice(spawns.at(-1).args.indexOf("--browser"), spawns.at(-1).args.indexOf("--browser") + 4),
-    ["--browser", "portable", "--cdp-port", "9222"]
-  );
-  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "scanning");
+  assert.strictEqual(generatedPortableResume.status, 409);
+  assert.match(generatedPortableResume.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
+  assert.strictEqual(spawns.length, spawnCountBeforeInvalidGeneratedMode);
+  assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
 
   for (const spawned of spawns) spawned.child.emit("close", 0, null);
   testWorkflowStatusReadBudget();
@@ -2554,7 +2555,7 @@ async function testWorkflowControlApi(
     browserMode: "portable"
   });
   assert.strictEqual(rejectedFrozenPortableResume.status, 409);
-  assert.match(rejectedFrozenPortableResume.body, /WORKFLOW_BROWSER_MODE_MISMATCH/);
+  assert.match(rejectedFrozenPortableResume.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   const interruptedAnalysisResume = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: interruptedAnalysis.workflowId,
     browserMode: "edge"

@@ -146,6 +146,7 @@ function assertRendererIsPureAndEscapesHtml() {
     dailyBCardLimit: 10,
     bossCatalog: null,
     bossFilterPreview: null,
+    runtime: { browserMode: "portable", cdpPort: 9222 },
     options: { cities: ["上海"], experience: [], jobTypes: [], degrees: [] }
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(viewModel)), viewModel, "today VM must contain plain serializable display data only");
@@ -163,6 +164,9 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.match(html, /data-acquisition-panel="generated"/);
   assert.match(html, /RoleFlow 本地精筛/);
   assert.doesNotMatch(html, /<strong>平台已继承<\/strong>/);
+  assert.match(html, /name="browserMode" value="portable"/);
+  assert.match(html, /name="cdpPort" value="9222"/);
+  assert.match(html, /当前浏览器：RoleFlow 专用 Edge/);
 }
 
 function assertScanStatusLabels() {
@@ -204,6 +208,8 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   assert.match(page.body, /data-today-primary="true"[^>]*name="action"[^>]*value="start"/);
   assert.match(page.body, /name="planId" value="\d+"/);
   assert.match(page.body, /name="browserMode" value="edge"/);
+  assert.match(page.body, /当前浏览器：当前 Edge（高级）/);
+  assert.match(page.body, /正在检查 RoleFlow 专用 Edge 与固定 BOSS 页面状态…/);
   assert.doesNotMatch(page.body, /value="portable"/);
   assert.match(page.body, /data-browser-readiness-button[^>]*disabled/);
   assert.match(page.body, new RegExp(`/api/acquisition-preview\\?planId=${saved.planId}`));

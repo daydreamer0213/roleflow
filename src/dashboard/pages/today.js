@@ -29,7 +29,7 @@ function renderPrimaryPanel(vm) {
 function renderPrimaryAction(primary, page, runtime) {
   if (primary.type === "link") return `<a class="button" data-today-primary="true" href="${escapeAttr(primary.href)}">${escapeHtml(primary.label)}</a>`;
   if (primary.type === "notice") return `<p class="primary-notice" role="status">${escapeHtml(primary.label)}</p>`;
-  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}"><input type="hidden" name="browserMode" value="edge"><button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "执行一轮")}</button></form><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查当前已登录 Edge 与固定 BOSS 页面状态…</div>`;
+  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "执行一轮")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(runtime.browserLabel || "当前 Edge（高级）")}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查 RoleFlow 专用 Edge 与固定 BOSS 页面状态…</div>`;
 }
 
 function renderMetrics(metrics) {
@@ -74,7 +74,12 @@ function renderAdvancedScan(vm) {
   const broad = scan.broad || {};
   const activeDays = vm.form?.plan?.bossActiveDays || "";
   const resume = scan.resumableBatchId ? `<button data-scan-button name="resumeBatchId" value="${escapeAttr(scan.resumableBatchId)}"${scan.disabled ? " disabled" : ""}>继续未完成扫描 #${escapeHtml(scan.resumableBatchId)}</button>` : "";
-  return `<details class="card today-details"><summary class="card-head"><strong>高级信息与维护</strong><span class="tiny">预算 · 维护扫描 · 历史队列</span></summary><section class="card-body scan-panel"><div class="alert"><strong>低频入口</strong><p>日常扫描 ${escapeHtml(daily.keywordPlan?.length || 0)} 个 A/B 关键词，广泛扫描 ${escapeHtml(broad.keywordPlan?.length || 0)} 个关键词；继续使用单标签串行、随机等待和风控即停。</p></div><p class="field-help">招聘方近 ${escapeHtml(activeDays)} 天活跃优先保留。详情读取预算剩余 ${escapeHtml(vm.metrics?.remainingDetails || 0)}，搜索页面预算剩余 ${escapeHtml(vm.metrics?.remainingPages || 0)}。日常扫描 A/B 主档每词最多 ${escapeHtml(daily.maxCards || 0)}/${escapeHtml(scan.dailyBCardLimit || 0)} 张卡片和 ${escapeHtml(daily.detailLimits?.A || 0)}/${escapeHtml(daily.detailLimits?.B || 0)} 个新详情，补充档最多 ${escapeHtml(daily.supplementalSalaryLaneCardLimit || 0)} 张卡片和 ${escapeHtml(daily.supplementalSalaryLaneDetailLimit || 0)} 个新详情；广泛扫描详情最多 ${escapeHtml(broad.maxDetailTotal || 0)} 个。</p><div><strong>扫描状态：</strong>${escapeHtml(vm.run?.label || "尚未运行")}</div>${vm.run?.error ? `<pre class="scan-error">${escapeHtml(vm.run.error)}</pre>` : ""}<form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${escapeAttr(vm.page?.planId)}"><input type="hidden" name="browserMode" value="edge"><button data-scan-button name="scanKind" value="daily"${scan.disabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scan.disabled ? " disabled" : ""}>广泛扫描</button>${resume}<button data-scan-button name="scanKind" value="refresh"${scan.disabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scan.disabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button secondary" href="/queue?planId=${escapeAttr(vm.page?.planId)}">待处理队列</a><a class="button secondary" href="/jobs?planId=${escapeAttr(vm.page?.planId)}&amp;batch=latest">查看岗位</a></form></section></details>`;
+  return `<details class="card today-details"><summary class="card-head"><strong>高级信息与维护</strong><span class="tiny">预算 · 维护扫描 · 历史队列</span></summary><section class="card-body scan-panel"><div class="alert"><strong>低频入口</strong><p>日常扫描 ${escapeHtml(daily.keywordPlan?.length || 0)} 个 A/B 关键词，广泛扫描 ${escapeHtml(broad.keywordPlan?.length || 0)} 个关键词；继续使用单标签串行、随机等待和风控即停。</p></div><p class="field-help">招聘方近 ${escapeHtml(activeDays)} 天活跃优先保留。详情读取预算剩余 ${escapeHtml(vm.metrics?.remainingDetails || 0)}，搜索页面预算剩余 ${escapeHtml(vm.metrics?.remainingPages || 0)}。日常扫描 A/B 主档每词最多 ${escapeHtml(daily.maxCards || 0)}/${escapeHtml(scan.dailyBCardLimit || 0)} 张卡片和 ${escapeHtml(daily.detailLimits?.A || 0)}/${escapeHtml(daily.detailLimits?.B || 0)} 个新详情，补充档最多 ${escapeHtml(daily.supplementalSalaryLaneCardLimit || 0)} 张卡片和 ${escapeHtml(daily.supplementalSalaryLaneDetailLimit || 0)} 个新详情；广泛扫描详情最多 ${escapeHtml(broad.maxDetailTotal || 0)} 个。</p><div><strong>扫描状态：</strong>${escapeHtml(vm.run?.label || "尚未运行")}</div>${vm.run?.error ? `<pre class="scan-error">${escapeHtml(vm.run.error)}</pre>` : ""}<form class="inline-form" method="post" action="/api/scan"><input type="hidden" name="planId" value="${escapeAttr(vm.page?.planId)}">${browserInputs(vm.runtime)}<button data-scan-button name="scanKind" value="daily"${scan.disabled ? " disabled" : ""}>日常扫描</button><button data-scan-button name="scanKind" value="broad"${scan.disabled ? " disabled" : ""}>广泛扫描</button>${resume}<button data-scan-button name="scanKind" value="refresh"${scan.disabled ? " disabled" : ""}>补读缺失详情</button><button data-scan-button name="scanKind" value="activity"${scan.disabled ? " disabled" : ""}>更新过期活跃状态</button><a class="button secondary" href="/queue?planId=${escapeAttr(vm.page?.planId)}">待处理队列</a><a class="button secondary" href="/jobs?planId=${escapeAttr(vm.page?.planId)}&amp;batch=latest">查看岗位</a></form></section></details>`;
+}
+
+function browserInputs(runtime = {}) {
+  const mode = runtime.browserMode === "portable" ? "portable" : "edge";
+  return `<input type="hidden" name="browserMode" value="${mode}">${mode === "portable" ? '<input type="hidden" name="cdpPort" value="9222">' : ""}`;
 }
 
 function renderChoices(label, name, options = [], selected = []) {
@@ -126,24 +131,16 @@ function renderClientScripts(runState, includeBrowserReadiness) {
     (function(){
       const statusNode = document.getElementById('browser-readiness-status');
       const button = document.querySelector('[data-browser-readiness-button]');
-      const browserMode = document.querySelector('[name=browserMode]');
       if (!statusNode || !button) return;
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
       let readinessInFlight = false;
       let queuedRefresh = false;
-      let selectionVersion = 0;
-      function readinessUrl() {
-        const mode = browserMode?.value === 'portable' ? 'portable' : 'edge';
-        const params = new URLSearchParams({browserMode:mode});
-        if (mode === 'portable') params.set('cdpPort','9222');
-        return '/api/browser-readiness?'+params.toString();
-      }
+      function readinessUrl() { return '/api/browser-readiness'; }
       async function refreshReadiness({queueIfBusy=false}={}) {
         if (readinessInFlight) {
           if (queueIfBusy) queuedRefresh = true;
           return;
         }
-        const requestVersion = selectionVersion;
         const requestUrl = readinessUrl();
         readinessInFlight = true;
         button.disabled = true;
@@ -151,25 +148,22 @@ function renderClientScripts(runState, includeBrowserReadiness) {
           const response = await fetch(requestUrl, {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
-          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
           statusNode.textContent = state.message || '浏览器状态未知。';
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
-          if (requestVersion !== selectionVersion || requestUrl !== readinessUrl()) return;
-          statusNode.textContent = '无法确认当前已登录 Edge 状态，请检查本地服务。';
+          statusNode.textContent = '无法确认 RoleFlow 专用 Edge 状态，请检查本地服务。';
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;
         } finally {
           readinessInFlight = false;
-          if (queuedRefresh || requestVersion !== selectionVersion || requestUrl !== readinessUrl()) {
+          if (queuedRefresh) {
             queuedRefresh = false;
             void refreshReadiness();
           }
         }
       }
       refreshReadiness();
-      browserMode?.addEventListener('change', function(){selectionVersion+=1;void refreshReadiness({queueIfBusy:true})});
       setInterval(refreshReadiness, 5000);
     })();
     </script>` : "";

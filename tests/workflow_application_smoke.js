@@ -8,12 +8,16 @@ const {
   controlWorkflow,
   getWorkflowStatus
 } = require("../src/application/workflow");
+const { resolveNewWorkflowBrowser } = require("../src/dashboard/server");
 
 async function main() {
+  dashboardAuthorityResolverRejectsRequestDrift();
   exportsAndPlainData();
   await validationPrecedesPersistenceAndLaunch();
   await activeWorkflowSkipsPreparation();
   await directApplicationContract();
+  await portableWorkflowPersistsDashboardAuthority();
+  await portableRecoveryKeepsFrozenAuthority();
   await resumeControlAndStatusContracts();
   console.log("workflow application smoke passed");
 }
@@ -98,6 +102,71 @@ async function directApplicationContract() {
   assert.strictEqual(result.workflow.planner.planHash, persistedPlanner.planHash);
   assert.deepStrictEqual(result.workflow.planner.planSnapshot.directions, ["AI 应用开发"]);
   assertPlain(result);
+}
+
+async function portableWorkflowPersistsDashboardAuthority() {
+  const events = [];
+  let launch = null;
+  let persistedPlanner = null;
+  const deps = startDeps(events, (value) => { launch = value; }, (value) => { persistedPlanner = value; });
+  deps.resolveNewWorkflowBrowser = () => ({ browserMode: "portable", cdpPort: 9222 });
+  await startWorkflow({
+    db: {},
+    input: { planId: 41, modelReady: true, modelState: modelState() },
+    deps
+  });
+  assert.deepStrictEqual(
+    { browserMode: persistedPlanner.browserMode, cdpPort: persistedPlanner.cdpPort },
+    { browserMode: "portable", cdpPort: 9222 }
+  );
+  assert.deepStrictEqual(
+    { browserMode: launch.input.browserMode, cdpPort: launch.input.cdpPort },
+    { browserMode: "portable", cdpPort: 9222 }
+  );
+}
+
+async function portableRecoveryKeepsFrozenAuthority() {
+  const events = [];
+  const launches = [];
+  const resumed = await resumeWorkflow({
+    db: {},
+    input: { workflowRunId: "workflow-2", batchModelReady: true },
+    deps: resumeDeps(events, { browserMode: "portable", cdpPort: 9222 }, launches)
+  });
+  assert.strictEqual(resumed.workflow.id, "workflow-2");
+  assert.deepStrictEqual(
+    { browserMode: launches[0].browserMode, cdpPort: launches[0].cdpPort },
+    { browserMode: "portable", cdpPort: 9222 }
+  );
+}
+
+function dashboardAuthorityResolverRejectsRequestDrift() {
+  const portableAuthority = {
+    browserMode: "portable",
+    cdpPort: 9222,
+    profilePath: "C:\\test\\BrowserProfile"
+  };
+  assert.deepStrictEqual(resolveNewWorkflowBrowser({}, portableAuthority), {
+    browserMode: "portable",
+    cdpPort: 9222
+  });
+  assert.deepStrictEqual(resolveNewWorkflowBrowser({ browserMode: "portable", cdpPort: "9222" }, portableAuthority), {
+    browserMode: "portable",
+    cdpPort: 9222
+  });
+  assert.throws(
+    () => resolveNewWorkflowBrowser({ browserMode: "edge" }, portableAuthority),
+    (error) => error.code === "DASHBOARD_BROWSER_AUTHORITY_MISMATCH"
+  );
+  const edgeAuthority = { browserMode: "edge", cdpPort: null, profilePath: "" };
+  assert.deepStrictEqual(resolveNewWorkflowBrowser({ cdpPort: null }, edgeAuthority), {
+    browserMode: "edge",
+    cdpPort: null
+  });
+  assert.throws(
+    () => resolveNewWorkflowBrowser({ cdpPort: 9222 }, edgeAuthority),
+    (error) => error.code === "DASHBOARD_BROWSER_AUTHORITY_MISMATCH"
+  );
 }
 
 async function activeWorkflowSkipsPreparation() {
@@ -212,7 +281,7 @@ function startDeps(events, captureLaunch = () => {}, capturePlanner = () => {}) 
   };
 }
 
-function resumeDeps(events) {
+function resumeDeps(events, browserAuthority = { browserMode: "edge", cdpPort: null }, launches = []) {
   const workflow = {
     id: "workflow-2",
     planId: 41,
@@ -221,7 +290,7 @@ function resumeDeps(events) {
     resumePhase: "analyzing",
     scanNeeded: true,
     scanBatchId: 91,
-    planner: { acquisitionMode: "generated", planSnapshotVersion: 2, browserMode: "edge" }
+    planner: { acquisitionMode: "generated", planSnapshotVersion: 2, browserMode: browserAuthority.browserMode, cdpPort: browserAuthority.cdpPort }
   };
   return {
     appError,
@@ -229,7 +298,9 @@ function resumeDeps(events) {
     workflowResumeNeedsBatchModel: () => false,
     assertFrozenWorkflowPlan: (value) => value,
     assertCompleteGeneratedContext: (value) => value,
-    resolveWorkflowResumeBrowserMode: () => "edge",
+    resolveWorkflowResumeBrowserMode: () => browserAuthority.browserMode,
+    normalizeCdpPort: (value) => Number(value),
+    portableCdpPort: 9222,
     workflowResumeRequiresBrowser: () => false,
     assertWorkflowAnalysisBatch: () => events.push("analysis-batch"),
     transitionWorkflowRun(_db, input) {
@@ -237,6 +308,7 @@ function resumeDeps(events) {
       return { ...workflow, status: input.status, resumePhase: input.resumePhase };
     },
     spawnScan(_scanRuns, input) {
+      launches.push(input);
       events.push("scan-run-creation");
       events.push("workflow-scan-binding");
       events.push("spawn");

@@ -23,6 +23,11 @@ function buildTodayViewModel(input = {}) {
   const mode = acquisitionModeOf(plan);
   const generated = generatedPlatformOf(plan);
   const activePlanner = activeRun?.planner || null;
+  const runtime = input.runtime || {};
+  const browserMode = String(runtime.browserMode || input.browserAuthority?.browserMode || "edge").trim().toLowerCase() === "portable"
+    ? "portable"
+    : "edge";
+  const cdpPort = browserMode === "portable" ? 9222 : null;
   const acquisition = {
     mode,
     generated,
@@ -102,7 +107,12 @@ function buildTodayViewModel(input = {}) {
         href: `/match-card?profileId=${profileId}`
       }
     },
-    runtime: { workflowStartDisabled: Boolean(startBlocked) }
+    runtime: {
+      workflowStartDisabled: Boolean(startBlocked),
+      browserMode,
+      cdpPort,
+      browserLabel: browserMode === "portable" ? "RoleFlow 专用 Edge" : "当前 Edge（高级）"
+    }
   };
 }
 
