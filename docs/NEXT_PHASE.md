@@ -16,7 +16,7 @@
 
 状态：**已通过**。
 
-2026-08-24 在 HEAD `e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` 加 Task 8 fix round 1 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。这不是尚未产生的修正提交 SHA，也不代表已经完成真实 Edge、BOSS、安装或卸载验收。
+2026-08-24 在 HEAD `f384896227948926f9e3af515804ce8df9e04ab3` 加 Task 8 fix round 2 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。这不是尚未产生的修正提交 SHA，也不代表已经完成真实 Edge、BOSS、安装或卸载验收。
 
 ## Task 8 已完成记录
 

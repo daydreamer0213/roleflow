@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$EdgePath = "",
   [int]$Port = 9222,
@@ -86,6 +86,6 @@ Write-Host "Portable Edge CDP: healthy"
 Write-Host "CDP URL: http://127.0.0.1:$Port"
 Write-Host "Profile dir: $ProfilePath"
 Write-Host "Browser: $($Version.Browser)"
-Write-Host "Project Edge is ready. First use: log in to BOSS once, then keep a BOSS search-results tab open."
+Write-Host "RoleFlow 专用 Edge（推荐）已就绪。首次使用请登录 BOSS，并保留一个 BOSS 搜索结果页。"
 
 exit 0

@@ -202,7 +202,7 @@ async function prepareWorkspaceTabsCommand(
   const cdpPort = Number(args["cdp-port"] || 9222);
   if (!["edge", "portable"].includes(browserMode)
     || (browserMode === "portable" && cdpPort !== 9222)) {
-    const error = new Error("工作区浏览器身份无效。默认使用 RoleFlow 专用 Edge（推荐）（内部为 portable/9222）；显式高级路径使用当前 Edge（高级，需要浏览器连接组件）。");
+    const error = new Error("工作区浏览器身份无效。底层 workspace-tabs 未传 --browser 时沿用“使用当前 Edge（高级，需要浏览器连接组件）”兼容路径；日常 Start.bat 默认使用“RoleFlow 专用 Edge（推荐）”，portable 只支持 9222。");
     error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
     throw error;
   }
