@@ -240,9 +240,20 @@ function runOwnerContract() {
       browser: portableBinding({ searchTabId: "CDP-succeeded-search", messageTabId: "CDP-succeeded-chat" })
     });
     assertClickedTerminalRebindBlocked(db, portableSucceededBatch, "succeeded");
-    const portableStoppedBatch = createCommunicationBatch(db, {
+    const portableAlreadyBatch = createCommunicationBatch(db, {
       planId: seeded.planId,
       jobIds: [seeded.ids[12]],
+      browserMode: "portable",
+      now: "2030-01-02T08:00:07.000Z"
+    });
+    bindCommunicationBatchRuntime(db, {
+      batchId: portableAlreadyBatch.id,
+      browser: portableBinding({ searchTabId: "CDP-already-search", messageTabId: "CDP-already-chat" })
+    });
+    assertClickedTerminalRebindBlocked(db, portableAlreadyBatch, "already_communicated");
+    const portableStoppedBatch = createCommunicationBatch(db, {
+      planId: seeded.planId,
+      jobIds: [seeded.ids[13]],
       browserMode: "portable",
       now: "2030-01-02T08:00:07.000Z"
     });
@@ -552,7 +563,7 @@ function seed(db, prefix) {
   const planId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run(profileId, `Plan ${prefix}`, "{}", now, now).lastInsertRowid);
   const scanBatchId = createBatch(db, "boss", prefix, `${prefix} communication store contract`, { profileId, searchPlanId: planId });
-  const ids = Array.from({ length: 13 }, (_, index) => upsertJob(db, job(`${prefix}-${index}`), scanBatchId));
+  const ids = Array.from({ length: 14 }, (_, index) => upsertJob(db, job(`${prefix}-${index}`), scanBatchId));
   const invalidUrlId = upsertJob(db, job(`${prefix}-bad-url`, { url: "https://evil.example/job_detail/not-boss.html" }), scanBatchId);
   const appliedId = upsertJob(db, job(`${prefix}-applied`), scanBatchId);
   return { profileId, planId, ids, invalidUrlId, appliedId };
@@ -606,7 +617,13 @@ function portableBinding(overrides = {}) {
 
 function assertClickedTerminalRebindBlocked(db, batch, status) {
   const item = listCommunicationBatchItems(db, batch.id)[0];
-  db.prepare("UPDATE communication_batch_items SET status = ?, click_count = 1 WHERE id = ?").run(status, item.id);
+  if (status === "already_communicated") {
+    db.prepare("UPDATE communication_batch_items SET status = 'click_dispatched', click_count = 1 WHERE id = ?").run(item.id);
+    transitionCommunicationItem(db, { itemId: item.id, expectedStatus: "click_dispatched", status });
+  } else {
+    db.prepare("UPDATE communication_batch_items SET status = ?, click_count = 1 WHERE id = ?").run(status, item.id);
+  }
+  assert.strictEqual(listCommunicationBatchItems(db, batch.id)[0].clickCount, 1);
   const before = getCommunicationBatch(db, batch.id).runtime.browser;
   const blocked = observeTransactions(db, () => assert.throws(
     () => bindCommunicationBatchRuntime(db, {

@@ -473,6 +473,7 @@ function seed(database) {
     portableRebindJobId: upsertJob(database, job("portable-rebind", { title: "Portable rebind role" }), scanBatchId),
     portableBlockedRebindJobId: upsertJob(database, job("portable-rebind-blocked", { title: "Portable blocked rebind role" }), scanBatchId),
     portableSucceededRebindJobId: upsertJob(database, job("portable-rebind-succeeded", { title: "Portable succeeded rebind role" }), scanBatchId),
+    portableAlreadyRebindJobId: upsertJob(database, job("portable-rebind-already", { title: "Portable already communicated role" }), scanBatchId),
     portableStoppedRebindJobId: upsertJob(database, job("portable-rebind-stopped", { title: "Portable stopped rebind role" }), scanBatchId),
     directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
     mismatchFirstJobId: upsertJob(database, job("mismatch-first", { title: "Mismatch first role" }), scanBatchId),
@@ -619,16 +620,22 @@ function clickAudit(item) {
 }
 
 function transitionToAmbiguous(database, batchId) {
+  const clicked = transitionToClicked(database, batchId);
+  return transitionCommunicationItem(database, { itemId: clicked.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+}
+
+function transitionToClicked(database, batchId) {
   const item = listCommunicationBatchItems(database, batchId)[0];
   transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
-  return transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+  return listCommunicationBatchItems(database, batchId)[0];
 }
 
 async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
   for (const [status, jobId] of [
     ["succeeded", fixture.portableSucceededRebindJobId],
+    ["already_communicated", fixture.portableAlreadyRebindJobId],
     ["stopped", fixture.portableStoppedRebindJobId]
   ]) {
     const created = createCommunicationBatch({
@@ -646,16 +653,23 @@ async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
     });
     setCommunicationBatchStatus(database, { batchId: created.batch.id, status: "running" });
     setCommunicationBatchStatus(database, { batchId: created.batch.id, status: "interrupted" });
-    const ambiguous = transitionToAmbiguous(database, created.batch.id);
-    resolveAmbiguousCommunication({
-      db: database,
-      input: {
-        batchId: created.batch.id,
-        itemId: ambiguous.id,
-        status,
-        evidenceNote: `Manual ${status} fixture evidence.`
-      }
-    });
+    const clicked = transitionToClicked(database, created.batch.id);
+    if (status === "already_communicated") {
+      transitionCommunicationItem(database, { itemId: clicked.id, expectedStatus: "click_dispatched", status });
+    } else {
+      const ambiguous = transitionCommunicationItem(database, {
+        itemId: clicked.id, expectedStatus: "click_dispatched", status: "ambiguous"
+      });
+      resolveAmbiguousCommunication({
+        db: database,
+        input: {
+          batchId: created.batch.id,
+          itemId: ambiguous.id,
+          status,
+          evidenceNote: `Manual ${status} fixture evidence.`
+        }
+      });
+    }
     const before = getCommunicationBatch(database, created.batch.id).runtime.browser;
     let inspections = 0;
     await assert.rejects(() => rebindCommunicationBrowser({

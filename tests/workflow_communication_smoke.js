@@ -257,6 +257,14 @@ async function workflowCommunicationSmoke() {
       }, { browser: "portable" }),
       { browser: "portable", "cdp-port": 9222 }
     );
+    assert.deepStrictEqual(
+      resolveCommunicationBrowserAuthority({
+        ...batch,
+        browserMode: "edge",
+        policySnapshot: legacyPolicySnapshot
+      }, { browser: "edge" }),
+      { browser: "edge" }
+    );
     assert.throws(
       () => resolveCommunicationBrowserAuthority({
         ...batch,
