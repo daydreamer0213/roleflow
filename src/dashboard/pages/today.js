@@ -18,7 +18,7 @@ function renderTodayPage(vm) {
   </div>
   ${renderPlanSettings(vm)}
   ${renderAdvancedScan(vm)}
-</main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, vm.primary?.type === "form");
+</main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, vm.primary?.type === "form", vm.runtime || {});
 }
 
 function renderPrimaryPanel(vm) {
@@ -29,7 +29,8 @@ function renderPrimaryPanel(vm) {
 function renderPrimaryAction(primary, page, runtime) {
   if (primary.type === "link") return `<a class="button" data-today-primary="true" href="${escapeAttr(primary.href)}">${escapeHtml(primary.label)}</a>`;
   if (primary.type === "notice") return `<p class="primary-notice" role="status">${escapeHtml(primary.label)}</p>`;
-  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "执行一轮")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(runtime.browserLabel || "当前 Edge（高级）")}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查 RoleFlow 专用 Edge 与固定 BOSS 页面状态…</div>`;
+  const browserLabel = browserAuthorityLabel(runtime);
+  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "执行一轮")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(browserLabel)}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查${escapeHtml(browserLabel)}与固定 BOSS 页面状态…</div>`;
 }
 
 function renderMetrics(metrics) {
@@ -82,6 +83,10 @@ function browserInputs(runtime = {}) {
   return `<input type="hidden" name="browserMode" value="${mode}">${mode === "portable" ? '<input type="hidden" name="cdpPort" value="9222">' : ""}`;
 }
 
+function browserAuthorityLabel(runtime = {}) {
+  return runtime.browserMode === "portable" ? "RoleFlow 专用 Edge" : "当前 Edge（高级）";
+}
+
 function renderChoices(label, name, options = [], selected = []) {
   const chosen = new Set(selected || []);
   const values = [...new Set([...(options || []), ...(selected || [])])];
@@ -126,7 +131,8 @@ function acquisitionDisplaySummary(acquisition = {}, profile = {}) {
 function statusText(tone) { return { good: "已检查", waiting: "待处理", danger: "需恢复" }[tone] || "提示"; }
 function keywordLines(keywords = []) { return keywords.map((item) => `${item.word || item} | ${item.priority || "B"} | ${item.reason || "用户确认的搜索关键词"}`).join("\n"); }
 
-function renderClientScripts(runState, includeBrowserReadiness) {
+function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
+  const browserLabel = browserAuthorityLabel(runtime);
   const readiness = includeBrowserReadiness ? `<script>
     (function(){
       const statusNode = document.getElementById('browser-readiness-status');
@@ -152,7 +158,7 @@ function renderClientScripts(runState, includeBrowserReadiness) {
           statusNode.dataset.status = state.status || 'unknown';
           button.disabled = baseDisabled || state.status !== 'ready';
         } catch {
-          statusNode.textContent = '无法确认 RoleFlow 专用 Edge 状态，请检查本地服务。';
+          statusNode.textContent = ${JSON.stringify(`无法确认${browserLabel}状态，请检查本地服务。`)};
           statusNode.dataset.status = 'browser_unavailable';
           button.disabled = true;
         } finally {

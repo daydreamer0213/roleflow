@@ -209,7 +209,8 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   assert.match(page.body, /name="planId" value="\d+"/);
   assert.match(page.body, /name="browserMode" value="edge"/);
   assert.match(page.body, /当前浏览器：当前 Edge（高级）/);
-  assert.match(page.body, /正在检查 RoleFlow 专用 Edge 与固定 BOSS 页面状态…/);
+  assert.match(page.body, /正在检查当前 Edge（高级）与固定 BOSS 页面状态…/);
+  assert.match(page.body, /无法确认当前 Edge（高级）状态，请检查本地服务。/);
   assert.doesNotMatch(page.body, /value="portable"/);
   assert.match(page.body, /data-browser-readiness-button[^>]*disabled/);
   assert.match(page.body, new RegExp(`/api/acquisition-preview\\?planId=${saved.planId}`));

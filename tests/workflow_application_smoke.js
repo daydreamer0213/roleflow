@@ -18,6 +18,8 @@ async function main() {
   await directApplicationContract();
   await portableWorkflowPersistsDashboardAuthority();
   await portableRecoveryKeepsFrozenAuthority();
+  await invalidPortableRecoveryFailsClosed();
+  await portableAnalysisControlKeepsAuthorityWithoutBrowserProbe();
   await resumeControlAndStatusContracts();
   console.log("workflow application smoke passed");
 }
@@ -166,6 +168,66 @@ function dashboardAuthorityResolverRejectsRequestDrift() {
   assert.throws(
     () => resolveNewWorkflowBrowser({ cdpPort: 9222 }, edgeAuthority),
     (error) => error.code === "DASHBOARD_BROWSER_AUTHORITY_MISMATCH"
+  );
+  assert.throws(
+    () => resolveNewWorkflowBrowser({ cdpPort: "" }, edgeAuthority),
+    (error) => error.code === "DASHBOARD_BROWSER_AUTHORITY_MISMATCH"
+  );
+}
+
+async function invalidPortableRecoveryFailsClosed() {
+  await assert.rejects(
+    resumeWorkflow({
+      db: {},
+      input: { workflowRunId: "workflow-2", batchModelReady: true },
+      deps: resumeDeps([], { browserMode: "portable", cdpPort: 9333 })
+    }),
+    (error) => error.code === "WORKFLOW_BROWSER_AUTHORITY_INVALID"
+  );
+}
+
+async function portableAnalysisControlKeepsAuthorityWithoutBrowserProbe() {
+  const launches = [];
+  let authorityCalls = 0;
+  const workflow = {
+    id: "workflow-portable-analysis",
+    planId: 41,
+    status: "paused",
+    resumePhase: "analyzing",
+    scanNeeded: true,
+    scanBatchId: 91,
+    controlState: "none",
+    planner: { acquisitionMode: "generated", planSnapshotVersion: 2, browserMode: "portable", cdpPort: 9222 }
+  };
+  await controlWorkflow({
+    db: {},
+    input: { workflowRunId: workflow.id, action: "resume", scanRuns: new Map() },
+    deps: {
+      appError,
+      getWorkflowRun: () => workflow,
+      exactActiveWorkflowRun: () => null,
+      exactPersistedWorkflowRunIsRunning: () => false,
+      workflowResumeNeedsBatchModel: () => false,
+      batchModelReady: () => true,
+      assertWorkflowAnalysisBatch: () => {},
+      resolveWorkflowControlBrowserAuthority: () => {
+        authorityCalls += 1;
+        return { browserMode: "portable", cdpPort: 9222 };
+      },
+      browserReadinessProbe: () => { throw new Error("analysis resume must not probe browser readiness"); },
+      workflowBatchResumeEvidence: () => ({}),
+      getBatchModelState: () => ({}),
+      resumeWorkflowRun: () => ({ ...workflow, status: "analyzing", resumePhase: null }),
+      spawnScan: (_runs, input) => launches.push(input),
+      settleFailedWorkflowLaunch: () => {},
+      transitionWorkflowRun: () => workflow,
+      logger: silentLogger()
+    }
+  });
+  assert.strictEqual(authorityCalls, 1);
+  assert.deepStrictEqual(
+    { browserMode: launches[0].browserMode, cdpPort: launches[0].cdpPort },
+    { browserMode: "portable", cdpPort: 9222 }
   );
 }
 

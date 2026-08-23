@@ -417,6 +417,8 @@ let server;
   db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
     .run(JSON.stringify(portableScanPlanJson), portableScanSaved.planId);
   const scanSpawnCountBeforeInvalidPortable = spawns.length;
+  const scanRowsBeforeInvalidPortable = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs WHERE plan_id = ?").get(portableScanSaved.planId).count);
+  const workflowRowsBeforeInvalidPortable = listWorkflowRuns(db, { planId: portableScanSaved.planId }).length;
   const invalidPortableScan = await postForm(baseUrl, "/api/scan", {
     planId: portableScanSaved.planId,
     browserMode: "portable",
@@ -426,6 +428,8 @@ let server;
   assert.strictEqual(invalidPortableScan.status, 409);
   assert.match(invalidPortableScan.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
   assert.strictEqual(spawns.length, scanSpawnCountBeforeInvalidPortable);
+  assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs WHERE plan_id = ?").get(portableScanSaved.planId).count), scanRowsBeforeInvalidPortable);
+  assert.strictEqual(listWorkflowRuns(db, { planId: portableScanSaved.planId }).length, workflowRowsBeforeInvalidPortable);
 
   batchModelReady = false;
   const resolutionCountBeforeModelGate = inheritedResolutionCount;
@@ -605,6 +609,9 @@ let server;
   assert.strictEqual(interruptedWorkflow.errorCode, "SCAN_PROCESS_ERROR");
 
   const portableSaved = seedProfile(db);
+  const workflowRowsBeforePortableDrift = listWorkflowRuns(db, { planId: portableSaved.planId }).length;
+  const scanRowsBeforePortableDrift = Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs WHERE plan_id = ?").get(portableSaved.planId).count);
+  const spawnCountBeforePortableDrift = spawns.length;
   const rejectedPortableStart = await postForm(baseUrl, "/api/workflow-run", {
     planId: portableSaved.planId,
     browserMode: "portable",
@@ -613,6 +620,9 @@ let server;
   });
   assert.strictEqual(rejectedPortableStart.status, 409);
   assert.match(rejectedPortableStart.body, /DASHBOARD_BROWSER_AUTHORITY_MISMATCH/);
+  assert.strictEqual(listWorkflowRuns(db, { planId: portableSaved.planId }).length, workflowRowsBeforePortableDrift);
+  assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM scan_runs WHERE plan_id = ?").get(portableSaved.planId).count), scanRowsBeforePortableDrift);
+  assert.strictEqual(spawns.length, spawnCountBeforePortableDrift);
   const portableStarted = await postForm(baseUrl, "/api/workflow-run", {
     planId: portableSaved.planId,
     browserMode: "edge",
@@ -1414,6 +1424,7 @@ let server;
     modelAccesses,
     setBatchReady(value) { batchModelReady = value; }
   });
+  await testPortableDashboardBinding({ database: db, acquisitionContextResolver });
 
   console.log("workflow_dashboard_smoke ok");
 })().catch((error) => {
@@ -1897,6 +1908,64 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
   assert.match(pausedPage.body, /data-action="resume"/);
   assert.match(pausedPage.body, /继续本轮/);
   assert.match(pausedPage.body, /结束本轮…/);
+}
+
+async function testPortableDashboardBinding({ database, acquisitionContextResolver }) {
+  const saved = seedProfile(database);
+  const portableSpawns = [];
+  const readinessInputs = [];
+  const portableServer = createDashboardServer({
+    db: database,
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: path.join(root, ".runtime", "portable-dashboard-profile")
+    },
+    root,
+    dbPath,
+    forceMock: true,
+    logger,
+    acquisitionContextResolver,
+    inheritedPreviewResolver: acquisitionContextResolver,
+    browserReadinessProbe: async (authority) => {
+      readinessInputs.push(authority);
+      return { status: "ready", ready: true, message: "portable fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
+    },
+    spawnProcess(_file, args) {
+      const child = new EventEmitter();
+      child.pid = 8800 + portableSpawns.length;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      portableSpawns.push({ args, child });
+      return child;
+    }
+  });
+  const portableBaseUrl = await listen(portableServer);
+  try {
+    const page = await getText(portableBaseUrl, `/plan?planId=${saved.planId}`);
+    assert.match(page.body, /当前浏览器：RoleFlow 专用 Edge/);
+    assert.match(page.body, /name="browserMode" value="portable"/);
+    assert.match(page.body, /name="cdpPort" value="9222"/);
+    const readiness = await getJson(portableBaseUrl, "/api/browser-readiness");
+    assert.strictEqual(readiness.status, 200);
+    assert.deepStrictEqual(readinessInputs, [{ browserMode: "portable", cdpPort: 9222 }]);
+    const preview = await getJson(portableBaseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+    assert.strictEqual(preview.status, 200);
+    const started = await postForm(portableBaseUrl, "/api/workflow-run", { planId: saved.planId, action: "start" });
+    assert.strictEqual(started.status, 303, started.body);
+    const workflow = listWorkflowRuns(database, { planId: saved.planId })[0];
+    assert.deepStrictEqual(
+      { browserMode: workflow.planner.browserMode, cdpPort: workflow.planner.cdpPort },
+      { browserMode: "portable", cdpPort: 9222 }
+    );
+    assert.deepStrictEqual(
+      portableSpawns[0].args.slice(portableSpawns[0].args.indexOf("--browser"), portableSpawns[0].args.indexOf("--browser") + 4),
+      ["--browser", "portable", "--cdp-port", "9222"]
+    );
+  } finally {
+    for (const spawned of portableSpawns) spawned.child.emit("close", 0, null);
+    await new Promise((resolve) => portableServer.close(resolve));
+  }
 }
 
 async function testPerJobWorkflowProgressPanel(baseUrl, database, saved) {
