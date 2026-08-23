@@ -1,7 +1,7 @@
 # RoleFlow 普通用户稳定专用 Edge 交付设计
 
 **日期：** 2026-08-23
-**状态：** 方向已获用户确认，书面规范待用户复核
+**状态：** 用户已确认，进入书面实施计划
 **基线：** `main@9cf5b41c8af7cfb8143ec0af4afc6db32b0fa099`
 **开发分支：** `codex/stable-dedicated-edge`
 
@@ -60,7 +60,7 @@ profile。该 profile 改为当前 Windows 用户下的稳定目录，不再跟�
 - 同一窗口后台创建标签页并核对结果；
 - 后台 DOM 读取、JavaScript 执行和 CDP 指令；
 - 鼠标事件；
-- 标签页关闭和身份漂移停止。
+- 创建失败时通过底层 `Target.closeTarget` 做一次性清理，并在身份漂移时停止。
 
 因此无需开发第二套浏览器 bridge。当前主要缺口是产品编排仍然偏向 Edge Control：
 
@@ -68,7 +68,9 @@ profile。该 profile 改为当前 Windows 用户下的稳定目录，不再跟�
 - 新工作流入口拒绝 `portable`；
 - Dashboard 消息发现的浏览器工厂写死为 `edge`；
 - 沟通清单界面默认选择 `edge`，部分重新绑定逻辑也只处理 `edge`；
-- 专用 Edge 工作区没有统一强制两个固定 BOSS 基线标签页。
+- 专用 Edge 工作区没有统一强制两个固定 BOSS 基线标签页；
+- `CdpBrowserAdapter` 尚未向消息详情读取暴露可验证的 `closeTab()`，且当前把
+  `/json/list` 的第一项猜成活动页，不能证明新标签确实没有抢前台。
 
 ## 3. 用户目标
 
