@@ -68,6 +68,7 @@ async function main() {
   fs.mkdirSync(projectRoot, { recursive: true });
   fs.mkdirSync(outsideCwd, { recursive: true });
   createProjectFixture();
+  testProcessIdentityProbeUsesFixtureLocalAppData();
   testStartupIdentityHelpers();
 
   await assertPortFree(dashboardPort);
@@ -492,6 +493,15 @@ function testStartupIdentityHelpers() {
   });
 }
 
+function testProcessIdentityProbeUsesFixtureLocalAppData() {
+  const identity = readWindowsProcessIdentity(process.pid);
+  assert.strictEqual(
+    normalizePath(identity.localAppData),
+    normalizePath(path.join(tempRoot, "local app data")),
+    "the direct PowerShell process-identity probe must use fixture LOCALAPPDATA"
+  );
+}
+
 function assertPureSnapshotAccepted(snapshot) {
   assert.strictEqual(invokeStartupHelper("Assert-RoleFlowPortableEdgeProcessSnapshot", snapshot), true);
 }
@@ -705,7 +715,7 @@ function readWindowsProcessIdentity(pid) {
   const script = [
     `$item = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${processId}" -ErrorAction SilentlyContinue`,
     "if ($null -ne $item) {",
-    "  [pscustomobject]@{ executablePath = [string]$item.ExecutablePath; commandLine = [string]$item.CommandLine } | ConvertTo-Json -Compress",
+    "  [pscustomobject]@{ executablePath = [string]$item.ExecutablePath; commandLine = [string]$item.CommandLine; localAppData = [string]$env:LOCALAPPDATA } | ConvertTo-Json -Compress",
     "}"
   ].join("\n");
   const result = spawnSync(powershell, [
@@ -715,6 +725,7 @@ function readWindowsProcessIdentity(pid) {
     "-Command",
     script
   ], {
+    env: fixtureEnv(),
     encoding: "utf8",
     timeout: 10000,
     windowsHide: true
