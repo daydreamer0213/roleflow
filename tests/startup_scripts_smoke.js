@@ -68,14 +68,13 @@ async function main() {
   fs.mkdirSync(projectRoot, { recursive: true });
   fs.mkdirSync(outsideCwd, { recursive: true });
   createProjectFixture();
-  testProcessIdentityProbeUsesFixtureLocalAppData();
-  testStartupIdentityHelpers();
-
   await assertPortFree(dashboardPort);
   if (cleanupProbe === "processes") {
     await runIntentionalCleanupProcessProbe();
     return;
   }
+  testProcessIdentityProbeUsesFixtureLocalAppData();
+  testStartupIdentityHelpers();
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
   testPortableModeRejectsInvalidCdpPort();
@@ -404,57 +403,7 @@ function testCleanupFailureIsAggregated() {
 
 function testStartupIdentityHelpers() {
   const localAppDataPath = path.join(tempRoot, "local app data");
-  const profileA = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
-    ProjectRoot: path.join(tempRoot, "project-a"),
-    ProfileDir: "",
-    LocalAppDataPath: localAppDataPath
-  });
-  const profileB = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
-    ProjectRoot: path.join(tempRoot, "project-b"),
-    ProfileDir: "",
-    LocalAppDataPath: localAppDataPath
-  });
-  assert.strictEqual(normalizePath(profileA), normalizePath(profileB));
-  assert.strictEqual(
-    normalizePath(profileA),
-    normalizePath(path.join(localAppDataPath, "RoleFlow", "BrowserProfile"))
-  );
-  const relativeProfile = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
-    ProjectRoot: path.join(tempRoot, "project-a"),
-    ProfileDir: "profiles\\dedicated",
-    LocalAppDataPath: localAppDataPath
-  });
-  assert.strictEqual(
-    normalizePath(relativeProfile),
-    normalizePath(path.join(tempRoot, "project-a", "profiles", "dedicated"))
-  );
   const absoluteProfile = path.join(tempRoot, "explicit profile");
-  assert.strictEqual(
-    normalizePath(invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
-      ProjectRoot: path.join(tempRoot, "project-a"),
-      ProfileDir: absoluteProfile,
-      LocalAppDataPath: localAppDataPath
-    })),
-    normalizePath(absoluteProfile)
-  );
-
-  assert.deepStrictEqual(
-    invokeStartupHelper("New-RoleFlowPortableEdgeArguments", {
-      Port: 9222,
-      ProfilePath: "C:\\RoleFlow Profile",
-      StartUrl: "https://www.zhipin.com/web/geek/jobs"
-    }),
-    [
-      "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=9222",
-      "--remote-allow-origins=*",
-      '"--user-data-dir=C:\\RoleFlow Profile"',
-      "--no-first-run",
-      "--no-default-browser-check",
-      "https://www.zhipin.com/web/geek/jobs"
-    ]
-  );
-
   const acceptedSnapshot = {
     ProcessName: "msedge.exe",
     ExecutablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -463,54 +412,6 @@ function testStartupIdentityHelpers() {
     Port: 9222,
     ProfilePath: "C:\\RoleFlow Profile"
   };
-  assertPureSnapshotAccepted(acceptedSnapshot);
-  assertPureSnapshotRejected(
-    { ...acceptedSnapshot, ExecutablePath: "C:\\fixture\\msedge.exe" },
-    /different executable/i
-  );
-  assertPureSnapshotRejected(
-    { ...acceptedSnapshot, ProfilePath: "C:\\wrong profile" },
-    /different profile/i
-  );
-  assertPureSnapshotRejected(
-    { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("127.0.0.1", "0.0.0.0") },
-    /loopback address/i
-  );
-  assertPureSnapshotRejected(
-    { ...acceptedSnapshot, CommandLine: `${acceptedSnapshot.CommandLine} --remote-debugging-address=0.0.0.0` },
-    /loopback address/i
-  );
-  assertPureSnapshotRejected(
-    { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("9222", "9333") },
-    /different port/i
-  );
-  assertListenerSnapshotAccepted({
-    querySucceeded: true,
-    listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }]
-  }, { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242 }] });
-  for (const listenerSnapshot of [
-    { querySucceeded: false, listeners: [] },
-    { querySucceeded: true, listeners: [{ localAddress: "0.0.0.0", owningProcess: 4242 }] },
-    { querySucceeded: true, listeners: [{ localAddress: "::", owningProcess: 4242 }] },
-    {
-      querySucceeded: true,
-      listeners: [
-        { localAddress: "127.0.0.1", owningProcess: 4242 },
-        { localAddress: "127.0.0.1", owningProcess: 4343 }
-      ]
-    }
-  ]) assertListenerSnapshotRejected(listenerSnapshot, {
-    querySucceeded: true,
-    processes: [{ ...acceptedSnapshot, ProcessId: 4242 }]
-  });
-  assertListenerSnapshotRejected(
-    { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] },
-    { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242, CommandLine: "" }] }
-  );
-  assertListenerSnapshotRejected(
-    { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] },
-    { querySucceeded: false, processes: [] }
-  );
   const explicitNestedSnapshot = {
     ...acceptedSnapshot,
     CommandLine: acceptedSnapshot.CommandLine.replace("C:\\RoleFlow Profile", "C:\\Profiles\\Dedicated")
@@ -530,29 +431,110 @@ function testStartupIdentityHelpers() {
       }
     ]
   };
-  const profileResults = invokeStartupHelperBatch([
-    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [acceptedSnapshot] }, false],
-    ["C:\\Profiles", { querySucceeded: true, processes: [explicitNestedSnapshot] }, false],
-    ["C:\\Profiles\\Dedicated\\Default", { querySucceeded: true, processes: [explicitNestedSnapshot] }, false],
-    [defaultEdgeUserData, { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
-    [path.join(defaultEdgeUserData, "Default"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
-    [path.dirname(defaultEdgeUserData), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
-    [path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, true],
-    ["C:\\RoleFlow Profile", { querySucceeded: false, processes: [] }, false],
-    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessName: "" }] }, false],
-    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ExecutablePath: "" }] }, false],
-    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, CommandLine: "" }] }, false],
-    ["C:\\RoleFlow Profile", otherProfileSnapshot, true]
-  ].map(([profilePath, processQuerySnapshot, accepted]) => ({
-    accepted,
-    functionName: "Assert-RoleFlowBrowserProfileNotInUse",
-    parameters: { ProfilePath: profilePath, ProcessQuerySnapshot: processQuerySnapshot }
-  })));
-  assert.deepStrictEqual(
-    profileResults.map((item) => item.accepted),
-    [false, false, false, false, false, false, true, false, false, false, false, true],
-    `unexpected profile identity decisions: ${JSON.stringify(profileResults)}`
-  );
+  const listenerParameters = (listenerSnapshot, processQuerySnapshot) => ({
+    ListenerSnapshot: listenerSnapshot,
+    ProcessQuerySnapshot: processQuerySnapshot,
+    EdgePath: acceptedSnapshot.EdgePath,
+    Port: 9222,
+    ProfilePath: "C:\\RoleFlow Profile"
+  });
+  const loopbackListener = { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] };
+  const edgeProcessQuery = { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242 }] };
+  const cases = [
+    {
+      name: "stable profile is project-independent",
+      functionName: "Resolve-RoleFlowBrowserProfilePath",
+      parameters: { ProjectRoot: path.join(tempRoot, "project-a"), ProfileDir: "", LocalAppDataPath: localAppDataPath },
+      expected: { accepted: true, value: path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), path: true }
+    },
+    {
+      name: "stable profile ignores a second project root",
+      functionName: "Resolve-RoleFlowBrowserProfilePath",
+      parameters: { ProjectRoot: path.join(tempRoot, "project-b"), ProfileDir: "", LocalAppDataPath: localAppDataPath },
+      expected: { accepted: true, value: path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), path: true }
+    },
+    {
+      name: "relative profile resolves from project root",
+      functionName: "Resolve-RoleFlowBrowserProfilePath",
+      parameters: { ProjectRoot: path.join(tempRoot, "project-a"), ProfileDir: "profiles\\dedicated", LocalAppDataPath: localAppDataPath },
+      expected: { accepted: true, value: path.join(tempRoot, "project-a", "profiles", "dedicated"), path: true }
+    },
+    {
+      name: "absolute profile remains absolute",
+      functionName: "Resolve-RoleFlowBrowserProfilePath",
+      parameters: { ProjectRoot: path.join(tempRoot, "project-a"), ProfileDir: absoluteProfile, LocalAppDataPath: localAppDataPath },
+      expected: { accepted: true, value: absoluteProfile, path: true }
+    },
+    {
+      name: "portable Edge arguments preserve frozen authority",
+      functionName: "New-RoleFlowPortableEdgeArguments",
+      parameters: { Port: 9222, ProfilePath: "C:\\RoleFlow Profile", StartUrl: "https://www.zhipin.com/web/geek/jobs" },
+      expected: {
+        accepted: true,
+        value: [
+          "--remote-debugging-address=127.0.0.1",
+          "--remote-debugging-port=9222",
+          "--remote-allow-origins=*",
+          '"--user-data-dir=C:\\RoleFlow Profile"',
+          "--no-first-run",
+          "--no-default-browser-check",
+          "https://www.zhipin.com/web/geek/jobs"
+        ]
+      }
+    },
+    { name: "portable Edge process accepts exact identity", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: acceptedSnapshot, expected: { accepted: true, value: true } },
+    { name: "portable Edge process rejects executable mismatch", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, ExecutablePath: "C:\\fixture\\msedge.exe" }, expected: { accepted: false, error: /different executable/i } },
+    { name: "portable Edge process rejects profile mismatch", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, ProfilePath: "C:\\wrong profile" }, expected: { accepted: false, error: /different profile/i } },
+    { name: "portable Edge process rejects non-loopback address", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("127.0.0.1", "0.0.0.0") }, expected: { accepted: false, error: /loopback address/i } },
+    { name: "portable Edge process rejects ambiguous address", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: `${acceptedSnapshot.CommandLine} --remote-debugging-address=0.0.0.0` }, expected: { accepted: false, error: /loopback address/i } },
+    { name: "portable Edge process rejects port mismatch", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("9222", "9333") }, expected: { accepted: false, error: /different port/i } },
+    { name: "portable Edge listener accepts exact identity", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters(loopbackListener, edgeProcessQuery), expected: { accepted: true, value: 4242 } },
+    { name: "portable Edge listener rejects failed listener query", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: false, listeners: [] }, edgeProcessQuery), expected: { accepted: false, error: /listener enumeration failed/i } },
+    { name: "portable Edge listener rejects all-address listener", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: true, listeners: [{ localAddress: "0.0.0.0", owningProcess: 4242 }] }, edgeProcessQuery), expected: { accepted: false, error: /exactly one loopback listener/i } },
+    { name: "portable Edge listener rejects IPv6 listener", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: true, listeners: [{ localAddress: "::", owningProcess: 4242 }] }, edgeProcessQuery), expected: { accepted: false, error: /exactly one loopback listener/i } },
+    { name: "portable Edge listener rejects ambiguous listener", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }, { localAddress: "127.0.0.1", owningProcess: 4343 }] }, edgeProcessQuery), expected: { accepted: false, error: /exactly one loopback listener/i } },
+    { name: "portable Edge listener rejects incomplete process", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters(loopbackListener, { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242, CommandLine: "" }] }), expected: { accepted: false, error: /CommandLine/ } },
+    { name: "portable Edge listener rejects failed process query", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters(loopbackListener, { querySucceeded: false, processes: [] }), expected: { accepted: false, error: /process enumeration failed/i } }
+  ];
+  for (const [name, profilePath, processQuerySnapshot, expected] of [
+    ["browser profile rejects exact use", "C:\\RoleFlow Profile", { querySucceeded: true, processes: [acceptedSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile rejects actual descendant", "C:\\Profiles", { querySucceeded: true, processes: [explicitNestedSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile rejects expected descendant", "C:\\Profiles\\Dedicated\\Default", { querySucceeded: true, processes: [explicitNestedSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile rejects default authority", defaultEdgeUserData, { querySucceeded: true, processes: [defaultEdgeSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile rejects default child", path.join(defaultEdgeUserData, "Default"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile rejects default parent", path.dirname(defaultEdgeUserData), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, { accepted: false, error: /already in use/i }],
+    ["browser profile accepts independent stable profile", path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, { accepted: true, value: true }],
+    ["browser profile rejects failed process query", "C:\\RoleFlow Profile", { querySucceeded: false, processes: [] }, { accepted: false, error: /process enumeration failed/i }],
+    ["browser profile rejects missing process name", "C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessName: "" }] }, { accepted: false, error: /incomplete identity/i }],
+    ["browser profile rejects missing executable", "C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ExecutablePath: "" }] }, { accepted: false, error: /incomplete identity/i }],
+    ["browser profile rejects missing command line", "C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, CommandLine: "" }] }, { accepted: false, error: /incomplete identity/i }],
+    ["browser profile ignores confirmed non-Edge process", "C:\\RoleFlow Profile", otherProfileSnapshot, { accepted: true, value: true }]
+  ]) {
+    cases.push({
+      name,
+      functionName: "Assert-RoleFlowBrowserProfileNotInUse",
+      parameters: { ProfilePath: profilePath, ProcessQuerySnapshot: processQuerySnapshot },
+      expected
+    });
+  }
+
+  const results = invokeStartupHelperBatch(cases.map(({ functionName, parameters }) => ({ functionName, parameters })));
+  assert.strictEqual(results.length, cases.length, "startup helper batch returned an incomplete result set");
+  for (const [index, testCase] of cases.entries()) {
+    const actual = results[index];
+    assert.strictEqual(actual.accepted, testCase.expected.accepted, `${testCase.name}: ${actual.error}`);
+    if (testCase.expected.accepted) {
+      assert.strictEqual(actual.error, "", `${testCase.name}: unexpected error`);
+      if (testCase.expected.path) {
+        assert.strictEqual(normalizePath(actual.value), normalizePath(testCase.expected.value), testCase.name);
+      } else {
+        assert.deepStrictEqual(actual.value, testCase.expected.value, testCase.name);
+      }
+    } else {
+      assert.strictEqual(actual.value, null, `${testCase.name}: rejected call returned a value`);
+      assert.match(actual.error, testCase.expected.error, `${testCase.name}: ${actual.error}`);
+    }
+  }
 }
 
 function testProcessIdentityProbeUsesFixtureLocalAppData() {
@@ -562,37 +544,6 @@ function testProcessIdentityProbeUsesFixtureLocalAppData() {
     normalizePath(path.join(tempRoot, "local app data")),
     "the direct PowerShell process-identity probe must use fixture LOCALAPPDATA"
   );
-}
-
-function assertPureSnapshotAccepted(snapshot) {
-  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowPortableEdgeProcessSnapshot", snapshot), true);
-}
-
-function assertPureSnapshotRejected(snapshot, pattern) {
-  assert.throws(
-    () => invokeStartupHelper("Assert-RoleFlowPortableEdgeProcessSnapshot", snapshot),
-    pattern
-  );
-}
-
-function assertListenerSnapshotAccepted(listenerSnapshot, processQuerySnapshot) {
-  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowPortableEdgeListenerSnapshot", {
-    ListenerSnapshot: listenerSnapshot,
-    ProcessQuerySnapshot: processQuerySnapshot,
-    EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    Port: 9222,
-    ProfilePath: "C:\\RoleFlow Profile"
-  }), 4242);
-}
-
-function assertListenerSnapshotRejected(listenerSnapshot, processQuerySnapshot) {
-  assert.throws(() => invokeStartupHelper("Assert-RoleFlowPortableEdgeListenerSnapshot", {
-    ListenerSnapshot: listenerSnapshot,
-    ProcessQuerySnapshot: processQuerySnapshot,
-    EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    Port: 9222,
-    ProfilePath: "C:\\RoleFlow Profile"
-  }));
 }
 
 function startNodeServer(script, args) {
@@ -649,24 +600,6 @@ function runPowerShellUnicode(args, {
     timeout,
     windowsHide: true
   });
-}
-
-function invokeStartupHelper(functionName, parameters) {
-  const payloadPath = path.join(tempRoot, `startup-helper-${Date.now()}-${Math.random()}.json`);
-  fs.writeFileSync(payloadPath, JSON.stringify({ functionName, parameters }), "utf8");
-  try {
-    const result = runPowerShell([
-      "-File", path.join(tempRoot, "startup-helper-probe.ps1"),
-      "-PayloadPath", payloadPath,
-      "-HelperPath",
-      path.join(projectRoot, "scripts", "lib", "startup-identity.ps1")
-    ], { cwd: outsideCwd, timeout: 10000 });
-    const output = combinedOutput(result);
-    if (result.status !== 0) throw new Error(output);
-    return JSON.parse(String(result.stdout || "").trim());
-  } finally {
-    fs.rmSync(payloadPath, { force: true });
-  }
 }
 
 function invokeStartupHelperBatch(calls) {
@@ -1092,25 +1025,19 @@ param(
 $ErrorActionPreference = "Stop"
 $payload = Get-Content -Raw -LiteralPath $PayloadPath | ConvertFrom-Json
 . $HelperPath
-if ($null -ne $payload.calls) {
-  $results = @(
-    foreach ($call in @($payload.calls)) {
-      $parameters = @{}
-      $call.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
-      try {
-        [void](& ([string]$call.functionName) @parameters)
-        [pscustomobject]@{ accepted = $true; error = "" }
-      } catch {
-        [pscustomobject]@{ accepted = $false; error = $_.Exception.Message }
-      }
+if ($null -eq $payload.calls) { throw "Startup helper batch calls are missing." }
+$results = @(
+  foreach ($call in @($payload.calls)) {
+    $parameters = @{}
+    $call.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
+    try {
+      $value = & ([string]$call.functionName) @parameters
+      [pscustomobject]@{ accepted = $true; value = $value; error = "" }
+    } catch {
+      [pscustomobject]@{ accepted = $false; value = $null; error = $_.Exception.Message }
     }
-  )
-  $results | ConvertTo-Json -Compress -Depth 10
-  exit 0
-}
-$parameters = @{}
-$payload.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
-$result = & ([string]$payload.functionName) @parameters
-$result | ConvertTo-Json -Compress -Depth 10
+  }
+)
+$results | ConvertTo-Json -Compress -Depth 10
 `;
 }

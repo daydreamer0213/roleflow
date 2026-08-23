@@ -126,3 +126,38 @@ The production change is limited to validating the snapshot process name before 
 - All test PowerShell children continue to receive fixture `LOCALAPPDATA`, and neither 8787 nor 9222 is bound or probed.
 - The change adds no process control, port access, migration, installation, or deletion behavior.
 - Post-test audit found zero startup fixture directories, zero startup fixture processes, and no repository `install-self-check.log`.
+
+## Fix Round 3: Startup Smoke Offline-Gate Runtime
+
+### RED and Baseline
+
+- Full-gate evidence showed standalone `startup_scripts_smoke` runs taking 152–162 seconds while all assertions passed; `tests/run_all.js` therefore terminated the item at its fixed 120-second gate with `ETIMEDOUT`.
+- A fresh local unmodified baseline passed in 165.016 seconds, confirming that changing `TEMP`/`TMP` was not the controlling factor and that the failure was repeatable runtime overhead rather than a functional assertion.
+- Static execution counting found 19 startup-helper PowerShell launches in the ordinary path. The recursive `cleanupProbe="processes"` child repeated the process-identity probe and all 19 startup-helper launches before reaching its cleanup fixture, doubling the helper launches to 38.
+
+### Minimal Optimization Evidence
+
+Moving the recursive cleanup-probe branch immediately after the project fixture and isolated-port check removed the repeated pure-helper suite without skipping anything in the ordinary test path. That reduced helper PowerShell launches from 38 to 19, but the first measured run still took 124.469 seconds, so it did not meet the required 100-second stability target.
+
+The existing batch probe was then extended to return each real helper call's `value`, `accepted`, and `error`. All 30 resolve, argument, process-snapshot, listener-snapshot, and browser-profile cases now execute the real copied `startup-identity.ps1` in one PowerShell process. Accepted cases retain exact value assertions; rejected cases retain `accepted=false`, `value=null`, and case-specific error assertions. No production logic was reimplemented in JavaScript.
+
+After the final batch-only probe cleanup, two consecutive standalone runs passed:
+
+- Run 1 — 88.054 seconds, `startup_scripts_smoke ok`.
+- Run 2 — 87.752 seconds, `startup_scripts_smoke ok`.
+
+Both runs stay below 100 seconds and leave more than 32 seconds below the unchanged 120-second offline gate. The final helper PowerShell launch count is 1 instead of 38.
+
+Additional gates:
+
+- `node tests/self_check.js` — exit 0, `self_check ok` (with the existing Node experimental SQLite warning).
+- `git diff --check` — exit 0.
+- Post-test audit — zero startup fixture processes and no repository `install-self-check.log`.
+
+### Safety Self-review
+
+- No timeout was raised, no case was deleted or skipped, and no production file changed.
+- Every pure case still invokes the copied production `startup-identity.ps1`; the batch changes process startup granularity only.
+- All PowerShell children retain fixture `LOCALAPPDATA`. No Edge executable was manufactured, started, queried, or stopped; no BOSS page or real 8787/9222 port was accessed.
+- The recursive cleanup fixture still creates, audits, verifies, and cleans only its temporary Dashboard process and temporary port.
+- Residual inspection found two process-free startup-smoke directories from earlier 120-second-terminated runs, including one optimization-before snapshot with a single-call helper payload. After resolving and proving both were unique children of the dedicated startup-smoke parent, only those two fixture directories were removed; the final fixture-directory count is zero.
