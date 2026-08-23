@@ -112,7 +112,7 @@ begin
   if UninstallSilent then
     Arguments := Arguments + ' -SkipDeletePrompt'
   else
-    Arguments := Arguments + ' -PromptDeleteUserData';
+    Arguments := Arguments + ' -PromptDeleteUserData -PromptDeleteBrowserProfile';
   Result := RunPowerShellScript(
     'prepare-uninstall.ps1',
     Arguments,

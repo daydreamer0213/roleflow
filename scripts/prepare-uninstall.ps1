@@ -5,11 +5,15 @@ param(
   [switch]$PromptDeleteUserData,
   [switch]$DeleteUserData,
   [switch]$ConfirmDelete,
+  [switch]$PromptDeleteBrowserProfile,
+  [switch]$DeleteBrowserProfile,
+  [switch]$ConfirmDeleteBrowserProfile,
   [switch]$SkipDeletePrompt,
   [switch]$SkipDashboardStop
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\")
 if ([string]::IsNullOrWhiteSpace($InstallRoot) -or
     $InstallRoot -eq [System.IO.Path]::GetPathRoot($InstallRoot)) {
@@ -55,8 +59,9 @@ function Stop-InstalledDashboard {
   }
 }
 
-function Remove-ApprovedUserData {
+function Get-ApprovedUserDataTargets {
   $ApprovedChildren = @("data", ".runtime", "reports", "logs", "profiles")
+  $Targets = @()
   foreach ($Child in $ApprovedChildren) {
     $Target = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot $Child)).TrimEnd("\")
     if (-not $Target.StartsWith(
@@ -65,10 +70,25 @@ function Remove-ApprovedUserData {
     )) {
       throw "Refusing to delete outside the RoleFlow install root: $Target"
     }
-    if (Test-Path -LiteralPath $Target) {
-      Remove-Item -LiteralPath $Target -Recurse -Force
-    }
+    $Targets += $Target
   }
+  return $Targets
+}
+
+function Get-BrowserProfileDeletionTarget {
+  $Target = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $InstallRoot
+  $Expected = Resolve-RoleFlowNormalizedPath -Path (
+    Join-Path $env:LOCALAPPDATA "RoleFlow\BrowserProfile"
+  )
+  if (-not [string]::Equals($Target, $Expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "ROLEFLOW_BROWSER_PROFILE_DELETE_IDENTITY_INVALID"
+  }
+  $LocalAppDataRoot = Resolve-RoleFlowNormalizedPath -Path $env:LOCALAPPDATA
+  if (-not $Target.StartsWith($LocalAppDataRoot + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+      [string]::Equals($Target, $LocalAppDataRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "ROLEFLOW_BROWSER_PROFILE_DELETE_PATH_UNSAFE"
+  }
+  return $Target
 }
 
 if (-not $SkipDashboardStop) {
@@ -90,9 +110,58 @@ if ($PromptDeleteUserData -and -not $SkipDeletePrompt) {
   }
 }
 
-if ($DeleteUserData -and $ConfirmDelete) {
-  Remove-ApprovedUserData
+if ($PromptDeleteBrowserProfile -and -not $SkipDeletePrompt) {
+  $PromptBrowserProfilePath = Get-BrowserProfileDeletionTarget
+  Add-Type -AssemblyName System.Windows.Forms
+  $Choice = [System.Windows.Forms.MessageBox]::Show(
+    "是否同时删除 RoleFlow 专用浏览器登录资料？`r`n`r`n路径：$PromptBrowserProfilePath`r`n`r`n删除后需要重新登录 BOSS。",
+    "卸载 RoleFlow",
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Warning,
+    [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+  )
+  if ($Choice -eq [System.Windows.Forms.DialogResult]::Yes) {
+    $DeleteBrowserProfile = $true
+    $ConfirmDeleteBrowserProfile = $true
+  }
+}
+
+if ($DeleteBrowserProfile -xor $ConfirmDeleteBrowserProfile) {
+  throw "ROLEFLOW_BROWSER_PROFILE_DELETE_CONFIRMATION_REQUIRED"
+}
+
+$DeleteApprovedUserData = $DeleteUserData -and $ConfirmDelete
+$DeleteApprovedBrowserProfile = $DeleteBrowserProfile -and $ConfirmDeleteBrowserProfile
+$UserDataTargets = @()
+$BrowserProfileTarget = $null
+
+if ($DeleteApprovedUserData) {
+  $UserDataTargets = @(Get-ApprovedUserDataTargets)
+}
+if ($DeleteApprovedBrowserProfile) {
+  $BrowserProfileTarget = Get-BrowserProfileDeletionTarget
+  $ProcessSnapshot = Get-RoleFlowEdgeProcessSnapshot
+  [void](Assert-RoleFlowBrowserProfileNotInUse `
+    -ProfilePath $BrowserProfileTarget `
+    -ProcessQuerySnapshot $ProcessSnapshot)
+}
+
+if ($DeleteApprovedUserData) {
+  foreach ($Target in $UserDataTargets) {
+    if (Test-Path -LiteralPath $Target) {
+      Remove-Item -LiteralPath $Target -Recurse -Force
+    }
+  }
   Write-Output "RoleFlow local user data deleted."
 } elseif (-not $SkipDeletePrompt) {
   Write-Output "RoleFlow local user data preserved at: $InstallRoot"
+}
+
+if ($DeleteApprovedBrowserProfile) {
+  if (Test-Path -LiteralPath $BrowserProfileTarget) {
+    Remove-Item -LiteralPath $BrowserProfileTarget -Recurse -Force
+  }
+  Write-Output "RoleFlow browser login data deleted."
+} elseif (-not $SkipDeletePrompt) {
+  Write-Output "RoleFlow browser login data preserved."
 }

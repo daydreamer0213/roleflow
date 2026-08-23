@@ -130,6 +130,7 @@ foreach ($RelativePath in @(
   "scripts\launch-installed.ps1",
   "scripts\installed-self-check.ps1",
   "scripts\prepare-uninstall.ps1",
+  "scripts\migrate-browser-profile.ps1",
   "scripts\lib\startup-identity.ps1"
 )) {
   Copy-ProjectItem -RelativePath $RelativePath
@@ -162,7 +163,8 @@ $ForbiddenFiles = @(
   Get-ChildItem -LiteralPath $StageDir -Recurse -File |
     Where-Object {
       $RelativePath = $_.FullName.Substring($StageDir.Length + 1)
-      $_.Name -match "jobs\.sqlite|\.sqlite-(wal|shm)$|\.key$" -or
+      $_.Name -match "jobs\.sqlite|\.sqlite(?:-(wal|shm))?$|\.key$|^\.env(?:\.|$)" -or
+      $RelativePath -match "(^|\\)(BrowserProfile|edge-profile|secrets?)(\\|$)" -or
       $RelativePath -match "^(tests|vendor\\edge-control-bridge|\.runtime|reports|logs)(\\|$)"
     }
 )

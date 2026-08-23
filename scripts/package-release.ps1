@@ -82,4 +82,4 @@ if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force 
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
 Remove-ProjectPath -Path $StageDir
 Write-Host "Release package: $zipPath"
-Write-Host "Excluded: data\jobs.sqlite, reports, .runtime\edge-profile, vendor\edge-control-bridge."
+Write-Host "Excluded: data\jobs.sqlite, reports, .runtime\edge-profile, vendor\edge-control-bridge. Browser login data is external and never packaged."
