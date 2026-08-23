@@ -106,7 +106,7 @@ async function main() {
   let nowMs = Date.parse("2026-07-31T01:00:00.000Z");
   server = createDashboardServer({
     db,
-    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
+    browserAuthority: { browserMode: "portable", cdpPort: 9222, profilePath: path.join(root, "portable-edge-profile") },
     root,
     dbPath,
     forceMock: true,
@@ -247,8 +247,8 @@ async function main() {
   await firstPending.started;
   assert.deepStrictEqual(
     discoveryBrowserAuthority,
-    { browserMode: "edge", cdpPort: null },
-    "message discovery must use the dashboard's default Edge browser authority"
+    { browserMode: "portable", cdpPort: 9222 },
+    "message discovery must use the frozen dedicated Edge browser authority"
   );
   assert.strictEqual(
     discoveryReaderBrowser,
@@ -472,6 +472,12 @@ async function main() {
   ]) {
     const safeMessage = messageDiscoveryReasonText(code);
     assert(safeMessage && !safeMessage.includes("诊断"), `${code} must have a specific safe recovery message`);
+    if (code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND") {
+      assert.match(safeMessage, /还原.*专用 Edge 窗口/,
+        "a minimized dedicated Edge window must tell the user how to restore visibility before retrying");
+      assert.match(safeMessage, /会话已保留/,
+        "a background-proof failure must say the pending conversation is preserved");
+    }
   }
 
   const secondPending = controlledPendingRun({

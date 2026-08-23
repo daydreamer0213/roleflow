@@ -1,5 +1,10 @@
 const { PAGE_HELPERS } = require("./boss");
 const { assertBossOperatorTabs } = require("../../core/workspace_tabs");
+const {
+  isBrowserTabId,
+  sameBrowserTabId,
+  sortedBrowserTabIds
+} = require("../../core/browser_tab_identity");
 
 const DETAIL_READY_ATTEMPTS = 60;
 const DETAIL_READY_DELAY_MS = 250;
@@ -90,7 +95,7 @@ function createBossMessageDetailReader({
       issued = true;
       const returnedTabId = await browser.createTab(communicationTabId, target.navigationUrl);
       createReturned = true;
-      if (Number.isInteger(returnedTabId)) detailTabId = returnedTabId;
+      if (isBrowserTabId(returnedTabId)) detailTabId = returnedTabId;
       const created = await waitForCreatedTargetTab({
         beforeTabs,
         binding,
@@ -105,11 +110,16 @@ function createBossMessageDetailReader({
     } catch (error) {
       primaryError = error;
     } finally {
-      if (issued && detailTabId === null) {
+      if (issued && primaryError) {
         try {
           const tabs = await browser.listTabs();
-          const candidate = optionalCreatedTargetTab(beforeTabs, tabs, target);
-          if (candidate) detailTabId = candidate.id;
+          const attributed = detailTabId !== null && tabs.some((tab) =>
+            !beforeTabs.some((item) => sameBrowserTabId(item.id, tab.id))
+            && sameBrowserTabId(tab.id, detailTabId));
+          if (!attributed) {
+            const candidate = optionalCreatedTargetTab(beforeTabs, tabs, target);
+            detailTabId = candidate?.id ?? null;
+          }
         } catch (error) {
           cleanupError = error;
         }
@@ -257,47 +267,58 @@ function captureBinding(tabs, communicationTabId) {
   const expectedCommunicationTabId = communicationTabId === undefined
     ? fixed.communicationTab.id
     : communicationTabId;
-  if (!Number.isInteger(expectedCommunicationTabId)
-    || !Number.isInteger(fixed.searchTab.id)
-    || !Number.isInteger(fixed.communicationTab.id)
-    || fixed.communicationTab.id !== expectedCommunicationTabId) {
-    throw detailError("BOSS_MESSAGE_DETAIL_BINDING_INVALID", "numeric fixed BOSS tab binding is required");
+  if (!isBrowserTabId(expectedCommunicationTabId)
+    || !isBrowserTabId(fixed.searchTab.id)
+    || !isBrowserTabId(fixed.communicationTab.id)
+    || !sameBrowserTabId(fixed.communicationTab.id, expectedCommunicationTabId)) {
+    throw detailError("BOSS_MESSAGE_DETAIL_BINDING_INVALID", "typed fixed BOSS tab binding is required");
+  }
+  const tabIds = sortedBrowserTabIds(tabs.map((tab) => tab.id));
+  if (tabIds.length !== tabs.length || new Set(tabIds.map((id) => typeof id)).size !== 1) {
+    throw detailError("BOSS_MESSAGE_DETAIL_BINDING_INVALID", "browser tab identity transport is inconsistent");
   }
   const bossTabs = tabs.filter(isBossTab);
   if (bossTabs.length !== 2) {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_INVALID", "BOSS fixed-tab baseline is not at rest");
   }
-  const activeTabId = activeTabIdInWindow(tabs, fixed.windowId);
+  const visibleTabIds = visibleTabIdsInWindow(tabs, fixed.windowId);
+  if (visibleTabIds.length !== 1) {
+    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "visible Edge tab identity is unavailable");
+  }
   return {
     searchTabId: fixed.searchTab.id,
     communicationTabId: fixed.communicationTab.id,
     windowId: fixed.windowId,
-    activeTabId,
-    bossTabIds: bossTabs.map((tab) => tab.id).sort((a, b) => a - b),
-    tabIds: numericTabIds(tabs)
+    visibleTabIds,
+    bossTabIds: sortedBrowserTabIds(bossTabs.map((tab) => tab.id)),
+    tabIds
   };
 }
 
 function assertRestoredBaseline(tabs, binding) {
-  const fixed = assertBossOperatorTabs(tabs);
+  let fixed;
+  try {
+    fixed = assertBossOperatorTabs(tabs);
+  } catch {
+    throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
+  }
   const bossTabs = tabs.filter(isBossTab);
-  const bossTabIds = bossTabs.map((tab) => tab.id).sort((a, b) => a - b);
+  const bossTabIds = sortedBrowserTabIds(bossTabs.map((tab) => tab.id));
   if (bossTabs.length !== 2
-    || fixed.searchTab.id !== binding.searchTabId
-    || fixed.communicationTab.id !== binding.communicationTabId
+    || !sameBrowserTabId(fixed.searchTab.id, binding.searchTabId)
+    || !sameBrowserTabId(fixed.communicationTab.id, binding.communicationTabId)
     || fixed.windowId !== binding.windowId
-    || activeTabIdInWindow(tabs, binding.windowId) !== binding.activeTabId
-    || bossTabIds.some((id, index) => id !== binding.bossTabIds[index])
-    || !sameIds(numericTabIds(tabs), binding.tabIds)) {
+    || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)
+    || !sameIds(bossTabIds, binding.bossTabIds)
+    || !sameIds(sortedBrowserTabIds(tabs.map((tab) => tab.id)), binding.tabIds)) {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
   }
   return fixed;
 }
 
 function optionalCreatedTargetTab(before, after, target) {
-  const beforeIds = new Set(before.map((tab) => tab.id));
-  const candidates = after.filter((tab) => !beforeIds.has(tab.id)
-    && Number.isInteger(tab.id)
+  const candidates = after.filter((tab) => !before.some((item) => sameBrowserTabId(item.id, tab.id))
+    && isBrowserTabId(tab.id)
     && isTargetDetailTab(tab, target));
   if (candidates.length > 1) {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "background detail cleanup is ambiguous");
@@ -306,16 +327,16 @@ function optionalCreatedTargetTab(before, after, target) {
 }
 
 function assertBackgroundCreation({ returnedTabId, beforeTabs, afterCreate, binding }) {
-  const beforeIds = new Set(beforeTabs.map((tab) => tab.id));
-  const newTabs = afterCreate.filter((tab) => !beforeIds.has(tab.id));
+  const newTabs = afterCreate.filter((tab) => !beforeTabs.some((item) => sameBrowserTabId(item.id, tab.id)));
   const created = newTabs[0];
-  if (!Number.isInteger(returnedTabId)
+  if (!isBrowserTabId(returnedTabId)
     || newTabs.length !== 1
-    || !Number.isInteger(created?.id)
-    || returnedTabId !== created.id
+    || !isBrowserTabId(created?.id)
+    || !sameBrowserTabId(returnedTabId, created.id)
+    || typeof returnedTabId !== typeof binding.communicationTabId
     || created.windowId !== binding.windowId
     || created.active === true
-    || activeTabIdInWindow(afterCreate, binding.windowId) !== binding.activeTabId) {
+    || !sameIds(visibleTabIdsInWindow(afterCreate, binding.windowId), binding.visibleTabIds)) {
     throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab safety could not be proven");
   }
   assertFixedTabsPresent(afterCreate, binding);
@@ -325,18 +346,18 @@ function assertBackgroundCreation({ returnedTabId, beforeTabs, afterCreate, bind
 function assertLiveDetailBinding(tabs, binding, detailTabId, target) {
   const detailTabs = tabs.filter((tab) => isTargetDetailTab(tab, target));
   if (detailTabs.length !== 1
-    || detailTabs[0].id !== detailTabId
+    || !sameBrowserTabId(detailTabs[0].id, detailTabId)
     || detailTabs[0].windowId !== binding.windowId
     || detailTabs[0].active === true
-    || activeTabIdInWindow(tabs, binding.windowId) !== binding.activeTabId) {
+    || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)) {
     throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab safety changed during read");
   }
   assertFixedTabsPresent(tabs, binding);
 }
 
 function assertFixedTabsPresent(tabs, binding) {
-  const search = tabs.find((tab) => tab.id === binding.searchTabId);
-  const communication = tabs.find((tab) => tab.id === binding.communicationTabId);
+  const search = tabs.find((tab) => sameBrowserTabId(tab.id, binding.searchTabId));
+  const communication = tabs.find((tab) => sameBrowserTabId(tab.id, binding.communicationTabId));
   if (!search || !communication
     || search.windowId !== binding.windowId
     || communication.windowId !== binding.windowId
@@ -346,12 +367,13 @@ function assertFixedTabsPresent(tabs, binding) {
   }
 }
 
-function activeTabIdInWindow(tabs, windowId) {
-  const active = tabs.filter((tab) => tab.windowId === windowId && tab.active === true);
-  if (active.length !== 1 || !Number.isInteger(active[0].id)) {
-    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "active Edge tab identity is unavailable");
+function visibleTabIdsInWindow(tabs, windowId) {
+  const visible = tabs.filter((tab) => tab.windowId === windowId && tab.active === true);
+  const ids = sortedBrowserTabIds(visible.map((tab) => tab.id));
+  if (visible.length > 1 || ids.length !== visible.length) {
+    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "visible Edge tab identity is ambiguous");
   }
-  return active[0].id;
+  return ids;
 }
 
 function assertDetailIdentity(communication, detail, selected, target) {
@@ -415,12 +437,9 @@ function isPendingTabUrl(tab) {
   return value === "" || value === "about:blank";
 }
 
-function numericTabIds(tabs) {
-  return tabs.map((tab) => tab.id).filter(Number.isInteger).sort((left, right) => left - right);
-}
-
 function sameIds(left, right) {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+  return left.length === right.length
+    && left.every((id, index) => sameBrowserTabId(id, right[index]));
 }
 
 function sanitizedDetailError(error) {

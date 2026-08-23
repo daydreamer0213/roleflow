@@ -1,10 +1,10 @@
 const assert = require("node:assert/strict");
 const { createBossMessageDetailReader } = require("../src/adapters/sites/boss_message_detail_reader");
 
-const SEARCH_TAB_ID = 101;
-const COMMUNICATION_TAB_ID = 102;
-const DASHBOARD_TAB_ID = 103;
-const DETAIL_TAB_ID = 104;
+const SEARCH_TAB_ID = "search-target-101";
+const COMMUNICATION_TAB_ID = "communication-target-102";
+const DASHBOARD_TAB_ID = "dashboard-target-103";
+const DETAIL_TAB_ID = "42";
 const WINDOW_ID = 7;
 const SECRET = "private-secret-token";
 const jobTarget = Object.freeze({
@@ -77,8 +77,10 @@ function messageDetail(overrides = {}) {
 }
 
 function fakeBrowser({
+  minimized = false,
   newTabActive = false,
   detailWindowId = WINDOW_ID,
+  detailTabId = DETAIL_TAB_ID,
   returnedTabId = DETAIL_TAB_ID,
   listedUrl = null,
   listedUrlSequence = null,
@@ -91,21 +93,21 @@ function fakeBrowser({
   detailSnapshot = messageDetail()
 } = {}) {
   const browser = {
-    tabs: baseTabs(),
+    tabs: baseTabs().map((tab) => minimized ? { ...tab, active: false } : tab),
     calls: [],
     detailListIndex: 0,
     async listTabs() {
       this.calls.push({ name: "listTabs" });
       return this.tabs.map((tab) => ({
         ...tab,
-        ...(tab.id === DETAIL_TAB_ID && Array.isArray(listedUrlSequence)
+        ...(tab.id === detailTabId && Array.isArray(listedUrlSequence)
           ? { url: listedUrlSequence[Math.min(this.detailListIndex++, listedUrlSequence.length - 1)] }
           : {})
       }));
     },
     async createTab(openerTabId, url) {
       this.calls.push({ name: "createTab", openerTabId, url });
-      const detail = { id: DETAIL_TAB_ID, windowId: detailWindowId, active: newTabActive, url: listedUrl || url };
+      const detail = { id: detailTabId, windowId: detailWindowId, active: newTabActive, url: listedUrl || url };
       if (newTabActive) {
         for (const tab of this.tabs) tab.active = false;
       }
@@ -203,6 +205,31 @@ async function read(reader, signal = null) {
   assert.strictEqual(browser.calls.filter((call) => call.name === "closeTab").length, 1);
   assert.strictEqual(browser.calls.some((call) => /bringToFront|focus/i.test(call.name)), false);
 
+  const minimizedBrowser = fakeBrowser({ minimized: true });
+  const minimized = makeReader(minimizedBrowser);
+  await assert.rejects(
+    () => read(minimized.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"
+  );
+  assert.deepStrictEqual(minimized.hooks, [], "a minimized window must stop before pacing or issued-attempt accounting");
+  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "createTab").length, 0);
+  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "closeTab").length, 0);
+  assert.deepStrictEqual(
+    minimizedBrowser.tabs,
+    baseTabs().map((tab) => ({ ...tab, active: false })),
+    "a minimized window must leave the pending item and exact typed baseline untouched"
+  );
+
+  const ambiguousVisibleBrowser = fakeBrowser();
+  ambiguousVisibleBrowser.tabs[0].active = true;
+  const ambiguousVisible = makeReader(ambiguousVisibleBrowser);
+  await assert.rejects(
+    () => read(ambiguousVisible.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"
+  );
+  assert.deepStrictEqual(ambiguousVisible.hooks, [], "multiple visible tabs must stop before pacing or accounting");
+  assert.strictEqual(ambiguousVisibleBrowser.calls.filter((call) => call.name === "createTab").length, 0);
+
   const delayedUrlBrowser = fakeBrowser({
     listedUrlSequence: ["", jobTarget.navigationUrl]
   });
@@ -244,7 +271,8 @@ async function read(reader, signal = null) {
   for (const [options, code] of [
     [{ newTabActive: true }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
     [{ detailWindowId: WINDOW_ID + 1 }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
-    [{ returnedTabId: String(DETAIL_TAB_ID) }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
+    [{ returnedTabId: 42 }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
+    [{ detailTabId: 42, returnedTabId: 42 }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
     [{ listedUrl: "https://www.zhipin.com/web/geek/chat" }, "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"],
     [{ communicationSnapshot: communication({ title: "Different job" }) }, "BOSS_MESSAGE_DETAIL_TARGET_MISMATCH"],
     [{ communicationSnapshot: communication({ risk: true }) }, "BOSS_RISK_CONTROL"],
