@@ -68,9 +68,9 @@ async function main() {
   fs.mkdirSync(projectRoot, { recursive: true });
   fs.mkdirSync(outsideCwd, { recursive: true });
   createProjectFixture();
+  testStartupIdentityHelpers();
 
   await assertPortFree(dashboardPort);
-  await assertPortFree(9222);
   if (cleanupProbe === "processes") {
     await runIntentionalCleanupProcessProbe();
     return;
@@ -79,8 +79,6 @@ async function main() {
   await testWorkspaceStartupFromSpacePath();
   testPortableModeRejectsInvalidCdpPort();
   await testForeignDashboardIdentityRejected();
-  await testForeignCdpIdentityRejected();
-  await testPortableEdgeProfileArgumentWithSpaces();
   await testFailurePathCleansStartedProcesses();
   testCleanupFailureIsAggregated();
 }
@@ -111,7 +109,7 @@ function createProjectFixture() {
   );
   fs.writeFileSync(path.join(projectRoot, "src", "cli.js"), fixtureCliSource(), "utf8");
   fs.writeFileSync(path.join(tempRoot, "foreign-health.js"), foreignHealthSource(), "utf8");
-  fs.writeFileSync(path.join(tempRoot, "foreign-cdp.js"), foreignCdpSource(), "utf8");
+  fs.writeFileSync(path.join(tempRoot, "startup-helper-probe.ps1"), startupHelperProbeSource(), "utf8");
 }
 
 function testRunScriptFromOutsideCwd() {
@@ -264,87 +262,6 @@ async function testForeignDashboardIdentityRejected() {
   }
 }
 
-async function testForeignCdpIdentityRejected() {
-  const foreign = startNodeServer(path.join(tempRoot, "foreign-cdp.js"), ["9222"]);
-  await waitForHttp("http://127.0.0.1:9222/json/version");
-  let result = runPowerShell([
-    "-File", path.join(projectRoot, "scripts", "start-portable-edge.ps1"),
-    "-Port", "9222",
-    "-CheckOnly"
-  ], {
-    cwd: outsideCwd,
-    env: fixtureEnv(),
-    timeout: 10000
-  });
-  assert.notStrictEqual(result.status, 0, "a foreign CDP responder must be rejected");
-  assert.match(combinedOutput(result), /msedge|identity|listener PID/i);
-  await stopChild(foreign);
-  await waitForPortClosed(9222);
-
-  const edgeExe = compileEdgeStub();
-  for (const invalidArgs of [
-    [
-      "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=9222",
-      `--user-data-dir=${path.join(tempRoot, "wrong profile")}`
-    ],
-    [
-      "--remote-debugging-port=9222",
-      `--user-data-dir=${path.join(projectRoot, ".runtime", "edge-profile")}`
-    ]
-  ]) {
-    const recordPath = path.join(tempRoot, `invalid-edge-${Date.now()}.txt`);
-    const edge = startEdgeStub(edgeExe, invalidArgs, recordPath);
-    await waitForHttp("http://127.0.0.1:9222/json/version");
-    result = runPowerShell([
-      "-File", path.join(projectRoot, "scripts", "start-portable-edge.ps1"),
-      "-Port", "9222",
-      "-CheckOnly"
-    ], {
-      cwd: outsideCwd,
-      env: fixtureEnv(),
-      timeout: 10000
-    });
-    assert.notStrictEqual(result.status, 0, "an msedge listener with incomplete or foreign authority must be rejected");
-    assert.match(combinedOutput(result), /profile|address|identity/i);
-    await stopChild(edge);
-    await waitForPortClosed(9222);
-  }
-}
-
-async function testPortableEdgeProfileArgumentWithSpaces() {
-  const edgeExe = path.join(tempRoot, "edge stub with spaces", "msedge.exe");
-  assert(fs.existsSync(edgeExe), "compiled Edge stub is missing");
-  const recordPath = path.join(tempRoot, "portable-edge-launch.txt");
-  const result = runPowerShell([
-    "-File", path.join(projectRoot, "scripts", "start-portable-edge.ps1"),
-    "-EdgePath", edgeExe,
-    "-Port", "9222",
-    "-ProfileDir", ".runtime\\edge-profile",
-    "-TimeoutSeconds", "8"
-  ], {
-    cwd: outsideCwd,
-    env: fixtureEnv({ ROLEFLOW_EDGE_STUB_RECORD: recordPath }),
-    timeout: 15000
-  });
-  assert.strictEqual(result.status, 0, combinedOutput(result));
-  await waitForFile(recordPath);
-  const lines = fs.readFileSync(recordPath, "utf8").split(/\r?\n/).filter(Boolean);
-  const pid = Number(lines[0]);
-  registerProcess(pid, {
-    kind: "edge",
-    expectedCommandFragment: edgeExe
-  });
-  const cwd = lines[1];
-  const args = lines.slice(2);
-  assert.strictEqual(normalizePath(cwd), normalizePath(projectRoot));
-  assert(args.includes("--remote-debugging-address=127.0.0.1"));
-  assert(args.includes("--remote-debugging-port=9222"));
-  assert(args.includes(`--user-data-dir=${path.join(projectRoot, ".runtime", "edge-profile")}`));
-  await stopRegisteredProcess(pid);
-  await waitForPortClosed(9222);
-}
-
 async function runIntentionalCleanupProcessProbe() {
   const auditPath = process.env.ROLEFLOW_STARTUP_CLEANUP_AUDIT;
   assert(auditPath, "cleanup process probe requires an audit path");
@@ -368,22 +285,6 @@ async function runIntentionalCleanupProcessProbe() {
     expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
   });
 
-  const edgeExe = compileEdgeStub();
-  const edgeRecord = path.join(tempRoot, "cleanup-probe-edge.txt");
-  const edgeResult = runPowerShell([
-    "-File", path.join(projectRoot, "scripts", "start-portable-edge.ps1"),
-    "-EdgePath", edgeExe,
-    "-Port", "9222",
-    "-ProfileDir", ".runtime\\edge-profile",
-    "-TimeoutSeconds", "8"
-  ], {
-    cwd: outsideCwd,
-    env: fixtureEnv({ ROLEFLOW_EDGE_STUB_RECORD: edgeRecord }),
-    timeout: 15000
-  });
-  assert.strictEqual(edgeResult.status, 0, combinedOutput(edgeResult));
-  await waitForFile(edgeRecord);
-
   throw new Error("STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE");
 }
 
@@ -402,7 +303,7 @@ async function testFailurePathCleansStartedProcesses() {
   assert.notStrictEqual(result.status, 0, "the intentional cleanup probe must preserve its primary failure");
   assert.match(combinedOutput(result), /STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE/);
   const audited = readJsonLines(auditPath);
-  assert.deepStrictEqual(audited.map((item) => item.kind).sort(), ["dashboard", "edge"]);
+  assert.deepStrictEqual(audited.map((item) => item.kind).sort(), ["dashboard"]);
 
   let verificationError = null;
   try {
@@ -410,7 +311,6 @@ async function testFailurePathCleansStartedProcesses() {
       await waitForProcessExited(entry.pid, 1500);
     }
     await waitForPortClosed(dashboardPort, 1500);
-    await waitForPortClosed(9222, 1500);
   } catch (error) {
     verificationError = error;
   }
@@ -428,7 +328,6 @@ async function testFailurePathCleansStartedProcesses() {
     await waitForProcessExited(entry.pid, 5000).catch((error) => emergencyCleanupErrors.push(error));
   }
   await waitForPortClosed(dashboardPort, 5000).catch((error) => emergencyCleanupErrors.push(error));
-  await waitForPortClosed(9222, 5000).catch((error) => emergencyCleanupErrors.push(error));
 
   if (verificationError && emergencyCleanupErrors.length) {
     throw new AggregateError(
@@ -459,37 +358,189 @@ function testCleanupFailureIsAggregated() {
   assert.match(output, /STARTUP_CLEANUP_FORCED_FAILURE/);
 }
 
-function compileEdgeStub() {
-  const outputDir = path.join(tempRoot, "edge stub with spaces");
-  const outputPath = path.join(outputDir, "msedge.exe");
-  if (fs.existsSync(outputPath)) return outputPath;
-  fs.mkdirSync(outputDir, { recursive: true });
-  const compileScript = path.join(tempRoot, "compile-edge-stub.ps1");
-  fs.writeFileSync(compileScript, edgeCompileSource(), "utf8");
-  const result = runPowerShell([
-    "-File", compileScript,
-    "-OutputPath", outputPath
-  ], { cwd: outsideCwd, timeout: 30000 });
-  assert.strictEqual(result.status, 0, combinedOutput(result));
-  assert(fs.existsSync(outputPath), "PowerShell did not compile the local Edge stub");
-  return outputPath;
+function testStartupIdentityHelpers() {
+  const localAppDataPath = path.join(tempRoot, "local app data");
+  const profileA = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
+    ProjectRoot: path.join(tempRoot, "project-a"),
+    ProfileDir: "",
+    LocalAppDataPath: localAppDataPath
+  });
+  const profileB = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
+    ProjectRoot: path.join(tempRoot, "project-b"),
+    ProfileDir: "",
+    LocalAppDataPath: localAppDataPath
+  });
+  assert.strictEqual(normalizePath(profileA), normalizePath(profileB));
+  assert.strictEqual(
+    normalizePath(profileA),
+    normalizePath(path.join(localAppDataPath, "RoleFlow", "BrowserProfile"))
+  );
+  const relativeProfile = invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
+    ProjectRoot: path.join(tempRoot, "project-a"),
+    ProfileDir: "profiles\\dedicated",
+    LocalAppDataPath: localAppDataPath
+  });
+  assert.strictEqual(
+    normalizePath(relativeProfile),
+    normalizePath(path.join(tempRoot, "project-a", "profiles", "dedicated"))
+  );
+  const absoluteProfile = path.join(tempRoot, "explicit profile");
+  assert.strictEqual(
+    normalizePath(invokeStartupHelper("Resolve-RoleFlowBrowserProfilePath", {
+      ProjectRoot: path.join(tempRoot, "project-a"),
+      ProfileDir: absoluteProfile,
+      LocalAppDataPath: localAppDataPath
+    })),
+    normalizePath(absoluteProfile)
+  );
+
+  assert.deepStrictEqual(
+    invokeStartupHelper("New-RoleFlowPortableEdgeArguments", {
+      Port: 9222,
+      ProfilePath: "C:\\RoleFlow Profile",
+      StartUrl: "https://www.zhipin.com/web/geek/jobs"
+    }),
+    [
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=9222",
+      "--remote-allow-origins=*",
+      '"--user-data-dir=C:\\RoleFlow Profile"',
+      "--no-first-run",
+      "--no-default-browser-check",
+      "https://www.zhipin.com/web/geek/jobs"
+    ]
+  );
+
+  const acceptedSnapshot = {
+    ProcessName: "msedge.exe",
+    ExecutablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 "--user-data-dir=C:\\RoleFlow Profile"',
+    EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    Port: 9222,
+    ProfilePath: "C:\\RoleFlow Profile"
+  };
+  assertPureSnapshotAccepted(acceptedSnapshot);
+  assertPureSnapshotRejected(
+    { ...acceptedSnapshot, ExecutablePath: "C:\\fixture\\msedge.exe" },
+    /different executable/i
+  );
+  assertPureSnapshotRejected(
+    { ...acceptedSnapshot, ProfilePath: "C:\\wrong profile" },
+    /different profile/i
+  );
+  assertPureSnapshotRejected(
+    { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("127.0.0.1", "0.0.0.0") },
+    /loopback address/i
+  );
+  assertPureSnapshotRejected(
+    { ...acceptedSnapshot, CommandLine: `${acceptedSnapshot.CommandLine} --remote-debugging-address=0.0.0.0` },
+    /loopback address/i
+  );
+  assertPureSnapshotRejected(
+    { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("9222", "9333") },
+    /different port/i
+  );
+  assertListenerSnapshotAccepted({
+    querySucceeded: true,
+    listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }]
+  }, { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242 }] });
+  for (const listenerSnapshot of [
+    { querySucceeded: false, listeners: [] },
+    { querySucceeded: true, listeners: [{ localAddress: "0.0.0.0", owningProcess: 4242 }] },
+    { querySucceeded: true, listeners: [{ localAddress: "::", owningProcess: 4242 }] },
+    {
+      querySucceeded: true,
+      listeners: [
+        { localAddress: "127.0.0.1", owningProcess: 4242 },
+        { localAddress: "127.0.0.1", owningProcess: 4343 }
+      ]
+    }
+  ]) assertListenerSnapshotRejected(listenerSnapshot, {
+    querySucceeded: true,
+    processes: [{ ...acceptedSnapshot, ProcessId: 4242 }]
+  });
+  assertListenerSnapshotRejected(
+    { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] },
+    { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242, CommandLine: "" }] }
+  );
+  assertListenerSnapshotRejected(
+    { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] },
+    { querySucceeded: false, processes: [] }
+  );
+  assertProfileInUseRejected("C:\\RoleFlow Profile", {
+    querySucceeded: true,
+    processes: [acceptedSnapshot]
+  });
+  assertProfileQueryRejected({ querySucceeded: false, processes: [] });
+  assertProfileQueryRejected({
+    querySucceeded: true,
+    processes: [{ ...acceptedSnapshot, ExecutablePath: "" }]
+  });
+  assertProfileQueryRejected({
+    querySucceeded: true,
+    processes: [{ ...acceptedSnapshot, CommandLine: "" }]
+  });
+  assertProfileInUseAccepted("C:\\RoleFlow Profile", {
+    querySucceeded: true,
+    processes: [
+      { ...acceptedSnapshot, ProcessName: "node.exe" },
+      {
+        ...acceptedSnapshot,
+        CommandLine: acceptedSnapshot.CommandLine.replace("C:\\RoleFlow Profile", "C:\\Other Profile")
+      }
+    ]
+  });
 }
 
-function startEdgeStub(edgeExe, args, recordPath) {
-  const child = spawn(edgeExe, args, {
-    cwd: outsideCwd,
-    env: fixtureEnv({ ROLEFLOW_EDGE_STUB_RECORD: recordPath }),
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true
-  });
-  children.add(child);
-  registerProcess(child.pid, {
-    kind: "edge",
-    expectedCommandFragment: edgeExe,
-    child
-  });
-  return child;
+function assertPureSnapshotAccepted(snapshot) {
+  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowPortableEdgeProcessSnapshot", snapshot), true);
 }
+
+function assertPureSnapshotRejected(snapshot, pattern) {
+  assert.throws(
+    () => invokeStartupHelper("Assert-RoleFlowPortableEdgeProcessSnapshot", snapshot),
+    pattern
+  );
+}
+
+function assertListenerSnapshotAccepted(listenerSnapshot, processQuerySnapshot) {
+  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowPortableEdgeListenerSnapshot", {
+    ListenerSnapshot: listenerSnapshot,
+    ProcessQuerySnapshot: processQuerySnapshot,
+    EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    Port: 9222,
+    ProfilePath: "C:\\RoleFlow Profile"
+  }), 4242);
+}
+
+function assertListenerSnapshotRejected(listenerSnapshot, processQuerySnapshot) {
+  assert.throws(() => invokeStartupHelper("Assert-RoleFlowPortableEdgeListenerSnapshot", {
+    ListenerSnapshot: listenerSnapshot,
+    ProcessQuerySnapshot: processQuerySnapshot,
+    EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    Port: 9222,
+    ProfilePath: "C:\\RoleFlow Profile"
+  }));
+}
+
+function assertProfileInUseRejected(profilePath, processQuerySnapshot) {
+  assert.throws(() => invokeStartupHelper("Assert-RoleFlowBrowserProfileNotInUse", {
+    ProfilePath: profilePath,
+    ProcessQuerySnapshot: processQuerySnapshot
+  }));
+}
+
+function assertProfileQueryRejected(processQuerySnapshot) {
+  assertProfileInUseRejected("C:\\RoleFlow Profile", processQuerySnapshot);
+}
+
+function assertProfileInUseAccepted(profilePath, processQuerySnapshot) {
+  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowBrowserProfileNotInUse", {
+    ProfilePath: profilePath,
+    ProcessQuerySnapshot: processQuerySnapshot
+  }), true);
+}
+
 
 function startNodeServer(script, args) {
   const child = spawn(process.execPath, [script, ...args], {
@@ -527,9 +578,28 @@ function runPowerShell(args, {
   });
 }
 
+function invokeStartupHelper(functionName, parameters) {
+  const payloadPath = path.join(tempRoot, `startup-helper-${Date.now()}-${Math.random()}.json`);
+  fs.writeFileSync(payloadPath, JSON.stringify({ functionName, parameters }), "utf8");
+  try {
+    const result = runPowerShell([
+      "-File", path.join(tempRoot, "startup-helper-probe.ps1"),
+      "-PayloadPath", payloadPath,
+      "-HelperPath",
+      path.join(projectRoot, "scripts", "lib", "startup-identity.ps1")
+    ], { cwd: outsideCwd, timeout: 10000 });
+    const output = combinedOutput(result);
+    if (result.status !== 0) throw new Error(output);
+    return JSON.parse(String(result.stdout || "").trim());
+  } finally {
+    fs.rmSync(payloadPath, { force: true });
+  }
+}
+
 function fixtureEnv(extra = {}) {
   return {
     ...process.env,
+    LOCALAPPDATA: path.join(tempRoot, "local app data"),
     ZHIPPING_NODE: process.execPath,
     ...extra
   };
@@ -678,7 +748,7 @@ async function cleanupResources() {
       cleanupErrors.push(error);
     }
   }
-  for (const port of [dashboardPort, 9222].filter((value) => value > 0)) {
+  for (const port of [dashboardPort].filter((value) => value > 0)) {
     try {
       await waitForPortClosed(port, 5000);
     } catch (error) {
@@ -734,15 +804,6 @@ function recoverRecordedProcesses() {
       }
       continue;
     }
-    if (filename.endsWith(".txt") && filename.includes("edge")) {
-      const pid = Number(fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean)[0]);
-      if (Number.isInteger(pid) && pid > 0) {
-        registerProcess(pid, {
-          kind: "edge",
-          expectedCommandFragment: path.join(tempRoot, "edge stub with spaces", "msedge.exe")
-        });
-      }
-    }
   }
 }
 
@@ -790,10 +851,6 @@ async function waitForHttp(url, timeoutMs = 5000) {
       return false;
     }
   }, timeoutMs, `HTTP endpoint did not become ready: ${url}`);
-}
-
-async function waitForFile(filePath, timeoutMs = 5000) {
-  await waitFor(() => fs.existsSync(filePath), timeoutMs, `file did not appear: ${filePath}`);
 }
 
 async function waitForPortClosed(port, timeoutMs = 5000) {
@@ -898,67 +955,19 @@ http.createServer((req, res) => {
 `;
 }
 
-function foreignCdpSource() {
+function startupHelperProbeSource() {
   return String.raw`
-const http = require("node:http");
-const port = Number(process.argv[2]);
-http.createServer((req, res) => {
-  res.setHeader("content-type", "application/json");
-  if (req.url === "/json/version") {
-    res.end(JSON.stringify({
-      Browser: "Foreign/1",
-      webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/foreign"
-    }));
-    return;
-  }
-  res.statusCode = 404;
-  res.end("{}");
-}).listen(port, "127.0.0.1");
-`;
-}
-
-function edgeCompileSource() {
-  return String.raw`
-param([Parameter(Mandatory=$true)][string]$OutputPath)
-$source = @'
-using System;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Sockets;
-using System.Text;
-
-public static class Program {
-  public static int Main(string[] args) {
-    var record = Environment.GetEnvironmentVariable("ROLEFLOW_EDGE_STUB_RECORD");
-    if (!String.IsNullOrEmpty(record)) {
-      var lines = new[] {
-        System.Diagnostics.Process.GetCurrentProcess().Id.ToString(),
-        Environment.CurrentDirectory
-      }.Concat(args).ToArray();
-      File.WriteAllLines(record, lines, Encoding.UTF8);
-    }
-    var portArg = args.FirstOrDefault(value => value.StartsWith("--remote-debugging-port=", StringComparison.OrdinalIgnoreCase));
-    int port;
-    if (portArg == null || !Int32.TryParse(portArg.Substring(portArg.IndexOf('=') + 1), out port)) return 2;
-    var listener = new TcpListener(IPAddress.Loopback, port);
-    listener.Start();
-    while (true) {
-      using (var client = listener.AcceptTcpClient())
-      using (var stream = client.GetStream()) {
-        var buffer = new byte[8192];
-        stream.Read(buffer, 0, buffer.Length);
-        var body = "{\"Browser\":\"Edge/Stub\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:" + port + "/devtools/browser/stub\"}";
-        var payload = Encoding.UTF8.GetBytes(
-          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-          Encoding.UTF8.GetByteCount(body) + "\r\nConnection: close\r\n\r\n" + body
-        );
-        stream.Write(payload, 0, payload.Length);
-      }
-    }
-  }
-}
-'@
-Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $OutputPath -OutputType WindowsApplication
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)][string]$PayloadPath,
+  [Parameter(Mandatory = $true)][string]$HelperPath
+)
+$ErrorActionPreference = "Stop"
+$payload = Get-Content -Raw -LiteralPath $PayloadPath | ConvertFrom-Json
+. $HelperPath
+$parameters = @{}
+$payload.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
+$result = & ([string]$payload.functionName) @parameters
+$result | ConvertTo-Json -Compress -Depth 10
 `;
 }

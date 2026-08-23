@@ -2,7 +2,7 @@
 param(
   [string]$EdgePath = "",
   [int]$Port = 9222,
-  [string]$ProfileDir = ".runtime\edge-profile",
+  [string]$ProfileDir = "",
   [string]$StartUrl = "https://www.zhipin.com/web/geek/jobs",
   [switch]$CheckOnly,
   [int]$TimeoutSeconds = 15
@@ -11,36 +11,23 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
-
-function Resolve-ProjectPath {
-  param([string]$Value)
-  if ([System.IO.Path]::IsPathRooted($Value)) {
-    return $Value
-  }
-  return Join-Path $ProjectRoot $Value
-}
+# New-RoleFlowPortableEdgeArguments supplies --remote-debugging-address=127.0.0.1.
 
 function Resolve-EdgePath {
   if ($EdgePath -and (Test-Path -LiteralPath $EdgePath)) {
-    return (Resolve-Path -LiteralPath $EdgePath).Path
+    return Resolve-RoleFlowNormalizedPath -Path (Resolve-Path -LiteralPath $EdgePath).Path
   }
+  if ($EdgePath) { throw "Caller-trusted -EdgePath does not exist: $EdgePath" }
 
-  $Candidates = @(
-    "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
-  )
+  $Candidates = @()
+  if (${env:ProgramFiles(x86)}) { $Candidates += (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe") }
+  if ($env:ProgramFiles) { $Candidates += (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe") }
   foreach ($Candidate in $Candidates) {
     if (Test-Path -LiteralPath $Candidate) {
-      return $Candidate
+      return Resolve-RoleFlowNormalizedPath -Path $Candidate
     }
   }
-
-  $Cmd = Get-Command msedge -ErrorAction SilentlyContinue
-  if ($null -ne $Cmd) {
-    return $Cmd.Source
-  }
-
-  throw "Microsoft Edge not found. Install Edge or pass -EdgePath."
+  throw "Microsoft Edge not found in standard installation paths. Install Edge or pass caller-trusted -EdgePath."
 }
 
 function Get-CdpVersion {
@@ -51,30 +38,35 @@ function Get-CdpVersion {
   }
 }
 
-$ProfilePath = Resolve-RoleFlowNormalizedPath -Path (Resolve-ProjectPath -Value $ProfileDir)
+$ProfilePath = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $ProjectRoot -ProfileDir $ProfileDir
+$ResolvedEdgePath = Resolve-EdgePath
+$ListenerSnapshot = Get-RoleFlowTcpListenerSnapshot -Port $Port
+if (-not $ListenerSnapshot.querySucceeded) {
+  throw "PORTABLE_EDGE_LISTENER_ENUMERATION_FAILED: could not inspect port $Port."
+}
+$ProcessQuerySnapshot = Get-RoleFlowEdgeProcessSnapshot
+$HasPortOwner = @($ListenerSnapshot.listeners).Count -gt 0
 $Version = Get-CdpVersion
 
+if ($HasPortOwner -and $null -eq $Version) {
+  throw "PORTABLE_EDGE_PORT_OCCUPIED_NOT_CDP: port $Port is already owned but /json/version is not a valid CDP responder."
+}
+if (-not $HasPortOwner -and $null -ne $Version) {
+  throw "PORTABLE_EDGE_LISTENER_SNAPSHOT_MISMATCH: CDP responded without a listener snapshot on port $Port."
+}
 if ($null -eq $Version -and $CheckOnly) {
   throw "Portable Edge CDP is not running on port $Port."
 }
 
 if ($null -ne $Version) {
-  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath)
+  [void](Assert-RoleFlowPortableEdgeListenerSnapshot -ListenerSnapshot $ListenerSnapshot -ProcessQuerySnapshot $ProcessQuerySnapshot -EdgePath $ResolvedEdgePath -Port $Port -ProfilePath $ProfilePath)
 }
 
 if ($null -eq $Version) {
-  $ResolvedEdgePath = Resolve-EdgePath
+  [void](Assert-RoleFlowBrowserProfileNotInUse -ProfilePath $ProfilePath -ProcessQuerySnapshot $ProcessQuerySnapshot)
   New-Item -ItemType Directory -Force -Path $ProfilePath | Out-Null
 
-  $Args = @(
-    "--remote-debugging-address=127.0.0.1",
-    "--remote-debugging-port=$Port",
-    "--remote-allow-origins=*",
-    ('"--user-data-dir={0}"' -f $ProfilePath),
-    "--no-first-run",
-    "--no-default-browser-check",
-    $StartUrl
-  )
+  $Args = New-RoleFlowPortableEdgeArguments -Port $Port -ProfilePath $ProfilePath -StartUrl $StartUrl
 
   Start-Process -FilePath $ResolvedEdgePath -ArgumentList $Args -WorkingDirectory $ProjectRoot | Out-Null
 
@@ -87,7 +79,7 @@ if ($null -eq $Version) {
   if ($null -eq $Version) {
     throw "Started Edge, but CDP did not become ready on port $Port."
   }
-  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath)
+  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath -EdgePath $ResolvedEdgePath)
 }
 
 Write-Host "Portable Edge CDP: healthy"

@@ -10,7 +10,7 @@ param(
   [ValidateRange(1, 1000)]
   [int]$MaxDetailTotal,
   [int]$Port = 9222,
-  [string]$ProfileDir = ".runtime\edge-profile",
+  [string]$ProfileDir = "",
   [string]$EdgePath = ""
 )
 
@@ -20,10 +20,12 @@ if ($ScanMode -eq "daily" -and ($PSBoundParameters.ContainsKey("MaxCards") -or $
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
+$ProfilePath = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $ProjectRoot -ProfileDir $ProfileDir
 
 $StartArgs = @{
   Port = $Port
-  ProfileDir = $ProfileDir
+  ProfileDir = $ProfilePath
 }
 if ($EdgePath) {
   $StartArgs.EdgePath = $EdgePath
