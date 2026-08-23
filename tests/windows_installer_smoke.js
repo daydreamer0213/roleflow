@@ -14,8 +14,10 @@ const powershell = path.join(
 );
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-windows-installer-suite-"));
 const suiteLocalAppData = path.join(suiteRoot, "local-app-data");
+const selfCheckProjectRoot = path.join(suiteRoot, "installed-self-check-project");
 const reservedProbePorts = new Set([8787, 9222]);
 fs.mkdirSync(suiteLocalAppData, { recursive: true });
+createSelfCheckProjectFixture();
 
 try {
   runSuite();
@@ -78,7 +80,11 @@ function runSuite() {
     ["app-data deletion preserves browser login", assertUninstallDeletesOnlyApprovedChildren],
     ["browser-profile deletion is separately confirmed", assertUninstallDeletesBrowserProfileSeparately],
     ["browser-profile guard runs before any deletion", assertUninstallGuardPrecedesEveryDeletion],
+    ["browser-profile root junction is rejected", assertUninstallRejectsBrowserProfileRootReparsePoint],
+    ["browser-profile nested junction is rejected", assertUninstallRejectsBrowserProfileNestedReparsePoint],
     ["migration is explicit, copy-only, and race-safe", assertBrowserProfileMigrationBoundaries],
+    ["migration source-tree junction is rejected", assertMigrationRejectsSourceTreeReparsePoint],
+    ["migration target-parent junction is rejected", assertMigrationRejectsTargetParentReparsePoint],
     ["installed self-check keeps authority while probing temporary ports", assertInstalledSelfCheckUsesSafeProbePorts],
     ["installer stage contains maintenance only", assertStandardInstallerStageBoundary],
     ["packaged PowerShell scripts parse", assertPackagedPowerShellScriptsParse]
@@ -185,6 +191,90 @@ function assertUninstallGuardPrecedesEveryDeletion() {
     assert(fs.existsSync(fixture.browserProfileSentinel), "profile guard failure must preserve browser data");
   } finally {
     fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUninstallRejectsBrowserProfileRootReparsePoint() {
+  const profileJunction = createUninstallFixture();
+  try {
+    fs.rmSync(profileJunction.browserProfile, { recursive: true, force: true });
+    const externalProfile = path.join(profileJunction.fixtureRoot, "external-browser-profile");
+    const externalSentinel = path.join(externalProfile, "Default", "external.txt");
+    fs.mkdirSync(path.dirname(externalSentinel), { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    createJunction(externalProfile, profileJunction.browserProfile);
+    const preserveResult = runPowerShell([
+      "-File", profileJunction.scriptPath,
+      "-InstallRoot", profileJunction.installRoot,
+      "-SkipDashboardStop",
+      "-SkipDeletePrompt"
+    ], { localAppData: profileJunction.localAppData });
+    assert.strictEqual(preserveResult.status, 0, combined(preserveResult));
+    assert(fs.existsSync(profileJunction.database), "default uninstall preparation must preserve application data");
+    assert(fs.lstatSync(profileJunction.browserProfile).isSymbolicLink(), "default uninstall preparation must preserve a profile junction");
+    assert(fs.existsSync(externalSentinel));
+    const result = runPowerShell([
+      "-File", profileJunction.scriptPath,
+      "-InstallRoot", profileJunction.installRoot,
+      "-SkipDashboardStop",
+      "-DeleteUserData",
+      "-ConfirmDelete",
+      "-DeleteBrowserProfile",
+      "-ConfirmDeleteBrowserProfile"
+    ], { localAppData: profileJunction.localAppData });
+    const observed = {
+      status: result.status,
+      databaseExists: fs.existsSync(profileJunction.database),
+      junctionExists: fs.existsSync(profileJunction.browserProfile),
+      externalSentinelExists: fs.existsSync(externalSentinel)
+    };
+    assert(
+      result.status !== 0 && /ROLEFLOW_REPARSE_POINT_BLOCKED/.test(combined(result)),
+      `BrowserProfile junction was not rejected before deletion: ${JSON.stringify(observed)}\n${combined(result)}`
+    );
+    assert(fs.existsSync(profileJunction.database), "reparse rejection must precede application-data deletion");
+    assert(fs.lstatSync(profileJunction.browserProfile).isSymbolicLink(), "BrowserProfile junction must remain intact");
+    assert(fs.existsSync(externalSentinel), "BrowserProfile junction target must remain intact");
+    assert(fs.existsSync(profileJunction.localAppDataSiblingSentinel));
+  } finally {
+    fs.rmSync(profileJunction.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUninstallRejectsBrowserProfileNestedReparsePoint() {
+  const nestedJunction = createUninstallFixture();
+  try {
+    const externalDirectory = path.join(nestedJunction.fixtureRoot, "external-browser-child");
+    const externalSentinel = path.join(externalDirectory, "external.txt");
+    fs.mkdirSync(externalDirectory, { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    const linkPath = path.join(nestedJunction.browserProfile, "Default", "LinkedData");
+    createJunction(externalDirectory, linkPath);
+    const result = runPowerShell([
+      "-File", nestedJunction.scriptPath,
+      "-InstallRoot", nestedJunction.installRoot,
+      "-SkipDashboardStop",
+      "-DeleteUserData",
+      "-ConfirmDelete",
+      "-DeleteBrowserProfile",
+      "-ConfirmDeleteBrowserProfile"
+    ], { localAppData: nestedJunction.localAppData });
+    const observed = {
+      status: result.status,
+      databaseExists: fs.existsSync(nestedJunction.database),
+      profileExists: fs.existsSync(nestedJunction.browserProfile),
+      nestedJunctionExists: fs.existsSync(linkPath),
+      externalSentinelExists: fs.existsSync(externalSentinel)
+    };
+    assert(
+      result.status !== 0 && /ROLEFLOW_REPARSE_POINT_BLOCKED/.test(combined(result)),
+      `nested BrowserProfile junction was not rejected before deletion: ${JSON.stringify(observed)}\n${combined(result)}`
+    );
+    assert(fs.existsSync(nestedJunction.database));
+    assert(fs.lstatSync(linkPath).isSymbolicLink(), "nested browser junction must remain intact");
+    assert(fs.existsSync(externalSentinel));
+  } finally {
+    fs.rmSync(nestedJunction.fixtureRoot, { recursive: true, force: true });
   }
 }
 
@@ -350,11 +440,76 @@ function assertMigrationPreservesRaceCreatedTarget() {
   }
 }
 
+function assertMigrationRejectsSourceTreeReparsePoint() {
+  const fixture = createMigrationFixture();
+  try {
+    const externalDirectory = path.join(fixture.fixtureRoot, "external-profile-data");
+    const externalSentinel = path.join(externalDirectory, "external.txt");
+    fs.mkdirSync(externalDirectory, { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    const linkPath = path.join(fixture.source, "Default", "LinkedData");
+    createJunction(externalDirectory, linkPath);
+    const before = snapshotTree(fixture.source);
+    const result = invokeMigration(fixture, ["-ConfirmMigration"]);
+    const observed = {
+      status: result.status,
+      targetExists: fs.existsSync(fixture.target),
+      junctionExists: fs.existsSync(linkPath),
+      externalSentinelExists: fs.existsSync(externalSentinel)
+    };
+    assert(
+      result.status !== 0 && /ROLEFLOW_REPARSE_POINT_BLOCKED/.test(combined(result)),
+      `source-tree junction was not rejected before migration: ${JSON.stringify(observed)}\n${combined(result)}`
+    );
+    assert.deepStrictEqual(snapshotTree(fixture.source), before, "reparse rejection must preserve the source tree");
+    assert(fs.lstatSync(linkPath).isSymbolicLink(), "source-tree junction must remain intact");
+    assert(fs.existsSync(externalSentinel), "source-tree junction target must remain intact");
+    assert(!fs.existsSync(fixture.target), "reparse rejection must not expose a migration target");
+    assert(fs.existsSync(fixture.siblingSentinel));
+    assertNoMigrationStaging(fixture);
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertMigrationRejectsTargetParentReparsePoint() {
+  const fixture = createMigrationFixture();
+  try {
+    const externalRoleFlow = path.join(fixture.fixtureRoot, "external-roleflow");
+    const externalSentinel = path.join(externalRoleFlow, "external.txt");
+    fs.mkdirSync(externalRoleFlow, { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    const roleFlowLink = path.join(fixture.localAppData, "RoleFlow");
+    createJunction(externalRoleFlow, roleFlowLink);
+    const before = snapshotTree(fixture.source);
+    const result = invokeMigration(fixture, ["-ConfirmMigration"]);
+    const observed = {
+      status: result.status,
+      targetExists: fs.existsSync(fixture.target),
+      roleFlowJunctionExists: fs.existsSync(roleFlowLink),
+      externalSentinelExists: fs.existsSync(externalSentinel)
+    };
+    assert(
+      result.status !== 0 && /ROLEFLOW_REPARSE_POINT_BLOCKED/.test(combined(result)),
+      `target-parent junction was not rejected before migration: ${JSON.stringify(observed)}\n${combined(result)}`
+    );
+    assert.deepStrictEqual(snapshotTree(fixture.source), before);
+    assert(fs.lstatSync(roleFlowLink).isSymbolicLink(), "target-parent junction must remain intact");
+    assert(fs.existsSync(externalSentinel), "target-parent junction target must remain intact");
+    assert(!fs.existsSync(path.join(externalRoleFlow, "BrowserProfile")));
+    assert(fs.existsSync(fixture.siblingSentinel));
+    assertNoMigrationStaging(fixture);
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
 function assertInstalledSelfCheckUsesSafeProbePorts() {
+  const repositoryArtifactsBefore = repositorySelfCheckFingerprint();
   const wrongRootPort = reserveFreePort();
   const wrongRootCdpPort = reserveFreePort();
   const wrongRoot = startHealthFixture(wrongRootPort, {
-    projectRoot: path.join(root, "different-install-root"),
+    projectRoot: path.join(selfCheckProjectRoot, "different-install-root"),
     browserAuthority: {
       browserMode: "portable",
       cdpPort: 9222,
@@ -371,7 +526,7 @@ function assertInstalledSelfCheckUsesSafeProbePorts() {
   const dashboardProbePort = reserveFreePort();
   const cdpProbePort = reserveFreePort();
   const wrongAuthority = startHealthFixture(dashboardProbePort, {
-    projectRoot: root,
+    projectRoot: selfCheckProjectRoot,
     browserAuthority: {
       browserMode: "portable",
       cdpPort: 9333,
@@ -388,7 +543,7 @@ function assertInstalledSelfCheckUsesSafeProbePorts() {
   const acceptedDashboardPort = reserveFreePort();
   const acceptedCdpPort = reserveFreePort();
   const accepted = startHealthFixture(acceptedDashboardPort, {
-    projectRoot: root,
+    projectRoot: selfCheckProjectRoot,
     browserAuthority: {
       browserMode: "portable",
       cdpPort: 9222,
@@ -405,19 +560,24 @@ function assertInstalledSelfCheckUsesSafeProbePorts() {
 
   const freeDashboardPort = reserveFreePort();
   const ambiguousCdpPort = reserveFreePort();
-  const ambiguous = startHealthFixture(ambiguousCdpPort, { projectRoot: root, browserAuthority: {} });
+  const ambiguous = startHealthFixture(ambiguousCdpPort, { projectRoot: selfCheckProjectRoot, browserAuthority: {} });
   try {
     const result = invokeSelfCheck(freeDashboardPort, ambiguousCdpPort);
     assert.notStrictEqual(result.status, 0, "a non-Edge CDP probe-port listener must be rejected");
   } finally {
     stopFixtureProcess(ambiguous);
   }
+  assert.deepStrictEqual(
+    repositorySelfCheckFingerprint(),
+    repositoryArtifactsBefore,
+    "installed self-check smoke must not write repository .runtime artifacts"
+  );
 }
 
 function invokeSelfCheck(dashboardProbePort, cdpProbePort) {
   return runPowerShell([
     "-File", path.join(root, "scripts", "installed-self-check.ps1"),
-    "-ProjectRoot", root,
+    "-ProjectRoot", selfCheckProjectRoot,
     "-NodePath", process.execPath,
     "-SkipEdgeCheck",
     "-DashboardProbePort", String(dashboardProbePort),
@@ -486,6 +646,61 @@ function assertPackagedPowerShellScriptsParse() {
     env: { ROLEFLOW_SCRIPT_ROOT: path.join(root, "scripts") }
   });
   assert.strictEqual(result.status, 0, combined(result));
+}
+
+function createSelfCheckProjectFixture() {
+  for (const relativePath of ["src", "scripts", "node_modules/pdfjs-dist/legacy/build"]) {
+    fs.mkdirSync(path.join(selfCheckProjectRoot, relativePath), { recursive: true });
+  }
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "package.json"), "{}\n", "utf8");
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "LICENSE"), "fixture\n", "utf8");
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "NOTICE"), "fixture\n", "utf8");
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "scripts", "start-workspace.ps1"), "# fixture\n", "utf8");
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "node_modules", "pdfjs-dist", "legacy", "build", "pdf.mjs"), "export {};\n", "utf8");
+  fs.writeFileSync(path.join(selfCheckProjectRoot, "src", "cli.js"), String.raw`
+const http = require("node:http");
+const path = require("node:path");
+
+function valueAfter(flag) {
+  const index = process.argv.indexOf(flag);
+  return index >= 0 ? process.argv[index + 1] : "";
+}
+
+const port = Number(valueAfter("--port"));
+const server = http.createServer((request, response) => {
+  response.writeHead(request.url === "/health" ? 200 : 404, { "content-type": "application/json" });
+  response.end(JSON.stringify({
+    ok: true,
+    pid: process.pid,
+    projectRoot: path.resolve(__dirname, ".."),
+    browserAuthority: {
+      browserMode: valueAfter("--browser"),
+      cdpPort: Number(valueAfter("--cdp-port")),
+      profilePath: valueAfter("--browser-profile")
+    }
+  }));
+});
+server.listen(port, "127.0.0.1");
+`, "utf8");
+}
+
+function repositorySelfCheckFingerprint() {
+  const logPath = path.join(root, ".runtime", "logs", "install-self-check.log");
+  const selfCheckDir = path.join(root, ".runtime", "self-check");
+  return {
+    log: fileFingerprint(logPath),
+    selfCheck: fs.existsSync(selfCheckDir) ? snapshotTree(selfCheckDir) : null
+  };
+}
+
+function fileFingerprint(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  const stat = fs.statSync(filePath);
+  return {
+    bytes: stat.size,
+    modified: stat.mtimeMs,
+    contents: fs.readFileSync(filePath).toString("base64")
+  };
 }
 
 function createUninstallFixture({ helperMode = "safe" } = {}) {
@@ -557,18 +772,7 @@ function copyMaintenanceScript(name, scriptRoot, helperMode) {
 }
 
 function startupIdentityStub(mode) {
-  const common = String.raw`
-function Resolve-RoleFlowNormalizedPath {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  if ([string]::IsNullOrWhiteSpace($Path)) { throw "Path identity is missing." }
-  return [System.IO.Path]::GetFullPath($Path).TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
-}
-function Resolve-RoleFlowBrowserProfilePath {
-  param([Parameter(Mandatory = $true)][string]$ProjectRoot, [string]$ProfileDir = "", [string]$LocalAppDataPath = $env:LOCALAPPDATA)
-  if ($ProfileDir) { return Resolve-RoleFlowNormalizedPath -Path $ProfileDir }
-  if ([string]::IsNullOrWhiteSpace($LocalAppDataPath)) { throw "LOCALAPPDATA is missing." }
-  return Resolve-RoleFlowNormalizedPath -Path (Join-Path $LocalAppDataPath "RoleFlow\BrowserProfile")
-}
+  const common = read("scripts/lib/startup-identity.ps1") + String.raw`
 function Get-RoleFlowEdgeProcessSnapshot {
   return [pscustomobject]@{ querySucceeded = $true; processes = @() }
 }
@@ -578,7 +782,12 @@ function Assert-RoleFlowBrowserProfileNotInUse {
 }
 `;
   if (mode === "in-use") {
-    return common.replace("  return $true\n}\n", "  throw \"ROLEFLOW_BROWSER_PROFILE_IN_USE\"\n}\n");
+    return common + String.raw`
+function Assert-RoleFlowBrowserProfileNotInUse {
+  param([Parameter(Mandatory = $true)][string]$ProfilePath, [Parameter(Mandatory = $true)]$ProcessQuerySnapshot)
+  throw "ROLEFLOW_BROWSER_PROFILE_IN_USE"
+}
+`;
   }
   if (mode === "copy-failure") {
     return common + String.raw`
@@ -606,6 +815,12 @@ function Copy-Item {
 `;
   }
   return common;
+}
+
+function createJunction(targetPath, linkPath) {
+  fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+  fs.symlinkSync(path.resolve(targetPath), linkPath, "junction");
+  assert(fs.lstatSync(linkPath).isSymbolicLink(), `failed to create junction fixture: ${linkPath}`);
 }
 
 function invokeMigration(fixture, extraArgs, replacesSource = false) {

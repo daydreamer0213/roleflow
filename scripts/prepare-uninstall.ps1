@@ -64,6 +64,7 @@ function Get-ApprovedUserDataTargets {
   $Targets = @()
   foreach ($Child in $ApprovedChildren) {
     $Target = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot $Child)).TrimEnd("\")
+    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
     if (-not $Target.StartsWith(
       $InstallRoot + "\",
       [System.StringComparison]::OrdinalIgnoreCase
@@ -77,6 +78,7 @@ function Get-ApprovedUserDataTargets {
 
 function Get-BrowserProfileDeletionTarget {
   $Target = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $InstallRoot
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
   $Expected = Resolve-RoleFlowNormalizedPath -Path (
     Join-Path $env:LOCALAPPDATA "RoleFlow\BrowserProfile"
   )
@@ -111,7 +113,7 @@ if ($PromptDeleteUserData -and -not $SkipDeletePrompt) {
 }
 
 if ($PromptDeleteBrowserProfile -and -not $SkipDeletePrompt) {
-  $PromptBrowserProfilePath = Get-BrowserProfileDeletionTarget
+  $PromptBrowserProfilePath = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $InstallRoot
   Add-Type -AssemblyName System.Windows.Forms
   $Choice = [System.Windows.Forms.MessageBox]::Show(
     "是否同时删除 RoleFlow 专用浏览器登录资料？`r`n`r`n路径：$PromptBrowserProfilePath`r`n`r`n删除后需要重新登录 BOSS。",
@@ -146,8 +148,28 @@ if ($DeleteApprovedBrowserProfile) {
     -ProcessQuerySnapshot $ProcessSnapshot)
 }
 
+if ($DeleteApprovedBrowserProfile) {
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $BrowserProfileTarget -IncludeDescendants)
+}
 if ($DeleteApprovedUserData) {
   foreach ($Target in $UserDataTargets) {
+    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
+  }
+}
+
+if ($DeleteApprovedBrowserProfile) {
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $BrowserProfileTarget -IncludeDescendants)
+  if (Test-Path -LiteralPath $BrowserProfileTarget) {
+    Remove-Item -LiteralPath $BrowserProfileTarget -Recurse -Force
+  }
+  Write-Output "RoleFlow browser login data deleted."
+} elseif (-not $SkipDeletePrompt) {
+  Write-Output "RoleFlow browser login data preserved."
+}
+
+if ($DeleteApprovedUserData) {
+  foreach ($Target in $UserDataTargets) {
+    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
     if (Test-Path -LiteralPath $Target) {
       Remove-Item -LiteralPath $Target -Recurse -Force
     }
@@ -155,13 +177,4 @@ if ($DeleteApprovedUserData) {
   Write-Output "RoleFlow local user data deleted."
 } elseif (-not $SkipDeletePrompt) {
   Write-Output "RoleFlow local user data preserved at: $InstallRoot"
-}
-
-if ($DeleteApprovedBrowserProfile) {
-  if (Test-Path -LiteralPath $BrowserProfileTarget) {
-    Remove-Item -LiteralPath $BrowserProfileTarget -Recurse -Force
-  }
-  Write-Output "RoleFlow browser login data deleted."
-} elseif (-not $SkipDeletePrompt) {
-  Write-Output "RoleFlow browser login data preserved."
 }

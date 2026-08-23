@@ -14,6 +14,75 @@ function Resolve-RoleFlowBrowserProfilePath {
   return Resolve-RoleFlowNormalizedPath -Path (Join-Path $LocalAppDataPath "RoleFlow\BrowserProfile")
 }
 
+function Test-RoleFlowPathOverlap {
+  param(
+    [Parameter(Mandatory = $true)][string]$FirstPath,
+    [Parameter(Mandatory = $true)][string]$SecondPath
+  )
+  $First = Resolve-RoleFlowNormalizedPath -Path $FirstPath
+  $Second = Resolve-RoleFlowNormalizedPath -Path $SecondPath
+  return [string]::Equals($First, $Second, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $First.StartsWith($Second + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+    $Second.StartsWith($First + "\", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-RoleFlowPathHasNoReparsePoint {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$IncludeDescendants
+  )
+  $NormalizedPath = Resolve-RoleFlowNormalizedPath -Path $Path
+  $Root = [System.IO.Path]::GetPathRoot($NormalizedPath)
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    throw "ROLEFLOW_REPARSE_POINT_CHECK_FAILED: $NormalizedPath"
+  }
+
+  try {
+    $Current = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if (($Current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "ROLEFLOW_REPARSE_POINT_BLOCKED: $($Current.FullName)"
+    }
+    $RelativePath = $NormalizedPath.Substring($Root.Length)
+    foreach ($Segment in @($RelativePath.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries))) {
+      if (-not $Current.PSIsContainer) { break }
+      $Matches = @(
+        Get-ChildItem -LiteralPath $Current.FullName -Force -ErrorAction Stop |
+          Where-Object { [string]::Equals($_.Name, $Segment, [System.StringComparison]::OrdinalIgnoreCase) }
+      )
+      if ($Matches.Count -eq 0) { return $true }
+      if ($Matches.Count -ne 1) { throw "ROLEFLOW_REPARSE_POINT_CHECK_FAILED: $NormalizedPath" }
+      $Current = $Matches[0]
+      if (($Current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ROLEFLOW_REPARSE_POINT_BLOCKED: $($Current.FullName)"
+      }
+    }
+
+    if ($IncludeDescendants -and
+        [string]::Equals(
+          (Resolve-RoleFlowNormalizedPath -Path $Current.FullName),
+          $NormalizedPath,
+          [System.StringComparison]::OrdinalIgnoreCase
+        ) -and
+        $Current.PSIsContainer) {
+      $Pending = [System.Collections.Stack]::new()
+      $Pending.Push($Current)
+      while ($Pending.Count -gt 0) {
+        $Directory = $Pending.Pop()
+        foreach ($Child in @(Get-ChildItem -LiteralPath $Directory.FullName -Force -ErrorAction Stop)) {
+          if (($Child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "ROLEFLOW_REPARSE_POINT_BLOCKED: $($Child.FullName)"
+          }
+          if ($Child.PSIsContainer) { $Pending.Push($Child) }
+        }
+      }
+    }
+  } catch {
+    if ($_.Exception.Message -like "ROLEFLOW_REPARSE_POINT_*") { throw }
+    throw "ROLEFLOW_REPARSE_POINT_CHECK_FAILED: $NormalizedPath"
+  }
+  return $true
+}
+
 function New-RoleFlowPortableEdgeArguments {
   param([int]$Port, [string]$ProfilePath, [string]$StartUrl)
   @("--remote-debugging-address=127.0.0.1", "--remote-debugging-port=$Port", "--remote-allow-origins=*", ('"--user-data-dir={0}"' -f (Resolve-RoleFlowNormalizedPath -Path $ProfilePath)), "--no-first-run", "--no-default-browser-check", $StartUrl)
@@ -115,8 +184,11 @@ function Assert-RoleFlowBrowserProfileNotInUse {
     if ($profileArguments.Count -gt 1) { throw "RoleFlow browser profile check failed: an Edge process has ambiguous profile authority." }
     if ($profileArguments.Count -eq 1) {
       $actualProfile = Resolve-RoleFlowNormalizedPath -Path (([string]$profileArguments[0]).Substring("--user-data-dir=".Length))
-      if ([string]::Equals($actualProfile, $expectedProfile, [System.StringComparison]::OrdinalIgnoreCase)) { throw "RoleFlow browser profile is already in use by Edge." }
+    } else {
+      if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "RoleFlow browser profile check failed: the default Edge profile authority is unavailable." }
+      $actualProfile = Resolve-RoleFlowNormalizedPath -Path (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data")
     }
+    if (Test-RoleFlowPathOverlap -FirstPath $actualProfile -SecondPath $expectedProfile) { throw "RoleFlow browser profile is already in use by Edge." }
   }
   return $true
 }

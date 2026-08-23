@@ -511,20 +511,16 @@ function testStartupIdentityHelpers() {
     { querySucceeded: true, listeners: [{ localAddress: "127.0.0.1", owningProcess: 4242 }] },
     { querySucceeded: false, processes: [] }
   );
-  assertProfileInUseRejected("C:\\RoleFlow Profile", {
-    querySucceeded: true,
-    processes: [acceptedSnapshot]
-  });
-  assertProfileQueryRejected({ querySucceeded: false, processes: [] });
-  assertProfileQueryRejected({
-    querySucceeded: true,
-    processes: [{ ...acceptedSnapshot, ExecutablePath: "" }]
-  });
-  assertProfileQueryRejected({
-    querySucceeded: true,
-    processes: [{ ...acceptedSnapshot, CommandLine: "" }]
-  });
-  assertProfileInUseAccepted("C:\\RoleFlow Profile", {
+  const explicitNestedSnapshot = {
+    ...acceptedSnapshot,
+    CommandLine: acceptedSnapshot.CommandLine.replace("C:\\RoleFlow Profile", "C:\\Profiles\\Dedicated")
+  };
+  const defaultEdgeUserData = path.join(localAppDataPath, "Microsoft", "Edge", "User Data");
+  const defaultEdgeSnapshot = {
+    ...acceptedSnapshot,
+    CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --profile-directory=Default'
+  };
+  const otherProfileSnapshot = {
     querySucceeded: true,
     processes: [
       { ...acceptedSnapshot, ProcessName: "node.exe" },
@@ -533,7 +529,29 @@ function testStartupIdentityHelpers() {
         CommandLine: acceptedSnapshot.CommandLine.replace("C:\\RoleFlow Profile", "C:\\Other Profile")
       }
     ]
-  });
+  };
+  const profileResults = invokeStartupHelperBatch([
+    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [acceptedSnapshot] }, false],
+    ["C:\\Profiles", { querySucceeded: true, processes: [explicitNestedSnapshot] }, false],
+    ["C:\\Profiles\\Dedicated\\Default", { querySucceeded: true, processes: [explicitNestedSnapshot] }, false],
+    [defaultEdgeUserData, { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
+    [path.join(defaultEdgeUserData, "Default"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
+    [path.dirname(defaultEdgeUserData), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
+    [path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, true],
+    ["C:\\RoleFlow Profile", { querySucceeded: false, processes: [] }, false],
+    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ExecutablePath: "" }] }, false],
+    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, CommandLine: "" }] }, false],
+    ["C:\\RoleFlow Profile", otherProfileSnapshot, true]
+  ].map(([profilePath, processQuerySnapshot, accepted]) => ({
+    accepted,
+    functionName: "Assert-RoleFlowBrowserProfileNotInUse",
+    parameters: { ProfilePath: profilePath, ProcessQuerySnapshot: processQuerySnapshot }
+  })));
+  assert.deepStrictEqual(
+    profileResults.map((item) => item.accepted),
+    [false, false, false, false, false, false, true, false, false, false, true],
+    `unexpected profile identity decisions: ${JSON.stringify(profileResults)}`
+  );
 }
 
 function testProcessIdentityProbeUsesFixtureLocalAppData() {
@@ -575,25 +593,6 @@ function assertListenerSnapshotRejected(listenerSnapshot, processQuerySnapshot) 
     ProfilePath: "C:\\RoleFlow Profile"
   }));
 }
-
-function assertProfileInUseRejected(profilePath, processQuerySnapshot) {
-  assert.throws(() => invokeStartupHelper("Assert-RoleFlowBrowserProfileNotInUse", {
-    ProfilePath: profilePath,
-    ProcessQuerySnapshot: processQuerySnapshot
-  }));
-}
-
-function assertProfileQueryRejected(processQuerySnapshot) {
-  assertProfileInUseRejected("C:\\RoleFlow Profile", processQuerySnapshot);
-}
-
-function assertProfileInUseAccepted(profilePath, processQuerySnapshot) {
-  assert.strictEqual(invokeStartupHelper("Assert-RoleFlowBrowserProfileNotInUse", {
-    ProfilePath: profilePath,
-    ProcessQuerySnapshot: processQuerySnapshot
-  }), true);
-}
-
 
 function startNodeServer(script, args) {
   const child = spawn(process.execPath, [script, ...args], {
@@ -654,6 +653,24 @@ function runPowerShellUnicode(args, {
 function invokeStartupHelper(functionName, parameters) {
   const payloadPath = path.join(tempRoot, `startup-helper-${Date.now()}-${Math.random()}.json`);
   fs.writeFileSync(payloadPath, JSON.stringify({ functionName, parameters }), "utf8");
+  try {
+    const result = runPowerShell([
+      "-File", path.join(tempRoot, "startup-helper-probe.ps1"),
+      "-PayloadPath", payloadPath,
+      "-HelperPath",
+      path.join(projectRoot, "scripts", "lib", "startup-identity.ps1")
+    ], { cwd: outsideCwd, timeout: 10000 });
+    const output = combinedOutput(result);
+    if (result.status !== 0) throw new Error(output);
+    return JSON.parse(String(result.stdout || "").trim());
+  } finally {
+    fs.rmSync(payloadPath, { force: true });
+  }
+}
+
+function invokeStartupHelperBatch(calls) {
+  const payloadPath = path.join(tempRoot, `startup-helper-batch-${Date.now()}-${Math.random()}.json`);
+  fs.writeFileSync(payloadPath, JSON.stringify({ calls }), "utf8");
   try {
     const result = runPowerShell([
       "-File", path.join(tempRoot, "startup-helper-probe.ps1"),
@@ -1074,6 +1091,22 @@ param(
 $ErrorActionPreference = "Stop"
 $payload = Get-Content -Raw -LiteralPath $PayloadPath | ConvertFrom-Json
 . $HelperPath
+if ($null -ne $payload.calls) {
+  $results = @(
+    foreach ($call in @($payload.calls)) {
+      $parameters = @{}
+      $call.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
+      try {
+        [void](& ([string]$call.functionName) @parameters)
+        [pscustomobject]@{ accepted = $true; error = "" }
+      } catch {
+        [pscustomobject]@{ accepted = $false; error = $_.Exception.Message }
+      }
+    }
+  )
+  $results | ConvertTo-Json -Compress -Depth 10
+  exit 0
+}
 $parameters = @{}
 $payload.parameters.psobject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }
 $result = & ([string]$payload.functionName) @parameters

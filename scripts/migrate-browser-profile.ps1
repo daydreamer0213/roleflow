@@ -54,6 +54,8 @@ $ExpectedParent = Resolve-RoleFlowNormalizedPath -Path (Join-Path $env:LOCALAPPD
 
 Assert-NonRootPath -Path $SourcePath
 Assert-NonRootPath -Path $TargetPath
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $SourcePath -IncludeDescendants)
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $TargetPath -IncludeDescendants)
 if (-not [string]::Equals($TargetPath, $ExpectedTarget, [System.StringComparison]::OrdinalIgnoreCase) -or
     -not [string]::Equals($TargetParent, $ExpectedParent, [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "ROLEFLOW_PROFILE_TARGET_IDENTITY_INVALID"
@@ -76,7 +78,9 @@ $ProcessSnapshot = Get-RoleFlowEdgeProcessSnapshot
 [void](Assert-RoleFlowBrowserProfileNotInUse -ProfilePath $SourcePath -ProcessQuerySnapshot $ProcessSnapshot)
 [void](Assert-RoleFlowBrowserProfileNotInUse -ProfilePath $TargetPath -ProcessQuerySnapshot $ProcessSnapshot)
 
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $TargetPath -IncludeDescendants)
 New-Item -ItemType Directory -Force -Path $TargetParent | Out-Null
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $TargetParent)
 $StagingName = ".BrowserProfile-migration-$([guid]::NewGuid().ToString('N'))"
 $StagingPath = Resolve-RoleFlowNormalizedPath -Path (Join-Path $TargetParent $StagingName)
 if (-not [string]::Equals(
@@ -92,11 +96,14 @@ if (-not [string]::Equals(
     (Test-Path -LiteralPath $StagingPath)) {
   throw "ROLEFLOW_PROFILE_STAGING_IDENTITY_INVALID"
 }
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $StagingPath -IncludeDescendants)
 
 $StagingCreated = $false
 try {
   [System.IO.Directory]::CreateDirectory($StagingPath) | Out-Null
   $StagingCreated = $true
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $SourcePath -IncludeDescendants)
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $StagingPath -IncludeDescendants)
   foreach ($Child in @(Get-ChildItem -LiteralPath $SourcePath -Force)) {
     Copy-Item `
       -LiteralPath $Child.FullName `
@@ -105,6 +112,8 @@ try {
       -Force
   }
 
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $SourcePath -IncludeDescendants)
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $StagingPath -IncludeDescendants)
   if (-not (Test-Path -LiteralPath (Join-Path $StagingPath "Local State") -PathType Leaf)) {
     throw "ROLEFLOW_PROFILE_STAGING_LOCAL_STATE_MISSING"
   }
@@ -114,6 +123,8 @@ try {
     throw "ROLEFLOW_PROFILE_STAGING_INVENTORY_MISMATCH"
   }
 
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $StagingPath -IncludeDescendants)
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $TargetPath -IncludeDescendants)
   [System.IO.Directory]::Move($StagingPath, $TargetPath)
   $StagingCreated = $false
   Write-Output "PROFILE_MIGRATION_OK"
@@ -130,6 +141,7 @@ try {
         )) {
       throw "ROLEFLOW_PROFILE_STAGING_CLEANUP_REFUSED"
     }
+    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $CleanupPath -IncludeDescendants)
     Remove-Item -LiteralPath $CleanupPath -Recurse -Force
   }
 }

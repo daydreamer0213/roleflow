@@ -64,3 +64,41 @@ The RED run used only temporary `LOCALAPPDATA` roots, deterministic copied helpe
 - Destructive browser-profile removal remains an explicit opt-in and is intentionally not exercised against real data.
 - An existing CDP listener can be accepted only when the shared production identity guard proves the installed Edge executable, requested probe port, and exact stable profile; Task 7 does not weaken or bypass that guard.
 - The StageOnly artifact is intentionally left on `D:` as verification evidence; no installer executable was built or run.
+
+## Fix Round 1: Overlap and Reparse Identity
+
+### RED
+
+- A pure process snapshot with an explicit `--user-data-dir=C:\Profiles\Dedicated` was incorrectly accepted when the requested maintenance path was either `C:\Profiles` or `C:\Profiles\Dedicated\Default`.
+- A pure ordinary-Edge snapshot without `--user-data-dir` was incorrectly accepted for the exact, parent, and child paths of the fixture `%LOCALAPPDATA%\Microsoft\Edge\User Data`. The independent fixture `%LOCALAPPDATA%\RoleFlow\BrowserProfile` remained an accepted non-overlap case.
+- With `BrowserProfile` itself as a junction, current Windows PowerShell uninstall returned success, deleted the application database and the junction, but preserved the junction target sentinel.
+- With a nested junction inside `BrowserProfile`, uninstall likewise deleted the database and containing profile tree while preserving the external junction target sentinel.
+- With a junction in the migration source tree, migration entered the copy phase and then failed with `ROLEFLOW_PROFILE_STAGING_INVENTORY_MISMATCH`; source, link target, sibling, and formal-target absence were preserved, but rejection did not precede staging/copy.
+- With `%LOCALAPPDATA%\RoleFlow` as a junction, migration returned `PROFILE_MIGRATION_OK` and published `BrowserProfile` inside the junction target.
+
+The observed Windows behavior therefore did **not** show `Remove-Item -Recurse` traversing these junctions and deleting their external targets. The defect was the missing reparse identity refusal and the resulting deletion/publication outside the intended lexical identity, including application data being deleted before a browser-profile identity failure could occur.
+
+### GREEN
+
+- `node tests/startup_scripts_smoke.js` — exit 0, `startup_scripts_smoke ok`.
+- `node tests/windows_installer_smoke.js` — exit 0, `windows_installer_smoke ok`.
+- `node tests/self_check.js` — exit 0, `self_check ok` (with the existing Node experimental SQLite warning).
+- Final fix-round StageOnly build — exit 0 at:
+  - `D:\DevData\RoleFlow-installer\stage-b53da2447e504581bea75b4a82185004\stage\1.0.0`
+- Independent stage inspection found the migration script and zero forbidden browser-profile, legacy edge-profile, database, secret, test, or Edge-Control paths.
+- `git diff --check` — exit 0.
+
+The shared guard now treats ordinary Edge without `--user-data-dir` as using the current fixture `LOCALAPPDATA\Microsoft\Edge\User Data`, rejects explicit or implicit profile overlap in either direction, and retains conservative query/incomplete/ambiguous failures. Migration and uninstall reject reparse points in all relevant existing path segments and deletion/copy trees before staging, copying, final rename, or removal. Lexical equality and ancestor checks remain a second layer after reparse identity validation.
+
+The interactive prompt only resolves the exact current profile path for display. Reparse/deletion validation runs after the separate opt-in, so the default-No path remains non-blocking and preserves even a reparse-backed profile identity.
+
+### Isolation and Risk Self-review
+
+- All PowerShell children used fixture `LOCALAPPDATA`; no command read or modified the real `%LOCALAPPDATA%\RoleFlow\BrowserProfile`.
+- Edge tests used serialized process snapshots only. No `msedge.exe` was manufactured, renamed, copied, executed, or queried, and Edge/BOSS was not started.
+- Network fixtures used temporary ports selected while explicitly excluding 8787 and 9222; neither production port was bound or probed.
+- The successful installed-self-check smoke used a minimal temporary project root. A before/after fingerprint proves it did not write repository `.runtime` logs or self-check artifacts.
+- The first unbatched startup regression exceeded its fixture timeout and left one fixture PowerShell/Node pair on temporary port 49292. Their exact command lines were revalidated against the unique startup-smoke path before stopping them; the unique fixture directory and the earlier Task 7 self-check test log were then removed. No unrelated process or runtime artifact was touched.
+- Junction failure assertions prove the source, application database, link, external link target, and siblings remain intact, and that no staging or formal migration target is exposed.
+- Cleanup retains the safer failure mode: if staging identity becomes a reparse point, cleanup refuses to call `Remove-Item` rather than risk crossing the identity boundary.
+- The D-drive StageOnly artifact is intentionally retained as evidence. No real installer or uninstaller was built, installed, or run.
