@@ -51,7 +51,7 @@ async function main() {
   try {
     db = storage.openDb(dbPath);
     const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db });
-    server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(), browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
+    server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(), browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     browser = await chromium.launch({ channel: options.browserChannel, headless: true });

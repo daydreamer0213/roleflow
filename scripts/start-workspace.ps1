@@ -102,9 +102,9 @@ if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $Browser
 $url = "http://127.0.0.1:$Port/"
 Write-Host "RoleFlow is ready: $url"
 if ($BrowserMode -eq "edge") {
-  Write-Host "浏览器：当前 Edge 高级模式，复用已登录的固定 BOSS 标签页"
+  Write-Host "浏览器：使用当前 Edge（高级，需要浏览器连接组件）"
 } else {
-  Write-Host "浏览器：项目专用 Edge（首次需要独立登录）"
+  Write-Host "浏览器：RoleFlow 专用 Edge（推荐）"
 }
 Write-Host "未登录时请先在 BOSS 标签页登录；设置好搜索条件后切回工作台。"
 

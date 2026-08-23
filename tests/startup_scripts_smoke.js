@@ -139,7 +139,7 @@ function testRunScriptFromOutsideCwd() {
 
 async function testWorkspaceStartupFromSpacePath() {
   const recordPath = path.join(tempRoot, "workspace-start.jsonl");
-  const result = runPowerShell([
+  const result = runPowerShellUnicode([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
     "-Port", String(dashboardPort),
     "-NoBrowser"
@@ -149,6 +149,7 @@ async function testWorkspaceStartupFromSpacePath() {
     timeout: 30000
   });
   assert.strictEqual(result.status, 0, combinedOutput(result));
+  assert.match(combinedOutput(result), /浏览器：RoleFlow 专用 Edge（推荐）/);
   const records = readJsonLines(recordPath);
   const dashboard = records.find((item) => item.command === "dashboard");
   const workspaceTabs = records.find((item) => item.command === "workspace-tabs");
@@ -182,7 +183,7 @@ async function testWorkspaceStartupFromSpacePath() {
   await waitForPortClosed(dashboardPort);
 
   const edgeRecordPath = path.join(tempRoot, "workspace-edge.jsonl");
-  const edge = runPowerShell([
+  const edge = runPowerShellUnicode([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
     "-Port", String(dashboardPort),
     "-BrowserMode", "edge",
@@ -193,6 +194,7 @@ async function testWorkspaceStartupFromSpacePath() {
     timeout: 30000
   });
   assert.strictEqual(edge.status, 0, combinedOutput(edge));
+  assert.match(combinedOutput(edge), /浏览器：使用当前 Edge（高级，需要浏览器连接组件）/);
   const edgeRecords = readJsonLines(edgeRecordPath);
   const edgeDashboard = edgeRecords.find((item) => item.command === "dashboard");
   const edgeTabs = edgeRecords.find((item) => item.command === "workspace-tabs");
@@ -629,6 +631,26 @@ function runPowerShell(args, {
   });
 }
 
+function runPowerShellUnicode(args, {
+  cwd = outsideCwd,
+  env = fixtureEnv(),
+  timeout = 20000
+} = {}) {
+  return spawnSync(powershell, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    ...args
+  ], {
+    cwd,
+    env,
+    encoding: "buffer",
+    timeout,
+    windowsHide: true
+  });
+}
+
 function invokeStartupHelper(functionName, parameters) {
   const payloadPath = path.join(tempRoot, `startup-helper-${Date.now()}-${Math.random()}.json`);
   fs.writeFileSync(payloadPath, JSON.stringify({ functionName, parameters }), "utf8");
@@ -667,9 +689,13 @@ function readJsonLines(filePath) {
 function combinedOutput(result) {
   return [
     result.error?.message || "",
-    result.stdout || "",
-    result.stderr || ""
+    decodeWindowsConsoleOutput(result.stdout),
+    decodeWindowsConsoleOutput(result.stderr)
   ].filter(Boolean).join("\n");
+}
+
+function decodeWindowsConsoleOutput(value) {
+  return Buffer.isBuffer(value) ? new TextDecoder("gb18030").decode(value) : String(value || "");
 }
 
 function normalizePath(value) {

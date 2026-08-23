@@ -22,7 +22,7 @@ async function main() {
   try {
     db = storage.openDb(dbPath);
     const runs = seed(storage, initializeWorkflowJobTasks, db);
-    server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: logger(), browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
+    server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: logger(), browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     browser = await chromium.launch({ channel: options.browserChannel, headless: true });

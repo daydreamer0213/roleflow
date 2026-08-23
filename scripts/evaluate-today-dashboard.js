@@ -63,6 +63,7 @@ async function main() {
     const blocked = seed({ storage, matchingCardFromProfile, db, name: "Blocked", confirmCard: false });
     server = createDashboardServer({
       db,
+      browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
       root: options.targetRoot,
       dbPath,
       forceMock: true,
