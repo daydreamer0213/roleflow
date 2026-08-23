@@ -178,7 +178,9 @@ function Assert-RoleFlowBrowserProfileNotInUse {
   if (-not $ProcessQuerySnapshot.querySucceeded) { throw "RoleFlow browser profile check failed: Edge process enumeration failed." }
   $expectedProfile = Resolve-RoleFlowNormalizedPath -Path $ProfilePath
   foreach ($process in @($ProcessQuerySnapshot.processes)) {
-    if (-not [string]::Equals([System.IO.Path]::GetFileName([string]$process.ProcessName), "msedge.exe", [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+    $SnapshotProcessName = [string]$process.ProcessName
+    if ([string]::IsNullOrWhiteSpace($SnapshotProcessName)) { throw "RoleFlow browser profile check failed: an Edge process has incomplete identity." }
+    if (-not [string]::Equals([System.IO.Path]::GetFileName($SnapshotProcessName), "msedge.exe", [System.StringComparison]::OrdinalIgnoreCase)) { continue }
     if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath) -or [string]::IsNullOrWhiteSpace([string]$process.CommandLine)) { throw "RoleFlow browser profile check failed: an Edge process has incomplete identity." }
     $profileArguments = @(Get-RoleFlowCommandLineArguments -CommandLine ([string]$process.CommandLine) | Where-Object { ([string]$_).StartsWith("--user-data-dir=", [System.StringComparison]::OrdinalIgnoreCase) })
     if ($profileArguments.Count -gt 1) { throw "RoleFlow browser profile check failed: an Edge process has ambiguous profile authority." }

@@ -102,3 +102,27 @@ The interactive prompt only resolves the exact current profile path for display.
 - Junction failure assertions prove the source, application database, link, external link target, and siblings remain intact, and that no staging or formal migration target is exposed.
 - Cleanup retains the safer failure mode: if staging identity becomes a reparse point, cleanup refuses to call `Remove-Item` rather than risk crossing the identity boundary.
 - The D-drive StageOnly artifact is intentionally retained as evidence. No real installer or uninstaller was built, installed, or run.
+
+## Fix Round 2: Missing Process Name Identity
+
+### RED
+
+The batch-only process snapshot added one complete Edge-shaped record with `querySucceeded=true`, an empty `ProcessName`, a populated Edge executable path and command line, and the exact requested `--user-data-dir`. `node tests/startup_scripts_smoke.js` exited 1 because that record returned `{ accepted: true }` instead of the literal expected `false`.
+
+The root cause was ordering in `Assert-RoleFlowBrowserProfileNotInUse`: it compared `GetFileName(ProcessName)` with `msedge.exe` and skipped nonmatches before checking whether the name was missing. An empty name was therefore treated as a confirmed non-Edge process rather than an incomplete process identity.
+
+### GREEN
+
+- `node tests/startup_scripts_smoke.js` — exit 0, `startup_scripts_smoke ok`.
+- `node tests/windows_installer_smoke.js` — exit 0, `windows_installer_smoke ok`.
+- `node tests/self_check.js` — exit 0, `self_check ok` (with the existing Node experimental SQLite warning).
+- `git diff --check` — exit 0.
+
+The production change is limited to validating the snapshot process name before the confirmed-non-Edge skip. Empty or whitespace-only names now fail conservatively; a populated name that is clearly not `msedge.exe` is still ignored. Existing query failure, missing executable/command line, ambiguous profile, default-profile overlap, and explicit-profile overlap decisions remain covered in the same pure snapshot batch.
+
+### Safety Self-review
+
+- The regression is a serialized data snapshot only; it does not manufacture, start, query, or stop Edge.
+- All test PowerShell children continue to receive fixture `LOCALAPPDATA`, and neither 8787 nor 9222 is bound or probed.
+- The change adds no process control, port access, migration, installation, or deletion behavior.
+- Post-test audit found zero startup fixture directories, zero startup fixture processes, and no repository `install-self-check.log`.

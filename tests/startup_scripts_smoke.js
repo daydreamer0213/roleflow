@@ -539,6 +539,7 @@ function testStartupIdentityHelpers() {
     [path.dirname(defaultEdgeUserData), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, false],
     [path.join(localAppDataPath, "RoleFlow", "BrowserProfile"), { querySucceeded: true, processes: [defaultEdgeSnapshot] }, true],
     ["C:\\RoleFlow Profile", { querySucceeded: false, processes: [] }, false],
+    ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessName: "" }] }, false],
     ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, ExecutablePath: "" }] }, false],
     ["C:\\RoleFlow Profile", { querySucceeded: true, processes: [{ ...acceptedSnapshot, CommandLine: "" }] }, false],
     ["C:\\RoleFlow Profile", otherProfileSnapshot, true]
@@ -549,7 +550,7 @@ function testStartupIdentityHelpers() {
   })));
   assert.deepStrictEqual(
     profileResults.map((item) => item.accepted),
-    [false, false, false, false, false, false, true, false, false, false, true],
+    [false, false, false, false, false, false, true, false, false, false, false, true],
     `unexpected profile identity decisions: ${JSON.stringify(profileResults)}`
   );
 }
