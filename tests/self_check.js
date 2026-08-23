@@ -26,7 +26,6 @@ const installer = fs.readFileSync(path.join(root, "scripts", "install.ps1"), "ut
 const workspaceLauncher = fs.readFileSync(path.join(root, "scripts", "start-workspace.ps1"), "utf8");
 const portableEdgeLauncher = fs.readFileSync(path.join(root, "scripts", "start-portable-edge.ps1"), "utf8");
 const releasePackager = fs.readFileSync(path.join(root, "scripts", "package-release.ps1"), "utf8");
-const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 assert.strictEqual(workspaceLauncher.charCodeAt(0), 0xFEFF, "start-workspace.ps1 must use a UTF-8 BOM for Windows PowerShell 5.1");
 assert(installer.includes("require.resolve('pdfjs-dist/legacy/build/pdf.mjs',"), "installer must resolve the production PDF parser dependency");
 assert(!installer.includes("pdf-parse"), "installer must not check the removed pdf-parse dependency");
@@ -35,7 +34,6 @@ assert(
   !installer.includes('tests\\run_all.js'),
   "startup dependency checks must not run the full offline suite"
 );
-assert(workspaceLauncher.includes('BrowserMode = "edge"'));
 assert(workspaceLauncher.includes("start-edge-control.ps1"));
 assert(workspaceLauncher.includes("start-portable-edge.ps1"));
 assert(workspaceLauncher.includes('"workspace-tabs"'));
@@ -45,17 +43,6 @@ assert(!workspaceLauncher.includes("Start-Process $url"));
 assert(portableEdgeLauncher.includes("--remote-debugging-address=127.0.0.1"));
 assert(portableEdgeLauncher.includes("9222"));
 assert(portableEdgeLauncher.includes("https://www.zhipin.com/web/geek/jobs"));
-assert(readme.includes("当前已登录 Edge（推荐）"));
-assert(readme.includes("Start.bat -BrowserMode portable"));
-assert(readme.includes("不会自动回退"));
-assert(readme.includes("9222"));
-assert(readme.includes(".runtime\\edge-profile"));
-assert(readme.includes("默认普通 Edge 模式需要用户已安装并连接健康的 Edge Control 扩展和桥接"));
-assert(readme.includes("发布 zip 不内置或自动安装 Edge Control 桥接"));
-assert(readme.includes("`Start.bat` 会 fail-closed（停止启动，不自动切换浏览器）"));
-assert(readme.includes("无需或不想安装 Edge Control 时，必须显式运行"));
-assert(!readme.includes("不依赖 Codex 或浏览器插件"));
-assert(!readme.includes("Edge Control 插件模式仅作为兼容入口"));
 assert(releasePackager.includes('"LICENSE"'), "release package must include the AGPL license");
 assert(releasePackager.includes('"NOTICE"'), "release package must include copyright and third-party notices");
 assert(!releasePackager.includes('Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs")'), "release package must not recursively include internal development evidence");

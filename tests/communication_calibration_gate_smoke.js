@@ -38,6 +38,7 @@ let server;
   let spawnedChild;
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root: process.cwd(),
     dbPath: "D:\\RoleFlow\\calibration-smoke.sqlite",
     logger,

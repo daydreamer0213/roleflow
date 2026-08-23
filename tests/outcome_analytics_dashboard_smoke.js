@@ -57,6 +57,7 @@ let server;
 
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,
@@ -145,6 +146,7 @@ let server;
   const warnings = [];
   const failOpenServer = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,

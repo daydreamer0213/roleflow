@@ -2627,6 +2627,11 @@ function startDashboard(db, args) {
     db,
     dbPath: path.resolve(args.db || DEFAULT_DB),
     root: ROOT,
+    browserAuthority: {
+      browserMode: args.browser,
+      cdpPort: args["cdp-port"],
+      profilePath: args["browser-profile"] || ""
+    },
     modelConfig: loadConfigs(ROOT).model,
     allowOfflineMock: args["allow-offline-mock"] === true,
     forceMock: args["force-mock"] === true

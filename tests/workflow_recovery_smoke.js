@@ -970,6 +970,7 @@ function dashboardStartupRecovery() {
     });
     createDashboardServer({
       db: database,
+      browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
       forceMock: true,
       allowOfflineMock: true,
       logger: {

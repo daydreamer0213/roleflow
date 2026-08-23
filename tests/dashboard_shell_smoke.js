@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { openDb, saveProfileAnalysis, createBatch, upsertJob } = require("../src/core/storage");
-const { createDashboardServer } = require("../src/dashboard/server");
+const { createDashboardServer, normalizeDashboardBrowserAuthority } = require("../src/dashboard/server");
 const response = require("../src/dashboard/http/response");
 const { renderPage } = require("../src/dashboard/ui/shell");
 const { renderNavigation } = require("../src/dashboard/ui/navigation");
@@ -10,12 +10,24 @@ const { renderNavigation } = require("../src/dashboard/ui/navigation");
 const root = path.join(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `dashboard-shell-${Date.now()}.sqlite`);
+const browserAuthority = { browserMode: "portable", cdpPort: 9222, profilePath: path.resolve(smokeDir, "dedicated-edge-profile") };
 let diagnosticEntries = [];
 const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboard-shell-smoke"; }, listRecent() { return diagnosticEntries; } };
 
 (async () => {
   assert.strictEqual(typeof response.escapeHtml, "function", "the response utility must expose HTML escaping");
   assert.strictEqual(typeof response.escapeAttr, "function", "the response utility must expose attribute escaping");
+  assert.strictEqual(typeof normalizeDashboardBrowserAuthority, "function", "the Dashboard must expose browser-authority validation");
+  assert.throws(
+    () => normalizeDashboardBrowserAuthority(),
+    (error) => error && error.code === "WORKFLOW_BROWSER_MODE_INVALID",
+    "a Dashboard without startup browser authority must be rejected"
+  );
+  assert.throws(
+    () => normalizeDashboardBrowserAuthority({ browserMode: "edge", cdpPort: 9222, profilePath: "" }),
+    (error) => error && error.code === "DASHBOARD_BROWSER_AUTHORITY_INVALID",
+    "advanced Edge authority must not include a portable CDP identity"
+  );
   assert.strictEqual(response.escapeHtml(`<&>\"'`), "&lt;&amp;&gt;&quot;&#39;");
   assert.strictEqual(response.escapeAttr(`<&>\"'`), "&lt;&amp;&gt;&quot;&#39;");
 
@@ -47,7 +59,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
   fs.mkdirSync(smokeDir, { recursive: true });
   const db = openDb(dbPath);
   const queueFixture = seedQueueFixture(db);
-  const server = createDashboardServer({ db, root, dbPath, forceMock: true, logger });
+  const server = createDashboardServer({ db, root, dbPath, forceMock: true, logger, browserAuthority });
   const baseUrl = await listen(server);
   try {
     const stylesheet = await getText(baseUrl, "/assets/roleflow.css");
@@ -69,6 +81,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.strictEqual(health.status, 200, "existing JSON API responses must remain available");
     assert.match(health.contentType, /^application\/json(?:;|$)/);
     assert.strictEqual(health.body.ok, true);
+    assert.deepStrictEqual(health.body.browserAuthority, browserAuthority);
 
     for (const pathname of ["/onboarding", "/settings", "/plan", "/workflow", "/queue", "/communication/new", "/communication", "/jobs", "/diagnostics"]) {
       const page = await getText(baseUrl, pathname);

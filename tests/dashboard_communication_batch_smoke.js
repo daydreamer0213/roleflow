@@ -384,7 +384,7 @@ async function assertCommunicationClient() {
       throw new Error("communication rebind must not navigate");
     }
   };
-  server = createDashboardServer({ db, root, dbPath, logger,
+  server = createDashboardServer({ db, root, dbPath, browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, logger,
     browserFactory({ browserMode }) {
       assert.strictEqual(browserMode, "edge");
       return edgeBrowser;

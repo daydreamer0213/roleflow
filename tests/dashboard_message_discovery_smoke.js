@@ -106,6 +106,7 @@ async function main() {
   let nowMs = Date.parse("2026-07-31T01:00:00.000Z");
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,
@@ -1059,6 +1060,7 @@ async function modelReadinessGateSmoke(database, projectRoot, databasePath, scop
   let browserCreations = 0;
   const readinessServer = createDashboardServer({
     db: database,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root: projectRoot,
     dbPath: databasePath,
     forceMock: true,
@@ -1097,6 +1099,7 @@ async function modelReadinessGateSmoke(database, projectRoot, databasePath, scop
 async function leaseConstraintSmoke(database, root, dbPath, logger, profileId) {
   const constraintServer = createDashboardServer({
     db: database,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,

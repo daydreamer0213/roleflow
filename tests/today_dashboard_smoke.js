@@ -42,6 +42,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   let previewFailureCode = "";
   const server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,

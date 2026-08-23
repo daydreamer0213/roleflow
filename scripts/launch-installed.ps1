@@ -18,7 +18,7 @@ RoleFlow 启动失败。
 
 $Reason
 
-请按提示检查 Microsoft Edge 和浏览器连接组件，然后重试。
+$(if ($Reason -match 'DASHBOARD_BROWSER_AUTHORITY_MISMATCH|PORTABLE_EDGE_(PORT_OCCUPIED_NOT_CDP|LISTENER_SNAPSHOT_MISMATCH)|Portable Edge identity check failed on port|RoleFlow browser profile is already in use') { '请关闭占用项目专用 Edge 配置目录或 9222 端口的窗口后重试。' } else { '请按提示处理后重试。' })
 诊断日志：$LogPath
 "@
   [void][System.Windows.Forms.MessageBox]::Show(

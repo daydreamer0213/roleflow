@@ -26,6 +26,7 @@ main().catch((error) => {
 async function main() {
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,
@@ -137,6 +138,7 @@ async function testSpawnFailureStaysRecoverable() {
   const failedDb = openDb(failedDbPath);
   const failedServer = createDashboardServer({
     db: failedDb,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root: failedRoot,
     dbPath: failedDbPath,
     forceMock: true,
@@ -276,6 +278,7 @@ async function createFailureFixture({ spawnProcess }) {
   const fixtureDb = openDb(fixtureDbPath);
   const fixtureServer = createDashboardServer({
     db: fixtureDb,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root: fixtureRoot,
     dbPath: fixtureDbPath,
     forceMock: true,

@@ -238,7 +238,7 @@ function restartRecoveryAndOrphanCleanupSmoke(database) {
     ttlMs: 10 * 60 * 1000
   });
 
-  createDashboardServer({ db: database, root, dbPath, logger });
+  createDashboardServer({ db: database, root, dbPath, browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, logger });
   assert.strictEqual(getLatestScanRun(database, { planId: 301, site: "boss" }).status, "interrupted");
   assert.strictEqual(getLatestScanRun(database, { planId: 302, site: "boss" }).status, "running");
   const recovered = scanStatus(new Map(), 302, database);

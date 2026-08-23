@@ -46,6 +46,7 @@ let noDbPathServer;
   let spawnBehavior = "normal";
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     logger,
@@ -360,7 +361,7 @@ let noDbPathServer;
   assert.strictEqual(getCommunicationBatch(db, parentFailure.batch.id).status, "interrupted");
   assert.strictEqual(getWorkflowRun(db, parentFailureWorkflow.id).status, "interrupted");
 
-  noDbPathServer = createDashboardServer({ db, root, dbPath: "", logger, spawnProcess() { throw new Error("spawn must not run without dbPath"); } });
+  noDbPathServer = createDashboardServer({ db, root, dbPath: "", browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, logger, spawnProcess() { throw new Error("spawn must not run without dbPath"); } });
   const noDbPathBaseUrl = await listen(noDbPathServer);
   const missingDbPath = await postJson(baseUrl, "/api/communication-batch", {
     planId: fixture.planId,

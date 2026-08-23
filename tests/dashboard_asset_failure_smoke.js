@@ -6,6 +6,7 @@ const { createDashboardServer } = require("../src/dashboard/server");
   const db = openDb(":memory:");
   const server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     forceMock: true,
     logger: { info() {}, warn() {}, error() {}, requestId() { return "dashboard-asset-failure-smoke"; }, listRecent() { return []; } },
     assetReader() {

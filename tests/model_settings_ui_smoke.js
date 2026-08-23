@@ -36,6 +36,7 @@ async function main() {
   const connectionProfiles = [];
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     modelConfig: fallback,

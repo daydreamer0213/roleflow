@@ -52,6 +52,7 @@ let server;
   const saved = seedProfile(db);
   server = createDashboardServer({
     db,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
     root,
     dbPath,
     forceMock: true,

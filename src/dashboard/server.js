@@ -292,6 +292,26 @@ const BROWSER_READINESS_STATUSES = new Set([
   "ready"
 ]);
 
+function normalizeDashboardBrowserAuthority(input) {
+  const browserMode = String(input?.browserMode || "").trim().toLowerCase();
+  if (!new Set(["edge", "portable"]).has(browserMode)) {
+    throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式无效。", { statusCode: 409 });
+  }
+  if (browserMode === "edge") {
+    if ((input.cdpPort !== null && input.cdpPort !== undefined && String(input.cdpPort).trim() !== "")
+      || String(input.profilePath || "").trim()) {
+      throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "当前 Edge 高级模式不能携带专用 Edge 身份。", { statusCode: 409 });
+    }
+    return Object.freeze({ browserMode, cdpPort: null, profilePath: "" });
+  }
+  const cdpPort = Number(input.cdpPort);
+  const profilePath = String(input.profilePath || "").trim();
+  if (cdpPort !== PORTABLE_CDP_PORT || !path.isAbsolute(profilePath)) {
+    throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "RoleFlow 专用 Edge 启动身份无效。", { statusCode: 409 });
+  }
+  return Object.freeze({ browserMode, cdpPort, profilePath: path.resolve(profilePath) });
+}
+
 function normalizeCdpPort(value, fallback = PORTABLE_CDP_PORT) {
   const port = Number(value || fallback);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -360,6 +380,7 @@ function resolveNewWorkflowBrowser(input = {}) {
 
 function createDashboardServer({
   db,
+  browserAuthority,
   root = path.resolve(__dirname, "../.."),
   dbPath = "",
   modelConfig = { provider: "mock", providers: { mock: {} } },
@@ -388,6 +409,7 @@ function createDashboardServer({
   planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync
 }) {
+  const frozenBrowserAuthority = normalizeDashboardBrowserAuthority(browserAuthority);
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
     || createDashboardBrowserReadinessProbe({ logger });
@@ -556,7 +578,8 @@ function createDashboardServer({
           ok: true,
           logging: "enabled",
           projectRoot: path.resolve(root),
-          pid: process.pid
+          pid: process.pid,
+          browserAuthority: frozenBrowserAuthority
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
@@ -4920,6 +4943,7 @@ function sendText(res, statusCode, text) {
 
 module.exports = {
   createDashboardServer,
+  normalizeDashboardBrowserAuthority,
   buildWorkflowDashboardState,
   resolveLiveAcquisitionContext,
   resolveLiveInheritedContext,

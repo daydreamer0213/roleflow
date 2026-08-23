@@ -91,7 +91,7 @@ let server;
       nextAction: "等待招聘方回复"
     });
 
-    server = createDashboardServer({ db, root, dbPath, forceMock: true });
+    server = createDashboardServer({ db, root, dbPath, forceMock: true, browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" } });
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     const base = `http://127.0.0.1:${server.address().port}`;
 

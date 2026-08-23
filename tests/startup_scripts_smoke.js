@@ -79,6 +79,8 @@ async function main() {
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
   testPortableModeRejectsInvalidCdpPort();
+  testEdgeModeRejectsDedicatedAuthority();
+  testDashboardCommandRejectsMissingOrConflictingAuthority();
   await testForeignDashboardIdentityRejected();
   await testFailurePathCleansStartedProcesses();
   testCleanupFailureIsAggregated();
@@ -159,43 +161,50 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.strictEqual(normalizePath(dashboard.cwd), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(dashboard.projectRoot), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(workspaceTabs.projectRoot), normalizePath(projectRoot));
-  assert.deepStrictEqual(
-    workspaceTabs.args.slice(
-      workspaceTabs.args.indexOf("--browser"),
-      workspaceTabs.args.indexOf("--browser") + 2
-    ),
-    ["--browser", "edge"]
-  );
-  assert(!workspaceTabs.args.includes("--cdp-port"));
+  const expectedStableProfile = path.join(tempRoot, "local app data", "RoleFlow", "BrowserProfile");
+  assert.deepStrictEqual(dashboard.args.slice(dashboard.args.indexOf("--browser")), [
+    "--browser", "portable",
+    "--cdp-port", "9222",
+    "--browser-profile", expectedStableProfile
+  ]);
+  assert.deepStrictEqual(workspaceTabs.args.slice(workspaceTabs.args.indexOf("--browser")), [
+    "--browser", "portable",
+    "--cdp-port", "9222",
+    "--browser-profile", expectedStableProfile
+  ]);
+  const health = await getJson(`http://127.0.0.1:${dashboardPort}/health`);
+  assert.deepStrictEqual(health.browserAuthority, {
+    browserMode: "portable",
+    cdpPort: 9222,
+    profilePath: expectedStableProfile
+  });
   await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(dashboardPort);
 
-  const portableRecordPath = path.join(tempRoot, "workspace-portable.jsonl");
-  const portable = runPowerShell([
+  const edgeRecordPath = path.join(tempRoot, "workspace-edge.jsonl");
+  const edge = runPowerShell([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
     "-Port", String(dashboardPort),
-    "-BrowserMode", "portable",
+    "-BrowserMode", "edge",
     "-NoBrowser"
   ], {
     cwd: outsideCwd,
-    env: fixtureEnv({ ROLEFLOW_STARTUP_RECORD: portableRecordPath }),
+    env: fixtureEnv({ ROLEFLOW_STARTUP_RECORD: edgeRecordPath }),
     timeout: 30000
   });
-  assert.strictEqual(portable.status, 0, combinedOutput(portable));
-  const portableRecords = readJsonLines(portableRecordPath);
-  const portableDashboard = portableRecords.find((item) => item.command === "dashboard");
-  const portableTabs = portableRecords.find((item) => item.command === "workspace-tabs");
-  assert(portableDashboard);
-  registerProcess(portableDashboard.pid, {
+  assert.strictEqual(edge.status, 0, combinedOutput(edge));
+  const edgeRecords = readJsonLines(edgeRecordPath);
+  const edgeDashboard = edgeRecords.find((item) => item.command === "dashboard");
+  const edgeTabs = edgeRecords.find((item) => item.command === "workspace-tabs");
+  assert(edgeDashboard);
+  registerProcess(edgeDashboard.pid, {
     kind: "dashboard",
     expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
   });
-  assert(portableTabs);
-  assert(portableTabs.args.includes("--browser"));
-  assert(portableTabs.args.includes("portable"));
-  assert(portableTabs.args.includes("--cdp-port"));
-  assert(portableTabs.args.includes("9222"));
-  await stopRegisteredProcess(portableDashboard.pid);
+  assert(edgeTabs);
+  assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge"]);
+  assert.deepStrictEqual(edgeTabs.args.slice(edgeTabs.args.indexOf("--browser")), ["--browser", "edge"]);
+  await stopRegisteredProcess(edgeDashboard.pid);
   await waitForPortClosed(dashboardPort);
 }
 
@@ -239,7 +248,7 @@ function testPortableModeRejectsInvalidCdpPort() {
 }
 
 async function testForeignDashboardIdentityRejected() {
-  for (const mode of ["other-project", "missing-identity", "pid-mismatch"]) {
+  for (const mode of ["other-project", "missing-identity", "pid-mismatch", "authority-mode", "authority-port", "authority-profile"]) {
     const child = startNodeServer(path.join(tempRoot, "foreign-health.js"), [
       String(dashboardPort),
       mode,
@@ -257,7 +266,7 @@ async function testForeignDashboardIdentityRejected() {
       timeout: 10000
     });
     assert.notStrictEqual(result.status, 0, `${mode} health listener must be rejected`);
-    assert.match(combinedOutput(result), /identity|current project|listener PID/i);
+    assert.match(combinedOutput(result), /identity|current project|listener PID|DASHBOARD_BROWSER_AUTHORITY_MISMATCH/i);
     await stopChild(child);
     await waitForPortClosed(dashboardPort);
   }
@@ -287,6 +296,38 @@ async function runIntentionalCleanupProcessProbe() {
   });
 
   throw new Error("STARTUP_CLEANUP_PROBE_PRIMARY_FAILURE");
+}
+
+function testEdgeModeRejectsDedicatedAuthority() {
+  for (const args of [
+    ["-BrowserMode", "edge", "-ProfileDir", path.join(tempRoot, "explicit-profile")],
+    ["-BrowserMode", "edge", "-CdpPort", "9222"]
+  ]) {
+    const result = runPowerShell([
+      "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+      "-Port", String(dashboardPort),
+      "-NoBrowser",
+      "-NoOpen",
+      ...args
+    ], { cwd: outsideCwd, env: fixtureEnv(), timeout: 10000 });
+    assert.notStrictEqual(result.status, 0, "Edge Control must reject explicitly supplied dedicated Edge fields");
+    assert.match(combinedOutput(result), /WORKSPACE_EDGE_BROWSER_AUTHORITY_INVALID/);
+  }
+}
+
+function testDashboardCommandRejectsMissingOrConflictingAuthority() {
+  for (const args of [
+    ["dashboard", "--port", String(dashboardPort)],
+    ["dashboard", "--port", String(dashboardPort), "--browser", "edge", "--cdp-port", "9222"],
+    ["dashboard", "--port", String(dashboardPort), "--browser", "edge", "--browser-profile", path.join(tempRoot, "explicit-profile")]
+  ]) {
+    const result = runPowerShell([
+      "-File", path.join(projectRoot, "run.ps1"),
+      ...args
+    ], { cwd: outsideCwd, env: fixtureEnv(), timeout: 10000 });
+    assert.notStrictEqual(result.status, 0, "dashboard command must require one valid immutable browser authority");
+    assert.match(combinedOutput(result), /WORKFLOW_BROWSER_MODE_INVALID|DASHBOARD_BROWSER_AUTHORITY_INVALID/);
+  }
 }
 
 async function testFailurePathCleansStartedProcesses() {
@@ -928,12 +969,27 @@ if (record) {
   }) + "\n");
 }
 if (command !== "dashboard") process.exit(0);
+const browserIndex = args.indexOf("--browser");
+const browserMode = browserIndex >= 0 ? args[browserIndex + 1] : "";
+const cdpIndex = args.indexOf("--cdp-port");
+const profileIndex = args.indexOf("--browser-profile");
+const cdpPort = cdpIndex >= 0 ? Number(args[cdpIndex + 1]) : null;
+const profilePath = profileIndex >= 0 ? args[profileIndex + 1] : "";
+if (!["edge", "portable"].includes(browserMode)) {
+  throw new Error("WORKFLOW_BROWSER_MODE_INVALID");
+}
+if (browserMode === "edge" && (cdpIndex >= 0 || profileIndex >= 0)) {
+  throw new Error("DASHBOARD_BROWSER_AUTHORITY_INVALID");
+}
+if (browserMode === "portable" && (cdpPort !== 9222 || !path.isAbsolute(profilePath))) {
+  throw new Error("DASHBOARD_BROWSER_AUTHORITY_INVALID");
+}
 const portIndex = args.indexOf("--port");
 const port = Number(args[portIndex + 1]);
 const server = http.createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/health") {
-    res.end(JSON.stringify({ ok: true, projectRoot, pid: process.pid }));
+    res.end(JSON.stringify({ ok: true, projectRoot, pid: process.pid, browserAuthority: { browserMode, cdpPort, profilePath } }));
     return;
   }
   res.statusCode = 404;
@@ -946,6 +1002,7 @@ server.listen(port, "127.0.0.1");
 function foreignHealthSource() {
   return String.raw`
 const http = require("node:http");
+const path = require("node:path");
 const port = Number(process.argv[2]);
 const mode = process.argv[3];
 const projectRoot = process.argv[4];
@@ -956,14 +1013,29 @@ http.createServer((req, res) => {
     res.end("{}");
     return;
   }
+  const authority = mode === "authority-mode"
+    ? { browserMode: "edge", cdpPort: null, profilePath: "" }
+    : mode === "authority-port"
+      ? { browserMode: "portable", cdpPort: 9333, profilePath: path.join(process.env.LOCALAPPDATA, "RoleFlow", "BrowserProfile") }
+      : mode === "authority-profile"
+        ? { browserMode: "portable", cdpPort: 9222, profilePath: path.join(process.env.LOCALAPPDATA, "RoleFlow", "OtherProfile") }
+        : { browserMode: "portable", cdpPort: 9222, profilePath: path.join(process.env.LOCALAPPDATA, "RoleFlow", "BrowserProfile") };
   const body = mode === "missing-identity"
     ? { ok: true }
     : mode === "pid-mismatch"
-      ? { ok: true, projectRoot, pid: process.pid + 1000 }
-      : { ok: true, projectRoot: "D:\\Other\\RoleFlow", pid: process.pid };
+      ? { ok: true, projectRoot, pid: process.pid + 1000, browserAuthority: authority }
+      : mode === "other-project"
+        ? { ok: true, projectRoot: "D:\\Other\\RoleFlow", pid: process.pid, browserAuthority: authority }
+        : { ok: true, projectRoot, pid: process.pid, browserAuthority: authority };
   res.end(JSON.stringify(body));
 }).listen(port, "127.0.0.1");
 `;
+}
+
+async function getJson(url) {
+  const response = await fetch(url);
+  assert.strictEqual(response.status, 200, `expected health response from ${url}`);
+  return response.json();
 }
 
 function startupHelperProbeSource() {
