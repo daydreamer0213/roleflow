@@ -88,6 +88,7 @@ function fakeBrowser({
   createErrorAfterInsert = false,
   onCreate = null,
   closeNoop = false,
+  twoVisibleAfterClose = false,
   communicationSnapshot = communication(),
   paneSnapshot = pane(),
   detailSnapshot = messageDetail()
@@ -131,6 +132,10 @@ function fakeBrowser({
         if (closingWasActive) {
           const dashboard = this.tabs.find((tab) => tab.id === DASHBOARD_TAB_ID);
           if (dashboard) dashboard.active = true;
+        }
+        if (twoVisibleAfterClose) {
+          const search = this.tabs.find((tab) => tab.id === SEARCH_TAB_ID);
+          if (search) search.active = true;
         }
       }
       return true;
@@ -204,6 +209,21 @@ async function read(reader, signal = null) {
   assert.strictEqual(browser.calls.filter((call) => call.name === "createTab").length, 1);
   assert.strictEqual(browser.calls.filter((call) => call.name === "closeTab").length, 1);
   assert.strictEqual(browser.calls.some((call) => /bringToFront|focus/i.test(call.name)), false);
+
+  const cleanupVisibilityBrowser = fakeBrowser({ twoVisibleAfterClose: true });
+  const cleanupVisibility = makeReader(cleanupVisibilityBrowser);
+  await assert.rejects(
+    () => read(cleanupVisibility.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED"
+  );
+  assert.deepStrictEqual(
+    cleanupVisibilityBrowser.tabs.filter((tab) => tab.active).map((tab) => tab.id),
+    [SEARCH_TAB_ID, DASHBOARD_TAB_ID],
+    "cleanup visibility drift must retain the exact unsafe two-visible fixture"
+  );
+  assert.strictEqual(cleanupVisibilityBrowser.calls.filter((call) => call.name === "createTab").length, 1);
+  assert.strictEqual(cleanupVisibilityBrowser.calls.filter((call) => call.name === "closeTab").length, 1);
+  assert.deepStrictEqual(cleanupVisibility.hooks, ["beforeOpen", "afterIssuedAttempt"]);
 
   const minimizedBrowser = fakeBrowser({ minimized: true });
   const minimized = makeReader(minimizedBrowser);

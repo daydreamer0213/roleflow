@@ -296,24 +296,23 @@ function captureBinding(tabs, communicationTabId) {
 }
 
 function assertRestoredBaseline(tabs, binding) {
-  let fixed;
   try {
-    fixed = assertBossOperatorTabs(tabs);
+    const fixed = assertBossOperatorTabs(tabs);
+    const bossTabs = tabs.filter(isBossTab);
+    const bossTabIds = sortedBrowserTabIds(bossTabs.map((tab) => tab.id));
+    if (bossTabs.length !== 2
+      || !sameBrowserTabId(fixed.searchTab.id, binding.searchTabId)
+      || !sameBrowserTabId(fixed.communicationTab.id, binding.communicationTabId)
+      || fixed.windowId !== binding.windowId
+      || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)
+      || !sameIds(bossTabIds, binding.bossTabIds)
+      || !sameIds(sortedBrowserTabIds(tabs.map((tab) => tab.id)), binding.tabIds)) {
+      throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
+    }
+    return fixed;
   } catch {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
   }
-  const bossTabs = tabs.filter(isBossTab);
-  const bossTabIds = sortedBrowserTabIds(bossTabs.map((tab) => tab.id));
-  if (bossTabs.length !== 2
-    || !sameBrowserTabId(fixed.searchTab.id, binding.searchTabId)
-    || !sameBrowserTabId(fixed.communicationTab.id, binding.communicationTabId)
-    || fixed.windowId !== binding.windowId
-    || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)
-    || !sameIds(bossTabIds, binding.bossTabIds)
-    || !sameIds(sortedBrowserTabIds(tabs.map((tab) => tab.id)), binding.tabIds)) {
-    throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
-  }
-  return fixed;
 }
 
 function optionalCreatedTargetTab(before, after, target) {
