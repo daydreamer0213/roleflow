@@ -242,7 +242,7 @@ async function prepareWorkspaceTabs({
   const baseline = workspaceBaseline(tabs);
   const initial = assertDedicatedTopology(tabs, dashboardUrl);
   if (visibleIdsInWindow(tabs, initial.guidanceTab.windowId).length > 1) {
-    throw workspaceError("BROWSER_COMMAND_FAILED", "项目专用 Edge 同时出现多个前台标签页，无法安全继续。");
+    throw workspaceError("BROWSER_COMMAND_FAILED", "RoleFlow 专用 Edge（推荐）同时出现多个前台标签页，无法安全继续。");
   }
   const readiness = await inspectReadiness({
     guidanceTab: initial.guidanceTab,
@@ -315,7 +315,7 @@ async function prepareWorkspaceTabs({
 
 function assertDedicatedTopology(tabs, dashboardUrl) {
   if (tabs.some((tab) => !Number.isInteger(tab.windowId))) {
-    throw workspaceError("BROWSER_COMMAND_FAILED", "项目专用 Edge 标签页缺少可靠的窗口身份。");
+    throw workspaceError("BROWSER_COMMAND_FAILED", "RoleFlow 专用 Edge（推荐）标签页缺少可靠的窗口身份。");
   }
   const bossTabs = tabs.filter(isBossTab);
   const searchTabs = bossTabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
@@ -323,12 +323,12 @@ function assertDedicatedTopology(tabs, dashboardUrl) {
   const exactPair = bossTabs.length === 2 && searchTabs.length === 1 && communicationTabs.length === 1;
   const singleGuidance = bossTabs.length === 1 && communicationTabs.length === 0;
   if (!exactPair && !singleGuidance) {
-    throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge 只能保留一个 BOSS 引导页或固定的搜索页与沟通页。");
+    throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge（推荐）只能保留一个 BOSS 引导页或固定的搜索页与沟通页。");
   }
   const guidanceTab = searchTabs[0] || bossTabs[0];
-  if (!guidanceTab) throw workspaceError("BOSS_TAB_REQUIRED", "项目专用 Edge 中没有 BOSS 标签页。");
+  if (!guidanceTab) throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge（推荐）中没有 BOSS 标签页。");
   if (tabs.some((tab) => tab.windowId !== guidanceTab.windowId)) {
-    throw workspaceError("WORKSPACE_WINDOW_MISMATCH", "项目专用 Edge 必须只保留一个可靠窗口。");
+    throw workspaceError("WORKSPACE_WINDOW_MISMATCH", "RoleFlow 专用 Edge（推荐）必须只保留一个可靠窗口。");
   }
   const fixedTabs = exactPair ? assertBossOperatorTabs(bossTabs) : null;
   const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
@@ -368,7 +368,7 @@ function requireSingleVisibleTab(tabs, windowId) {
   if (visibleIds.length !== 1) {
     throw workspaceError(
       "BROWSER_COMMAND_FAILED",
-      "请恢复 RoleFlow 专用 Edge 窗口后重试；创建标签页前必须能确认唯一前台页。"
+      "请恢复 RoleFlow 专用 Edge（推荐）窗口后重试；创建标签页前必须能确认唯一前台页。"
     );
   }
   return visibleIds;
@@ -377,7 +377,7 @@ function requireSingleVisibleTab(tabs, windowId) {
 function requireVisibleBaseline(tabs, windowId, expectedIds) {
   const actualIds = visibleIdsInWindow(tabs, windowId);
   if (!sameTabIdLists(actualIds, expectedIds)) {
-    throw workspaceError("BROWSER_COMMAND_FAILED", "后台标签页操作改变了项目专用 Edge 的前台页。");
+    throw workspaceError("BROWSER_COMMAND_FAILED", "后台标签页操作改变了 RoleFlow 专用 Edge（推荐）的前台页。");
   }
 }
 

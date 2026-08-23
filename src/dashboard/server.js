@@ -300,7 +300,7 @@ function normalizeDashboardBrowserAuthority(input) {
   if (browserMode === "edge") {
     if ((input.cdpPort !== null && input.cdpPort !== undefined && String(input.cdpPort).trim() !== "")
       || String(input.profilePath || "").trim()) {
-      throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "使用当前 Edge（高级，需要浏览器连接组件）不能携带专用 Edge 身份。", { statusCode: 409 });
+      throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "使用当前 Edge（高级，需要浏览器连接组件）不能携带 RoleFlow 专用 Edge（推荐）的端口或配置目录。", { statusCode: 409 });
     }
     return Object.freeze({ browserMode, cdpPort: null, profilePath: "" });
   }

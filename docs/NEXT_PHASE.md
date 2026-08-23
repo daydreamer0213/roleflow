@@ -1,6 +1,6 @@
 # RoleFlow 下一阶段主控索引
 
-> 更新于 2026-08-23。当前工作对象是尚未发布的 stable dedicated Edge source candidate，不是已发布 v1.0.0 的补丁说明。
+> 更新于 2026-08-24。当前工作对象是尚未发布的 stable dedicated Edge source candidate，不是已发布 v1.0.0 的补丁说明。
 
 ## 当前结论
 
@@ -16,13 +16,16 @@
 
 状态：**已通过**。
 
-2026-08-23 在 HEAD `9fcd4c7ee423709632f581341bb0153a57bd396b` 加当前 Task 8 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。这不是尚未产生的 Task 8 提交 SHA，也不代表已经完成真实 Edge、BOSS、安装或卸载验收。
+2026-08-24 在 HEAD `e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` 加 Task 8 fix round 1 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。这不是尚未产生的修正提交 SHA，也不代表已经完成真实 Edge、BOSS、安装或卸载验收。
 
-本阶段剩余步骤：
+## Task 8 已完成记录
 
-1. 在 `D:\DevData\RoleFlow-installer` 下新建唯一的 `offline-gate-*` 目录，运行 installer `StageOnly`；不得把大体积暂存数据写到 `C:`。
-2. 运行暂存包禁入扫描、`git diff --check` 和 `git status --short`，确认只有预期修改。
-3. 提交当前文档候选；Task 9 再基于干净工作树记录已提交 candidate source SHA。
+- Installer `StageOnly` 已在 `D:\DevData\RoleFlow-installer\offline-gate-5e2587006b1a43d0832fa3d3dd75b695\stage\1.0.0` 完成。
+- 独立禁入扫描检查了 3,145 个暂存条目，没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge。
+- `git diff --check` 已通过；提交前 `git status --short` 只包含获批的 Task 8 文档、用户文案和既有测试夹具迁移。
+- Task 8 candidate commit 已生成：`e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2`。
+
+`e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` 只是进入本轮修正文案前的 Task 8 candidate commit，不是最终 candidate source SHA。Task 9 将在所有修正提交完成后，从干净工作树的实际 HEAD 读取并记录真实 candidate source SHA。
 
 ## 本阶段不做
 

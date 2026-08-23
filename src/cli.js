@@ -202,8 +202,7 @@ async function prepareWorkspaceTabsCommand(
   const cdpPort = Number(args["cdp-port"] || 9222);
   if (!["edge", "portable"].includes(browserMode)
     || (browserMode === "portable" && cdpPort !== 9222)) {
-    const error = new Error("工作台同窗启动固定使用项目专用 Edge 的 9222 端口。");
-    error.message = "工作台默认复用当前 Edge（高级）；RoleFlow 专用 Edge 仅支持显式 portable/9222。";
+    const error = new Error("工作区浏览器身份无效。默认使用 RoleFlow 专用 Edge（推荐）（内部为 portable/9222）；显式高级路径使用当前 Edge（高级，需要浏览器连接组件）。");
     error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
     throw error;
   }

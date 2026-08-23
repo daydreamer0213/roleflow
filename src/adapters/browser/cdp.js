@@ -327,7 +327,7 @@ function appendTargetCleanupFailure(primaryError, {
     : closeError
       ? `Target.closeTarget 失败：${closeError.message || closeError}`
       : `Target.closeTarget 返回 success=${String(closeResult?.success)}`;
-  const guidance = "请在项目专用 Edge 中手动关闭本次残留标签页；如出现额外窗口，也请关闭多余窗口后重新运行 Start.bat。";
+  const guidance = "请在 RoleFlow 专用 Edge（推荐）中手动关闭本次残留标签页；如出现额外窗口，也请关闭多余窗口后重新运行 Start.bat。";
   primaryError.message = `${primaryError.message}\n\n清理失败：${detail}。${guidance}`;
   primaryError.cleanupError = {
     code: "BROWSER_TARGET_CLEANUP_FAILED",

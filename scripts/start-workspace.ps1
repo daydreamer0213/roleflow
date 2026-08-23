@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ($BrowserMode -eq "edge" -and ($PSBoundParameters.ContainsKey('CdpPort') -or $PSBoundParameters.ContainsKey('ProfileDir'))) {
-  throw "WORKSPACE_EDGE_BROWSER_AUTHORITY_INVALID: Edge 高级模式不能携带专用 Edge 端口或配置目录。"
+  throw "WORKSPACE_EDGE_BROWSER_AUTHORITY_INVALID: 使用当前 Edge（高级，需要浏览器连接组件）不能携带 RoleFlow 专用 Edge（推荐）的端口或配置目录。"
 }
 if ($BrowserMode -eq "portable" -and $CdpPort -ne 9222) {
   throw "WORKSPACE_PORTABLE_BROWSER_REQUIRED: portable 模式只支持 9222 端口。"

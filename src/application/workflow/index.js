@@ -228,13 +228,13 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
   if (browserMode === "portable") {
     const storedCdpPort = Number(workflow.planner?.cdpPort);
     if (acquisitionMode === "inherited" && (!Number.isInteger(storedCdpPort) || storedCdpPort !== portableCdpPort)) {
-      throw appError("INHERITED_PORTABLE_PORT_REQUIRED", "项目专用 Edge 固定使用 9222 端口。", { statusCode: 409 });
+      throw appError("INHERITED_PORTABLE_PORT_REQUIRED", "RoleFlow 专用 Edge（推荐）固定使用 9222 端口。", { statusCode: 409 });
     }
     cdpPort = acquisitionMode === "inherited"
       ? storedCdpPort
       : normalizeCdpPort(input.cdpPort || (Number.isInteger(storedCdpPort) ? storedCdpPort : portableCdpPort));
     if (cdpPort !== portableCdpPort) {
-      throw appError("INHERITED_PORTABLE_PORT_REQUIRED", "项目专用 Edge 固定使用 9222 端口。", { statusCode: 409 });
+      throw appError("INHERITED_PORTABLE_PORT_REQUIRED", "RoleFlow 专用 Edge（推荐）固定使用 9222 端口。", { statusCode: 409 });
     }
   }
   if (["completed", "failed", "stopped"].includes(workflow.status)) {

@@ -2120,14 +2120,14 @@ class BossSiteAdapter {
       );
     }
     if (!hasKnownBossWindow(searchTab)) {
-      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认项目专用 Edge 标签页所属窗口。请关闭多余的项目专用 Edge 窗口后重新运行 Start.bat。");
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认 RoleFlow 专用 Edge（推荐）标签页所属窗口。请关闭多余的 RoleFlow 专用 Edge（推荐）窗口后重新运行 Start.bat。");
     }
     await this.assertSearchPage(searchTab.id);
     this.communicationSearchTabId = searchTab.id;
 
     const reusableCandidates = tabs.filter(isReusableBossCommunicationTab);
     if (reusableCandidates.some((tab) => !hasKnownBossWindow(tab))) {
-      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认项目专用 Edge 标签页所属窗口。请关闭多余的项目专用 Edge 窗口后重新运行 Start.bat。");
+      throw bossError("BOSS_COMMUNICATION_TAB_WINDOW_UNKNOWN", "无法确认 RoleFlow 专用 Edge（推荐）标签页所属窗口。请关闭多余的 RoleFlow 专用 Edge（推荐）窗口后重新运行 Start.bat。");
     }
 
     const stored = this.communicationTabId === null

@@ -1,12 +1,12 @@
 # RoleFlow 当前项目交接
 
-> 当前权威交接入口。更新于 2026-08-23。新会话先读根目录 `AGENTS.md`、本文件和 `NEXT_PHASE.md`，再检查当前代码与测试；不要用历史聊天、旧计划或 v1.0.0 发布说明推断当前 source candidate。
+> 当前权威交接入口。更新于 2026-08-24。新会话先读根目录 `AGENTS.md`、本文件和 `NEXT_PHASE.md`，再检查当前代码与测试；不要用历史聊天、旧计划或 v1.0.0 发布说明推断当前 source candidate。
 
 ## 1. 发布与候选状态
 
 - 已发布正式版仍是 `v1.0.0`，下载资产为 GitHub Release 中的 `RoleFlow-Setup-1.0.0.exe`。
 - 当前分支 `codex/stable-dedicated-edge` 是**尚未发布的 source candidate**。它包含 v1.0.0 之后的工作，但尚未推送、合并或发布。
-- 当前候选的完整离线门禁：**已通过**。2026-08-23 在 HEAD `9fcd4c7ee423709632f581341bb0153a57bd396b` 加当前 Task 8 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。
+- 当前候选的完整离线门禁：**已通过**。2026-08-24 在 HEAD `e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` 加 Task 8 fix round 1 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。
 - 当前候选没有执行新的真实 BOSS、真实 Edge、安装或卸载验收；历史真实验收不等于本候选已经验收。
 
 ## 2. 当前浏览器交付模型
@@ -45,7 +45,7 @@
 ## 6. 当前验证与交接协议
 
 - 危险夹具扫描、`node tests/run_all.js`、installer `StageOnly`、`git diff --check` 和 `git status --short` 均为当前候选的必做离线门禁。
-- 以上 101/101 记录只证明 2026-08-23 当时的 HEAD 与 Task 8 工作树；Task 8 提交 SHA 尚未在这条记录中虚构。后续代码变化必须重新运行并记录实际结果。
+- 以上 101/101 记录只证明 2026-08-24 当时的 HEAD 与 Task 8 fix round 1 工作树；尚未产生的修正提交 SHA 没有在这条记录中虚构。后续代码变化必须重新运行并记录实际结果。
 - 交付必须列出修改文件、验证命令与结果、未验证前提、真实平台读写情况、stage 路径和提交哈希。
 - 不自动推送、合并、发布、安装、卸载、启动 Edge、访问真实 BOSS 或执行外部写；这些动作分别需要用户授权。
 

@@ -82,3 +82,79 @@ An independent scan inspected 3,145 staged entries and returned `FORBIDDEN_STAGE
 - One focused onboarding run reached the Dashboard but returned a transient `database is locked` at a later resume upload. It left no Dashboard child, did not reproduce in two consecutive focused reruns, and the later full suite passed `onboarding_smoke`.
 - The direct child-error diagnosis created ignored `.runtime\smoke\flow-authority-probe.sqlite`. After the worker's precise cleanup attempt was rejected by execution policy, the controller revalidated the exact workspace-relative identity, removed that single file through the file API, and confirmed zero same-prefix remnants. No unrelated file or process was touched.
 - The stage directory is intentionally retained on `D:` as offline evidence. No actual installer executable was built or executed.
+
+## Fix Round 1: Expanded User-copy Audit and Final Candidate Record
+
+### Scope and Root Cause
+
+The 2026-08-23 audit searched only `scripts`, `src/dashboard`, and `src/core`. A repository-wide `scripts`/`src` audit on 2026-08-24 found additional user-visible legacy names in the CLI, installed launcher, workspace startup, workflow application, BOSS/CDP adapters, message-discovery recovery copy, and one Dashboard authority error. The implementation behavior, error codes, variables, browser parsing, and authority defaults were already correct; the defect was incomplete copy-audit scope.
+
+The fix changes only user-facing strings and one existing copy assertion:
+
+- Ordinary paths consistently say “RoleFlow 专用 Edge（推荐）”.
+- The explicit advanced path consistently says “使用当前 Edge（高级，需要浏览器连接组件）”.
+- The CLI invalid-authority message now describes the default dedicated `portable/9222` path and the explicit advanced current-Edge path without claiming that current Edge is the default. Its condition, default arguments, error code, and parsing behavior are unchanged.
+- `scripts/launch-installed.ps1`, `scripts/start-workspace.ps1`, `src/core/workspace_tabs.js`, `src/application/workflow/index.js`, `src/adapters/sites/boss.js`, `src/adapters/browser/cdp.js`, `src/dashboard/message_discovery_view.js`, and `src/dashboard/server.js` use the approved product labels in their recovery and identity messages.
+- `tests/dashboard_message_discovery_smoke.js` was the only focused test with a stale copy assertion. Its existing assertion was updated to the exact approved dedicated-Edge label; no new prose test, timeout, or behavior change was added.
+
+The final strict audit across all `scripts` and `src` returned:
+
+```text
+EXPANDED_COPY_AUDIT_OK: no user-visible legacy labels
+```
+
+The three developer diagnostics in `scripts/start-portable-edge.ps1` may still say `Portable Edge CDP` and `CDP URL`; internal `portable`, CDP, and `9222` identifiers also remain intentionally unchanged.
+
+### Focused Verification
+
+- Node syntax — 7 changed JavaScript production files checked, `NODE_SYNTAX_OK files=7`.
+- Windows PowerShell 5.1 parser — `scripts/start-workspace.ps1` and `scripts/launch-installed.ps1`, `PS51_PARSE_OK files=2`.
+- `node tests/workspace_tabs_smoke.js` — `workspace_tabs_smoke ok`.
+- `node tests/workflow_application_smoke.js` — `workflow application smoke passed`.
+- `node tests/boss_communication_page_smoke.js` — `boss_communication_page_smoke ok`.
+- `node tests/browser_transport_smoke.js` — `browser_transport_smoke ok`.
+- `node tests/dashboard_message_discovery_smoke.js` — `dashboard_message_discovery_smoke ok` after the approved existing-assertion migration.
+- `node tests/windows_installer_smoke.js` — `windows_installer_smoke ok`.
+- `node tests/startup_scripts_smoke.js` — `startup_scripts_smoke ok` under its unchanged timeout.
+
+The first PowerShell parser invocation was itself malformed because the outer shell expanded its variables before Windows PowerShell received the command. It did not parse or execute either target script. The corrected escaped invocation then parsed both files successfully.
+
+### Fresh Full Offline Gate
+
+The hazardous-fixture audit again found no `OutputAssembly`, `edgeCompileSource`, `compileEdgeStub`, or `startEdgeStub` match:
+
+```text
+HAZARD_SCAN_OK: no matches
+```
+
+On 2026-08-24, from HEAD `e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` plus the fix-round working tree, the normal command `node tests/run_all.js` exited 0. Its exact final line was:
+
+```text
+All 101 offline checks passed.
+```
+
+`docs/PROJECT_HANDOFF.md` and `docs/NEXT_PHASE.md` now record that actual date, base HEAD, working-tree basis, command, exit status, count, and final line. They do not invent the not-yet-created fix commit SHA. `NEXT_PHASE.md` also records the completed original Task 8 StageOnly, 3,145-entry forbidden scan, hygiene checks, and intermediate candidate commit `e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2`; it states explicitly that Task 9 must read the true candidate source SHA from the clean post-fix HEAD.
+
+### Fresh Installer Stage and Hygiene
+
+The fix-round `StageOnly` command succeeded without compiling or running an installer. Its unique root and stage are:
+
+```text
+D:\DevData\RoleFlow-installer\offline-gate-fix-aa6e82be310344cab73b84b1291bf214
+D:\DevData\RoleFlow-installer\offline-gate-fix-aa6e82be310344cab73b84b1291bf214\stage\1.0.0
+```
+
+The independent scan returned `FORBIDDEN_STAGE_SCAN_OK entries=3145`; there was exactly one `offline-gate-fix-*` directory. The stage contains no profile, test, SQLite/WAL/SHM, Key, `.env`, secret, `.runtime`, report/log, or Edge Control bridge content.
+
+Residual inspection returned:
+
+```text
+DASHBOARD_CHILD_REMNANTS=0
+FLOW_AUTHORITY_PROBE_REMNANTS=0
+STARTUP_SMOKE_DIR_REMNANTS=0
+REPO_INSTALL_SELF_CHECK_LOG=0
+```
+
+`git diff --check` exited 0 with only the existing LF-to-CRLF warnings, and the working-tree status contained only the approved fix-round documents, user-copy files, and the one migrated existing assertion. The full runner repeated its existing optional Playwright skips, Node experimental SQLite warnings, and private-fixture Git diagnostics, then completed all 101 registered offline checks.
+
+No Edge or BOSS session was started or inspected, no real 8787/9222 listener was probed, no installer or uninstaller ran, and no external write, push, merge, or publication occurred.
