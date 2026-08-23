@@ -10,6 +10,7 @@ const {
 const {
   createCommunicationBatch,
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   listCommunicationBatchItems
 } = require("../src/core/communication_batches");
 const { runCommunicationBatch } = require("../src/core/communication_executor");
@@ -194,6 +195,26 @@ async function workflowCommunicationSmoke() {
     assert.strictEqual(getWorkflowRun(db, workflow.id).communicationBatchId, batch.id);
     assert.strictEqual(batch.policySnapshot.targetSuccessCount, 3);
     assert.deepStrictEqual(batch.policySnapshot.browser, { mode: "portable", cdpPort: 9222 });
+    assert.deepStrictEqual(bindCommunicationBatchRuntime(db, {
+      batchId: batch.id,
+      browser: {
+        mode: "portable",
+        windowId: 17,
+        searchTabId: "CDP-search",
+        messageTabId: "CDP-chat",
+        searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?query=java",
+        searchScrollTop: 120,
+        bindingGeneration: 1
+      }
+    }).runtime.browser, {
+      mode: "portable",
+      windowId: 17,
+      searchTabId: "CDP-search",
+      messageTabId: "CDP-chat",
+      searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?query=java",
+      searchScrollTop: 120,
+      bindingGeneration: 1
+    });
     const confirmedWorkflow = getWorkflowRun(db, workflow.id);
     assert.strictEqual(confirmedWorkflow.metrics.selected, 5);
     assert.strictEqual(confirmedWorkflow.metrics.communication.selected, 5);

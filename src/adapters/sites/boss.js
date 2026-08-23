@@ -4,6 +4,7 @@ const { mergeJobMetadata } = require("../../core/job_metadata");
 const { canonicalizeBossSearchTemplate } = require("../../core/inherited_search_scope");
 const { normalizePlatformFilterCatalog } = require("../../core/platform_filters");
 const { PRODUCT_POLICY } = require("../../core/product_policy");
+const { isBrowserTabId, sameBrowserTabId } = require("../../core/browser_tab_identity");
 
 const SEARCH_PLAN_POLICY = PRODUCT_POLICY.searchPlan;
 const REFRESH_LIMIT = PRODUCT_POLICY.operations.refreshLimit;
@@ -2018,8 +2019,8 @@ class BossSiteAdapter {
   }
 
   async captureCommunicationSearchState(tabId) {
-    if (!Number.isInteger(tabId) || tabId <= 0) {
-      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A numeric fixed search tab ID is required.");
+    if (!isBrowserTabId(tabId)) {
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A valid fixed search tab ID is required.");
     }
     await this.assertSearchPage(tabId);
     const state = await this.browser.evalValue(tabId, `(() => ({
@@ -2048,11 +2049,11 @@ class BossSiteAdapter {
   async assertBoundCommunicationTabs({ requireSearchPage = false } = {}) {
     const binding = this.communicationBinding;
     if (!this.communicationTabsBound || !binding) {
-      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A persisted ordinary Edge binding is required.");
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A persisted fixed-tab binding is required.");
     }
     const tabs = await this.browser.listTabs();
-    const searchTab = tabs.find((tab) => tab.id === binding.searchTabId);
-    const messageTab = tabs.find((tab) => tab.id === binding.messageTabId);
+    const searchTab = tabs.find((tab) => sameBrowserTabId(tab.id, binding.searchTabId));
+    const messageTab = tabs.find((tab) => sameBrowserTabId(tab.id, binding.messageTabId));
     if (!searchTab || !messageTab) {
       throw bossError("BOSS_OPERATOR_TABS_CHANGED", "The fixed BOSS operator tabs changed.");
     }
@@ -2093,7 +2094,7 @@ class BossSiteAdapter {
   async prepareCommunicationTabOnce(searchTabId = null) {
     if (this.communicationTabsBound) {
       if (searchTabId !== null && searchTabId !== undefined
-        && searchTabId !== this.communicationBinding.searchTabId) {
+        && !sameBrowserTabId(searchTabId, this.communicationBinding.searchTabId)) {
         throw bossError("BOSS_SEARCH_PAGE_LOST", "The fixed BOSS search tab cannot be rebound during communication inspection.");
       }
       await this.assertBoundCommunicationTabs({ requireSearchPage: false });
@@ -3320,16 +3321,18 @@ function isBossSearchTab(tab) {
 }
 
 function normalizeCommunicationTabBinding(value = {}) {
-  for (const field of ["windowId", "searchTabId", "messageTabId", "bindingGeneration"]) {
+  for (const field of ["windowId", "bindingGeneration"]) {
     if (!Number.isInteger(value[field]) || value[field] <= 0) {
-      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", `${field} must be a numeric Edge identifier.`);
+      throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", `${field} must be a positive integer.`);
     }
   }
-  if (value.mode !== "edge"
-    || value.searchTabId === value.messageTabId
+  if (!["edge", "portable"].includes(value.mode)
+    || !isBrowserTabId(value.searchTabId)
+    || !isBrowserTabId(value.messageTabId)
+    || sameBrowserTabId(value.searchTabId, value.messageTabId)
     || !Number.isInteger(value.searchScrollTop)
     || value.searchScrollTop < 0) {
-    throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A complete ordinary Edge binding is required.");
+    throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A complete fixed-tab binding is required.");
   }
   let returnUrl;
   try {
@@ -3345,7 +3348,7 @@ function normalizeCommunicationTabBinding(value = {}) {
     throw bossError("BOSS_COMMUNICATION_BINDING_REQUIRED", "A trusted BOSS search return URL is required.");
   }
   return Object.freeze({
-    mode: "edge",
+    mode: value.mode,
     windowId: value.windowId,
     searchTabId: value.searchTabId,
     messageTabId: value.messageTabId,

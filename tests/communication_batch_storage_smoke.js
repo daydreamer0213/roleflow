@@ -12,6 +12,7 @@ const {
 const {
   createCommunicationBatch,
   getCommunicationBatch,
+  bindCommunicationBatchRuntime,
   touchCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
@@ -62,6 +63,9 @@ try {
   }), scanBatchId);
   const alreadyCommunicatedId = upsertJob(db, job("already-communicated", {
     title: "Already communicated role"
+  }), scanBatchId);
+  const portableBindingId = upsertJob(db, job("portable-binding", {
+    title: "Portable binding role"
   }), scanBatchId);
   const evilUrlId = upsertJob(db, job("evil-url", {
     title: "Evil URL role",
@@ -126,6 +130,20 @@ try {
     "stopped"
   );
   assert.strictEqual(setCommunicationBatchStatus(db, { batchId: safeStop.id, status: "stopped" }).status, "stopped");
+  const portableBindingBatch = createCommunicationBatch(db, { planId, jobIds: [portableBindingId], browserMode: "portable" });
+  const portableBinding = {
+    mode: "portable",
+    windowId: 17,
+    searchTabId: "CDP-search",
+    messageTabId: "CDP-chat",
+    searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?query=java",
+    searchScrollTop: 120,
+    bindingGeneration: 1
+  };
+  assert.deepStrictEqual(
+    bindCommunicationBatchRuntime(db, { batchId: portableBindingBatch.id, browser: portableBinding }).runtime.browser,
+    portableBinding
+  );
   assert.throws(
     () => createCommunicationBatch(db, { planId, jobIds: [notRecommendedId], browserMode: "edge" }),
     (error) => error.code === "COMMUNICATION_JOB_INELIGIBLE"

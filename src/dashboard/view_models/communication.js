@@ -46,7 +46,7 @@ function buildCommunicationViewModel({
     singleItemCompany: pendingAcceptance ? text(singleItem?.company) : "",
     rebindVisible: state === "pending_review"
       && ["paused", "interrupted"].includes(text(batch.status))
-      && text(batch.browserMode) === "edge"
+      && ["edge", "portable"].includes(text(batch.browserMode))
       && Boolean(batch.runtime?.browser)
       && !executionControlVisible,
     recoveryHref: `/communication?batchId=${encodeURIComponent(number(batch.id))}#communication-recovery`

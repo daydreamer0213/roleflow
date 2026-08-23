@@ -144,7 +144,7 @@ function runOwnerContract() {
         batchId: bindingBatch.id,
         browser: numericBinding({ searchTabId: "1995685534" })
       }),
-      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_INVALID"
+      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_MISMATCH"
     );
     assert.throws(
       () => bindCommunicationBatchRuntime(db, {
@@ -202,6 +202,33 @@ function runOwnerContract() {
     ));
     assert.deepStrictEqual(blockedRebind.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
     assert.deepStrictEqual(getCommunicationBatch(db, bindingBatch.id).runtime, runtimeBeforeBlockedRebind);
+    const portableBindingBatch = createCommunicationBatch(db, {
+      planId: seeded.planId,
+      jobIds: [seeded.ids[9]],
+      browserMode: "portable",
+      now: "2030-01-02T08:00:05.000Z"
+    });
+    const portable = portableBinding();
+    const portableBound = observeTransactions(db, () => bindCommunicationBatchRuntime(db, {
+      batchId: portableBindingBatch.id,
+      browser: portable,
+      now: "2030-01-02T08:00:06.000Z"
+    }));
+    assert.deepStrictEqual(portableBound.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+    assert.deepStrictEqual(portableBound.value.runtime.browser, portable);
+    assert.strictEqual(typeof portableBound.value.runtime.browser.searchTabId, "string");
+    assert.strictEqual(typeof portableBound.value.runtime.browser.messageTabId, "string");
+    const beforeModeMismatch = tableSnapshot(db);
+    const mismatch = observeTransactions(db, () => assert.throws(
+      () => bindCommunicationBatchRuntime(db, {
+        batchId: portableBindingBatch.id,
+        browser: numericBinding()
+      }),
+      (error) => error.code === "COMMUNICATION_BROWSER_BINDING_INVALID"
+        && /mode mismatch/.test(error.message)
+    ));
+    assert.deepStrictEqual(mismatch.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
+    assert.deepStrictEqual(tableSnapshot(db), beforeModeMismatch, "binding mode mismatch must not write any table");
     const items = listCommunicationBatchItems(db, batch.id);
     assert.strictEqual(items.length, 8);
     assert.deepStrictEqual(Object.keys(items[0]).sort(), [
@@ -537,6 +564,19 @@ function numericBinding(overrides = {}) {
     messageTabId: 1995685619,
     searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?city=100010000",
     searchScrollTop: 320,
+    bindingGeneration: 1,
+    ...overrides
+  };
+}
+
+function portableBinding(overrides = {}) {
+  return {
+    mode: "portable",
+    windowId: 17,
+    searchTabId: "CDP-search",
+    messageTabId: "CDP-chat",
+    searchReturnUrl: "https://www.zhipin.com/web/geek/jobs?query=java",
+    searchScrollTop: 120,
     bindingGeneration: 1,
     ...overrides
   };

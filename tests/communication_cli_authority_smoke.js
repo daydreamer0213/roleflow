@@ -71,6 +71,74 @@ let db;
     stop_code: null
   });
 
+  const portableEvents = [];
+  const portableSearchUrl = "https://www.zhipin.com/web/geek/jobs?query=java&page=2";
+  const portableBrowser = {
+    async listTabs() {
+      portableEvents.push("listTabs");
+      return [
+        { id: "CDP-search", windowId: 17, url: portableSearchUrl },
+        { id: "CDP-chat", windowId: 17, url: "https://www.zhipin.com/web/geek/chat" }
+      ];
+    },
+    async createTab() { throw new Error("portable communication must not create tabs"); }
+  };
+  const portableAdapter = {
+    async preflight({ tabId } = {}) {
+      portableEvents.push(`preflight:${tabId}`);
+      return tabId === "CDP-chat"
+        ? { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false }
+        : { tabId, url: portableSearchUrl, isSearchPage: true };
+    },
+    async prepareCommunicationTab(tabId) {
+      portableEvents.push(`weak-prepare:${tabId}`);
+      return "CDP-search";
+    },
+    async captureCommunicationSearchState(tabId) {
+      portableEvents.push(`capture:${tabId}`);
+      return { url: portableSearchUrl, scrollTop: 120 };
+    },
+    bindCommunicationTabs(binding) { portableEvents.push(["bind", binding]); },
+    async beginCommunicationSession() { portableEvents.push("begin"); },
+    async restoreCommunicationSearchPage() { portableEvents.push("restore"); }
+  };
+  assert.deepStrictEqual(await communicate(db, {
+    batch: batchId,
+    browser: "portable",
+    "cdp-port": "9222",
+    "single-item": "1"
+  }, {
+    createBrowserFn: () => portableBrowser,
+    createSiteAdapterFn: () => portableAdapter,
+    runCommunicationBatchFn: async ({ adapter }) => {
+      assert.strictEqual(adapter, portableAdapter);
+      portableEvents.push("run");
+      return { terminal: 0, total: 0 };
+    }
+  }), { terminal: 0, total: 0 });
+  const expectedPortableBinding = {
+    mode: "portable",
+    windowId: 17,
+    searchTabId: "CDP-search",
+    messageTabId: "CDP-chat",
+    searchReturnUrl: portableSearchUrl,
+    searchScrollTop: 120,
+    bindingGeneration: 1
+  };
+  assert.deepStrictEqual(portableEvents, [
+    "listTabs",
+    "preflight:CDP-chat",
+    "preflight:CDP-search",
+    "listTabs",
+    "capture:CDP-search",
+    ["bind", expectedPortableBinding],
+    "begin",
+    "run",
+    "restore"
+  ]);
+  assert.deepStrictEqual(getCommunicationBatch(db, batchId).runtime.browser, expectedPortableBinding);
+  assert.strictEqual(typeof getCommunicationBatch(db, batchId).runtime.browser.searchTabId, "string");
+
   const edgeBatchId = Number(db.prepare(`INSERT INTO communication_batches(
     site, profile_id, plan_id, browser_mode, status, policy_json,
     confirmed_at, created_at, updated_at

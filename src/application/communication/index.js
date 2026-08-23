@@ -133,9 +133,6 @@ async function rebindCommunicationBrowser({ db, input = {}, deps = {} }) {
   const batchId = Number(input.batchId);
   const batch = getCommunicationBatch(db, batchId);
   if (!batch) throw appError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found", { statusCode: 404 });
-  if (batch.browserMode !== "edge") {
-    throw appError("COMMUNICATION_BROWSER_REBIND_UNAVAILABLE", "只有当前 Edge 批次可以重新检查浏览器页面。", { statusCode: 409 });
-  }
   if (!["paused", "interrupted"].includes(batch.status)) {
     throw appError("COMMUNICATION_BATCH_STATUS_INVALID", "只有已暂停或已中断的批次可以重新检查浏览器页面。", { statusCode: 409 });
   }

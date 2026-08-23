@@ -787,9 +787,31 @@ function assertNoPreparationAction(browser, before) {
     requested: 900,
     applied: 640
   }]);
+  const portableBrowser = fakeBrowser({
+    tabs: [
+      { id: "CDP-search", url: searchUrl, windowId: 17 },
+      { id: "CDP-chat", url: "https://www.zhipin.com/web/geek/chat", windowId: 17 }
+    ]
+  });
+  const portableAdapter = new BossSiteAdapter({ browser: portableBrowser, sleepFn: async () => {} });
+  const portableBinding = numericBinding({
+    mode: "portable",
+    windowId: 17,
+    searchTabId: "CDP-search",
+    messageTabId: "CDP-chat"
+  });
+  assert.deepStrictEqual(await portableAdapter.captureCommunicationSearchState("CDP-search"), {
+    url: searchUrl,
+    scrollTop: 0
+  });
+  portableAdapter.bindCommunicationTabs(portableBinding);
+  await portableAdapter.beginCommunicationSession();
+  assert.strictEqual(await portableAdapter.prepareCommunicationTab("CDP-search"), "CDP-search");
+  await portableAdapter.restoreCommunicationSearchPage();
+  assert.deepStrictEqual(portableBrowser.calls.navigate, [["CDP-search", searchUrl]]);
   assert.throws(
-    () => new BossSiteAdapter({ browser: boundBrowser, sleepFn: async () => {} }).bindCommunicationTabs(
-      numericBinding({ searchTabId: "1995685534" })
+    () => new BossSiteAdapter({ browser: portableBrowser, sleepFn: async () => {} }).bindCommunicationTabs(
+      { ...portableBinding, messageTabId: "CDP-search" }
     ),
     (error) => error.code === "BOSS_COMMUNICATION_BINDING_REQUIRED"
   );

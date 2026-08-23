@@ -11,6 +11,7 @@ const { PRODUCT_POLICY } = require("../core/product_policy");
 const { chinaDayStartMs } = require("../core/site_access_budget");
 const { listWorkflowReviewCandidates } = require("../core/workflow_inventory");
 const { recordVerifiedCommunicationStart } = require("../core/candidate_progress");
+const { isBrowserTabId, sameBrowserTabId } = require("../core/browser_tab_identity");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
@@ -148,18 +149,15 @@ function getCommunicationBatch(db, batchId) {
 
 function bindCommunicationBatchRuntime(db, input = {}) {
   const batchId = positiveInteger(input.batchId, "COMMUNICATION_BATCH_INVALID", "batchId is required");
-  const requested = validateBrowserBinding(input.browser);
   const rebind = input.rebind === true;
   const now = timestamp(input.now);
   db.exec("BEGIN IMMEDIATE");
   try {
     const batch = getCommunicationBatch(db, batchId);
     if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-    if (batch.browserMode !== "edge") {
-      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime tab binding requires ordinary Edge");
-    }
+    const requested = validateBrowserBinding(input.browser, batch.browserMode);
     const stored = batch.runtime?.browser
-      ? validateBrowserBinding(batch.runtime.browser)
+      ? validateBrowserBinding(batch.runtime.browser, batch.browserMode)
       : null;
     let next = requested;
     if (!stored) {
@@ -643,17 +641,23 @@ function normalizeWorkflowPortableCdpPort(value) {
   return value;
 }
 
-function validateBrowserBinding(value) {
+function validateBrowserBinding(value, expectedMode = "") {
   const browser = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  for (const field of ["windowId", "searchTabId", "messageTabId", "bindingGeneration"]) {
+  for (const field of ["windowId", "bindingGeneration"]) {
     if (!Number.isInteger(browser[field]) || browser[field] <= 0) {
       throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", `${field} must be a positive integer`);
     }
   }
-  if (browser.mode !== "edge") {
-    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime tab binding requires ordinary Edge");
+  if (!["edge", "portable"].includes(browser.mode)
+    || (expectedMode && browser.mode !== expectedMode)) {
+    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime browser binding mode mismatch");
   }
-  if (browser.searchTabId === browser.messageTabId) {
+  for (const field of ["searchTabId", "messageTabId"]) {
+    if (!isBrowserTabId(browser[field])) {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", `${field} must be a valid browser tab identifier`);
+    }
+  }
+  if (sameBrowserTabId(browser.searchTabId, browser.messageTabId)) {
     throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "fixed search and message tabs must be different");
   }
   if (!Number.isInteger(browser.searchScrollTop) || browser.searchScrollTop < 0) {
@@ -673,7 +677,7 @@ function validateBrowserBinding(value) {
     throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
   }
   return Object.freeze({
-    mode: "edge",
+    mode: browser.mode,
     windowId: browser.windowId,
     searchTabId: browser.searchTabId,
     messageTabId: browser.messageTabId,

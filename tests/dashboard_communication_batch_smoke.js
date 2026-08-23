@@ -11,15 +11,18 @@ const {
   recordSiteAccessEvent,
   setSiteRuntimeState,
   createWorkflowRun,
+  getWorkflowRun,
   transitionWorkflowRun,
   attachWorkflowCommunication
 } = require("../src/core/storage");
 const {
   getCommunicationBatch,
+  createCommunicationBatch,
   bindCommunicationBatchRuntime,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
-  transitionCommunicationItem
+  transitionCommunicationItem,
+  communicationQuotaSnapshot
 } = require("../src/core/communication_batches");
 const {
   communicationAmbiguityState,
@@ -108,6 +111,15 @@ function assertCommunicationViewModel() {
   assert.equal(rebindable.controls.rebindVisible, true);
   assert.match(renderCommunicationPage(rebindable), /重新检查浏览器页面/);
   assert.equal(rebindable.polling, null, "interrupted batches must wait for a deliberate resume instead of polling");
+  const portableRebindable = buildCommunicationViewModel({
+    scope: { profile: { id: 7 }, plan: { id: 11 } },
+    current: communicationStatus({
+      status: "interrupted",
+      browserMode: "portable",
+      runtime: { browser: browserBinding({ mode: "portable", windowId: 17, searchTabId: "CDP-search", messageTabId: "CDP-chat" }) }
+    }, { batchStatus: "interrupted" })
+  });
+  assert.equal(portableRebindable.controls.rebindVisible, true);
 
   const completed = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "completed" }, { batchStatus: "completed", total: 2, terminal: 2, remaining: 0, statusCounts: { succeeded: 1, stopped: 1 } }, [{ id: 1, status: "succeeded" }, { id: 2, status: "stopped" }]) });
   assert.equal(completed.state, "completed");
@@ -414,8 +426,9 @@ async function assertCommunicationClient() {
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
   assert.match(builder.body, /form\.addEventListener\('change',update\);update\(\)/);
-  assert.match(builder.body, /<option value="edge" selected>\u5f53\u524d\u5df2\u767b\u5f55 Edge\uff08\u63a8\u8350\uff09<\/option>/);
-  assert.match(builder.body, /<option value="portable">\u9879\u76ee\u4e13\u7528 Edge\uff08\u624b\u52a8\u5907\u7528\uff09<\/option>/);
+  assert.match(builder.body, /浏览器：当前已登录 Edge（Dashboard 已固定）/);
+  assert.match(builder.body, /<input type="hidden" name="browserMode" value="edge">/);
+  assert.doesNotMatch(builder.body, /<select name="browserMode">/);
   assert.strictEqual((builder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 30);
   assert.match(builder.body, /已达到日常沟通区间，无需为凑满 30 个补扫/);
 
@@ -509,8 +522,18 @@ async function assertCommunicationClient() {
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.skippedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
 
-  const created = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: [fixture.primaryId, fixture.backupId], browserMode: "portable", title: "forged", company: "forged", bucket: "not_recommended", url: "https://invalid.example" });
+  const beforeForgedAuthority = communicationAuthorityWriteSnapshot(db);
+  await expectApiError(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.primaryId,
+    browserMode: "portable",
+    cdpPort: 9222
+  }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+  assert.deepStrictEqual(communicationAuthorityWriteSnapshot(db), beforeForgedAuthority);
+
+  const created = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: [fixture.primaryId, fixture.backupId], title: "forged", company: "forged", bucket: "not_recommended", url: "https://invalid.example" });
   assert.strictEqual(created.status, 200);
+  assert.strictEqual(created.body.batch.browserMode, "edge");
   const batchId = created.body.batch.id;
   assert.deepStrictEqual(listCommunicationBatchItems(db, batchId).map((item) => [item.jobId, item.titleSnapshot, item.companySnapshot]), [
     [fixture.primaryId, "Primary role", "Company primary"],
@@ -653,28 +676,6 @@ async function assertCommunicationClient() {
   assert.match(mismatchedBatch.body, /批次范围无法安全确认/);
   assert.doesNotMatch(mismatchedBatch.body, /name="action" value="(?:start|resume)(?:_one)?"/);
 
-  const tamperedPortable = await postJson(baseUrl, "/api/communication-batch", {
-    planId: fixture.planId,
-    jobIds: [fixture.talkId],
-    browserMode: "portable"
-  });
-  assert.strictEqual(tamperedPortable.status, 200);
-  const tamperedBatchId = tamperedPortable.body.batch.id;
-  const tamperedItem = listCommunicationBatchItems(db, tamperedBatchId)[0];
-  db.prepare("UPDATE communication_batches SET policy_json = ? WHERE id = ?").run(JSON.stringify({
-    ...tamperedPortable.body.batch.policySnapshot,
-    browser: { mode: "portable", cdpPort: 9223 }
-  }), tamperedBatchId);
-  const spawnsBeforeTamperedStart = spawns.length;
-  await expectApiError(
-    baseUrl,
-    "/api/communication-control",
-    { batchId: tamperedBatchId, action: "start_one", itemId: tamperedItem.id },
-    "COMMUNICATION_PORTABLE_CDP_PORT_INVALID",
-    409
-  );
-  assert.strictEqual(spawns.length, spawnsBeforeTamperedStart);
-
   const review = await getText(baseUrl, `/communication?batchId=${batchId}`);
   assert.strictEqual((review.body.match(/class="app-shell"/g) || []).length, 1, "communication review must use one shared app shell");
   assert.strictEqual((review.body.match(/class="primary-nav"/g) || []).length, 1, "communication review must use one primary navigation");
@@ -753,7 +754,7 @@ async function assertCommunicationClient() {
   assert.strictEqual(spawns.length, 2);
   assert.deepStrictEqual(
     spawns[1].args.slice(spawns[1].args.indexOf("--browser")),
-    ["--browser", "portable", "--cdp-port", "9222"]
+    ["--browser", "edge"]
   );
 
   setCommunicationBatchStatus(db, {
@@ -842,6 +843,7 @@ async function assertCommunicationClient() {
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="daily" disabled/);
   assert.match(blockedPlan.body, /data-scan-button name="scanKind" value="broad" disabled/);
   assert.strictEqual(spawns.length, 4);
+  await portableDashboardAuthoritySmoke();
   console.log("dashboard_communication_batch_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -853,6 +855,213 @@ async function assertCommunicationClient() {
     try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch {}
   }
 });
+
+async function portableDashboardAuthoritySmoke() {
+  const database = openDb(":memory:");
+  const portableSpawns = [];
+  let portableServer;
+  try {
+    const fixture = seed(database);
+    const portableWorkflowScanBatchId = createBatch(database, "boss", "portable-dashboard-workflow", "portable dashboard workflow", {
+      profileId: fixture.profileId,
+      searchPlanId: fixture.planId
+    });
+    const portableWorkflowJobId = upsertJob(database, job("portable-dashboard-workflow", {
+      title: "Portable dashboard workflow role",
+      description: "Build and operate production Python services with complete delivery ownership and measurable outcomes. ".repeat(4)
+    }), portableWorkflowScanBatchId);
+    const portableSearchUrl = "https://www.zhipin.com/web/geek/jobs?city=100010000&query=portable";
+    const portableBrowser = {
+      async listTabs() {
+        return [
+          { id: "CDP-search", windowId: 17, url: portableSearchUrl },
+          { id: "CDP-chat", windowId: 17, url: "https://www.zhipin.com/web/geek/chat" }
+        ];
+      },
+      async evalValue(tabId) {
+        const search = tabId === "CDP-search";
+        return {
+          url: search ? portableSearchUrl : "https://www.zhipin.com/web/geek/chat",
+          path: search ? "/web/geek/jobs" : "/web/geek/chat",
+          title: search ? "BOSS portable search" : "BOSS portable chat",
+          isBoss: true,
+          isLoginPage: false,
+          isRiskPage: false,
+          loggedIn: true,
+          isSearchPage: search,
+          hasJobStructure: search,
+          scrollTop: search ? 360 : 0
+        };
+      },
+      async createTab() { throw new Error("portable rebind must not create a tab"); },
+      async navigate() { throw new Error("portable rebind must not navigate"); }
+    };
+    portableServer = createDashboardServer({
+      db: database,
+      root,
+      dbPath: "D:\\DevData\\roleflow-portable-dashboard-fixture.sqlite",
+      browserAuthority: {
+        browserMode: "portable",
+        cdpPort: 9222,
+        profilePath: "D:\\DevData\\roleflow-portable-dashboard-profile"
+      },
+      logger,
+      browserFactory(authority) {
+        assert.deepStrictEqual(authority, { browserMode: "portable", cdpPort: 9222 });
+        return portableBrowser;
+      },
+      spawnProcess(file, args, options) {
+        portableSpawns.push({ file, args, options });
+        const child = new EventEmitter();
+        child.pid = 6262;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        return child;
+      }
+    });
+    const portableBaseUrl = await listen(portableServer);
+    const builder = await getText(portableBaseUrl, `/communication/new?planId=${fixture.planId}`);
+    assert.match(builder.body, /浏览器：项目专用 Edge（Dashboard 已固定）/);
+    assert.match(builder.body, /<input type="hidden" name="browserMode" value="portable">/);
+    assert.doesNotMatch(builder.body, /<select name="browserMode">/);
+
+    const beforeForged = communicationAuthorityWriteSnapshot(database);
+    await expectApiError(portableBaseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: fixture.primaryId,
+      browserMode: "edge"
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    await expectApiError(portableBaseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: fixture.primaryId,
+      browserMode: "portable",
+      cdpPort: 9223
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    assert.deepStrictEqual(communicationAuthorityWriteSnapshot(database), beforeForged);
+
+    const defaulted = await postJson(portableBaseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: fixture.primaryId
+    });
+    assert.strictEqual(defaulted.status, 200);
+    assert.deepStrictEqual(defaulted.body.batch.policySnapshot.browser, { mode: "portable", cdpPort: 9222 });
+
+    const mismatchedWorkflow = reviewWorkflow(database, {
+      id: "portable-dashboard-workflow-mismatch",
+      planId: fixture.planId,
+      localDay: "2098-02-01",
+      planner: { browserMode: "edge", acquisitionMode: "inherited" }
+    });
+    const beforeWorkflowMismatch = communicationAuthorityWriteSnapshot(database);
+    await expectApiError(portableBaseUrl, "/api/communication-batch", {
+      workflowRunId: mismatchedWorkflow.id,
+      planId: fixture.planId,
+      jobIds: portableWorkflowJobId
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    assert.deepStrictEqual(communicationAuthorityWriteSnapshot(database), beforeWorkflowMismatch);
+    assert.strictEqual(getWorkflowRun(database, mismatchedWorkflow.id).communicationBatchId, null);
+
+    database.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?").run(JSON.stringify({
+      ...mismatchedWorkflow.planner,
+      browserMode: "portable",
+      cdpPort: 9222
+    }), mismatchedWorkflow.id);
+    const matchedWorkflow = getWorkflowRun(database, mismatchedWorkflow.id);
+    const workflowBatch = await postJson(portableBaseUrl, "/api/communication-batch", {
+      workflowRunId: matchedWorkflow.id,
+      planId: fixture.planId,
+      jobIds: portableWorkflowJobId,
+      browserMode: "portable",
+      cdpPort: 9222
+    });
+    assert.strictEqual(workflowBatch.status, 200, JSON.stringify(workflowBatch.body));
+    assert.strictEqual(getWorkflowRun(database, matchedWorkflow.id).communicationBatchId, workflowBatch.body.batch.id);
+
+    const rebindBatch = await postJson(portableBaseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: fixture.rebindId
+    });
+    bindCommunicationBatchRuntime(database, {
+      batchId: rebindBatch.body.batch.id,
+      browser: browserBinding({
+        mode: "portable",
+        windowId: 17,
+        searchTabId: "CDP-search-old",
+        messageTabId: "CDP-chat-old",
+        searchReturnUrl: portableSearchUrl
+      })
+    });
+    setCommunicationBatchStatus(database, { batchId: rebindBatch.body.batch.id, status: "running" });
+    setCommunicationBatchStatus(database, { batchId: rebindBatch.body.batch.id, status: "paused" });
+    const rebound = await postJson(portableBaseUrl, "/api/communication-rebind", { batchId: rebindBatch.body.batch.id });
+    assert.strictEqual(rebound.status, 200);
+    assert.deepStrictEqual(getCommunicationBatch(database, rebindBatch.body.batch.id).runtime.browser, browserBinding({
+      mode: "portable",
+      windowId: 17,
+      searchTabId: "CDP-search",
+      messageTabId: "CDP-chat",
+      searchReturnUrl: portableSearchUrl,
+      searchScrollTop: 360,
+      bindingGeneration: 2
+    }));
+    const resumed = await postJson(portableBaseUrl, "/api/communication-control", {
+      batchId: rebindBatch.body.batch.id,
+      action: "resume"
+    });
+    assert.strictEqual(resumed.status, 200);
+    assert.strictEqual(getCommunicationBatch(database, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, 3);
+    assert.strictEqual(portableSpawns.length, 1);
+
+    const wrongModeBatch = createCommunicationBatch(database, {
+      planId: fixture.planId,
+      jobIds: [fixture.safeId],
+      browserMode: "edge"
+    });
+    const wrongModeItem = listCommunicationBatchItems(database, wrongModeBatch.id)[0];
+    await expectApiError(portableBaseUrl, "/api/communication-control", {
+      batchId: wrongModeBatch.id,
+      action: "start_one",
+      itemId: wrongModeItem.id
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    assert.strictEqual(getCommunicationBatch(database, wrongModeBatch.id).status, "confirmed");
+    assert.strictEqual(portableSpawns.length, 1);
+    bindCommunicationBatchRuntime(database, { batchId: wrongModeBatch.id, browser: browserBinding() });
+    setCommunicationBatchStatus(database, { batchId: wrongModeBatch.id, status: "running" });
+    setCommunicationBatchStatus(database, { batchId: wrongModeBatch.id, status: "paused" });
+    await expectApiError(portableBaseUrl, "/api/communication-rebind", {
+      batchId: wrongModeBatch.id
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+
+    const wrongPortBatch = createCommunicationBatch(database, {
+      planId: fixture.planId,
+      jobIds: [fixture.backupId],
+      browserMode: "portable"
+    });
+    database.prepare("UPDATE communication_batches SET policy_json = ? WHERE id = ?").run(JSON.stringify({
+      ...wrongPortBatch.policySnapshot,
+      browser: { mode: "portable", cdpPort: 9223 }
+    }), wrongPortBatch.id);
+    const wrongPortItem = listCommunicationBatchItems(database, wrongPortBatch.id)[0];
+    await expectApiError(portableBaseUrl, "/api/communication-control", {
+      batchId: wrongPortBatch.id,
+      action: "start_one",
+      itemId: wrongPortItem.id
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    assert.strictEqual(portableSpawns.length, 1);
+  } finally {
+    if (portableServer) await new Promise((resolve) => portableServer.close(resolve));
+    database.close();
+  }
+}
+
+function communicationAuthorityWriteSnapshot(database) {
+  return {
+    batches: Number(database.prepare("SELECT COUNT(*) AS count FROM communication_batches").get().count),
+    items: Number(database.prepare("SELECT COUNT(*) AS count FROM communication_batch_items").get().count),
+    events: Number(database.prepare("SELECT COUNT(*) AS count FROM events").get().count),
+    quota: communicationQuotaSnapshot(database)
+  };
+}
 
 function seed(database) {
   const now = new Date().toISOString();
@@ -885,7 +1094,7 @@ function seed(database) {
   }
   const otherProfileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Other dashboard smoke", "{}", now, now).lastInsertRowid);
   Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(otherProfileId, "Other dashboard plan", "{}", now, now).lastInsertRowid);
-  return { planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, historySucceededId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+  return { profileId, scanBatchId, planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, historySucceededId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function reviewWorkflow(database, { id, planId, localDay, planner = {} }) {

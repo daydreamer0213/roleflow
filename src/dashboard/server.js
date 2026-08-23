@@ -383,6 +383,48 @@ function resolveNewWorkflowBrowser(input = {}, frozenAuthority) {
   return { browserMode: authority.browserMode, cdpPort: authority.cdpPort };
 }
 
+function resolveCommunicationBatchBrowserAuthority(db, input = {}, frozenAuthority) {
+  const authority = resolveNewWorkflowBrowser(input, frozenAuthority);
+  const workflowRunId = String(input.workflowRunId || "").trim();
+  if (!workflowRunId) return authority;
+  const workflow = getWorkflowRun(db, workflowRunId);
+  if (!workflow) return authority;
+  const workflowMode = String(workflow.planner?.browserMode
+    || (workflow.planner?.acquisitionMode === "inherited" ? "edge" : "")
+  ).trim().toLowerCase();
+  const workflowPort = workflow.planner?.cdpPort ?? null;
+  if (workflowMode !== authority.browserMode
+    || workflowPort !== authority.cdpPort) {
+    throw dashboardBrowserAuthorityMismatch();
+  }
+  return authority;
+}
+
+function assertCommunicationBatchBrowserAuthority(batch, frozenAuthority) {
+  const authority = normalizeDashboardBrowserAuthority(frozenAuthority);
+  const browserPolicy = batch?.policySnapshot?.browser;
+  const batchMode = String(batch?.browserMode || "").trim().toLowerCase();
+  const policyMode = String(browserPolicy?.mode || batchMode).trim().toLowerCase();
+  const batchPort = batchMode === "portable"
+    ? (browserPolicy ? browserPolicy.cdpPort : PORTABLE_CDP_PORT)
+    : null;
+  if (batchMode !== authority.browserMode
+    || policyMode !== batchMode
+    || batchPort !== authority.cdpPort
+    || (batchMode === "edge" && browserPolicy?.cdpPort != null)) {
+    throw dashboardBrowserAuthorityMismatch();
+  }
+  return authority;
+}
+
+function dashboardBrowserAuthorityMismatch() {
+  return appError(
+    "DASHBOARD_BROWSER_AUTHORITY_MISMATCH",
+    "浏览器身份由 Dashboard 启动时固定，不能由请求或批次切换。",
+    { statusCode: 409 }
+  );
+}
+
 function createDashboardServer({
   db,
   browserAuthority,
@@ -578,7 +620,7 @@ function createDashboardServer({
         controller: messageDiscovery,
         helpers: messageDiscoveryViewHelpers()
       }));
-      if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent(), url.searchParams.get("events")));
@@ -640,9 +682,9 @@ function createDashboardServer({
       }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
-      if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, db);
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder });
-      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder });
+      if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, { db, browserAuthority: frozenBrowserAuthority });
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority });
+      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
@@ -3220,7 +3262,7 @@ function parseBody(rawBody, contentType) {
   return result;
 }
 
-async function handleCommunicationBatch(req, res, db) {
+async function handleCommunicationBatch(req, res, { db, browserAuthority }) {
   const wantsJson = String(req.headers.accept || "").includes("application/json");
   let rawBody;
   try {
@@ -3233,7 +3275,11 @@ async function handleCommunicationBatch(req, res, db) {
   let params = {};
   const result = communicationApiResult(() => {
     params = parseBody(rawBody, req.headers["content-type"] || "");
-    return createCommunicationBatch({ db, input: { ...params, jobIds: arrayValue(params.jobIds) } });
+    const authority = resolveCommunicationBatchBrowserAuthority(db, params, browserAuthority);
+    return createCommunicationBatch({
+      db,
+      input: { ...params, browserMode: authority.browserMode, jobIds: arrayValue(params.jobIds) }
+    });
   });
   if (!result.ok) {
     if (wantsJson) return sendJson(res, result.statusCode, result.body);
@@ -3262,18 +3308,22 @@ async function handleCommunicationControl(req, res, {
   spawnProcess = spawn,
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
-  communicationBrowserRebinder = inspectAndBindCommunicationBrowser
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
+  browserAuthority
 }) {
   const rawBody = await readBody(req);
   const params = parseBody(rawBody, req.headers["content-type"] || "");
   const result = await communicationApiResultAsync(async () => {
+    const action = String(params.action || "").trim().toLowerCase();
+    const requestedBatch = getCommunicationBatch(db, params.batchId);
+    if (requestedBatch && ["start", "start_one", "resume", "resume_one"].includes(action)) {
+      assertCommunicationBatchBrowserAuthority(requestedBatch, browserAuthority);
+    }
     const controlDeps = communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
     const control = validateCommunicationControl({ db, input: params, deps: controlDeps });
     const batch = control.batch;
-    const action = String(params.action || "").trim().toLowerCase();
     const readAmbiguity = communicationAmbiguityReader || communicationAmbiguityStateForBatch;
     if (["resume", "resume_one"].includes(action)
-      && batch?.browserMode === "edge"
       && ["paused", "interrupted"].includes(batch.status)
       && batch.runtime?.browser
       && !readAmbiguity(db, batch.id).blocked) {
@@ -3305,22 +3355,27 @@ async function handleCommunicationRebind(req, res, {
   db,
   logger,
   browserFactory = createDashboardBrowser,
-  communicationBrowserRebinder = inspectAndBindCommunicationBrowser
+  communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
+  browserAuthority
 }) {
   const rawBody = await readBody(req);
   const params = parseBody(rawBody, req.headers["content-type"] || "");
-  const result = await communicationApiResultAsync(() => rebindCommunicationBrowser({
-    db,
-    input: params,
-    deps: {
-      inspectAndBindCommunicationBrowser: ({ batch }) => communicationBrowserRebinder({
-        db,
-        batch,
-        logger,
-        browserFactory
-      })
-    }
-  }));
+  const result = await communicationApiResultAsync(() => {
+    const batch = getCommunicationBatch(db, params.batchId);
+    if (batch) assertCommunicationBatchBrowserAuthority(batch, browserAuthority);
+    return rebindCommunicationBrowser({
+      db,
+      input: params,
+      deps: {
+        inspectAndBindCommunicationBrowser: ({ batch: rebindBatch }) => communicationBrowserRebinder({
+          db,
+          batch: rebindBatch,
+          logger,
+          browserFactory
+        })
+      }
+    });
+  });
   if (!result.ok || String(req.headers.accept || "").includes("application/json")) {
     return sendJson(res, result.statusCode, result.body);
   }
@@ -3333,7 +3388,8 @@ async function inspectAndBindCommunicationBrowser({
   logger,
   browserFactory = createDashboardBrowser
 }) {
-  const browser = browserFactory({ browserMode: "edge", cdpPort: null });
+  const cdpPort = batch.browserMode === "portable" ? portableCommunicationCdpPort(batch) : null;
+  const browser = browserFactory({ browserMode: batch.browserMode, cdpPort });
   const adapter = new boss.BossSiteAdapter({ browser, logger });
   const inspected = await inspectBossOperatorTabs({
     browser,
@@ -3344,7 +3400,7 @@ async function inspectAndBindCommunicationBrowser({
   return bindCommunicationBatchRuntime(db, {
     batchId: batch.id,
     browser: {
-      mode: "edge",
+      mode: batch.browserMode,
       windowId: inspected.windowId,
       searchTabId: inspected.searchTab.id,
       messageTabId: inspected.communicationTab.id,
@@ -4589,7 +4645,7 @@ function outcomeUnclassifiedCounts(aggregate) {
 }
 
 
-function renderCommunicationBuilderPage({ db, searchParams }) {
+function renderCommunicationBuilderPage({ db, searchParams, browserAuthority }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
   if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
   const quota = communicationQuota(db);
@@ -4609,7 +4665,9 @@ function renderCommunicationBuilderPage({ db, searchParams }) {
     return `<label class="communication-job"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}"${checked}><span><strong>${escapeHtml(job.title)}</strong><br><small>${escapeHtml(job.company || "")} · ${escapeHtml(job.decisionBucket)}</small></span></label>`;
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
-  return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><label>浏览器 <select name="browserMode"><option value="edge" selected>当前已登录 Edge（推荐）</option><option value="portable">项目专用 Edge（手动备用）</option></select></label><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
+  const authority = normalizeDashboardBrowserAuthority(browserAuthority);
+  const browserLabel = authority.browserMode === "portable" ? "项目专用 Edge" : "当前已登录 Edge";
+  return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><input type="hidden" name="browserMode" value="${escapeAttr(authority.browserMode)}"><p>浏览器：${escapeHtml(browserLabel)}（Dashboard 已固定）</p><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
 }
 
 function renderCommunicationCenterPage({ db, searchParams }) {

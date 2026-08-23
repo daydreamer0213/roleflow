@@ -290,41 +290,36 @@ async function communicate(
   let summary = null;
 
   try {
-    if (browserMode === "edge") {
-      const inspected = await inspectBossOperatorTabs({
-        browser,
-        inspectTab: (tabId) => adapter.preflight({ tabId })
-      });
-      if (typeof adapter.bindCommunicationTabs !== "function") {
-        throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication requires fixed BOSS operator tab binding.");
-      }
-      if (typeof adapter.captureCommunicationSearchState !== "function"
-        || typeof adapter.beginCommunicationSession !== "function"
-        || typeof adapter.restoreCommunicationSearchPage !== "function") {
-        throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Edge communication adapter is missing its fixed-tab lifecycle.");
-      }
-      const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
-      assertCommunicationSearchScope(workflowRun, captured.url);
-      const current = getCommunicationBatch(db, batchId);
-      const bound = bindCommunicationBatchRuntime(db, {
-        batchId,
-        browser: {
-          mode: "edge",
-          windowId: inspected.windowId,
-          searchTabId: inspected.searchTab.id,
-          messageTabId: inspected.communicationTab.id,
-          searchReturnUrl: captured.url,
-          searchScrollTop: captured.scrollTop,
-          bindingGeneration: current.runtime?.browser?.bindingGeneration || 1
-        }
-      });
-      adapter.bindCommunicationTabs(bound.runtime.browser);
-      await adapter.beginCommunicationSession();
-      sessionStarted = true;
-    } else {
-      const browserState = await adapter.preflight();
-      await adapter.prepareCommunicationTab(browserState.tabId);
+    const inspected = await inspectBossOperatorTabs({
+      browser,
+      inspectTab: (tabId) => adapter.preflight({ tabId })
+    });
+    if (typeof adapter.bindCommunicationTabs !== "function") {
+      throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Communication requires fixed BOSS operator tab binding.");
     }
+    if (typeof adapter.captureCommunicationSearchState !== "function"
+      || typeof adapter.beginCommunicationSession !== "function"
+      || typeof adapter.restoreCommunicationSearchPage !== "function") {
+      throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Communication adapter is missing its fixed-tab lifecycle.");
+    }
+    const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
+    assertCommunicationSearchScope(workflowRun, captured.url);
+    const current = getCommunicationBatch(db, batchId);
+    const bound = bindCommunicationBatchRuntime(db, {
+      batchId,
+      browser: {
+        mode: browserMode,
+        windowId: inspected.windowId,
+        searchTabId: inspected.searchTab.id,
+        messageTabId: inspected.communicationTab.id,
+        searchReturnUrl: captured.url,
+        searchScrollTop: captured.scrollTop,
+        bindingGeneration: current.runtime?.browser?.bindingGeneration || 1
+      }
+    });
+    adapter.bindCommunicationTabs(bound.runtime.browser);
+    await adapter.beginCommunicationSession();
+    sessionStarted = true;
     summary = await runCommunicationBatchFn({
       db,
       batchId,

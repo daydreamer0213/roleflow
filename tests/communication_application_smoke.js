@@ -147,6 +147,65 @@ let noDbPathServer;
   assert.strictEqual(rebound.batch.status, "paused");
   assert.strictEqual(rebound.batch.runtime.browser.bindingGeneration, 2);
   assert.strictEqual(rebound.batch.runtime.browser.searchTabId, 1995685534);
+  const portableRebindable = createCommunicationBatch({
+    db,
+    input: { planId: fixture.planId, jobIds: [fixture.portableRebindJobId], browserMode: "portable" }
+  });
+  bindCommunicationBatchRuntime(db, {
+    batchId: portableRebindable.batch.id,
+    browser: browserBinding({
+      mode: "portable",
+      windowId: 17,
+      searchTabId: "CDP-search",
+      messageTabId: "CDP-chat"
+    })
+  });
+  setCommunicationBatchStatus(db, { batchId: portableRebindable.batch.id, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: portableRebindable.batch.id, status: "interrupted" });
+  const portableRebound = await rebindCommunicationBrowser({
+    db,
+    input: { batchId: portableRebindable.batch.id },
+    deps: {
+      async inspectAndBindCommunicationBrowser({ batch }) {
+        return bindCommunicationBatchRuntime(db, {
+          batchId: batch.id,
+          browser: browserBinding({
+            mode: "portable",
+            windowId: 17,
+            searchTabId: "CDP-search-next",
+            messageTabId: "CDP-chat-next",
+            bindingGeneration: batch.runtime.browser.bindingGeneration
+          }),
+          rebind: true
+        });
+      }
+    }
+  });
+  assert.deepStrictEqual(portableRebound.batch.runtime.browser, browserBinding({
+    mode: "portable",
+    windowId: 17,
+    searchTabId: "CDP-search-next",
+    messageTabId: "CDP-chat-next",
+    bindingGeneration: 2
+  }));
+  const portableBlocked = createCommunicationBatch({
+    db,
+    input: { planId: fixture.planId, jobIds: [fixture.portableBlockedRebindJobId], browserMode: "portable" }
+  });
+  bindCommunicationBatchRuntime(db, {
+    batchId: portableBlocked.batch.id,
+    browser: browserBinding({ mode: "portable", windowId: 17, searchTabId: "CDP-blocked-search", messageTabId: "CDP-blocked-chat" })
+  });
+  setCommunicationBatchStatus(db, { batchId: portableBlocked.batch.id, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: portableBlocked.batch.id, status: "interrupted" });
+  const portableBlockedItem = transitionToAmbiguous(db, portableBlocked.batch.id);
+  let portableBlockedInspections = 0;
+  await assert.rejects(() => rebindCommunicationBrowser({
+    db,
+    input: { batchId: portableBlocked.batch.id },
+    deps: { async inspectAndBindCommunicationBrowser() { portableBlockedInspections += 1; } }
+  }), (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409);
+  assert.strictEqual(portableBlockedInspections, 0);
   recoveryFloorCommunicationGuardSmoke(db, fixture);
   const directResolution = createCommunicationBatch({
     db,
@@ -161,10 +220,17 @@ let noDbPathServer;
   assert.strictEqual(directResolved.item.status, "stopped");
   assert.strictEqual(directResolved.batch.id, directResolution.batch.id);
 
-  const created = await postJson(baseUrl, "/api/communication-batch", {
+  const batchesBeforeForgedAuthority = Number(db.prepare("SELECT COUNT(*) AS count FROM communication_batches").get().count);
+  await expectApiError(baseUrl, "/api/communication-batch", {
     planId: fixture.planId,
     jobIds: fixture.startJobId,
     browserMode: "portable",
+    cdpPort: 9222
+  }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+  assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM communication_batches").get().count), batchesBeforeForgedAuthority);
+  const created = await postJson(baseUrl, "/api/communication-batch", {
+    planId: fixture.planId,
+    jobIds: fixture.startJobId,
     title: "forged title",
     company: "forged company"
   });
@@ -177,7 +243,7 @@ let noDbPathServer;
     "Start company",
     "https://www.zhipin.com/job_detail/start.html"
   ]]);
-  assert.deepStrictEqual(created.body.batch.policySnapshot.browser, { mode: "portable", cdpPort: 9222 });
+  assert.deepStrictEqual(created.body.batch.policySnapshot.browser, { mode: "edge" });
 
   const status = getCommunicationStatus({ db, batchId });
   assert.deepStrictEqual(Object.keys(status).sort(), ["batch", "calibration", "items", "quota", "runtimeBlock", "summary"]);
@@ -235,7 +301,7 @@ let noDbPathServer;
   assert.strictEqual(started.body.batch.status, "running");
   assert.strictEqual(spawns.length, 1);
   assert.deepStrictEqual(spawns[0].args.slice(spawns[0].args.indexOf("communicate")), [
-    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "portable", "--cdp-port", "9222"
+    "communicate", "--db", dbPath, "--batch", String(batchId), "--browser", "edge"
   ]);
 
   const interrupted = await postJson(baseUrl, "/api/communication-batch", {
@@ -403,6 +469,8 @@ function seed(database) {
     directJobId: upsertJob(database, job("direct", { title: "Direct role" }), scanBatchId),
     launcherJobId: upsertJob(database, job("launcher", { title: "Launcher role" }), scanBatchId),
     rebindJobId: upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId),
+    portableRebindJobId: upsertJob(database, job("portable-rebind", { title: "Portable rebind role" }), scanBatchId),
+    portableBlockedRebindJobId: upsertJob(database, job("portable-rebind-blocked", { title: "Portable blocked rebind role" }), scanBatchId),
     directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
     mismatchFirstJobId: upsertJob(database, job("mismatch-first", { title: "Mismatch first role" }), scanBatchId),
     mismatchSecondJobId: upsertJob(database, job("mismatch-second", { title: "Mismatch second role" }), scanBatchId),
