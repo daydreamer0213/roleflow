@@ -13,8 +13,9 @@ function codedError(code) {
   return error;
 }
 
-async function inspect(result) {
+async function inspect(result, browserMode = "edge") {
   return inspectBossBrowserReadiness({
+    browserMode,
     now: () => "2099-01-01T00:00:00.000Z",
     preflight: async () => {
       if (result instanceof Error) throw result;
@@ -63,7 +64,16 @@ async function inspect(result) {
     now: () => "2099-01-01T00:00:00.000Z"
   });
   assert.strictEqual(unavailable.status, "browser_unavailable");
-  assert.match(unavailable.message, /Edge Control/);
+  assert.match(unavailable.message, /当前 Edge（高级）/);
+
+  const portableUnavailable = await inspectBossBrowserReadiness({
+    browserMode: "portable",
+    preflight: async () => { throw codedError("BROWSER_DISCONNECTED"); },
+    now: () => "2099-01-01T00:00:00.000Z"
+  });
+  assert.strictEqual(portableUnavailable.status, "browser_unavailable");
+  assert.match(portableUnavailable.message, /RoleFlow 专用 Edge/);
+  assert.doesNotMatch(portableUnavailable.message, /普通 Edge/);
 
   const topology = await inspectBossBrowserReadiness({
     preflight: async () => {

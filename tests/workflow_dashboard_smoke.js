@@ -1471,20 +1471,31 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
     assert.strictEqual(communicationDriftReadiness.ready, false);
 
     const portablePreflightCalls = [];
+    const portableTabs = [
+      { id: "CDP-dashboard-search", windowId: 51, url: "https://www.zhipin.com/web/geek/jobs" },
+      { id: "CDP-dashboard-chat", windowId: 51, url: "https://www.zhipin.com/web/geek/chat" }
+    ];
+    let portableListCalls = 0;
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {
       portablePreflightCalls.push(options);
-      return { tabId: 41, isSearchPage: true };
+      return options?.tabId === "CDP-dashboard-search"
+        ? { tabId: options.tabId, url: portableTabs[0].url, isSearchPage: true }
+        : { tabId: options?.tabId, url: portableTabs[1].url, isSearchPage: false };
     };
     const portableReadiness = await inspectDashboardBossBrowserReadiness({
       browserMode: "portable",
       cdpPort: 9222,
       logger,
       browserFactory() {
-        return { async listTabs() { throw new Error("portable readiness must not list Edge tabs"); } };
+        return { async listTabs() { portableListCalls += 1; return portableTabs; } };
       }
     });
     assert.strictEqual(portableReadiness.status, "ready");
-    assert.deepStrictEqual(portablePreflightCalls, [undefined]);
+    assert.strictEqual(portableListCalls, 2);
+    assert.deepStrictEqual(portablePreflightCalls, [
+      { tabId: "CDP-dashboard-chat" },
+      { tabId: "CDP-dashboard-search" }
+    ]);
 
     const inheritedPreflightCalls = [];
     boss.BossSiteAdapter.prototype.preflight = async function preflight(options) {

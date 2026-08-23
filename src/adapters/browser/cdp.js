@@ -1,4 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 15000;
+const { sameBrowserTabId, sortedBrowserTabIds } = require("../../core/browser_tab_identity");
 const BROWSER_ERROR_CODES = new Set([
   "BROWSER_TIMEOUT",
   "BROWSER_DISCONNECTED",
@@ -18,14 +19,16 @@ class CdpBrowserAdapter {
       throw browserError("BROWSER_COMMAND_FAILED", "CDP tab list response is not an array.");
     }
     const pageTabs = pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
-    const listedTabs = await Promise.all(pageTabs.map(async (page, index) => {
+    const listedTabs = await Promise.all(pageTabs.map(async (page) => {
       try {
+        const windowId = await this.windowIdForTarget(page.id);
+        const visibilityState = await this.visibilityStateForPage(page);
         return {
           id: page.id,
           title: page.title || "",
           url: page.url || "",
-          active: index === 0,
-          windowId: await this.windowIdForTarget(page.id),
+          active: visibilityState === "visible",
+          windowId,
           webSocketDebuggerUrl: page.webSocketDebuggerUrl
         };
       } catch (error) {
@@ -46,12 +49,26 @@ class CdpBrowserAdapter {
 
   async windowIdForTarget(targetId) {
     const result = await this.browserCommand("Browser.getWindowForTarget", {
-      targetId: String(targetId || "")
+      targetId
     });
     if (!Number.isInteger(result?.windowId)) {
       throw browserError("BROWSER_COMMAND_FAILED", `CDP target has no reliable browser window identity: ${targetId}`);
     }
     return result.windowId;
+  }
+
+  async visibilityStateForPage(page) {
+    const result = await sendCdp(
+      page.webSocketDebuggerUrl,
+      "Runtime.evaluate",
+      { expression: "document.visibilityState", returnByValue: true },
+      this.timeoutMs
+    );
+    const state = result?.result?.value;
+    if (!new Set(["visible", "hidden"]).has(state)) {
+      throw browserError("BROWSER_COMMAND_FAILED", `CDP page visibility is unavailable: ${page.id}`);
+    }
+    return state;
   }
 
   async activeTabId() {
@@ -70,7 +87,15 @@ class CdpBrowserAdapter {
   }
 
   async createTab(openerTabId, url = "about:blank") {
-    const opener = await this.findTab(openerTabId);
+    const beforeTabs = await this.listTabs();
+    const opener = beforeTabs.find((tab) => sameBrowserTabId(tab.id, openerTabId));
+    if (!opener) throw browserError("BROWSER_COMMAND_FAILED", `CDP tab not found: ${openerTabId}`);
+    const visibleBefore = sortedBrowserTabIds(beforeTabs
+      .filter((tab) => tab.windowId === opener.windowId && tab.active)
+      .map((tab) => tab.id));
+    if (visibleBefore.length !== 1) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP tab creation requires exactly one visible page in the opener window.");
+    }
     const result = await this.browserCommand("Target.createTarget", {
       url: String(url || "about:blank"),
       newWindow: false,
@@ -79,42 +104,52 @@ class CdpBrowserAdapter {
     if (!result?.targetId) throw browserError("BROWSER_COMMAND_FAILED", "Browser did not return a new tab id.");
     const targetId = result.targetId;
     try {
-      const createdWindowId = await this.windowIdForTarget(targetId);
-      if (String(createdWindowId) !== String(opener.windowId)) {
+      const afterTabs = await this.listTabs();
+      const created = afterTabs.find((tab) => sameBrowserTabId(tab.id, targetId));
+      if (!created) {
+        throw browserError("BROWSER_COMMAND_FAILED", "CDP created tab could not be verified.");
+      }
+      if (created.windowId !== opener.windowId) {
         throw browserError("BROWSER_COMMAND_FAILED", "CDP created the tab in a different browser window.");
+      }
+      if (created.active) {
+        throw browserError("BROWSER_COMMAND_FAILED", "CDP created tab unexpectedly became visible.");
+      }
+      const visibleAfter = sortedBrowserTabIds(afterTabs
+        .filter((tab) => tab.windowId === opener.windowId && tab.active)
+        .map((tab) => tab.id));
+      if (!sameBrowserTabIdList(visibleAfter, visibleBefore)) {
+        throw browserError("BROWSER_COMMAND_FAILED", "CDP tab creation changed the visible page.");
       }
       return targetId;
     } catch (error) {
-      let closeResult = null;
       let closeError = null;
       try {
-        closeResult = await this.browserCommand("Target.closeTarget", { targetId });
+        await this.closeTab(targetId);
+        const restoredTabs = await this.listTabs();
+        const restoredIds = sortedBrowserTabIds(restoredTabs.map((tab) => tab.id));
+        const beforeIds = sortedBrowserTabIds(beforeTabs.map((tab) => tab.id));
+        const restoredVisible = sortedBrowserTabIds(restoredTabs
+          .filter((tab) => tab.windowId === opener.windowId && tab.active)
+          .map((tab) => tab.id));
+        if (!sameBrowserTabIdList(restoredIds, beforeIds)
+          || !sameBrowserTabIdList(restoredVisible, visibleBefore)) {
+          throw browserError("BROWSER_COMMAND_FAILED", "CDP cleanup did not restore the original typed tab baseline.");
+        }
       } catch (cleanupError) {
         closeError = cleanupError;
       }
-      if (closeResult?.success !== true) {
-        try {
-          const targets = await this.requestJson("/json/list");
-          if (!Array.isArray(targets)) {
-            throw browserError("BROWSER_COMMAND_FAILED", "CDP target list response is not an array.");
-          }
-          const stillExists = targets.some((target) => String(target?.id || "") === String(targetId));
-          if (stillExists) appendTargetCleanupFailure(error, {
-            targetId,
-            closeResult,
-            closeError
-          });
-        } catch (confirmationError) {
-          appendTargetCleanupFailure(error, {
-            targetId,
-            closeResult,
-            closeError,
-            confirmationError
-          });
-        }
-      }
+      if (closeError) appendTargetCleanupFailure(error, { targetId, closeError });
       throw error;
     }
+  }
+
+  async closeTab(tabId) {
+    const result = await this.browserCommand("Target.closeTarget", { targetId: tabId });
+    if (result?.success !== true) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP did not confirm that the tab was closed.");
+    }
+    return result;
   }
 
   async bringToFront(tabId) {
@@ -299,6 +334,11 @@ function appendTargetCleanupFailure(primaryError, {
     targetId: String(targetId || ""),
     message: detail
   };
+}
+
+function sameBrowserTabIdList(left, right) {
+  return left.length === right.length
+    && left.every((value, index) => sameBrowserTabId(value, right[index]));
 }
 
 function positiveTimeout(value) {

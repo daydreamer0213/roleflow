@@ -203,7 +203,7 @@ async function prepareWorkspaceTabsCommand(
   if (!["edge", "portable"].includes(browserMode)
     || (browserMode === "portable" && cdpPort !== 9222)) {
     const error = new Error("工作台同窗启动固定使用项目专用 Edge 的 9222 端口。");
-    error.message = "工作台默认复用普通 Edge；项目专用 Edge 仅支持显式 portable/9222。";
+    error.message = "工作台默认复用当前 Edge（高级）；RoleFlow 专用 Edge 仅支持显式 portable/9222。";
     error.code = "WORKSPACE_PORTABLE_BROWSER_REQUIRED";
     throw error;
   }
@@ -223,15 +223,17 @@ async function prepareWorkspaceTabsCommand(
   const result = await prepareTabs({
     browser,
     dashboardUrl: parsedDashboardUrl.toString(),
-    requireFixedBossTabs: browserMode === "edge",
-    inspectReadiness: (fixed) => inspectBossBrowserReadiness({
+    requireFixedBossTabs: true,
+    bootstrapDedicatedTabs: browserMode === "portable",
+    inspectReadiness: ({ guidanceTab, fixedTabs }) => inspectBossBrowserReadiness({
+      browserMode,
       preflight: async () => {
-        if (!fixed) return adapter.preflight();
+        if (!fixedTabs) return adapter.preflight({ tabId: guidanceTab.id });
         const inspected = await inspectBossOperatorTabs({
           browser,
           inspectTab: (tabId) => adapter.preflight({ tabId }),
-          expectedSearchTabId: fixed.searchTab.id,
-          expectedCommunicationTabId: fixed.communicationTab.id
+          expectedSearchTabId: fixedTabs.searchTab.id,
+          expectedCommunicationTabId: fixedTabs.communicationTab.id
         });
         return inspected.searchState;
       }
@@ -983,11 +985,12 @@ async function scan(
     : null;
   const adapter = createSiteAdapter(site, { browser, logger: scanLogger, accessController });
   let browserState = null;
-  const usesFixedBossSearchTab = site === "boss" && String(args.browser || "").trim().toLowerCase() === "edge";
+  const browserMode = String(args.browser || "").trim().toLowerCase();
+  const usesFixedBossSearchTab = site === "boss" && ["edge", "portable"].includes(browserMode);
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
     if (!usesFixedBossSearchTab) return adapter.preflight();
     return preflightBossScanBrowser({
-      browserMode: "edge",
+      browserMode,
       browser,
       adapter,
       expectedSearchTabId,
@@ -997,7 +1000,7 @@ async function scan(
   const runWithBoundFixedBossSearchAction = async (action) => {
     if (!usesFixedBossSearchTab) return action(browserState);
     return runWithBoundBossScanBrowser({
-      browserMode: "edge",
+      browserMode,
       browser,
       adapter,
       expectedSearchTabId: browserState.tabId,
@@ -1808,10 +1811,11 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
     signal
   });
   const adapter = createSiteAdapter("boss", { browser, logger: scanLogger, accessController });
-  const usesFixedBossSearchTab = String(args.browser || "").trim().toLowerCase() === "edge";
+  const browserMode = String(args.browser || "").trim().toLowerCase();
+  const usesFixedBossSearchTab = ["edge", "portable"].includes(browserMode);
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
     return preflightBossScanBrowser({
-      browserMode: usesFixedBossSearchTab ? "edge" : args.browser,
+      browserMode,
       browser,
       adapter,
       expectedSearchTabId,
@@ -1822,7 +1826,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   const runWithBoundFixedBossRefreshAction = async (action) => {
     if (!usesFixedBossSearchTab) return action(browserState);
     return runWithBoundBossScanBrowser({
-      browserMode: "edge",
+      browserMode,
       browser,
       adapter,
       expectedSearchTabId: browserState.tabId,
@@ -2306,7 +2310,7 @@ async function preflightBossScanBrowser({
   expectedSearchTabId = null,
   expectedCommunicationTabId = null
 }) {
-  if (String(browserMode || "").trim().toLowerCase() !== "edge") {
+  if (!["edge", "portable"].includes(String(browserMode || "").trim().toLowerCase())) {
     return adapter.preflight();
   }
   const inspected = await inspectBossOperatorTabs({

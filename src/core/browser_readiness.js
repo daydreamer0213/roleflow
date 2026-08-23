@@ -1,11 +1,4 @@
-const BROWSER_READINESS_MESSAGES = Object.freeze({
-  browser_unavailable: "Edge Control 未连接到普通 Edge，请启动桥接服务并确认扩展已连接。",
-  boss_tab_missing: "请在普通 Edge 保留一个 BOSS 搜索页和一个 BOSS 沟通页，并放在同一窗口。",
-  login_required: "等待登录：请在普通 Edge 的 BOSS 标签页完成登录。",
-  search_page_required: "请在固定 BOSS 搜索标签打开职位搜索结果页并设置本轮筛选。",
-  risk_control: "BOSS 当前要求安全验证，请完成验证后再继续。",
-  ready: "普通 Edge 已登录并就绪，可以执行一轮。"
-});
+const BROWSER_READINESS_MESSAGES = Object.freeze(readinessMessages("edge"));
 
 const CODE_TO_STATUS = Object.freeze({
   BROWSER_DISCONNECTED: "browser_unavailable",
@@ -26,6 +19,7 @@ const CODE_TO_STATUS = Object.freeze({
 
 async function inspectBossBrowserReadiness({
   preflight,
+  browserMode = "edge",
   now = () => new Date().toISOString()
 }) {
   if (typeof preflight !== "function") {
@@ -33,20 +27,34 @@ async function inspectBossBrowserReadiness({
   }
   try {
     const state = await preflight();
-    return readinessSnapshot(state?.isSearchPage ? "ready" : "search_page_required", now);
+    return readinessSnapshot(state?.isSearchPage ? "ready" : "search_page_required", now, browserMode);
   } catch (error) {
     const status = CODE_TO_STATUS[error?.code];
     if (!status) throw error;
-    return readinessSnapshot(status, now);
+    return readinessSnapshot(status, now, browserMode);
   }
 }
 
-function readinessSnapshot(status, now) {
+function readinessSnapshot(status, now, browserMode) {
   return {
     status,
     ready: status === "ready",
-    message: BROWSER_READINESS_MESSAGES[status],
+    message: readinessMessages(browserMode)[status],
     checkedAt: now()
+  };
+}
+
+function readinessMessages(browserMode) {
+  const label = browserMode === "edge"
+    ? "当前 Edge（高级）"
+    : "RoleFlow 专用 Edge";
+  return {
+    browser_unavailable: `${label} 未连接，请确认浏览器和连接服务均已就绪。`,
+    boss_tab_missing: `请在${label}保留一个 BOSS 搜索页和一个 BOSS 沟通页，并放在同一窗口。`,
+    login_required: `等待登录：请在${label}的 BOSS 标签页完成登录。`,
+    search_page_required: `请在${label}的固定 BOSS 搜索标签打开职位搜索结果页并设置本轮筛选。`,
+    risk_control: "BOSS 当前要求安全验证，请完成验证后再继续。",
+    ready: `${label}已登录并就绪，可以执行一轮。`
   };
 }
 

@@ -207,14 +207,59 @@ async function fixedBossScanPreflightSmoke() {
   );
   assert.deepStrictEqual(calls, []);
 
-  const portableCalls = [];
+  const portableEvents = [];
+  const portableTabs = [
+    { id: "CDP-search-31", windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
+    { id: "CDP-chat-32", windowId: 7, url: "https://www.zhipin.com/web/geek/chat" }
+  ];
   const portableState = await preflightBossScanBrowser({
     browserMode: "portable",
-    browser: { listTabs: async () => { throw new Error("portable must not enumerate tabs"); } },
-    adapter: { preflight: async (options) => { portableCalls.push(options); return { tabId: 9222 }; } }
+    browser: { listTabs: async () => { portableEvents.push("list"); return portableTabs; } },
+    adapter: {
+      preflight: async ({ tabId }) => {
+        portableEvents.push(`inspect:${tabId}`);
+        return tabId === "CDP-search-31"
+          ? { tabId, url: portableTabs[0].url, isSearchPage: true }
+          : { tabId, url: portableTabs[1].url, isSearchPage: false };
+      }
+    }
   });
-  assert.deepStrictEqual(portableCalls, [undefined]);
-  assert.deepStrictEqual(portableState, { tabId: 9222 });
+  assert.deepStrictEqual(portableEvents, [
+    "list",
+    "inspect:CDP-chat-32",
+    "inspect:CDP-search-31",
+    "list"
+  ]);
+  assert.deepStrictEqual(portableState, {
+    tabId: "CDP-search-31",
+    communicationTabId: "CDP-chat-32",
+    url: portableTabs[0].url,
+    isSearchPage: true
+  });
+
+  portableEvents.length = 0;
+  await runWithBoundBossScanBrowser({
+    browserMode: "portable",
+    browser: { listTabs: async () => { portableEvents.push("list"); return portableTabs; } },
+    adapter: {
+      preflight: async ({ tabId }) => {
+        portableEvents.push(`inspect:${tabId}`);
+        return tabId === "CDP-search-31"
+          ? { tabId, url: portableTabs[0].url, isSearchPage: true }
+          : { tabId, url: portableTabs[1].url, isSearchPage: false };
+      }
+    },
+    expectedSearchTabId: portableState.tabId,
+    expectedCommunicationTabId: portableState.communicationTabId,
+    action: async () => { portableEvents.push("scan-action"); }
+  });
+  assert.deepStrictEqual(portableEvents, [
+    "list",
+    "inspect:CDP-chat-32",
+    "inspect:CDP-search-31",
+    "list",
+    "scan-action"
+  ], "both typed CDP fixed tabs must be checked before the first scan action");
 }
 
 async function completedRunSmoke() {

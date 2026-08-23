@@ -2,6 +2,12 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const { EdgeControlAdapter } = require("../src/adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../src/adapters/browser/cdp");
+let browserTabIdentity = null;
+try {
+  browserTabIdentity = require("../src/core/browser_tab_identity");
+} catch {
+  // Kept null so the transport behaviors can reach RED before the new helper exists.
+}
 
 const state = {
   mode: "ok",
@@ -13,7 +19,8 @@ const state = {
   edgeCdpDispatchCount: 0,
   cdpCreatedTargetListed: false,
   cdpListInvalidAfterCreate: false,
-  cdpWindowlessInternalTarget: false
+  cdpWindowlessInternalTarget: false,
+  cdpExtraPage: false
 };
 
 const server = http.createServer(async (req, res) => {
@@ -85,6 +92,15 @@ const server = http.createServer(async (req, res) => {
       url: "https://www.zhipin.com/web/geek/jobs",
       webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-tab"
     }];
+    if (state.cdpExtraPage) {
+      pages.unshift({
+        id: "cdp-hidden-first",
+        type: "page",
+        title: "Hidden first",
+        url: "https://example.test/hidden-first",
+        webSocketDebuggerUrl: "ws://transport.test/devtools/page/cdp-hidden-first"
+      });
+    }
     if (state.cdpCreatedTargetListed) {
       pages.push({
         id: "cdp-created-tab",
@@ -174,11 +190,27 @@ async function main() {
     global.WebSocket = websocket.FakeWebSocket;
 
     websocket.mode = "respond";
+    websocket.visibilityByTarget = {
+      "cdp-tab": "visible",
+      "cdp-hidden-first": "hidden",
+      "cdp-created-tab": "hidden"
+    };
     const identifiedTabs = await cdp.listTabs();
     assert.strictEqual(identifiedTabs.length, 1);
     assert.strictEqual(identifiedTabs[0].id, "cdp-tab");
     assert.strictEqual(identifiedTabs[0].windowId, 42);
     assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget"), 1);
+
+    state.cdpExtraPage = true;
+    websocket.messages.length = 0;
+    const visibilityTabs = await cdp.listTabs();
+    assert.deepStrictEqual(
+      visibilityTabs.map((tab) => [tab.id, tab.active]),
+      [["cdp-hidden-first", false], ["cdp-tab", true]],
+      "CDP active state must follow observed visibility, not /json/list order"
+    );
+    assert.strictEqual(countMethod(websocket.messages, "Runtime.evaluate"), 2);
+    state.cdpExtraPage = false;
 
     websocket.mode = "window-identity-missing";
     await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
@@ -199,21 +231,26 @@ async function main() {
 
     websocket.mode = "respond";
 
-    websocket.mode = "disconnect";
+    websocket.mode = "disconnect-navigation";
     await rejectsWithCode(
       () => cdp.navigate("cdp-tab", "https://example.test/cdp-once"),
       "BROWSER_DISCONNECTED"
     );
     assert.strictEqual(countMethod(websocket.messages, "Page.navigate"), 1, "CDP navigation must be sent once");
 
-    websocket.mode = "disconnect";
+    websocket.mode = "disconnect-eval";
     await rejectsWithCode(
       () => cdp.evalValue("cdp-tab", "document.querySelector('button')?.click()"),
       "BROWSER_DISCONNECTED"
     );
-    assert.strictEqual(countMethod(websocket.messages, "Runtime.evaluate"), 1, "CDP eval must be sent once");
+    assert.strictEqual(
+      websocket.messages.filter((message) => message.method === "Runtime.evaluate"
+        && message.params.expression === "document.querySelector('button')?.click()").length,
+      1,
+      "CDP eval must be sent once"
+    );
 
-    websocket.mode = "timeout";
+    websocket.mode = "timeout-isolate";
     await rejectsWithCode(
       () => cdp.cdp("cdp-tab", "Runtime.getIsolateId"),
       "BROWSER_TIMEOUT"
@@ -225,11 +262,47 @@ async function main() {
     websocket.urls.length = 0;
     state.versionRequests = 0;
     assert.strictEqual(await cdp.createTab("cdp-tab", "https://example.test/new"), "cdp-created-tab");
-    assert.strictEqual(state.versionRequests, 3);
-    assert.strictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/browser/cdp-browser");
-    assert.notStrictEqual(websocket.urls.at(-1), "ws://transport.test/devtools/page/cdp-tab");
+    assert.strictEqual(state.versionRequests, 4);
+    assert(websocket.urls.includes("ws://transport.test/devtools/browser/cdp-browser"));
+    assert(websocket.urls.includes("ws://transport.test/devtools/page/cdp-created-tab"));
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
     assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget") >= 2, true);
+    await cdp.closeTab("cdp-created-tab");
+
+    websocket.messages.length = 0;
+    websocket.visibilityByTarget["cdp-tab"] = "hidden";
+    await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/no-visible-opener"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 0);
+    websocket.visibilityByTarget["cdp-tab"] = "visible";
+
+    websocket.mode = "created-visible";
+    websocket.messages.length = 0;
+    const visibleCreateListRequests = state.tabRequests;
+    await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/foreground-created"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 0);
+    assert.strictEqual(
+      state.tabRequests - visibleCreateListRequests,
+      3,
+      "post-issue cleanup must re-list and prove the original typed/visible baseline"
+    );
+
+    websocket.mode = "created-visibility-missing";
+    websocket.messages.length = 0;
+    await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/visibility-unavailable"),
+      "BROWSER_COMMAND_FAILED"
+    );
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 0);
 
     websocket.mode = "created-window-mismatch";
     websocket.messages.length = 0;
@@ -260,39 +333,33 @@ async function main() {
     assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
     assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
 
-    websocket.mode = "close-false-target-persists";
+    for (const [mode, succeeds] of [
+      ["close-success", true],
+      ["close-false", false],
+      ["close-missing", false],
+      ["close-ambiguous", false],
+      ["close-disconnected", false]
+    ]) {
+      websocket.mode = mode;
+      websocket.messages.length = 0;
+      if (succeeds) {
+        assert.deepStrictEqual(await cdp.closeTab("cdp-created-tab"), { success: true });
+      } else {
+        await rejectsWithCode(() => cdp.closeTab("cdp-created-tab"),
+          mode === "close-disconnected" ? "BROWSER_DISCONNECTED" : "BROWSER_COMMAND_FAILED");
+      }
+      assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1, `${mode} must not retry cleanup`);
+    }
+
+    websocket.mode = "created-window-mismatch-close-false";
     websocket.messages.length = 0;
-    const persistentCleanupError = await rejectsWithCode(
-      () => cdp.createTab("cdp-tab", "https://example.test/persistent-cleanup"),
+    const cleanupFailure = await rejectsWithCode(
+      () => cdp.createTab("cdp-tab", "https://example.test/cleanup-failure"),
       "BROWSER_COMMAND_FAILED"
     );
-    assert.match(persistentCleanupError.message, /Browser\.getWindowForTarget failed/, "the window identity error must remain the primary cause");
-    assert.match(persistentCleanupError.message, /清理失败/);
-    assert.match(persistentCleanupError.message, /关闭.*标签页/);
+    assert.match(cleanupFailure.message, /清理失败/);
     assert.strictEqual(countMethod(websocket.messages, "Target.closeTarget"), 1);
-
-    websocket.mode = "close-false-target-disappears";
-    websocket.messages.length = 0;
-    state.cdpCreatedTargetListed = false;
-    const tabRequestsBeforeDisappearedCleanup = state.tabRequests;
-    const disappearedCleanupError = await rejectsWithCode(
-      () => cdp.createTab("cdp-tab", "https://example.test/disappeared-cleanup"),
-      "BROWSER_COMMAND_FAILED"
-    );
-    assert.match(disappearedCleanupError.message, /Browser\.getWindowForTarget failed/);
-    assert.doesNotMatch(disappearedCleanupError.message, /清理失败/);
-    assert.strictEqual(state.tabRequests, tabRequestsBeforeDisappearedCleanup + 2, "cleanup must re-read targets after closeTarget success=false");
-
-    websocket.mode = "close-false-target-list-invalid";
-    websocket.messages.length = 0;
-    state.cdpListInvalidAfterCreate = false;
-    const unconfirmedCleanupError = await rejectsWithCode(
-      () => cdp.createTab("cdp-tab", "https://example.test/unconfirmed-cleanup"),
-      "BROWSER_COMMAND_FAILED"
-    );
-    assert.match(unconfirmedCleanupError.message, /Browser\.getWindowForTarget failed/);
-    assert.match(unconfirmedCleanupError.message, /清理失败/);
-    assert.match(unconfirmedCleanupError.message, /无法确认残留标签页是否已关闭/);
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 0);
 
     websocket.mode = "respond";
     state.cdpListInvalidAfterCreate = false;
@@ -413,6 +480,13 @@ async function main() {
       3,
       "failed Edge click dispatch must not be retried"
     );
+
+    assert(browserTabIdentity, "browser tab identity helper must exist");
+    const { isBrowserTabId, sameBrowserTabId, sortedBrowserTabIds } = browserTabIdentity;
+    assert.strictEqual(isBrowserTabId(42), true);
+    assert.strictEqual(isBrowserTabId("CDP-target-42"), true);
+    assert.strictEqual(sameBrowserTabId(42, "42"), false);
+    assert.deepStrictEqual(sortedBrowserTabIds(["b", 2, "a", 1]), [1, 2, "a", "b"]);
   } finally {
     global.WebSocket = originalWebSocket;
     server.closeAllConnections?.();
@@ -444,13 +518,15 @@ function reset(mode) {
   state.cdpCreatedTargetListed = false;
   state.cdpListInvalidAfterCreate = false;
   state.cdpWindowlessInternalTarget = false;
+  state.cdpExtraPage = false;
 }
 
 function installFakeWebSocket() {
-  const control = { mode: "disconnect", messages: [], urls: [] };
+  const control = { mode: "disconnect", messages: [], urls: [], visibilityByTarget: {} };
   control.FakeWebSocket = class FakeWebSocket {
     constructor(url) {
       control.urls.push(url);
+      this.url = url;
       this.listeners = new Map();
       queueMicrotask(() => this.emit("open", {}));
     }
@@ -468,7 +544,16 @@ function installFakeWebSocket() {
         const dispatchCount = control.messages.filter((item) => item.method === "Input.dispatchMouseEvent").length;
         let result = {};
         let error = null;
-        if (payload.method === "Browser.getWindowForTarget") {
+        if (payload.method === "Runtime.evaluate"
+          && payload.params.expression === "document.visibilityState") {
+          const targetId = this.url.split("/").at(-1);
+          const stateValue = control.mode === "created-visible" && targetId === "cdp-created-tab"
+            ? "visible"
+            : control.mode === "created-visibility-missing" && targetId === "cdp-created-tab"
+              ? undefined
+              : control.visibilityByTarget[targetId];
+          result = stateValue === undefined ? {} : { result: { value: stateValue } };
+        } else if (payload.method === "Browser.getWindowForTarget") {
           if (control.mode === "window-identity-missing"
             || (control.mode === "created-window-identity-missing"
               && payload.params.targetId === "cdp-created-tab")) result = {};
@@ -480,27 +565,48 @@ function installFakeWebSocket() {
             && payload.params.targetId === "cdp-created-tab") error = { message: "Browser window not found" };
           else if (["created-window-identity-error-close-fails", "close-false-target-persists", "close-false-target-disappears", "close-false-target-list-invalid"].includes(control.mode)
             && payload.params.targetId === "cdp-created-tab") error = { message: "identity query failed" };
-          else if (control.mode === "created-window-mismatch" && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
+          else if (["created-window-mismatch", "created-window-mismatch-close-false"].includes(control.mode)
+            && payload.params.targetId === "cdp-created-tab") result = { windowId: 99 };
           else result = { windowId: 42 };
         } else if (payload.method === "Target.createTarget") {
           result = { targetId: "cdp-created-tab" };
-          state.cdpCreatedTargetListed = control.mode === "close-false-target-persists";
+          state.cdpCreatedTargetListed = true;
           state.cdpListInvalidAfterCreate = control.mode === "close-false-target-list-invalid";
         } else if (payload.method === "Target.closeTarget"
           && control.mode === "created-window-identity-error-close-fails") {
           error = { message: "cleanup failed" };
+        } else if (payload.method === "Target.closeTarget" && control.mode === "close-disconnected") {
+          this.emit("close", { code: 1006, reason: "test cleanup disconnect" });
+          return;
+        } else if (payload.method === "Target.closeTarget" && control.mode === "close-success") {
+          result = { success: true };
+        } else if (payload.method === "Target.closeTarget" && control.mode === "close-false") {
+          result = { success: false };
+        } else if (payload.method === "Target.closeTarget" && control.mode === "close-missing") {
+          result = {};
+        } else if (payload.method === "Target.closeTarget" && control.mode === "close-ambiguous") {
+          result = { success: "true" };
+        } else if (payload.method === "Target.closeTarget" && control.mode === "created-window-mismatch-close-false") {
+          result = { success: false };
         } else if (payload.method === "Target.closeTarget"
           && ["close-false-target-persists", "close-false-target-disappears", "close-false-target-list-invalid"].includes(control.mode)) {
           result = { success: false };
           if (control.mode === "close-false-target-disappears") state.cdpCreatedTargetListed = false;
+        } else if (payload.method === "Target.closeTarget") {
+          result = { success: true };
+          state.cdpCreatedTargetListed = false;
         } else if (control.mode === "fail-third-dispatch"
           && payload.method === "Input.dispatchMouseEvent"
           && dispatchCount === 3) {
           error = { message: "dispatch failed" };
-        } else if (control.mode === "disconnect") {
+        } else if ((control.mode === "disconnect-navigation" && payload.method === "Page.navigate")
+          || (control.mode === "disconnect-eval" && payload.method === "Runtime.evaluate"
+            && payload.params.expression !== "document.visibilityState")
+          || control.mode === "disconnect") {
           this.emit("close", { code: 1006, reason: "test disconnect" });
           return;
-        } else if (control.mode === "timeout") {
+        } else if ((control.mode === "timeout-isolate" && payload.method === "Runtime.getIsolateId")
+          || control.mode === "timeout") {
           return;
         }
         this.emit("message", {

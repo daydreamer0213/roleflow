@@ -1,3 +1,5 @@
+const { sameBrowserTabId, sortedBrowserTabIds } = require("./browser_tab_identity");
+
 function workspaceError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
@@ -44,7 +46,7 @@ function assertBossOperatorTabs(tabs = []) {
   if (searchTabs.length !== 1 || communicationTabs.length !== 1) {
     throw workspaceError(
       "BOSS_TAB_REQUIRED",
-      "普通 Edge 必须正好保留一个 BOSS 搜索页和一个 BOSS 沟通页。"
+      "浏览器必须正好保留一个 BOSS 搜索页和一个 BOSS 沟通页。"
     );
   }
   const [searchTab] = searchTabs;
@@ -59,7 +61,7 @@ function assertBossOperatorTabs(tabs = []) {
   if (searchTab.windowId !== communicationTab.windowId) {
     throw workspaceError(
       "BOSS_WINDOW_MISMATCH",
-      "BOSS 搜索页和沟通页必须位于同一个普通 Edge 窗口。"
+      "BOSS 搜索页和沟通页必须位于同一个浏览器窗口。"
     );
   }
   return {
@@ -100,20 +102,20 @@ async function inspectBossOperatorTabs({
     refreshed = assertBossOperatorTabs(refreshedTabs);
   } catch (error) {
     if (error?.code !== "BOSS_TAB_REQUIRED") throw error;
-    const currentSearchTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.searchTab.id));
+    const currentSearchTab = refreshedTabs.find((tab) => sameBrowserTabId(tab.id, fixed.searchTab.id));
     if (!currentSearchTab || bossPath(currentSearchTab) !== "/web/geek/jobs") {
       throw searchTabChanged("BOSS fixed search tab path changed during preflight.", currentSearchTab);
     }
-    const currentCommunicationTab = refreshedTabs.find((tab) => String(tab.id) === String(fixed.communicationTab.id));
+    const currentCommunicationTab = refreshedTabs.find((tab) => sameBrowserTabId(tab.id, fixed.communicationTab.id));
     if (!currentCommunicationTab || bossPath(currentCommunicationTab) !== "/web/geek/chat") {
       throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab path changed during preflight.");
     }
     throw error;
   }
-  if (String(refreshed.searchTab.id) !== String(fixed.searchTab.id)) {
+  if (!sameBrowserTabId(refreshed.searchTab.id, fixed.searchTab.id)) {
     throw searchTabChanged("BOSS fixed search tab changed during preflight.", refreshed.searchTab);
   }
-  if (String(refreshed.communicationTab.id) !== String(fixed.communicationTab.id)) {
+  if (!sameBrowserTabId(refreshed.communicationTab.id, fixed.communicationTab.id)) {
     throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during preflight.");
   }
   assertExpectedBossOperatorTabIds(refreshed, { expectedSearchTabId, expectedCommunicationTabId });
@@ -126,11 +128,11 @@ async function inspectBossOperatorTabs({
 
 function assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expectedCommunicationTabId }) {
   if (expectedSearchTabId !== null && expectedSearchTabId !== undefined
-    && String(fixed.searchTab.id) !== String(expectedSearchTabId)) {
+    && !sameBrowserTabId(fixed.searchTab.id, expectedSearchTabId)) {
     throw searchTabChanged("BOSS fixed search tab changed before preflight.", fixed.searchTab);
   }
   if (expectedCommunicationTabId !== null && expectedCommunicationTabId !== undefined
-    && String(fixed.communicationTab.id) !== String(expectedCommunicationTabId)) {
+    && !sameBrowserTabId(fixed.communicationTab.id, expectedCommunicationTabId)) {
     throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed before preflight.");
   }
 }
@@ -139,11 +141,11 @@ function assertBossRuntimeTabBindings(tabs = [], {
   expectedSearchTabId,
   expectedCommunicationTabId
 } = {}) {
-  const searchTab = tabs.find((tab) => String(tab.id) === String(expectedSearchTabId));
+  const searchTab = tabs.find((tab) => sameBrowserTabId(tab.id, expectedSearchTabId));
   if (!searchTab) {
     throw searchTabChanged("BOSS fixed search tab changed during runtime.");
   }
-  const communicationTab = tabs.find((tab) => String(tab.id) === String(expectedCommunicationTabId));
+  const communicationTab = tabs.find((tab) => sameBrowserTabId(tab.id, expectedCommunicationTabId));
   if (!communicationTab) {
     throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during runtime.");
   }
@@ -170,7 +172,7 @@ function assertLiveBossOperatorState(state, { tabId, pathname, code, requiresSea
   } catch {
     throw workspaceError(code, "BOSS fixed operator tab returned invalid live state.");
   }
-  if (String(state?.tabId) !== String(tabId)
+  if (!sameBrowserTabId(state?.tabId, tabId)
     || !/(^|\.)zhipin\.com$/i.test(url.hostname)
     || url.pathname !== pathname
     || (requiresSearchPage ? state?.isSearchPage !== true : state?.isSearchPage === true)) {
@@ -199,75 +201,216 @@ async function prepareWorkspaceTabs({
   browser,
   dashboardUrl,
   inspectReadiness,
-  requireFixedBossTabs = false
+  requireFixedBossTabs = false,
+  bootstrapDedicatedTabs = false
 }) {
   if (!browser || typeof inspectReadiness !== "function") {
     throw new TypeError("prepareWorkspaceTabs requires browser and inspectReadiness()");
   }
   const tabs = await browser.listTabs();
-  const fixed = requireFixedBossTabs
-    ? assertBossOperatorTabs(tabs)
-    : null;
-  const bossTab = fixed?.searchTab || selectBossTab(tabs);
-  if (!bossTab) {
-    throw workspaceError("BOSS_TAB_REQUIRED", "项目专用 Edge 中没有 BOSS 标签页。");
+  if (!bootstrapDedicatedTabs) {
+    const fixedTabs = requireFixedBossTabs ? assertBossOperatorTabs(tabs) : null;
+    const guidanceTab = fixedTabs?.searchTab || selectBossTab(tabs);
+    if (!guidanceTab) throw workspaceError("BOSS_TAB_REQUIRED", "浏览器中没有 BOSS 标签页。");
+    const readiness = await inspectReadiness({ guidanceTab, fixedTabs });
+    const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
+    if (dashboardTabs.length > 1) {
+      throw workspaceError("WORKSPACE_DASHBOARD_TAB_AMBIGUOUS", "RoleFlow Dashboard 标签页不止一个。");
+    }
+    return workspaceResult({
+      guidanceTab,
+      communicationTab: fixedTabs?.communicationTab || null,
+      dashboardTab: dashboardTabs[0] || null,
+      status: readiness.status
+    });
+  }
+
+  const baseline = workspaceBaseline(tabs);
+  const initial = assertDedicatedTopology(tabs, dashboardUrl);
+  if (visibleIdsInWindow(tabs, initial.guidanceTab.windowId).length > 1) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "项目专用 Edge 同时出现多个前台标签页，无法安全继续。");
+  }
+  const readiness = await inspectReadiness({
+    guidanceTab: initial.guidanceTab,
+    fixedTabs: initial.fixedTabs
+  });
+  if (readiness?.status === "login_required") {
+    await guideStartupTab(browser, initial.guidanceTab);
+    return workspaceResult({ guidanceTab: initial.guidanceTab, status: readiness.status });
+  }
+  if (readiness?.status !== "ready") {
+    return workspaceResult({
+      guidanceTab: initial.guidanceTab,
+      communicationTab: initial.fixedTabs?.communicationTab || null,
+      dashboardTab: initial.dashboardTab,
+      status: readiness?.status
+    });
+  }
+  if (bossPath(initial.guidanceTab) !== "/web/geek/jobs") {
+    throw workspaceError("BOSS_SEARCH_PAGE_INVALID", "已就绪的 BOSS 标签页不是职位搜索页。");
+  }
+
+  const createdIds = [];
+  try {
+    let communicationTab = initial.fixedTabs?.communicationTab || null;
+    if (!communicationTab) {
+      requireSingleVisibleTab(tabs, initial.guidanceTab.windowId);
+      const chatUrl = new URL("/web/geek/chat", initial.guidanceTab.url).toString();
+      const communicationTabId = await browser.createTab(initial.guidanceTab.id, chatUrl);
+      createdIds.push(communicationTabId);
+      const afterChat = await browser.listTabs();
+      communicationTab = requireCreatedTab(afterChat, {
+        tabId: communicationTabId,
+        windowId: initial.guidanceTab.windowId,
+        path: "/web/geek/chat",
+        code: "BOSS_COMMUNICATION_PAGE_LOST"
+      });
+      requireVisibleBaseline(afterChat, initial.guidanceTab.windowId, baseline.visibleIds);
+      assertDedicatedTopology(afterChat, dashboardUrl);
+    }
+
+    let dashboardTab = initial.dashboardTab;
+    if (!dashboardTab) {
+      const beforeDashboard = await browser.listTabs();
+      requireSingleVisibleTab(beforeDashboard, initial.guidanceTab.windowId);
+      const dashboardTabId = await browser.createTab(initial.guidanceTab.id, dashboardUrl);
+      createdIds.push(dashboardTabId);
+      const afterDashboard = await browser.listTabs();
+      dashboardTab = requireCreatedTab(afterDashboard, {
+        tabId: dashboardTabId,
+        windowId: initial.guidanceTab.windowId,
+        dashboardUrl,
+        code: "WORKSPACE_DASHBOARD_TAB_REQUIRED"
+      });
+      requireVisibleBaseline(afterDashboard, initial.guidanceTab.windowId, baseline.visibleIds);
+      assertDedicatedTopology(afterDashboard, dashboardUrl);
+    }
+
+    await guideStartupTab(browser, dashboardTab);
+    return workspaceResult({
+      guidanceTab: initial.guidanceTab,
+      communicationTab,
+      dashboardTab,
+      status: readiness.status
+    });
+  } catch (error) {
+    await cleanupCreatedTabs(browser, createdIds, baseline, error);
+    throw error;
+  }
+}
+
+function assertDedicatedTopology(tabs, dashboardUrl) {
+  if (tabs.some((tab) => !Number.isInteger(tab.windowId))) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "项目专用 Edge 标签页缺少可靠的窗口身份。");
   }
   const bossTabs = tabs.filter(isBossTab);
-  if (!requireFixedBossTabs
-    && bossTabs.some((tab) => String(tab.windowId) !== String(bossTab.windowId))) {
-    throw workspaceError(
-      "BOSS_WINDOW_MISMATCH",
-      "BOSS 标签页分布在多个项目 Edge 窗口，请关闭多余窗口后重试。"
-    );
+  const searchTabs = bossTabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
+  const communicationTabs = bossTabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
+  const exactPair = bossTabs.length === 2 && searchTabs.length === 1 && communicationTabs.length === 1;
+  const singleGuidance = bossTabs.length === 1 && communicationTabs.length === 0;
+  if (!exactPair && !singleGuidance) {
+    throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge 只能保留一个 BOSS 引导页或固定的搜索页与沟通页。");
   }
-  if (!Number.isInteger(bossTab.windowId)) {
-    throw workspaceError("BROWSER_COMMAND_FAILED", "BOSS 标签页没有可靠的窗口身份。");
+  const guidanceTab = searchTabs[0] || bossTabs[0];
+  if (!guidanceTab) throw workspaceError("BOSS_TAB_REQUIRED", "项目专用 Edge 中没有 BOSS 标签页。");
+  if (tabs.some((tab) => tab.windowId !== guidanceTab.windowId)) {
+    throw workspaceError("WORKSPACE_WINDOW_MISMATCH", "项目专用 Edge 必须只保留一个可靠窗口。");
   }
+  const fixedTabs = exactPair ? assertBossOperatorTabs(bossTabs) : null;
   const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
-  const crossWindow = dashboardTabs.find((tab) =>
-    String(tab.windowId) !== String(bossTab.windowId)
-  );
-  if (crossWindow) {
-    throw workspaceError(
-      "WORKSPACE_DASHBOARD_WINDOW_MISMATCH",
-      "RoleFlow Dashboard 标签页位于另一个窗口。请仅移动或关闭 RoleFlow Dashboard 标签页；不要关闭含有无关页面的普通 Edge 窗口。"
-    );
+  if (dashboardTabs.length > 1) {
+    throw workspaceError("WORKSPACE_DASHBOARD_TAB_AMBIGUOUS", "RoleFlow Dashboard 标签页不止一个。");
   }
-  if (!requireFixedBossTabs
-    && tabs.some((tab) => !Number.isInteger(tab.windowId) || tab.windowId !== bossTab.windowId)) {
-    throw workspaceError(
-      "WORKSPACE_WINDOW_MISMATCH",
-      "项目专用 Edge 包含多个窗口或缺少可靠的窗口身份，请关闭多余窗口后重试。"
-    );
-  }
+  return { guidanceTab, fixedTabs, dashboardTab: dashboardTabs[0] || null };
+}
 
-  let dashboardTab = dashboardTabs[0] || null;
-  if (!dashboardTab) {
-    const dashboardTabId = await browser.createTab(bossTab.id, dashboardUrl);
-    const createdTabs = await browser.listTabs();
-    dashboardTab = createdTabs.find((tab) => String(tab.id) === String(dashboardTabId)) || null;
-    if (!dashboardTab) {
-      throw workspaceError(
-        "WORKSPACE_DASHBOARD_TAB_REQUIRED",
-        "RoleFlow Dashboard 标签页创建后未能在浏览器中确认。"
-      );
-    }
-    if (!Number.isInteger(dashboardTab.windowId)
-      || dashboardTab.windowId !== bossTab.windowId) {
-      throw workspaceError(
-        "WORKSPACE_DASHBOARD_WINDOW_MISMATCH",
-        "RoleFlow Dashboard 标签页位于另一个窗口。请仅移动或关闭 RoleFlow Dashboard 标签页；不要关闭含有无关页面的普通 Edge 窗口。"
-      );
-    }
+function requireCreatedTab(tabs, { tabId, windowId, path = null, dashboardUrl = null, code }) {
+  const tab = tabs.find((item) => sameBrowserTabId(item.id, tabId));
+  if (!tab || (path && bossPath(tab) !== path)
+    || (dashboardUrl && !isDashboardTab(tab, dashboardUrl))) {
+    throw workspaceError(code, "后台标签页创建后未能安全确认。");
   }
+  if (tab.windowId !== windowId || tab.active) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "新建标签页未保持在原窗口后台。", { tabId });
+  }
+  return tab;
+}
 
-  const readiness = await inspectReadiness(fixed);
-  await browser.bringToFront(readiness.status === "ready" ? dashboardTab.id : bossTab.id);
+function workspaceBaseline(tabs) {
   return {
-    bossTabId: bossTab.id,
-    dashboardTabId: dashboardTab.id,
-    windowId: bossTab.windowId,
-    status: readiness.status
+    ids: sortedBrowserTabIds(tabs.map((tab) => tab.id)),
+    visibleIds: sortedBrowserTabIds(tabs.filter((tab) => tab.active).map((tab) => tab.id))
+  };
+}
+
+function visibleIdsInWindow(tabs, windowId) {
+  return sortedBrowserTabIds(tabs
+    .filter((tab) => tab.windowId === windowId && tab.active)
+    .map((tab) => tab.id));
+}
+
+function requireSingleVisibleTab(tabs, windowId) {
+  const visibleIds = visibleIdsInWindow(tabs, windowId);
+  if (visibleIds.length !== 1) {
+    throw workspaceError(
+      "BROWSER_COMMAND_FAILED",
+      "请恢复 RoleFlow 专用 Edge 窗口后重试；创建标签页前必须能确认唯一前台页。"
+    );
+  }
+  return visibleIds;
+}
+
+function requireVisibleBaseline(tabs, windowId, expectedIds) {
+  const actualIds = visibleIdsInWindow(tabs, windowId);
+  if (!sameTabIdLists(actualIds, expectedIds)) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "后台标签页操作改变了项目专用 Edge 的前台页。");
+  }
+}
+
+async function guideStartupTab(browser, tab) {
+  await browser.bringToFront(tab.id);
+  const refreshed = await browser.listTabs();
+  const current = refreshed.find((item) => sameBrowserTabId(item.id, tab.id));
+  if (!current || current.windowId !== tab.windowId
+    || !sameTabIdLists(visibleIdsInWindow(refreshed, tab.windowId), [tab.id])) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "启动引导未能确认目标标签页成为前台页。");
+  }
+}
+
+async function cleanupCreatedTabs(browser, createdIds, baseline, primaryError) {
+  for (const tabId of [...createdIds].reverse()) {
+    try {
+      await browser.closeTab(tabId);
+    } catch (error) {
+      primaryError.message = `${primaryError.message}\n\n清理失败：${error.message || error}`;
+      primaryError.cleanupError = error;
+      return;
+    }
+  }
+  try {
+    const restored = workspaceBaseline(await browser.listTabs());
+    if (!sameTabIdLists(restored.ids, baseline.ids)
+      || !sameTabIdLists(restored.visibleIds, baseline.visibleIds)) {
+      throw workspaceError("BROWSER_COMMAND_FAILED", "启动清理后无法重证原始标签页基线。");
+    }
+  } catch (error) {
+    primaryError.message = `${primaryError.message}\n\n清理失败：${error.message || error}`;
+    primaryError.cleanupError = error;
+  }
+}
+
+function sameTabIdLists(left, right) {
+  return left.length === right.length
+    && left.every((value, index) => sameBrowserTabId(value, right[index]));
+}
+
+function workspaceResult({ guidanceTab, communicationTab = null, dashboardTab = null, status }) {
+  return {
+    bossTabId: guidanceTab.id,
+    communicationTabId: communicationTab?.id ?? null,
+    dashboardTabId: dashboardTab?.id ?? null,
+    windowId: guidanceTab.windowId,
+    status
   };
 }
 

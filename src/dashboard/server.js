@@ -343,8 +343,8 @@ async function inspectDashboardBossBrowserReadiness({
   const browser = browserFactory({ browserMode, cdpPort });
   const adapter = new boss.BossSiteAdapter({ browser, logger });
   return inspectBossBrowserReadiness({
+    browserMode,
     preflight: async () => {
-      if (browserMode !== "edge") return adapter.preflight();
       const inspected = await inspectBossOperatorTabs({
         browser,
         inspectTab: (tabId) => adapter.preflight({ tabId })
@@ -1616,16 +1616,11 @@ async function resolveLiveInheritedContext({
   try {
     const browser = browserFactory({ browserMode, cdpPort });
     const adapter = new boss.BossSiteAdapter({ browser, logger });
-    let preflight;
-    if (browserMode === "edge") {
-      const inspected = await inspectBossOperatorTabs({
-        browser,
-        inspectTab: (tabId) => adapter.preflight({ tabId })
-      });
-      preflight = inspected.searchState;
-    } else {
-      preflight = await adapter.preflight();
-    }
+    const inspectedTabs = await inspectBossOperatorTabs({
+      browser,
+      inspectTab: (tabId) => adapter.preflight({ tabId })
+    });
+    const preflight = inspectedTabs.searchState;
     if (!preflight.isSearchPage) {
       throw appError(
         "BOSS_SEARCH_PAGE_INVALID",
