@@ -166,7 +166,7 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.doesNotMatch(html, /<strong>平台已继承<\/strong>/);
   assert.match(html, /name="browserMode" value="portable"/);
   assert.match(html, /name="cdpPort" value="9222"/);
-  assert.match(html, /当前浏览器：RoleFlow 专用 Edge/);
+  assert.match(html, /当前浏览器：RoleFlow 专用 Edge（推荐）/);
 }
 
 function assertScanStatusLabels() {
@@ -208,9 +208,9 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   assert.match(page.body, /data-today-primary="true"[^>]*name="action"[^>]*value="start"/);
   assert.match(page.body, /name="planId" value="\d+"/);
   assert.match(page.body, /name="browserMode" value="edge"/);
-  assert.match(page.body, /当前浏览器：当前 Edge（高级）/);
-  assert.match(page.body, /正在检查当前 Edge（高级）与固定 BOSS 页面状态…/);
-  assert.match(page.body, /无法确认当前 Edge（高级）状态，请检查本地服务。/);
+  assert.match(page.body, /当前浏览器：使用当前 Edge（高级，需要浏览器连接组件）/);
+  assert.match(page.body, /正在检查使用当前 Edge（高级，需要浏览器连接组件）与固定 BOSS 页面状态…/);
+  assert.match(page.body, /无法确认使用当前 Edge（高级，需要浏览器连接组件）状态，请检查本地服务。/);
   assert.doesNotMatch(page.body, /value="portable"/);
   assert.match(page.body, /data-browser-readiness-button[^>]*disabled/);
   assert.match(page.body, new RegExp(`/api/acquisition-preview\\?planId=${saved.planId}`));

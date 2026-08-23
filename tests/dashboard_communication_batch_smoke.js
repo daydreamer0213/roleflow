@@ -426,7 +426,7 @@ async function assertCommunicationClient() {
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
   assert.match(builder.body, /form\.addEventListener\('change',update\);update\(\)/);
-  assert.match(builder.body, /浏览器：当前已登录 Edge（Dashboard 已固定）/);
+  assert.match(builder.body, /浏览器：使用当前 Edge（高级，需要浏览器连接组件）（Dashboard 已固定）/);
   assert.match(builder.body, /<input type="hidden" name="browserMode" value="edge">/);
   assert.doesNotMatch(builder.body, /<select name="browserMode">/);
   assert.strictEqual((builder.body.match(/<input[^>]*name="jobIds"[^>]*checked/g) || []).length, 30);
@@ -921,7 +921,7 @@ async function portableDashboardAuthoritySmoke() {
     });
     const portableBaseUrl = await listen(portableServer);
     const builder = await getText(portableBaseUrl, `/communication/new?planId=${fixture.planId}`);
-    assert.match(builder.body, /浏览器：项目专用 Edge（Dashboard 已固定）/);
+    assert.match(builder.body, /浏览器：RoleFlow 专用 Edge（推荐）（Dashboard 已固定）/);
     assert.match(builder.body, /<input type="hidden" name="browserMode" value="portable">/);
     assert.doesNotMatch(builder.body, /<select name="browserMode">/);
 

@@ -64,7 +64,7 @@ async function inspect(result, browserMode = "edge") {
     now: () => "2099-01-01T00:00:00.000Z"
   });
   assert.strictEqual(unavailable.status, "browser_unavailable");
-  assert.match(unavailable.message, /当前 Edge（高级）/);
+  assert.match(unavailable.message, /使用当前 Edge（高级，需要浏览器连接组件）/);
 
   const portableUnavailable = await inspectBossBrowserReadiness({
     browserMode: "portable",

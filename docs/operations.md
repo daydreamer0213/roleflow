@@ -30,8 +30,24 @@
 1. 记录页面显示的错误编号和请求编号。
 2. 打开工作台“诊断”，按请求编号查最近事件。
 3. 需要更完整的上下文时，搜索 `.runtime\logs` 下的 JSONL。
-4. 运行 `npm.cmd test`。当前 `tests/run_all.js` 注册 97 项离线检查，不访问 BOSS；其中 `startup_scripts_smoke.js` 会临时生成名为 `msedge.exe` 的本地测试桩，可能触发 360 告警。已安装 360 的验收机应先明确是否允许该测试，或按发布记录如实报告跳过原因，不得把 96 项通过写成完整 97 项通过。
+4. 运行 `node tests/run_all.js`。当前注册 101 项离线检查，不访问 BOSS；启动边界测试使用注入的进程与 HTTP 探针，不再生成假的 `msedge.exe`。2026-08-23 的当前 source candidate 实际通过 101/101 项离线检查，后续代码变化仍需重新运行，不能沿用历史计数。
 5. 只有离线检查通过后，才在已登录 Edge 上做 3–5 条只读小样本验收。
+
+## 浏览器登录资料
+
+- 默认入口是“RoleFlow 专用 Edge（推荐）”，不需要 Edge Control。登录资料固定在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`，覆盖升级或更换安装目录后继续复用。
+- 只有浏览器登录资料跨安装目录稳定。`data\jobs.sqlite`、简历、模型设置、日志和报告仍属于原安装目录，安装到新目录不会自动复制这些数据。
+- “使用当前 Edge（高级，需要浏览器连接组件）”必须显式运行 `Start.bat -BrowserMode edge`，并要求已有 Edge Control 扩展与桥接健康；“RoleFlow 专用 Edge（推荐）”失败时绝不自动回退。
+
+从旧安装目录迁移浏览器登录资料时，先关闭占用源或目标 profile 的 Edge，再执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\migrate-browser-profile.ps1 -SourceProfileDir "旧目录\.runtime\edge-profile" -ConfirmMigration
+```
+
+迁移是显式、只复制、保留源目录的操作。脚本会拒绝缺少确认、目标已存在、源/目标重叠、路径身份不完整或仍被 Edge 占用的情况；成功标志为 `PROFILE_MIGRATION_OK`。
+
+普通交互卸载默认保留浏览器登录资料；静默卸载也保留。删除 `%LOCALAPPDATA%\RoleFlow\BrowserProfile` 必须在交互卸载中对“删除专用浏览器登录资料”单独确认，不能把删除安装目录内数据的确认当成 profile 删除授权。
 
 ## Dashboard 与只读数据库检查
 
@@ -143,7 +159,9 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 ## BOSS 安全处置
 
 - 出现验证页、登录失效、结构异常或频繁超时时，立即停止，不自动刷新硬闯。
-- 不同时运行多个扫描，不用多个标签并发点卡片。
+- 静止基线只保留同一窗口内一个 `BOSS-SEARCH` 和一个 `BOSS-COMMUNICATION` 固定页，不同时运行多个扫描，不用多个标签并发点卡片。
+- 消息发现只有在新会话没有完整可信本地 JD 时，才允许串行打开一个 `active: false` 的后台临时详情页；核验、保存并关闭后恢复两页基线。
+- 启动助手可在用户启动工作区且未传 `-NoOpen` 时引导一次前台。扫描、JD 读取、分析、消息发现、沟通、轮询、重试和恢复不得激活 BOSS 页或恢复前台焦点。
 - 两次正式扫描开始时间至少间隔 2 小时；不要为了凑数量连续追加扫描。
 - 留足冷却后再小样本验证；不要连续重跑整轮扫描。
 - 本地模型分析可以有限并行，因为岗位内容已经落盘，不会增加 BOSS 请求频率。
@@ -179,4 +197,4 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 | `BOSS_RISK_CONTROL` / `BOSS_LOGIN_REQUIRED` | 安全验证或登录失效 | 立即停止，处理后重试 |
 | `MESSAGE_DISCOVERY_LEASE_LOST` | BOSS 租约丢失 | 停止后重新启动 |
 
-恢复步骤：先安全停止，再检查便携 Edge 和消息页，最后重新开始一轮。出现登录、风控、页面漂移或身份不确定时立即停止，不重试点击。
+恢复步骤：先安全停止，再检查 RoleFlow 专用 Edge（推荐）和固定消息页，最后重新开始一轮。出现登录、风控、页面漂移或身份不确定时立即停止，不重试点击。

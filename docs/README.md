@@ -5,8 +5,8 @@
 按以下顺序读取，不要先加载历史聊天或整个 `superpowers` 目录：
 
 1. [`../AGENTS.md`](../AGENTS.md)：长期安全、质量、浏览器和数据边界。
-2. [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：当前 `v1.0.0` 状态和交接协议。
-3. [`NEXT_PHASE.md`](NEXT_PHASE.md)：下一阶段四个独立课题的边界与设计任务。
+2. [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：当前未发布 source candidate 的状态和交接协议。
+3. [`NEXT_PHASE.md`](NEXT_PHASE.md)：当前候选的后续门禁、发布边界和待办。
 4. 当前任务直接涉及的源码、测试和一份对应设计。
 
 ## 当前产品文档
@@ -14,7 +14,7 @@
 以下文档需要与当前代码持续保持一致：
 
 - [`../README.md`](../README.md)：项目定位、安装方式、主要能力和快速开始。
-- [`releases/v1.0.0.md`](releases/v1.0.0.md)：当前正式版本说明与验证边界。
+- [`releases/v1.0.0.md`](releases/v1.0.0.md)：已发布 v1.0.0 的历史版本说明；不代表当前 source candidate。
 - [`product_spec.md`](product_spec.md)：产品边界、用户流程和功能规格。
 - [`daily_workflow.md`](daily_workflow.md)：每日扫描、模型分析、清单确认和批量沟通逻辑。
 - [`onboarding_workflow.md`](onboarding_workflow.md)：模型配置、简历解析、画像与筛选方案首次使用流程。

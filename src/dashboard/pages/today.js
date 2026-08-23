@@ -84,7 +84,9 @@ function browserInputs(runtime = {}) {
 }
 
 function browserAuthorityLabel(runtime = {}) {
-  return runtime.browserMode === "portable" ? "RoleFlow 专用 Edge" : "当前 Edge（高级）";
+  return runtime.browserMode === "portable"
+    ? "RoleFlow 专用 Edge（推荐）"
+    : "使用当前 Edge（高级，需要浏览器连接组件）";
 }
 
 function renderChoices(label, name, options = [], selected = []) {

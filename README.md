@@ -12,9 +12,9 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v1.0.0` 是 RoleFlow 第一阶段正式版。真正新用户路径的人工验收已经覆盖模型设置、简历与搜索方案、岗位筛选、清单确认、连续沟通和只读消息发现，主流程完整跑通。沟通点击保持后台执行，工作流状态变化时按需更新，历史已点击岗位不会再次进入新清单；所有身份校验、安全停止和不重试规则保持不变。本轮已通过除 `startup_scripts_smoke.js` 外的 96 组安全离线检查；该启动测试会临时编译名为 `msedge.exe` 的本地桩程序并触发 360 告警，因此没有重跑。
+`v1.0.0` 是已经发布的正式版；普通用户应从 [v1.0.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.0.0) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
 
-真实连续批次验收已完成：批次 #1 共 12 个岗位，其中 10 个成功、2 个历史停止项保持原样，未自动重试；只读消息发现也已完成。验收期间 BOSS 固定标签未被激活，工作流轮询未再出现高频整页刷新。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
+当前仓库是**尚未发布的 source candidate**。它把默认浏览器改为“RoleFlow 专用 Edge（推荐）”，并把登录资料固定到 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。这部分不属于已发布 v1.0.0 下载内容；当前候选已于 2026-08-23 通过 101/101 项离线检查，但尚未执行新的真实 Edge、BOSS、安装或卸载验收，也没有把历史真实验收写成这次候选的验收结果。
 
 ## 核心能力
 
@@ -23,41 +23,42 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 - 结合岗位职责、技术要求、薪资、活跃度和风险信号给出分层建议。
 - 将主投、先聊确认、备选和待复核岗位整理为本地工作清单。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- 当前公开快照包含 97 组离线检查，覆盖扫描、存储、模型适配、工作流恢复、候选人进展、Windows 安装和只读消息发现。
+- 当前 source candidate 已于 2026-08-23 运行 `node tests/run_all.js` 并通过 101/101 项离线检查；测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
 ## 快速开始
 
-Windows 普通用户：
+已发布 v1.0.0 的 Windows 普通用户：
 
 > **请前往 [v1.0.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.0.0)，下载 `RoleFlow-Setup-1.0.0.exe`。**
 >
 > `RoleFlow-v1.0.0-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
-1. 下载并运行 `RoleFlow-Setup-1.0.0.exe`。标准安装器会显示安装位置、进度和完成状态，默认安装到 `%LOCALAPPDATA%\Programs\RoleFlow`，不要求管理员权限，并在 Windows“已安装的应用”中提供卸载入口。覆盖安装会保留现有本地数据。
-2. 从桌面或开始菜单启动 RoleFlow。启动过程不会显示常驻黑色终端；失败时会显示原因和日志位置。
-3. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
-4. 上传 TXT、MD、DOCX、PDF 简历，或粘贴简历文本。
-5. 检查模型生成的候选人画像和搜索方案，手工选择求职城市并保存方案。
-6. 开始岗位筛选前，请在同一个普通 Edge 窗口正好保留一个 `BOSS-SEARCH` 岗位搜索页和一个 `BOSS-COMMUNICATION` 沟通页，并确认 Edge Control 扩展和桥接服务健康。RoleFlow 默认使用“当前已登录 Edge（推荐）”并复用这两个标签页，不会另开项目专用 Edge。
-7. RoleFlow 只读检查登录、风控、窗口归属和页面身份；检查失败会停止并给出处理建议，不会自动回退，也不会静默切换浏览器 authority（浏览器控制权）。必须保持这两个固定标签页在同一窗口；RoleFlow 不会创建第二个 BOSS 窗口或标签页。
-8. 只有下载高级便携 ZIP 且需要独立环境时，才在解压目录手动运行：
+当前 source candidate 的日常路径如下；它尚未发布为新的正式安装器：
+
+1. 在当前源码或候选暂存目录运行 `Install.bat`，再双击 `Start.bat`。默认会启动“RoleFlow 专用 Edge（推荐）”，不需要 Edge Control 或浏览器连接组件。
+2. 第一次在“RoleFlow 专用 Edge（推荐）”中登录 BOSS。登录资料保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`，覆盖升级或更换安装目录后仍会复用；不要把这个目录放进发布包或提交到 Git。
+3. 在同一个“RoleFlow 专用 Edge（推荐）”窗口保留一个 `BOSS-SEARCH` 搜索页和一个 `BOSS-COMMUNICATION` 沟通页。启动助手可在就绪检查后引导一次前台；此后的扫描、JD 读取、分析、消息发现和沟通都保持后台。
+4. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
+5. 上传 TXT、MD、DOCX、PDF 简历，检查候选人画像和搜索方案，手工选择求职城市并保存方案。
+6. RoleFlow 会只读检查登录、风控、窗口归属和页面身份；失败时停止并给出处理建议，不会自动切换浏览器。消息发现优先复用本地完整 JD；只有新会话缺少完整可信 JD 时，才允许串行打开一个同窗口、`active: false` 的后台临时详情页，检查并保存后立即关闭。
+7. 只有明确要复用日常 Edge 时，才显式运行高级模式：
 
    ```text
-   Start.bat -BrowserMode portable
+   Start.bat -BrowserMode edge
    ```
 
-   该备用模式固定使用 CDP 端口 `9222` 和项目的 `.runtime\edge-profile`，需要独立登录 BOSS。它不会被普通 Edge 检查失败自动启动。
-9. 登录成功不会自动扫描；扫描完成后仍需用户确认清单并再次明确点击“开始沟通”。本阶段不自动沟通、不发送或投递，也不放宽首次校准点击和批次确认门禁。
+   “使用当前 Edge（高级，需要浏览器连接组件）”要求现有 Edge Control 扩展与桥接健康；“RoleFlow 专用 Edge（推荐）”失败时绝不会自动回退到该模式。
+8. 登录成功不会自动扫描；扫描完成后仍需用户确认清单并再次明确点击“开始沟通”。本阶段不自动沟通、不发送或投递，也不放宽首次校准点击和批次确认门禁。
 
 模型不可用时，历史岗位和投递记录仍可查看；简历解析和语义匹配会明确显示为待处理，不会伪装成模型结论。
 
 ### 浏览器连接
 
-标准安装器包含 RoleFlow、固定版 Node.js 和生产依赖，但当前不分发 Edge Control 扩展和桥接：该外部组件尚无可验证的再分发许可。启动前需要使用现有本地安装方式准备并连接 Edge Control；缺失时 RoleFlow 会停止并给出说明，不会自动下载未知版本，也不会静默切换到独立浏览器。
+当前 source candidate 默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Edge Control。Edge Control 扩展和桥接只服务于“使用当前 Edge（高级，需要浏览器连接组件）”，不进入普通安装包，也不会自动下载；高级模式缺少组件时会停止，不会切换浏览器 authority（浏览器控制权）。
 
-卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。默认保留岗位数据库、简历、模型设置、日志和报告；只有在卸载确认框中明确选择删除，才会清理当前 RoleFlow 安装目录内的这些数据。
+卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。普通卸载和静默卸载都保留 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`；交互卸载只有在独立确认“删除专用浏览器登录资料”后才删除它。岗位数据库、简历、模型设置、日志和报告仍位于各自安装目录，不会因为浏览器登录资料稳定就悄悄迁移到新的安装目录。
 
 仓库源码和便携 ZIP 仍保留 `Install.bat` / `Start.bat`，用于开发、便携使用和故障恢复。`Install.bat` 不是标准 Windows 安装器，也不再把完整开发回归测试作为用户安装步骤。
 
@@ -145,29 +146,35 @@ Windows 普通用户：
 
 ## 便携交付
 
-双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；发布包不依赖 Codex，但默认普通 Edge 模式需要用户已安装并连接健康的 Edge Control 扩展和桥接。发布 zip 不内置或自动安装 Edge Control 桥接。
+双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；当前 source candidate 默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Codex 或 Edge Control。Edge Control 不内置在发布 zip 中，只用于显式高级模式。
 
 维护者双击 `BuildInstaller.bat` 可生成标准安装器和同名 `.sha256` 校验文件。构建会先运行一次完整离线回归，再在 `D:\DevData\RoleFlow-installer` 创建不含数据库、简历、密钥、日志、报告、浏览器 profile、测试源码或 Edge Control 的干净暂存目录，然后调用固定的 Inno Setup 6 编译器。构建机需要把编译器放在 `D:\DevData\InnoSetup`，或设置 `ROLEFLOW_ISCC`。
 
-项目专用 Edge profile 位于 `.runtime\edge-profile`。不要复制旧电脑的登录 profile；在新电脑重新登录 BOSS。
+“RoleFlow 专用 Edge（推荐）”的默认登录资料位于 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`，不属于安装目录。它会跨覆盖升级和安装目录变化保留；更换电脑时不要直接复制浏览器登录资料，应在新电脑重新登录 BOSS。
 
-默认普通 Edge 入口通过 Edge Control 扩展和桥接复用当前已登录会话。若扩展或桥接缺失、未连接或不健康，`Start.bat` 会 fail-closed（停止启动，不自动切换浏览器），并提示用户安装/连接或刷新 Edge Control、在普通 Edge 登录 BOSS、保留同一窗口中的一个搜索页和一个沟通页后重试。
+从旧版安装目录内的 `.runtime\edge-profile` 迁移时，先关闭使用源目录或目标目录的 Edge，再明确执行只复制迁移：
 
-无需或不想安装 Edge Control 时，必须显式运行：
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\migrate-browser-profile.ps1 -SourceProfileDir "旧目录\.runtime\edge-profile" -ConfirmMigration
+```
+
+迁移会复制并核对文件后写入稳定目录，不移动或删除源目录；目标目录已存在时会停止，由用户决定保留哪一份。
+
+默认入口直接运行：
 
 ```text
 Start.bat -BrowserMode portable
 ```
 
-该模式不依赖 Edge Control，固定使用 CDP `9222` 和独立的 `.runtime\edge-profile`，需要单独登录 BOSS；它不会由普通 Edge 检查失败自动启动。
+命令中的内部模式名仍为 `portable`，但普通产品名称统一为“RoleFlow 专用 Edge（推荐）”。端口 `9222` 和 CDP 属于开发诊断细节，不需要普通用户配置。
 
-普通 Edge 入口的显式扫描命令：
+“使用当前 Edge（高级，需要浏览器连接组件）”的显式扫描命令：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\scan-boss.ps1 -PlanId 1 -BridgeSource plugin
 ```
 
-便携 CDP 模式仍作为显式兼容入口，无需插件：
+“RoleFlow 专用 Edge（推荐）”的源码扫描命令仍沿用内部脚本名：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\scan-portable.ps1 -PlanId 1
@@ -229,7 +236,7 @@ data/                   本地 SQLite（真实文件不进 Git）
 消息发现是独立的一轮手动操作，不是持续监控，也不会自动回复。
 
 - 打开页面：队列右上角“消息发现”，或 `/messages?profileId=候选人ID`。
-- 前置条件：便携 Edge 正在运行，并且存在唯一一个已登录的 `BOSS-COMMUNICATION` 消息页。
+- 前置条件：RoleFlow 专用 Edge（推荐）正在运行，并且固定基线中存在唯一一个已登录的 `BOSS-COMMUNICATION` 消息页。
 - 点击“开始只读发现”后，系统只读取未读会话和预览变化；不会填写输入框、不会点击发送。
 - HR 连续发送的文本会作为一组处理（最多 5 条）；含语音、图片、附件或超长文本时会停止并提示人工粘贴。
 - 生成结果最多 2 条草稿，只保存在本机内存，30 分钟、新运行、放弃、已手动发送或关闭工作台后都会清空。

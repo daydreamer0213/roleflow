@@ -300,14 +300,14 @@ function normalizeDashboardBrowserAuthority(input) {
   if (browserMode === "edge") {
     if ((input.cdpPort !== null && input.cdpPort !== undefined && String(input.cdpPort).trim() !== "")
       || String(input.profilePath || "").trim()) {
-      throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "当前 Edge 高级模式不能携带专用 Edge 身份。", { statusCode: 409 });
+      throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "使用当前 Edge（高级，需要浏览器连接组件）不能携带专用 Edge 身份。", { statusCode: 409 });
     }
     return Object.freeze({ browserMode, cdpPort: null, profilePath: "" });
   }
   const cdpPort = Number(input.cdpPort);
   const profilePath = String(input.profilePath || "").trim();
   if (cdpPort !== PORTABLE_CDP_PORT || !path.isAbsolute(profilePath)) {
-    throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "RoleFlow 专用 Edge 启动身份无效。", { statusCode: 409 });
+    throw appError("DASHBOARD_BROWSER_AUTHORITY_INVALID", "RoleFlow 专用 Edge（推荐）启动身份无效。", { statusCode: 409 });
   }
   return Object.freeze({ browserMode, cdpPort, profilePath: path.resolve(profilePath) });
 }
@@ -323,7 +323,7 @@ function normalizeCdpPort(value, fallback = PORTABLE_CDP_PORT) {
 function createDashboardBrowser({ browserMode, cdpPort }) {
   if (browserMode === "portable") return new CdpBrowserAdapter({ port: normalizeCdpPort(cdpPort) });
   if (browserMode === "edge") return new EdgeControlAdapter();
-  throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式必须是当前 Edge 或项目专用 Edge。", { statusCode: 409 });
+  throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式必须是 RoleFlow 专用 Edge（推荐）或使用当前 Edge（高级，需要浏览器连接组件）。", { statusCode: 409 });
 }
 
 function createDashboardBrowserReadinessProbe({ logger }) {
@@ -1675,8 +1675,8 @@ async function resolveLiveInheritedContext({
       throw appError(
         "BOSS_SEARCH_PAGE_INVALID",
         browserMode === "edge"
-          ? "请先在当前已登录 Edge 的固定 BOSS 搜索页打开岗位搜索结果。"
-          : "请先在项目专用 Edge 打开 BOSS 岗位搜索结果页。",
+          ? "使用当前 Edge（高级，需要浏览器连接组件）：请先在固定 BOSS 搜索页打开岗位搜索结果。"
+          : "请先在 RoleFlow 专用 Edge（推荐）打开 BOSS 岗位搜索结果页。",
         { statusCode: 409 }
       );
     }
@@ -1743,8 +1743,8 @@ async function resolveLiveInheritedContext({
       throw appError(
         browserMode === "edge" ? "BROWSER_UNAVAILABLE" : "PORTABLE_EDGE_REQUIRED",
         browserMode === "edge"
-          ? "当前已登录 Edge 的 Edge Control 或桥接未连接，请启动或刷新桥接并确认扩展已连接。"
-          : "项目专用 Edge 未启动或已经断开。请重新运行 Start.bat。",
+          ? "使用当前 Edge（高级，需要浏览器连接组件）：连接组件未就绪，请启动或刷新桥接并确认扩展已连接。"
+          : "RoleFlow 专用 Edge（推荐）未启动或已经断开。请重新运行 Start.bat。",
         { statusCode: 409, cause: error }
       );
     }
@@ -1752,8 +1752,8 @@ async function resolveLiveInheritedContext({
       throw appError(
         "BOSS_LOGIN_REQUIRED",
         browserMode === "edge"
-          ? "请先在当前已登录 Edge 的固定 BOSS 页面登录。"
-          : "请先在项目专用 Edge 登录 BOSS。",
+          ? "使用当前 Edge（高级，需要浏览器连接组件）：请先在固定 BOSS 页面登录。"
+          : "请先在 RoleFlow 专用 Edge（推荐）登录 BOSS。",
         { statusCode: 409, cause: error }
       );
     }
@@ -1876,8 +1876,8 @@ function publicAcquisitionPreviewError(error) {
     BOSS_WINDOW_MISMATCH: [409, "BOSS 搜索页和沟通页需要位于同一 Edge 窗口。"],
     BOSS_SEARCH_PAGE_INVALID: [409, "请先在固定 BOSS 搜索页打开岗位搜索结果。"],
     BOSS_SEARCH_PAGE_LOST: [409, "固定 BOSS 搜索页已离开岗位搜索结果。"],
-    BROWSER_DISCONNECTED: [409, "当前已登录 Edge 的只读控制通道未连接。"],
-    BROWSER_UNAVAILABLE: [409, "当前已登录 Edge 的只读控制通道未连接。"]
+    BROWSER_DISCONNECTED: [409, "浏览器只读控制通道未连接。"],
+    BROWSER_UNAVAILABLE: [409, "浏览器只读控制通道未连接。"]
   };
   const [statusCode, message] = known[code] || [500, "暂时无法读取当前 BOSS 搜索范围。"];
   return { statusCode, error: message, errorCode: known[code] ? code : "ACQUISITION_PREVIEW_FAILED" };
@@ -1902,7 +1902,13 @@ async function resolveLiveGeneratedContext({
     });
     const searchState = inspected.searchState;
     if (!searchState?.isSearchPage) {
-      throw appError("BOSS_SEARCH_PAGE_INVALID", "请先在当前已登录 Edge 的固定 BOSS 搜索页打开岗位搜索结果。", { statusCode: 409 });
+      throw appError(
+        "BOSS_SEARCH_PAGE_INVALID",
+        browserMode === "edge"
+          ? "使用当前 Edge（高级，需要浏览器连接组件）：请先在固定 BOSS 搜索页打开岗位搜索结果。"
+          : "请先在 RoleFlow 专用 Edge（推荐）的固定 BOSS 搜索页打开岗位搜索结果。",
+        { statusCode: 409 }
+      );
     }
     const cached = getPlatformFilterCatalog(db, "boss")?.catalog || null;
     let catalog = cached;
@@ -1951,10 +1957,10 @@ async function resolveLiveGeneratedContext({
       throw error;
     }
     if (error?.code === "BROWSER_DISCONNECTED") {
-      throw appError("BROWSER_UNAVAILABLE", "当前已登录 Edge 的 Edge Control 或桥接未连接，请启动或刷新桥接并确认扩展已连接。", { statusCode: 409, cause: error });
+      throw appError("BROWSER_UNAVAILABLE", "使用当前 Edge（高级，需要浏览器连接组件）：连接组件未就绪，请启动或刷新桥接并确认扩展已连接。", { statusCode: 409, cause: error });
     }
     if (error?.code === "BOSS_LOGIN_REQUIRED") {
-      throw appError("BOSS_LOGIN_REQUIRED", "请先在当前已登录 Edge 的固定 BOSS 页面登录。", { statusCode: 409, cause: error });
+      throw appError("BOSS_LOGIN_REQUIRED", "使用当前 Edge（高级，需要浏览器连接组件）：请先在固定 BOSS 页面登录。", { statusCode: 409, cause: error });
     }
     if ([
       "BOSS_RISK_CONTROL",
@@ -2162,7 +2168,7 @@ function resolveWorkflowResumeBrowserMode(workflow, requestedMode = "") {
   if (requested && !["edge", "portable"].includes(requested)) {
     throw appError(
       "WORKFLOW_BROWSER_MODE_INVALID",
-      "浏览器模式必须是当前 Edge 或项目专用 Edge。",
+      "浏览器模式必须是 RoleFlow 专用 Edge（推荐）或使用当前 Edge（高级，需要浏览器连接组件）。",
       { statusCode: 409 }
     );
   }
@@ -2502,7 +2508,7 @@ function resolveWorkflowControlBrowserAuthority(workflow, params = {}) {
   if (cdpPort !== PORTABLE_CDP_PORT) {
     throw appError(
       "INHERITED_PORTABLE_PORT_REQUIRED",
-      "继承模式必须使用项目专用 Edge 的 9222 端口。",
+      "继承模式必须使用 RoleFlow 专用 Edge（推荐）的固定浏览器身份。",
       { statusCode: 409 }
     );
   }
@@ -4666,7 +4672,9 @@ function renderCommunicationBuilderPage({ db, searchParams, browserAuthority }) 
   }).join("") || "<p>当前没有可加入的岗位。</p>";
   const blockNotice = runtimeBlock ? `<p class="communication-warning">${escapeHtml(runtimeBlock.reasonCode)}${runtimeBlock.blockedUntil ? ` · ${escapeHtml(runtimeBlock.blockedUntil)}` : ""}</p>` : "";
   const authority = normalizeDashboardBrowserAuthority(browserAuthority);
-  const browserLabel = authority.browserMode === "portable" ? "项目专用 Edge" : "当前已登录 Edge";
+  const browserLabel = authority.browserMode === "portable"
+    ? "RoleFlow 专用 Edge（推荐）"
+    : "使用当前 Edge（高级，需要浏览器连接组件）";
   return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><input type="hidden" name="browserMode" value="${escapeAttr(authority.browserMode)}"><p>浏览器：${escapeHtml(browserLabel)}（Dashboard 已固定）</p><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
 }
 

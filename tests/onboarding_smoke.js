@@ -28,6 +28,7 @@ const { resolveAnalysisConcurrency } = require("../src/cli");
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `onboarding-${Date.now()}.sqlite`);
+const browserProfilePath = path.join(smokeDir, `onboarding-browser-profile-${process.pid}-${Date.now()}`);
 let dashboard;
 let success = false;
 const generatedReports = [];
@@ -35,7 +36,7 @@ const generatedReports = [];
 (async () => {
   fs.mkdirSync(smokeDir, { recursive: true });
   const port = await getFreePort();
-  dashboard = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", "dashboard", "--db", dbPath, "--port", String(port), "--allow-offline-mock", "--force-mock"], {
+  dashboard = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli.js", "dashboard", "--db", dbPath, "--port", String(port), "--browser", "portable", "--cdp-port", "9222", "--browser-profile", browserProfilePath, "--allow-offline-mock", "--force-mock"], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"]
   });

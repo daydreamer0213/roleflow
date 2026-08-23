@@ -111,7 +111,9 @@ function buildTodayViewModel(input = {}) {
       workflowStartDisabled: Boolean(startBlocked),
       browserMode,
       cdpPort,
-      browserLabel: browserMode === "portable" ? "RoleFlow 专用 Edge" : "当前 Edge（高级）"
+      browserLabel: browserMode === "portable"
+        ? "RoleFlow 专用 Edge（推荐）"
+        : "使用当前 Edge（高级，需要浏览器连接组件）"
     }
   };
 }

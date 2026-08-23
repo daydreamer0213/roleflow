@@ -46,8 +46,8 @@ function readinessSnapshot(status, now, browserMode) {
 
 function readinessMessages(browserMode) {
   const label = browserMode === "edge"
-    ? "当前 Edge（高级）"
-    : "RoleFlow 专用 Edge";
+    ? "使用当前 Edge（高级，需要浏览器连接组件）"
+    : "RoleFlow 专用 Edge（推荐）";
   return {
     browser_unavailable: `${label} 未连接，请确认浏览器和连接服务均已就绪。`,
     boss_tab_missing: `请在${label}保留一个 BOSS 搜索页和一个 BOSS 沟通页，并放在同一窗口。`,

@@ -118,11 +118,30 @@ async function main() {
     const originalInspectInheritedSearchPage = BossSiteAdapter.prototype.inspectInheritedSearchPage;
     const diagnosticEvents = [];
     const browserFactoryCalls = [];
+    const fixtureTabs = [
+      {
+        id: 7101,
+        url: "https://www.zhipin.com/web/geek/jobs",
+        windowId: 77,
+        active: false
+      },
+      {
+        id: 7102,
+        url: "https://www.zhipin.com/web/geek/chat",
+        windowId: 77,
+        active: false
+      }
+    ];
     try {
-      BossSiteAdapter.prototype.preflight = async () => ({
-        tabId: "fixture-search-tab",
-        isSearchPage: true
-      });
+      BossSiteAdapter.prototype.preflight = async ({ tabId }) => {
+        const tab = fixtureTabs.find((item) => item.id === tabId);
+        if (!tab) throw new Error(`unexpected fixture tab: ${tabId}`);
+        return {
+          tabId: tab.id,
+          url: tab.url,
+          isSearchPage: tab.id === fixtureTabs[0].id
+        };
+      };
       BossSiteAdapter.prototype.inspectInheritedSearchPage = async () => ({
         url: "https://www.zhipin.com/web/geek/jobs?city=100010000&industry=100020&query=raw-secret-query",
         catalog: { fields: {} },
@@ -147,7 +166,11 @@ async function main() {
         cdpPort: 9222,
         browserFactory(input) {
           browserFactoryCalls.push(input);
-          return {};
+          return {
+            async listTabs() {
+              return fixtureTabs.map((tab) => ({ ...tab }));
+            }
+          };
         },
         logger: {
           info(event, fields = {}) { diagnosticEvents.push({ event, fields }); },

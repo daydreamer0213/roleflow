@@ -9,6 +9,7 @@ const { PRODUCT_POLICY_VERSION } = require("../src/core/product_policy");
 const root = path.resolve(__dirname, "..");
 const smokeDir = path.join(root, ".runtime", "smoke");
 const dbPath = path.join(smokeDir, `flow-${Date.now()}.sqlite`);
+const browserProfilePath = path.join(smokeDir, `flow-browser-profile-${process.pid}-${Date.now()}`);
 let dashboard = null;
 let success = false;
 const generatedReports = [];
@@ -52,7 +53,13 @@ const dbHandles = [];
     "--db",
     dbPath,
     "--port",
-    String(port)
+    String(port),
+    "--browser",
+    "portable",
+    "--cdp-port",
+    "9222",
+    "--browser-profile",
+    browserProfilePath
   ], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 
   const baseUrl = `http://127.0.0.1:${port}`;
