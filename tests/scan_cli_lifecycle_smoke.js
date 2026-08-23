@@ -81,7 +81,7 @@ async function fixedBossScanPreflightSmoke() {
   const fixedTabs = [
     { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
     { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
-    { id: 90, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs/other" }
+    { id: 90, windowId: 7, url: "https://example.invalid/notes" }
   ];
   const calls = [];
   let currentTabs = fixedTabs;
@@ -168,6 +168,66 @@ async function fixedBossScanPreflightSmoke() {
     );
   }
   assert.deepStrictEqual(blockedActions, { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 });
+
+  for (const windowId of [7, 8]) {
+    await assert.rejects(
+      () => preflightBossScanBrowser({
+        browserMode: "edge",
+        browser: {
+          listTabs: async () => [...fixedTabs, {
+            id: `unmanaged-boss-${windowId}`,
+            windowId,
+            url: "https://www.zhipin.com/job_detail/unmanaged.html"
+          }]
+        },
+        adapter
+      }),
+      (error) => error.code === "BOSS_TAB_REQUIRED"
+    );
+  }
+
+  let multipleVisibleActions = 0;
+  await assert.rejects(() => runWithBoundBossScanBrowser({
+    browserMode: "edge",
+    browser: {
+      listTabs: async () => fixedTabs.map((tab) => tab.id === 31 || tab.id === 32
+        ? { ...tab, active: true }
+        : tab)
+    },
+    adapter,
+    action: async () => { multipleVisibleActions += 1; }
+  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  assert.strictEqual(multipleVisibleActions, 0);
+
+  let zeroVisibleActions = 0;
+  await runWithBoundBossScanBrowser({
+    browserMode: "edge",
+    browser: {
+      listTabs: async () => fixedTabs.map((tab) => ({ ...tab, active: false }))
+    },
+    adapter,
+    action: async () => { zeroVisibleActions += 1; }
+  });
+  assert.strictEqual(zeroVisibleActions, 1);
+
+  let visibleDriftLists = 0;
+  let visibleDriftActions = 0;
+  await assert.rejects(() => runWithBoundBossScanBrowser({
+    browserMode: "edge",
+    browser: {
+      async listTabs() {
+        visibleDriftLists += 1;
+        return fixedTabs.map((tab) => tab.id === 31
+          ? { ...tab, active: visibleDriftLists === 1 }
+          : tab.id === 32
+            ? { ...tab, active: visibleDriftLists !== 1 }
+            : tab);
+      }
+    },
+    adapter,
+    action: async () => { visibleDriftActions += 1; }
+  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  assert.strictEqual(visibleDriftActions, 0);
 
   await assert.rejects(
     () => preflightBossScanBrowser({

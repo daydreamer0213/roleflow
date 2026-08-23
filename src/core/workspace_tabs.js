@@ -41,9 +41,10 @@ function searchTabChanged(message, tab = null) {
 }
 
 function assertBossOperatorTabs(tabs = []) {
+  const bossTabs = tabs.filter(isBossTab);
   const searchTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
   const communicationTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
-  if (searchTabs.length !== 1 || communicationTabs.length !== 1) {
+  if (bossTabs.length !== 2 || searchTabs.length !== 1 || communicationTabs.length !== 1) {
     throw workspaceError(
       "BOSS_TAB_REQUIRED",
       "浏览器必须正好保留一个 BOSS 搜索页和一个 BOSS 沟通页。"
@@ -80,7 +81,12 @@ async function inspectBossOperatorTabs({
   if (!browser || typeof browser.listTabs !== "function" || typeof inspectTab !== "function") {
     throw new TypeError("inspectBossOperatorTabs requires browser.listTabs() and inspectTab()");
   }
-  const fixed = assertBossOperatorTabs(await browser.listTabs());
+  const initialTabs = await browser.listTabs();
+  const fixed = assertBossOperatorTabs(initialTabs);
+  const initialVisibleIds = visibleIdsInWindow(initialTabs, fixed.windowId);
+  if (initialVisibleIds.length > 1) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "固定 BOSS 标签页窗口同时出现多个前台标签页。");
+  }
   assertExpectedBossOperatorTabIds(fixed, { expectedSearchTabId, expectedCommunicationTabId });
   const communicationState = await inspectTab(fixed.communicationTab.id);
   assertLiveBossOperatorState(communicationState, {
@@ -118,6 +124,9 @@ async function inspectBossOperatorTabs({
   if (!sameBrowserTabId(refreshed.communicationTab.id, fixed.communicationTab.id)) {
     throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed during preflight.");
   }
+  if (!sameTabIdLists(visibleIdsInWindow(refreshedTabs, refreshed.windowId), initialVisibleIds)) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "固定 BOSS 标签页检查期间前台标签页发生变化。");
+  }
   assertExpectedBossOperatorTabIds(refreshed, { expectedSearchTabId, expectedCommunicationTabId });
   return {
     ...refreshed,
@@ -141,6 +150,9 @@ function assertBossRuntimeTabBindings(tabs = [], {
   expectedSearchTabId,
   expectedCommunicationTabId
 } = {}) {
+  if (tabs.filter(isBossTab).length !== 2) {
+    throw workspaceError("BOSS_TAB_REQUIRED", "运行期间只能保留固定的 BOSS 搜索页和沟通页。");
+  }
   const searchTab = tabs.find((tab) => sameBrowserTabId(tab.id, expectedSearchTabId));
   if (!searchTab) {
     throw searchTabChanged("BOSS fixed search tab changed during runtime.");
@@ -154,6 +166,9 @@ function assertBossRuntimeTabBindings(tabs = [], {
   }
   if (searchTab.windowId !== communicationTab.windowId) {
     throw workspaceError("BOSS_WINDOW_MISMATCH", "BOSS fixed operator tabs moved to different windows during runtime.");
+  }
+  if (visibleIdsInWindow(tabs, searchTab.windowId).length > 1) {
+    throw workspaceError("BROWSER_COMMAND_FAILED", "固定 BOSS 标签页窗口同时出现多个前台标签页。");
   }
   if (!/^\/web\/geek\/jobs\/?$/i.test(bossPath(searchTab))
     && !/^\/job_detail\/[^/?#]+\.html$/i.test(bossPath(searchTab))) {
@@ -224,7 +239,6 @@ async function prepareWorkspaceTabs({
       status: readiness.status
     });
   }
-
   const baseline = workspaceBaseline(tabs);
   const initial = assertDedicatedTopology(tabs, dashboardUrl);
   if (visibleIdsInWindow(tabs, initial.guidanceTab.windowId).length > 1) {

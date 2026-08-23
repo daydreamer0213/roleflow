@@ -1431,7 +1431,7 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
   const tabs = [
     { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
     { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" },
-    { id: 33, windowId: 7, url: "https://www.zhipin.com/job_detail/other-boss-page.html" }
+    { id: 33, windowId: 7, url: "https://example.invalid/notes" }
   ];
   const originalPreflight = boss.BossSiteAdapter.prototype.preflight;
   const originalInspect = boss.BossSiteAdapter.prototype.inspectInheritedSearchPage;

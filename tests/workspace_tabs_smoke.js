@@ -70,8 +70,8 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   const inspectionCalls = [];
   const strictInspection = await inspectBossOperatorTabs({
     browser: fakeBrowser([boss, fixedCommunication, {
-      id: "unrelated-boss-detail",
-      url: "https://www.zhipin.com/web/geek/jobs/detail",
+      id: "unrelated-non-boss",
+      url: "https://example.invalid/notes",
       windowId: 99
     }]),
     inspectTab: async (tabId) => {
@@ -95,6 +95,61 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     communicationState: { tabId: fixedCommunication.id, url: fixedCommunication.url, isSearchPage: false },
     windowId: 42
   });
+  for (const unmanagedBoss of [
+    { id: "same-window-boss-detail", url: "https://www.zhipin.com/job_detail/extra.html", windowId: 42 },
+    { id: "other-window-boss-detail", url: "https://www.zhipin.com/job_detail/extra.html", windowId: 99 }
+  ]) {
+    assert.throws(
+      () => assertBossOperatorTabs([boss, fixedCommunication, unmanagedBoss]),
+      (error) => error.code === "BOSS_TAB_REQUIRED"
+    );
+    let unmanagedInspectionCalls = 0;
+    await assert.rejects(() => inspectBossOperatorTabs({
+      browser: fakeBrowser([boss, fixedCommunication, unmanagedBoss]),
+      inspectTab: async () => { unmanagedInspectionCalls += 1; }
+    }), (error) => error.code === "BOSS_TAB_REQUIRED");
+    assert.strictEqual(unmanagedInspectionCalls, 0);
+  }
+
+  let multipleVisibleInspectionCalls = 0;
+  await assert.rejects(() => inspectBossOperatorTabs({
+    browser: fakeBrowser([
+      { ...boss, active: true },
+      { ...fixedCommunication, active: true }
+    ]),
+    inspectTab: async () => { multipleVisibleInspectionCalls += 1; }
+  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  assert.strictEqual(multipleVisibleInspectionCalls, 0);
+
+  const zeroVisibleInspectionCalls = [];
+  await inspectBossOperatorTabs({
+    browser: fakeBrowser([
+      { ...boss, active: false },
+      { ...fixedCommunication, active: false }
+    ]),
+    inspectTab: async (tabId) => {
+      zeroVisibleInspectionCalls.push(tabId);
+      return tabId === fixedCommunication.id
+        ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+        : { tabId, url: boss.url, isSearchPage: true };
+    }
+  });
+  assert.deepStrictEqual(zeroVisibleInspectionCalls, [fixedCommunication.id, boss.id]);
+
+  let visibleDriftListCalls = 0;
+  await assert.rejects(() => inspectBossOperatorTabs({
+    browser: {
+      async listTabs() {
+        visibleDriftListCalls += 1;
+        return visibleDriftListCalls === 1
+          ? [{ ...boss, active: true }, { ...fixedCommunication, active: false }]
+          : [{ ...boss, active: false }, { ...fixedCommunication, active: true }];
+      }
+    },
+    inspectTab: async (tabId) => tabId === fixedCommunication.id
+      ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+      : { tabId, url: boss.url, isSearchPage: true }
+  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
   const communicationLostCalls = [];
   await assert.rejects(
     () => inspectBossOperatorTabs({
@@ -210,7 +265,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
         windowId: 99
       }
     ]),
-    "unrelated ordinary Edge windows must not invalidate the fixed BOSS pair"
+    "unrelated non-BOSS Edge windows must not invalidate the fixed BOSS pair"
   );
   const dashboard = {
     id: "roleflow-dashboard",
