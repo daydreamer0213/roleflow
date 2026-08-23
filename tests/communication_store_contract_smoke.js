@@ -229,6 +229,28 @@ function runOwnerContract() {
     ));
     assert.deepStrictEqual(mismatch.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
     assert.deepStrictEqual(tableSnapshot(db), beforeModeMismatch, "binding mode mismatch must not write any table");
+    const portableSucceededBatch = createCommunicationBatch(db, {
+      planId: seeded.planId,
+      jobIds: [seeded.ids[11]],
+      browserMode: "portable",
+      now: "2030-01-02T08:00:07.000Z"
+    });
+    bindCommunicationBatchRuntime(db, {
+      batchId: portableSucceededBatch.id,
+      browser: portableBinding({ searchTabId: "CDP-succeeded-search", messageTabId: "CDP-succeeded-chat" })
+    });
+    assertClickedTerminalRebindBlocked(db, portableSucceededBatch, "succeeded");
+    const portableStoppedBatch = createCommunicationBatch(db, {
+      planId: seeded.planId,
+      jobIds: [seeded.ids[12]],
+      browserMode: "portable",
+      now: "2030-01-02T08:00:07.000Z"
+    });
+    bindCommunicationBatchRuntime(db, {
+      batchId: portableStoppedBatch.id,
+      browser: portableBinding({ searchTabId: "CDP-stopped-search", messageTabId: "CDP-stopped-chat" })
+    });
+    assertClickedTerminalRebindBlocked(db, portableStoppedBatch, "stopped");
     const items = listCommunicationBatchItems(db, batch.id);
     assert.strictEqual(items.length, 8);
     assert.deepStrictEqual(Object.keys(items[0]).sort(), [
@@ -530,7 +552,7 @@ function seed(db, prefix) {
   const planId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run(profileId, `Plan ${prefix}`, "{}", now, now).lastInsertRowid);
   const scanBatchId = createBatch(db, "boss", prefix, `${prefix} communication store contract`, { profileId, searchPlanId: planId });
-  const ids = Array.from({ length: 12 }, (_, index) => upsertJob(db, job(`${prefix}-${index}`), scanBatchId));
+  const ids = Array.from({ length: 13 }, (_, index) => upsertJob(db, job(`${prefix}-${index}`), scanBatchId));
   const invalidUrlId = upsertJob(db, job(`${prefix}-bad-url`, { url: "https://evil.example/job_detail/not-boss.html" }), scanBatchId);
   const appliedId = upsertJob(db, job(`${prefix}-applied`), scanBatchId);
   return { profileId, planId, ids, invalidUrlId, appliedId };
@@ -580,6 +602,22 @@ function portableBinding(overrides = {}) {
     bindingGeneration: 1,
     ...overrides
   };
+}
+
+function assertClickedTerminalRebindBlocked(db, batch, status) {
+  const item = listCommunicationBatchItems(db, batch.id)[0];
+  db.prepare("UPDATE communication_batch_items SET status = ?, click_count = 1 WHERE id = ?").run(status, item.id);
+  const before = getCommunicationBatch(db, batch.id).runtime.browser;
+  const blocked = observeTransactions(db, () => assert.throws(
+    () => bindCommunicationBatchRuntime(db, {
+      batchId: batch.id,
+      browser: { ...before, searchScrollTop: before.searchScrollTop + 1 },
+      rebind: true
+    }),
+    (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED"
+  ));
+  assert.deepStrictEqual(blocked.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
+  assert.deepStrictEqual(getCommunicationBatch(db, batch.id).runtime.browser, before);
 }
 
 function observeTransactions(db, action) {

@@ -206,6 +206,7 @@ let noDbPathServer;
     deps: { async inspectAndBindCommunicationBrowser() { portableBlockedInspections += 1; } }
   }), (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409);
   assert.strictEqual(portableBlockedInspections, 0);
+  await clickedTerminalPortableRebindGuardSmoke(db, fixture);
   recoveryFloorCommunicationGuardSmoke(db, fixture);
   const directResolution = createCommunicationBatch({
     db,
@@ -471,6 +472,8 @@ function seed(database) {
     rebindJobId: upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId),
     portableRebindJobId: upsertJob(database, job("portable-rebind", { title: "Portable rebind role" }), scanBatchId),
     portableBlockedRebindJobId: upsertJob(database, job("portable-rebind-blocked", { title: "Portable blocked rebind role" }), scanBatchId),
+    portableSucceededRebindJobId: upsertJob(database, job("portable-rebind-succeeded", { title: "Portable succeeded rebind role" }), scanBatchId),
+    portableStoppedRebindJobId: upsertJob(database, job("portable-rebind-stopped", { title: "Portable stopped rebind role" }), scanBatchId),
     directResolveJobId: upsertJob(database, job("direct-resolve", { title: "Direct resolve role" }), scanBatchId),
     mismatchFirstJobId: upsertJob(database, job("mismatch-first", { title: "Mismatch first role" }), scanBatchId),
     mismatchSecondJobId: upsertJob(database, job("mismatch-second", { title: "Mismatch second role" }), scanBatchId),
@@ -621,6 +624,58 @@ function transitionToAmbiguous(database, batchId) {
   transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "verified", status: "click_dispatched", audit: clickAudit(item) });
   return transitionCommunicationItem(database, { itemId: item.id, expectedStatus: "click_dispatched", status: "ambiguous" });
+}
+
+async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
+  for (const [status, jobId] of [
+    ["succeeded", fixture.portableSucceededRebindJobId],
+    ["stopped", fixture.portableStoppedRebindJobId]
+  ]) {
+    const created = createCommunicationBatch({
+      db: database,
+      input: { planId: fixture.planId, jobIds: [jobId], browserMode: "portable" }
+    });
+    bindCommunicationBatchRuntime(database, {
+      batchId: created.batch.id,
+      browser: browserBinding({
+        mode: "portable",
+        windowId: 17,
+        searchTabId: `CDP-${status}-search`,
+        messageTabId: `CDP-${status}-chat`
+      })
+    });
+    setCommunicationBatchStatus(database, { batchId: created.batch.id, status: "running" });
+    setCommunicationBatchStatus(database, { batchId: created.batch.id, status: "interrupted" });
+    const ambiguous = transitionToAmbiguous(database, created.batch.id);
+    resolveAmbiguousCommunication({
+      db: database,
+      input: {
+        batchId: created.batch.id,
+        itemId: ambiguous.id,
+        status,
+        evidenceNote: `Manual ${status} fixture evidence.`
+      }
+    });
+    const before = getCommunicationBatch(database, created.batch.id).runtime.browser;
+    let inspections = 0;
+    await assert.rejects(() => rebindCommunicationBrowser({
+      db: database,
+      input: { batchId: created.batch.id },
+      deps: {
+        async inspectAndBindCommunicationBrowser() {
+          inspections += 1;
+          return bindCommunicationBatchRuntime(database, {
+            batchId: created.batch.id,
+            browser: { ...before, searchScrollTop: before.searchScrollTop + 1 },
+            rebind: true
+          });
+        }
+      }
+    }), (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409);
+    assert.strictEqual(inspections, 0, `${status} clickCount=1 must stop before browser inspection`);
+    assert.deepStrictEqual(getCommunicationBatch(database, created.batch.id).runtime.browser, before);
+    assert.strictEqual(listCommunicationBatchItems(database, created.batch.id)[0].clickCount, 1);
+  }
 }
 
 function pickBatchState(batch) {

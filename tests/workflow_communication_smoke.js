@@ -268,6 +268,17 @@ async function workflowCommunicationSmoke() {
       (error) => error.code === "COMMUNICATION_PORTABLE_BROWSER_POLICY_INVALID"
     );
     assert.throws(
+      () => resolveCommunicationBrowserAuthority({
+        ...batch,
+        browserMode: "edge",
+        policySnapshot: {
+          ...batch.policySnapshot,
+          browser: { mode: "portable", cdpPort: 9222 }
+        }
+      }, { browser: "edge" }),
+      (error) => error.code === "COMMUNICATION_BROWSER_POLICY_INVALID"
+    );
+    assert.throws(
       () => resolveCommunicationBrowserAuthority(batch, {
         browser: "portable",
         "cdp-port": "9222.0"

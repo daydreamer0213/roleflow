@@ -950,15 +950,29 @@ async function portableDashboardAuthoritySmoke() {
       id: "portable-dashboard-workflow-mismatch",
       planId: fixture.planId,
       localDay: "2098-02-01",
-      planner: { browserMode: "edge", acquisitionMode: "inherited" }
+      planner: { browserMode: "portable", cdpPort: 9223, acquisitionMode: "inherited" }
     });
-    const beforeWorkflowMismatch = communicationAuthorityWriteSnapshot(database);
+    const beforeWorkflowPortMismatch = communicationAuthorityWriteSnapshot(database);
     await expectApiError(portableBaseUrl, "/api/communication-batch", {
       workflowRunId: mismatchedWorkflow.id,
       planId: fixture.planId,
       jobIds: portableWorkflowJobId
     }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
-    assert.deepStrictEqual(communicationAuthorityWriteSnapshot(database), beforeWorkflowMismatch);
+    assert.deepStrictEqual(communicationAuthorityWriteSnapshot(database), beforeWorkflowPortMismatch);
+    assert.strictEqual(getWorkflowRun(database, mismatchedWorkflow.id).communicationBatchId, null);
+
+    database.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?").run(JSON.stringify({
+      ...mismatchedWorkflow.planner,
+      browserMode: "edge",
+      cdpPort: null
+    }), mismatchedWorkflow.id);
+    const beforeWorkflowModeMismatch = communicationAuthorityWriteSnapshot(database);
+    await expectApiError(portableBaseUrl, "/api/communication-batch", {
+      workflowRunId: mismatchedWorkflow.id,
+      planId: fixture.planId,
+      jobIds: portableWorkflowJobId
+    }, "DASHBOARD_BROWSER_AUTHORITY_MISMATCH", 409);
+    assert.deepStrictEqual(communicationAuthorityWriteSnapshot(database), beforeWorkflowModeMismatch);
     assert.strictEqual(getWorkflowRun(database, mismatchedWorkflow.id).communicationBatchId, null);
 
     database.prepare("UPDATE workflow_runs SET planner_json = ? WHERE id = ?").run(JSON.stringify({

@@ -418,8 +418,6 @@ function resolveCommunicationBrowserAuthority(batch, args = {}) {
   if (browserMode !== batchMode) {
     throw new Error(`沟通批次固定使用 ${batchMode}，不能切换为 ${browserMode}。`);
   }
-  if (batchMode !== "portable") return { ...args, browser: browserMode };
-
   const policySnapshot = batch?.policySnapshot;
   const hasBrowserPolicy = Boolean(
     policySnapshot
@@ -427,13 +425,22 @@ function resolveCommunicationBrowserAuthority(batch, args = {}) {
     && Object.prototype.hasOwnProperty.call(policySnapshot, "browser")
   );
   const browserPolicy = hasBrowserPolicy ? policySnapshot.browser : null;
-  const frozenPort = hasBrowserPolicy ? browserPolicy?.cdpPort : 9222;
   if (hasBrowserPolicy && (
     !browserPolicy
     || typeof browserPolicy !== "object"
     || Array.isArray(browserPolicy)
     || String(browserPolicy.mode || "").trim().toLowerCase() !== batchMode
-    || !Number.isInteger(browserPolicy.cdpPort)
+  )) {
+    const code = batchMode === "portable"
+      ? "COMMUNICATION_PORTABLE_BROWSER_POLICY_INVALID"
+      : "COMMUNICATION_BROWSER_POLICY_INVALID";
+    throw codedError(code, `[${code}] 沟通批次缺少有效的冻结浏览器策略。`);
+  }
+  if (batchMode !== "portable") return { ...args, browser: browserMode };
+
+  const frozenPort = hasBrowserPolicy ? browserPolicy?.cdpPort : 9222;
+  if (hasBrowserPolicy && (
+    !Number.isInteger(browserPolicy.cdpPort)
     || browserPolicy.cdpPort !== 9222
   )) {
     throw codedError(
