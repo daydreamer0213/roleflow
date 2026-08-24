@@ -10,6 +10,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 if ($BrowserMode -eq "edge" -and ($PSBoundParameters.ContainsKey('CdpPort') -or $PSBoundParameters.ContainsKey('ProfileDir'))) {
   throw "WORKSPACE_EDGE_BROWSER_AUTHORITY_INVALID: 使用当前 Edge（高级，需要浏览器连接组件）不能携带 RoleFlow 专用 Edge（推荐）的端口或配置目录。"
 }

@@ -48,7 +48,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browser.state.createCalls.push({ openerTabId, url });
     const next = browser.state.createdTabs.shift();
     if (!next) throw new Error("unexpected createTab");
-    const tab = { ...next, url };
+    const tab = { ...next, url: next.resolvedUrl || url };
     if (!next.omitFromList) browser.state.tabs.push(tab);
     return next.returnId ?? next.id;
   };
@@ -344,6 +344,24 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   ]);
   assert.deepStrictEqual(bootstrapped.state.frontCalls, ["CDP-dashboard"]);
 
+  const redirectedDashboard = dedicatedBrowser([{ ...boss, active: true }], [
+    { id: "CDP-chat-redirect", windowId: 42, active: false },
+    {
+      id: "CDP-dashboard-redirect",
+      windowId: 42,
+      active: false,
+      resolvedUrl: "http://127.0.0.1:8787/settings?firstRun=1"
+    }
+  ]);
+  const redirectedResult = await prepareWorkspaceTabs({
+    browser: redirectedDashboard,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(redirectedResult.dashboardTabId, "CDP-dashboard-redirect");
+  assert.deepStrictEqual(redirectedDashboard.state.frontCalls, ["CDP-dashboard-redirect"]);
+
   const invalidTopologies = [
     [{ ...boss, active: true }, { ...boss, id: "duplicate-search", active: false }],
     [{ ...boss, active: true }, fixedCommunication, { ...fixedCommunication, id: "duplicate-chat" }],
@@ -444,6 +462,42 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     "bootstrap cleanup closes only invocation-owned tabs in reverse order"
   );
   assert.deepStrictEqual(foregroundDashboard.state.frontCalls, []);
+
+  const transientCleanup = dedicatedBrowser([{ ...boss, active: true }], [
+    { id: "CDP-chat-transient-cleanup", windowId: 42, active: false },
+    {
+      id: "CDP-dashboard-wrong-origin",
+      windowId: 42,
+      active: false,
+      resolvedUrl: "http://127.0.0.1:9876/"
+    }
+  ]);
+  const listTransientCleanup = transientCleanup.listTabs.bind(transientCleanup);
+  transientCleanup.listTabs = async () => {
+    if (transientCleanup.state.listCalls === 4) {
+      transientCleanup.state.listCalls += 1;
+      const error = new Error("fixture closed target is still disappearing");
+      error.code = "BROWSER_DISCONNECTED";
+      throw error;
+    }
+    return listTransientCleanup();
+  };
+  let transientPrimaryError = null;
+  await assert.rejects(() => prepareWorkspaceTabs({
+    browser: transientCleanup,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    inspectReadiness: async () => ({ status: "ready" })
+  }), (error) => {
+    transientPrimaryError = error;
+    return error.code === "WORKSPACE_DASHBOARD_TAB_REQUIRED";
+  });
+  assert.deepStrictEqual(
+    transientCleanup.state.closeCalls,
+    ["CDP-dashboard-wrong-origin", "CDP-chat-transient-cleanup"]
+  );
+  assert.strictEqual(transientPrimaryError.cleanupError, undefined);
+  assert.doesNotMatch(transientPrimaryError.message, /清理失败/);
 
   const failedFocus = dedicatedBrowser([
     { ...boss, active: true }, fixedCommunication, { ...dashboard, active: false }

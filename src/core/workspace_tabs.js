@@ -199,7 +199,7 @@ function isDashboardTab(tab, dashboardUrl) {
   try {
     const actual = new URL(tab?.url || "");
     const expected = new URL(dashboardUrl);
-    return actual.origin === expected.origin && actual.pathname === expected.pathname;
+    return actual.origin === expected.origin;
   } catch {
     return false;
   }
@@ -402,7 +402,7 @@ async function cleanupCreatedTabs(browser, createdIds, baseline, primaryError) {
     }
   }
   try {
-    const restored = workspaceBaseline(await browser.listTabs());
+    const restored = workspaceBaseline(await listTabsAfterCloseSettles(browser));
     if (!sameTabIdLists(restored.ids, baseline.ids)
       || !sameTabIdLists(restored.visibleIds, baseline.visibleIds)) {
       throw workspaceError("BROWSER_COMMAND_FAILED", "启动清理后无法重证原始标签页基线。");
@@ -410,6 +410,16 @@ async function cleanupCreatedTabs(browser, createdIds, baseline, primaryError) {
   } catch (error) {
     primaryError.message = `${primaryError.message}\n\n清理失败：${error.message || error}`;
     primaryError.cleanupError = error;
+  }
+}
+
+async function listTabsAfterCloseSettles(browser) {
+  try {
+    return await browser.listTabs();
+  } catch (error) {
+    if (error?.code !== "BROWSER_DISCONNECTED") throw error;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return browser.listTabs();
   }
 }
 

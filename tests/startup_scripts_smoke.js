@@ -77,6 +77,7 @@ async function main() {
   testStartupIdentityHelpers();
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
+  await testInstalledLauncherPreservesUtf8Output();
   testPortableModeRejectsInvalidCdpPort();
   testEdgeModeRejectsDedicatedAuthority();
   testDashboardCommandRejectsMissingOrConflictingAuthority();
@@ -96,6 +97,10 @@ function createProjectFixture() {
   fs.copyFileSync(
     path.join(root, "scripts", "start-portable-edge.ps1"),
     path.join(projectRoot, "scripts", "start-portable-edge.ps1")
+  );
+  fs.copyFileSync(
+    path.join(root, "scripts", "launch-installed.ps1"),
+    path.join(projectRoot, "scripts", "launch-installed.ps1")
   );
   const identityHelper = path.join(root, "scripts", "lib", "startup-identity.ps1");
   if (fs.existsSync(identityHelper)) {
@@ -207,6 +212,61 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.deepStrictEqual(edgeTabs.args.slice(edgeTabs.args.indexOf("--browser")), ["--browser", "edge"]);
   await stopRegisteredProcess(edgeDashboard.pid);
   await waitForPortClosed(dashboardPort);
+}
+
+async function testInstalledLauncherPreservesUtf8Output() {
+  const launcherPath = path.join(projectRoot, "scripts", "launch-installed.ps1");
+  const launcherSource = fs.readFileSync(launcherPath, "utf8");
+  fs.writeFileSync(
+    launcherPath,
+    launcherSource.replace("[int]$Port = 8787", `[int]$Port = ${dashboardPort}`),
+    "utf8"
+  );
+  const portableEdgePath = path.join(projectRoot, "scripts", "start-portable-edge.ps1");
+  const portableEdgeSource = fs.readFileSync(portableEdgePath, "utf8");
+  fs.writeFileSync(
+    portableEdgePath,
+    "param([int]$Port, [string]$ProfileDir)\r\nexit 0\r\n",
+    "utf8"
+  );
+  const launcherLog = path.join(projectRoot, ".runtime", "logs", "launcher.log");
+  fs.rmSync(launcherLog, { force: true });
+  const recordPath = path.join(tempRoot, "launcher-unicode.jsonl");
+  let dashboard = null;
+  try {
+    const result = runPowerShellUnicode([
+      "-File", launcherPath
+    ], {
+      cwd: outsideCwd,
+      env: fixtureEnv({
+        ROLEFLOW_STARTUP_RECORD: recordPath,
+        ROLEFLOW_STARTUP_UNICODE_PROBE: "1"
+      }),
+      timeout: 30000
+    });
+    if (fs.existsSync(recordPath)) {
+      dashboard = readJsonLines(recordPath).find((item) => item.command === "dashboard") || null;
+    }
+    if (dashboard) {
+      registerProcess(dashboard.pid, {
+        kind: "dashboard",
+        expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+      });
+    }
+    assert.strictEqual(result.status, 0, combinedOutput(result));
+    assert(dashboard, "launcher unicode probe did not start the fixture Dashboard");
+    assert.match(
+      fs.readFileSync(launcherLog, "utf8"),
+      /后台标签页创建后未能安全确认。/,
+      "installed launcher must preserve UTF-8 output from the workspace child process"
+    );
+  } finally {
+    fs.writeFileSync(portableEdgePath, portableEdgeSource, "utf8");
+    if (dashboard && processRegistry.has(Number(dashboard.pid))) {
+      await stopRegisteredProcess(dashboard.pid);
+      await waitForPortClosed(dashboardPort);
+    }
+  }
 }
 
 function testPortableModeRejectsInvalidCdpPort() {
@@ -652,7 +712,12 @@ function combinedOutput(result) {
 }
 
 function decodeWindowsConsoleOutput(value) {
-  return Buffer.isBuffer(value) ? new TextDecoder("gb18030").decode(value) : String(value || "");
+  if (!Buffer.isBuffer(value)) return String(value || "");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(value);
+  } catch {
+    return new TextDecoder("gb18030").decode(value);
+  }
 }
 
 function normalizePath(value) {
@@ -950,6 +1015,10 @@ if (record) {
     projectRoot,
     scriptPath: __filename
   }) + "\n");
+}
+if (command === "workspace-tabs" && process.env.ROLEFLOW_STARTUP_UNICODE_PROBE) {
+  console.log("后台标签页创建后未能安全确认。");
+  process.exit(0);
 }
 if (command !== "dashboard") process.exit(0);
 const browserIndex = args.indexOf("--browser");
