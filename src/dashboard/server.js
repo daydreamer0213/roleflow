@@ -452,6 +452,7 @@ function createDashboardServer({
   messageDiscoveryDependencies = {},
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
+  browserSupervisor = null,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync
@@ -627,11 +628,34 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/health") {
         return sendJson(res, 200, {
           ok: true,
+          applicationStatus: "ready",
           logging: "enabled",
           projectRoot: path.resolve(root),
           pid: process.pid,
-          browserAuthority: frozenBrowserAuthority
+          browserAuthority: frozenBrowserAuthority,
+          browserRuntime: browserSupervisor?.getSnapshot?.() || null
         });
+      }
+      if (req.method === "GET" && url.pathname === "/api/runtime-status") {
+        return sendJson(res, 200, {
+          application: { status: "ready", ready: true },
+          browser: browserSupervisor?.getSnapshot?.() || null
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/api/runtime/browser/recover") {
+        await readBody(req);
+        if (!browserSupervisor?.ensure) {
+          throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器由高级连接模式管理，不能从工作台启动。", { statusCode: 409 });
+        }
+        const address = dashboardServer.address();
+        if (!address || typeof address === "string") {
+          throw appError("DASHBOARD_RUNTIME_ADDRESS_UNAVAILABLE", "RoleFlow 工作台地址尚未就绪。", { statusCode: 503 });
+        }
+        const browser = await browserSupervisor.ensure({
+          dashboardUrl: `http://127.0.0.1:${address.port}/`,
+          reason: "user_recovery"
+        });
+        return sendJson(res, 200, { browser });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
         const authority = resolveDashboardWorkflowBrowser({
@@ -733,17 +757,20 @@ function createDashboardServer({
   });
   const closeHttpServer = dashboardServer.close.bind(dashboardServer);
   dashboardServer.close = (callback) => {
-    const discoveryCleanup = messageDiscovery.close();
+    const cleanups = [
+      Promise.resolve().then(() => messageDiscovery.close()),
+      Promise.resolve().then(() => browserSupervisor?.close?.())
+    ];
     return closeHttpServer((serverError) => {
-      Promise.resolve(discoveryCleanup).then(
-        () => callback?.(serverError),
-        (cleanupError) => {
-          logger.warn("message_discovery_shutdown_cleanup_failed", {
-            errorCode: String(cleanupError?.code || "MESSAGE_DISCOVERY_CLEANUP_FAILED")
+      Promise.allSettled(cleanups).then((results) => {
+        const cleanupError = results.find((result) => result.status === "rejected")?.reason || null;
+        if (cleanupError) {
+          logger.warn("dashboard_shutdown_cleanup_failed", {
+            errorCode: String(cleanupError?.code || "DASHBOARD_CLEANUP_FAILED")
           });
-          callback?.(serverError || cleanupError);
         }
-      );
+        callback?.(serverError || cleanupError);
+      });
     });
   };
   return dashboardServer;

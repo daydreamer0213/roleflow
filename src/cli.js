@@ -5,6 +5,8 @@ const os = require("os");
 const { loadConfigs } = require("./config");
 const { EdgeControlAdapter } = require("./adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
+const { createPortableEdgeRuntime } = require("./adapters/browser/portable_edge_runtime");
+const { createBrowserSupervisor } = require("./core/browser_supervisor");
 const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("./adapters/sites/boss");
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
@@ -2628,6 +2630,23 @@ function rebuildReport(db, args = {}) {
 function startDashboard(db, args) {
   const port = Number(args.port || 8787);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("Invalid --port");
+  let browserSupervisor = null;
+  if (args.browser === "portable" && args["no-browser"] !== true && args["force-mock"] !== true) {
+    const profilePath = String(args["browser-profile"] || "").trim();
+    if (!profilePath || !path.isAbsolute(profilePath)) {
+      throw new Error("RoleFlow 专用 Edge 需要绝对浏览器配置目录。");
+    }
+    const browserRuntime = createPortableEdgeRuntime({
+      projectRoot: ROOT,
+      profilePath,
+      cdpPort: Number(args["cdp-port"] || 9222)
+    });
+    browserSupervisor = createBrowserSupervisor({
+      ensureBrowser: browserRuntime.ensure,
+      inspectBrowser: browserRuntime.inspect,
+      logger
+    });
+  }
   const server = createDashboardServer({
     db,
     dbPath: path.resolve(args.db || DEFAULT_DB),
@@ -2637,6 +2656,7 @@ function startDashboard(db, args) {
       cdpPort: args["cdp-port"],
       profilePath: args["browser-profile"] || ""
     },
+    browserSupervisor,
     modelConfig: loadConfigs(ROOT).model,
     allowOfflineMock: args["allow-offline-mock"] === true,
     forceMock: args["force-mock"] === true
@@ -2644,7 +2664,9 @@ function startDashboard(db, args) {
   logger.info("dashboard_starting", { port, dbPath: path.resolve(args.db || DEFAULT_DB) });
   installDashboardSignalHandlers({ server, db, logger });
   server.listen(port, "127.0.0.1", () => {
-    console.log(`Dashboard: http://127.0.0.1:${port}/`);
+    const dashboardUrl = `http://127.0.0.1:${port}/`;
+    if (browserSupervisor) void browserSupervisor.start({ dashboardUrl, reason: "dashboard_started" });
+    console.log(`Dashboard: ${dashboardUrl}`);
     console.log("只写本地 SQLite，不会自动投递或发消息。按 Ctrl+C 停止。");
   });
   return server;

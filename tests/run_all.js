@@ -46,6 +46,7 @@ const tests = [
   "workflow_health_smoke.js",
   "workflow_communication_smoke.js",
   "communication_cli_authority_smoke.js",
+  "dashboard_runtime_smoke.js",
   "dashboard_shell_smoke.js",
   "dashboard_wave2_acceptance_smoke.js",
   "today_dashboard_smoke.js",
