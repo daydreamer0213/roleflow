@@ -82,7 +82,7 @@ async function inspectBossOperatorTabs({
   if (!browser || typeof browser.listTabs !== "function" || typeof inspectTab !== "function") {
     throw new TypeError("inspectBossOperatorTabs requires browser.listTabs() and inspectTab()");
   }
-  const initialTabs = await browser.listTabs();
+  const initialTabs = await browser.listTabs({ scope: "boss" });
   const fixed = assertBossOperatorTabs(initialTabs);
   const initialVisibleIds = visibleIdsInWindow(initialTabs, fixed.windowId);
   if (initialVisibleIds.length > 1) {
@@ -103,7 +103,7 @@ async function inspectBossOperatorTabs({
     code: "BOSS_SEARCH_PAGE_LOST",
     requiresSearchPage: true
   });
-  const refreshedTabs = await browser.listTabs();
+  const refreshedTabs = await browser.listTabs({ scope: "boss" });
   let refreshed;
   try {
     refreshed = assertBossOperatorTabs(refreshedTabs);

@@ -216,6 +216,13 @@ async function main() {
       "CDP active state must follow observed visibility, not /json/list order"
     );
     assert.strictEqual(countMethod(websocket.messages, "Runtime.evaluate"), 2);
+
+    websocket.messages.length = 0;
+    const bossScopedTabs = await cdp.listTabs({ scope: "boss" });
+    assert.deepStrictEqual(bossScopedTabs.map((tab) => tab.id), ["cdp-tab"]);
+    assert.strictEqual(countMethod(websocket.messages, "Runtime.evaluate"), 1,
+      "BOSS-scoped tab inspection must not evaluate an unrelated Dashboard page");
+    assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget"), 1);
     state.cdpExtraPage = false;
 
     websocket.mode = "window-identity-missing";

@@ -13,11 +13,16 @@ function fakeBrowser(initialTabs, createdTab = null) {
     createCalls: [],
     frontCalls: [],
     closeCalls: [],
-    listCalls: 0
+    listCalls: 0,
+    listOptions: []
   };
   return {
     state,
-    async listTabs() { state.listCalls += 1; return state.tabs.map((tab) => ({ ...tab })); },
+    async listTabs(options) {
+      state.listCalls += 1;
+      state.listOptions.push(options);
+      return state.tabs.map((tab) => ({ ...tab }));
+    },
     async createTab(openerTabId, url) {
       state.createCalls.push({ openerTabId, url });
       if (!createdTab) throw new Error("unexpected createTab");
@@ -68,12 +73,13 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   };
   assert.strictEqual(typeof inspectBossOperatorTabs, "function");
   const inspectionCalls = [];
+  const strictBrowser = fakeBrowser([boss, fixedCommunication, {
+    id: "unrelated-non-boss",
+    url: "https://example.invalid/notes",
+    windowId: 99
+  }]);
   const strictInspection = await inspectBossOperatorTabs({
-    browser: fakeBrowser([boss, fixedCommunication, {
-      id: "unrelated-non-boss",
-      url: "https://example.invalid/notes",
-      windowId: 99
-    }]),
+    browser: strictBrowser,
     inspectTab: async (tabId) => {
       inspectionCalls.push(tabId);
       return String(tabId) === String(fixedCommunication.id)
@@ -82,6 +88,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     }
   });
   assert.deepStrictEqual(inspectionCalls, [fixedCommunication.id, boss.id]);
+  assert.deepStrictEqual(strictBrowser.state.listOptions, [{ scope: "boss" }, { scope: "boss" }]);
   assert.deepStrictEqual({
     searchTabId: strictInspection.searchTab.id,
     communicationTabId: strictInspection.communicationTab.id,

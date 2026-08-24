@@ -188,7 +188,7 @@ function isPathWithin(candidate, base) {
   return normalizedCandidate.startsWith(prefix);
 }
 
-function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
+function loadModelSettings({ root, fallbackModelConfig, readOnly = false, inspectCredential = true }) {
   const file = settingsPath(root);
   let stored;
   try {
@@ -237,7 +237,11 @@ function loadModelSettings({ root, fallbackModelConfig, readOnly = false }) {
   const migrationError = stored && stored.schemaVersion !== 2 ? migrateLegacySecret(root, settings) : "";
   const primary = settings.taskProfiles.deep_analysis;
   const secretId = secretIdForSettings(settings);
-  const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  const keyState = secretId
+    ? inspectCredential
+      ? inspectSecret(root, secretId)
+      : { stored: hasSecret(root, secretId), readable: false, configured: false, errorCode: "" }
+    : { stored: false, readable: false, configured: false, errorCode: "" };
   const keyErrorCode = keyState.errorCode || migrationError;
   return {
     source,
@@ -517,11 +521,11 @@ async function testModelConnection({ settings, apiKey, fetchImpl = fetch }) {
 }
 
 function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile, readOnly = false }) {
-  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly });
+  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly, inspectCredential: false });
   const profileId = normalizeTaskProfileId(taskProfile || "deep_analysis");
   const profile = loaded.settings.taskProfiles[profileId];
   const secretId = secretIdForSettings(loaded.settings, profileId);
-  const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  const keyState = loadRuntimeSecretState(root, secretId);
   const effective = effectiveTaskProfile(loaded.settings, profileId);
   const base = {
     ...loaded,
@@ -536,20 +540,18 @@ function resolveRuntimeModelConfig({ root, fallbackModelConfig, taskProfile, rea
   if (effective.provider === "mock") {
     return { ...base, modelConfig: modelConfigFromProfile(effective, "") };
   }
-  const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
   const apiKeyEnv = loaded.source === "legacy" ? legacyApiKeyEnv(fallbackModelConfig) : null;
-  return { ...base, modelConfig: modelConfigFromProfile(effective, apiKey, apiKeyEnv) };
+  return { ...base, modelConfig: modelConfigFromProfile(effective, keyState.value, apiKeyEnv) };
 }
 
 function resolveRuntimeBatchBackup({ root, fallbackModelConfig, readOnly = false }) {
-  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly });
+  const loaded = loadModelSettings({ root, fallbackModelConfig, readOnly, inspectCredential: false });
   const backup = loaded.settings.batchBackup;
   if (!backup.enabled) return null;
   if (backup.connection?.status !== "verified" || backup.connection.fingerprint !== profileFingerprint(backup)) return null;
   const secretId = secretIdForBatchBackup(loaded.settings, backup);
-  const keyState = secretId ? inspectSecret(root, secretId) : { stored: false, readable: false, configured: false, errorCode: "" };
+  const keyState = loadRuntimeSecretState(root, secretId);
   if (backup.provider !== "mock" && !(keyState.configured && keyState.readable)) return null;
-  const apiKey = keyState.configured ? loadSecret(root, secretId) : "";
   return {
     ...loaded,
     secretId,
@@ -559,8 +561,26 @@ function resolveRuntimeBatchBackup({ root, fallbackModelConfig, readOnly = false
     keyConfigured: Boolean(keyState.configured),
     keyReadable: Boolean(keyState.readable),
     keyErrorCode: keyState.errorCode || "",
-    modelConfig: modelConfigFromProfile(backup, apiKey, null)
+    modelConfig: modelConfigFromProfile(backup, keyState.value, null)
   };
+}
+
+function loadRuntimeSecretState(root, secretId) {
+  if (!secretId || !hasSecret(root, secretId)) {
+    return { stored: false, readable: false, configured: false, errorCode: "", value: "" };
+  }
+  try {
+    const value = loadSecret(root, secretId);
+    return {
+      stored: true,
+      readable: Boolean(value),
+      configured: Boolean(value),
+      errorCode: value ? "" : "SECRET_EMPTY",
+      value
+    };
+  } catch {
+    return { stored: true, readable: false, configured: false, errorCode: "SECRET_UNREADABLE", value: "" };
+  }
 }
 
 function isModelReady(modelState, { taskProfile = "deep_analysis", checkedAfter = "" } = {}) {

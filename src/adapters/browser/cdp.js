@@ -13,12 +13,17 @@ class CdpBrowserAdapter {
     this.timeoutMs = positiveTimeout(timeoutMs);
   }
 
-  async listTabs() {
+  async listTabs({ scope = "all" } = {}) {
     const pages = await this.requestJson("/json/list");
     if (!Array.isArray(pages)) {
       throw browserError("BROWSER_COMMAND_FAILED", "CDP tab list response is not an array.");
     }
-    const pageTabs = pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
+    if (!new Set(["all", "boss"]).has(scope)) {
+      throw browserError("BROWSER_COMMAND_FAILED", `Unsupported CDP tab scope: ${scope}`);
+    }
+    const pageTabs = pages.filter((page) => page.type === "page"
+      && page.webSocketDebuggerUrl
+      && (scope !== "boss" || isBossPageTarget(page)));
     const listedTabs = await Promise.all(pageTabs.map(async (page) => {
       try {
         const windowId = await this.windowIdForTarget(page.id);
@@ -253,6 +258,15 @@ class CdpBrowserAdapter {
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+function isBossPageTarget(page) {
+  try {
+    const url = new URL(String(page?.url || ""));
+    return url.protocol === "https:" && /(^|\.)zhipin\.com$/i.test(url.hostname);
+  } catch {
+    return false;
   }
 }
 

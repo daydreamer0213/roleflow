@@ -642,12 +642,13 @@ function createDashboardServer({
       ? offlineMockState
       : resolveRuntimeModelConfig({ root: dataRoot, fallbackModelConfig: modelConfig, taskProfile });
   const getRuntimeModel = (taskProfile) => getRuntimeModelState(taskProfile).modelConfig;
-  const modelReady = (taskProfile, options = {}) => {
+  const modelStateReady = (state, taskProfile, options = {}) => {
     if ((allowOfflineMock || forceMock) && !modelReadinessChecker) return true;
-    const state = getRuntimeModelState(taskProfile);
     const checker = modelReadinessChecker || isModelReady;
     return checker(state, { taskProfile, ...options });
   };
+  const modelReady = (taskProfile, options = {}) =>
+    modelStateReady(getRuntimeModelState(taskProfile), taskProfile, options);
   const modelSettingsSaveFlights = new Map();
   const runModelSettingsSave = (params, operation) => {
     const normalized = Object.keys(params).sort().map((key) => [key, params[key]]);
@@ -709,9 +710,12 @@ function createDashboardServer({
       url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "GET" && DASHBOARD_ASSETS[url.pathname]) return sendDashboardAsset(res, DASHBOARD_ASSETS[url.pathname], assetReader);
       if (req.method === "GET" && url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
-      if (req.method === "GET" && url.pathname === "/") return redirectHome(res, db, {
-        deepModelReady: modelReady("deep_analysis")
-      });
+      if (req.method === "GET" && url.pathname === "/") {
+        const modelState = getPublicModelSettings();
+        return redirectHome(res, db, {
+          deepModelReady: modelStateReady(modelState, "deep_analysis")
+        });
+      }
       if (req.method === "GET" && url.pathname === "/onboarding") return sendHtml(res, renderOnboarding({ profiles: listCandidateProfiles(db), modelState: getPublicModelSettings(), modelReady: modelReady("deep_analysis"), selectedProfileId: url.searchParams.get("profileId") }));
       if (req.method === "GET" && url.pathname === "/onboarding/progress") return sendHtml(res, renderOnboardingProgressPage({
         run: getOnboardingRun(db, url.searchParams.get("runId"))
@@ -931,7 +935,11 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") {
         assertBrowserRuntimeReady();
-        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+        const batchModelState = getRuntimeModelState("batch_screening");
+        const backupRuntime = batchModelState.settings?.batchBackup?.enabled
+          ? getRuntimeBatchBackup()
+          : null;
+        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelStateReady(batchModelState, "batch_screening"), modelState: batchModelState, backupRuntime, logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       if (req.method === "POST" && url.pathname === "/api/scan") {

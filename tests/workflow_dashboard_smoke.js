@@ -1576,7 +1576,7 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
 }
 
 async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
-  const assertRoute = async ({ pathname, method = "POST", taskProfile, runtime }) => {
+  const assertRoute = async ({ pathname, method = "POST", taskProfile, runtime, singleRuntimeState = false }) => {
     modelAccesses.length = 0;
     if (method === "GET") await getText(baseUrl, pathname);
     else await postForm(baseUrl, pathname, {});
@@ -1590,6 +1590,12 @@ async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
       assert(profiled.some((entry) => entry.kind === "runtime"), `${pathname} must resolve ${taskProfile} runtime`);
     }
     assert(profiled.some((entry) => entry.kind === "ready"), `${pathname} must check ${taskProfile} readiness`);
+    if (singleRuntimeState) {
+      assert.strictEqual(modelAccesses.filter((entry) => entry.kind === "runtime").length, 1,
+        `${pathname} must resolve one reusable runtime model state`);
+      assert.strictEqual(modelAccesses.filter((entry) => entry.kind === "public").length, 0,
+        `${pathname} must not decrypt the same credential again through public settings`);
+    }
   };
 
   await assertRoute({ pathname: "/onboarding", method: "GET", taskProfile: "deep_analysis", runtime: false });
@@ -1599,7 +1605,7 @@ async function testModelTaskRouting({ baseUrl, modelAccesses, setBatchReady }) {
   await assertRoute({ pathname: "/api/plan/recommend", taskProfile: "deep_analysis", runtime: true });
   await assertRoute({ pathname: "/api/analyze-job", taskProfile: "batch_screening", runtime: true });
   await assertRoute({ pathname: "/api/analyze-jobs", taskProfile: "batch_screening", runtime: true });
-  await assertRoute({ pathname: "/api/workflow-run", taskProfile: "batch_screening", runtime: false });
+  await assertRoute({ pathname: "/api/workflow-run", taskProfile: "batch_screening", runtime: true, singleRuntimeState: true });
   await assertRoute({ pathname: "/api/workflow-run/resume", taskProfile: "batch_screening", runtime: false });
 
   setBatchReady(false);

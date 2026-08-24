@@ -71,16 +71,32 @@ function Test-Dashboard {
   return $true
 }
 
-function Get-DashboardRuntimeStatus {
-  param([int]$DashboardPort)
-  try {
-    return Invoke-RestMethod `
-      -Method Get `
-      -Uri "http://127.0.0.1:$DashboardPort/api/runtime-status" `
-      -TimeoutSec 3
-  } catch {
-    throw "DASHBOARD_RUNTIME_STATUS_UNAVAILABLE: 无法读取 RoleFlow 的浏览器启动状态。$($_.Exception.Message)"
-  }
+function Wait-DashboardRuntimeStatus {
+  param(
+    [int]$DashboardPort,
+    [int]$TimeoutSeconds = 20
+  )
+  $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $Runtime = $null
+  $LastError = ""
+  do {
+    try {
+      $Runtime = Invoke-RestMethod `
+        -Method Get `
+        -Uri "http://127.0.0.1:$DashboardPort/api/runtime-status" `
+        -TimeoutSec 3
+      $LastError = ""
+      if ($Runtime.browser.ready -eq $true -or $Runtime.browser.status -notin @("unknown", "starting")) {
+        return $Runtime
+      }
+    } catch {
+      $LastError = $_.Exception.Message
+    }
+    if ((Get-Date) -lt $Deadline) { Start-Sleep -Milliseconds 300 }
+  } while ((Get-Date) -lt $Deadline)
+
+  if ($null -ne $Runtime) { return $Runtime }
+  throw "DASHBOARD_RUNTIME_STATUS_UNAVAILABLE: 无法读取 RoleFlow 的浏览器启动状态。$LastError"
 }
 
 function Confirm-DashboardBrowserRuntime {
@@ -90,12 +106,7 @@ function Confirm-DashboardBrowserRuntime {
   )
   if ($BrowserMode -ne "portable" -or $NoBrowser) { return }
 
-  $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
-  $Deadline = (Get-Date).AddSeconds(20)
-  while ($Runtime.browser.status -in @("unknown", "starting") -and (Get-Date) -lt $Deadline) {
-    Start-Sleep -Milliseconds 300
-    $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
-  }
+  $Runtime = Wait-DashboardRuntimeStatus -DashboardPort $DashboardPort
   if ($Runtime.browser.ready -eq $true) { return }
 
   if (-not $AllowRecovery) {
@@ -120,7 +131,7 @@ function Confirm-DashboardBrowserRuntime {
 
   # Workspace preparation may fail after Edge has already recovered. In that case
   # startup still succeeds and the Dashboard can explain the remaining action.
-  $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
+  $Runtime = Wait-DashboardRuntimeStatus -DashboardPort $DashboardPort
   if ($Runtime.browser.ready -eq $true) { return }
   $Detail = if ($RecoveryError) { $RecoveryError } else { [string]$Runtime.browser.message }
   throw "DASHBOARD_BROWSER_RECOVERY_FAILED: $Detail"

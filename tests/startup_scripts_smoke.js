@@ -77,6 +77,7 @@ async function main() {
   testStartupIdentityHelpers();
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
+  await testExistingDashboardRetriesTransientRuntimeStatus();
   await testExistingDashboardRecoversStoppedBrowser();
   await testInstalledLauncherPreservesUtf8Output();
   await testConcurrentInstalledLaunchUsesOneDashboard();
@@ -253,6 +254,42 @@ async function testExistingDashboardRecoversStoppedBrowser() {
     "reopening RoleFlow must request exactly one browser recovery");
   const runtime = await getJson(`http://127.0.0.1:${dashboardPort}/api/runtime-status`);
   assert.strictEqual(runtime.browser.ready, true);
+
+  await stopRegisteredProcess(dashboard.pid);
+  await waitForPortClosed(dashboardPort);
+}
+
+async function testExistingDashboardRetriesTransientRuntimeStatus() {
+  const recordPath = path.join(tempRoot, "workspace-runtime-retry.jsonl");
+  fs.rmSync(recordPath, { force: true });
+  const env = fixtureEnv({
+    ROLEFLOW_STARTUP_RECORD: recordPath,
+    ROLEFLOW_STARTUP_RUNTIME_FAILURES: "1",
+    ROLEFLOW_STARTUP_RUNTIME_BLOCK_MS: "3500"
+  });
+  const first = runPowerShellUnicode([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", String(dashboardPort),
+    "-NoBrowser",
+    "-NoOpen"
+  ], { cwd: outsideCwd, env, timeout: 30000 });
+  assert.strictEqual(first.status, 0, combinedOutput(first));
+
+  const dashboard = readJsonLines(recordPath).find((item) => item.command === "dashboard");
+  assert(dashboard, "runtime retry fixture did not start the Dashboard");
+  registerProcess(dashboard.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
+
+  const second = runPowerShellUnicode([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", String(dashboardPort),
+    "-NoOpen"
+  ], { cwd: outsideCwd, env, timeout: 30000 });
+  assert.strictEqual(second.status, 0, combinedOutput(second));
+  assert.strictEqual(readJsonLines(recordPath).filter((item) => item.command === "dashboard").length, 1,
+    "a transient runtime-status failure must not start a second Dashboard");
 
   await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(dashboardPort);
@@ -1134,6 +1171,8 @@ const profileIndex = args.indexOf("--browser-profile");
 const cdpPort = cdpIndex >= 0 ? Number(args[cdpIndex + 1]) : null;
 const profilePath = profileIndex >= 0 ? args[profileIndex + 1] : "";
 let browserReady = process.env.ROLEFLOW_STARTUP_BROWSER_STATUS !== "stopped";
+let runtimeFailuresRemaining = Number(process.env.ROLEFLOW_STARTUP_RUNTIME_FAILURES || 0);
+const runtimeFailureBlockMs = Number(process.env.ROLEFLOW_STARTUP_RUNTIME_BLOCK_MS || 0);
 if (!["edge", "portable"].includes(browserMode)) {
   throw new Error("WORKFLOW_BROWSER_MODE_INVALID");
 }
@@ -1152,6 +1191,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.url === "/api/runtime-status") {
+    if (runtimeFailuresRemaining > 0) {
+      runtimeFailuresRemaining -= 1;
+      const blockedUntil = Date.now() + runtimeFailureBlockMs;
+      while (Date.now() < blockedUntil) {}
+    }
     res.end(JSON.stringify({
       application: { status: "ready", ready: true },
       browser: browserMode === "portable"
