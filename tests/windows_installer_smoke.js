@@ -40,6 +40,11 @@ function runSuite() {
 
   const inno = read("installer/RoleFlow.iss");
   const innoLines = inno.split(/\r?\n/);
+  assert.strictEqual(
+    innoLines.filter((line) => line.trim() === "[InstallDelete]").length,
+    1,
+    "installer must have exactly one bounded InstallDelete section"
+  );
   const installDeleteStart = innoLines.indexOf("[InstallDelete]");
   const installDeleteEnd = innoLines.findIndex((line, index) =>
     index > installDeleteStart && /^\[[^\]]+\]$/.test(line.trim())
