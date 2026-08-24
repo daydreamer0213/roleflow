@@ -37,6 +37,7 @@ main().catch((error) => {
 async function main() {
   db = openDb(dbPath);
   const connectionProfiles = [];
+  let primaryVerificationGate = null;
   server = createDashboardServer({
     db,
     browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
@@ -46,6 +47,10 @@ async function main() {
     modelConfig: fallback,
     connectionTester: async ({ settings }) => {
       connectionProfiles.push(settings.taskProfile || "batch_backup");
+      if (primaryVerificationGate && settings.taskProfile === "deep_analysis") {
+        primaryVerificationGate.started();
+        await primaryVerificationGate.wait;
+      }
       return { status: "verified", checkedAt: new Date().toISOString(), latencyMs: 7, httpStatus: 200 };
     }
   });
@@ -81,6 +86,8 @@ async function main() {
     "备用模型默认关闭",
     "备用模型必须先通过连接测试",
     'class="settings-primary-grid"',
+    'form.dataset.submitting==="true"',
+    "正在测试并保存…",
     'href="https://platform.deepseek.com/"',
     'target="_blank"',
     'rel="noopener noreferrer"'
@@ -105,19 +112,42 @@ async function main() {
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const backupApiKey = "backup-ui-smoke-key-not-visible-after-save";
-  const verifiedPrimary = await fetch(baseUrl + "/api/settings/model", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      taskProfile: "primary_models",
-      action: "verify_primary",
-      preset: "deepseek",
-      apiKey
-    }).toString(),
-    redirect: "manual"
-  });
-  assert.strictEqual(verifiedPrimary.status, 303);
-  assert.strictEqual(verifiedPrimary.headers.get("location"), "/settings?profile=primary_models&modelConfigured=1");
+  const primaryModelBody = new URLSearchParams({
+    taskProfile: "primary_models",
+    action: "verify_primary",
+    preset: "deepseek",
+    apiKey
+  }).toString();
+  let releaseVerification;
+  let markVerificationStarted;
+  const verificationStarted = new Promise((resolve) => { markVerificationStarted = resolve; });
+  primaryVerificationGate = {
+    started: markVerificationStarted,
+    wait: new Promise((resolve) => { releaseVerification = resolve; })
+  };
+  const repeatedSaves = Promise.all([
+    fetch(baseUrl + "/api/settings/model", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: primaryModelBody,
+      redirect: "manual"
+    }),
+    fetch(baseUrl + "/api/settings/model", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: primaryModelBody,
+      redirect: "manual"
+    })
+  ]);
+  await verificationStarted;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  releaseVerification();
+  const [verifiedPrimary, repeatedPrimary] = await repeatedSaves;
+  primaryVerificationGate = null;
+  for (const response of [verifiedPrimary, repeatedPrimary]) {
+    assert.strictEqual(response.status, 303);
+    assert.strictEqual(response.headers.get("location"), "/settings?profile=primary_models&modelConfigured=1");
+  }
   assert.deepStrictEqual(connectionProfiles, ["deep_analysis", "batch_screening"]);
 
   let publicState = loadModelSettings({ root, fallbackModelConfig: fallback });

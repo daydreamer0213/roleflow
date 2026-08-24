@@ -1,7 +1,7 @@
 ﻿const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const {
   listReportJobs,
@@ -625,6 +625,22 @@ function createDashboardServer({
     const checker = modelReadinessChecker || isModelReady;
     return checker(state, { taskProfile, ...options });
   };
+  const modelSettingsSaveFlights = new Map();
+  const runModelSettingsSave = (params, operation) => {
+    const normalized = Object.keys(params).sort().map((key) => [key, params[key]]);
+    const fingerprint = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+    const existing = modelSettingsSaveFlights.get(fingerprint);
+    if (existing) return existing;
+    const pending = Promise.resolve().then(operation);
+    modelSettingsSaveFlights.set(fingerprint, pending);
+    const clear = () => {
+      if (modelSettingsSaveFlights.get(fingerprint) === pending) {
+        modelSettingsSaveFlights.delete(fingerprint);
+      }
+    };
+    pending.then(clear, clear);
+    return pending;
+  };
   const getRuntimeBatchBackup = () => batchBackupResolver
     ? batchBackupResolver({ root: dataRoot, fallbackModelConfig: modelConfig })
     : forceMock
@@ -678,9 +694,17 @@ function createDashboardServer({
         run: getOnboardingRun(db, url.searchParams.get("runId"))
       }));
       if (req.method === "GET" && url.pathname === "/settings") {
-        const primaryModelsReady = modelReady("deep_analysis") && modelReady("batch_screening");
+        const modelState = getPublicModelSettings();
+        const sharedPrimaryCredential = ["deep_analysis", "batch_screening"].every((taskProfile) =>
+          modelState.settings?.taskProfiles?.[taskProfile]?.credentialRef !== "independent"
+        );
+        const checker = modelReadinessChecker || isModelReady;
+        const primaryModelsReady = sharedPrimaryCredential
+          ? checker(modelState, { taskProfile: "deep_analysis" })
+            && checker(modelState, { taskProfile: "batch_screening" })
+          : modelReady("deep_analysis") && modelReady("batch_screening");
         return sendHtml(res, renderModelSettingsPage({
-          modelState: getPublicModelSettings(),
+          modelState,
           searchParams: url.searchParams,
           primaryModelsReady
         }));
@@ -877,7 +901,7 @@ function createDashboardServer({
       });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root: dataRoot, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root: dataRoot, fallbackModelConfig: modelConfig, connectionTester, logger, requestId, runModelSettingsSave });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, dataRoot, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
@@ -1245,123 +1269,20 @@ async function handleMatchCardConfirm(req, res, { db, logger, requestId }) {
   }
 }
 
-async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, connectionTester, logger, requestId }) {
+async function handleModelSettingsSave(req, res, { root, fallbackModelConfig, connectionTester, logger, requestId, runModelSettingsSave }) {
   let taskProfile = "";
   let action = "";
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     taskProfile = String(params.taskProfile || "").trim();
     action = String(params.action || "save").trim();
-    if (taskProfile === "primary_models") {
-      if (action !== "verify_primary") {
-        throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
-      }
-      const state = await saveVerifiedPrimaryModelProfiles({
-        root,
-        input: {
-          preset: String(params.preset || ""),
-          baseUrl: String(params.baseUrl || ""),
-          apiKey: String(params.apiKey || "")
-        },
-        fallbackModelConfig,
-        connectionTester
-      });
-      logger.info("primary_model_profiles_verified", {
-        requestId,
-        deepAnalysisStatus: state.settings.taskProfiles.deep_analysis.connection.status,
-        batchScreeningStatus: state.settings.taskProfiles.batch_screening.connection.status
-      });
-      return redirect(res, "/settings?profile=primary_models&modelConfigured=1");
-    }
-    if (!["deep_analysis", "batch_screening", "batch_backup"].includes(taskProfile)) {
-      throw appError("MODEL_TASK_PROFILE_INVALID", "模型任务配置无效。", { statusCode: 400 });
-    }
-    if (!["save", "save_parameters", "restore_recommended"].includes(action)) {
-      throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
-    }
-    if (taskProfile === "batch_backup" && action === "save_parameters") {
-      throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型必须通过连接测试后保存。", { statusCode: 400 });
-    }
-    if (action === "restore_recommended") {
-      if (taskProfile === "batch_backup") {
-        throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型没有推荐值恢复操作。", { statusCode: 400 });
-      }
-      const state = restoreRecommendedTaskProfile({
-        root,
-        taskProfile,
-        fallbackModelConfig
-      });
-      logger.info("model_task_profile_restored", {
-        requestId,
-        taskProfile,
-        model: state.settings.taskProfiles[taskProfile].model,
-        revision: state.settings.taskProfiles[taskProfile].revision,
-        connectionStatus: state.settings.taskProfiles[taskProfile].connection.status
-      });
-      return redirect(res, `/settings?profile=${encodeURIComponent(taskProfile)}&recommended=1`);
-    }
-    const timeoutMs = Number(params.timeoutMs);
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 3000 || timeoutMs > 120000) {
-      throw appError("MODEL_TIMEOUT_INVALID", "请求超时必须是 3000 到 120000 毫秒。", { statusCode: 400 });
-    }
-    const credentialMode = String(params.credentialMode || (taskProfile === "batch_backup" ? "independent" : "shared")).trim();
-    if (!["shared", "independent"].includes(credentialMode)) {
-      throw appError("MODEL_CREDENTIAL_MODE_INVALID", "凭据模式必须是共享或独立。", { statusCode: 400 });
-    }
-    if (taskProfile === "batch_backup" && credentialMode !== "independent") {
-      throw appError("MODEL_CREDENTIAL_MODE_INVALID", "备用模型必须使用独立 API Key。", { statusCode: 400 });
-    }
-    const input = {
-      ...params,
-      model: String(params.model || "") === "__custom__"
-        ? String(params.customModel || "")
-        : String(params.model || ""),
-      credentialRef: credentialMode,
-      enabled: ["1", "on", "true"].includes(String(params.enabled || "").toLowerCase())
-    };
-    if (taskProfile === "deep_analysis") {
-      if (Number(params.concurrency) !== 1) {
-        throw appError("MODEL_CONCURRENCY_INVALID", "深度分析并发固定为 1。", { statusCode: 400 });
-      }
-    } else if (taskProfile === "batch_screening") {
-      if (![1, 2].includes(Number(params.concurrency))) {
-        throw appError("MODEL_CONCURRENCY_INVALID", "批量筛选并发只能是 1 或 2。", { statusCode: 400 });
-      }
-    }
-    const state = action === "save_parameters"
-      ? saveModelTaskProfileParameters({
-          root,
-          taskProfile,
-          input,
-          fallbackModelConfig
-        })
-      : taskProfile === "batch_backup"
-      ? await saveVerifiedBatchBackup({
-          root,
-          input,
-          fallbackModelConfig,
-          connectionTester
-        })
-      : await saveVerifiedModelTaskProfile({
-          root,
-          taskProfile,
-          input,
-          fallbackModelConfig,
-          connectionTester
-        });
-    const identity = modelTaskProfileIdentity(state.settings, taskProfile);
-    logger.info("model_settings_saved", {
-      requestId,
-      taskProfile,
-      provider: identity.provider,
-      model: identity.model,
-      revision: identity.revision,
-      connectionStatus: identity.connection?.status || "unverified",
-      latencyMs: identity.connection?.latencyMs ?? null
-    });
-    redirect(res, action === "save_parameters"
-      ? `/settings?profile=${encodeURIComponent(taskProfile)}&modelSaved=1`
-      : `/settings?profile=${encodeURIComponent(taskProfile)}&modelConfigured=1`);
+    const result = await runModelSettingsSave(params, () => saveModelSettingsRequest(params, {
+      root,
+      fallbackModelConfig,
+      connectionTester
+    }));
+    logger.info(result.event, { requestId, ...result.metadata });
+    redirect(res, result.location);
   } catch (error) {
     respondUiError(res, error, taskProfile ? `/settings?profile=${encodeURIComponent(taskProfile)}` : "/settings", {
       logger,
@@ -1941,6 +1862,104 @@ async function resolveLiveInheritedContext({
     }
     throw error;
   }
+}
+
+async function saveModelSettingsRequest(params, { root, fallbackModelConfig, connectionTester }) {
+  const taskProfile = String(params.taskProfile || "").trim();
+  const action = String(params.action || "save").trim();
+  if (taskProfile === "primary_models") {
+    if (action !== "verify_primary") {
+      throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
+    }
+    const state = await saveVerifiedPrimaryModelProfiles({
+      root,
+      input: {
+        preset: String(params.preset || ""),
+        baseUrl: String(params.baseUrl || ""),
+        apiKey: String(params.apiKey || "")
+      },
+      fallbackModelConfig,
+      connectionTester
+    });
+    return {
+      event: "primary_model_profiles_verified",
+      metadata: {
+        deepAnalysisStatus: state.settings.taskProfiles.deep_analysis.connection.status,
+        batchScreeningStatus: state.settings.taskProfiles.batch_screening.connection.status
+      },
+      location: "/settings?profile=primary_models&modelConfigured=1"
+    };
+  }
+  if (!["deep_analysis", "batch_screening", "batch_backup"].includes(taskProfile)) {
+    throw appError("MODEL_TASK_PROFILE_INVALID", "模型任务配置无效。", { statusCode: 400 });
+  }
+  if (!["save", "save_parameters", "restore_recommended"].includes(action)) {
+    throw appError("MODEL_SETTINGS_ACTION_INVALID", "模型设置操作无效。", { statusCode: 400 });
+  }
+  if (taskProfile === "batch_backup" && action === "save_parameters") {
+    throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型必须通过连接测试后保存。", { statusCode: 400 });
+  }
+  if (action === "restore_recommended") {
+    if (taskProfile === "batch_backup") {
+      throw appError("MODEL_SETTINGS_ACTION_INVALID", "备用模型没有推荐值恢复操作。", { statusCode: 400 });
+    }
+    const state = restoreRecommendedTaskProfile({ root, taskProfile, fallbackModelConfig });
+    return {
+      event: "model_task_profile_restored",
+      metadata: {
+        taskProfile,
+        model: state.settings.taskProfiles[taskProfile].model,
+        revision: state.settings.taskProfiles[taskProfile].revision,
+        connectionStatus: state.settings.taskProfiles[taskProfile].connection.status
+      },
+      location: `/settings?profile=${encodeURIComponent(taskProfile)}&recommended=1`
+    };
+  }
+  const timeoutMs = Number(params.timeoutMs);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 3000 || timeoutMs > 120000) {
+    throw appError("MODEL_TIMEOUT_INVALID", "请求超时必须是 3000 到 120000 毫秒。", { statusCode: 400 });
+  }
+  const credentialMode = String(params.credentialMode || (taskProfile === "batch_backup" ? "independent" : "shared")).trim();
+  if (!["shared", "independent"].includes(credentialMode)) {
+    throw appError("MODEL_CREDENTIAL_MODE_INVALID", "凭据模式必须是共享或独立。", { statusCode: 400 });
+  }
+  if (taskProfile === "batch_backup" && credentialMode !== "independent") {
+    throw appError("MODEL_CREDENTIAL_MODE_INVALID", "备用模型必须使用独立 API Key。", { statusCode: 400 });
+  }
+  const input = {
+    ...params,
+    model: String(params.model || "") === "__custom__"
+      ? String(params.customModel || "")
+      : String(params.model || ""),
+    credentialRef: credentialMode,
+    enabled: ["1", "on", "true"].includes(String(params.enabled || "").toLowerCase())
+  };
+  if (taskProfile === "deep_analysis" && Number(params.concurrency) !== 1) {
+    throw appError("MODEL_CONCURRENCY_INVALID", "深度分析并发固定为 1。", { statusCode: 400 });
+  }
+  if (taskProfile === "batch_screening" && ![1, 2].includes(Number(params.concurrency))) {
+    throw appError("MODEL_CONCURRENCY_INVALID", "批量筛选并发只能是 1 或 2。", { statusCode: 400 });
+  }
+  const state = action === "save_parameters"
+    ? saveModelTaskProfileParameters({ root, taskProfile, input, fallbackModelConfig })
+    : taskProfile === "batch_backup"
+      ? await saveVerifiedBatchBackup({ root, input, fallbackModelConfig, connectionTester })
+      : await saveVerifiedModelTaskProfile({ root, taskProfile, input, fallbackModelConfig, connectionTester });
+  const identity = modelTaskProfileIdentity(state.settings, taskProfile);
+  return {
+    event: "model_settings_saved",
+    metadata: {
+      taskProfile,
+      provider: identity.provider,
+      model: identity.model,
+      revision: identity.revision,
+      connectionStatus: identity.connection?.status || "unverified",
+      latencyMs: identity.connection?.latencyMs ?? null
+    },
+    location: action === "save_parameters"
+      ? `/settings?profile=${encodeURIComponent(taskProfile)}&modelSaved=1`
+      : `/settings?profile=${encodeURIComponent(taskProfile)}&modelConfigured=1`
+  };
 }
 
 async function handleAcquisitionPreview(res, {
@@ -4468,6 +4487,36 @@ function modelSettingsClientScript() {
         }
       });
     });
+    const saveForms=[...document.querySelectorAll('form[action="/api/settings/model"]')];
+    const resetSaveForm=(form)=>{
+      form.dataset.submitting="";
+      form.removeAttribute("aria-busy");
+      form.querySelectorAll('button[type="submit"]').forEach((button)=>{
+        button.removeAttribute("aria-disabled");
+        button.style.pointerEvents="";
+        if(button.dataset.originalLabel){button.textContent=button.dataset.originalLabel}
+      });
+    };
+    saveForms.forEach((form)=>form.addEventListener("submit",(event)=>{
+      if(form.dataset.submitting==="true"){
+        event.preventDefault();
+        return;
+      }
+      form.dataset.submitting="true";
+      form.setAttribute("aria-busy","true");
+      const submitter=event.submitter;
+      form.querySelectorAll('button[type="submit"]').forEach((button)=>{
+        button.setAttribute("aria-disabled","true");
+        button.style.pointerEvents="none";
+      });
+      if(submitter){
+        submitter.dataset.originalLabel=submitter.textContent;
+        submitter.textContent=submitter.value==="save_parameters"||submitter.value==="restore_recommended"
+          ?"正在保存…"
+          :"正在测试并保存…";
+      }
+    }));
+    window.addEventListener("pageshow",()=>saveForms.forEach(resetSaveForm));
   }());</script>`;
 }
 
