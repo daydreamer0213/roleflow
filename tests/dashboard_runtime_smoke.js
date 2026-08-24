@@ -41,13 +41,15 @@ function fakeSupervisor() {
 }
 
 function quietLogger() {
+  fs.mkdirSync(path.join(smokeRoot, ".runtime", "logs"), { recursive: true });
   const logger = {
     info() {},
     warn() {},
     error() {},
     requestId: (() => { let id = 0; return () => `runtime-${++id}`; })(),
     listRecent() { return []; },
-    child() { return logger; }
+    child() { return logger; },
+    logDir: path.join(smokeRoot, ".runtime", "logs")
   };
   return logger;
 }
@@ -62,6 +64,8 @@ function quietLogger() {
     profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
   };
   const reconcileCalls = [];
+  const openedLogFolders = [];
+  let failOpeningLogs = false;
   let spawnCalls = 0;
   const workspaceResponses = [
     { status: "ready", bossTabId: "boss-search", communicationTabId: "boss-chat", dashboardTabId: "dashboard" },
@@ -72,6 +76,7 @@ function quietLogger() {
     db,
     dbPath,
     root,
+    dataRoot: smokeRoot,
     forceMock: true,
     logger: quietLogger(),
     browserAuthority,
@@ -80,6 +85,13 @@ function quietLogger() {
     workspaceReconciler: async (input) => {
       reconcileCalls.push({ ...input });
       return workspaceResponses.shift();
+    },
+    applicationVersion: "9.8.7-test",
+    launchSessionId: "launch-session-test",
+    diagnosticsActionToken: "diagnostics-action-test",
+    openLogsFolder: (folder) => {
+      if (failOpeningLogs) throw new Error("explorer unavailable");
+      openedLogFolders.push(folder);
     }
   });
   const base = await listen(server);
@@ -106,6 +118,89 @@ function quietLogger() {
         message: "BOSS 工作区尚未检查。"
       }
     });
+
+    const diagnostics = await getJson(base, "/api/runtime-diagnostics");
+    assert.strictEqual(diagnostics.status, 200);
+    assert.strictEqual(diagnostics.body.schemaVersion, 1);
+    assert.match(diagnostics.body.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepStrictEqual(diagnostics.body.application, {
+      status: "ready",
+      ready: true,
+      version: "9.8.7-test",
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      launchSessionId: "launch-session-test"
+    });
+    assert.deepStrictEqual(diagnostics.body.browser, {
+      status: "starting",
+      ready: false,
+      action: "none",
+      checkedAt: "2099-01-01T00:00:00.000Z",
+      failureCount: 0,
+      sessionId: ""
+    });
+    assert.deepStrictEqual(diagnostics.body.workspace, {
+      status: "unchecked",
+      ready: false
+    });
+    assert.deepStrictEqual(diagnostics.body.logs, {
+      available: true,
+      label: "RoleFlow 用户日志目录"
+    });
+    const diagnosticText = JSON.stringify(diagnostics.body);
+    assert.doesNotMatch(diagnosticText, /profilePath|BrowserProfile|commandLine|cookie|resume|BOSS-SEARCH|boss-search/i);
+    assert.doesNotMatch(diagnosticText, new RegExp(escapeRegExp(path.resolve(smokeRoot)), "i"));
+
+    const diagnosticsPage = await fetch(`${base}/diagnostics`).then((response) => response.text());
+    assert.match(diagnosticsPage, /复制诊断信息/);
+    assert.match(diagnosticsPage, /打开日志文件夹/);
+    assert.match(diagnosticsPage, /当前用户的 RoleFlow 数据目录/);
+    assert.doesNotMatch(diagnosticsPage, /项目的 \.runtime\/logs/);
+
+    const missingAction = await postJson(base, "/api/runtime-diagnostics/open-logs", {});
+    assert.strictEqual(missingAction.status, 403);
+    assert.strictEqual(missingAction.body.errorCode, "RUNTIME_DIAGNOSTICS_ACTION_REQUIRED");
+    assert.deepStrictEqual(openedLogFolders, []);
+
+    const rejectedLogPath = await postJson(base, "/api/runtime-diagnostics/open-logs", {
+      path: "C:\\Windows"
+    }, { "x-roleflow-action": "diagnostics-action-test" });
+    assert.strictEqual(rejectedLogPath.status, 400);
+    assert.strictEqual(rejectedLogPath.body.errorCode, "RUNTIME_DIAGNOSTICS_INPUT_NOT_ALLOWED");
+    assert.deepStrictEqual(openedLogFolders, []);
+
+    const openedLogs = await postJson(base, "/api/runtime-diagnostics/open-logs", {}, {
+      "x-roleflow-action": "diagnostics-action-test"
+    });
+    assert.strictEqual(openedLogs.status, 200);
+    assert.deepStrictEqual(openedLogs.body, { ok: true });
+    assert.deepStrictEqual(openedLogFolders, [path.resolve(smokeRoot, ".runtime", "logs")]);
+
+    const logDir = path.resolve(smokeRoot, ".runtime", "logs");
+    const externalLogDir = path.resolve(smokeRoot, "external-log-target");
+    const externalSentinel = path.join(externalLogDir, "keep.txt");
+    fs.rmSync(logDir, { recursive: true, force: true });
+    fs.mkdirSync(externalLogDir, { recursive: true });
+    fs.writeFileSync(externalSentinel, "keep", "utf8");
+    fs.symlinkSync(externalLogDir, logDir, "junction");
+    const blockedReparse = await postJson(base, "/api/runtime-diagnostics/open-logs", {}, {
+      "x-roleflow-action": "diagnostics-action-test"
+    });
+    assert.strictEqual(blockedReparse.status, 500);
+    assert.strictEqual(blockedReparse.body.errorCode, "ROLEFLOW_RUNTIME_REPARSE_POINT_BLOCKED");
+    assert.deepStrictEqual(openedLogFolders, [path.resolve(smokeRoot, ".runtime", "logs")]);
+    assert.strictEqual(fs.readFileSync(externalSentinel, "utf8"), "keep");
+    fs.rmSync(logDir, { force: true });
+    fs.mkdirSync(logDir, { recursive: true });
+
+    failOpeningLogs = true;
+    const failedOpen = await postJson(base, "/api/runtime-diagnostics/open-logs", {}, {
+      "x-roleflow-action": "diagnostics-action-test"
+    });
+    assert.strictEqual(failedOpen.status, 500);
+    assert.strictEqual(failedOpen.body.errorCode, "RUNTIME_LOG_FOLDER_OPEN_FAILED");
+    failOpeningLogs = false;
 
     supervisor.setSnapshot(snapshot("unavailable", {
       message: "RoleFlow 专用 Edge 暂时无法使用。",
@@ -255,11 +350,15 @@ async function getJson(base, pathname) {
   return { status: response.status, body: await response.json() };
 }
 
-async function postJson(base, pathname, body) {
+async function postJson(base, pathname, body, extraHeaders = {}) {
   const response = await fetch(`${base}${pathname}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
     body: JSON.stringify(body)
   });
   return { status: response.status, body: await response.json() };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

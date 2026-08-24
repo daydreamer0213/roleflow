@@ -169,4 +169,4 @@ function numericId(value) {
   return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
 
-module.exports = { createLogger, appError, errorMeta, publicError, listRecentLogs, workflowLogContext };
+module.exports = { createLogger, appError, errorMeta, publicError, listRecentLogs, sanitize, workflowLogContext };

@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const powershell = path.join(
@@ -15,7 +15,6 @@ const powershell = path.join(
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-windows-installer-suite-"));
 const suiteLocalAppData = path.join(suiteRoot, "local-app-data");
 const selfCheckProjectRoot = path.join(suiteRoot, "installed-self-check-project");
-const reservedProbePorts = new Set([8787, 9222]);
 fs.mkdirSync(suiteLocalAppData, { recursive: true });
 createSelfCheckProjectFixture();
 
@@ -63,10 +62,20 @@ function runSuite() {
   assert.match(inno, /AppId=\{\{[0-9A-F-]+\}/i);
   assert.match(inno, /\[Icons\]/);
   assert.match(inno, /\{autodesktop\}/);
+  assert.match(inno, /Name:\s*"desktopicon"[^\r\n]*Flags:\s*checkedonce/i);
+  assert.match(inno, /Name:\s*"\{autodesktop\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"[^\r\n]*Tasks:\s*desktopicon/i);
+  assert.match(inno, /Name:\s*"\{group\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"/i);
+  assert.match(inno, /Flags:\s*nowait\s+postinstall\s+skipifsilent\s+runhidden/i);
   assert.match(inno, /\{uninstallexe\}/);
   assert.match(inno, /launch-installed\.ps1/);
   assert.match(inno, /prepare-uninstall\.ps1/);
   assert.match(inno, /installed-self-check\.ps1/);
+  assert(
+    inno.indexOf("'prepare-user-data.ps1'") < inno.indexOf("'installed-self-check.ps1'"),
+    "installer must prepare stable user data before the isolated self-check writes logs"
+  );
+  assert.match(inno, /当前用户的 RoleFlow 数据目录/);
+  assert.doesNotMatch(inno, /安装目录下 \.runtime\\logs/);
   assert.doesNotMatch(inno, /migrate-browser-profile\.ps1/i);
   assert.doesNotMatch(inno, /\[UninstallDelete\][\s\S]*BrowserProfile/i);
   assert.doesNotMatch(inno, /vendor\\edge-control-bridge/i);
@@ -107,7 +116,7 @@ function runSuite() {
     ["migration is explicit, copy-only, and race-safe", assertBrowserProfileMigrationBoundaries],
     ["migration source-tree junction is rejected", assertMigrationRejectsSourceTreeReparsePoint],
     ["migration target-parent junction is rejected", assertMigrationRejectsTargetParentReparsePoint],
-    ["installed self-check keeps authority while probing temporary ports", assertInstalledSelfCheckUsesSafeProbePorts],
+    ["installed self-check is isolated from Edge and fixed ports", assertInstalledSelfCheckIsIsolated],
     ["installer stage contains maintenance only", assertStandardInstallerStageBoundary],
     ["packaged PowerShell scripts parse", assertPackagedPowerShellScriptsParse]
   ];
@@ -607,69 +616,16 @@ function assertMigrationRejectsTargetParentReparsePoint() {
   }
 }
 
-function assertInstalledSelfCheckUsesSafeProbePorts() {
+function assertInstalledSelfCheckIsIsolated() {
   const repositoryArtifactsBefore = repositorySelfCheckFingerprint();
-  const wrongRootPort = reserveFreePort();
-  const wrongRootCdpPort = reserveFreePort();
-  const wrongRoot = startHealthFixture(wrongRootPort, {
-    projectRoot: path.join(selfCheckProjectRoot, "different-install-root"),
-    browserAuthority: {
-      browserMode: "portable",
-      cdpPort: 9222,
-      profilePath: path.join(suiteLocalAppData, "RoleFlow", "BrowserProfile")
-    }
-  });
-  try {
-    const result = invokeSelfCheck(wrongRootPort, wrongRootCdpPort);
-    assert.notStrictEqual(result.status, 0, "a Dashboard conflict from another install root must be rejected");
-  } finally {
-    stopFixtureProcess(wrongRoot);
-  }
-
-  const dashboardProbePort = reserveFreePort();
-  const cdpProbePort = reserveFreePort();
-  const wrongAuthority = startHealthFixture(dashboardProbePort, {
-    projectRoot: selfCheckProjectRoot,
-    browserAuthority: {
-      browserMode: "portable",
-      cdpPort: 9333,
-      profilePath: path.join(suiteLocalAppData, "RoleFlow", "BrowserProfile")
-    }
-  });
-  try {
-    const result = invokeSelfCheck(dashboardProbePort, cdpProbePort);
-    assert.notStrictEqual(result.status, 0, "a Dashboard conflict with the wrong authority must be rejected");
-  } finally {
-    stopFixtureProcess(wrongAuthority);
-  }
-
-  const acceptedDashboardPort = reserveFreePort();
-  const acceptedCdpPort = reserveFreePort();
-  const accepted = startHealthFixture(acceptedDashboardPort, {
-    projectRoot: selfCheckProjectRoot,
-    browserAuthority: {
-      browserMode: "portable",
-      cdpPort: 9222,
-      profilePath: path.join(suiteLocalAppData, "RoleFlow", "BrowserProfile")
-    }
-  });
-  try {
-    const result = invokeSelfCheck(acceptedDashboardPort, acceptedCdpPort);
-    assert.strictEqual(result.status, 0, combined(result));
-    assert.match(combined(result), /SELF_CHECK_OK/);
-  } finally {
-    stopFixtureProcess(accepted);
-  }
-
-  const freeDashboardPort = reserveFreePort();
-  const ambiguousCdpPort = reserveFreePort();
-  const ambiguous = startHealthFixture(ambiguousCdpPort, { projectRoot: selfCheckProjectRoot, browserAuthority: {} });
-  try {
-    const result = invokeSelfCheck(freeDashboardPort, ambiguousCdpPort);
-    assert.notStrictEqual(result.status, 0, "a non-Edge CDP probe-port listener must be rejected");
-  } finally {
-    stopFixtureProcess(ambiguous);
-  }
+  const source = read("scripts/installed-self-check.ps1");
+  assert.doesNotMatch(source, /--cdp-port|--browser-profile|start-portable-edge/i);
+  assert.match(source, /--no-browser/);
+  assert.match(source, /--force-mock/);
+  assert.match(source, /Get-Random -Minimum 49152 -Maximum 65535/);
+  const result = invokeSelfCheck();
+  assert.strictEqual(result.status, 0, combined(result));
+  assert.match(combined(result), /SELF_CHECK_OK/);
   assert.deepStrictEqual(
     repositorySelfCheckFingerprint(),
     repositoryArtifactsBefore,
@@ -677,14 +633,13 @@ function assertInstalledSelfCheckUsesSafeProbePorts() {
   );
 }
 
-function invokeSelfCheck(dashboardProbePort, cdpProbePort) {
+function invokeSelfCheck() {
   return runPowerShell([
     "-File", path.join(root, "scripts", "installed-self-check.ps1"),
     "-ProjectRoot", selfCheckProjectRoot,
+    "-DataRoot", path.join(suiteLocalAppData, "RoleFlow", "Data"),
     "-NodePath", process.execPath,
-    "-SkipEdgeCheck",
-    "-DashboardProbePort", String(dashboardProbePort),
-    "-CdpProbePort", String(cdpProbePort)
+    "-SkipEdgeCheck"
   ], { timeout: 30_000, localAppData: suiteLocalAppData });
 }
 
@@ -711,6 +666,8 @@ function assertStandardInstallerStageBoundary() {
       "ScanPortable.bat",
       "StartPortableEdge.bat",
       "tests",
+      "data",
+      "profiles",
       "BrowserProfile",
       path.join(".runtime", "edge-profile"),
       path.join("vendor", "edge-control-bridge")
@@ -720,6 +677,7 @@ function assertStandardInstallerStageBoundary() {
     const forbidden = listTree(stageDir).filter((relativePath) =>
       /(^|[\\/])BrowserProfile([\\/]|$)/i.test(relativePath)
       || /(^|[\\/])edge-profile([\\/]|$)/i.test(relativePath)
+      || /^(?:data|profiles)([\\/]|$)/i.test(relativePath)
       || /(^|[\\/])tests?([\\/]|$)/i.test(relativePath)
       || /(^|[\\/])vendor[\\/]edge-control-bridge([\\/]|$)/i.test(relativePath)
       || /^reports?([\\/]|$)/i.test(relativePath)
@@ -772,9 +730,10 @@ function valueAfter(flag) {
 
 const port = Number(valueAfter("--port"));
 const server = http.createServer((request, response) => {
-  response.writeHead(request.url === "/health" ? 200 : 404, { "content-type": "application/json" });
+  response.writeHead(request.url === "/health" ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify({
     ok: true,
+    applicationStatus: "ready",
     pid: process.pid,
     projectRoot: path.resolve(__dirname, ".."),
     browserAuthority: {
@@ -995,61 +954,6 @@ function removeUniqueChild(child, selectedRoot) {
 function assertPathIsUniqueChild(child, selectedRoot) {
   const relative = path.relative(selectedRoot, child);
   assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative), `unsafe recursive cleanup target: ${child}`);
-}
-
-function reserveFreePort() {
-  const command = [
-    "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)",
-    "$listener.Start()",
-    "try { ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port } finally { $listener.Stop() }"
-  ].join("; ");
-  const result = runPowerShell(["-Command", command], { localAppData: suiteLocalAppData });
-  assert.strictEqual(result.status, 0, combined(result));
-  const port = Number(String(result.stdout).trim());
-  assert(Number.isInteger(port) && port > 0);
-  if (reservedProbePorts.has(port)) return reserveFreePort();
-  reservedProbePorts.add(port);
-  return port;
-}
-
-function startHealthFixture(port, health) {
-  const readyPath = path.join(suiteRoot, `health-ready-${port}-${Date.now()}.txt`);
-  const helper = String.raw`
-const fs = require("node:fs");
-const http = require("node:http");
-const base = JSON.parse(process.env.ROLEFLOW_TEST_HEALTH);
-const server = http.createServer((request, response) => {
-  response.writeHead(request.url === "/health" ? 200 : 404, { "content-type": "application/json" });
-  response.end(JSON.stringify({ ...base, ok: true, pid: process.pid }));
-});
-server.listen(Number(process.env.ROLEFLOW_TEST_PORT), "127.0.0.1", () => {
-  fs.writeFileSync(process.env.ROLEFLOW_TEST_READY, "ready", "utf8");
-});
-setInterval(() => {}, 1000);
-`;
-  const child = spawn(process.execPath, ["-e", helper], {
-    cwd: root,
-    env: {
-      ...process.env,
-      LOCALAPPDATA: suiteLocalAppData,
-      ROLEFLOW_TEST_HEALTH: JSON.stringify(health),
-      ROLEFLOW_TEST_PORT: String(port),
-      ROLEFLOW_TEST_READY: readyPath
-    },
-    stdio: "ignore",
-    windowsHide: true
-  });
-  const deadline = Date.now() + 5_000;
-  while (!fs.existsSync(readyPath) && Date.now() < deadline && child.exitCode === null) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-  }
-  assert(fs.existsSync(readyPath), `health fixture did not bind temporary port ${port}`);
-  fs.rmSync(readyPath, { force: true });
-  return child;
-}
-
-function stopFixtureProcess(child) {
-  if (child && child.exitCode === null) child.kill();
 }
 
 function runPowerShell(args, options = {}) {

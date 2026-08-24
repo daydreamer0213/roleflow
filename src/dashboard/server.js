@@ -94,7 +94,7 @@ const {
   listProgressCardsWithEvents
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
-const { explicitDataRootForChild } = require("../core/runtime_paths");
+const { assertNoReparsePoint, explicitDataRootForChild } = require("../core/runtime_paths");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { inferCandidateDisplayName } = require("../core/resume_privacy");
@@ -116,7 +116,7 @@ const { createSiteAccessController } = require("../core/site_access_budget");
 const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
-const { createLogger, appError, errorMeta, publicError, workflowLogContext } = require("../core/observability");
+const { createLogger, appError, errorMeta, publicError, sanitize, workflowLogContext } = require("../core/observability");
 const {
   listModelPresets,
   listModelTaskProfiles,
@@ -498,7 +498,11 @@ function createDashboardServer({
   workspaceReconciler = null,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   planRescore = rescorePlanObservations,
-  assetReader = fs.readFileSync
+  assetReader = fs.readFileSync,
+  applicationVersion = require("../../package.json").version,
+  launchSessionId = randomUUID(),
+  diagnosticsActionToken = randomUUID(),
+  openLogsFolder = openLocalFolder
 }) {
   const frozenBrowserAuthority = normalizeDashboardBrowserAuthority(browserAuthority);
   const resolveDashboardWorkflowBrowser = (input) => resolveNewWorkflowBrowser(input, frozenBrowserAuthority);
@@ -642,6 +646,13 @@ function createDashboardServer({
     ...messageDiscoveryDependencies
   });
   let workspaceRuntime = publicWorkspaceRuntimeSnapshot();
+  const runtimeLogDir = resolveRuntimeLogDir({ dataRoot, logger });
+  const runtimeDiagnostics = () => buildRuntimeDiagnostics({
+    applicationVersion,
+    launchSessionId,
+    browser: browserSupervisor?.getSnapshot?.() || null,
+    workspace: workspaceRuntime
+  });
   const reconcileWorkspace = async (input) => {
     if (!workspaceReconciler) {
       throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
@@ -690,7 +701,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
-      if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent(), url.searchParams.get("events")));
+      if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent(), url.searchParams.get("events"), diagnosticsActionToken));
       if (req.method === "GET" && url.pathname === "/health") {
         return sendJson(res, 200, {
           ok: true,
@@ -709,6 +720,36 @@ function createDashboardServer({
           browser: browserSupervisor?.getSnapshot?.() || null,
           workspace: workspaceRuntime
         });
+      }
+      if (req.method === "GET" && url.pathname === "/api/runtime-diagnostics") {
+        return sendJson(res, 200, runtimeDiagnostics());
+      }
+      if (req.method === "POST" && url.pathname === "/api/runtime-diagnostics/open-logs") {
+        if (String(req.headers["x-roleflow-action"] || "") !== diagnosticsActionToken) {
+          throw appError("RUNTIME_DIAGNOSTICS_ACTION_REQUIRED", "请从 RoleFlow 诊断页面打开日志。", { statusCode: 403 });
+        }
+        const input = parseBody(await readBody(req), req.headers["content-type"] || "");
+        if (Object.keys(input).length) {
+          throw appError(
+            "RUNTIME_DIAGNOSTICS_INPUT_NOT_ALLOWED",
+            "打开日志不接受自定义路径。",
+            { statusCode: 400 }
+          );
+        }
+        assertNoReparsePoint(dataRoot);
+        assertNoReparsePoint(runtimeLogDir);
+        fs.mkdirSync(runtimeLogDir, { recursive: true });
+        assertNoReparsePoint(runtimeLogDir);
+        try {
+          await Promise.resolve(openLogsFolder(runtimeLogDir));
+        } catch (cause) {
+          throw appError(
+            "RUNTIME_LOG_FOLDER_OPEN_FAILED",
+            "RoleFlow 无法打开日志文件夹。",
+            { statusCode: 500, cause }
+          );
+        }
+        return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/browser/recover") {
         await readBody(req);
@@ -4569,7 +4610,7 @@ function modelSettingsBack(error, fallback) {
     : fallback;
 }
 
-function renderDiagnosticsPage(entries = [], events = "") {
+function renderDiagnosticsPage(entries = [], events = "", actionToken = "") {
   const showAll = events === "all";
   const rows = entries.filter((entry) => showAll || ["warn", "error"].includes(entry.level)).map((entry) => {
     const error = entry.error || {};
@@ -4590,7 +4631,71 @@ function renderDiagnosticsPage(entries = [], events = "") {
   const filterNotice = showAll
     ? `<p class="hint">正在显示最近 120 条脱敏日志（含常规事件）。<a href="/diagnostics">只看问题和建议行动</a></p>`
     : `<p class="hint">问题和建议行动优先：默认只显示 warn 和 error。<a href="/diagnostics?events=all">显示所有常规事件</a></p>`;
-  return renderLegacyDashboardPage({ title: "诊断日志", currentPath: "/diagnostics", stage: "诊断", body: `<main id="main-content"><h1>诊断日志</h1>${filterNotice}<p class="hint">仅展示最近 120 条脱敏日志。完整 JSONL 位于项目的 .runtime/logs。</p><section class="panel"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main>` });
+  return renderLegacyDashboardPage({ title: "诊断日志", currentPath: "/diagnostics", stage: "诊断", body: `<main id="main-content"><h1>诊断日志</h1><section class="panel"><h2>需要协助时</h2><p>复制的是运行状态和版本，不包含简历、岗位内容、登录信息或本机文件路径。</p><div class="button-row"><button type="button" data-copy-runtime-diagnostics>复制诊断信息</button><button type="button" class="secondary" data-open-runtime-logs>打开日志文件夹</button></div><p class="hint" data-runtime-diagnostics-feedback aria-live="polite">完整日志保存在当前用户的 RoleFlow 数据目录。</p></section>${filterNotice}<p class="hint">下方仅展示最近 120 条脱敏日志。</p><span class="nav-scroll-hint">左右滑动查看完整日志表格</span><section class="panel diagnostics-scroll"><table class="diagnostics"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>事件</th><th>请求</th><th>错误码</th><th>摘要</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">暂无日志</td></tr>"}</tbody></table></section></main><script>(function(){const actionToken=${JSON.stringify(String(actionToken || ""))};const feedback=document.querySelector('[data-runtime-diagnostics-feedback]');const copy=document.querySelector('[data-copy-runtime-diagnostics]');const open=document.querySelector('[data-open-runtime-logs]');copy?.addEventListener('click',async()=>{try{const response=await fetch('/api/runtime-diagnostics');if(!response.ok)throw new Error();const value=JSON.stringify(await response.json(),null,2);await navigator.clipboard.writeText(value);feedback.textContent='诊断信息已复制。';}catch{feedback.textContent='复制失败，请重试。';}});open?.addEventListener('click',async()=>{try{const response=await fetch('/api/runtime-diagnostics/open-logs',{method:'POST',headers:{'content-type':'application/json','x-roleflow-action':actionToken},body:'{}'});if(!response.ok)throw new Error();feedback.textContent='日志文件夹已打开。';}catch{feedback.textContent='无法打开日志文件夹，请重试。';}});}());</script>` });
+}
+
+function buildRuntimeDiagnostics({ applicationVersion, launchSessionId, browser, workspace }) {
+  return sanitize({
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    application: {
+      status: "ready",
+      ready: true,
+      version: String(applicationVersion || "unknown"),
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      launchSessionId: String(launchSessionId || "")
+    },
+    browser: browser ? {
+      status: String(browser.status || "unknown"),
+      ready: browser.ready === true,
+      action: String(browser.action || "none"),
+      checkedAt: String(browser.checkedAt || ""),
+      failureCount: Number(browser.failureCount || 0),
+      sessionId: String(browser.sessionId || "")
+    } : null,
+    workspace: {
+      status: String(workspace?.status || "unchecked"),
+      ready: workspace?.ready === true
+    },
+    logs: {
+      available: true,
+      label: "RoleFlow 用户日志目录"
+    }
+  });
+}
+
+function resolveRuntimeLogDir({ dataRoot, logger }) {
+  const expected = path.resolve(dataRoot, ".runtime", "logs");
+  const actual = path.resolve(logger?.logDir || expected);
+  if (actual.startsWith("\\\\") || !path.isAbsolute(actual)) {
+    throw appError("RUNTIME_LOG_DIRECTORY_INVALID", "RoleFlow 日志目录无效。", { statusCode: 500 });
+  }
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
+    throw appError("RUNTIME_LOG_DIRECTORY_INVALID", "RoleFlow 日志目录无效。", { statusCode: 500 });
+  }
+  assertNoReparsePoint(dataRoot);
+  assertNoReparsePoint(actual);
+  return actual;
+}
+
+function openLocalFolder(folder) {
+  if (process.platform !== "win32") {
+    throw appError("RUNTIME_LOG_FOLDER_OPEN_UNSUPPORTED", "当前系统不能自动打开日志文件夹。", { statusCode: 501 });
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn("explorer.exe", [folder], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 function respondUiError(res, error, back, { logger, requestId, event, fallbackCode }) {

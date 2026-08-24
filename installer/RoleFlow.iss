@@ -95,6 +95,15 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    WizardForm.StatusLabel.Caption := '正在准备 RoleFlow 用户数据…';
+    if (not RunPowerShellScript(
+      'prepare-user-data.ps1',
+      '-InstallRoot "' + ExpandConstant('{app}') + '"',
+      ResultCode
+    )) or (ResultCode <> 0) then
+      RaiseException(
+        'RoleFlow 无法安全准备用户数据。安装文件没有被当作用户数据使用，请查看安装日志。'
+      );
     WizardForm.StatusLabel.Caption := '正在检查 RoleFlow 本地运行环境…';
     if (not RunPowerShellScript(
       'installed-self-check.ps1',
@@ -102,7 +111,7 @@ begin
       ResultCode
     )) or (ResultCode <> 0) then
       RaiseException(
-        'RoleFlow 环境自检未通过。请查看安装目录下 .runtime\logs\install-self-check.log。'
+        'RoleFlow 环境自检未通过。请确认已安装 Microsoft Edge；详细信息位于当前用户的 RoleFlow 数据目录：.runtime\logs\install-self-check.log。'
       );
   end;
 end;

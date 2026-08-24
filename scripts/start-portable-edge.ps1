@@ -23,6 +23,7 @@ function Resolve-EdgePath {
   $Candidates = @()
   if (${env:ProgramFiles(x86)}) { $Candidates += (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe") }
   if ($env:ProgramFiles) { $Candidates += (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe") }
+  if ($env:LOCALAPPDATA) { $Candidates += (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\Application\msedge.exe") }
   foreach ($Candidate in $Candidates) {
     if (Test-Path -LiteralPath $Candidate) {
       return Resolve-RoleFlowNormalizedPath -Path $Candidate

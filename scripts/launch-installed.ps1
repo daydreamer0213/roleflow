@@ -39,20 +39,31 @@ function Show-RoleFlowError {
   } else {
     $Reason
   }
+  $CanOpenLogs = Test-Path -LiteralPath $LogDir -PathType Container
   $Message = @"
 RoleFlow 启动失败。
 
 $DisplayReason
 
-$(if ($Reason -match 'DASHBOARD_BROWSER_AUTHORITY_MISMATCH|PORTABLE_EDGE_(PORT_OCCUPIED_NOT_CDP|LISTENER_SNAPSHOT_MISMATCH)|Portable Edge identity check failed on port|RoleFlow browser profile is already in use') { '请关闭占用 RoleFlow 专用 Edge（推荐）配置目录或 9222 端口的窗口后重试。' } else { '请按提示处理后重试。' })
+RoleFlow 工作台未能启动，已有用户数据不会被删除或覆盖。请按提示处理后重试。
 诊断日志：$LogPath
+$(if ($CanOpenLogs) { "`r`n是否打开诊断日志文件夹？" } else { "" })
 "@
-  [void][System.Windows.Forms.MessageBox]::Show(
+  $Buttons = if ($CanOpenLogs) {
+    [System.Windows.Forms.MessageBoxButtons]::YesNo
+  } else {
+    [System.Windows.Forms.MessageBoxButtons]::OK
+  }
+  $Result = [System.Windows.Forms.MessageBox]::Show(
     $Message,
     "RoleFlow",
-    [System.Windows.Forms.MessageBoxButtons]::OK,
+    $Buttons,
     [System.Windows.Forms.MessageBoxIcon]::Error
   )
+  if ($CanOpenLogs -and $Result -eq [System.Windows.Forms.DialogResult]::Yes) {
+    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $LogDir -IncludeDescendants)
+    Start-Process -FilePath "explorer.exe" -ArgumentList @(('"{0}"' -f $LogDir)) | Out-Null
+  }
 }
 
 function Get-RoleFlowStartupMutexName {

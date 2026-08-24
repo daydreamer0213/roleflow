@@ -4,6 +4,7 @@ const { spawnSync } = require("node:child_process");
 const tests = [
   "self_check.js",
   "windows_installer_smoke.js",
+  "cross_machine_runtime_smoke.js",
   "startup_scripts_smoke.js",
   "background_process_visibility_smoke.js",
   "scoring_url_smoke.js",

@@ -141,12 +141,6 @@ foreach ($RelativePath in @(
   "configs\keywords.yaml",
   "configs\scoring.yaml",
   "configs\model.json",
-  "configs\profile.example.json",
-  "profiles\example_profile.json",
-  "profiles\example_resume_versions.json",
-  "profiles\README.md",
-  "data\sample_jobs.json",
-  "data\sample_resume.txt",
   "docs\README.md",
   "docs\daily_workflow.md",
   "docs\onboarding_workflow.md",
@@ -166,7 +160,7 @@ $ForbiddenFiles = @(
       $RelativePath = $_.FullName.Substring($StageDir.Length + 1)
       $_.Name -match "jobs\.sqlite|\.sqlite(?:-(wal|shm))?$|\.key$|^\.env(?:\.|$)" -or
       $RelativePath -match "(^|\\)(BrowserProfile|edge-profile|secrets?)(\\|$)" -or
-      $RelativePath -match "^(tests|vendor\\edge-control-bridge|\.runtime|reports|logs)(\\|$)"
+      $RelativePath -match "^(tests|data|profiles|vendor\\edge-control-bridge|\.runtime|reports|logs)(\\|$)"
     }
 )
 if ($ForbiddenFiles.Count -gt 0) {
