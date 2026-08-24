@@ -61,6 +61,12 @@ function quietLogger() {
     cdpPort: 9222,
     profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
   };
+  const reconcileCalls = [];
+  const workspaceResponses = [
+    { status: "ready", bossTabId: "boss-search", communicationTabId: "boss-chat", dashboardTabId: "dashboard" },
+    { status: "login_required", bossTabId: "boss-login", communicationTabId: null, dashboardTabId: "dashboard" },
+    { status: "ambiguous", errorCode: "BOSS_TAB_REQUIRED", message: "工作区存在多个候选页面。" }
+  ];
   const server = createDashboardServer({
     db,
     dbPath,
@@ -68,7 +74,11 @@ function quietLogger() {
     forceMock: true,
     logger: quietLogger(),
     browserAuthority,
-    browserSupervisor: supervisor
+    browserSupervisor: supervisor,
+    workspaceReconciler: async (input) => {
+      reconcileCalls.push({ ...input });
+      return workspaceResponses.shift();
+    }
   });
   const base = await listen(server);
   try {
@@ -100,13 +110,62 @@ function quietLogger() {
       assert.strictEqual(response.status, 200, `${pathname} must remain available without Edge`);
     }
 
+    const blockedReconcile = await postJson(base, "/api/runtime/workspace/reconcile", {
+      startupGuidance: true
+    });
+    assert.strictEqual(blockedReconcile.status, 409);
+    assert.strictEqual(blockedReconcile.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
+    assert.deepStrictEqual(reconcileCalls, []);
+
+    supervisor.setSnapshot(snapshot("ready"));
+    const reconciled = await postJson(base, "/api/runtime/workspace/reconcile", {
+      startupGuidance: true
+    });
+    assert.strictEqual(reconciled.status, 200);
+    assert.strictEqual(reconciled.body.workspace.status, "ready");
+    assert.deepStrictEqual(reconcileCalls, [{
+      startupGuidance: false,
+      reason: "user_reconcile"
+    }]);
+
+    supervisor.setSnapshot(snapshot("unavailable", {
+      message: "RoleFlow 专用 Edge 暂时无法使用。",
+      action: "install_edge",
+      failureCount: 1
+    }));
+
     const recovered = await postJson(base, "/api/runtime/browser/recover", {});
     assert.strictEqual(recovered.status, 200);
-    assert.deepStrictEqual(recovered.body, { browser: snapshot("ready") });
+    assert.deepStrictEqual(recovered.body, {
+      browser: snapshot("ready"),
+      workspace: {
+        status: "login_required",
+        bossTabId: "boss-login",
+        communicationTabId: null,
+        dashboardTabId: "dashboard"
+      }
+    });
     assert.deepStrictEqual(supervisor.calls, [{
       dashboardUrl: `${base}/`,
       reason: "user_recovery"
     }]);
+    assert.deepStrictEqual(reconcileCalls, [
+      { startupGuidance: false, reason: "user_reconcile" },
+      { startupGuidance: false, reason: "user_recovery" }
+    ]);
+
+    const ambiguous = await postJson(base, "/api/runtime/workspace/reconcile", {
+      startupGuidance: true
+    });
+    assert.strictEqual(ambiguous.status, 200);
+    assert.strictEqual(ambiguous.body.workspace.status, "ambiguous");
+    const healthAfterAmbiguity = await getJson(base, "/health");
+    assert.strictEqual(healthAfterAmbiguity.status, 200);
+    assert.strictEqual(healthAfterAmbiguity.body.applicationStatus, "ready");
+    assert.deepStrictEqual(reconcileCalls.at(-1), {
+      startupGuidance: false,
+      reason: "user_reconcile"
+    });
   } finally {
     await close(server);
     db.close();

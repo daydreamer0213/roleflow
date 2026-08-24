@@ -226,6 +226,7 @@ async function prepareWorkspaceTabsCommand(
     dashboardUrl: parsedDashboardUrl.toString(),
     requireFixedBossTabs: true,
     bootstrapDedicatedTabs: browserMode === "portable",
+    allowStartupGuidance: true,
     inspectReadiness: ({ guidanceTab, fixedTabs }) => inspectBossBrowserReadiness({
       browserMode,
       preflight: async () => {
@@ -2630,7 +2631,9 @@ function rebuildReport(db, args = {}) {
 function startDashboard(db, args) {
   const port = Number(args.port || 8787);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("Invalid --port");
+  const dashboardUrl = `http://127.0.0.1:${port}/`;
   let browserSupervisor = null;
+  let workspaceReconciler = null;
   if (args.browser === "portable" && args["no-browser"] !== true && args["force-mock"] !== true) {
     const profilePath = String(args["browser-profile"] || "").trim();
     if (!profilePath || !path.isAbsolute(profilePath)) {
@@ -2646,6 +2649,33 @@ function startDashboard(db, args) {
       inspectBrowser: browserRuntime.inspect,
       logger
     });
+    const workspaceBrowser = createBrowser({ browser: "portable", "cdp-port": Number(args["cdp-port"] || 9222) });
+    const workspaceAdapter = createSiteAdapter("boss", { browser: workspaceBrowser, logger });
+    let workspaceReconciliationQueue = Promise.resolve();
+    workspaceReconciler = ({ startupGuidance = false } = {}) => {
+      const reconciliation = workspaceReconciliationQueue.then(() => prepareWorkspaceTabs({
+        browser: workspaceBrowser,
+        dashboardUrl,
+        requireFixedBossTabs: true,
+        bootstrapDedicatedTabs: true,
+        allowStartupGuidance: startupGuidance,
+        inspectReadiness: ({ guidanceTab, fixedTabs }) => inspectBossBrowserReadiness({
+          browserMode: "portable",
+          preflight: async () => {
+            if (!fixedTabs) return workspaceAdapter.preflight({ tabId: guidanceTab.id });
+            const inspected = await inspectBossOperatorTabs({
+              browser: workspaceBrowser,
+              inspectTab: (tabId) => workspaceAdapter.preflight({ tabId }),
+              expectedSearchTabId: fixedTabs.searchTab.id,
+              expectedCommunicationTabId: fixedTabs.communicationTab.id
+            });
+            return inspected.searchState;
+          }
+        })
+      }));
+      workspaceReconciliationQueue = reconciliation.catch(() => null);
+      return reconciliation;
+    };
   }
   const server = createDashboardServer({
     db,
@@ -2657,6 +2687,7 @@ function startDashboard(db, args) {
       profilePath: args["browser-profile"] || ""
     },
     browserSupervisor,
+    workspaceReconciler,
     modelConfig: loadConfigs(ROOT).model,
     allowOfflineMock: args["allow-offline-mock"] === true,
     forceMock: args["force-mock"] === true
@@ -2664,8 +2695,18 @@ function startDashboard(db, args) {
   logger.info("dashboard_starting", { port, dbPath: path.resolve(args.db || DEFAULT_DB) });
   installDashboardSignalHandlers({ server, db, logger });
   server.listen(port, "127.0.0.1", () => {
-    const dashboardUrl = `http://127.0.0.1:${port}/`;
-    if (browserSupervisor) void browserSupervisor.start({ dashboardUrl, reason: "dashboard_started" });
+    if (browserSupervisor) {
+      void browserSupervisor.start({ dashboardUrl, reason: "dashboard_started" })
+        .then((browser) => browser.ready
+          ? workspaceReconciler({
+            startupGuidance: args["no-startup-guidance"] !== true,
+            reason: "initial_startup"
+          })
+          : null)
+        .catch((error) => logger.warn("workspace_initial_reconciliation_failed", {
+          errorCode: String(error?.code || "WORKSPACE_RECONCILIATION_FAILED")
+        }));
+    }
     console.log(`Dashboard: ${dashboardUrl}`);
     console.log("只写本地 SQLite，不会自动投递或发消息。按 Ctrl+C 停止。");
   });

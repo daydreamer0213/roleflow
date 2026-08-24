@@ -453,6 +453,7 @@ function createDashboardServer({
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   browserSupervisor = null,
+  workspaceReconciler = null,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync
@@ -655,7 +656,25 @@ function createDashboardServer({
           dashboardUrl: `http://127.0.0.1:${address.port}/`,
           reason: "user_recovery"
         });
-        return sendJson(res, 200, { browser });
+        const workspace = browser?.ready && workspaceReconciler
+          ? await workspaceReconciler({ startupGuidance: false, reason: "user_recovery" })
+          : null;
+        return sendJson(res, 200, workspace ? { browser, workspace } : { browser });
+      }
+      if (req.method === "POST" && url.pathname === "/api/runtime/workspace/reconcile") {
+        parseBody(await readBody(req), req.headers["content-type"] || "");
+        if (!workspaceReconciler) {
+          throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
+        }
+        const browser = browserSupervisor?.getSnapshot?.() || null;
+        if (!browser?.ready) {
+          throw appError("BROWSER_RUNTIME_NOT_READY", "RoleFlow 专用 Edge 尚未就绪，请先恢复浏览器。", { statusCode: 409 });
+        }
+        const workspace = await workspaceReconciler({
+          startupGuidance: false,
+          reason: "user_reconcile"
+        });
+        return sendJson(res, 200, { browser, workspace });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
         const authority = resolveDashboardWorkflowBrowser({

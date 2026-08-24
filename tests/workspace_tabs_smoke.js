@@ -273,6 +273,225 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     windowId: 42
   };
 
+  const dashboardOnlyLoginQuiet = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    { id: "CDP-dashboard-login-quiet", windowId: 42, active: false }
+  ]);
+  const dashboardOnlyLoginQuietResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyLoginQuiet,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async ({ guidanceTab, fixedTabs }) => {
+      assert.strictEqual(guidanceTab.id, "CDP-dashboard-login-quiet");
+      assert.strictEqual(fixedTabs, null);
+      return { status: "login_required" };
+    }
+  });
+  assert.deepStrictEqual(dashboardOnlyLoginQuietResult, {
+    bossTabId: "CDP-dashboard-login-quiet",
+    communicationTabId: null,
+    dashboardTabId: dashboard.id,
+    windowId: 42,
+    status: "login_required"
+  });
+  assert.deepStrictEqual(dashboardOnlyLoginQuiet.state.createCalls, [{
+    openerTabId: dashboard.id,
+    url: "https://www.zhipin.com/web/geek/jobs"
+  }]);
+  assert.deepStrictEqual(dashboardOnlyLoginQuiet.state.frontCalls, []);
+
+  const dashboardOnlyLoginGuided = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    { id: "CDP-dashboard-login-guided", windowId: 42, active: false }
+  ]);
+  const dashboardOnlyLoginGuidedResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyLoginGuided,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
+    inspectReadiness: async () => ({ status: "login_required" })
+  });
+  assert.strictEqual(dashboardOnlyLoginGuidedResult.status, "login_required");
+  assert.deepStrictEqual(dashboardOnlyLoginGuided.state.createCalls, [{
+    openerTabId: dashboard.id,
+    url: "https://www.zhipin.com/web/geek/jobs"
+  }]);
+  assert.deepStrictEqual(dashboardOnlyLoginGuided.state.frontCalls, ["CDP-dashboard-login-guided"]);
+
+  const dashboardOnlyRedirectedLogin = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    {
+      id: "CDP-dashboard-login-redirect",
+      windowId: 42,
+      active: false,
+      resolvedUrl: "https://www.zhipin.com/"
+    }
+  ]);
+  let redirectedLoginInspections = 0;
+  const dashboardOnlyRedirectedLoginResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyRedirectedLogin,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
+    inspectReadiness: async ({ guidanceTab }) => {
+      redirectedLoginInspections += 1;
+      assert.strictEqual(guidanceTab.id, "CDP-dashboard-login-redirect");
+      assert.strictEqual(guidanceTab.url, "https://www.zhipin.com/");
+      return { status: "login_required" };
+    }
+  });
+  assert.strictEqual(dashboardOnlyRedirectedLoginResult.status, "login_required");
+  assert.strictEqual(redirectedLoginInspections, 1);
+  assert.deepStrictEqual(dashboardOnlyRedirectedLogin.state.closeCalls, []);
+  assert.deepStrictEqual(dashboardOnlyRedirectedLogin.state.frontCalls, ["CDP-dashboard-login-redirect"]);
+
+  const dashboardOnlyTransitionReady = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    {
+      id: "CDP-dashboard-transition-search",
+      windowId: 42,
+      active: false,
+      resolvedUrl: "https://www.zhipin.com/"
+    },
+    { id: "CDP-dashboard-transition-chat", windowId: 42, active: false }
+  ]);
+  const dashboardOnlyTransitionResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyTransitionReady,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => {
+      dashboardOnlyTransitionReady.state.tabs.find(
+        (tab) => tab.id === "CDP-dashboard-transition-search"
+      ).url = "https://www.zhipin.com/web/geek/jobs";
+      return { status: "ready" };
+    }
+  });
+  assert.strictEqual(dashboardOnlyTransitionResult.status, "ready");
+  assert.deepStrictEqual(dashboardOnlyTransitionReady.state.createCalls, [
+    { openerTabId: dashboard.id, url: "https://www.zhipin.com/web/geek/jobs" },
+    { openerTabId: "CDP-dashboard-transition-search", url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
+  assert.deepStrictEqual(dashboardOnlyTransitionReady.state.closeCalls, []);
+
+  const searchDriftAfterReadiness = dedicatedBrowser([
+    { ...boss, active: true }
+  ], [
+    { id: "must-not-create-chat-after-drift", windowId: 42, active: false }
+  ]);
+  const searchDriftResult = await prepareWorkspaceTabs({
+    browser: searchDriftAfterReadiness,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => {
+      searchDriftAfterReadiness.state.tabs[0].url = "https://www.zhipin.com/job_detail/drift.html";
+      return { status: "ready" };
+    }
+  });
+  assert.strictEqual(searchDriftResult.status, "ambiguous");
+  assert.deepStrictEqual(searchDriftAfterReadiness.state.createCalls, []);
+
+  const dashboardOnlyReady = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    { id: "CDP-dashboard-search", windowId: 42, active: false },
+    { id: "CDP-dashboard-chat", windowId: 42, active: false }
+  ]);
+  const dashboardOnlyReadyResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyReady,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.deepStrictEqual(dashboardOnlyReadyResult, {
+    bossTabId: "CDP-dashboard-search",
+    communicationTabId: "CDP-dashboard-chat",
+    dashboardTabId: dashboard.id,
+    windowId: 42,
+    status: "ready"
+  });
+  assert.deepStrictEqual(dashboardOnlyReady.state.createCalls, [
+    { openerTabId: dashboard.id, url: "https://www.zhipin.com/web/geek/jobs" },
+    { openerTabId: "CDP-dashboard-search", url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
+  assert.deepStrictEqual(dashboardOnlyReady.state.frontCalls, [dashboard.id]);
+
+  const completedCreateCount = dashboardOnlyReady.state.createCalls.length;
+  const completedFrontCount = dashboardOnlyReady.state.frontCalls.length;
+  const repeatedResult = await prepareWorkspaceTabs({
+    browser: dashboardOnlyReady,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(repeatedResult.status, "ready");
+  assert.strictEqual(dashboardOnlyReady.state.createCalls.length, completedCreateCount);
+  assert.strictEqual(dashboardOnlyReady.state.frontCalls.length, completedFrontCount);
+
+  const hiddenDashboardOnly = dedicatedBrowser([
+    { ...dashboard, active: false }
+  ], [{ id: "must-not-be-created", windowId: 42, active: false }]);
+  const hiddenDashboardResult = await prepareWorkspaceTabs({
+    browser: hiddenDashboardOnly,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(hiddenDashboardResult.status, "ambiguous");
+  assert.strictEqual(hiddenDashboardResult.errorCode, "BROWSER_COMMAND_FAILED");
+  assert.deepStrictEqual(hiddenDashboardOnly.state.createCalls, []);
+
+  for (const ambiguousTabs of [
+    [{ ...dashboard, active: true }, { ...boss, active: false }, { ...boss, id: "second-boss", active: false }],
+    [{ ...dashboard, active: true }, { id: "other-window", url: "https://example.invalid/", windowId: 99, active: false }]
+  ]) {
+    const ambiguous = dedicatedBrowser(ambiguousTabs);
+    const ambiguousResult = await prepareWorkspaceTabs({
+      browser: ambiguous,
+      dashboardUrl: dashboard.url,
+      bootstrapDedicatedTabs: true,
+      allowStartupGuidance: false,
+      inspectReadiness: async () => ({ status: "ready" })
+    });
+    assert.strictEqual(ambiguousResult.status, "ambiguous");
+    assert.deepStrictEqual(ambiguous.state.createCalls, []);
+    assert.deepStrictEqual(ambiguous.state.closeCalls, []);
+  }
+
+  const dashboardBootstrapCleanup = dedicatedBrowser([
+    { ...dashboard, active: true }
+  ], [
+    { id: "CDP-cleanup-search", windowId: 42, active: false },
+    { id: "CDP-cleanup-chat", windowId: 42, active: true }
+  ]);
+  const dashboardBootstrapCleanupResult = await prepareWorkspaceTabs({
+    browser: dashboardBootstrapCleanup,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(dashboardBootstrapCleanupResult.status, "ambiguous");
+  assert.strictEqual(dashboardBootstrapCleanupResult.errorCode, "BROWSER_COMMAND_FAILED");
+  assert.deepStrictEqual(dashboardBootstrapCleanup.state.createCalls, [
+    { openerTabId: dashboard.id, url: "https://www.zhipin.com/web/geek/jobs" },
+    { openerTabId: "CDP-cleanup-search", url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
+  assert.deepStrictEqual(dashboardBootstrapCleanup.state.closeCalls, [
+    "CDP-cleanup-chat",
+    "CDP-cleanup-search"
+  ]);
+  assert.deepStrictEqual(dashboardBootstrapCleanup.state.tabs, [{ ...dashboard, active: true }]);
+
   const loginTab = { id: "CDP-login", url: "https://www.zhipin.com/", windowId: 42, active: true };
   const loginBrowser = dedicatedBrowser([loginTab]);
   const loginInspections = [];
@@ -280,6 +499,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browser: loginBrowser,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
     inspectReadiness: async (context) => {
       loginInspections.push(context);
       return { status: "login_required" };
@@ -325,6 +545,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browser: bootstrapped,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
     inspectReadiness: async ({ guidanceTab, fixedTabs }) => {
       assert.strictEqual(guidanceTab.id, boss.id);
       assert.strictEqual(fixedTabs, null);
@@ -357,6 +578,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browser: redirectedDashboard,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
     inspectReadiness: async () => ({ status: "ready" })
   });
   assert.strictEqual(redirectedResult.dashboardTabId, "CDP-dashboard-redirect");
@@ -372,12 +594,13 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   for (const tabs of invalidTopologies) {
     const invalid = dedicatedBrowser(tabs);
     let inspections = 0;
-    await assert.rejects(() => prepareWorkspaceTabs({
+    const invalidResult = await prepareWorkspaceTabs({
       browser: invalid,
       dashboardUrl: dashboard.url,
       bootstrapDedicatedTabs: true,
       inspectReadiness: async () => { inspections += 1; return { status: "ready" }; }
-    }));
+    });
+    assert.strictEqual(invalidResult.status, "ambiguous");
     assert.strictEqual(inspections, 0);
     assert.deepStrictEqual(invalid.state.createCalls, []);
     assert.deepStrictEqual(invalid.state.frontCalls, []);
@@ -386,21 +609,26 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   const duplicateDashboard = dedicatedBrowser([
     { ...boss, active: true }, fixedCommunication, dashboard, { ...dashboard, id: "dashboard-2" }
   ]);
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const duplicateDashboardResult = await prepareWorkspaceTabs({
     browser: duplicateDashboard,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => error.code === "WORKSPACE_DASHBOARD_TAB_AMBIGUOUS");
+  });
+  assert.strictEqual(duplicateDashboardResult.status, "ambiguous");
+  assert.strictEqual(duplicateDashboardResult.errorCode, "WORKSPACE_DASHBOARD_TAB_AMBIGUOUS");
   assert.deepStrictEqual(duplicateDashboard.state.closeCalls, []);
 
   const noVisible = dedicatedBrowser([{ ...boss, active: false }]);
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const noVisibleResult = await prepareWorkspaceTabs({
     browser: noVisible,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => error.code === "BROWSER_COMMAND_FAILED" && /恢复.*专用 Edge/.test(error.message));
+  });
+  assert.strictEqual(noVisibleResult.status, "ambiguous");
+  assert.strictEqual(noVisibleResult.errorCode, "BROWSER_COMMAND_FAILED");
+  assert.match(noVisibleResult.message, /恢复.*专用 Edge/);
   assert.deepStrictEqual(noVisible.state.createCalls, []);
   assert.deepStrictEqual(noVisible.state.frontCalls, []);
 
@@ -413,34 +641,57 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browser: completeButHidden,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
     inspectReadiness: async () => ({ status: "ready" })
   });
   assert.strictEqual(completeHiddenResult.status, "ready");
   assert.deepStrictEqual(completeButHidden.state.createCalls, []);
   assert.deepStrictEqual(completeButHidden.state.frontCalls, [dashboard.id]);
 
+  const hiddenWindowDrift = dedicatedBrowser([
+    { ...boss, active: false },
+    { ...fixedCommunication, active: false },
+    { ...dashboard, active: false }
+  ]);
+  const hiddenWindowDriftResult = await prepareWorkspaceTabs({
+    browser: hiddenWindowDrift,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
+    inspectReadiness: async () => {
+      for (const tab of hiddenWindowDrift.state.tabs) tab.windowId = 99;
+      return { status: "ready" };
+    }
+  });
+  assert.strictEqual(hiddenWindowDriftResult.status, "ambiguous");
+  assert.strictEqual(hiddenWindowDriftResult.errorCode, "WORKSPACE_WINDOW_MISMATCH");
+  assert.deepStrictEqual(hiddenWindowDrift.state.frontCalls, []);
+
   const multipleVisible = dedicatedBrowser([
     { ...boss, active: true },
     { id: "visible-user-page", url: "https://example.invalid/", windowId: 42, active: true }
   ]);
   let multipleVisibleInspections = 0;
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const multipleVisibleResult = await prepareWorkspaceTabs({
     browser: multipleVisible,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => { multipleVisibleInspections += 1; return { status: "risk_control" }; }
-  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  });
+  assert.strictEqual(multipleVisibleResult.status, "ambiguous");
+  assert.strictEqual(multipleVisibleResult.errorCode, "BROWSER_COMMAND_FAILED");
   assert.strictEqual(multipleVisibleInspections, 0, "two visible pages invalidate even read-only startup inspection");
 
   const foregroundChat = dedicatedBrowser([{ ...boss, active: true }, {
     id: "unrelated-user-page", url: "https://example.invalid/", windowId: 42, active: false
   }], [{ id: "CDP-chat-foreground", windowId: 42, active: true }]);
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const foregroundChatResult = await prepareWorkspaceTabs({
     browser: foregroundChat,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  });
+  assert.strictEqual(foregroundChatResult.status, "ambiguous");
   assert.deepStrictEqual(foregroundChat.state.closeCalls, ["CDP-chat-foreground"]);
   assert(foregroundChat.state.tabs.some((tab) => tab.id === "unrelated-user-page"));
   assert.deepStrictEqual(foregroundChat.state.frontCalls, []);
@@ -450,12 +701,13 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     { id: "CDP-chat-cleanup", windowId: 42, active: false },
     { id: "CDP-dashboard-foreground", windowId: 42, active: true }
   ]);
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const foregroundDashboardResult = await prepareWorkspaceTabs({
     browser: foregroundDashboard,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  });
+  assert.strictEqual(foregroundDashboardResult.status, "ambiguous");
   assert.deepStrictEqual(
     foregroundDashboard.state.closeCalls,
     ["CDP-dashboard-foreground", "CDP-chat-cleanup"],
@@ -474,7 +726,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   ]);
   const listTransientCleanup = transientCleanup.listTabs.bind(transientCleanup);
   transientCleanup.listTabs = async () => {
-    if (transientCleanup.state.listCalls === 4) {
+    if (transientCleanup.state.listCalls === 5) {
       transientCleanup.state.listCalls += 1;
       const error = new Error("fixture closed target is still disappearing");
       error.code = "BROWSER_DISCONNECTED";
@@ -482,33 +734,32 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     }
     return listTransientCleanup();
   };
-  let transientPrimaryError = null;
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const transientCleanupResult = await prepareWorkspaceTabs({
     browser: transientCleanup,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => {
-    transientPrimaryError = error;
-    return error.code === "WORKSPACE_DASHBOARD_TAB_REQUIRED";
   });
+  assert.strictEqual(transientCleanupResult.status, "ambiguous");
+  assert.strictEqual(transientCleanupResult.errorCode, "WORKSPACE_DASHBOARD_TAB_REQUIRED");
   assert.deepStrictEqual(
     transientCleanup.state.closeCalls,
     ["CDP-dashboard-wrong-origin", "CDP-chat-transient-cleanup"]
   );
-  assert.strictEqual(transientPrimaryError.cleanupError, undefined);
-  assert.doesNotMatch(transientPrimaryError.message, /清理失败/);
+  assert.doesNotMatch(transientCleanupResult.message, /清理失败/);
 
   const failedFocus = dedicatedBrowser([
     { ...boss, active: true }, fixedCommunication, { ...dashboard, active: false }
   ]);
   failedFocus.bringToFront = async (tabId) => { failedFocus.state.frontCalls.push(tabId); };
-  await assert.rejects(() => prepareWorkspaceTabs({
+  const failedFocusResult = await prepareWorkspaceTabs({
     browser: failedFocus,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
+    allowStartupGuidance: true,
     inspectReadiness: async () => ({ status: "ready" })
-  }), (error) => error.code === "BROWSER_COMMAND_FAILED");
+  });
+  assert.strictEqual(failedFocusResult.status, "ambiguous");
   assert.deepStrictEqual(failedFocus.state.frontCalls, [dashboard.id], "startup focus guidance must not retry");
 
   const typedRuntimeTabs = [
@@ -549,12 +800,14 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
         dashboardUrl,
         requireFixedBossTabs,
         bootstrapDedicatedTabs,
+        allowStartupGuidance,
         inspectReadiness
       }) => {
         assert.strictEqual(receivedBrowser, browser);
         assert.strictEqual(dashboardUrl, "http://localhost:8787/workspace");
         calls.requireFixedBossTabs = requireFixedBossTabs;
         calls.bootstrapDedicatedTabs = bootstrapDedicatedTabs;
+        calls.allowStartupGuidance = allowStartupGuidance;
         assert.strictEqual((await inspectReadiness({
           guidanceTab: calls.fixedTabs.searchTab,
           fixedTabs: calls.fixedTabs
@@ -572,6 +825,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     browserList: 0,
     requireFixedBossTabs: null,
     bootstrapDedicatedTabs: null,
+    allowStartupGuidance: null,
     fixedTabs: {
       searchTab: { id: "fixed-search", url: "https://www.zhipin.com/web/geek/jobs", windowId: 55 },
       communicationTab: { id: "fixed-communication", url: "https://www.zhipin.com/web/geek/chat", windowId: 55 }
@@ -588,6 +842,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   assert.deepStrictEqual(commandCalls.browser, [{ browser: "edge" }]);
   assert.strictEqual(commandCalls.requireFixedBossTabs, true);
   assert.strictEqual(commandCalls.bootstrapDedicatedTabs, false);
+  assert.strictEqual(commandCalls.allowStartupGuidance, true);
   assert.strictEqual(commandCalls.browserList, 2);
   assert.strictEqual(commandCalls.adapter[0].site, "boss");
   assert.deepStrictEqual(commandCalls.preflight, [
@@ -616,6 +871,7 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   }]);
   assert.strictEqual(portableCalls.requireFixedBossTabs, true);
   assert.strictEqual(portableCalls.bootstrapDedicatedTabs, true);
+  assert.strictEqual(portableCalls.allowStartupGuidance, true);
   assert.strictEqual(portableCalls.browserList, 2);
   assert.deepStrictEqual(portableCalls.preflight, [
     { tabId: "fixed-communication" },

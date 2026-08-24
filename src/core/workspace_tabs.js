@@ -4,6 +4,7 @@ function workspaceError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
   Object.assign(error, details);
+  Object.defineProperty(error, "isWorkspaceError", { value: true });
   return error;
 }
 
@@ -217,7 +218,8 @@ async function prepareWorkspaceTabs({
   dashboardUrl,
   inspectReadiness,
   requireFixedBossTabs = false,
-  bootstrapDedicatedTabs = false
+  bootstrapDedicatedTabs = false,
+  allowStartupGuidance = false
 }) {
   if (!browser || typeof inspectReadiness !== "function") {
     throw new TypeError("prepareWorkspaceTabs requires browser and inspectReadiness()");
@@ -240,75 +242,151 @@ async function prepareWorkspaceTabs({
     });
   }
   const baseline = workspaceBaseline(tabs);
-  const initial = assertDedicatedTopology(tabs, dashboardUrl);
-  if (visibleIdsInWindow(tabs, initial.guidanceTab.windowId).length > 1) {
-    throw workspaceError("BROWSER_COMMAND_FAILED", "RoleFlow 专用 Edge（推荐）同时出现多个前台标签页，无法安全继续。");
+  let workingTabs = tabs;
+  let current;
+  try {
+    current = assertDedicatedTopology(workingTabs, dashboardUrl);
+  } catch (error) {
+    return ambiguousWorkspaceResult(workingTabs, dashboardUrl, error);
   }
-  const readiness = await inspectReadiness({
-    guidanceTab: initial.guidanceTab,
-    fixedTabs: initial.fixedTabs
-  });
-  if (readiness?.status === "login_required") {
-    await guideStartupTab(browser, initial.guidanceTab);
-    return workspaceResult({ guidanceTab: initial.guidanceTab, status: readiness.status });
+  const initialWindowId = (current.guidanceTab || current.dashboardTab).windowId;
+  const initialVisibleIds = visibleIdsInWindow(workingTabs, initialWindowId);
+  if (initialVisibleIds.length > 1) {
+    return ambiguousWorkspaceResult(workingTabs, dashboardUrl, workspaceError(
+      "BROWSER_COMMAND_FAILED",
+      "RoleFlow 专用 Edge（推荐）同时出现多个前台标签页，无法安全继续。"
+    ));
   }
-  if (readiness?.status !== "ready") {
-    return workspaceResult({
-      guidanceTab: initial.guidanceTab,
-      communicationTab: initial.fixedTabs?.communicationTab || null,
-      dashboardTab: initial.dashboardTab,
-      status: readiness?.status
-    });
+  if (!current.guidanceTab && initialVisibleIds.length !== 1) {
+    return ambiguousWorkspaceResult(workingTabs, dashboardUrl, workspaceError(
+      "BROWSER_COMMAND_FAILED",
+      "请恢复 RoleFlow 专用 Edge（推荐）窗口后重试；创建标签页前必须能确认唯一前台页。"
+    ));
   }
-  if (bossPath(initial.guidanceTab) !== "/web/geek/jobs") {
-    throw workspaceError("BOSS_SEARCH_PAGE_INVALID", "已就绪的 BOSS 标签页不是职位搜索页。");
-  }
-
   const createdIds = [];
   try {
-    let communicationTab = initial.fixedTabs?.communicationTab || null;
+    if (!current.guidanceTab) {
+      const dashboardTab = current.dashboardTab;
+      requireSingleVisibleTab(workingTabs, dashboardTab.windowId);
+      const searchTabId = await browser.createTab(
+        dashboardTab.id,
+        "https://www.zhipin.com/web/geek/jobs"
+      );
+      createdIds.push(searchTabId);
+      const afterSearch = await browser.listTabs();
+      const searchTab = requireCreatedTab(afterSearch, {
+        tabId: searchTabId,
+        windowId: dashboardTab.windowId,
+        bossOrigin: true,
+        code: "BOSS_SEARCH_PAGE_INVALID"
+      });
+      requireVisibleBaseline(afterSearch, dashboardTab.windowId, baseline.visibleIds);
+      current = assertDedicatedTopology(afterSearch, dashboardUrl);
+      if (!sameBrowserTabId(current.guidanceTab?.id, searchTab.id)) {
+        throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "新建 BOSS 搜索页的身份无法安全确认。");
+      }
+      workingTabs = afterSearch;
+    }
+
+    const readiness = await inspectReadiness({
+      guidanceTab: current.guidanceTab,
+      fixedTabs: current.fixedTabs
+    });
+    if (readiness?.status === "login_required") {
+      if (allowStartupGuidance) await guideStartupTab(browser, current.guidanceTab);
+      return workspaceResult({
+        guidanceTab: current.guidanceTab,
+        dashboardTab: current.dashboardTab,
+        status: readiness.status
+      });
+    }
+    if (readiness?.status !== "ready") {
+      return workspaceResult({
+        guidanceTab: current.guidanceTab,
+        communicationTab: current.fixedTabs?.communicationTab || null,
+        dashboardTab: current.dashboardTab,
+        status: readiness?.status
+      });
+    }
+
+    const expectedGuidanceTabId = current.guidanceTab.id;
+    const expectedCommunicationTabId = current.fixedTabs?.communicationTab?.id ?? null;
+    const expectedDashboardTabId = current.dashboardTab?.id ?? null;
+    const afterReadiness = await browser.listTabs();
+    const refreshed = assertDedicatedTopology(afterReadiness, dashboardUrl);
+    const refreshedWorkspaceTabs = [
+      refreshed.guidanceTab,
+      refreshed.fixedTabs?.communicationTab || null,
+      refreshed.dashboardTab
+    ].filter(Boolean);
+    if (refreshedWorkspaceTabs.some((tab) => tab.windowId !== initialWindowId)) {
+      throw workspaceError("WORKSPACE_WINDOW_MISMATCH", "RoleFlow 专用 Edge 工作区在就绪检查后更换了窗口。");
+    }
+    if (!sameBrowserTabId(refreshed.guidanceTab?.id, expectedGuidanceTabId)) {
+      throw workspaceError("BOSS_SEARCH_TAB_CHANGED", "BOSS 搜索页在就绪检查后发生了变化。");
+    }
+    if (expectedCommunicationTabId !== null
+      && !sameBrowserTabId(refreshed.fixedTabs?.communicationTab?.id, expectedCommunicationTabId)) {
+      throw workspaceError("BOSS_COMMUNICATION_PAGE_LOST", "BOSS 沟通页在就绪检查后发生了变化。");
+    }
+    if (expectedDashboardTabId !== null
+      && !sameBrowserTabId(refreshed.dashboardTab?.id, expectedDashboardTabId)) {
+      throw workspaceError("WORKSPACE_DASHBOARD_TAB_REQUIRED", "RoleFlow Dashboard 在就绪检查后发生了变化。");
+    }
+    requireVisibleBaseline(afterReadiness, initialWindowId, baseline.visibleIds);
+    current = refreshed;
+    workingTabs = afterReadiness;
+    if (bossPath(current.guidanceTab) !== "/web/geek/jobs") {
+      throw workspaceError("BOSS_SEARCH_PAGE_INVALID", "已就绪的 BOSS 标签页不是职位搜索页。");
+    }
+
+    let communicationTab = current.fixedTabs?.communicationTab || null;
     if (!communicationTab) {
-      requireSingleVisibleTab(tabs, initial.guidanceTab.windowId);
-      const chatUrl = new URL("/web/geek/chat", initial.guidanceTab.url).toString();
-      const communicationTabId = await browser.createTab(initial.guidanceTab.id, chatUrl);
+      requireSingleVisibleTab(workingTabs, current.guidanceTab.windowId);
+      const chatUrl = new URL("/web/geek/chat", current.guidanceTab.url).toString();
+      const communicationTabId = await browser.createTab(current.guidanceTab.id, chatUrl);
       createdIds.push(communicationTabId);
       const afterChat = await browser.listTabs();
       communicationTab = requireCreatedTab(afterChat, {
         tabId: communicationTabId,
-        windowId: initial.guidanceTab.windowId,
+        windowId: current.guidanceTab.windowId,
         path: "/web/geek/chat",
         code: "BOSS_COMMUNICATION_PAGE_LOST"
       });
-      requireVisibleBaseline(afterChat, initial.guidanceTab.windowId, baseline.visibleIds);
+      requireVisibleBaseline(afterChat, current.guidanceTab.windowId, baseline.visibleIds);
       assertDedicatedTopology(afterChat, dashboardUrl);
+      workingTabs = afterChat;
     }
 
-    let dashboardTab = initial.dashboardTab;
+    let dashboardTab = current.dashboardTab;
     if (!dashboardTab) {
       const beforeDashboard = await browser.listTabs();
-      requireSingleVisibleTab(beforeDashboard, initial.guidanceTab.windowId);
-      const dashboardTabId = await browser.createTab(initial.guidanceTab.id, dashboardUrl);
+      requireSingleVisibleTab(beforeDashboard, current.guidanceTab.windowId);
+      const dashboardTabId = await browser.createTab(current.guidanceTab.id, dashboardUrl);
       createdIds.push(dashboardTabId);
       const afterDashboard = await browser.listTabs();
       dashboardTab = requireCreatedTab(afterDashboard, {
         tabId: dashboardTabId,
-        windowId: initial.guidanceTab.windowId,
+        windowId: current.guidanceTab.windowId,
         dashboardUrl,
         code: "WORKSPACE_DASHBOARD_TAB_REQUIRED"
       });
-      requireVisibleBaseline(afterDashboard, initial.guidanceTab.windowId, baseline.visibleIds);
+      requireVisibleBaseline(afterDashboard, current.guidanceTab.windowId, baseline.visibleIds);
       assertDedicatedTopology(afterDashboard, dashboardUrl);
     }
 
-    await guideStartupTab(browser, dashboardTab);
+    if (allowStartupGuidance) await guideStartupTab(browser, dashboardTab);
     return workspaceResult({
-      guidanceTab: initial.guidanceTab,
+      guidanceTab: current.guidanceTab,
       communicationTab,
       dashboardTab,
       status: readiness.status
     });
   } catch (error) {
     await cleanupCreatedTabs(browser, createdIds, baseline, error);
+    if (error?.isWorkspaceError && !error.cleanupError) {
+      return ambiguousWorkspaceResult(tabs, dashboardUrl, error);
+    }
     throw error;
   }
 }
@@ -320,27 +398,36 @@ function assertDedicatedTopology(tabs, dashboardUrl) {
   const bossTabs = tabs.filter(isBossTab);
   const searchTabs = bossTabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
   const communicationTabs = bossTabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
+  const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
   const exactPair = bossTabs.length === 2 && searchTabs.length === 1 && communicationTabs.length === 1;
   const singleGuidance = bossTabs.length === 1 && communicationTabs.length === 0;
-  if (!exactPair && !singleGuidance) {
+  const dashboardOnly = bossTabs.length === 0 && dashboardTabs.length === 1 && tabs.length === 1;
+  if (!exactPair && !singleGuidance && !dashboardOnly) {
     throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge（推荐）只能保留一个 BOSS 引导页或固定的搜索页与沟通页。");
   }
-  const guidanceTab = searchTabs[0] || bossTabs[0];
-  if (!guidanceTab) throw workspaceError("BOSS_TAB_REQUIRED", "RoleFlow 专用 Edge（推荐）中没有 BOSS 标签页。");
-  if (tabs.some((tab) => tab.windowId !== guidanceTab.windowId)) {
+  const guidanceTab = searchTabs[0] || bossTabs[0] || null;
+  const anchorTab = guidanceTab || dashboardTabs[0];
+  if (tabs.some((tab) => tab.windowId !== anchorTab.windowId)) {
     throw workspaceError("WORKSPACE_WINDOW_MISMATCH", "RoleFlow 专用 Edge（推荐）必须只保留一个可靠窗口。");
   }
   const fixedTabs = exactPair ? assertBossOperatorTabs(bossTabs) : null;
-  const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
   if (dashboardTabs.length > 1) {
     throw workspaceError("WORKSPACE_DASHBOARD_TAB_AMBIGUOUS", "RoleFlow Dashboard 标签页不止一个。");
   }
   return { guidanceTab, fixedTabs, dashboardTab: dashboardTabs[0] || null };
 }
 
-function requireCreatedTab(tabs, { tabId, windowId, path = null, dashboardUrl = null, code }) {
+function requireCreatedTab(tabs, {
+  tabId,
+  windowId,
+  path = null,
+  bossOrigin = false,
+  dashboardUrl = null,
+  code
+}) {
   const tab = tabs.find((item) => sameBrowserTabId(item.id, tabId));
   if (!tab || (path && bossPath(tab) !== path)
+    || (bossOrigin && !isBossTab(tab))
     || (dashboardUrl && !isDashboardTab(tab, dashboardUrl))) {
     throw workspaceError(code, "后台标签页创建后未能安全确认。");
   }
@@ -435,6 +522,24 @@ function workspaceResult({ guidanceTab, communicationTab = null, dashboardTab = 
     dashboardTabId: dashboardTab?.id ?? null,
     windowId: guidanceTab.windowId,
     status
+  };
+}
+
+function ambiguousWorkspaceResult(tabs, dashboardUrl, error) {
+  const searchTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
+  const communicationTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
+  const dashboardTabs = tabs.filter((tab) => isDashboardTab(tab, dashboardUrl));
+  const windowIds = [...new Set(tabs.map((tab) => tab.windowId).filter(Number.isInteger))];
+  return {
+    bossTabId: searchTabs.length === 1 ? searchTabs[0].id : null,
+    communicationTabId: communicationTabs.length === 1 ? communicationTabs[0].id : null,
+    dashboardTabId: dashboardTabs.length === 1 ? dashboardTabs[0].id : null,
+    windowId: windowIds.length === 1 && tabs.every((tab) => Number.isInteger(tab.windowId))
+      ? windowIds[0]
+      : null,
+    status: "ambiguous",
+    errorCode: String(error?.code || "WORKSPACE_AMBIGUOUS"),
+    message: String(error?.message || "RoleFlow 专用 Edge 工作区存在无法安全判断的页面。")
   };
 }
 
