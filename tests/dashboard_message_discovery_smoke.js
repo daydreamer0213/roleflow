@@ -72,6 +72,7 @@ async function main() {
   await dashboardSignalShutdownSmoke();
   const fixture = createFixture();
   await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
+  await browserRuntimeGateSmoke(db, root, dbPath, logger, fixture.profileId);
   const scenarios = [];
   const cleanupTimers = controllableTimers();
   const browsers = [];
@@ -1099,6 +1100,68 @@ async function modelReadinessGateSmoke(database, projectRoot, databasePath, scop
     );
   } finally {
     await new Promise((resolve) => readinessServer.close(resolve));
+  }
+}
+
+async function browserRuntimeGateSmoke(database, projectRoot, databasePath, scopedLogger, profileId) {
+  let browserCreations = 0;
+  let ensureCalls = 0;
+  const runtimeServer = createDashboardServer({
+    db: database,
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: path.join(projectRoot, "runtime-gate-profile")
+    },
+    root: projectRoot,
+    dbPath: databasePath,
+    forceMock: true,
+    logger: scopedLogger,
+    browserSupervisor: {
+      getSnapshot() {
+        return {
+          status: "unavailable",
+          ready: false,
+          message: "fixture unavailable",
+          action: "recover",
+          checkedAt: "2099-01-01T00:00:00.000Z",
+          failureCount: 1,
+          sessionId: ""
+        };
+      },
+      async ensure() { ensureCalls += 1; throw new Error("discovery must not recover Edge"); },
+      close() {}
+    },
+    messageDiscoveryDependencies: {
+      createBrowser() {
+        browserCreations += 1;
+        return {};
+      }
+    }
+  });
+  await new Promise((resolve, reject) => {
+    runtimeServer.once("error", reject);
+    runtimeServer.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const base = `http://127.0.0.1:${runtimeServer.address().port}`;
+    const page = await request(base, `/messages?profileId=${profileId}`);
+    assert.strictEqual(page.status, 200, "saved message results must remain readable without Edge");
+    const response = await postJson(base, "/api/message-discovery", {
+      action: "start",
+      profileId
+    });
+    assert.strictEqual(response.status, 409);
+    assert.strictEqual(response.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
+    assert.strictEqual(browserCreations, 0, "browser gate must stop before message browser creation");
+    assert.strictEqual(
+      database.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
+      0,
+      "browser gate must stop before message lease acquisition"
+    );
+    assert.strictEqual(ensureCalls, 0, "message discovery must never recover Edge automatically");
+  } finally {
+    await new Promise((resolve) => runtimeServer.close(resolve));
   }
 }
 

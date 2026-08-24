@@ -127,7 +127,8 @@ function assertRendererContracts(vm) {
   assert.match(html, /系统正在继续处理，无需操作/);
   assert.match(html, /还需完成 1 个搜索目标；7 个岗位详情待读取/);
   assert.match(html, /<script src="\/assets\/workflow\.js"><\/script>/, "workflow behavior must come from the allowlisted external asset");
-  assert.strictEqual((html.match(/<script/gi) || []).length, 1, "renderer must not copy client behavior inline");
+  assert.match(html, /<script src="\/assets\/runtime\.js"><\/script>/, "shared runtime behavior must come from the allowlisted external asset");
+  assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>/i, "renderer must not copy client behavior inline");
   assert.doesNotMatch(fs.readFileSync(asset, "utf8"), /\.focus\(\)/, "workflow polling must not move keyboard focus");
   assert.match(html, /name="workflowRunId" value="workflow-migration-fixture"/);
   assert.match(html, /name="action" value="pause"/);

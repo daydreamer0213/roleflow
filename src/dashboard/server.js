@@ -204,6 +204,10 @@ const DASHBOARD_ASSETS = Object.freeze({
   "/assets/communication.js": {
     contentType: "application/javascript; charset=utf-8",
     file: path.join(__dirname, "assets", "communication.js")
+  },
+  "/assets/runtime.js": {
+    contentType: "application/javascript; charset=utf-8",
+    file: path.join(__dirname, "assets", "runtime.js")
   }
 });
 
@@ -278,19 +282,37 @@ const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createMessageDiscoveryController } = require("./message_discovery_controller");
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const boss = require("../adapters/sites/boss");
-const { inspectBossBrowserReadiness } = require("../core/browser_readiness");
+const { inspectBossBrowserReadiness, readinessAction } = require("../core/browser_readiness");
 const { inspectBossOperatorTabs } = require("../core/workspace_tabs");
 
 const VALID_STATUSES = new Set(OUTCOME_STATUSES);
 const PORTABLE_CDP_PORT = 9222;
 const BROWSER_READINESS_STATUSES = new Set([
+  "starting",
+  "unavailable",
+  "conflict",
+  "stopped",
+  "needs_attention",
   "browser_unavailable",
   "boss_tab_missing",
   "login_required",
   "search_page_required",
+  "communication_page_required",
   "risk_control",
   "ready"
 ]);
+
+const WORKSPACE_RUNTIME_MESSAGES = Object.freeze({
+  unchecked: "BOSS 工作区尚未检查。",
+  login_required: "请在专用 Edge 登录 BOSS，完成后重新检查。",
+  search_page_required: "BOSS 搜索页需要重新确认。",
+  communication_page_required: "BOSS 沟通页需要重新确认。",
+  risk_control: "BOSS 正在要求安全验证，请先在浏览器中完成验证。",
+  ambiguous: "BOSS 工作区存在无法安全判断的页面，请查看诊断。",
+  browser_unavailable: "专用 Edge 暂时不可用。",
+  not_ready: "BOSS 工作区尚未准备好。",
+  ready: "BOSS 工作区已就绪。"
+});
 
 function normalizeDashboardBrowserAuthority(input) {
   const browserMode = String(input?.browserMode || "").trim().toLowerCase();
@@ -326,11 +348,12 @@ function createDashboardBrowser({ browserMode, cdpPort }) {
   throw appError("WORKFLOW_BROWSER_MODE_INVALID", "浏览器模式必须是 RoleFlow 专用 Edge（推荐）或使用当前 Edge（高级，需要浏览器连接组件）。", { statusCode: 409 });
 }
 
-function createDashboardBrowserReadinessProbe({ logger }) {
+function createDashboardBrowserReadinessProbe({ logger, browserSupervisor = null }) {
   return ({ browserMode = "edge", cdpPort = null } = {}) => inspectDashboardBossBrowserReadiness({
     browserMode,
     cdpPort,
-    logger
+    logger,
+    supervisorSnapshot: browserSupervisor?.getSnapshot?.() || null
   });
 }
 
@@ -338,13 +361,15 @@ async function inspectDashboardBossBrowserReadiness({
   browserMode = "edge",
   cdpPort = null,
   logger,
+  supervisorSnapshot = null,
   browserFactory = createDashboardBrowser
 }) {
-  const browser = browserFactory({ browserMode, cdpPort });
-  const adapter = new boss.BossSiteAdapter({ browser, logger });
   return inspectBossBrowserReadiness({
     browserMode,
+    supervisorSnapshot,
     preflight: async () => {
+      const browser = browserFactory({ browserMode, cdpPort });
+      const adapter = new boss.BossSiteAdapter({ browser, logger });
       const inspected = await inspectBossOperatorTabs({
         browser,
         inspectTab: (tabId) => adapter.preflight({ tabId })
@@ -355,15 +380,17 @@ async function inspectDashboardBossBrowserReadiness({
 }
 
 function publicBrowserReadinessSnapshot(readiness) {
-  const { status, ready, message, checkedAt } = readiness || {};
+  const { status, ready, message, action, checkedAt } = readiness || {};
+  const resolvedAction = typeof action === "string" ? action : readinessAction(status);
   if (!BROWSER_READINESS_STATUSES.has(status)
     || typeof ready !== "boolean"
     || ready !== (status === "ready")
     || typeof message !== "string"
+    || typeof resolvedAction !== "string"
     || typeof checkedAt !== "string") {
     throw appError("BROWSER_READINESS_INVALID", "浏览器就绪状态无效。", { statusCode: 500 });
   }
-  return { status, ready, message, checkedAt };
+  return { status, ready, message, action: resolvedAction, checkedAt };
 }
 
 function resolveNewWorkflowBrowser(input = {}, frozenAuthority) {
@@ -381,6 +408,19 @@ function resolveNewWorkflowBrowser(input = {}, frozenAuthority) {
     );
   }
   return { browserMode: authority.browserMode, cdpPort: authority.cdpPort };
+}
+
+function publicWorkspaceRuntimeSnapshot(workspace = null) {
+  const status = String(workspace?.status || "unchecked");
+  const message = WORKSPACE_RUNTIME_MESSAGES[status];
+  if (!message) {
+    return {
+      status: "ambiguous",
+      ready: false,
+      message: WORKSPACE_RUNTIME_MESSAGES.ambiguous
+    };
+  }
+  return { status, ready: status === "ready", message };
 }
 
 function resolveCommunicationBatchBrowserAuthority(db, input = {}, frozenAuthority) {
@@ -462,9 +502,23 @@ function createDashboardServer({
   const resolveDashboardWorkflowBrowser = (input) => resolveNewWorkflowBrowser(input, frozenBrowserAuthority);
   const scanRuns = new Map();
   const resolvedBrowserReadinessProbe = browserReadinessProbe
-    || createDashboardBrowserReadinessProbe({ logger });
+    || createDashboardBrowserReadinessProbe({ logger, browserSupervisor });
   const resolvedWorkflowResumeBrowserReadinessProbe = workflowResumeBrowserReadinessProbe
-    || ((authority) => inspectDashboardBossBrowserReadiness({ ...authority, logger }));
+    || ((authority) => inspectDashboardBossBrowserReadiness({
+      ...authority,
+      logger,
+      supervisorSnapshot: browserSupervisor?.getSnapshot?.() || null
+    }));
+  const assertBrowserRuntimeReady = () => {
+    if (!browserSupervisor?.getSnapshot) return;
+    const snapshot = browserSupervisor.getSnapshot();
+    if (snapshot?.ready) return;
+    throw appError(
+      "BROWSER_RUNTIME_NOT_READY",
+      "专用 Edge 尚未就绪；本地资料仍可查看，需要浏览器的操作请稍后重试。",
+      { statusCode: 409 }
+    );
+  };
   const resolvedWorkflowHealth = {
     getSnapshot: workflowHealth?.getSnapshot || getWorkflowHealthSnapshot,
     buildReport: workflowHealth?.buildReport || buildWorkflowHealthReport,
@@ -585,6 +639,15 @@ function createDashboardServer({
     }),
     ...messageDiscoveryDependencies
   });
+  let workspaceRuntime = publicWorkspaceRuntimeSnapshot();
+  const reconcileWorkspace = async (input) => {
+    if (!workspaceReconciler) {
+      throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
+    }
+    const workspace = await workspaceReconciler(input);
+    workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
+    return workspace;
+  };
   const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();
@@ -634,13 +697,15 @@ function createDashboardServer({
           projectRoot: path.resolve(root),
           pid: process.pid,
           browserAuthority: frozenBrowserAuthority,
-          browserRuntime: browserSupervisor?.getSnapshot?.() || null
+          browserRuntime: browserSupervisor?.getSnapshot?.() || null,
+          workspaceRuntime
         });
       }
       if (req.method === "GET" && url.pathname === "/api/runtime-status") {
         return sendJson(res, 200, {
           application: { status: "ready", ready: true },
-          browser: browserSupervisor?.getSnapshot?.() || null
+          browser: browserSupervisor?.getSnapshot?.() || null,
+          workspace: workspaceRuntime
         });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/browser/recover") {
@@ -657,9 +722,11 @@ function createDashboardServer({
           reason: "user_recovery"
         });
         const workspace = browser?.ready && workspaceReconciler
-          ? await workspaceReconciler({ startupGuidance: false, reason: "user_recovery" })
+          ? await reconcileWorkspace({ startupGuidance: false, reason: "user_recovery" })
           : null;
-        return sendJson(res, 200, workspace ? { browser, workspace } : { browser });
+        return sendJson(res, 200, workspace
+          ? { browser, workspace: publicWorkspaceRuntimeSnapshot(workspace) }
+          : { browser });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/workspace/reconcile") {
         parseBody(await readBody(req), req.headers["content-type"] || "");
@@ -670,11 +737,14 @@ function createDashboardServer({
         if (!browser?.ready) {
           throw appError("BROWSER_RUNTIME_NOT_READY", "RoleFlow 专用 Edge 尚未就绪，请先恢复浏览器。", { statusCode: 409 });
         }
-        const workspace = await workspaceReconciler({
+        const workspace = await reconcileWorkspace({
           startupGuidance: false,
           reason: "user_reconcile"
         });
-        return sendJson(res, 200, { browser, workspace });
+        return sendJson(res, 200, {
+          browser,
+          workspace: publicWorkspaceRuntimeSnapshot(workspace)
+        });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
         const authority = resolveDashboardWorkflowBrowser({
@@ -695,7 +765,8 @@ function createDashboardServer({
           logger,
           requestId,
           inheritedPreviewResolver,
-          browserAuthority: authority
+          browserAuthority: authority,
+          assertBrowserRuntimeReady
         });
       }
       if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
@@ -726,15 +797,15 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, { db, browserAuthority: frozenBrowserAuthority });
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority });
-      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority });
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
+      if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
-      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
+      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, { assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
@@ -765,9 +836,15 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
-      if (req.method === "POST" && url.pathname === "/api/workflow-run") return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run") {
+        assertBrowserRuntimeReady();
+        return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      }
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
-      if (req.method === "POST" && url.pathname === "/api/scan") return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/scan") {
+        assertBrowserRuntimeReady();
+        return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      }
       sendText(res, 404, "Not found");
     } catch (error) {
       logger.error("http_unhandled_error", { requestId, method: req.method, path: url?.pathname || req.url, error: errorMeta(error) });
@@ -792,6 +869,7 @@ function createDashboardServer({
       });
     });
   };
+  dashboardServer.reconcileWorkspace = reconcileWorkspace;
   return dashboardServer;
 }
 
@@ -1823,7 +1901,8 @@ async function handleAcquisitionPreview(res, {
   logger,
   requestId,
   inheritedPreviewResolver,
-  browserAuthority
+  browserAuthority,
+  assertBrowserRuntimeReady = () => {}
 }) {
   const normalizedPlanId = Number(planId || 0);
   try {
@@ -1852,6 +1931,7 @@ async function handleAcquisitionPreview(res, {
         { statusCode: 409 }
       );
     }
+    assertBrowserRuntimeReady();
     const context = await inheritedPreviewResolver({
       db,
       plan,
@@ -1914,6 +1994,7 @@ function publicAcquisitionPreviewError(error) {
     ACQUISITION_PREVIEW_INHERITED_REQUIRED: [409, "当前方案不是继承模式，不需要读取 BOSS 搜索页范围。"],
     SCAN_ALREADY_RUNNING: [409, "BOSS 正在执行其他只读任务，暂不读取搜索页范围。"],
     BOSS_RUNTIME_BLOCKED: [409, "BOSS 访问仍处于安全暂停期，暂不读取搜索页范围。"],
+    BROWSER_RUNTIME_NOT_READY: [409, "专用 Edge 尚未就绪，暂不读取搜索页范围。"],
     BOSS_RISK_CONTROL: [409, "BOSS 当前出现安全验证，已停止读取搜索页范围。"],
     BOSS_LOGIN_REQUIRED: [409, "请先在固定 BOSS 页面完成登录。"],
     BOSS_TAB_REQUIRED: [409, "请先恢复同一 Edge 窗口中的 BOSS 搜索页和沟通页。"],
@@ -2181,10 +2262,16 @@ function workflowResumeNeedsBatchModel(db, workflow) {
 function assertWorkflowResumeBrowserReady(readiness) {
   if (readiness.ready && readiness.status === "ready") return;
   const code = {
+    starting: "BROWSER_RUNTIME_NOT_READY",
+    unavailable: "BROWSER_RUNTIME_NOT_READY",
+    conflict: "BROWSER_RUNTIME_NOT_READY",
+    stopped: "BROWSER_RUNTIME_NOT_READY",
+    needs_attention: "BROWSER_RUNTIME_NOT_READY",
     browser_unavailable: "BROWSER_UNAVAILABLE",
     boss_tab_missing: "BOSS_TAB_REQUIRED",
     login_required: "BOSS_LOGIN_REQUIRED",
     search_page_required: "BOSS_SEARCH_PAGE_INVALID",
+    communication_page_required: "BOSS_COMMUNICATION_PAGE_LOST",
     risk_control: "BOSS_RISK_CONTROL"
   }[readiness.status] || "BROWSER_READINESS_INVALID";
   throw appError(code, readiness.message, { statusCode: 409 });
@@ -2952,12 +3039,15 @@ function handleRecommendationFeedbackApi(db, rawBody, contentType = "application
   }
 }
 
-async function handleMessageDiscovery(req, res, controller) {
+async function handleMessageDiscovery(req, res, controller, { assertBrowserRuntimeReady = () => {} } = {}) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const action = String(params.action || "").trim();
     let result;
-    if (action === "start") result = controller.start(params.profileId);
+    if (action === "start") {
+      assertBrowserRuntimeReady();
+      result = controller.start(params.profileId);
+    }
     else if (action === "stop") result = controller.stop(params.profileId);
     else if (action === "dismiss") result = controller.dismiss(params.profileId);
     else throw appError("MESSAGE_DISCOVERY_ACTION_INVALID", "消息发现操作无效。", { statusCode: 400 });
@@ -3361,7 +3451,8 @@ async function handleCommunicationControl(req, res, {
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
-  browserAuthority
+  browserAuthority,
+  assertBrowserRuntimeReady = () => {}
 }) {
   const rawBody = await readBody(req);
   const params = parseBody(rawBody, req.headers["content-type"] || "");
@@ -3373,6 +3464,9 @@ async function handleCommunicationControl(req, res, {
     }
     const controlDeps = communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
     const control = validateCommunicationControl({ db, input: params, deps: controlDeps });
+    if (["start", "start_one", "resume", "resume_one"].includes(action)) {
+      assertBrowserRuntimeReady();
+    }
     const batch = control.batch;
     const readAmbiguity = communicationAmbiguityReader || communicationAmbiguityStateForBatch;
     if (["resume", "resume_one"].includes(action)
@@ -3408,13 +3502,15 @@ async function handleCommunicationRebind(req, res, {
   logger,
   browserFactory = createDashboardBrowser,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
-  browserAuthority
+  browserAuthority,
+  assertBrowserRuntimeReady = () => {}
 }) {
   const rawBody = await readBody(req);
   const params = parseBody(rawBody, req.headers["content-type"] || "");
   const result = await communicationApiResultAsync(() => {
     const batch = getCommunicationBatch(db, params.batchId);
     if (batch) assertCommunicationBatchBrowserAuthority(batch, browserAuthority);
+    assertBrowserRuntimeReady();
     return rebindCommunicationBrowser({
       db,
       input: params,

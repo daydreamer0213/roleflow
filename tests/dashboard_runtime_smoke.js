@@ -62,6 +62,7 @@ function quietLogger() {
     profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
   };
   const reconcileCalls = [];
+  let spawnCalls = 0;
   const workspaceResponses = [
     { status: "ready", bossTabId: "boss-search", communicationTabId: "boss-chat", dashboardTabId: "dashboard" },
     { status: "login_required", bossTabId: "boss-login", communicationTabId: null, dashboardTabId: "dashboard" },
@@ -75,6 +76,7 @@ function quietLogger() {
     logger: quietLogger(),
     browserAuthority,
     browserSupervisor: supervisor,
+    spawnProcess() { spawnCalls += 1; throw new Error("browser gate must run before spawn"); },
     workspaceReconciler: async (input) => {
       reconcileCalls.push({ ...input });
       return workspaceResponses.shift();
@@ -87,12 +89,22 @@ function quietLogger() {
     assert.strictEqual(health.body.ok, true);
     assert.strictEqual(health.body.applicationStatus, "ready");
     assert.deepStrictEqual(health.body.browserRuntime, snapshot("starting"));
+    assert.deepStrictEqual(health.body.workspaceRuntime, {
+      status: "unchecked",
+      ready: false,
+      message: "BOSS 工作区尚未检查。"
+    });
     assert.deepStrictEqual(health.body.browserAuthority, browserAuthority);
 
     const runtime = await getJson(base, "/api/runtime-status");
     assert.deepStrictEqual(runtime.body, {
       application: { status: "ready", ready: true },
-      browser: snapshot("starting")
+      browser: snapshot("starting"),
+      workspace: {
+        status: "unchecked",
+        ready: false,
+        message: "BOSS 工作区尚未检查。"
+      }
     });
 
     supervisor.setSnapshot(snapshot("unavailable", {
@@ -104,11 +116,34 @@ function quietLogger() {
     assert.strictEqual(degradedHealth.status, 200);
     assert.strictEqual(degradedHealth.body.applicationStatus, "ready");
     assert.strictEqual(degradedHealth.body.browserRuntime.status, "unavailable");
+    const unavailableReadiness = await getJson(base, "/api/browser-readiness");
+    assert.strictEqual(unavailableReadiness.status, 200);
+    assert.strictEqual(unavailableReadiness.body.status, "unavailable");
+    assert.strictEqual(unavailableReadiness.body.action, "recover");
 
     for (const pathname of ["/onboarding", "/settings", "/diagnostics"]) {
       const response = await fetch(`${base}${pathname}`);
       assert.strictEqual(response.status, 200, `${pathname} must remain available without Edge`);
     }
+
+    for (const pathname of ["/api/scan", "/api/workflow-run"]) {
+      const blocked = await postJson(base, pathname, {});
+      assert.strictEqual(blocked.status, 409, `${pathname} must stop while the managed browser is unavailable`);
+      assert.strictEqual(blocked.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
+    }
+    const blockedDiscovery = await postJson(base, "/api/message-discovery", {
+      action: "start",
+      profileId: 1
+    });
+    assert.strictEqual(blockedDiscovery.status, 409);
+    assert.strictEqual(blockedDiscovery.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
+    assert.strictEqual(
+      db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
+      0,
+      "browser gate must stop message discovery before lease acquisition"
+    );
+    assert.strictEqual(spawnCalls, 0);
+    assert.deepStrictEqual(supervisor.calls, [], "operation failures must never recover Edge automatically");
 
     const blockedReconcile = await postJson(base, "/api/runtime/workspace/reconcile", {
       startupGuidance: true
@@ -122,7 +157,15 @@ function quietLogger() {
       startupGuidance: true
     });
     assert.strictEqual(reconciled.status, 200);
-    assert.strictEqual(reconciled.body.workspace.status, "ready");
+    assert.deepStrictEqual(reconciled.body.workspace, {
+      status: "ready",
+      ready: true,
+      message: "BOSS 工作区已就绪。"
+    });
+    assert.doesNotMatch(JSON.stringify(reconciled.body), /boss-search|boss-chat|dashboard/);
+    const readyRuntime = await getJson(base, "/api/runtime-status");
+    assert.strictEqual(readyRuntime.body.workspace.status, "ready");
+    assert.strictEqual(readyRuntime.body.workspace.ready, true);
     assert.deepStrictEqual(reconcileCalls, [{
       startupGuidance: false,
       reason: "user_reconcile"
@@ -140,11 +183,11 @@ function quietLogger() {
       browser: snapshot("ready"),
       workspace: {
         status: "login_required",
-        bossTabId: "boss-login",
-        communicationTabId: null,
-        dashboardTabId: "dashboard"
+        ready: false,
+        message: "请在专用 Edge 登录 BOSS，完成后重新检查。"
       }
     });
+    assert.doesNotMatch(JSON.stringify(recovered.body), /boss-login|dashboard/);
     assert.deepStrictEqual(supervisor.calls, [{
       dashboardUrl: `${base}/`,
       reason: "user_recovery"
@@ -153,12 +196,22 @@ function quietLogger() {
       { startupGuidance: false, reason: "user_reconcile" },
       { startupGuidance: false, reason: "user_recovery" }
     ]);
+    const loginRuntime = await getJson(base, "/api/runtime-status");
+    assert.strictEqual(loginRuntime.body.workspace.status, "login_required");
+    assert.match(loginRuntime.body.workspace.message, /登录/);
 
     const ambiguous = await postJson(base, "/api/runtime/workspace/reconcile", {
       startupGuidance: true
     });
     assert.strictEqual(ambiguous.status, 200);
-    assert.strictEqual(ambiguous.body.workspace.status, "ambiguous");
+    assert.deepStrictEqual(ambiguous.body.workspace, {
+      status: "ambiguous",
+      ready: false,
+      message: "BOSS 工作区存在无法安全判断的页面，请查看诊断。"
+    });
+    const ambiguousRuntime = await getJson(base, "/api/runtime-status");
+    assert.strictEqual(ambiguousRuntime.body.workspace.status, "ambiguous");
+    assert.doesNotMatch(JSON.stringify(ambiguousRuntime.body.workspace), /boss-search|boss-chat|dashboard/);
     const healthAfterAmbiguity = await getJson(base, "/health");
     assert.strictEqual(healthAfterAmbiguity.status, 200);
     assert.strictEqual(healthAfterAmbiguity.body.applicationStatus, "ready");
@@ -166,6 +219,15 @@ function quietLogger() {
       startupGuidance: false,
       reason: "user_reconcile"
     });
+
+    workspaceResponses.push({ status: "ready", bossTabId: "initial-boss", communicationTabId: "initial-chat" });
+    const initialWorkspace = await server.reconcileWorkspace({
+      startupGuidance: true,
+      reason: "initial_startup"
+    });
+    assert.strictEqual(initialWorkspace.status, "ready");
+    const afterInitialRuntime = await getJson(base, "/api/runtime-status");
+    assert.strictEqual(afterInitialRuntime.body.workspace.status, "ready");
   } finally {
     await close(server);
     db.close();

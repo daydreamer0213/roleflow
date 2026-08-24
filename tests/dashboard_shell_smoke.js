@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const { openDb, saveProfileAnalysis, createBatch, upsertJob } = require("../src/core/storage");
 const { createDashboardServer, normalizeDashboardBrowserAuthority } = require("../src/dashboard/server");
 const response = require("../src/dashboard/http/response");
@@ -71,6 +72,11 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
       /\.rail-label\{[^}]*writing-mode:vertical-rl;(?![^}]*rotate\(180deg\))[^}]*\}/,
       "the emitted signal rail label must remain naturally readable"
     );
+
+    const runtimeAsset = await getText(baseUrl, "/assets/runtime.js");
+    assert.strictEqual(runtimeAsset.status, 200, "the shared runtime client must be served");
+    assert.match(runtimeAsset.contentType, /^application\/javascript(?:;|$)/);
+    await assertRuntimeClient(runtimeAsset.body);
 
     const unknownAsset = await getText(baseUrl, "/assets/%2e%2e%2fpackage.json");
     assert.strictEqual(unknownAsset.status, 404, "unknown asset paths must not reach the filesystem");
@@ -219,6 +225,92 @@ function assertSharedFrame(markup, href, name) {
   assert.strictEqual((markup.match(/class="primary-nav"/g) || []).length, 1, `${name} must use exactly one primary navigation`);
   assert.doesNotMatch(markup, /<main[^>]*>\s*<nav(?:\s|>)/, `${name} must not retain an inner duplicate navigation`);
   assert.match(markup, new RegExp(`<a href="${escapeRegExp(href)}" aria-current="page">`), `${name} must preserve its active navigation`);
+  assert.strictEqual((markup.match(/data-runtime-status/g) || []).length, 1, `${name} must expose one shared runtime status`);
+  assert.match(markup, /data-runtime-status[^>]*aria-live="polite"/);
+  assert.match(markup, /data-runtime-title>正在准备专用 Edge/);
+  assert.match(markup, /data-runtime-message/);
+  assert.match(markup, /data-runtime-recover[^>]*hidden/);
+  assert.strictEqual((markup.match(/src="\/assets\/runtime\.js"/g) || []).length, 1, `${name} must load one runtime client`);
+}
+
+async function assertRuntimeClient(source) {
+  const elements = {
+    "[data-runtime-status]": { dataset: {} },
+    "[data-runtime-title]": { textContent: "" },
+    "[data-runtime-message]": { textContent: "" },
+    "[data-runtime-recover]": {
+      hidden: true,
+      disabled: false,
+      textContent: "",
+      addEventListener(type, handler) { this[type] = handler; }
+    }
+  };
+  const documentHandlers = {};
+  const pending = [];
+  const fetchCalls = [];
+  const timers = new Map();
+  let timerId = 0;
+  const document = {
+    hidden: false,
+    querySelector(selector) { return elements[selector] || null; },
+    addEventListener(type, handler) { documentHandlers[type] = handler; }
+  };
+  const context = {
+    document,
+    fetch(url, options = {}) {
+      fetchCalls.push({ url, options });
+      return new Promise((resolve) => pending.push(resolve));
+    },
+    setTimeout(handler, delay) {
+      const id = ++timerId;
+      timers.set(id, { handler, delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    console: { error() {} }
+  };
+  vm.runInNewContext(source, context, { filename: "runtime.js" });
+  assert.deepStrictEqual(fetchCalls.map((call) => call.url), ["/api/runtime-status"]);
+  documentHandlers.visibilitychange();
+  assert.strictEqual(fetchCalls.length, 1, "runtime polling must keep one request in flight");
+
+  pending.shift()({
+    ok: true,
+    async json() {
+      return {
+        application: { status: "ready", ready: true },
+        browser: { status: "unavailable", ready: false },
+        workspace: { status: "unchecked" }
+      };
+    }
+  });
+  await settlePromises();
+  assert.match(elements["[data-runtime-title]"].textContent, /专用 Edge/);
+  assert.strictEqual(elements["[data-runtime-recover]"].hidden, false);
+  assert([...timers.values()].every((timer) => timer.delay === 5000), "runtime polling must use the fixed five-second interval");
+
+  const click = elements["[data-runtime-recover]"].click;
+  const clickPromise = click();
+  assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime/browser/recover");
+  assert.strictEqual(fetchCalls.at(-1).options.method, "POST");
+  pending.shift()({ ok: true, async json() { return { browser: { status: "ready", ready: true }, workspace: { status: "ready" } }; } });
+  await clickPromise;
+  await settlePromises();
+
+  document.hidden = true;
+  documentHandlers.visibilitychange();
+  assert.strictEqual(timers.size, 0, "hidden pages must stop runtime polling");
+  document.hidden = false;
+  documentHandlers.visibilitychange();
+  assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime-status", "visible pages must resume local runtime polling");
+  assert(fetchCalls.every((call) => String(call.url).startsWith("/api/runtime")), "runtime client must call only local runtime endpoints");
+}
+
+async function settlePromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 function escapeRegExp(value) {

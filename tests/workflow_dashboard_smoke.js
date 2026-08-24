@@ -166,6 +166,7 @@ let server;
     status: "login_required",
     ready: false,
     message: "等待登录：请在 BOSS 标签页完成登录。",
+    action: "login",
     checkedAt: "2099-01-01T00:00:00.000Z"
   };
   const browserReadinessInputs = [];
@@ -360,6 +361,7 @@ let server;
     status: "login_required",
     ready: false,
     message: "等待登录：请在 BOSS 标签页完成登录。",
+    action: "login",
     checkedAt: "2099-01-01T00:00:01.000Z"
   };
   browserReadiness = {
@@ -382,6 +384,7 @@ let server;
     status: "ready",
     ready: true,
     message: "继承模式已就绪，可以执行一轮。",
+    action: "none",
     checkedAt: "2099-01-01T00:00:05.000Z"
   };
   const readyReadiness = await getJson(baseUrl, "/api/browser-readiness");
@@ -1479,7 +1482,7 @@ async function testDashboardFixedTabReadinessAndInheritedContext({ db: database,
         return { async listTabs() { return tabs; } };
       }
     });
-    assert.strictEqual(communicationDriftReadiness.status, "boss_tab_missing");
+    assert.strictEqual(communicationDriftReadiness.status, "communication_page_required");
     assert.strictEqual(communicationDriftReadiness.ready, false);
 
     const portablePreflightCalls = [];
@@ -1914,6 +1917,22 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
   const saved = seedProfile(database);
   const portableSpawns = [];
   const readinessInputs = [];
+  let previewResolutionCount = 0;
+  let browserRuntime = {
+    status: "ready",
+    ready: true,
+    message: "portable runtime ready",
+    action: "none",
+    checkedAt: "2099-01-01T00:00:00.000Z"
+  };
+  const browserSupervisor = {
+    getSnapshot() { return { ...browserRuntime }; },
+    close() {}
+  };
+  const trackedPreviewResolver = async (input) => {
+    previewResolutionCount += 1;
+    return acquisitionContextResolver(input);
+  };
   const portableServer = createDashboardServer({
     db: database,
     browserAuthority: {
@@ -1925,8 +1944,9 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
     dbPath,
     forceMock: true,
     logger,
+    browserSupervisor,
     acquisitionContextResolver,
-    inheritedPreviewResolver: acquisitionContextResolver,
+    inheritedPreviewResolver: trackedPreviewResolver,
     browserReadinessProbe: async (authority) => {
       readinessInputs.push(authority);
       return { status: "ready", ready: true, message: "portable fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
@@ -1951,6 +1971,25 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
     assert.deepStrictEqual(readinessInputs, [{ browserMode: "portable", cdpPort: 9222 }]);
     const preview = await getJson(portableBaseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
     assert.strictEqual(preview.status, 200);
+    assert.strictEqual(previewResolutionCount, 1);
+    browserRuntime = {
+      status: "unavailable",
+      ready: false,
+      message: "portable runtime unavailable",
+      action: "recover",
+      checkedAt: "2099-01-01T00:00:01.000Z"
+    };
+    const blockedPreview = await getJson(portableBaseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+    assert.strictEqual(blockedPreview.status, 409);
+    assert.strictEqual(blockedPreview.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
+    assert.strictEqual(previewResolutionCount, 1, "runtime gate must stop inherited preview before browser resolution");
+    browserRuntime = {
+      status: "ready",
+      ready: true,
+      message: "portable runtime ready",
+      action: "none",
+      checkedAt: "2099-01-01T00:00:02.000Z"
+    };
     const started = await postForm(portableBaseUrl, "/api/workflow-run", { planId: saved.planId, action: "start" });
     assert.strictEqual(started.status, 303, started.body);
     const workflow = listWorkflowRuns(database, { planId: saved.planId })[0];

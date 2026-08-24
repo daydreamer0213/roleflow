@@ -859,6 +859,8 @@ async function assertCommunicationClient() {
 async function portableDashboardAuthoritySmoke() {
   const database = openDb(":memory:");
   const portableSpawns = [];
+  let managedBrowserReady = true;
+  let managedBrowserEnsureCalls = 0;
   let portableServer;
   try {
     const fixture = seed(database);
@@ -906,6 +908,21 @@ async function portableDashboardAuthoritySmoke() {
         profilePath: "D:\\DevData\\roleflow-portable-dashboard-profile"
       },
       logger,
+      browserSupervisor: {
+        getSnapshot() {
+          return {
+            status: managedBrowserReady ? "ready" : "unavailable",
+            ready: managedBrowserReady,
+            message: managedBrowserReady ? "ready" : "unavailable",
+            action: managedBrowserReady ? "none" : "recover",
+            checkedAt: "2099-01-01T00:00:00.000Z",
+            failureCount: managedBrowserReady ? 0 : 1,
+            sessionId: managedBrowserReady ? "portable-session" : ""
+          };
+        },
+        async ensure() { managedBrowserEnsureCalls += 1; throw new Error("operation gate must not recover Edge"); },
+        close() {}
+      },
       browserFactory(authority) {
         assert.deepStrictEqual(authority, { browserMode: "portable", cdpPort: 9222 });
         return portableBrowser;
@@ -1025,6 +1042,28 @@ async function portableDashboardAuthoritySmoke() {
     assert.strictEqual(resumed.status, 200);
     assert.strictEqual(getCommunicationBatch(database, rebindBatch.body.batch.id).runtime.browser.bindingGeneration, 3);
     assert.strictEqual(portableSpawns.length, 1);
+
+    managedBrowserReady = false;
+    const blockedBatch = await postJson(portableBaseUrl, "/api/communication-batch", {
+      planId: fixture.planId,
+      jobIds: fixture.safeId,
+      browserMode: "portable"
+    });
+    assert.strictEqual(blockedBatch.status, 200, "local communication batch building must remain available");
+    const blockedItem = listCommunicationBatchItems(database, blockedBatch.body.batch.id)[0];
+    await expectApiError(portableBaseUrl, "/api/communication-control", {
+      batchId: blockedBatch.body.batch.id,
+      action: "start_one",
+      itemId: blockedItem.id
+    }, "BROWSER_RUNTIME_NOT_READY", 409);
+    assert.strictEqual(getCommunicationBatch(database, blockedBatch.body.batch.id).status, "confirmed");
+    assert.strictEqual(portableSpawns.length, 1);
+    assert.strictEqual(managedBrowserEnsureCalls, 0, "communication execution must never recover Edge automatically");
+    const discardedBlockedBatch = await postJson(portableBaseUrl, "/api/communication-control", {
+      batchId: blockedBatch.body.batch.id,
+      action: "discard"
+    });
+    assert.strictEqual(discardedBlockedBatch.status, 200, "local discard must not require browser readiness");
 
     const wrongModeBatch = createCommunicationBatch(database, {
       planId: fixture.planId,

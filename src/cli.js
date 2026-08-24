@@ -2698,7 +2698,7 @@ function startDashboard(db, args) {
     if (browserSupervisor) {
       void browserSupervisor.start({ dashboardUrl, reason: "dashboard_started" })
         .then((browser) => browser.ready
-          ? workspaceReconciler({
+          ? server.reconcileWorkspace({
             startupGuidance: args["no-startup-guidance"] !== true,
             reason: "initial_startup"
           })
