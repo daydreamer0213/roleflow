@@ -442,6 +442,12 @@ function testStartupIdentityHelpers() {
   const edgeProcessQuery = { querySucceeded: true, processes: [{ ...acceptedSnapshot, ProcessId: 4242 }] };
   const cases = [
     {
+      name: "unused port is a successful empty listener snapshot",
+      functionName: "Get-RoleFlowTcpListenerSnapshot",
+      parameters: { Port: dashboardPort },
+      expected: { accepted: true, value: { querySucceeded: true, listeners: [] } }
+    },
+    {
       name: "stable profile is project-independent",
       functionName: "Resolve-RoleFlowBrowserProfilePath",
       parameters: { ProjectRoot: path.join(tempRoot, "project-a"), ProfileDir: "", LocalAppDataPath: localAppDataPath },

@@ -38,6 +38,10 @@ RestartApplications=no
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
 
+[InstallDelete]
+Type: files; Name: "{app}\src\adapters\browser\index.js"
+Type: files; Name: "{app}\src\core\llm.js"
+
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

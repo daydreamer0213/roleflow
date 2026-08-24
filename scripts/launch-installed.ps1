@@ -13,10 +13,15 @@ $StartScript = Join-Path $PSScriptRoot "start-workspace.ps1"
 function Show-RoleFlowError {
   param([string]$Reason)
   Add-Type -AssemblyName System.Windows.Forms
+  $DisplayReason = if ($Reason -match '^PORTABLE_EDGE_LISTENER_ENUMERATION_FAILED') {
+    '无法检查 RoleFlow 专用 Edge 使用的本地端口。请重启电脑后重试；若仍失败，请提供下方诊断日志。'
+  } else {
+    $Reason
+  }
   $Message = @"
 RoleFlow 启动失败。
 
-$Reason
+$DisplayReason
 
 $(if ($Reason -match 'DASHBOARD_BROWSER_AUTHORITY_MISMATCH|PORTABLE_EDGE_(PORT_OCCUPIED_NOT_CDP|LISTENER_SNAPSHOT_MISMATCH)|Portable Edge identity check failed on port|RoleFlow browser profile is already in use') { '请关闭占用 RoleFlow 专用 Edge（推荐）配置目录或 9222 端口的窗口后重试。' } else { '请按提示处理后重试。' })
 诊断日志：$LogPath

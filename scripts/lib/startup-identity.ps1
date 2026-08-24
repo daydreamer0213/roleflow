@@ -142,7 +142,7 @@ function Assert-RoleFlowPortableEdgeProcessSnapshot {
 function Get-RoleFlowTcpListenerSnapshot {
   param([Parameter(Mandatory = $true)][int]$Port)
   try {
-    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; owningProcess = [int]$_.OwningProcess } })
+    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { [int]$_.LocalPort -eq $Port } | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; owningProcess = [int]$_.OwningProcess } })
     return [pscustomobject]@{ querySucceeded = $true; listeners = $listeners }
   } catch { return [pscustomobject]@{ querySucceeded = $false; listeners = @() } }
 }
