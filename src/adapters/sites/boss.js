@@ -986,12 +986,21 @@ class BossSiteAdapter {
     await this.browser.navigate(tabId, url);
     this.pageNavigations += 1;
     if (["catalog", "list"].includes(kind)) this.listNavigations += 1;
-    await this.waitWithPacing(kind, { signal, assertTabBindings });
+    await this.waitWithPacing(kind, {
+      signal,
+      assertTabBindings,
+      skipInitialTabBindingCheck: true
+    });
   }
 
-  async waitWithPacing(kind, { signal = null, assertTabBindings = null, onWait = null } = {}) {
+  async waitWithPacing(kind, {
+    signal = null,
+    assertTabBindings = null,
+    onWait = null,
+    skipInitialTabBindingCheck = false
+  } = {}) {
     throwIfAborted(signal);
-    await assertRuntimeTabBindings(assertTabBindings);
+    if (!skipInitialTabBindingCheck) await assertRuntimeTabBindings(assertTabBindings);
     const [min, max] = BOSS_PACING_POLICY.delayMs[kind] || BOSS_PACING_POLICY.delayMs.list;
     const delayMs = randomBetween(min, max, this.random);
     if (typeof onWait === "function") await onWait({ kind, durationMs: delayMs });

@@ -31,6 +31,7 @@ main().then(() => console.log("boss_safe_pacing_smoke ok")).catch((error) => {
 
 async function main() {
   await catalogRefreshBudgetSmoke();
+  await navigationBindingCheckOrderSmoke();
   await paneDetailDelaySmoke();
   detailFetchPacingPolicySmoke();
   await pacingRestoreFailClosedSmoke();
@@ -50,6 +51,23 @@ async function main() {
   await riskPersistenceFailurePreservesOriginalErrorSmoke();
   assert.strictEqual(formatAccessWaitDuration(2_500), "约 3 秒");
   assert.strictEqual(formatAccessWaitDuration(61_000), "约 2 分钟");
+}
+
+async function navigationBindingCheckOrderSmoke() {
+  const events = [];
+  const adapter = new BossSiteAdapter({
+    browser: {
+      async navigate() { events.push("navigate"); }
+    },
+    sleepFn: async () => { events.push("sleep"); },
+    randomFn: () => 0
+  });
+  await adapter.navigateWithPacing("search", "https://www.zhipin.com/web/geek/jobs?query=test", "list", {
+    enforceBudget: false,
+    assertTabBindings: async () => { events.push("assert"); }
+  });
+  assert.deepStrictEqual(events, ["assert", "navigate", "sleep", "assert"],
+    "navigation must validate before issuing the request and after the paced wait, not during the transient navigation state");
 }
 
 function sharedPacingPersistenceSmoke() {

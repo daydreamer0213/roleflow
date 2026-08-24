@@ -1482,7 +1482,7 @@ async function scan(
     onScanComplete: (summary) => { scanSummary = summary; },
     signal,
     assertTabBindings: usesFixedBossSearchTab
-      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs({ scope: "boss" }), {
         expectedSearchTabId: state.tabId,
         expectedCommunicationTabId: state.communicationTabId
       })
@@ -1925,7 +1925,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
     tabId: state.tabId,
     signal,
     assertTabBindings: usesFixedBossSearchTab
-      ? async () => assertBossRuntimeTabBindings(await browser.listTabs(), {
+      ? async () => assertBossRuntimeTabBindings(await browser.listTabs({ scope: "boss" }), {
         expectedSearchTabId: state.tabId,
         expectedCommunicationTabId: state.communicationTabId
       })
