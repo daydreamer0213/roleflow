@@ -34,11 +34,13 @@ assert(
   !installer.includes('tests\\run_all.js'),
   "startup dependency checks must not run the full offline suite"
 );
-assert(workspaceLauncher.includes("start-edge-control.ps1"));
-assert(workspaceLauncher.includes("start-portable-edge.ps1"));
-assert(workspaceLauncher.includes('"workspace-tabs"'));
-assert(workspaceLauncher.includes('"--dashboard-url", $url'));
+assert(!workspaceLauncher.includes("start-edge-control.ps1"), "application startup must not synchronously require Edge Control");
+assert(!workspaceLauncher.includes("start-portable-edge.ps1"), "application startup must not synchronously launch portable Edge");
+assert(!workspaceLauncher.includes('"workspace-tabs"'), "application startup must not synchronously reconcile BOSS tabs");
+assert(workspaceLauncher.includes('"dashboard"'), "application startup must launch the Dashboard first");
 assert(workspaceLauncher.includes('"--cdp-port", [string]$CdpPort'));
+assert(workspaceLauncher.includes('"--no-browser"'));
+assert(workspaceLauncher.includes('"--no-startup-guidance"'));
 assert(!workspaceLauncher.includes("Start-Process $url"));
 assert(portableEdgeLauncher.includes("--remote-debugging-address=127.0.0.1"));
 assert(portableEdgeLauncher.includes("9222"));
