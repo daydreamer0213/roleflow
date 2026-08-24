@@ -39,6 +39,21 @@ class CdpBrowserAdapter {
     return listedTabs.filter(Boolean);
   }
 
+  async inspectTransport() {
+    const [version, pages] = await Promise.all([
+      this.requestJson("/json/version"),
+      this.requestJson("/json/list")
+    ]);
+    if (!version?.webSocketDebuggerUrl || !Array.isArray(pages)) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP readiness response is incomplete.");
+    }
+    await this.browserCommand("Browser.getVersion");
+    return {
+      browser: String(version.Browser || ""),
+      pageCount: pages.filter((page) => page.type === "page").length
+    };
+  }
+
   async browserCommand(method, params = {}) {
     const version = await this.requestJson("/json/version");
     if (!version?.webSocketDebuggerUrl) {

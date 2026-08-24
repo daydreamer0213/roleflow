@@ -195,6 +195,12 @@ async function main() {
       "cdp-hidden-first": "hidden",
       "cdp-created-tab": "hidden"
     };
+    const transport = await cdp.inspectTransport();
+    assert.deepStrictEqual(transport, { browser: "Edge/140", pageCount: 1 });
+    assert.strictEqual(countMethod(websocket.messages, "Browser.getVersion"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Page.navigate"), 0);
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 0);
+
     const identifiedTabs = await cdp.listTabs();
     assert.strictEqual(identifiedTabs.length, 1);
     assert.strictEqual(identifiedTabs[0].id, "cdp-tab");

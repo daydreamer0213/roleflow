@@ -5,6 +5,7 @@ param(
   [string]$ProfileDir = "",
   [string]$StartUrl = "https://www.zhipin.com/web/geek/jobs",
   [switch]$CheckOnly,
+  [switch]$OutputJson,
   [int]$TimeoutSeconds = 15
 )
 
@@ -27,7 +28,7 @@ function Resolve-EdgePath {
       return Resolve-RoleFlowNormalizedPath -Path $Candidate
     }
   }
-  throw "Microsoft Edge not found in standard installation paths. Install Edge or pass caller-trusted -EdgePath."
+  throw "PORTABLE_EDGE_NOT_FOUND: Microsoft Edge not found in standard installation paths. Install Edge or pass caller-trusted -EdgePath."
 }
 
 function Get-CdpVersion {
@@ -59,7 +60,7 @@ if ($null -eq $Version -and $CheckOnly) {
 }
 
 if ($null -ne $Version) {
-  [void](Assert-RoleFlowPortableEdgeListenerSnapshot -ListenerSnapshot $ListenerSnapshot -ProcessQuerySnapshot $ProcessQuerySnapshot -EdgePath $ResolvedEdgePath -Port $Port -ProfilePath $ProfilePath)
+  $VerifiedListenerPid = Assert-RoleFlowPortableEdgeListenerSnapshot -ListenerSnapshot $ListenerSnapshot -ProcessQuerySnapshot $ProcessQuerySnapshot -EdgePath $ResolvedEdgePath -Port $Port -ProfilePath $ProfilePath
 }
 
 if ($null -eq $Version) {
@@ -68,7 +69,11 @@ if ($null -eq $Version) {
 
   $Args = New-RoleFlowPortableEdgeArguments -Port $Port -ProfilePath $ProfilePath -StartUrl $StartUrl
 
-  Start-Process -FilePath $ResolvedEdgePath -ArgumentList $Args -WorkingDirectory $ProjectRoot | Out-Null
+  try {
+    Start-Process -FilePath $ResolvedEdgePath -ArgumentList $Args -WorkingDirectory $ProjectRoot | Out-Null
+  } catch {
+    throw "PORTABLE_EDGE_START_FAILED: $($_.Exception.Message)"
+  }
 
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
@@ -77,15 +82,26 @@ if ($null -eq $Version) {
   } while ($null -eq $Version -and (Get-Date) -lt $Deadline)
 
   if ($null -eq $Version) {
-    throw "Started Edge, but CDP did not become ready on port $Port."
+    throw "PORTABLE_EDGE_START_TIMEOUT: Started Edge, but CDP did not become ready on port $Port."
   }
-  [void](Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath -EdgePath $ResolvedEdgePath)
+  $VerifiedListenerPid = Assert-RoleFlowPortableEdgeListenerIdentity -Port $Port -ProfilePath $ProfilePath -EdgePath $ResolvedEdgePath
 }
 
-Write-Host "Portable Edge CDP: healthy"
-Write-Host "CDP URL: http://127.0.0.1:$Port"
-Write-Host "Profile dir: $ProfilePath"
-Write-Host "Browser: $($Version.Browser)"
-Write-Host "RoleFlow 专用 Edge（推荐）已就绪。首次使用请登录 BOSS，并保留一个 BOSS 搜索结果页。"
+if ($OutputJson) {
+  [ordered]@{
+    schemaVersion = 1
+    pid = [int]$VerifiedListenerPid
+    edgePath = $ResolvedEdgePath
+    profilePath = $ProfilePath
+    cdpUrl = "http://127.0.0.1:$Port"
+    browser = [string]$Version.Browser
+  } | ConvertTo-Json -Compress
+} else {
+  Write-Host "Portable Edge CDP: healthy"
+  Write-Host "CDP URL: http://127.0.0.1:$Port"
+  Write-Host "Profile dir: $ProfilePath"
+  Write-Host "Browser: $($Version.Browser)"
+  Write-Host "RoleFlow 专用 Edge（推荐）已就绪。首次使用请登录 BOSS，并保留一个 BOSS 搜索结果页。"
+}
 
 exit 0
