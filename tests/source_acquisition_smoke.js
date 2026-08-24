@@ -207,8 +207,9 @@ async function preflightSmoke() {
   };
   const inspected = [];
   const logs = [];
+  let listCalls = 0;
   const browser = {
-    async listTabs() { return [activeChat, oldSearch, usableSearch]; },
+    async listTabs() { listCalls += 1; return [activeChat, oldSearch, usableSearch]; },
     async activeTabId() { return activeChat.id; },
     async evalValue(tabId, expression) {
       assert(expression.includes("loggedIn"));
@@ -256,6 +257,12 @@ async function preflightSmoke() {
   assert(!serializedLog.includes("PRIVATE_QUERY"));
   assert(!serializedLog.includes("101280100"));
   assert(!serializedLog.includes("salary=405"));
+
+  inspected.length = 0;
+  const boundState = await adapter.preflight({ tabId: usableSearch.id });
+  assert.strictEqual(boundState.tabId, usableSearch.id);
+  assert.strictEqual(listCalls, 1, "a pre-bound tab must not trigger another full tab enumeration");
+  assert.deepStrictEqual(inspected, [usableSearch.id]);
 }
 
 async function inheritedPageInspectionSmoke() {

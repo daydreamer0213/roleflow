@@ -785,10 +785,10 @@ class BossSiteAdapter {
 
   async preflight({ tabId = null } = {}) {
     if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS 预检需要浏览器连接。");
-    const tabs = typeof this.browser.listTabs === "function" ? await this.browser.listTabs() : [];
+    const tabs = (tabId || typeof this.browser.listTabs !== "function") ? [] : await this.browser.listTabs();
     const fallbackId = tabId || (!tabs.length ? await this.browser.activeTabId() : null);
     const candidates = (tabId
-      ? [tabs.find((item) => String(item.id) === String(tabId)) || { id: tabId, url: "", title: "" }]
+      ? [{ id: tabId, url: "", title: "" }]
       : tabs.filter((item) => /zhipin\.com/i.test(String(item.url || ""))).sort(compareBossTabs));
     if (!candidates.length && fallbackId) candidates.push({ id: fallbackId, url: "", title: "" });
     if (!candidates.length) throw bossError("BOSS_TAB_REQUIRED", "Edge 中没有可控制的 BOSS 直聘标签页。");

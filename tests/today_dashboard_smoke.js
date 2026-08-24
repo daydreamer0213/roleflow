@@ -29,6 +29,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
   assertRendererIsPureAndEscapesHtml();
   assertScanStatusLabels();
   fs.mkdirSync(smokeDir, { recursive: true });
+  await assertBrowserReadsAreSerialized();
   const db = openDb(dbPath);
   const privateFileNameContacts = ["13876543210", "上海市浦东新区今日页路66号"];
   const ready = seedProfile(db, {
@@ -192,6 +193,61 @@ function assertScanStatusLabels() {
   });
   assert.strictEqual(viewModel.run.label, "正在执行日常扫描");
   assert.match(renderTodayPage(viewModel), /扫描状态：<\/strong>正在执行日常扫描/);
+}
+
+async function assertBrowserReadsAreSerialized() {
+  const serialDbPath = path.join(smokeDir, `today-browser-serial-${Date.now()}.sqlite`);
+  const serialDb = openDb(serialDbPath);
+  const saved = seedProfile(serialDb, { name: "Serialized browser reads", confirmCard: true });
+  const events = [];
+  let releaseReadiness;
+  let markReadinessStarted;
+  const readinessStarted = new Promise((resolve) => { markReadinessStarted = resolve; });
+  const readinessWait = new Promise((resolve) => { releaseReadiness = resolve; });
+  const serialServer = createDashboardServer({
+    db: serialDb,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
+    root,
+    dbPath: serialDbPath,
+    forceMock: true,
+    logger,
+    browserReadinessProbe: async () => {
+      events.push("readiness:start");
+      markReadinessStarted();
+      await readinessWait;
+      events.push("readiness:end");
+      return { status: "ready", ready: true, message: "fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
+    },
+    inheritedPreviewResolver: async () => {
+      events.push("preview:start");
+      return {
+        acquisitionMode: "inherited",
+        searchTemplate: { mode: "inherited", url: "https://www.zhipin.com/web/geek/jobs" },
+        platformPolicy: { filterSummary: [], unresolvedParams: [] }
+      };
+    }
+  });
+  const serialBaseUrl = await listen(serialServer);
+  try {
+    const readiness = getJson(serialBaseUrl, "/api/browser-readiness");
+    await readinessStarted;
+    const repeatedReadiness = getJson(serialBaseUrl, "/api/browser-readiness");
+    const preview = getJson(serialBaseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(events, ["readiness:start"], "browser-backed dashboard reads must enter one at a time");
+    releaseReadiness();
+    const [readinessResult, repeatedReadinessResult, previewResult] = await Promise.all([readiness, repeatedReadiness, preview]);
+    assert.strictEqual(readinessResult.status, 200);
+    assert.strictEqual(repeatedReadinessResult.status, 200);
+    assert.strictEqual(previewResult.status, 200, JSON.stringify(previewResult.body));
+    assert.deepStrictEqual(events, ["readiness:start", "readiness:end", "preview:start"]);
+  } finally {
+    releaseReadiness();
+    await close(serialServer);
+    serialDb.close();
+    for (const suffix of ["", "-shm", "-wal"]) fs.rmSync(`${serialDbPath}${suffix}`, { force: true });
+  }
 }
 
 async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {

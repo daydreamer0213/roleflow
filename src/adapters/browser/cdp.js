@@ -199,10 +199,20 @@ class CdpBrowserAdapter {
   }
 
   async findTab(tabId) {
-    const tabs = await this.listTabs();
-    const tab = tabs.find((item) => item.id === tabId);
+    const pages = await this.requestJson("/json/list");
+    if (!Array.isArray(pages)) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP tab list response is not an array.");
+    }
+    const tab = pages.find((page) => page.type === "page"
+      && page.webSocketDebuggerUrl
+      && sameBrowserTabId(page.id, tabId));
     if (!tab) throw browserError("BROWSER_COMMAND_FAILED", `CDP tab not found: ${tabId}`);
-    return tab;
+    return {
+      id: tab.id,
+      title: tab.title || "",
+      url: tab.url || "",
+      webSocketDebuggerUrl: tab.webSocketDebuggerUrl
+    };
   }
 
   async requestJson(path) {

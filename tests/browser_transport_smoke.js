@@ -237,6 +237,22 @@ async function main() {
 
     websocket.mode = "respond";
 
+    state.cdpExtraPage = true;
+    websocket.messages.length = 0;
+    await cdp.evalValue("cdp-tab", "document.title");
+    assert.strictEqual(
+      websocket.messages.filter((message) => message.method === "Runtime.evaluate"
+        && message.params.expression === "document.visibilityState").length,
+      0,
+      "a command for a known tab must not inspect every page visibility first"
+    );
+    assert.strictEqual(
+      websocket.messages.filter((message) => message.method === "Runtime.evaluate"
+        && message.params.expression === "document.title").length,
+      1
+    );
+    state.cdpExtraPage = false;
+
     websocket.mode = "disconnect-navigation";
     await rejectsWithCode(
       () => cdp.navigate("cdp-tab", "https://example.test/cdp-once"),

@@ -515,6 +515,29 @@ function createDashboardServer({
       logger,
       supervisorSnapshot: browserSupervisor?.getSnapshot?.() || null
     }));
+  let browserReadTail = Promise.resolve();
+  const runBrowserRead = (operation) => {
+    const pending = browserReadTail.then(operation, operation);
+    browserReadTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+  let browserReadinessInFlight = null;
+  const inspectBrowserReadiness = (authority) => {
+    if (browserReadinessInFlight) return browserReadinessInFlight;
+    const pending = runBrowserRead(() => resolvedBrowserReadinessProbe(authority));
+    browserReadinessInFlight = pending;
+    const clear = () => {
+      if (browserReadinessInFlight === pending) browserReadinessInFlight = null;
+    };
+    pending.then(clear, clear);
+    return pending;
+  };
+  const inspectWorkflowResumeBrowserReadiness = (authority) =>
+    runBrowserRead(() => resolvedWorkflowResumeBrowserReadinessProbe(authority));
+  const resolveSerializedAcquisitionContext = (input) =>
+    runBrowserRead(() => acquisitionContextResolver(input));
+  const resolveSerializedInheritedPreview = (input) =>
+    runBrowserRead(() => inheritedPreviewResolver(input));
   const assertBrowserRuntimeReady = () => {
     if (!browserSupervisor?.getSnapshot) return;
     const snapshot = browserSupervisor.getSnapshot();
@@ -818,7 +841,7 @@ function createDashboardServer({
           browserMode: url.searchParams.get("browserMode"),
           cdpPort: url.searchParams.get("cdpPort")
         });
-        const readiness = await resolvedBrowserReadinessProbe(authority);
+        const readiness = await inspectBrowserReadiness(authority);
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
       }
       if (req.method === "GET" && url.pathname === "/api/acquisition-preview") {
@@ -831,7 +854,7 @@ function createDashboardServer({
           planId: url.searchParams.get("planId"),
           logger,
           requestId,
-          inheritedPreviewResolver,
+          inheritedPreviewResolver: resolveSerializedInheritedPreview,
           browserAuthority: authority,
           assertBrowserRuntimeReady
         });
@@ -854,7 +877,7 @@ function createDashboardServer({
           logger,
           requestId,
           spawnProcess,
-          browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe,
+          browserReadinessProbe: inspectWorkflowResumeBrowserReadiness,
           getBatchModelState: () => getRuntimeModelState("batch_screening"),
           batchModelReady: () => modelReady("batch_screening"),
           workflowControlSchedule,
@@ -908,9 +931,9 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") {
         assertBrowserRuntimeReady();
-        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       if (req.method === "POST" && url.pathname === "/api/scan") {
         assertBrowserRuntimeReady();
         return handlePlanScan(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });

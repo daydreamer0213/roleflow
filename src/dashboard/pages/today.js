@@ -143,8 +143,10 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
       let readinessInFlight = false;
       let queuedRefresh = false;
+      let pollingStopped = false;
       function readinessUrl() { return '/api/browser-readiness'; }
       async function refreshReadiness({queueIfBusy=false}={}) {
+        if (pollingStopped) return;
         if (readinessInFlight) {
           if (queueIfBusy) queuedRefresh = true;
           return;
@@ -165,14 +167,22 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
           button.disabled = true;
         } finally {
           readinessInFlight = false;
-          if (queuedRefresh) {
+          if (queuedRefresh && !pollingStopped) {
             queuedRefresh = false;
             void refreshReadiness();
           }
         }
       }
       refreshReadiness();
-      setInterval(refreshReadiness, 5000);
+      const readinessInterval = setInterval(refreshReadiness, 5000);
+      button.form?.addEventListener?.('submit', () => {
+        pollingStopped = true;
+        queuedRefresh = false;
+        clearInterval(readinessInterval);
+        button.disabled = true;
+        statusNode.textContent = '正在启动本轮任务…';
+        statusNode.dataset.status = 'starting';
+      });
     })();
     </script>` : "";
   return `${readiness}<script>(function(){const form=document.getElementById('plan-form');const note=document.getElementById('plan-dirty-note');if(!form)return;let previewInFlight=false;async function refreshInheritedPreview(){const node=form.querySelector('[data-inherited-preview]');const mode=form.querySelector('input[name=acquisitionMode]:checked')?.value||'inherited';if(!node||mode!=='inherited'||!node.dataset.previewUrl||previewInFlight)return;previewInFlight=true;node.textContent='正在只读检查当前 BOSS 搜索页…';try{const response=await fetch(node.dataset.previewUrl,{cache:'no-store'});const value=await response.json();node.textContent=response.ok?(value.summary||'当前 BOSS 搜索页未识别到额外筛选条件'):(value.error||'暂时无法读取当前 BOSS 搜索范围。')}catch{node.textContent='暂时无法读取当前 BOSS 搜索范围。'}finally{previewInFlight=false}}function syncAcquisitionPanels(refreshPreview){const mode=form.querySelector('input[name=acquisitionMode]:checked')?.value||'inherited';form.querySelectorAll('[data-acquisition-panel]').forEach(function(panel){const visible=panel.dataset.acquisitionPanel===mode;panel.hidden=!visible;panel.setAttribute('aria-hidden',visible?'false':'true')});if(refreshPreview&&mode==='inherited')void refreshInheritedPreview()}syncAcquisitionPanels(true);form.querySelectorAll('input[name=acquisitionMode]').forEach(function(input){input.addEventListener('change',function(){syncAcquisitionPanels(true)})});form.addEventListener('input',function(){document.querySelectorAll('[data-scan-button]').forEach(function(button){button.disabled=true});if(note)note.hidden=false});}());</script>${runState === "running" ? `<script>setTimeout(()=>location.reload(),2500)</script>` : ""}`;

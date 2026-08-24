@@ -3010,7 +3010,7 @@ async function getJson(baseUrl, pathname) {
 }
 
 function extractBrowserReadinessScript(page) {
-  const match = String(page).match(/<script>\s*(\(function\(\)\{[\s\S]*?setInterval\(refreshReadiness, 5000\);[\s\S]*?\}\)\(\);)\s*<\/script>/);
+  const match = String(page).match(/<script>\s*(\(function\(\)\{[\s\S]*?setInterval\(refreshReadiness, 5000\);[\s\S]*?正在启动本轮任务[\s\S]*?\}\)\(\);)\s*<\/script>/);
   assert(match, "expected rendered plan page to include the browser-readiness polling script");
   return match[1];
 }
@@ -3161,9 +3161,15 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
   const requests = [];
   let intervalCallback = null;
   let intervalMs = null;
+  let clearedInterval = null;
+  const formListeners = new Map();
+  const form = {
+    addEventListener(event, callback) { formListeners.set(event, callback); }
+  };
   const button = {
     dataset: { browserBaseDisabled: "false" },
-    disabled: true
+    disabled: true,
+    form
   };
   const statusNode = { textContent: "", dataset: {} };
   const context = vm.createContext({
@@ -3181,6 +3187,7 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
       intervalMs = interval;
       return 1;
     },
+    clearInterval(id) { clearedInterval = id; },
     URLSearchParams
   });
   new vm.Script(readinessScript).runInContext(context);
@@ -3200,13 +3207,12 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
   await flushPromises();
   assert.strictEqual(statusNode.dataset.status, "ready", "a slow first response must still update the status");
   assert.strictEqual(button.disabled, false, "a slow ready response must still enable an otherwise eligible workflow");
-
-  const nextRequest = intervalCallback();
-  assert.strictEqual(requests.length, 2, "the next timer tick may start only after the first request completes");
-  assert.strictEqual(button.disabled, true, "each readiness request must fail closed before awaiting its response");
-  requests[1].resolve(readinessResponse("risk_control"));
-  await nextRequest;
-  assert.strictEqual(statusNode.dataset.status, "risk_control");
+  assert.strictEqual(typeof formListeners.get("submit"), "function");
+  formListeners.get("submit")();
+  assert.strictEqual(clearedInterval, 1, "workflow submission must stop the readiness timer");
+  await intervalCallback();
+  assert.strictEqual(requests.length, 1, "readiness polling must remain stopped after workflow submission");
+  assert.strictEqual(statusNode.textContent, "正在启动本轮任务…");
   assert.strictEqual(button.disabled, true);
 }
 
