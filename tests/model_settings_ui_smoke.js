@@ -2,6 +2,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { openDb } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { secretPath } = require("../src/core/secret_store");
@@ -109,6 +110,7 @@ async function main() {
   assert(/settings-credentials[\s\S]*id="shared-model-preset"[\s\S]*id="shared-model-api-key"/.test(settingsHtml));
   assert(/<details[^>]*id="model-profile-batch_backup"(?![^>]*\sopen)/.test(settingsHtml));
   assert(!settingsHtml.includes("ui-smoke-key-not-visible-after-save"));
+  assertModelSettingsSubmitGuard(settingsHtml);
 
   const apiKey = "ui-smoke-key-not-visible-after-save";
   const backupApiKey = "backup-ui-smoke-key-not-visible-after-save";
@@ -312,4 +314,61 @@ function listen(server) {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
+}
+
+function assertModelSettingsSubmitGuard(settingsHtml) {
+  const script = settingsHtml.match(/<script>\(function\(\)\{[\s\S]*?正在测试并保存…[\s\S]*?<\/script>/)?.[0]
+    ?.replace(/^<script>/, "")
+    .replace(/<\/script>$/, "");
+  assert(script, "settings page must include the model save interaction script");
+  const formListeners = new Map();
+  const windowListeners = new Map();
+  const attributes = new Map();
+  const buttonAttributes = new Map();
+  const button = {
+    value: "verify_primary",
+    textContent: "测试连接并保存",
+    dataset: {},
+    style: {},
+    setAttribute(name, value) { buttonAttributes.set(name, value); },
+    removeAttribute(name) { buttonAttributes.delete(name); }
+  };
+  const form = {
+    dataset: {},
+    setAttribute(name, value) { attributes.set(name, value); },
+    removeAttribute(name) { attributes.delete(name); },
+    addEventListener(event, callback) { formListeners.set(event, callback); },
+    querySelectorAll(selector) { return selector === 'button[type="submit"]' ? [button] : []; }
+  };
+  const document = {
+    getElementById(id) {
+      if (id === "model-preset-data") return { textContent: "[]" };
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === ".model-profile-form") return [];
+      if (selector === 'form[action="/api/settings/model"]') return [form];
+      return [];
+    }
+  };
+  const context = vm.createContext({
+    document,
+    Event,
+    window: { addEventListener(event, callback) { windowListeners.set(event, callback); } }
+  });
+  new vm.Script(script).runInContext(context);
+
+  let repeatedPrevented = false;
+  formListeners.get("submit")({ submitter: button, preventDefault() {} });
+  assert.strictEqual(form.dataset.submitting, "true");
+  assert.strictEqual(attributes.get("aria-busy"), "true");
+  assert.strictEqual(button.textContent, "正在测试并保存…");
+  assert.strictEqual(buttonAttributes.get("aria-disabled"), "true");
+  formListeners.get("submit")({ submitter: button, preventDefault() { repeatedPrevented = true; } });
+  assert.strictEqual(repeatedPrevented, true, "a repeated model save submit must be blocked in the page");
+
+  windowListeners.get("pageshow")();
+  assert.strictEqual(form.dataset.submitting, "");
+  assert.strictEqual(attributes.has("aria-busy"), false);
+  assert.strictEqual(button.textContent, "测试连接并保存");
 }

@@ -1165,7 +1165,13 @@ function matchingCardEntryLocation(db, profileId, resumeContentHash) {
     return `/plan?profileId=${profileId}&planId=${activePlan?.id || ""}`;
   }
   const draft = cards.find((card) => card.status === "draft");
-  if (draft) return `/match-card?profileId=${profileId}&cardId=${draft.id}`;
+  if (draft) {
+    const onboardingGate = matchingCardOnboardingGate(db, profileId, draft.id);
+    if (onboardingGate && !onboardingGate.ready) {
+      return onboardingProgressLocation(onboardingGate.run.id);
+    }
+    return `/match-card?profileId=${profileId}&cardId=${draft.id}`;
+  }
   const latestVersion = listProfileVersions(db, profileId, 1)[0];
   if (!latestVersion) throw new Error("候选人画像没有已保存的简历版本，无法生成匹配偏好卡。");
   const created = createMatchingCardDraft(db, {
@@ -1188,6 +1194,13 @@ function renderMatchCardPage({ db, searchParams }) {
   const planPath = `/plan?profileId=${profile.id}${activePlan ? `&planId=${activePlan.id}` : ""}`;
   const requested = getMatchingCard(db, searchParams.get("cardId"));
   const card = requested?.profileId === profile.id ? requested : null;
+  const onboardingGate = card ? matchingCardOnboardingGate(db, profile.id, card.id) : null;
+  if (card?.status === "draft" && onboardingGate && !onboardingGate.ready) {
+    return renderErrorPage(
+      "本地筛选方案仍在生成，完成后才能检查并确认匹配偏好卡。",
+      onboardingProgressLocation(onboardingGate.run.id)
+    );
+  }
   const drafts = listMatchingCards(db, profileId).filter((item) => item.status === "draft");
   const activeDocument = activeCard?.resumeDocumentId ? getResumeDocument(db, activeCard.resumeDocumentId) : null;
   const activeLabel = activeCard
@@ -1283,6 +1296,14 @@ async function handleMatchCardConfirm(req, res, { db, logger, requestId }) {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const profileId = Number(params.profileId);
     const cardId = Number(params.cardId);
+    const onboardingGate = matchingCardOnboardingGate(db, profileId, cardId);
+    if (onboardingGate && !onboardingGate.ready) {
+      throw appError(
+        "ONBOARDING_SEARCH_PLAN_PENDING",
+        "本地筛选方案仍在生成，完成后才能确认匹配偏好卡。",
+        { statusCode: 409 }
+      );
+    }
     confirmMatchingCard(db, { profileId, cardId });
     logger.info("matching_card_confirmed", { requestId, profileId, cardId });
     const activePlan = getActiveSearchPlan(db, profileId);
@@ -1885,6 +1906,24 @@ async function resolveLiveInheritedContext({
     }
     throw error;
   }
+}
+
+function matchingCardOnboardingGate(db, profileId, cardId) {
+  const row = db.prepare(`
+    SELECT id FROM onboarding_runs
+    WHERE profile_id = ? AND matching_card_id = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(Number(profileId || 0), Number(cardId || 0));
+  if (!row) return null;
+  const run = getOnboardingRun(db, row.id);
+  return {
+    run,
+    ready: run?.status === "completed"
+      && run.stage === "ready"
+      && run.matchingCardId === Number(cardId)
+      && Boolean(run.searchPlanId)
+  };
 }
 
 async function saveModelSettingsRequest(params, { root, fallbackModelConfig, connectionTester }) {
@@ -4371,8 +4410,8 @@ function renderModelTaskProfileSection({ definition, settings, presets, modelSta
         </div>
       </details>
       <div class="settings-actions">
-        <button class="settings-secondary" name="action" value="restore_recommended" formnovalidate>恢复推荐值</button>
-        <button name="action" value="save_parameters">保存模型参数</button>
+        <button type="submit" class="settings-secondary" name="action" value="restore_recommended" formnovalidate>恢复推荐值</button>
+        <button type="submit" name="action" value="save_parameters">保存模型参数</button>
       </div>
     </form>
   </section>`;
@@ -4405,7 +4444,7 @@ function renderBatchBackupSettings({ settings, presets, modelState, selected }) 
           <label class="settings-field">备用模型专用 API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="已保存则可留空"><small>备用模型使用独立密钥，不会复用主模型或其他厂商的 Key。</small></label>
           <label class="settings-field settings-field-wide">兼容接口基础地址<input class="profile-base-url" name="baseUrl" type="url" value="${escapeAttr(backup.baseUrl || "")}"${preset.id === "custom" ? "" : " readonly"}></label>
         </div></details>
-        <div class="settings-actions"><button name="action" value="save">测试连接并保存备用模型</button></div>
+        <div class="settings-actions"><button type="submit" name="action" value="save">测试连接并保存备用模型</button></div>
       </form>
     </div>
   </details>`;

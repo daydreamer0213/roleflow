@@ -131,6 +131,33 @@ async function main() {
     !buildingPlanHtml.includes('<a class="button-link onboarding-next"'),
     "progress page must not offer the matching-card step early"
   );
+  const partialRun = getOnboardingRun(db, runId);
+  const earlyCardLocation = `/match-card?profileId=${partialRun.profileId}&cardId=${partialRun.matchingCardId}`;
+  const earlyCardPage = await fetch(`${base}${earlyCardLocation}`);
+  const earlyCardHtml = await earlyCardPage.text();
+  assert(!earlyCardHtml.includes('action="/api/match-card/confirm"'), "a direct card URL must not bypass the search-plan gate");
+  assert(earlyCardHtml.includes("筛选方案"));
+  const earlyConfirm = await fetch(`${base}/api/match-card/confirm`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ profileId: partialRun.profileId, cardId: partialRun.matchingCardId }),
+    redirect: "manual"
+  });
+  assert.notStrictEqual(earlyConfirm.status, 303, "the confirm endpoint must enforce the same search-plan gate");
+  assert.strictEqual(
+    db.prepare("SELECT status FROM candidate_matching_cards WHERE id = ?").get(partialRun.matchingCardId).status,
+    "draft"
+  );
+  const repeatedForm = new FormData();
+  repeatedForm.set("profileId", String(partialRun.profileId));
+  repeatedForm.set("resume", new Blob([resumeText], { type: "text/plain" }), "candidate.txt");
+  const repeatedUpload = await fetch(`${base}/api/resume`, {
+    method: "POST",
+    body: repeatedForm,
+    redirect: "manual"
+  });
+  assert.strictEqual(repeatedUpload.status, 303);
+  assert.strictEqual(repeatedUpload.headers.get("location"), progressLocation, "same-resume upload must return to the unfinished onboarding run");
   releasePlan({
     name: "本地筛选方案",
     cities: ["广州"],
