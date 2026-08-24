@@ -39,6 +39,19 @@ function runSuite() {
   }
 
   const inno = read("installer/RoleFlow.iss");
+  const innoLines = inno.split(/\r?\n/);
+  const installDeleteStart = innoLines.indexOf("[InstallDelete]");
+  const installDeleteEnd = innoLines.findIndex((line, index) =>
+    index > installDeleteStart && /^\[[^\]]+\]$/.test(line.trim())
+  );
+  const normalizedInstallDeleteEntries = (installDeleteStart < 0 ? [] : innoLines
+    .slice(installDeleteStart + 1, installDeleteEnd < 0 ? innoLines.length : installDeleteEnd))
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith(";"));
+  assert.deepStrictEqual(normalizedInstallDeleteEntries, [
+    'Type: files; Name: "{app}\\src\\adapters\\browser\\index.js"',
+    'Type: files; Name: "{app}\\src\\core\\llm.js"'
+  ], "installer overlay cleanup must remain limited to the two proven obsolete code files");
   assert.match(inno, /PrivilegesRequired=lowest/);
   assert.match(inno, /DefaultDirName=\{localappdata\}\\Programs\\RoleFlow/);
   assert.match(inno, /AppId=\{\{[0-9A-F-]+\}/i);
