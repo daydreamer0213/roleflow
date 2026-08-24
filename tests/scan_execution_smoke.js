@@ -88,6 +88,10 @@ function cliArgsMatrixSmoke() {
     buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", resumeBatchId: 73 }),
     [...expectedByKind.daily, "--resume-batch", "73", "--browser", "edge"]
   );
+  assert.deepStrictEqual(
+    buildScanCliArgs({ ...common, kind: "refresh", browserMode: "edge", dataRoot: "D:\\RoleFlow user data" }),
+    [...expectedByKind.refresh, "--data-root", "D:\\RoleFlow user data", "--browser", "edge"]
+  );
   assert.throws(
     () => buildScanCliArgs({ ...common, kind: "daily", browserMode: "edge", detailMode: "search_page_api" }),
     (error) => error.code === "PRODUCT_DETAIL_MODE_UNSUPPORTED" && error.statusCode === 409

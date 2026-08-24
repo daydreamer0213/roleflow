@@ -32,6 +32,7 @@ function runSuite() {
     "scripts/build-installer.ps1",
     "scripts/installed-self-check.ps1",
     "scripts/launch-installed.ps1",
+    "scripts/prepare-user-data.ps1",
     "scripts/prepare-uninstall.ps1"
   ];
   for (const relativePath of requiredFiles) {
@@ -100,6 +101,9 @@ function runSuite() {
     ["browser-profile guard runs before any deletion", assertUninstallGuardPrecedesEveryDeletion],
     ["browser-profile root junction is rejected", assertUninstallRejectsBrowserProfileRootReparsePoint],
     ["browser-profile nested junction is rejected", assertUninstallRejectsBrowserProfileNestedReparsePoint],
+    ["stable data root junction is rejected", assertUninstallRejectsUserDataRootReparsePoint],
+    ["stable data nested junction is rejected", assertUninstallRejectsUserDataNestedReparsePoint],
+    ["network LOCALAPPDATA is rejected before deletion", assertUninstallRejectsNetworkLocalAppData],
     ["migration is explicit, copy-only, and race-safe", assertBrowserProfileMigrationBoundaries],
     ["migration source-tree junction is rejected", assertMigrationRejectsSourceTreeReparsePoint],
     ["migration target-parent junction is rejected", assertMigrationRejectsTargetParentReparsePoint],
@@ -149,12 +153,14 @@ function assertUninstallDeletesOnlyApprovedChildren() {
       "-ConfirmDelete"
     ], { localAppData: fixture.localAppData });
     assert.strictEqual(result.status, 0, combined(result));
-    for (const relativePath of ["data", ".runtime", "reports", "logs", "profiles"]) {
+    for (const relativePath of ["data", ".runtime", "reports", "profiles"]) {
       assert(
-        !fs.existsSync(path.join(fixture.installRoot, relativePath)),
+        !fs.existsSync(path.join(fixture.dataRoot, relativePath)),
         `confirmed cleanup must remove ${relativePath}`
       );
     }
+    assert(!fs.existsSync(fixture.dataRoot), "confirmed cleanup must remove only the stable Data root");
+    assert(fs.existsSync(fixture.installRoot), "data cleanup must preserve the application install root");
     assert(fs.existsSync(fixture.browserProfileSentinel), "application-data deletion must preserve browser login data");
     assert(fs.existsSync(fixture.outsideSentinel), "confirmed cleanup must stay inside the install root");
   } finally {
@@ -186,6 +192,31 @@ function assertUninstallDeletesBrowserProfileSeparately() {
     assert(fs.existsSync(fixture.localAppDataSiblingSentinel), "browser cleanup must preserve LOCALAPPDATA siblings");
     assert(fs.existsSync(fixture.installRoot), "browser cleanup must preserve the install root");
     assert(fs.existsSync(fixture.database), "browser-only cleanup must preserve application data");
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUninstallRejectsNetworkLocalAppData() {
+  const fixture = createUninstallFixture();
+  try {
+    const networkLocalAppData = "\\\\roleflow-invalid-host\\share\\user";
+    for (const flags of [
+      ["-DeleteUserData", "-ConfirmDelete"],
+      ["-DeleteBrowserProfile", "-ConfirmDeleteBrowserProfile"]
+    ]) {
+      const result = runPowerShell([
+        "-File", fixture.scriptPath,
+        "-InstallRoot", fixture.installRoot,
+        "-SkipDashboardStop",
+        "-SkipDeletePrompt",
+        ...flags
+      ], { localAppData: networkLocalAppData, skipLocalAppDataCreate: true });
+      assert.notStrictEqual(result.status, 0, "network LOCALAPPDATA must stop confirmed deletion");
+      assert.match(combined(result), /ROLEFLOW_LOCALAPPDATA_UNC_REJECTED/);
+      assert(fs.existsSync(fixture.database));
+      assert(fs.existsSync(fixture.browserProfileSentinel));
+    }
   } finally {
     fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
   }
@@ -293,6 +324,60 @@ function assertUninstallRejectsBrowserProfileNestedReparsePoint() {
     assert(fs.existsSync(externalSentinel));
   } finally {
     fs.rmSync(nestedJunction.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUninstallRejectsUserDataRootReparsePoint() {
+  const fixture = createUninstallFixture();
+  try {
+    fs.rmSync(fixture.dataRoot, { recursive: true, force: true });
+    const externalData = path.join(fixture.fixtureRoot, "external-user-data");
+    const externalSentinel = path.join(externalData, "data", "jobs.sqlite");
+    fs.mkdirSync(path.dirname(externalSentinel), { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    createJunction(externalData, fixture.dataRoot);
+    const result = runPowerShell([
+      "-File", fixture.scriptPath,
+      "-InstallRoot", fixture.installRoot,
+      "-SkipDashboardStop",
+      "-DeleteUserData",
+      "-ConfirmDelete"
+    ], { localAppData: fixture.localAppData });
+    assert.notStrictEqual(result.status, 0, "stable Data root junction must block deletion");
+    assert.match(combined(result), /ROLEFLOW_REPARSE_POINT_BLOCKED/);
+    assert(fs.lstatSync(fixture.dataRoot).isSymbolicLink());
+    assert(fs.existsSync(externalSentinel));
+    assert(fs.existsSync(fixture.browserProfileSentinel));
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUninstallRejectsUserDataNestedReparsePoint() {
+  const fixture = createUninstallFixture();
+  try {
+    const externalData = path.join(fixture.fixtureRoot, "external-user-data-child");
+    const externalSentinel = path.join(externalData, "outside.txt");
+    fs.mkdirSync(externalData, { recursive: true });
+    fs.writeFileSync(externalSentinel, "external", "utf8");
+    const linkedChild = path.join(fixture.dataRoot, ".runtime", "resumes", "linked");
+    fs.mkdirSync(path.dirname(linkedChild), { recursive: true });
+    createJunction(externalData, linkedChild);
+    const result = runPowerShell([
+      "-File", fixture.scriptPath,
+      "-InstallRoot", fixture.installRoot,
+      "-SkipDashboardStop",
+      "-DeleteUserData",
+      "-ConfirmDelete"
+    ], { localAppData: fixture.localAppData });
+    assert.notStrictEqual(result.status, 0, "nested stable-data junction must block deletion");
+    assert.match(combined(result), /ROLEFLOW_REPARSE_POINT_BLOCKED/);
+    assert(fs.lstatSync(linkedChild).isSymbolicLink());
+    assert(fs.existsSync(externalSentinel));
+    assert(fs.existsSync(fixture.database));
+    assert(fs.existsSync(fixture.browserProfileSentinel));
+  } finally {
+    fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
   }
 }
 
@@ -619,6 +704,7 @@ function assertStandardInstallerStageBoundary() {
     assert(stageMatch, `missing installer stage path:\n${combined(result)}`);
     const stageDir = stageMatch[1].trim();
     assert(fs.existsSync(path.join(stageDir, "scripts", "migrate-browser-profile.ps1")), "installer stage must include explicit profile migration");
+    assert(fs.existsSync(path.join(stageDir, "scripts", "prepare-user-data.ps1")), "installer stage must include stable user-data preparation");
     for (const relativePath of [
       "Install.bat",
       "Start.bat",
@@ -726,15 +812,17 @@ function createUninstallFixture({ helperMode = "safe" } = {}) {
   const installRoot = path.join(fixtureRoot, "Programs", "RoleFlow");
   const scriptRoot = path.join(fixtureRoot, "maintenance", "scripts");
   const localAppData = path.join(fixtureRoot, "local-app-data");
-  for (const relativePath of ["data", ".runtime/settings", "reports", "logs", "profiles"]) {
-    fs.mkdirSync(path.join(installRoot, relativePath), { recursive: true });
+  const dataRoot = path.join(localAppData, "RoleFlow", "Data");
+  for (const relativePath of ["data", ".runtime/settings", ".runtime/logs", "reports", "profiles"]) {
+    fs.mkdirSync(path.join(dataRoot, relativePath), { recursive: true });
   }
-  const database = path.join(installRoot, "data", "jobs.sqlite");
+  fs.mkdirSync(installRoot, { recursive: true });
+  const database = path.join(dataRoot, "data", "jobs.sqlite");
   fs.writeFileSync(database, "fixture", "utf8");
-  fs.writeFileSync(path.join(installRoot, ".runtime", "settings", "model.json"), "{}", "utf8");
-  fs.writeFileSync(path.join(installRoot, "reports", "result.html"), "fixture", "utf8");
-  fs.writeFileSync(path.join(installRoot, "logs", "roleflow.log"), "fixture", "utf8");
-  fs.writeFileSync(path.join(installRoot, "profiles", "private.json"), "fixture", "utf8");
+  fs.writeFileSync(path.join(dataRoot, ".runtime", "settings", "model.json"), "{}", "utf8");
+  fs.writeFileSync(path.join(dataRoot, "reports", "result.html"), "fixture", "utf8");
+  fs.writeFileSync(path.join(dataRoot, ".runtime", "logs", "roleflow.log"), "fixture", "utf8");
+  fs.writeFileSync(path.join(dataRoot, "profiles", "private.json"), "fixture", "utf8");
   const browserProfile = path.join(localAppData, "RoleFlow", "BrowserProfile");
   fs.mkdirSync(path.join(browserProfile, "Default"), { recursive: true });
   const browserProfileSentinel = path.join(browserProfile, "Default", "RoleFlowProfileSentinel.txt");
@@ -749,6 +837,7 @@ function createUninstallFixture({ helperMode = "safe" } = {}) {
     installRoot,
     scriptPath,
     localAppData,
+    dataRoot,
     database,
     browserProfile,
     browserProfileSentinel,
@@ -966,7 +1055,9 @@ function stopFixtureProcess(child) {
 function runPowerShell(args, options = {}) {
   const timeout = typeof options === "number" ? options : options.timeout || 15_000;
   const localAppData = typeof options === "number" ? suiteLocalAppData : options.localAppData || suiteLocalAppData;
-  fs.mkdirSync(localAppData, { recursive: true });
+  if (typeof options !== "object" || !options.skipLocalAppDataCreate) {
+    fs.mkdirSync(localAppData, { recursive: true });
+  }
   return spawnSync(powershell, [
     "-NoProfile",
     "-NonInteractive",

@@ -9,7 +9,10 @@ const { getOnboardingRun } = require("../src/storage/onboarding_store");
 const { processOnboardingRun } = require("../src/core/onboarding_run");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-onboarding-progress-"));
-const dbPath = path.join(root, "jobs.sqlite");
+const appRoot = path.join(root, "application");
+const dataRoot = path.join(root, "user data");
+const dbPath = path.join(dataRoot, "data", "jobs.sqlite");
+fs.mkdirSync(appRoot, { recursive: true });
 const db = openDb(dbPath);
 const spawns = [];
 let server;
@@ -27,7 +30,8 @@ async function main() {
   server = createDashboardServer({
     db,
     browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
-    root,
+    root: appRoot,
+    dataRoot,
     dbPath,
     forceMock: true,
     spawnProcess(file, args, options) {
@@ -42,14 +46,15 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`;
 
   const form = new FormData();
-  form.set("resumeText", [
+  const resumeText = [
     "姓名：王小明",
     "手机：13800138000",
     "求职意向：AI 应用开发工程师",
     "项目经历：KnowledgeFlow 项目，使用 Python、FastAPI 和 RAG。",
     "工作经历：参与企业知识检索服务开发并负责接口联调。",
     "专业技能：Python、FastAPI、RAG、SQLite、Docker。"
-  ].join("\n"));
+  ].join("\n");
+  form.set("resume", new Blob([resumeText], { type: "text/plain" }), "candidate.txt");
   const upload = await fetch(`${base}/api/resume`, {
     method: "POST",
     body: form,
@@ -64,6 +69,10 @@ async function main() {
   assert(spawns[0].args.includes("onboarding-process"));
   assert(spawns[0].args.includes("--run"));
   assert(spawns[0].args.includes(runId));
+  assert.deepStrictEqual(
+    spawns[0].args.slice(spawns[0].args.indexOf("--data-root"), spawns[0].args.indexOf("--data-root") + 2),
+    ["--data-root", dataRoot]
+  );
   assert.strictEqual(spawns[0].options.windowsHide, true);
   assert.deepStrictEqual(spawns[0].options.stdio, ["ignore", "ignore", "ignore"]);
 
@@ -116,6 +125,9 @@ async function main() {
   assert(completedHtml.includes(completed.nextHref.replaceAll("&", "&amp;")));
 
   const stored = getOnboardingRun(db, runId);
+  assert(fs.existsSync(path.join(dataRoot, ".runtime", "resumes", `${stored.resumeDocumentId}.txt`)));
+  assert(!fs.existsSync(path.join(appRoot, ".runtime", "resumes")), "resume sources must not be written under the app root");
+  assert(fs.existsSync(path.join(dataRoot, ".runtime", "logs")), "Dashboard logs must use the stable data root");
   assert(stored.profileVersionId > 0);
   assert(stored.matchingCardId > 0);
   assert(stored.searchPlanId > 0);

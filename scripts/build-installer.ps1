@@ -129,6 +129,7 @@ foreach ($RelativePath in @(
   "scripts\scan-portable.ps1",
   "scripts\launch-installed.ps1",
   "scripts\installed-self-check.ps1",
+  "scripts\prepare-user-data.ps1",
   "scripts\prepare-uninstall.ps1",
   "scripts\migrate-browser-profile.ps1",
   "scripts\lib\startup-identity.ps1"

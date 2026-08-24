@@ -11,7 +11,7 @@ const DOCX_PARSE_TIMEOUT_MS = 30000;
 const TEXT_EXTENSIONS = new Set([".txt", ".md"]);
 const SUPPORTED_EXTENSIONS = new Set([...TEXT_EXTENSIONS, ".docx", ".pdf"]);
 
-async function parseResumeUpload({ fileName, buffer, root }) {
+async function parseResumeUpload({ fileName, buffer, root, runtimeRoot = root }) {
   const name = safeFileName(fileName);
   const extension = path.extname(name).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(extension)) throw appError("RESUME_UNSUPPORTED_FORMAT", "仅支持 TXT、MD、DOCX、PDF 简历文件。", { details: { extension } });
@@ -29,7 +29,7 @@ async function parseResumeUpload({ fileName, buffer, root }) {
   if (extension === ".docx") {
     extractionMethod = "docx_powershell";
     try {
-      text = extractDocxText(buffer, name, root);
+      text = extractDocxText(buffer, name, root, runtimeRoot);
     } catch (error) {
       const timedOut = error?.code === "RESUME_DOCX_TIMEOUT" || error?.code === "ETIMEDOUT";
       throw appError(timedOut ? "RESUME_DOCX_TIMEOUT" : "RESUME_DOCX_PARSE_FAILED", timedOut
@@ -155,8 +155,8 @@ function assessResumeText(value) {
   };
 }
 
-function extractDocxText(buffer, fileName, root) {
-  const tempDir = path.join(root, ".runtime", "resume-parse");
+function extractDocxText(buffer, fileName, root, runtimeRoot = root) {
+  const tempDir = path.join(runtimeRoot, ".runtime", "resume-parse");
   fs.mkdirSync(tempDir, { recursive: true });
   const tempPath = path.join(tempDir, crypto.randomUUID() + "-" + fileName);
   fs.writeFileSync(tempPath, buffer);

@@ -406,6 +406,7 @@ async function assertCommunicationClient() {
     },
     spawnProcess(file, args, options) {
     browserEvents.push("spawn");
+    assert.strictEqual(args.includes("--data-root"), false, "developer child commands must retain repository-root fallback");
     spawns.push({ file, args, options });
     const child = new EventEmitter();
     child.pid = 5252;

@@ -132,10 +132,24 @@ const {
 const { validateResumeBatch } = require("./core/scan_resume");
 const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
 const { prepareWorkspaceTabs, inspectBossOperatorTabs, assertBossRuntimeTabBindings } = require("./core/workspace_tabs");
+const { resolveRuntimePaths } = require("./core/runtime_paths");
 
 const ROOT = path.resolve(__dirname, "..");
-const DEFAULT_DB = path.join(ROOT, "data", "jobs.sqlite");
-const logger = createLogger({ root: ROOT, component: "cli" });
+let runtimePaths = resolveRuntimePaths({ appRoot: ROOT });
+let logger = createNoopLogger();
+
+function createNoopLogger() {
+  const noop = () => {};
+  const value = {
+    info: noop,
+    warn: noop,
+    error: noop,
+    requestId: () => "cli-not-started",
+    listRecent: () => [],
+    child: () => value
+  };
+  return value;
+}
 
 if (require.main === module) {
   main().catch((err) => {
@@ -156,12 +170,18 @@ async function main() {
   const [command = "help", ...argv] = process.argv.slice(2);
   const args = parseArgs(argv);
   if (["help", "--help", "-h"].includes(command) || args.help) return printHelp();
+  runtimePaths = resolveRuntimePaths({
+    appRoot: ROOT,
+    ...(args["data-root"] !== undefined ? { dataRoot: args["data-root"] } : {})
+  });
+  logger = createLogger({ root: runtimePaths.dataRoot, component: "cli" });
   logger.info("cli_command_started", { command, argKeys: Object.keys(args).sort() });
 
   if (command === "workspace-tabs") return prepareWorkspaceTabsCommand(args);
-  const db = openDb(path.resolve(args.db || DEFAULT_DB));
+  const dbPath = path.resolve(args.db || runtimePaths.dbPath);
+  const db = openDb(dbPath);
   if (command === "init-db") {
-    console.log(`SQLite ready: ${path.resolve(args.db || DEFAULT_DB)}`);
+    console.log(`SQLite ready: ${dbPath}`);
     return;
   }
 
@@ -618,7 +638,7 @@ function openSiteAccessLedger(db, args, { site = "boss", enabled = true } = {}) 
   }
   const requested = rawRequested.trim();
   const ledgerPath = path.resolve(requested);
-  const operationalPath = path.resolve(args?.db || DEFAULT_DB);
+  const operationalPath = path.resolve(args?.db || runtimePaths.dbPath);
   if (sameWindowsPath(ledgerPath, operationalPath)) {
     return { db, path: ledgerPath, close() {} };
   }
@@ -732,12 +752,12 @@ async function executeTrackedScanRun(db, { runId, leaseOwner, runLogger, run, si
   }
 }
 
-function resolveScanModelSettingsContext(args, { root = ROOT, pathPolicy = {} } = {}) {
+function resolveScanModelSettingsContext(args, { root = runtimePaths.dataRoot, worktreeRoot = ROOT, pathPolicy = {} } = {}) {
   if (args["model-settings-root"] === undefined) {
     return { root, readOnly: false };
   }
   const externalRoot = resolveReadOnlyModelSettingsRoot(args["model-settings-root"], {
-    worktreeRoot: pathPolicy.worktreeRoot || root,
+    worktreeRoot: pathPolicy.worktreeRoot || worktreeRoot,
     homeRoot: pathPolicy.homeRoot || os.homedir(),
     tempRoot: pathPolicy.tempRoot || os.tmpdir()
   });
@@ -1532,7 +1552,7 @@ async function scan(
       reviewIfDrained: finalStatus === "completed",
       renderReports: (phaseDb, phaseBatchId, { counts }) => {
         const savedCount = completedWorkflowAnalysisCount(counts);
-        report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), path.join(ROOT, "reports"));
+        report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), runtimePaths.reportRoot);
         scanLogger.info("scan_completed", {
           batchId: phaseBatchId,
           saved: savedCount,
@@ -1598,7 +1618,7 @@ async function scan(
       saved += 1;
     }
     scanLogger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
-    report = renderReports(listReportJobs(db, { batchId }), path.join(ROOT, "reports"));
+    report = renderReports(listReportJobs(db, { batchId }), runtimePaths.reportRoot);
     scanLogger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
     console.log(`导入 ${saved} 个岗位`);
     console.log(`Markdown: ${report.mdPath}`);
@@ -1685,7 +1705,7 @@ async function resumeWorkflowAnalysisOnly(db, {
       const savedCount = completedWorkflowAnalysisCount(counts);
       report = renderReports(
         listReportJobs(phaseDb, { batchId: phaseBatchId }),
-        path.join(ROOT, "reports")
+        runtimePaths.reportRoot
       );
       scanLogger.info("scan_completed", {
         batchId: phaseBatchId,
@@ -1792,7 +1812,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   if (!matchingContext) throw new Error(`Search Plan #${planId} 缺少已确认匹配偏好卡对应的画像版本。`);
   let configs = loadConfigs(ROOT);
   const batchModelState = resolveRuntimeModelConfig({
-    root: ROOT,
+    root: runtimePaths.dataRoot,
     fallbackModelConfig: configs.model,
     taskProfile: "batch_screening"
   });
@@ -1925,7 +1945,7 @@ async function refreshDetails(db, args, { signal = null, execution = null } = {}
   });
   assertScanActive(signal);
   for (const job of analyzedJobs) upsertJob(db, job, batchId);
-  const report = renderReports(listReportJobs(db, { batchId, limit: 500 }), path.join(ROOT, "reports"));
+  const report = renderReports(listReportJobs(db, { batchId, limit: 500 }), runtimePaths.reportRoot);
   scanLogger.info(activityOnly ? "activity_probe_completed" : "detail_refresh_completed", { batchId, planId, requested: pending.length, refreshed: analyzedJobs.length });
   console.log(`${activityOnly ? "活跃状态更新" : "补读"}完成：请求 ${pending.length} 条，成功 ${analyzedJobs.length} 条`);
   console.log(`Markdown: ${report.mdPath}`);
@@ -2476,19 +2496,19 @@ async function createProfile(db, args) {
   const resumePath = path.resolve(args.resume);
   const fileName = path.basename(resumePath);
   const buffer = require("fs").readFileSync(resumePath);
-  const resume = await parseResumeUpload({ fileName, buffer, root: ROOT });
+  const resume = await parseResumeUpload({ fileName, buffer, root: ROOT, runtimeRoot: runtimePaths.dataRoot });
   const configs = loadConfigs(ROOT);
   configs.model = args["force-mock"] === true
     ? offlineMockModelConfig()
     : resolveRuntimeModelConfig({
-      root: ROOT,
+      root: runtimePaths.dataRoot,
       fallbackModelConfig: configs.model,
       taskProfile: "deep_analysis"
     }).modelConfig;
   const { profile, plan } = await analyzeResumeToPlan({ modelConfig: configs.model, resume });
   const saved = saveProfileAnalysis(db, { profile, document: resume, searchPlan: plan });
   try {
-    const storedFilePath = storeResumeSourceFile({ root: ROOT, documentId: saved.resumeDocumentId, fileName, buffer });
+    const storedFilePath = storeResumeSourceFile({ root: runtimePaths.dataRoot, documentId: saved.resumeDocumentId, fileName, buffer });
     attachResumeDocumentFile(db, saved.resumeDocumentId, storedFilePath);
   } catch (error) {
     logger.warn("resume_source_file_save_failed", { documentId: saved.resumeDocumentId, error: errorMeta(error) });
@@ -2506,7 +2526,7 @@ async function processOnboardingCommand(db, args) {
   const modelConfig = args["force-mock"] === true
     ? offlineMockModelConfig()
     : resolveRuntimeModelConfig({
-        root: ROOT,
+        root: runtimePaths.dataRoot,
         fallbackModelConfig,
         taskProfile: "deep_analysis"
       }).modelConfig;
@@ -2557,7 +2577,7 @@ async function reassessBatch(db, args) {
   let configs = loadConfigs(ROOT);
   configs.model = args["use-model"] === true
     ? resolveRuntimeModelConfig({
-      root: ROOT,
+      root: runtimePaths.dataRoot,
       fallbackModelConfig: configs.model,
       taskProfile: "batch_screening"
     }).modelConfig
@@ -2623,7 +2643,7 @@ function rescorePlan(db, args) {
 function rebuildReport(db, args = {}) {
   const batchId = Number(args.batch || 0);
   const jobs = batchId ? listReportJobs(db, { batchId, limit: 500 }) : listReportJobs(db, { limit: 500 });
-  const report = renderReports(jobs, path.join(ROOT, "reports"));
+  const report = renderReports(jobs, runtimePaths.reportRoot);
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
 }
@@ -2679,8 +2699,9 @@ function startDashboard(db, args) {
   }
   const server = createDashboardServer({
     db,
-    dbPath: path.resolve(args.db || DEFAULT_DB),
+    dbPath: path.resolve(args.db || runtimePaths.dbPath),
     root: ROOT,
+    dataRoot: runtimePaths.dataRoot,
     browserAuthority: {
       browserMode: args.browser,
       cdpPort: args["cdp-port"],
@@ -2692,7 +2713,7 @@ function startDashboard(db, args) {
     allowOfflineMock: args["allow-offline-mock"] === true,
     forceMock: args["force-mock"] === true
   });
-  logger.info("dashboard_starting", { port, dbPath: path.resolve(args.db || DEFAULT_DB) });
+  logger.info("dashboard_starting", { port, dbPath: path.resolve(args.db || runtimePaths.dbPath) });
   installDashboardSignalHandlers({ server, db, logger });
   server.listen(port, "127.0.0.1", () => {
     if (browserSupervisor) {

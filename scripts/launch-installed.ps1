@@ -8,10 +8,28 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $Utf8NoBom
 $OutputEncoding = $Utf8NoBom
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$LogDir = Join-Path $ProjectRoot ".runtime\logs"
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+. (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
+if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  throw "ROLEFLOW_LOCALAPPDATA_REQUIRED: 无法确定当前 Windows 用户的数据目录。"
+}
+if ($env:LOCALAPPDATA.StartsWith("\\", [System.StringComparison]::Ordinal)) {
+  throw "ROLEFLOW_LOCALAPPDATA_UNC_REJECTED"
+}
+$LocalAppDataRoot = Resolve-RoleFlowNormalizedPath -Path $env:LOCALAPPDATA
+[void](Assert-RoleFlowPathHasNoReparsePoint -Path $LocalAppDataRoot)
+$DataRoot = Resolve-RoleFlowNormalizedPath -Path (Join-Path $LocalAppDataRoot "RoleFlow\Data")
+$LogDir = Join-Path $DataRoot ".runtime\logs"
 $LogPath = Join-Path $LogDir "launcher.log"
 $StartScript = Join-Path $PSScriptRoot "start-workspace.ps1"
+
+function Write-RoleFlowLauncherLog {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  if (-not (Test-Path -LiteralPath $DataRoot -PathType Container)) { return }
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $DataRoot -IncludeDescendants)
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $LogDir -IncludeDescendants)
+  Add-Content -LiteralPath $LogPath -Encoding utf8 -Value $Value
+}
 
 function Show-RoleFlowError {
   param([string]$Reason)
@@ -70,7 +88,7 @@ try {
     -Port $Port 2>&1
   $ExitCode = $LASTEXITCODE
   $Text = ($Output | Out-String).Trim()
-  Add-Content -LiteralPath $LogPath -Encoding utf8 -Value (
+  Write-RoleFlowLauncherLog -Value (
     "{0:o} exit={1}`r`n{2}" -f (Get-Date), $ExitCode, $Text
   )
   if ($ExitCode -ne 0) {
@@ -82,9 +100,11 @@ try {
     exit $ExitCode
   }
 } catch {
-  Add-Content -LiteralPath $LogPath -Encoding utf8 -Value (
-    "{0:o} launcher_error={1}" -f (Get-Date), $_.Exception.Message
-  )
+  try {
+    Write-RoleFlowLauncherLog -Value (
+      "{0:o} launcher_error={1}" -f (Get-Date), $_.Exception.Message
+    )
+  } catch {}
   Show-RoleFlowError -Reason $_.Exception.Message
   exit 1
 } finally {

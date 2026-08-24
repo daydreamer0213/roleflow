@@ -22,6 +22,10 @@ if ($BrowserMode -eq "portable" -and $CdpPort -ne 9222) {
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $RunScript = Join-Path $ProjectRoot "run.ps1"
 . (Join-Path $PSScriptRoot "lib\startup-identity.ps1")
+if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+  throw "ROLEFLOW_LOCALAPPDATA_REQUIRED: 无法确定当前 Windows 用户的数据目录。"
+}
+$DataRoot = Resolve-RoleFlowNormalizedPath -Path (Join-Path $env:LOCALAPPDATA "RoleFlow\Data")
 $ProfilePath = if ($BrowserMode -eq "portable") {
   Resolve-RoleFlowBrowserProfilePath -ProjectRoot $ProjectRoot -ProfileDir $ProfileDir
 } else {
@@ -71,13 +75,18 @@ function Test-Dashboard {
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $BrowserAuthority)) {
+  $DataPreparation = & (Join-Path $PSScriptRoot "prepare-user-data.ps1") `
+    -InstallRoot $ProjectRoot `
+    -DataRoot $DataRoot
+  Write-Verbose "RoleFlow user data: $DataPreparation"
   $arguments = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", ('"{0}"' -f $RunScript),
     "dashboard",
     "--port", [string]$Port,
-    "--browser", $BrowserMode
+    "--browser", $BrowserMode,
+    "--data-root", ('"{0}"' -f $DataRoot)
   )
   if ($BrowserMode -eq "portable") {
     $arguments += @("--cdp-port", [string]$CdpPort, "--browser-profile", ('"{0}"' -f $ProfilePath))

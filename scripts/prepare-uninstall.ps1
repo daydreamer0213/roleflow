@@ -59,24 +59,49 @@ function Stop-InstalledDashboard {
   }
 }
 
-function Get-ApprovedUserDataTargets {
-  $ApprovedChildren = @("data", ".runtime", "reports", "logs", "profiles")
-  $Targets = @()
-  foreach ($Child in $ApprovedChildren) {
-    $Target = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot $Child)).TrimEnd("\")
-    [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
-    if (-not $Target.StartsWith(
-      $InstallRoot + "\",
-      [System.StringComparison]::OrdinalIgnoreCase
-    )) {
-      throw "Refusing to delete outside the RoleFlow install root: $Target"
-    }
-    $Targets += $Target
+function Get-RoleFlowLocalAppDataRoot {
+  if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    throw "ROLEFLOW_LOCALAPPDATA_REQUIRED"
   }
-  return $Targets
+  if ($env:LOCALAPPDATA.StartsWith("\\", [System.StringComparison]::Ordinal)) {
+    throw "ROLEFLOW_LOCALAPPDATA_UNC_REJECTED"
+  }
+  if (-not [System.IO.Path]::IsPathRooted($env:LOCALAPPDATA)) {
+    throw "ROLEFLOW_LOCALAPPDATA_ABSOLUTE_REQUIRED"
+  }
+  $LocalAppDataRoot = Resolve-RoleFlowNormalizedPath -Path $env:LOCALAPPDATA
+  $VolumeRoot = [System.IO.Path]::GetPathRoot($LocalAppDataRoot).TrimEnd("\")
+  if ([string]::Equals($LocalAppDataRoot.TrimEnd("\"), $VolumeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "ROLEFLOW_LOCALAPPDATA_VOLUME_ROOT_REJECTED"
+  }
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $LocalAppDataRoot)
+  return $LocalAppDataRoot
+}
+
+function Get-RoleFlowUserDataParent {
+  $LocalAppDataRoot = Get-RoleFlowLocalAppDataRoot
+  $Parent = Resolve-RoleFlowNormalizedPath -Path (Join-Path $LocalAppDataRoot "RoleFlow")
+  if (-not $Parent.StartsWith($LocalAppDataRoot + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+      [string]::Equals($Parent, $LocalAppDataRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "ROLEFLOW_USER_DATA_PARENT_UNSAFE"
+  }
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Parent)
+  return $Parent
+}
+
+function Get-ApprovedUserDataTargets {
+  $Parent = Get-RoleFlowUserDataParent
+  $Target = Resolve-RoleFlowNormalizedPath -Path (Join-Path $Parent "Data")
+  if (-not $Target.StartsWith($Parent + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+      [string]::Equals($Target, $Parent, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "ROLEFLOW_USER_DATA_DELETE_PATH_UNSAFE"
+  }
+  [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
+  return @($Target)
 }
 
 function Get-BrowserProfileDeletionTarget {
+  $LocalAppDataRoot = Get-RoleFlowLocalAppDataRoot
   $Target = Resolve-RoleFlowBrowserProfilePath -ProjectRoot $InstallRoot
   [void](Assert-RoleFlowPathHasNoReparsePoint -Path $Target -IncludeDescendants)
   $Expected = Resolve-RoleFlowNormalizedPath -Path (
@@ -85,7 +110,6 @@ function Get-BrowserProfileDeletionTarget {
   if (-not [string]::Equals($Target, $Expected, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "ROLEFLOW_BROWSER_PROFILE_DELETE_IDENTITY_INVALID"
   }
-  $LocalAppDataRoot = Resolve-RoleFlowNormalizedPath -Path $env:LOCALAPPDATA
   if (-not $Target.StartsWith($LocalAppDataRoot + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
       [string]::Equals($Target, $LocalAppDataRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "ROLEFLOW_BROWSER_PROFILE_DELETE_PATH_UNSAFE"
@@ -98,9 +122,10 @@ if (-not $SkipDashboardStop) {
 }
 
 if ($PromptDeleteUserData -and -not $SkipDeletePrompt) {
+  $PromptUserDataPath = Join-Path (Get-RoleFlowUserDataParent) "Data"
   Add-Type -AssemblyName System.Windows.Forms
   $Choice = [System.Windows.Forms.MessageBox]::Show(
-    "是否同时删除本机 RoleFlow 数据？`r`n`r`n将删除：岗位数据库、简历、模型设置、日志、报告和本地候选人资料。`r`n默认选择否会保留这些内容在：`r`n$InstallRoot",
+    "是否同时删除本机 RoleFlow 数据？`r`n`r`n将删除：岗位数据库、简历、模型设置、日志、报告和本地候选人资料。`r`n默认选择否会保留这些内容在：`r`n$PromptUserDataPath",
     "卸载 RoleFlow",
     [System.Windows.Forms.MessageBoxButtons]::YesNo,
     [System.Windows.Forms.MessageBoxIcon]::Warning,
@@ -176,5 +201,6 @@ if ($DeleteApprovedUserData) {
   }
   Write-Output "RoleFlow local user data deleted."
 } elseif (-not $SkipDeletePrompt) {
-  Write-Output "RoleFlow local user data preserved at: $InstallRoot"
+  $PreservedDataPath = Join-Path (Get-RoleFlowUserDataParent) "Data"
+  Write-Output "RoleFlow local user data preserved at: $PreservedDataPath"
 }

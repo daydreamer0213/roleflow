@@ -43,6 +43,7 @@ function buildScanCliArgs({
   browserMode,
   cdpPort,
   runId,
+  dataRoot = null,
   resumeBatchId = null,
   workflowRunId = "",
   analysisOnly = false,
@@ -67,6 +68,9 @@ function buildScanCliArgs({
     "--plan", String(normalizedPlanId),
     "--run-id", normalizedRunId
   ];
+  if (dataRoot !== null && dataRoot !== undefined && dataRoot !== "") {
+    cliArgs.push("--data-root", requiredText(dataRoot, "dataRoot"));
+  }
   if (analysisOnly === true) {
     if (normalizedKind !== "daily") {
       throw scanExecutionError("INVALID_SCAN_INPUT", "analysisOnly is only valid for daily workflow runs");

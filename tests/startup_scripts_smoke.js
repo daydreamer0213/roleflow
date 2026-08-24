@@ -96,6 +96,10 @@ function createProjectFixture() {
     path.join(projectRoot, "scripts", "start-workspace.ps1")
   );
   fs.copyFileSync(
+    path.join(root, "scripts", "prepare-user-data.ps1"),
+    path.join(projectRoot, "scripts", "prepare-user-data.ps1")
+  );
+  fs.copyFileSync(
     path.join(root, "scripts", "start-portable-edge.ps1"),
     path.join(projectRoot, "scripts", "start-portable-edge.ps1")
   );
@@ -166,8 +170,13 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.strictEqual(normalizePath(dashboard.cwd), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(dashboard.projectRoot), normalizePath(projectRoot));
   const expectedStableProfile = path.join(tempRoot, "local app data", "RoleFlow", "BrowserProfile");
+  const expectedDataRoot = path.join(tempRoot, "local app data", "RoleFlow", "Data");
+  for (const relativePath of ["data", ".runtime/settings", ".runtime/resumes", ".runtime/logs", "reports", "profiles"]) {
+    assert(fs.statSync(path.join(expectedDataRoot, relativePath)).isDirectory(), `startup must prepare ${relativePath}`);
+  }
   assert.deepStrictEqual(dashboard.args.slice(dashboard.args.indexOf("--browser")), [
     "--browser", "portable",
+    "--data-root", expectedDataRoot,
     "--cdp-port", "9222",
     "--browser-profile", expectedStableProfile,
     "--no-browser"
@@ -202,7 +211,7 @@ async function testWorkspaceStartupFromSpacePath() {
     expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
   });
   assert.strictEqual(edgeRecords.filter((item) => item.command === "workspace-tabs").length, 0);
-  assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge", "--no-browser"]);
+  assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge", "--data-root", expectedDataRoot, "--no-browser"]);
   await stopRegisteredProcess(edgeDashboard.pid);
   await waitForPortClosed(dashboardPort);
 }
@@ -222,8 +231,10 @@ async function testInstalledLauncherPreservesUtf8Output() {
     "param([int]$Port, [string]$ProfileDir)\r\nexit 0\r\n",
     "utf8"
   );
-  const launcherLog = path.join(projectRoot, ".runtime", "logs", "launcher.log");
+  const launcherLog = path.join(tempRoot, "local app data", "RoleFlow", "Data", ".runtime", "logs", "launcher.log");
+  const installRootLauncherLog = path.join(projectRoot, ".runtime", "logs", "launcher.log");
   fs.rmSync(launcherLog, { force: true });
+  fs.rmSync(installRootLauncherLog, { force: true });
   const recordPath = path.join(tempRoot, "launcher-unicode.jsonl");
   let dashboard = null;
   try {
@@ -253,6 +264,7 @@ async function testInstalledLauncherPreservesUtf8Output() {
       /浏览器：RoleFlow 专用 Edge（推荐）/,
       "installed launcher must preserve UTF-8 output from the workspace child process"
     );
+    assert.strictEqual(fs.existsSync(installRootLauncherLog), false, "installed launch must not recreate logs under the program directory");
   } finally {
     fs.writeFileSync(portableEdgePath, portableEdgeSource, "utf8");
     if (dashboard && processRegistry.has(Number(dashboard.pid))) {

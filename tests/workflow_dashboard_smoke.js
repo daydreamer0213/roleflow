@@ -273,6 +273,7 @@ let server;
       return timer.handle;
     },
     spawnProcess(file, args, options) {
+      assert.strictEqual(args.includes("--data-root"), false, "developer child commands must retain repository-root fallback");
       if (args.includes("--workflow-run")) {
         const workflowRunId = args[args.indexOf("--workflow-run") + 1];
         const scanRunId = args[args.indexOf("--run-id") + 1];

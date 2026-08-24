@@ -10,6 +10,7 @@ const tests = [
   "browser_transport_smoke.js",
   "browser_supervisor_smoke.js",
   "portable_edge_runtime_smoke.js",
+  "runtime_paths_smoke.js",
   "browser_readiness_smoke.js",
   "workspace_tabs_smoke.js",
   "scan_execution_smoke.js",
@@ -108,12 +109,18 @@ const tests = [
   "private_full_chain_runner_smoke.js"
 ];
 
+const timeoutByTest = {
+  "windows_installer_smoke.js": 180_000,
+  "startup_scripts_smoke.js": 180_000,
+  "model_task_profiles_smoke.js": 180_000
+};
+
 for (const file of tests) {
   console.log(`\n> ${file}`);
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], {
     cwd: path.join(__dirname, ".."),
     stdio: "inherit",
-    timeout: 120_000
+    timeout: timeoutByTest[file] || 120_000
   });
   if (result.error) {
     console.error(`${file}: ${result.error.message}`);

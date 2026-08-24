@@ -141,15 +141,20 @@ async function testResumeParserTimeouts() {
   const runtimeParent = path.join(root, ".runtime");
   fs.mkdirSync(runtimeParent, { recursive: true });
   const tempRoot = fs.mkdtempSync(path.join(runtimeParent, "model-parser-resilience-"));
+  const appRoot = path.join(tempRoot, "app");
+  const runtimeRoot = path.join(tempRoot, "data");
+  fs.mkdirSync(appRoot, { recursive: true });
   try {
     await assert.rejects(
-      () => resumeParser.parseResumeUpload({ fileName: "resume.docx", buffer: Buffer.from("docx"), root: tempRoot }),
+      () => resumeParser.parseResumeUpload({ fileName: "resume.docx", buffer: Buffer.from("docx"), root: appRoot, runtimeRoot }),
       (error) => error.code === "RESUME_DOCX_TIMEOUT"
         && error.statusCode === 408
         && error.message.includes("\u7c98\u8d34")
         && error.details?.diagnostics?.extractionMethod === "docx_powershell"
     );
     assert.strictEqual(docxOptions.timeout, 30000);
+    assert.strictEqual(fs.existsSync(path.join(appRoot, ".runtime", "resume-parse")), false);
+    assert.strictEqual(fs.existsSync(path.join(runtimeRoot, ".runtime", "resume-parse")), true);
 
     const pasted = resumeParser.parseResumeText({
       text: "Candidate profile with education, experience, projects, and technical skills. ".repeat(2)

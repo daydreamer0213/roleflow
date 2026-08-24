@@ -124,6 +124,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
       spawnScan(input.scanRuns, {
         db,
         root: input.root,
+        dataRoot: input.dataRoot,
         dbPath: input.dbPath,
         planId: plan.id,
         cdpPort: browserAuthority.cdpPort,
@@ -272,10 +273,10 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     try {
       if (resumesAnalysis) {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "analyzing", resumePhase: null });
-        spawnScan(input.scanRuns, { db, root: input.root, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
+        spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else if (workflow.scanNeeded) {
         scanAvailability(db, input.scanRuns, workflow.planId, logger);
-        spawnScan(input.scanRuns, { db, root: input.root, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
+        spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
       }
@@ -389,7 +390,7 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
   if (shouldLaunch) {
     if (workflow.scanNeeded) {
       try {
-        spawnScan(input.scanRuns, { db, root: input.root, dbPath: input.dbPath, planId: workflow.planId, cdpPort: authority.cdpPort, browserMode: authority.browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
+        spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort: authority.cdpPort, browserMode: authority.browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } catch (launchError) {
         settleFailedWorkflowLaunch(db, input.scanRuns, workflow, launchError);
         throw launchError;

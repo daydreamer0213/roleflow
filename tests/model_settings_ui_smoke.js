@@ -13,8 +13,11 @@ const {
   secretIdForSettings
 } = require("../src/core/model_settings");
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-ui-"));
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "zhiping-model-ui-"));
+const appRoot = path.join(fixtureRoot, "application");
+const root = path.join(fixtureRoot, "user data");
 const dbPath = path.join(root, "data", "jobs.sqlite");
+fs.mkdirSync(appRoot, { recursive: true });
 const fallback = {
   provider: "mock",
   providers: { mock: { model: "offline-structured-mock" } }
@@ -28,7 +31,7 @@ main().catch((error) => {
 }).finally(() => {
   if (server) server.close();
   if (db) db.close();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 async function main() {
@@ -37,7 +40,8 @@ async function main() {
   server = createDashboardServer({
     db,
     browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
-    root,
+    root: appRoot,
+    dataRoot: root,
     dbPath,
     modelConfig: fallback,
     connectionTester: async ({ settings }) => {
@@ -143,6 +147,7 @@ async function main() {
   const logDir = path.join(root, ".runtime", "logs");
   const logs = fs.readdirSync(logDir).map((name) => fs.readFileSync(path.join(logDir, name), "utf8")).join("\\n");
   assert(!logs.includes(apiKey));
+  assert(!fs.existsSync(path.join(appRoot, ".runtime", "settings")), "model settings must not be written under the app root");
   assert.strictEqual(deepRuntime.modelConfig.providers.openai_compatible.model, "deepseek-v4-pro");
   assert.strictEqual(batchRuntime.modelConfig.providers.openai_compatible.model, "deepseek-v4-flash");
   assert.strictEqual(batchRuntime.concurrency, 2);

@@ -94,6 +94,7 @@ const {
   listProgressCardsWithEvents
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
+const { explicitDataRootForChild } = require("../core/runtime_paths");
 const { analyzeResumeProfile, recommendPlanForProfile, prepareResumeTextForModel } = require("../core/profile_onboarding");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { inferCandidateDisplayName } = require("../core/resume_privacy");
@@ -469,6 +470,7 @@ function createDashboardServer({
   db,
   browserAuthority,
   root = path.resolve(__dirname, "../.."),
+  dataRoot = root,
   dbPath = "",
   modelConfig = { provider: "mock", providers: { mock: {} } },
   allowOfflineMock = false,
@@ -478,7 +480,7 @@ function createDashboardServer({
   modelReadinessChecker = null,
   batchBackupResolver = null,
   connectionTester = testModelConnection,
-  logger = createLogger({ root, component: "dashboard" }),
+  logger = createLogger({ root: dataRoot, component: "dashboard" }),
   spawnProcess = spawn,
   workflowHealth = {},
   outcomeAnalytics = {},
@@ -603,15 +605,15 @@ function createDashboardServer({
     modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } }
   };
   const getPublicModelSettings = () => modelSettingsLoader
-    ? modelSettingsLoader({ root, fallbackModelConfig: modelConfig })
+    ? modelSettingsLoader({ root: dataRoot, fallbackModelConfig: modelConfig })
     : forceMock
       ? offlineMockState
-      : loadModelSettings({ root, fallbackModelConfig: modelConfig });
+      : loadModelSettings({ root: dataRoot, fallbackModelConfig: modelConfig });
   const getRuntimeModelState = (taskProfile) => runtimeModelResolver
-    ? runtimeModelResolver({ root, fallbackModelConfig: modelConfig, taskProfile })
+    ? runtimeModelResolver({ root: dataRoot, fallbackModelConfig: modelConfig, taskProfile })
     : forceMock
       ? offlineMockState
-      : resolveRuntimeModelConfig({ root, fallbackModelConfig: modelConfig, taskProfile });
+      : resolveRuntimeModelConfig({ root: dataRoot, fallbackModelConfig: modelConfig, taskProfile });
   const getRuntimeModel = (taskProfile) => getRuntimeModelState(taskProfile).modelConfig;
   const modelReady = (taskProfile, options = {}) => {
     if ((allowOfflineMock || forceMock) && !modelReadinessChecker) return true;
@@ -620,10 +622,10 @@ function createDashboardServer({
     return checker(state, { taskProfile, ...options });
   };
   const getRuntimeBatchBackup = () => batchBackupResolver
-    ? batchBackupResolver({ root, fallbackModelConfig: modelConfig })
+    ? batchBackupResolver({ root: dataRoot, fallbackModelConfig: modelConfig })
     : forceMock
       ? null
-      : resolveRuntimeBatchBackup({ root, fallbackModelConfig: modelConfig });
+      : resolveRuntimeBatchBackup({ root: dataRoot, fallbackModelConfig: modelConfig });
   const messageDiscovery = createMessageDiscoveryController({
     db,
     root,
@@ -674,7 +676,7 @@ function createDashboardServer({
       }
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
-      if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root, searchParams: url.searchParams });
+      if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root: dataRoot, searchParams: url.searchParams });
       if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
@@ -781,6 +783,7 @@ function createDashboardServer({
         return handleWorkflowControl(req, res, {
           db,
           root,
+          dataRoot,
           dbPath,
           scanRuns,
           logger,
@@ -797,7 +800,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, { db, browserAuthority: frozenBrowserAuthority });
-      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
+      if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dataRoot, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
@@ -809,11 +812,12 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
-      if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/resume/preview") return handleResumePreview(req, res, { root, dataRoot, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume") return handleResumeUpload(req, res, {
         db,
         dbPath,
         root,
+        dataRoot,
         modelReady: modelReady("deep_analysis"),
         logger,
         requestId,
@@ -824,6 +828,7 @@ function createDashboardServer({
         db,
         dbPath,
         root,
+        dataRoot,
         logger,
         requestId,
         spawnProcess,
@@ -831,19 +836,19 @@ function createDashboardServer({
       });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root: dataRoot, fallbackModelConfig: modelConfig, connectionTester, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, dataRoot, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") {
         assertBrowserRuntimeReady();
-        return handleWorkflowRunStart(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), modelState: getPublicModelSettings(), backupRuntime: getRuntimeBatchBackup(), logger, requestId, spawnProcess, acquisitionContextResolver, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: resolvedWorkflowResumeBrowserReadinessProbe, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       if (req.method === "POST" && url.pathname === "/api/scan") {
         assertBrowserRuntimeReady();
-        return handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+        return handlePlanScan(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
       sendText(res, 404, "Not found");
     } catch (error) {
@@ -892,14 +897,14 @@ function handleResumeFile(_req, res, { db, root, searchParams }) {
   res.end(body);
 }
 
-async function handleResumePreview(req, res, { root, logger, requestId }) {
+async function handleResumePreview(req, res, { root, dataRoot = root, logger, requestId }) {
   try {
     const form = parseMultipart(await readBodyBuffer(req, MAX_UPLOAD_BYTES + 64 * 1024), req.headers["content-type"] || "");
     const file = form.files.resume || form.files.resumeVersion;
     const pastedText = String(form.fields.resumeText || "").trim();
     if (!file && !pastedText) throw new Error("请选择简历文件，或粘贴完整的简历文本。");
     const resume = file
-      ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
+      ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root, runtimeRoot: dataRoot })
       : parseResumeText({ text: pastedText });
     const prepared = prepareResumeTextForModel(resume.text, {
       originalFileName: resume.originalFileName
@@ -972,6 +977,7 @@ async function handleResumeUpload(req, res, {
   db,
   dbPath,
   root,
+  dataRoot = root,
   modelReady,
   logger,
   requestId,
@@ -989,7 +995,7 @@ async function handleResumeUpload(req, res, {
     let resume;
     try {
       resume = file
-        ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
+        ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root, runtimeRoot: dataRoot })
         : parseResumeText({ text: pastedText });
     } catch (error) {
       const source = file ? "简历文件" : "粘贴的简历文本";
@@ -1016,7 +1022,7 @@ async function handleResumeUpload(req, res, {
     parseRecorded = true;
     persistResumeSourceFile({
       db,
-      root,
+      root: dataRoot,
       documentId: created.run.resumeDocumentId,
       file,
       logger,
@@ -1028,6 +1034,7 @@ async function handleResumeUpload(req, res, {
           db,
           dbPath,
           root,
+          dataRoot,
           run: created.run,
           logger,
           requestId,
@@ -1358,7 +1365,7 @@ async function handleProfileSave(req, res, db, { logger, requestId }) {
   }
 }
 
-async function handleResumeVersionSave(req, res, { db, root, modelConfig, modelReady, logger, requestId }) {
+async function handleResumeVersionSave(req, res, { db, root, dataRoot = root, modelConfig, modelReady, logger, requestId }) {
   let form = { fields: {}, files: {} };
   try {
     form = parseMultipart(await readBodyBuffer(req, MAX_UPLOAD_BYTES + 64 * 1024), req.headers["content-type"] || "");
@@ -1370,7 +1377,7 @@ async function handleResumeVersionSave(req, res, { db, root, modelConfig, modelR
     let document = null;
     if (file || pastedText) {
       document = file
-        ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root })
+        ? await parseResumeUpload({ fileName: file.fileName, buffer: file.data, root, runtimeRoot: dataRoot })
         : parseResumeText({ text: pastedText, fileName: "pasted_resume_version.txt" });
       maskResumeDocumentDiagnostics(document);
     }
@@ -1386,7 +1393,7 @@ async function handleResumeVersionSave(req, res, { db, root, modelConfig, modelR
       document,
       version: { ...resumeVersionFromForm(form.fields), analysis }
     });
-    persistResumeSourceFile({ db, root, documentId: saved.resumeDocumentId, file, logger, requestId });
+    persistResumeSourceFile({ db, root: dataRoot, documentId: saved.resumeDocumentId, file, logger, requestId });
     if (document) recordResumeParseAttempt(db, { profileId, document });
     logger.info("resume_version_saved", { requestId, profileId, versionId: saved.versionId, hasDocument: Boolean(document) });
     redirect(res, `/resumes?profileId=${profileId}&saved=1`);
@@ -1596,7 +1603,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
   }
 }
 
-async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady, logger, requestId, spawnProcess, resolveNewWorkflowBrowser }) {
+async function handlePlanScan(req, res, { db, root, dataRoot = root, dbPath, scanRuns, modelReady, logger, requestId, spawnProcess, resolveNewWorkflowBrowser }) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const browserAuthority = resolveNewWorkflowBrowser(params);
@@ -1643,7 +1650,7 @@ async function handlePlanScan(req, res, { db, root, dbPath, scanRuns, modelReady
       scanKind = batch.filterSnapshot.execution.scanKind;
       if (!["daily", "broad"].includes(scanKind)) throw appError("SCAN_RESUME_KIND_INVALID", "只有日常或广泛扫描批次可以断点恢复。");
     }
-    startPlanScan(scanRuns, { db, root, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, detailMode, logger, requestId, spawnProcess });
+    startPlanScan(scanRuns, { db, root, dataRoot, dbPath, planId: plan.id, cdpPort, browserMode, scanKind, resumeBatchId, detailMode, logger, requestId, spawnProcess });
     redirect(res, `/plan?profileId=${plan.profileId}&planId=${plan.id}&scan=started`);
   } catch (error) {
     respondUiError(res, error, modelSettingsBack(error, "/plan"), { logger, requestId, event: "search_plan_scan_rejected", fallbackCode: "SCAN_START_FAILED" });
@@ -2128,6 +2135,7 @@ function preparePlanForNewWorkflow({ db, plan, matchingContext, root, rescore = 
 async function handleWorkflowRunStart(req, res, {
   db,
   root,
+  dataRoot = root,
   dbPath,
   scanRuns,
   modelReady,
@@ -2147,7 +2155,7 @@ async function handleWorkflowRunStart(req, res, {
     const browserAuthority = resolveNewWorkflowBrowser(params);
     const result = await startWorkflow({
       db,
-      input: { ...params, ...browserAuthority, root, dbPath, scanRuns, modelReady, modelState, backupRuntime, requestId, spawnProcess },
+      input: { ...params, ...browserAuthority, root, dataRoot, dbPath, scanRuns, modelReady, modelState, backupRuntime, requestId, spawnProcess },
       deps: {
         appError, getSearchPlan, getCandidateProfile, getCandidateMatchingContext, getSearchPlanDependency,
         assertSearchPlanReady,
@@ -2192,6 +2200,7 @@ function assertWorkflowScanAvailable(db, scanRuns, planId, logger) {
 async function handleWorkflowRunResume(req, res, {
   db,
   root,
+  dataRoot = root,
   dbPath,
   scanRuns,
   batchModelReady,
@@ -2208,7 +2217,7 @@ async function handleWorkflowRunResume(req, res, {
     const browserAuthority = resolveNewWorkflowBrowser(params);
     const result = await resumeWorkflow({
       db,
-      input: { ...params, ...browserAuthority, workflowRunId, root, dbPath, scanRuns, batchModelReady, requestId, spawnProcess },
+      input: { ...params, ...browserAuthority, workflowRunId, root, dataRoot, dbPath, scanRuns, batchModelReady, requestId, spawnProcess },
       deps: {
         appError, getWorkflowRun, getBatch, workflowResumeNeedsBatchModel, assertCompleteInheritedContext,
         assertCompleteGeneratedContext, assertFrozenWorkflowPlan,
@@ -2334,6 +2343,7 @@ function handleWorkflowStatus(res, db, workflowRunId, logger = null) {
 async function handleWorkflowControl(req, res, {
   db,
   root,
+  dataRoot = root,
   dbPath,
   scanRuns,
   logger,
@@ -2361,6 +2371,7 @@ async function handleWorkflowControl(req, res, {
         workflowRunId,
         action,
         root,
+        dataRoot,
         dbPath,
         scanRuns,
         requestId,
@@ -2667,6 +2678,7 @@ function asIso(value) {
 function startPlanScan(scanRuns, {
   db,
   root,
+  dataRoot = root,
   dbPath,
   planId,
   cdpPort,
@@ -2719,6 +2731,7 @@ function startPlanScan(scanRuns, {
     browserMode,
     cdpPort,
     runId,
+    dataRoot: explicitDataRootForChild({ appRoot: root, dataRoot }),
     resumeBatchId: analysisOnly ? null : effectiveResumeBatchId,
     detailMode,
     ...(workflowRun ? {
@@ -3065,6 +3078,7 @@ function startOnboardingProcess({
   db,
   dbPath,
   root,
+  dataRoot = root,
   run,
   logger,
   requestId,
@@ -3081,6 +3095,7 @@ function startOnboardingProcess({
     "src/cli.js",
     "onboarding-process",
     "--db", dbPath,
+    ...dataRootCliArgs(root, dataRoot),
     "--run", run.id
   ];
   if (forceMock) args.push("--force-mock");
@@ -3141,6 +3156,7 @@ async function handleOnboardingRetry(req, res, {
   db,
   dbPath,
   root,
+  dataRoot = root,
   logger,
   requestId,
   spawnProcess,
@@ -3156,6 +3172,7 @@ async function handleOnboardingRetry(req, res, {
         db,
         dbPath,
         root,
+        dataRoot,
         run,
         logger,
         requestId,
@@ -3444,6 +3461,7 @@ async function handleCommunicationBatch(req, res, { db, browserAuthority }) {
 async function handleCommunicationControl(req, res, {
   db,
   root,
+  dataRoot = root,
   dbPath,
   logger,
   requestId,
@@ -3462,7 +3480,7 @@ async function handleCommunicationControl(req, res, {
     if (requestedBatch && ["start", "start_one", "resume", "resume_one"].includes(action)) {
       assertCommunicationBatchBrowserAuthority(requestedBatch, browserAuthority);
     }
-    const controlDeps = communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
+    const controlDeps = communicationApplicationDeps({ db, root, dataRoot, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader });
     const control = validateCommunicationControl({ db, input: params, deps: controlDeps });
     if (["start", "start_one", "resume", "resume_one"].includes(action)) {
       assertBrowserRuntimeReady();
@@ -3580,7 +3598,7 @@ function assertCommunicationRebindScope(db, batch, returnUrl) {
   }
 }
 
-function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = null, logger, requestId, spawnProcess = spawn }) {
+function startCommunicationProcess({ db, root, dataRoot = root, dbPath, batch, singleItemId = null, logger, requestId, spawnProcess = spawn }) {
   const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
   const processLogger = typeof logger.child === "function" ? logger.child({
     ...workflowLogContext({ ...(workflow || {}), communicationBatchId: batch.id }),
@@ -3600,6 +3618,7 @@ function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = nul
       "src/cli.js",
       "communicate",
       "--db", dbPath,
+      ...dataRootCliArgs(root, dataRoot),
       "--batch", String(batch.id),
       "--browser", batch.browserMode
     ];
@@ -3664,11 +3683,12 @@ function startCommunicationProcess({ db, root, dbPath, batch, singleItemId = nul
   return child;
 }
 
-function communicationApplicationDeps({ db, root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader }) {
+function communicationApplicationDeps({ db, root, dataRoot = root, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader }) {
   return {
     spawnCommunication: ({ batch, singleItemId }) => startCommunicationProcess({
       db,
       root,
+      dataRoot,
       dbPath,
       batch,
       singleItemId,
@@ -4818,6 +4838,11 @@ function renderCommunicationBuilderPage({ db, searchParams, browserAuthority }) 
     ? "RoleFlow 专用 Edge（推荐）"
     : "使用当前 Edge（高级，需要浏览器连接组件）";
   return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><input type="hidden" name="browserMode" value="${escapeAttr(authority.browserMode)}"><p>浏览器：${escapeHtml(browserLabel)}（Dashboard 已固定）</p><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
+}
+
+function dataRootCliArgs(root, dataRoot) {
+  const explicitDataRoot = explicitDataRootForChild({ appRoot: root, dataRoot });
+  return explicitDataRoot ? ["--data-root", explicitDataRoot] : [];
 }
 
 function renderCommunicationCenterPage({ db, searchParams }) {
