@@ -70,15 +70,6 @@ function Test-Dashboard {
 & (Join-Path $PSScriptRoot "install.ps1") -CheckOnly
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if (-not $NoBrowser) {
-  if ($BrowserMode -eq "edge") {
-    & (Join-Path $PSScriptRoot "start-edge-control.ps1") -Source auto
-  } else {
-    & (Join-Path $PSScriptRoot "start-portable-edge.ps1") -Port $CdpPort -ProfileDir $ProfilePath
-  }
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
 if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $BrowserAuthority)) {
   $arguments = @(
     "-NoProfile",
@@ -91,6 +82,8 @@ if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $Browser
   if ($BrowserMode -eq "portable") {
     $arguments += @("--cdp-port", [string]$CdpPort, "--browser-profile", ('"{0}"' -f $ProfilePath))
   }
+  if ($NoBrowser) { $arguments += "--no-browser" }
+  if ($NoOpen) { $arguments += "--no-startup-guidance" }
   Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null
   $deadline = (Get-Date).AddSeconds(15)
   do {
@@ -110,16 +103,3 @@ if ($BrowserMode -eq "edge") {
   Write-Host "浏览器：RoleFlow 专用 Edge（推荐）"
 }
 Write-Host "未登录时请先在 BOSS 标签页登录；设置好搜索条件后切回工作台。"
-
-if (-not $NoOpen) {
-  $workspaceArgs = @(
-    "workspace-tabs",
-    "--dashboard-url", $url,
-    "--browser", $BrowserMode
-  )
-  if ($BrowserMode -eq "portable") {
-    $workspaceArgs += @("--cdp-port", [string]$CdpPort, "--browser-profile", $ProfilePath)
-  }
-  & $RunScript @workspaceArgs
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}

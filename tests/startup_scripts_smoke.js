@@ -78,6 +78,7 @@ async function main() {
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
   await testInstalledLauncherPreservesUtf8Output();
+  await testConcurrentInstalledLaunchUsesOneDashboard();
   testPortableModeRejectsInvalidCdpPort();
   testEdgeModeRejectsDedicatedAuthority();
   testDashboardCommandRejectsMissingOrConflictingAuthority();
@@ -156,26 +157,20 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.match(combinedOutput(result), /浏览器：RoleFlow 专用 Edge（推荐）/);
   const records = readJsonLines(recordPath);
   const dashboard = records.find((item) => item.command === "dashboard");
-  const workspaceTabs = records.find((item) => item.command === "workspace-tabs");
   assert(dashboard, "dashboard command did not reach the fixture project CLI");
   registerProcess(dashboard.pid, {
     kind: "dashboard",
     expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
   });
-  assert(workspaceTabs, "workspace-tabs command did not reach the fixture project CLI");
+  assert.strictEqual(records.filter((item) => item.command === "workspace-tabs").length, 0, "application startup must not synchronously reconcile BOSS tabs");
   assert.strictEqual(normalizePath(dashboard.cwd), normalizePath(projectRoot));
   assert.strictEqual(normalizePath(dashboard.projectRoot), normalizePath(projectRoot));
-  assert.strictEqual(normalizePath(workspaceTabs.projectRoot), normalizePath(projectRoot));
   const expectedStableProfile = path.join(tempRoot, "local app data", "RoleFlow", "BrowserProfile");
   assert.deepStrictEqual(dashboard.args.slice(dashboard.args.indexOf("--browser")), [
     "--browser", "portable",
     "--cdp-port", "9222",
-    "--browser-profile", expectedStableProfile
-  ]);
-  assert.deepStrictEqual(workspaceTabs.args.slice(workspaceTabs.args.indexOf("--browser")), [
-    "--browser", "portable",
-    "--cdp-port", "9222",
-    "--browser-profile", expectedStableProfile
+    "--browser-profile", expectedStableProfile,
+    "--no-browser"
   ]);
   const health = await getJson(`http://127.0.0.1:${dashboardPort}/health`);
   assert.deepStrictEqual(health.browserAuthority, {
@@ -201,15 +196,13 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.match(combinedOutput(edge), /浏览器：使用当前 Edge（高级，需要浏览器连接组件）/);
   const edgeRecords = readJsonLines(edgeRecordPath);
   const edgeDashboard = edgeRecords.find((item) => item.command === "dashboard");
-  const edgeTabs = edgeRecords.find((item) => item.command === "workspace-tabs");
   assert(edgeDashboard);
   registerProcess(edgeDashboard.pid, {
     kind: "dashboard",
     expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
   });
-  assert(edgeTabs);
-  assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge"]);
-  assert.deepStrictEqual(edgeTabs.args.slice(edgeTabs.args.indexOf("--browser")), ["--browser", "edge"]);
+  assert.strictEqual(edgeRecords.filter((item) => item.command === "workspace-tabs").length, 0);
+  assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge", "--no-browser"]);
   await stopRegisteredProcess(edgeDashboard.pid);
   await waitForPortClosed(dashboardPort);
 }
@@ -257,7 +250,7 @@ async function testInstalledLauncherPreservesUtf8Output() {
     assert(dashboard, "launcher unicode probe did not start the fixture Dashboard");
     assert.match(
       fs.readFileSync(launcherLog, "utf8"),
-      /后台标签页创建后未能安全确认。/,
+      /浏览器：RoleFlow 专用 Edge（推荐）/,
       "installed launcher must preserve UTF-8 output from the workspace child process"
     );
   } finally {
@@ -267,6 +260,31 @@ async function testInstalledLauncherPreservesUtf8Output() {
       await waitForPortClosed(dashboardPort);
     }
   }
+}
+
+async function testConcurrentInstalledLaunchUsesOneDashboard() {
+  const launcherPath = path.join(projectRoot, "scripts", "launch-installed.ps1");
+  const recordPath = path.join(tempRoot, "launcher-concurrent.jsonl");
+  fs.rmSync(recordPath, { force: true });
+  const env = fixtureEnv({ ROLEFLOW_STARTUP_RECORD: recordPath });
+  const [first, second] = await Promise.all([
+    runPowerShellAsync(["-File", launcherPath], { cwd: outsideCwd, env, timeout: 40000 }),
+    runPowerShellAsync(["-File", launcherPath], { cwd: outsideCwd, env, timeout: 40000 })
+  ]);
+  assert.strictEqual(first.status, 0, combinedOutput(first));
+  assert.strictEqual(second.status, 0, combinedOutput(second));
+
+  const records = readJsonLines(recordPath);
+  const dashboards = records.filter((item) => item.command === "dashboard");
+  assert.strictEqual(dashboards.length, 1, "concurrent launchers must create exactly one Dashboard process");
+  const health = await getJson(`http://127.0.0.1:${dashboardPort}/health`);
+  assert.strictEqual(health.pid, dashboards[0].pid);
+  registerProcess(health.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
+  await stopRegisteredProcess(health.pid);
+  await waitForPortClosed(dashboardPort);
 }
 
 function testPortableModeRejectsInvalidCdpPort() {
@@ -647,6 +665,38 @@ function runPowerShell(args, {
     encoding: "utf8",
     timeout,
     windowsHide: true
+  });
+}
+
+function runPowerShellAsync(args, {
+  cwd = outsideCwd,
+  env = fixtureEnv(),
+  timeout = 20000
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(powershell, [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      ...args
+    ], { cwd, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`PowerShell fixture timed out after ${timeout}ms`));
+    }, timeout);
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
   });
 }
 

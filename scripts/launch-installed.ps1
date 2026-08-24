@@ -37,7 +37,30 @@ $(if ($Reason -match 'DASHBOARD_BROWSER_AUTHORITY_MISMATCH|PORTABLE_EDGE_(PORT_O
   )
 }
 
+function Get-RoleFlowStartupMutexName {
+  $Identity = "{0}|{1}" -f ([System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\").ToLowerInvariant()), $Port
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $Hash = $Hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Identity))
+  } finally {
+    $Hasher.Dispose()
+  }
+  $Suffix = (-join ($Hash | ForEach-Object { $_.ToString("x2") })).Substring(0, 24)
+  return "Local\RoleFlow-Startup-$Suffix"
+}
+
+$StartupMutex = $null
+$StartupMutexAcquired = $false
 try {
+  $StartupMutex = [System.Threading.Mutex]::new($false, (Get-RoleFlowStartupMutexName))
+  try {
+    $StartupMutexAcquired = $StartupMutex.WaitOne([TimeSpan]::FromSeconds(30))
+  } catch [System.Threading.AbandonedMutexException] {
+    $StartupMutexAcquired = $true
+  }
+  if (-not $StartupMutexAcquired) {
+    throw "ROLEFLOW_STARTUP_ALREADY_IN_PROGRESS: 另一个 RoleFlow 启动过程仍在运行。"
+  }
   $Output = & powershell.exe `
     -NoProfile `
     -NonInteractive `
@@ -64,4 +87,9 @@ try {
   )
   Show-RoleFlowError -Reason $_.Exception.Message
   exit 1
+} finally {
+  if ($StartupMutexAcquired) {
+    try { $StartupMutex.ReleaseMutex() } catch {}
+  }
+  if ($null -ne $StartupMutex) { $StartupMutex.Dispose() }
 }
