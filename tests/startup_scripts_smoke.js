@@ -77,6 +77,7 @@ async function main() {
   testStartupIdentityHelpers();
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
+  await testExistingDashboardRecoversStoppedBrowser();
   await testInstalledLauncherPreservesUtf8Output();
   await testConcurrentInstalledLaunchUsesOneDashboard();
   testPortableModeRejectsInvalidCdpPort();
@@ -213,6 +214,47 @@ async function testWorkspaceStartupFromSpacePath() {
   assert.strictEqual(edgeRecords.filter((item) => item.command === "workspace-tabs").length, 0);
   assert.deepStrictEqual(edgeDashboard.args.slice(edgeDashboard.args.indexOf("--browser")), ["--browser", "edge", "--data-root", expectedDataRoot, "--no-browser"]);
   await stopRegisteredProcess(edgeDashboard.pid);
+  await waitForPortClosed(dashboardPort);
+}
+
+async function testExistingDashboardRecoversStoppedBrowser() {
+  const recordPath = path.join(tempRoot, "workspace-recover.jsonl");
+  fs.rmSync(recordPath, { force: true });
+  const env = fixtureEnv({
+    ROLEFLOW_STARTUP_RECORD: recordPath,
+    ROLEFLOW_STARTUP_BROWSER_STATUS: "stopped"
+  });
+  const first = runPowerShellUnicode([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", String(dashboardPort),
+    "-NoBrowser",
+    "-NoOpen"
+  ], { cwd: outsideCwd, env, timeout: 30000 });
+  assert.strictEqual(first.status, 0, combinedOutput(first));
+
+  const dashboard = readJsonLines(recordPath).find((item) => item.command === "dashboard");
+  assert(dashboard, "recovery fixture did not start the Dashboard");
+  registerProcess(dashboard.pid, {
+    kind: "dashboard",
+    expectedCommandFragment: path.join(projectRoot, "src", "cli.js")
+  });
+
+  const second = runPowerShellUnicode([
+    "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
+    "-Port", String(dashboardPort),
+    "-NoOpen"
+  ], { cwd: outsideCwd, env, timeout: 30000 });
+  assert.strictEqual(second.status, 0, combinedOutput(second));
+
+  const records = readJsonLines(recordPath);
+  assert.strictEqual(records.filter((item) => item.command === "dashboard").length, 1,
+    "reopening RoleFlow must reuse the existing Dashboard");
+  assert.strictEqual(records.filter((item) => item.command === "browser-recover").length, 1,
+    "reopening RoleFlow must request exactly one browser recovery");
+  const runtime = await getJson(`http://127.0.0.1:${dashboardPort}/api/runtime-status`);
+  assert.strictEqual(runtime.browser.ready, true);
+
+  await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(dashboardPort);
 }
 
@@ -1091,6 +1133,7 @@ const cdpIndex = args.indexOf("--cdp-port");
 const profileIndex = args.indexOf("--browser-profile");
 const cdpPort = cdpIndex >= 0 ? Number(args[cdpIndex + 1]) : null;
 const profilePath = profileIndex >= 0 ? args[profileIndex + 1] : "";
+let browserReady = process.env.ROLEFLOW_STARTUP_BROWSER_STATUS !== "stopped";
 if (!["edge", "portable"].includes(browserMode)) {
   throw new Error("WORKFLOW_BROWSER_MODE_INVALID");
 }
@@ -1106,6 +1149,22 @@ const server = http.createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/health") {
     res.end(JSON.stringify({ ok: true, projectRoot, pid: process.pid, browserAuthority: { browserMode, cdpPort, profilePath } }));
+    return;
+  }
+  if (req.url === "/api/runtime-status") {
+    res.end(JSON.stringify({
+      application: { status: "ready", ready: true },
+      browser: browserMode === "portable"
+        ? { status: browserReady ? "ready" : "stopped", ready: browserReady, message: browserReady ? "ready" : "stopped", action: browserReady ? "none" : "recover" }
+        : null,
+      workspace: { status: "unchecked", ready: false, message: "unchecked" }
+    }));
+    return;
+  }
+  if (req.url === "/api/runtime/browser/recover" && req.method === "POST") {
+    browserReady = true;
+    if (record) fs.appendFileSync(record, JSON.stringify({ pid: process.pid, command: "browser-recover", args: [] }) + "\n");
+    res.end(JSON.stringify({ browser: { status: "ready", ready: true, message: "ready", action: "none" } }));
     return;
   }
   res.statusCode = 404;

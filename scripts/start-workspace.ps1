@@ -71,10 +71,66 @@ function Test-Dashboard {
   return $true
 }
 
+function Get-DashboardRuntimeStatus {
+  param([int]$DashboardPort)
+  try {
+    return Invoke-RestMethod `
+      -Method Get `
+      -Uri "http://127.0.0.1:$DashboardPort/api/runtime-status" `
+      -TimeoutSec 3
+  } catch {
+    throw "DASHBOARD_RUNTIME_STATUS_UNAVAILABLE: 无法读取 RoleFlow 的浏览器启动状态。$($_.Exception.Message)"
+  }
+}
+
+function Confirm-DashboardBrowserRuntime {
+  param(
+    [int]$DashboardPort,
+    [switch]$AllowRecovery
+  )
+  if ($BrowserMode -ne "portable" -or $NoBrowser) { return }
+
+  $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
+  $Deadline = (Get-Date).AddSeconds(20)
+  while ($Runtime.browser.status -in @("unknown", "starting") -and (Get-Date) -lt $Deadline) {
+    Start-Sleep -Milliseconds 300
+    $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
+  }
+  if ($Runtime.browser.ready -eq $true) { return }
+
+  if (-not $AllowRecovery) {
+    throw "DASHBOARD_BROWSER_START_FAILED: $([string]$Runtime.browser.message)"
+  }
+  if ([string]$Runtime.browser.status -eq "conflict") {
+    throw "DASHBOARD_BROWSER_CONFLICT: $([string]$Runtime.browser.message)"
+  }
+
+  $RecoveryError = $null
+  try {
+    $Recovered = Invoke-RestMethod `
+      -Method Post `
+      -Uri "http://127.0.0.1:$DashboardPort/api/runtime/browser/recover" `
+      -ContentType "application/json" `
+      -Body "{}" `
+      -TimeoutSec 45
+    if ($Recovered.browser.ready -eq $true) { return }
+  } catch {
+    $RecoveryError = $_.Exception.Message
+  }
+
+  # Workspace preparation may fail after Edge has already recovered. In that case
+  # startup still succeeds and the Dashboard can explain the remaining action.
+  $Runtime = Get-DashboardRuntimeStatus -DashboardPort $DashboardPort
+  if ($Runtime.browser.ready -eq $true) { return }
+  $Detail = if ($RecoveryError) { $RecoveryError } else { [string]$Runtime.browser.message }
+  throw "DASHBOARD_BROWSER_RECOVERY_FAILED: $Detail"
+}
+
 & (Join-Path $PSScriptRoot "install.ps1") -CheckOnly
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $BrowserAuthority)) {
+$DashboardWasRunning = Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $BrowserAuthority
+if (-not $DashboardWasRunning) {
   $DataPreparation = & (Join-Path $PSScriptRoot "prepare-user-data.ps1") `
     -InstallRoot $ProjectRoot `
     -DataRoot $DataRoot
@@ -103,6 +159,10 @@ if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $Browser
 if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $BrowserAuthority)) {
   throw "Dashboard failed to start on http://127.0.0.1:$Port. Check whether the port is occupied."
 }
+
+Confirm-DashboardBrowserRuntime `
+  -DashboardPort $Port `
+  -AllowRecovery:$DashboardWasRunning
 
 $url = "http://127.0.0.1:$Port/"
 Write-Host "RoleFlow is ready: $url"
