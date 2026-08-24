@@ -4152,7 +4152,11 @@ function publicOnboardingRun(run, now = new Date()) {
   const elapsedSeconds = Number.isFinite(started)
     ? Math.max(0, Math.round((now.getTime() - started) / 1000))
     : 0;
-  const nextHref = run.matchingCardId
+  const canReviewMatchingCard = run.status === "completed"
+    && run.stage === "ready"
+    && Boolean(run.matchingCardId)
+    && Boolean(run.searchPlanId);
+  const nextHref = canReviewMatchingCard
     ? `/match-card?profileId=${run.profileId}&cardId=${run.matchingCardId}`
     : "";
   return {

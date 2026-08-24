@@ -105,12 +105,45 @@ async function main() {
   assert(!JSON.stringify(queued).includes("13800138000"));
   assert(!JSON.stringify(queued).includes("王小明"));
 
-  await processOnboardingRun({
+  let releasePlan;
+  let planStarted;
+  const planStartedPromise = new Promise((resolve) => { planStarted = resolve; });
+  const processing = processOnboardingRun({
     db,
     runId,
     modelConfig: { provider: "mock", providers: { mock: { model: "offline-structured-mock" } } },
-    logger: quietLogger()
+    logger: quietLogger(),
+    recommendPlan: async () => {
+      planStarted();
+      return new Promise((resolve) => { releasePlan = resolve; });
+    }
   });
+  await planStartedPromise;
+  const buildingPlanStatus = await fetch(`${base}/api/onboarding-status?runId=${encodeURIComponent(runId)}`);
+  const buildingPlan = await buildingPlanStatus.json();
+  assert.strictEqual(buildingPlan.status, "running");
+  assert.strictEqual(buildingPlan.stage, "building_plan");
+  assert.strictEqual(buildingPlan.nextHref, "", "matching card must stay gated until the search plan is complete");
+  assert.strictEqual(buildingPlan.nextLabel, "");
+  const buildingPlanPage = await fetch(`${base}${progressLocation}`);
+  const buildingPlanHtml = await buildingPlanPage.text();
+  assert(
+    !buildingPlanHtml.includes('<a class="button-link onboarding-next"'),
+    "progress page must not offer the matching-card step early"
+  );
+  releasePlan({
+    name: "本地筛选方案",
+    cities: ["广州"],
+    salary: { minK: 10, maxK: 18 },
+    experience: ["经验不限"],
+    allowExperienceStretch: true,
+    bossActiveDays: 3,
+    directions: ["AI 应用开发工程师"],
+    keywords: [{ word: "AI 应用开发", priority: "A", reason: "目标岗位" }],
+    excludeWords: [],
+    hardExcludes: []
+  });
+  await processing;
   const completedStatus = await fetch(`${base}/api/onboarding-status?runId=${encodeURIComponent(runId)}`);
   const completed = await completedStatus.json();
   assert.strictEqual(completed.status, "completed", JSON.stringify(completed));
