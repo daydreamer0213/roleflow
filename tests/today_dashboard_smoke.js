@@ -202,8 +202,13 @@ async function assertBrowserReadsAreSerialized() {
   const events = [];
   let releaseReadiness;
   let markReadinessStarted;
+  let markRepeatedReadinessArrived;
+  let markPreviewArrived;
+  let readinessRequestCount = 0;
   const readinessStarted = new Promise((resolve) => { markReadinessStarted = resolve; });
   const readinessWait = new Promise((resolve) => { releaseReadiness = resolve; });
+  const repeatedReadinessArrived = new Promise((resolve) => { markRepeatedReadinessArrived = resolve; });
+  const previewArrived = new Promise((resolve) => { markPreviewArrived = resolve; });
   const serialServer = createDashboardServer({
     db: serialDb,
     browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
@@ -227,14 +232,20 @@ async function assertBrowserReadsAreSerialized() {
       };
     }
   });
+  serialServer.prependListener("request", (req) => {
+    if (req.url?.startsWith("/api/browser-readiness")) {
+      readinessRequestCount += 1;
+      if (readinessRequestCount === 2) markRepeatedReadinessArrived();
+    }
+    if (req.url?.startsWith("/api/acquisition-preview")) markPreviewArrived();
+  });
   const serialBaseUrl = await listen(serialServer);
   try {
     const readiness = getJson(serialBaseUrl, "/api/browser-readiness");
     await readinessStarted;
     const repeatedReadiness = getJson(serialBaseUrl, "/api/browser-readiness");
     const preview = getJson(serialBaseUrl, `/api/acquisition-preview?planId=${saved.planId}`);
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    await Promise.all([repeatedReadinessArrived, previewArrived]);
     assert.deepStrictEqual(events, ["readiness:start"], "browser-backed dashboard reads must enter one at a time");
     releaseReadiness();
     const [readinessResult, repeatedReadinessResult, previewResult] = await Promise.all([readiness, repeatedReadiness, preview]);
